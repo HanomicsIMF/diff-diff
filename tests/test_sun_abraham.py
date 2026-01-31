@@ -950,8 +950,9 @@ class TestSunAbrahamTStatNaN:
             assert np.isnan(t_stat), (
                 f"overall_t_stat should be NaN when SE={se}, got {t_stat}"
             )
-            assert np.isnan(results.overall_p_value) or True, (
-                "overall_p_value should propagate NaN from t_stat"
+            assert np.isnan(results.overall_p_value), (
+                f"overall_p_value should be NaN when SE={se} (analytical inference), "
+                f"got {results.overall_p_value}"
             )
             ci = results.overall_conf_int
             assert np.isnan(ci[0]) and np.isnan(ci[1]), (
