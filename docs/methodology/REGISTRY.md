@@ -147,8 +147,8 @@ Var(ATT_avg) = 1'V1 / |post|²
 where V is the VCV sub-matrix for post-treatment δ_e coefficients.
 
 *Standard errors:*
-- Default: Cluster-robust at unit level (accounts for within-unit serial correlation)
-- Alternative: HC1 heteroskedasticity-robust (for cross-sectional data)
+- Default: HC1 heteroskedasticity-robust (same as DifferenceInDifferences base class)
+- Alternative: Cluster-robust at unit level via `cluster` parameter (recommended for panel data)
 - Optional: Wild cluster bootstrap (complex for multi-coefficient testing;
   requires joint bootstrap distribution)
 - Degrees of freedom adjusted for absorbed fixed effects

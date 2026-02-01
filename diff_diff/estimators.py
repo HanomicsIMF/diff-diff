@@ -796,11 +796,32 @@ class MultiPeriodDiD(DifferenceInDifferences):
             if unit not in data.columns:
                 raise ValueError(f"Unit column '{unit}' not found in data")
 
-            # Check for staggered treatment timing
-            treated_mask = data[treatment] == 1
-            if treated_mask.any():
-                treatment_timing = data.loc[treated_mask].groupby(unit)[time].min()
-                if treatment_timing.nunique() > 1:
+            # Check for staggered treatment timing and absorbing treatment
+            unit_time_sorted = data.sort_values([unit, time])
+            adoption_times = {}
+            has_reversal = False
+            for u, group in unit_time_sorted.groupby(unit):
+                d_vals = group[treatment].values
+                # Check for treatment reversal (non-absorbing treatment)
+                if not has_reversal and len(d_vals) > 1 and np.any(np.diff(d_vals) < 0):
+                    warnings.warn(
+                        f"Treatment reversal detected (unit '{u}' transitions from "
+                        f"treated to untreated). MultiPeriodDiD assumes treatment is "
+                        f"an absorbing state (once treated, always treated). "
+                        f"Treatment reversals violate this assumption and may "
+                        f"produce unreliable estimates.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    has_reversal = True
+                # Only use units with observed 0→1 transition for adoption timing
+                # (skip units that are always treated — can't determine adoption time)
+                if 0 in d_vals and 1 in d_vals:
+                    adoption_times[u] = group.loc[group[treatment] == 1, time].iloc[0]
+
+            if len(adoption_times) > 0:
+                unique_adoption = len(set(adoption_times.values()))
+                if unique_adoption > 1:
                     warnings.warn(
                         "Treatment timing varies across units (staggered adoption "
                         "detected). MultiPeriodDiD assumes simultaneous adoption "
@@ -832,6 +853,16 @@ class MultiPeriodDiD(DifferenceInDifferences):
         if len(pre_periods) == 0:
             raise ValueError("Must have at least one pre-treatment period")
 
+        if len(pre_periods) < 2:
+            warnings.warn(
+                "Only one pre-treatment period available. At least 2 pre-periods "
+                "are needed to assess parallel trends. The treatment effect estimate "
+                "is still valid, but pre-period coefficients for parallel trends "
+                "testing are not available.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Validate post_periods are in the data
         for p in post_periods:
             if p not in all_periods:
@@ -856,15 +887,15 @@ class MultiPeriodDiD(DifferenceInDifferences):
         elif reference_period not in all_periods:
             raise ValueError(f"Reference period '{reference_period}' not found in time column")
 
-        # Warn if reference period is a post-treatment period
+        # Disallow post-period reference (downstream logic assumes reference is pre-period)
         if reference_period in post_periods:
-            warnings.warn(
+            raise ValueError(
                 f"reference_period={reference_period} is a post-treatment period. "
-                f"The reference period should typically be a pre-treatment period "
-                f"(e.g., the last pre-period). Post-period references alter the "
-                f"interpretation of all coefficients.",
-                UserWarning,
-                stacklevel=2,
+                f"The reference period must be a pre-treatment period "
+                f"(e.g., the last pre-period {pre_periods[-1]}). "
+                f"Post-period references are not supported because the reference "
+                f"period is excluded from estimation, which would bias avg_att "
+                f"and break downstream inference."
             )
 
         # Validate fixed effects and absorb columns

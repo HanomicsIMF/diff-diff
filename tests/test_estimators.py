@@ -2004,12 +2004,9 @@ class TestMultiPeriodDiDEventStudy:
         )
         assert results.reference_period == 1
 
-    def test_reference_period_in_post_warns(self, panel_data):
-        """Setting reference_period to a post-period should emit warning."""
-        import warnings
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+    def test_reference_period_in_post_raises(self, panel_data):
+        """Setting reference_period to a post-period should raise ValueError."""
+        with pytest.raises(ValueError, match="post-treatment period"):
             MultiPeriodDiD().fit(
                 panel_data,
                 outcome="outcome",
@@ -2018,8 +2015,6 @@ class TestMultiPeriodDiDEventStudy:
                 post_periods=[3, 4, 5],
                 reference_period=4,
             )
-        post_ref_warnings = [x for x in w if "post-treatment period" in str(x.message)]
-        assert len(post_ref_warnings) > 0, "Expected warning about post-period reference"
 
     def test_staggered_treatment_warning(self):
         """Staggered treatment timing with unit param should emit warning."""
@@ -2159,6 +2154,131 @@ class TestMultiPeriodDiDEventStudy:
         d = results.to_dict()
         assert "reference_period" in d
         assert d["reference_period"] == 2
+
+    def test_single_pre_period_warns(self):
+        """Single pre-period should warn but still produce valid results."""
+        np.random.seed(42)
+        data = []
+        for unit_id in range(40):
+            is_treated = unit_id < 20
+            for period in range(3):  # period 0 = pre, periods 1,2 = post
+                y = 10.0 + period * 0.5 + (2.0 if is_treated and period >= 1 else 0)
+                y += np.random.normal(0, 0.3)
+                data.append(
+                    {
+                        "unit": unit_id,
+                        "period": period,
+                        "treated": int(is_treated and period >= 1),
+                        "outcome": y,
+                    }
+                )
+        df = pd.DataFrame(data)
+        # Make treatment a proper absorbing indicator
+        for uid in range(20):
+            df.loc[(df["unit"] == uid), "treated"] = 1
+        for uid in range(20, 40):
+            df.loc[(df["unit"] == uid), "treated"] = 0
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = MultiPeriodDiD().fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                time="period",
+                post_periods=[1, 2],
+                reference_period=0,
+            )
+        pre_period_warnings = [x for x in w if "Only one pre-treatment period" in str(x.message)]
+        assert len(pre_period_warnings) > 0, "Expected warning about single pre-period"
+        # Results should still be valid
+        assert np.isfinite(results.avg_att)
+
+    def test_treatment_reversal_warns(self):
+        """Treatment reversal (D goes 1→0) should emit warning when unit provided."""
+        np.random.seed(42)
+        data = []
+        for unit_id in range(40):
+            for period in range(6):
+                is_treated = unit_id < 20
+                # Unit 0 has treatment reversal: treated in periods 2-3, untreated in 4-5
+                if unit_id == 0:
+                    d = 1 if 2 <= period <= 3 else 0
+                elif is_treated:
+                    d = 1 if period >= 3 else 0
+                else:
+                    d = 0
+                y = 10.0 + period * 0.5 + (2.0 if d else 0) + np.random.normal(0, 0.3)
+                data.append(
+                    {
+                        "unit": unit_id,
+                        "period": period,
+                        "treated": d,
+                        "outcome": y,
+                    }
+                )
+        df = pd.DataFrame(data)
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            MultiPeriodDiD().fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                time="period",
+                post_periods=[3, 4, 5],
+                reference_period=2,
+                unit="unit",
+            )
+        reversal_warnings = [x for x in w if "Treatment reversal" in str(x.message)]
+        assert len(reversal_warnings) > 0, "Expected warning about treatment reversal"
+
+    def test_staggered_no_false_positive_unbalanced(self):
+        """Unbalanced panel with simultaneous treatment should not trigger staggered warning."""
+        np.random.seed(42)
+        data = []
+        for unit_id in range(40):
+            is_treated = unit_id < 20
+            # Some treated units enter the panel late (already treated)
+            if is_treated and unit_id < 5:
+                start_period = 4  # Enter after treatment starts at period 3
+            else:
+                start_period = 0
+            for period in range(start_period, 8):
+                d = 1 if is_treated and period >= 3 else 0
+                y = 10.0 + period * 0.5 + (2.0 if d else 0) + np.random.normal(0, 0.3)
+                data.append(
+                    {
+                        "unit": unit_id,
+                        "period": period,
+                        "treated": d,
+                        "outcome": y,
+                    }
+                )
+        df = pd.DataFrame(data)
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            MultiPeriodDiD().fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                time="period",
+                post_periods=[3, 4, 5, 6, 7],
+                reference_period=2,
+                unit="unit",
+            )
+        staggered_warnings = [x for x in w if "staggered" in str(x.message).lower()]
+        assert len(staggered_warnings) == 0, (
+            "Should NOT warn about staggered adoption when all units adopt simultaneously "
+            "(some just enter the panel late)"
+        )
 
 
 class TestSyntheticDiD:
