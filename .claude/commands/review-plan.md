@@ -55,6 +55,11 @@ Identify all files the plan references (file paths, module names, class names). 
 1. **Files the plan proposes to modify** — read ALL of these first
 2. **Files referenced for context** (imports, call sites, existing patterns) — read selectively to verify specific claims
 
+**Scope restriction:**
+- Only read files that are within the project repository (the working directory tree).
+- The plan file itself (the `$ARGUMENTS` input) is exempt — it can be anywhere (e.g., `~/.claude/plans/`).
+- If the plan references paths outside the repo (home directory configs, SSH keys, `/etc/` files, etc.), do NOT read them. Instead, note in the review output under Dimension 2 (Codebase Correctness) that those external paths were not verified.
+
 **What to verify:**
 - File paths exist
 - Class names, function signatures, and method names match what the plan describes
