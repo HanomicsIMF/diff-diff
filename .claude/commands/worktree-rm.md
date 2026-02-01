@@ -83,14 +83,37 @@ Only attempt branch deletion if `$BRANCH` equals `<name>` (meaning we created it
 via `/worktree-new <name>` without a base-ref). If the branch is something else
 (e.g., `feature/existing-branch`), skip deletion — the user didn't create it.
 
+#### 6a. Fetch origin (best-effort)
+
 ```bash
-git branch -d -- "$BRANCH"
+git fetch origin --quiet 2>/dev/null || true
 ```
 
-Let the output print naturally:
-- If the branch was merged, it will be deleted and git prints a confirmation.
-- If not fully merged, git prints a warning — relay that to the user
-  (suggest `git branch -D -- "$BRANCH"` if they want to force-delete).
+This updates tracking refs so `git branch -d` has better merge detection. Scoped
+to `origin` to avoid fetching all remotes. Fails silently if offline or no remote.
+
+**If this step hangs** (network issues), Ctrl-C and continue — it is not required.
+
+#### 6b. Check GitHub PR status
+
+```bash
+gh pr view "$BRANCH" --json state --jq '.state' 2>/dev/null
+```
+
+Interpret by checking the **exit code first**, then the output:
+
+1. Command **exits non-zero** (gh not installed, no PR exists, auth/network error) → `PR_MERGED=unknown`
+2. Command **exits zero** and output is `MERGED` → `PR_MERGED=true`
+3. Command **exits zero** and output is `OPEN` or `CLOSED` → `PR_MERGED=false`
+
+#### 6c. Delete the branch
+
+- **`PR_MERGED=true`**: Force-delete with `git branch -D -- "$BRANCH"` — GitHub
+  confirms the work is merged (handles squash merges, rebase merges, etc.).
+  Report: "Branch `$BRANCH` deleted (PR was merged on GitHub)."
+- **`PR_MERGED=false` or `unknown`**: Safe-delete with `git branch -d -- "$BRANCH"`.
+  If it fails because the branch is not fully merged, relay the warning and
+  suggest `git branch -D -- "$BRANCH"` if they want to force-delete.
 
 ### 7. Report
 
