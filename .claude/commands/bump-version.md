@@ -80,10 +80,13 @@ Files that need updating:
      Note: Rust version may differ from Python version; always sync to the new version
 
 6. **Update CHANGELOG comparison links**:
+   - Run `git remote get-url origin` to determine the repository's GitHub URL
+     (strip `.git` suffix, convert SSH format to HTTPS if needed)
    - At the bottom of `CHANGELOG.md`, after `[OLD_VERSION]:`, add the new comparison link:
      ```
-     [NEW_VERSION]: https://github.com/igerber/diff-diff/compare/vOLD_VERSION...vNEW_VERSION
+     [NEW_VERSION]: https://github.com/OWNER/REPO/compare/vOLD_VERSION...vNEW_VERSION
      ```
+     using the owner/repo derived from the remote URL.
 
 7. **Report summary**:
    Display a summary of all changes made:
