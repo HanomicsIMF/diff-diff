@@ -36,7 +36,7 @@ Parse by splitting `$ARGUMENTS` on whitespace. Recognise `--dry-run`, `--yes`, a
    ```
    Error: No 'origin' remote configured.
    ```
-   Then show `git remote -v` output so the user can see what remotes exist.
+   Then show `git remote` output (remote names only, no URLs — URLs may contain embedded credentials) so the user can see what remotes are configured.
 
 3. **Check `gh` CLI availability**:
    ```bash
@@ -93,11 +93,11 @@ For each remaining branch:
 #### 4a. GitHub CLI detection (if `GH_AVAILABLE`)
 
 ```bash
-gh pr list --state merged --head "<branch>" --json number,title --limit 1
+gh pr list --state merged --head "<branch>" --json number,title,headRefOid --limit 1
 ```
 
 - **If the command succeeds** (exit code 0) and returns valid JSON:
-  - If the JSON array is non-empty, mark the branch as **gh-confirmed merged** and record the PR number and title.
+  - If the JSON array is non-empty, mark the branch as **gh-confirmed merged** and record the PR number, title, and `headRefOid` (the commit SHA at the branch tip when the PR was merged).
   - If the array is empty, the branch has no merged PR via this method — continue to 4b only if running the git-only fallback in parallel, otherwise skip.
 - **If the command fails** (non-zero exit code or invalid JSON output):
   - If `gh` has failed for **every** branch checked so far (suggesting a systemic issue like auth failure), emit a single summary warning and disable `gh` for remaining branches:
@@ -129,12 +129,12 @@ For each candidate branch, collect:
 
 - **Last commit subject**:
   ```bash
-  git log -1 --format="%s" "<branch>"
+  git log -1 --format="%s" "refs/heads/<branch>"
   ```
 
 - **Relative age**:
   ```bash
-  git log -1 --format="%ar" "<branch>"
+  git log -1 --format="%ar" "refs/heads/<branch>"
   ```
 
 - **PR number and title** (from step 4a, if available)
@@ -194,11 +194,18 @@ For each candidate, use a two-pass approach:
 
 2. **If `-d` succeeds**: the branch is fully merged into HEAD — no data loss possible. Record as deleted.
 
-3. **If `-d` fails AND the branch is gh-confirmed merged**: fall back to force delete. This is justified because GitHub confirms the PR's work is preserved on the remote; `-d` fails only because squash/rebase merges change commit hashes.
+3. **If `-d` fails AND the branch is gh-confirmed merged**: compare the local branch tip to the stored `headRefOid` before force-deleting:
    ```bash
-   git branch -D -- "<branch>"
+   git rev-parse "<branch>"
    ```
-   Note: `-D` may drop local-only commits that were never pushed (e.g., work started after the PR merged). The merged PR's content is preserved, but any unpushed local changes on the branch will be lost.
+   - **If the local tip matches `headRefOid`**: the branch has not changed since the PR was merged. Force-delete is safe:
+     ```bash
+     git branch -D -- "<branch>"
+     ```
+   - **If the local tip does NOT match `headRefOid`**: the branch has new commits since PR #N was merged. Do **not** force-delete — record as a failure with a specific message:
+     ```
+     Branch '<branch>' has new commits since PR #<N> was merged. Skipping force-delete to protect unmerged work.
+     ```
 
 4. **If `-d` fails AND the branch is gone-tracking only** (no gh confirmation): record as a failure. Do not force-delete — there is no external confirmation that the work is preserved.
 
@@ -214,13 +221,26 @@ Branch cleanup complete.
   Skipped: K branches (protected/checked-out)
 ```
 
-If any branches failed deletion:
+If any branches failed deletion, group by failure reason:
+
+For **gone-tracking branches** that failed `-d` (likely squash-merged, no gh confirmation):
 ```
-The following branches could not be deleted with safe delete (likely squash-merged):
+The following branches could not be safely deleted (likely squash-merged):
 
   <branch-name>
 
 To delete manually after verifying on GitHub:
+  git branch -D -- "<branch-name>"
+```
+
+For **gh-confirmed branches** that diverged from their merged PR tip:
+```
+The following branches have new local commits since their PRs were merged:
+
+  <branch-name>  (PR #<N> merged, but branch has new commits)
+
+Review the new commits before deleting:
+  git log <headRefOid>..refs/heads/<branch-name>
   git branch -D -- "<branch-name>"
 ```
 
@@ -234,7 +254,7 @@ Error: Not inside a git repository.
 ### No origin remote
 ```
 Error: No 'origin' remote configured.
-Run 'git remote -v' to see configured remotes.
+Run 'git remote' to see configured remote names.
 ```
 
 ### Network failure during fetch
@@ -263,7 +283,7 @@ Skip with message naming the worktree path.
 
 ## Notes
 
-- Uses `--` before branch names in `git branch` deletion commands to prevent branch names starting with `-` from being interpreted as flags. Do **not** use `--` before branch names in `git log`, where `--` separates revisions from pathspecs and would cause git to treat the branch name as a file path.
+- Uses `--` before branch names in `git branch` deletion commands to prevent branch names starting with `-` from being interpreted as flags. Uses `refs/heads/<branch>` in `git log` commands to avoid both flag interpretation (branch names starting with `-`) and pathspec ambiguity (where `--` would cause git to treat the branch name as a file path).
 - GitHub CLI detection handles squash-merged and rebase-merged PRs correctly (GitHub knows the PR was merged regardless of how commit hashes changed).
 - Git gone-tracking detection is less reliable for squash/rebase merges since `git branch -d` requires the exact commits to be reachable from HEAD.
 - Protected branches (`main`, `master`, current branch, worktree branches) are never deleted regardless of merge status.
