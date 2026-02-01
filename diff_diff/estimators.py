@@ -1086,7 +1086,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 avg_conf_int = (np.nan, np.nan)
             else:
                 avg_se = float(np.sqrt(avg_var))
-                if avg_se > 0:
+                if np.isfinite(avg_se) and avg_se > 0:
                     avg_t_stat = avg_att / avg_se
                     avg_p_value = compute_p_value(avg_t_stat, df=df)
                     avg_conf_int = compute_confidence_interval(avg_att, avg_se, self.alpha, df=df)

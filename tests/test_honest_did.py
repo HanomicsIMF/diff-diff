@@ -1043,6 +1043,72 @@ class TestEdgeCases:
         with pytest.raises(ValueError, match="No post-period effects with finite"):
             honest.fit(cs_results)
 
+    def test_honest_did_nonmonotone_period_labels(self):
+        """HonestDiD extraction should handle period labels where sorted order
+        doesn't separate pre/post (e.g. pre=[5,6], post=[1,2]).
+
+        The extraction must place pre-period effects before post-period effects
+        in beta_hat regardless of label values.
+        """
+        # Pre-periods 5, 6, 7 (reference=7 omitted), post-periods 1, 2
+        # sorted() would give [1, 2, 5, 6] — post before pre — which is wrong
+        period_effects = {
+            5: PeriodEffect(
+                period=5, effect=0.1, se=0.3, t_stat=0.33, p_value=0.74, conf_int=(-0.49, 0.69)
+            ),
+            6: PeriodEffect(
+                period=6, effect=0.2, se=0.35, t_stat=0.57, p_value=0.57, conf_int=(-0.49, 0.89)
+            ),
+            1: PeriodEffect(
+                period=1, effect=2.5, se=0.4, t_stat=6.25, p_value=0.0001, conf_int=(1.72, 3.28)
+            ),
+            2: PeriodEffect(
+                period=2, effect=2.8, se=0.45, t_stat=6.22, p_value=0.0001, conf_int=(1.92, 3.68)
+            ),
+        }
+
+        # VCV column mapping: period -> index in regression VCV
+        interaction_indices = {5: 0, 6: 1, 1: 2, 2: 3}
+
+        # Distinct diagonal entries so we can verify VCV block extraction
+        vcov = np.diag([0.09, 0.1225, 0.16, 0.2025])
+
+        results = MultiPeriodDiDResults(
+            period_effects=period_effects,
+            avg_att=2.65,
+            avg_se=0.42,
+            avg_t_stat=6.31,
+            avg_p_value=0.0001,
+            avg_conf_int=(1.83, 3.47),
+            n_obs=400,
+            n_treated=200,
+            n_control=200,
+            pre_periods=[5, 6, 7],
+            post_periods=[1, 2],
+            vcov=vcov,
+            reference_period=7,
+            interaction_indices=interaction_indices,
+        )
+
+        beta_hat, sigma, num_pre, num_post, pre_p, post_p = _extract_event_study_params(results)
+
+        # Pre-periods: 5, 6 (7 is reference, omitted)
+        assert num_pre == 2
+        # Post-periods: 1, 2
+        assert num_post == 2
+
+        # beta_hat must be [pre_5, pre_6, post_1, post_2]
+        assert beta_hat[0] == pytest.approx(0.1)  # period 5
+        assert beta_hat[1] == pytest.approx(0.2)  # period 6
+        assert beta_hat[2] == pytest.approx(2.5)  # period 1
+        assert beta_hat[3] == pytest.approx(2.8)  # period 2
+
+        # sigma blocks must match: pre block = diag(0.09, 0.1225), post block = diag(0.16, 0.2025)
+        assert sigma[0, 0] == pytest.approx(0.09)  # period 5 variance
+        assert sigma[1, 1] == pytest.approx(0.1225)  # period 6 variance
+        assert sigma[2, 2] == pytest.approx(0.16)  # period 1 variance
+        assert sigma[3, 3] == pytest.approx(0.2025)  # period 2 variance
+
 
 # =============================================================================
 # Tests for Visualization (without matplotlib)

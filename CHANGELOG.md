@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when no finite pre- or post-period effects remain)
 - HonestDiD VCV extraction: now uses interaction sub-VCV instead of full regression VCV
   (via `interaction_indices` period → column index mapping)
+- MultiPeriodDiD: `avg_se` guard now checks `np.isfinite()` (matches per-period pattern;
+  prevents `avg_t_stat=0` / `avg_p_value=1` when variance is infinite)
+- HonestDiD: extraction now uses explicit pre-then-post ordering instead of sorted period
+  labels (prevents misclassification when period labels don't sort chronologically)
 
 ## [2.2.0] - 2026-01-27
 
