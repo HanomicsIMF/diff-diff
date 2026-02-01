@@ -892,13 +892,12 @@ class MultiPeriodDiD(DifferenceInDifferences):
             # Default: last pre-period (e=-1 convention, matches fixest)
             if len(pre_periods) > 1:
                 warnings.warn(
-                    f"The default reference_period is changing from the first "
+                    f"The default reference_period has changed from the first "
                     f"pre-period ({pre_periods[0]}) to the last pre-period "
-                    f"({pre_periods[-1]}) to match the standard e=-1 convention. "
+                    f"({pre_periods[-1]}) to match the standard e=-1 convention "
+                    f"(as used by fixest, did, etc.). "
                     f"To silence this warning, pass "
-                    f"reference_period={pre_periods[-1]} explicitly. "
-                    f"In a future version, the default will be the last "
-                    f"pre-period.",
+                    f"reference_period={pre_periods[-1]} explicitly.",
                     FutureWarning,
                     stacklevel=2,
                 )

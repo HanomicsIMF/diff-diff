@@ -1091,8 +1091,8 @@ class HonestDiD:
             _extract_event_study_params(results)
         )
 
-        # beta_hat from MultiPeriodDiDResults already contains only post-periods
-        # Check if we have the right number of coefficients
+        # beta_hat contains [pre-period effects, post-period effects] in order.
+        # Extract just the post-period effects for HonestDiD bounds.
         if len(beta_hat) == num_post:
             # Already just post-period effects
             beta_post = beta_hat
