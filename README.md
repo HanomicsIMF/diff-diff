@@ -1274,7 +1274,6 @@ TROP(
     max_iter=100,               # Max iterations for factor estimation
     tol=1e-6,                   # Convergence tolerance
     alpha=0.05,                 # Significance level
-    variance_method='bootstrap', # 'bootstrap' or 'jackknife'
     n_bootstrap=200,            # Bootstrap replications
     seed=None                   # Random seed
 )
@@ -1874,8 +1873,7 @@ TROP(
     max_iter=100,              # Max iterations for factor estimation
     tol=1e-6,                  # Convergence tolerance
     alpha=0.05,                # Significance level for CIs
-    variance_method='bootstrap',  # 'bootstrap' or 'jackknife'
-    n_bootstrap=200,           # Bootstrap/jackknife iterations
+    n_bootstrap=200,           # Bootstrap replications
     seed=None                  # Random seed
 )
 ```
@@ -1899,7 +1897,7 @@ Note: TROP infers treatment periods from the treatment indicator column. The tre
 | Attribute | Description |
 |-----------|-------------|
 | `att` | Average Treatment effect on the Treated |
-| `se` | Standard error (bootstrap or jackknife) |
+| `se` | Standard error (bootstrap) |
 | `t_stat` | T-statistic |
 | `p_value` | P-value |
 | `conf_int` | Confidence interval |
@@ -1918,7 +1916,6 @@ Note: TROP infers treatment periods from the treatment indicator column. The tre
 | `loocv_score` | LOOCV score for selected parameters |
 | `n_pre_periods` | Number of pre-treatment periods |
 | `n_post_periods` | Number of post-treatment periods |
-| `variance_method` | Variance estimation method |
 | `bootstrap_distribution` | Bootstrap distribution (if bootstrap) |
 
 **Methods:**

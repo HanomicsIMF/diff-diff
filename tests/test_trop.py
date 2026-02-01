@@ -191,7 +191,6 @@ class TestTROP:
             lambda_time_grid=[0.0, 1.0],
             lambda_unit_grid=[0.0, 1.0],
             lambda_nn_grid=[0.0, 0.1],
-            variance_method="bootstrap",
             n_bootstrap=30,
             seed=42
         )
@@ -204,29 +203,8 @@ class TestTROP:
         )
 
         assert results.se > 0
-        assert results.variance_method == "bootstrap"
         assert results.n_bootstrap == 30
         assert results.bootstrap_distribution is not None
-
-    def test_jackknife_variance(self, simple_panel_data):
-        """Test jackknife variance estimation."""
-        trop_est = TROP(
-            lambda_time_grid=[0.0, 1.0],
-            lambda_unit_grid=[0.0, 1.0],
-            lambda_nn_grid=[0.0, 0.1],
-            variance_method="jackknife",
-            seed=42
-        )
-        results = trop_est.fit(
-            simple_panel_data,
-            outcome="outcome",
-            treatment="treated",
-            unit="unit",
-            time="period",
-        )
-
-        assert results.se >= 0
-        assert results.variance_method == "jackknife"
 
     def test_confidence_interval(self, simple_panel_data):
         """Test confidence interval properties."""
@@ -259,11 +237,6 @@ class TestTROP:
 
         trop_est.set_params(alpha=0.10)
         assert trop_est.alpha == 0.10
-
-    def test_invalid_variance_method(self):
-        """Test error on invalid variance method."""
-        with pytest.raises(ValueError):
-            TROP(variance_method="invalid")
 
     def test_missing_columns(self, simple_panel_data):
         """Test error when column is missing."""
@@ -541,7 +514,6 @@ class TestTROPResults:
             factor_matrix=np.zeros((10, 15)),
             effective_rank=2.0,
             loocv_score=0.5,
-            variance_method="bootstrap",
         )
 
         # Verify that all inference fields are NaN when SE=0
@@ -1667,7 +1639,6 @@ class TestPaperConformanceFixes:
             lambda_time_grid=[0.0],
             lambda_unit_grid=[0.0],
             lambda_nn_grid=[0.0],
-            variance_method="bootstrap",
             n_bootstrap=30,
             seed=42
         )
@@ -2207,7 +2178,6 @@ class TestLOOCVFallback:
             lambda_unit_grid=[0.0],
             lambda_nn_grid=[np.inf],    # Will be converted to 1e10 internally
             n_bootstrap=5,
-            variance_method="bootstrap",
             seed=42
         )
 
@@ -2827,7 +2797,6 @@ class TestTROPJointMethod:
             lambda_time_grid=[0.0, 1.0],
             lambda_unit_grid=[0.0, 1.0],
             lambda_nn_grid=[0.0, 0.1],
-            variance_method="bootstrap",
             n_bootstrap=20,
             seed=42,
         )
@@ -2840,30 +2809,8 @@ class TestTROPJointMethod:
         )
 
         assert results.se > 0
-        assert results.variance_method == "bootstrap"
         assert results.n_bootstrap == 20
         assert results.bootstrap_distribution is not None
-
-    def test_joint_jackknife_variance(self, simple_panel_data):
-        """Joint method jackknife variance estimation works."""
-        trop_est = TROP(
-            method="joint",
-            lambda_time_grid=[0.0, 1.0],
-            lambda_unit_grid=[0.0, 1.0],
-            lambda_nn_grid=[0.0, 0.1],
-            variance_method="jackknife",
-            seed=42,
-        )
-        results = trop_est.fit(
-            simple_panel_data,
-            outcome="outcome",
-            treatment="treated",
-            unit="unit",
-            time="period",
-        )
-
-        assert results.se >= 0
-        assert results.variance_method == "jackknife"
 
     def test_joint_confidence_interval(self, simple_panel_data):
         """Joint method produces valid confidence intervals."""
@@ -3098,41 +3045,6 @@ class TestTROPJointMethod:
             f"ATT with NaN ({results_nan.att:.4f}) should match dropped data "
             f"({results_dropped.att:.4f}) - true NaN exclusion"
         )
-
-    def test_joint_jackknife_produces_variation(self, simple_panel_data):
-        """Verify jackknife produces variation across leave-out iterations.
-
-        This tests the PR #113 fix: jackknife should truly exclude units
-        via weight zeroing, not imputation. If imputation were used, all
-        jackknife estimates would be nearly identical.
-        """
-        trop_est = TROP(
-            method="joint",
-            lambda_time_grid=[1.0],
-            lambda_unit_grid=[1.0],
-            lambda_nn_grid=[0.0],
-            variance_method="jackknife",
-            seed=42,
-        )
-        results = trop_est.fit(
-            simple_panel_data,
-            outcome="outcome",
-            treatment="treated",
-            unit="unit",
-            time="period",
-        )
-
-        # SE should be positive (variation exists)
-        assert results.se > 0, "Jackknife SE should be positive"
-
-        # If we can access jackknife estimates, verify they vary
-        # (The SE being > 0 already implies variation, but this is more explicit)
-        if hasattr(results, 'bootstrap_distribution') and results.bootstrap_distribution is not None:
-            # For jackknife, this stores the jackknife estimates
-            jack_estimates = results.bootstrap_distribution
-            if len(jack_estimates) > 1:
-                estimate_std = np.std(jack_estimates)
-                assert estimate_std > 0, "Jackknife estimates should vary"
 
     def test_joint_unit_no_valid_pre_gets_zero_weight(self, simple_panel_data):
         """Verify units with no valid pre-period data get zero weight.

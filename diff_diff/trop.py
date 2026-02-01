@@ -132,8 +132,6 @@ class TROPResults:
         Effective rank of the factor matrix (sum of singular values / max).
     loocv_score : float
         Leave-one-out cross-validation score for selected parameters.
-    variance_method : str
-        Method used for variance estimation.
     alpha : float
         Significance level for confidence interval.
     n_pre_periods : int
@@ -164,7 +162,6 @@ class TROPResults:
     factor_matrix: np.ndarray
     effective_rank: float
     loocv_score: float
-    variance_method: str
     alpha: float = 0.05
     n_pre_periods: int = 0
     n_post_periods: int = 0
@@ -222,9 +219,8 @@ class TROPResults:
             f"{'LOOCV score:':<25} {self.loocv_score:>10.6f}",
         ]
 
-        # Variance method info
-        lines.append(f"{'Variance method:':<25} {self.variance_method:>10}")
-        if self.variance_method == "bootstrap" and self.n_bootstrap is not None:
+        # Variance info
+        if self.n_bootstrap is not None:
             lines.append(f"{'Bootstrap replications:':<25} {self.n_bootstrap:>10}")
 
         lines.extend([
@@ -280,7 +276,6 @@ class TROPResults:
             "lambda_nn": self.lambda_nn,
             "effective_rank": self.effective_rank,
             "loocv_score": self.loocv_score,
-            "variance_method": self.variance_method,
         }
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -397,10 +392,8 @@ class TROP:
         Convergence tolerance for optimization.
     alpha : float, default=0.05
         Significance level for confidence intervals.
-    variance_method : str, default='bootstrap'
-        Method for variance estimation: 'bootstrap' or 'jackknife'.
     n_bootstrap : int, default=200
-        Number of replications for variance estimation.
+        Number of bootstrap replications for variance estimation.
     max_loocv_samples : int, default=100
         Maximum control observations to use in LOOCV for tuning parameter
         selection. Subsampling is used for computational tractability as
@@ -461,7 +454,6 @@ class TROP:
         max_iter: int = 100,
         tol: float = 1e-6,
         alpha: float = 0.05,
-        variance_method: str = 'bootstrap',
         n_bootstrap: int = 200,
         max_loocv_samples: int = 100,
         seed: Optional[int] = None,
@@ -482,18 +474,9 @@ class TROP:
         self.max_iter = max_iter
         self.tol = tol
         self.alpha = alpha
-        self.variance_method = variance_method
         self.n_bootstrap = n_bootstrap
         self.max_loocv_samples = max_loocv_samples
         self.seed = seed
-
-        # Validate parameters
-        valid_variance_methods = ("bootstrap", "jackknife")
-        if variance_method not in valid_variance_methods:
-            raise ValueError(
-                f"variance_method must be one of {valid_variance_methods}, "
-                f"got '{variance_method}'"
-            )
 
         # Validate that time/unit grids do not contain inf.
         # Per Athey et al. (2025) Eq. 3, λ_time=0 and λ_unit=0 give uniform
@@ -1260,9 +1243,9 @@ class TROP:
 
         Notes
         -----
-        Bootstrap and jackknife variance estimation assume simultaneous treatment
-        adoption (fixed `treated_periods` across resamples). The treatment timing
-        is inferred from the data once and held constant for all bootstrap/jackknife
+        Bootstrap variance estimation assumes simultaneous treatment adoption
+        (fixed `treated_periods` across resamples). The treatment timing is
+        inferred from the data once and held constant for all bootstrap
         iterations. For staggered adoption designs where treatment timing varies
         across units, use `method="twostep"` which computes observation-specific
         weights that naturally handle heterogeneous timing.
@@ -1505,17 +1488,10 @@ class TROP:
         # Bootstrap variance estimation
         effective_lambda = (lambda_time, lambda_unit, lambda_nn)
 
-        if self.variance_method == "bootstrap":
-            se, bootstrap_dist = self._bootstrap_variance_joint(
-                data, outcome, treatment, unit, time,
-                effective_lambda, treated_periods
-            )
-        else:
-            # Jackknife for joint method
-            se, bootstrap_dist = self._jackknife_variance_joint(
-                Y, D, effective_lambda, treated_periods,
-                n_units, n_periods
-            )
+        se, bootstrap_dist = self._bootstrap_variance_joint(
+            data, outcome, treatment, unit, time,
+            effective_lambda, treated_periods
+        )
 
         # Compute test statistics
         if se > 0:
@@ -1550,11 +1526,10 @@ class TROP:
             factor_matrix=L,
             effective_rank=effective_rank,
             loocv_score=best_score,
-            variance_method=self.variance_method,
             alpha=self.alpha,
             n_pre_periods=n_pre_periods,
             n_post_periods=n_post_periods,
-            n_bootstrap=self.n_bootstrap if self.variance_method == "bootstrap" else None,
+            n_bootstrap=self.n_bootstrap,
             bootstrap_distribution=bootstrap_dist if len(bootstrap_dist) > 0 else None,
         )
 
@@ -1751,87 +1726,6 @@ class TROP:
             )
 
         return tau
-
-    def _jackknife_variance_joint(
-        self,
-        Y: np.ndarray,
-        D: np.ndarray,
-        optimal_lambda: Tuple[float, float, float],
-        treated_periods: int,
-        n_units: int,
-        n_periods: int,
-    ) -> Tuple[float, np.ndarray]:
-        """
-        Compute jackknife standard error for joint method.
-
-        Parameters
-        ----------
-        Y : np.ndarray
-            Outcome matrix.
-        D : np.ndarray
-            Treatment matrix.
-        optimal_lambda : tuple
-            Optimal tuning parameters.
-        treated_periods : int
-            Number of post-treatment periods.
-        n_units : int
-            Number of units.
-        n_periods : int
-            Number of periods.
-
-        Returns
-        -------
-        Tuple[float, np.ndarray]
-            (se, jackknife_estimates).
-        """
-        lambda_time, lambda_unit, lambda_nn = optimal_lambda
-        jackknife_estimates = []
-
-        # Get treated unit indices
-        treated_unit_idx = np.where(np.any(D == 1, axis=0))[0]
-
-        for leave_out in treated_unit_idx:
-            # True leave-one-out: zero the delta weight for the left-out unit
-            # This excludes the unit from estimation without imputation
-            Y_jack = Y.copy()
-            D_jack = D.copy()
-            D_jack[:, leave_out] = 0  # Mark as not treated for weight computation
-
-            try:
-                # Compute weights (left-out unit is still in calculation)
-                delta = self._compute_joint_weights(
-                    Y_jack, D_jack, lambda_time, lambda_unit,
-                    treated_periods, n_units, n_periods
-                )
-
-                # Zero the delta weight for the left-out unit
-                # This ensures the unit doesn't contribute to estimation
-                delta[:, leave_out] = 0.0
-
-                # Fit model (left-out unit has zero weight, truly excluded)
-                if lambda_nn >= 1e10:
-                    _, _, _, tau = self._solve_joint_no_lowrank(Y_jack, D_jack, delta)
-                else:
-                    _, _, _, _, tau = self._solve_joint_with_lowrank(
-                        Y_jack, D_jack, delta, lambda_nn, self.max_iter, self.tol
-                    )
-
-                jackknife_estimates.append(tau)
-
-            except (np.linalg.LinAlgError, ValueError):
-                continue
-
-        jackknife_estimates = np.array(jackknife_estimates)
-
-        if len(jackknife_estimates) < 2:
-            return 0.0, jackknife_estimates
-
-        # Jackknife SE formula
-        n = len(jackknife_estimates)
-        mean_est = np.mean(jackknife_estimates)
-        se = np.sqrt((n - 1) / n * np.sum((jackknife_estimates - mean_est) ** 2))
-
-        return float(se), jackknife_estimates
 
     def fit(
         self,
@@ -2175,16 +2069,10 @@ class TROP:
         # Step 4: Variance estimation
         # Use effective_lambda (converted values) to ensure SE is computed with same
         # parameters as point estimation. This fixes the variance inconsistency issue.
-        if self.variance_method == "bootstrap":
-            se, bootstrap_dist = self._bootstrap_variance(
-                data, outcome, treatment, unit, time,
-                effective_lambda, Y=Y, D=D, control_unit_idx=control_unit_idx
-            )
-        else:
-            se, bootstrap_dist = self._jackknife_variance(
-                Y, D, control_mask, control_unit_idx, effective_lambda,
-                n_units, n_periods
-            )
+        se, bootstrap_dist = self._bootstrap_variance(
+            data, outcome, treatment, unit, time,
+            effective_lambda, Y=Y, D=D, control_unit_idx=control_unit_idx
+        )
 
         # Compute test statistics
         if se > 0:
@@ -2221,11 +2109,10 @@ class TROP:
             factor_matrix=L_hat,
             effective_rank=effective_rank,
             loocv_score=best_score,
-            variance_method=self.variance_method,
             alpha=self.alpha,
             n_pre_periods=n_pre_periods,
             n_post_periods=n_post_periods,
-            n_bootstrap=self.n_bootstrap if self.variance_method == "bootstrap" else None,
+            n_bootstrap=self.n_bootstrap,
             bootstrap_distribution=bootstrap_dist if len(bootstrap_dist) > 0 else None,
         )
 
@@ -2323,7 +2210,7 @@ class TROP:
             # Weight matrix: outer product (n_periods x n_units)
             return np.outer(time_weights, unit_weights)
 
-        # Fallback: compute from scratch (used in bootstrap/jackknife)
+        # Fallback: compute from scratch (used in bootstrap)
         # Time distance: |t - s| following paper's Equation 3 (page 7)
         dist_time = np.abs(np.arange(n_periods) - t)
         time_weights = np.exp(-lambda_time * dist_time)
@@ -2904,103 +2791,6 @@ class TROP:
         se = np.std(bootstrap_estimates, ddof=1)
         return float(se), bootstrap_estimates
 
-    def _jackknife_variance(
-        self,
-        Y: np.ndarray,
-        D: np.ndarray,
-        control_mask: np.ndarray,
-        control_unit_idx: np.ndarray,
-        optimal_lambda: Tuple[float, float, float],
-        n_units: int,
-        n_periods: int,
-    ) -> Tuple[float, np.ndarray]:
-        """
-        Compute jackknife standard error (leave-one-unit-out).
-
-        Uses observation-specific weights following Algorithm 2.
-
-        Parameters
-        ----------
-        Y : np.ndarray
-            Outcome matrix.
-        D : np.ndarray
-            Treatment matrix.
-        control_mask : np.ndarray
-            Control observation mask.
-        control_unit_idx : np.ndarray
-            Indices of control units.
-        optimal_lambda : tuple
-            Optimal tuning parameters.
-        n_units : int
-            Number of units.
-        n_periods : int
-            Number of periods.
-
-        Returns
-        -------
-        tuple
-            (se, jackknife_estimates).
-        """
-        lambda_time, lambda_unit, lambda_nn = optimal_lambda
-        jackknife_estimates = []
-
-        # Get treated unit indices
-        treated_unit_idx = np.where(np.any(D == 1, axis=0))[0]
-
-        for leave_out in treated_unit_idx:
-            # Create mask excluding this unit
-            Y_jack = Y.copy()
-            D_jack = D.copy()
-            Y_jack[:, leave_out] = np.nan
-            D_jack[:, leave_out] = 0
-
-            control_mask_jack = D_jack == 0
-
-            # Get remaining treated observations
-            treated_obs_jack = [(t, i) for t in range(n_periods) for i in range(n_units)
-                                if D_jack[t, i] == 1]
-
-            if not treated_obs_jack:
-                continue
-
-            try:
-                # Compute ATT using observation-specific weights (Algorithm 2)
-                tau_values = []
-                for t, i in treated_obs_jack:
-                    # Compute observation-specific weights for this (i, t)
-                    weight_matrix = self._compute_observation_weights(
-                        Y_jack, D_jack, i, t, lambda_time, lambda_unit,
-                        control_unit_idx, n_units, n_periods
-                    )
-
-                    # Fit model with these weights
-                    alpha, beta, L = self._estimate_model(
-                        Y_jack, control_mask_jack, weight_matrix, lambda_nn,
-                        n_units, n_periods
-                    )
-
-                    # Compute treatment effect
-                    tau = Y_jack[t, i] - alpha[i] - beta[t] - L[t, i]
-                    tau_values.append(tau)
-
-                if tau_values:
-                    jackknife_estimates.append(np.mean(tau_values))
-
-            except (np.linalg.LinAlgError, ValueError):
-                continue
-
-        jackknife_estimates = np.array(jackknife_estimates)
-
-        if len(jackknife_estimates) < 2:
-            return 0.0, jackknife_estimates
-
-        # Jackknife SE formula
-        n = len(jackknife_estimates)
-        mean_est = np.mean(jackknife_estimates)
-        se = np.sqrt((n - 1) / n * np.sum((jackknife_estimates - mean_est) ** 2))
-
-        return se, jackknife_estimates
-
     def _fit_with_fixed_lambda(
         self,
         data: pd.DataFrame,
@@ -3086,7 +2876,6 @@ class TROP:
             "max_iter": self.max_iter,
             "tol": self.tol,
             "alpha": self.alpha,
-            "variance_method": self.variance_method,
             "n_bootstrap": self.n_bootstrap,
             "max_loocv_samples": self.max_loocv_samples,
             "seed": self.seed,

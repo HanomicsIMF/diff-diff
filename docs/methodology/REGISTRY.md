@@ -550,8 +550,7 @@ Q(λ) = Σ_{j,s: D_js=0} [τ̂_js^loocv(λ)]²
   - This ensures λ selection only considers fully estimable combinations
 
 *Standard errors:*
-- Default: Block bootstrap preserving panel structure (Algorithm 3)
-- Alternative: Jackknife (leave-one-unit-out) — **implementation addition** not described in the paper
+- Block bootstrap preserving panel structure (Algorithm 3)
 
 *Edge cases:*
 - Rank selection: automatic via cross-validation, information criterion, or elbow
@@ -661,7 +660,7 @@ For joint method, LOOCV works as follows:
 - **Simultaneous adoption (enforced)**: The joint method requires all treated units
   to receive treatment at the same time. A `ValueError` is raised if staggered
   adoption is detected (units first treated at different periods). Treatment timing is
-  inferred once and held constant for bootstrap/jackknife variance estimation.
+  inferred once and held constant for bootstrap variance estimation.
   For staggered adoption designs, use `method="twostep"`.
 
 **Reference**: Adapted from reference implementation. See also Athey et al. (2025).
@@ -974,7 +973,7 @@ should be a deliberate user choice.
 | SunAbraham | Cluster-robust + delta method | Pairs bootstrap |
 | SyntheticDiD | Placebo variance (Alg 4) | Block bootstrap |
 | TripleDifference | HC1 / cluster-robust | Influence function for IPW/DR |
-| TROP | Block bootstrap | Jackknife |
+| TROP | Block bootstrap | — |
 | BaconDecomposition | N/A (exact decomposition) | Individual 2×2 SEs |
 | HonestDiD | Inherited from event study | FLCI, C-LF |
 | PreTrendsPower | Exact (analytical) | - |

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- **TROP `variance_method` parameter** — Jackknife variance estimation removed.
+  Bootstrap (the only method specified in Athey et al. 2025) is now always used.
+  The `variance_method` field has also been removed from `TROPResults`.
+
 ## [2.2.0] - 2026-01-27
 
 ### Added
