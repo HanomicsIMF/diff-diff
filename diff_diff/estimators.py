@@ -1016,9 +1016,14 @@ class MultiPeriodDiD(DifferenceInDifferences):
             idx = interaction_indices[period]
             effect = coefficients[idx]
             se = np.sqrt(vcov[idx, idx])
-            t_stat = effect / se if np.isfinite(se) and se > 0 else np.nan
-            p_value = compute_p_value(t_stat, df=df)
-            conf_int = compute_confidence_interval(effect, se, self.alpha, df=df)
+            if np.isfinite(se) and se > 0:
+                t_stat = effect / se
+                p_value = compute_p_value(t_stat, df=df)
+                conf_int = compute_confidence_interval(effect, se, self.alpha, df=df)
+            else:
+                t_stat = np.nan
+                p_value = np.nan
+                conf_int = (np.nan, np.nan)
 
             period_effects[period] = PeriodEffect(
                 period=period,

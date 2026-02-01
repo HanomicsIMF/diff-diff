@@ -1845,6 +1845,13 @@ class TestMultiPeriodDiD:
         pe_3 = results.period_effects[3]
         assert np.isnan(pe_3.effect), "Period 3 effect should be NaN (unidentified)"
 
+        # All inference fields for the unidentified period should be NaN
+        assert np.isnan(pe_3.se), "Period 3 SE should be NaN (unidentified)"
+        assert np.isnan(pe_3.t_stat), "Period 3 t_stat should be NaN (unidentified)"
+        assert np.isnan(pe_3.p_value), "Period 3 p_value should be NaN (unidentified)"
+        assert np.isnan(pe_3.conf_int[0]), "Period 3 CI lower should be NaN (unidentified)"
+        assert np.isnan(pe_3.conf_int[1]), "Period 3 CI upper should be NaN (unidentified)"
+
         # avg_att should be NaN because one period effect is NaN (R-style NA propagation)
         assert np.isnan(results.avg_att), "avg_att should be NaN when any period effect is NaN"
         assert np.isnan(results.avg_se), "avg_se should be NaN when avg_att is NaN"

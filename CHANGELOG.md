@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `reference_period` and `interaction_indices` attributes on `MultiPeriodDiDResults`
 - `pre_period_effects` and `post_period_effects` convenience properties on results
 - Pre-period section in `summary()` output with reference period indicator
-- Warning when `reference_period` is set to a post-treatment period
+- `ValueError` when `reference_period` is set to a post-treatment period
 - Staggered adoption warning when treatment timing varies across units (with `unit` param)
 - Informative KeyError when accessing reference period via `get_effect()`
 

@@ -95,8 +95,9 @@ CallawaySantAnna or SunAbraham instead.
 
 *Assumption checks / warnings:*
 - Treatment indicator must be binary (0/1) with variation in both groups
-- Requires at least 2 pre-treatment and 1 post-treatment period
-  (need ≥2 pre-periods to test parallel trends)
+- Requires at least 1 pre-treatment and 1 post-treatment period
+- Warns when only 1 pre-period available (≥2 needed to test parallel trends;
+  ATT is still valid but pre-trends assessment is not possible)
 - Reference period defaults to last pre-treatment period (e=-1 convention)
 - Warns if treatment timing varies across units (suggests CallawaySantAnna)
 - Treatment must be an absorbing state (once treated, always treated)
