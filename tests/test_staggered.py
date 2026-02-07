@@ -1554,7 +1554,7 @@ class TestCallawaySantAnnaAnalyticalSE:
             never_treated_frac=0.3,
             seed=42
         )
-        n_boot = ci_params.bootstrap(499)
+        n_boot = ci_params.bootstrap(499, min_n=249)
 
         # Run with analytical SE (n_bootstrap=0)
         cs_analytical = CallawaySantAnna(n_bootstrap=0, seed=42)
@@ -1698,7 +1698,7 @@ class TestCallawaySantAnnaAnalyticalSE:
             never_treated_frac=0.3,
             seed=42
         )
-        n_boot = ci_params.bootstrap(499)
+        n_boot = ci_params.bootstrap(499, min_n=199)
 
         # Analytical
         cs_analytical = CallawaySantAnna(n_bootstrap=0, seed=42)

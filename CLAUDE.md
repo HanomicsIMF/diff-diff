@@ -375,7 +375,7 @@ Tests mirror the source modules:
 - `tests/test_pretrends.py` - Tests for pre-trends power analysis
 - `tests/test_datasets.py` - Tests for dataset loading functions
 
-Session-scoped `ci_params` fixture in `conftest.py` scales bootstrap iterations and TROP grid sizes in pure Python mode — use `ci_params.bootstrap(n)` and `ci_params.grid(values)` in new tests with `n_bootstrap >= 20`.
+Session-scoped `ci_params` fixture in `conftest.py` scales bootstrap iterations and TROP grid sizes in pure Python mode — use `ci_params.bootstrap(n)` and `ci_params.grid(values)` in new tests with `n_bootstrap >= 20`. For SE convergence tests (analytical vs bootstrap comparison), use `ci_params.bootstrap(n, min_n=199)` to ensure sufficient iterations.
 
 ### Test Writing Guidelines
 

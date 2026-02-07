@@ -1665,7 +1665,11 @@ class TestPaperConformanceFixes:
 
         # Bootstrap should complete successfully
         assert results.bootstrap_distribution is not None
-        assert len(results.bootstrap_distribution) >= 11  # Most iterations succeed
+        min_successes = max(11, int(0.67 * n_boot))
+        assert len(results.bootstrap_distribution) >= min_successes, (
+            f"Expected >= {min_successes} successful bootstrap draws "
+            f"out of {n_boot}, got {len(results.bootstrap_distribution)}"
+        )
         # SE should be positive and finite
         assert results.se > 0
         assert np.isfinite(results.se)

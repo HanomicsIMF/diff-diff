@@ -812,7 +812,7 @@ class TestSEFormulas:
         This test is marked slow because it uses 499 bootstrap iterations
         for thorough validation of SE convergence.
         """
-        n_boot = ci_params.bootstrap(499)
+        n_boot = ci_params.bootstrap(499, min_n=199)
         data = generate_staggered_data(
             n_units=300,
             n_periods=8,

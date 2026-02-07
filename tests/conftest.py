@@ -105,11 +105,15 @@ class CIParams:
     """
 
     @staticmethod
-    def bootstrap(n: int) -> int:
-        """Scale bootstrap iterations. Guaranteed monotonic: bootstrap(n+1) >= bootstrap(n)."""
+    def bootstrap(n: int, *, min_n: int = 11) -> int:
+        """Scale bootstrap iterations. Guaranteed monotonic: bootstrap(n+1) >= bootstrap(n).
+
+        Use a larger min_n for tests comparing analytical vs bootstrap SEs,
+        which need more iterations for stable convergence.
+        """
         if not _PURE_PYTHON_MODE or n <= 10:
             return n
-        return max(11, int(math.sqrt(n) * 1.6))
+        return min(n, max(min_n, int(math.sqrt(n) * 1.6)))
 
     @staticmethod
     def grid(values: list) -> list:
