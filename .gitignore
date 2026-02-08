@@ -84,3 +84,6 @@ launch-video/
 
 # Reference implementations (local only)
 trop_avg_ref/
+
+# Academic papers (local only, not for distribution)
+papers/
