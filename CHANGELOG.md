@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-02-07
+
 ### Changed
 - **MultiPeriodDiD: Full event-study specification** (BREAKING)
   - Treatment × period interactions now created for ALL periods (pre and post),
@@ -51,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prevents `avg_t_stat=0` / `avg_p_value=1` when variance is infinite)
 - HonestDiD: extraction now uses explicit pre-then-post ordering instead of sorted period
   labels (prevents misclassification when period labels don't sort chronologically)
+- Backend-aware test parameter scaling for pure Python CI performance
+- Lower TROP stratified bootstrap threshold floor from 11 to 5 for pure Python CI
 
 ## [2.2.0] - 2026-01-27
 
@@ -654,6 +658,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.2.1]: https://github.com/igerber/diff-diff/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/igerber/diff-diff/compare/v2.1.9...v2.2.0
 [2.1.9]: https://github.com/igerber/diff-diff/compare/v2.1.8...v2.1.9
 [2.1.8]: https://github.com/igerber/diff-diff/compare/v2.1.7...v2.1.8
