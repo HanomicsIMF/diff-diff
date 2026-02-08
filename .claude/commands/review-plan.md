@@ -1,22 +1,37 @@
 ---
 description: Review a Claude Code plan file from a staff engineer perspective
-argument-hint: "[--updated] <path-to-plan-file>"
+argument-hint: "[--updated] [--pr <comment-url>] <path-to-plan-file>"
 ---
 
 # Review Plan
 
-Review a Claude Code plan file from a staff engineer perspective and provide structured feedback across 8 dimensions.
+Review a Claude Code plan file from a staff engineer perspective and provide structured feedback across 8 dimensions. Optionally, when given a `--pr <comment-url>`, also verify the plan covers all feedback items from a specific PR review comment (Dimension 9).
 
 ## Arguments
 
 `$ARGUMENTS` may contain:
 - **Plan file path** (required): Path to the plan file, e.g., `~/.claude/plans/dreamy-coalescing-brook.md`
 - `--updated` (optional): Signal that the plan has been revised since a prior review. Forces a fresh full review and includes a delta assessment of what changed.
+- `--pr <comment-url>` (optional): URL of the specific PR comment whose feedback
+  the plan addresses. Accepts GitHub comment URLs in any of these formats:
+    - `https://github.com/owner/repo/pull/123#issuecomment-456`
+    - `https://github.com/owner/repo/pull/123#discussion_r789`
+    - `https://github.com/owner/repo/pull/123#pullrequestreview-012`
+  Enables branch verification and PR feedback coverage checking (Dimension 9).
 
 Parse `$ARGUMENTS` to extract:
 - **--updated**: Split `$ARGUMENTS` on whitespace and check if any token is exactly `--updated`. Remove that token to get the remaining text.
-- **Plan file path**: The remaining non-flag tokens after removing `--updated`, joined back together. The flag may appear before or after the path.
-- If no path remains after stripping the flag, use AskUserQuestion to request it:
+- **--pr**: Check if any token is exactly `--pr`. If found, take the next token as the comment URL and remove both tokens. If `--pr` is found with no following URL, use AskUserQuestion to request it:
+```
+What is the PR comment URL to check coverage against?
+
+Supported formats:
+1. PR-level comment: https://github.com/owner/repo/pull/42#issuecomment-123456
+2. Inline review comment: https://github.com/owner/repo/pull/42#discussion_r789012
+3. Full PR review: https://github.com/owner/repo/pull/42#pullrequestreview-345678
+```
+- **Plan file path**: The remaining non-flag tokens after removing `--updated` and `--pr <url>`, joined back together. All flags (`--updated`, `--pr <url>`) are position-independent relative to the path and to each other.
+- If no path remains after stripping flags, use AskUserQuestion to request it:
 ```
 Which plan file would you like me to review?
 
@@ -30,6 +45,7 @@ Options:
 - **Advisory-only**: Provide feedback and recommendations. Do not implement fixes.
 - **No code changes**: Do not modify any source code, test files, or documentation.
 - Use the Read tool for files and the Glob/Grep tools for searching. Do not use Write, Edit, NotebookEdit, or any file-modifying Bash commands.
+- The `gh api` calls used with `--pr` are read-only API requests, consistent with the read-only constraint.
 
 ## Instructions
 
@@ -66,9 +82,98 @@ Read the project's `CLAUDE.md` file to understand:
 
 If the plan modifies estimator math, standard error formulas, inference logic, or edge-case handling, also read `docs/methodology/REGISTRY.md` to understand the academic foundations and reference implementations for the affected estimator(s).
 
+### Step 2b: Parse Comment URL and Verify Branch (if `--pr`)
+
+Only perform this step when `--pr <comment-url>` was provided. Otherwise skip to Step 3.
+
+**Parse the URL:**
+- Strip query parameters from the URL before parsing: remove the query string (the `?...` portion) while preserving the `#` fragment. For example, `https://github.com/o/r/pull/1?notification_referrer_id=abc#issuecomment-123` becomes `https://github.com/o/r/pull/1#issuecomment-123`. If the fragment itself contains `?` (e.g., `#discussion_r123?foo=bar`), strip the `?` and everything after it from the fragment before pattern matching, since GitHub fragments never contain `?` as meaningful data.
+- Only `github.com` URLs are supported. If the URL host is not `github.com`, report an error and stop.
+- Extract `owner`, `repo`, `pr_number` from the URL path. The `pr_number` is always the path segment immediately after `/pull/`.
+- Extract comment type and ID from the fragment:
+
+| Fragment | Type | `gh api` endpoint |
+|---|---|---|
+| `#issuecomment-{id}` | Issue comment | `repos/{owner}/{repo}/issues/comments/{id}` |
+| `#discussion_r{id}` | Inline review comment | `repos/{owner}/{repo}/pulls/comments/{id}` |
+| `#pullrequestreview-{id}` | PR review | `repos/{owner}/{repo}/pulls/{pr_number}/reviews/{id}` |
+
+If the URL doesn't match any fragment pattern (including bare PR URLs without a fragment), report:
+```
+Error: Unrecognized PR comment URL format. Expected a GitHub PR comment URL like:
+  https://github.com/owner/repo/pull/123#issuecomment-456
+The URL must point to a specific comment, not a PR page.
+```
+
+**Verify `gh` CLI availability:**
+
+Run `gh auth status 2>/dev/null` (suppress output on success). If it fails, report a hard error:
+```
+Error: The --pr flag requires the GitHub CLI (gh) to be installed and authenticated.
+Run `gh auth login` to authenticate, then retry.
+```
+
+**Verify branch state:**
+
+```bash
+gh pr view <number> --repo <owner>/<repo> --json headRefName,baseRefName,title --jq '.'
+```
+
+Compare `headRefName` against `git branch --show-current`:
+- **Match**: Note "Branch verified" in output.
+- **Mismatch**: Emit a warning in the output and note under Dimension 2 (Codebase Correctness) that code references may be inaccurate. Recommend the user checkout the PR branch first (`git checkout <headRefName>`), but do not block the review.
+
+### Step 2c: Fetch the Specific Comment (if `--pr`)
+
+Only perform this step when `--pr` was provided. Otherwise skip to Step 3.
+
+Fetch the comment using the `gh api` endpoint from the table in Step 2b.
+
+**For `pullrequestreview-` URLs**, fetch BOTH the review body AND its inline comments:
+```bash
+# Review body
+gh api repos/{owner}/{repo}/pulls/{pr_number}/reviews/{id} --jq '{body: .body, user: .user.login, state: .state}'
+
+# All inline comments belonging to this review
+gh api repos/{owner}/{repo}/pulls/{pr_number}/reviews/{id}/comments --paginate --jq '.[] | {body: .body, path: .path, line: .line, diff_hunk: .diff_hunk}'
+```
+
+**For other comment types**, fetch the single comment:
+
+**Issue comment:**
+```bash
+gh api repos/{owner}/{repo}/issues/comments/{id} --jq '{body: .body, user: .user.login, created_at: .created_at}'
+```
+
+**Inline review comment:**
+```bash
+gh api repos/{owner}/{repo}/pulls/comments/{id} --jq '{body: .body, user: .user.login, path: .path, line: .line, diff_hunk: .diff_hunk}'
+```
+
+**Error handling:**
+- **404**: `Error: Comment not found at <url>. It may have been deleted or the URL may be incorrect.`
+- **403 / other API errors**: `Error: GitHub API returned <status>. You may not have access to this repository, or you may be rate-limited. Check 'gh auth status' and try again.`
+- **Empty comment body** (and no inline comments for review types): report and skip Dimension 9:
+  ```
+  Note: No feedback text found in the comment at <url>.
+  Skipping PR Feedback Coverage (Dimension 9). Reviewing plan without PR context.
+  ```
+
+The response includes: `body` (comment text), `user.login` (author), `created_at`, and for inline comments: `path` (file), `line` (line number in the file — use `line`, not `position` which is the diff offset, and not `original_line` which is the base branch line), `diff_hunk` (surrounding diff context).
+
+**Extract discrete feedback items** from the comment body:
+- For AI review comments (structured markdown with P0/P1/P2/P3 or Critical/Medium/Minor sections): parse each severity section and extract individual items with their labeled severity
+- For human comments with numbered/bulleted lists: each list item is one feedback item
+- For human comments that are a single paragraph or conversational: the entire comment is one feedback item
+- For inline review comments: each comment is one item, with `path` and `line` as its file/line reference
+- **Default severity**: when a feedback item has no severity label, treat it as Medium
+- Process all feedback items regardless of count
+
+Each feedback item tracks: severity (labeled or default Medium), description, file path (if available), and line reference (if available).
+
 ### Step 3: Read Referenced Files
 
-Identify all files the plan references (file paths, module names, class names). Then read them to validate the plan's assumptions:
+Identify all files the plan references (file paths, module names, class names). When `--pr` was provided, also include files referenced in the feedback comment — inline comment `path` fields and file paths mentioned in the comment body (e.g., `path/to/file.py:L123`). Then read them to validate the plan's assumptions:
 
 **Priority order for reading files:**
 1. **Files the plan proposes to modify** — read ALL of these first
@@ -171,14 +276,41 @@ Plan-specific failure modes that wouldn't show up in a code review:
 - For bug fixes: does the plan fix all pattern instances and test all of them?
 - Are there missing test scenarios? (Parameter interactions, error paths, boundary conditions)
 
+#### Dimension 9: PR Feedback Coverage (only if `--pr` provided with non-empty comment)
+
+Only evaluate this dimension when `--pr` was provided and a non-empty comment was fetched in Step 2c. For each feedback item extracted in Step 2c, assess:
+
+- **Addressed**: Plan explicitly mentions the issue AND proposes a concrete fix
+- **Partially addressed**: Plan touches the area but doesn't fully resolve the feedback
+- **Not addressed**: Plan makes no mention of this feedback item
+- **Dismissed with justification**: Plan acknowledges the feedback but explains why it won't be acted on (acceptable for Low/P3; flag for Critical/P0)
+
+Use judgment, not just substring matching — the plan may use different words to describe the same fix.
+
+**Verdict impact:**
+- Unaddressed P0/P1/Critical items -> automatic "Needs revision"
+- Unaddressed P2/Medium items count as Medium issues
+- Unaddressed P3/Low items count as Low issues
+
 ### Step 5: Present Structured Feedback
 
-Present the review in the following format. Do NOT skip any section — if a section has no findings, write "None." for that section. The Delta Assessment section is only included when the `--updated` flag was provided (see Step 1b).
+Present the review in the following format. Do NOT skip any section — if a section has no findings, write "None." for that section. The Delta Assessment section is only included when the `--updated` flag was provided (see Step 1b). The PR Context and PR Feedback Coverage sections are only included when `--pr` was provided with a non-empty comment.
 
 ```
 ## Overall Assessment
 
 [2-3 sentences: what the plan does, whether it's ready for implementation, and the biggest concern if any]
+
+---
+
+## PR Context (only include if `--pr` was provided with non-empty comment)
+
+**PR**: #<number> - <title> (<owner>/<repo>)
+**Branch**: <headRefName> -> <baseRefName>
+**Comment**: <comment-url>
+**Comment author**: <user.login>
+**Feedback items extracted**: N
+**Branch match**: Yes / No (warning: recommend `git checkout <headRefName>`)
 
 ---
 
@@ -203,6 +335,29 @@ Cross-reference against the relevant CLAUDE.md checklists. List which checklist 
 
 ---
 
+## PR Feedback Coverage (only include if `--pr` was provided with non-empty comment)
+
+### Addressed
+- [severity] <description> -- Plan step: <reference to plan section>
+
+### Partially Addressed
+- [severity] <description> -- Gap: <what's missing>
+
+### Not Addressed
+- [severity] <description>
+
+### Dismissed
+- [severity] <description> -- Plan's reason: "<quote>"
+
+| Status | Count |
+|--------|-------|
+| Addressed | N |
+| Partially addressed | N |
+| Not addressed | N |
+| Dismissed | N |
+
+---
+
 ## Questions for the Author
 
 [Ambiguities or missing information that should be clarified before implementation begins. Phrase as specific questions.]
@@ -220,6 +375,13 @@ Cross-reference against the relevant CLAUDE.md checklists. List which checklist 
 ### New Issues
 [List any new issues introduced by the revisions, or "None."]
 
+### PR Feedback Coverage Delta (only include if both `--updated` and `--pr` were provided)
+
+The `--pr` URL must be the same across the initial review and the `--updated` re-review — this compares coverage of the same feedback comment. If the prior review's PR comment URL is no longer available in conversation context (e.g., context compressed), note: "PR coverage delta unavailable — prior PR context not found."
+
+- **Newly addressed**: [list of feedback items now covered that were previously not addressed or partially addressed]
+- **Still not addressed**: [list of feedback items still missing]
+
 ---
 
 ## Summary
@@ -230,6 +392,7 @@ Cross-reference against the relevant CLAUDE.md checklists. List which checklist 
 | Medium | [count] |
 | Low | [count] |
 | Checklist gaps | [count] |
+| PR feedback gaps | [count of Not Addressed + Partially Addressed] (only if `--pr`) |
 | Questions | [count] |
 
 **Verdict**: [Ready / Ready with minor fixes / Needs revision]
@@ -247,3 +410,15 @@ Cross-reference against the relevant CLAUDE.md checklists. List which checklist 
 - For best results, run this before implementing a plan to catch issues early
 - The 8 dimensions are tuned for plan-specific failure modes, not generic code review
 - Use `--updated` when re-reviewing a revised plan to get a delta assessment of what changed since the prior review
+- Use `--pr <comment-url>` when the plan addresses a specific PR review comment.
+  This fetches the comment, extracts feedback items, and checks that the plan
+  covers each one. Pairs naturally with `/read-feedback-revise` which creates the plan.
+- The `--pr` flag requires the `gh` CLI to be installed and authenticated.
+- For best results, run this while on the PR branch so file contents and line
+  numbers match what reviewers commented on.
+- The comment URL can be copied from the GitHub web UI by right-clicking the
+  timestamp on any PR comment and selecting "Copy link".
+- For `pullrequestreview-` URLs, both the review body and its inline comments
+  are fetched (matching `/read-feedback-revise` behavior).
+- Verification of these changes should be done manually before merging the PR
+  that adds this feature. See the Verification section of this plan.
