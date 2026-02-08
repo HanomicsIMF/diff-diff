@@ -159,9 +159,10 @@ MultiPeriodDiD Results
      - **7x faster** (pure)
 
 **Validation**: PASS - Both average ATT and all period-level effects match R's
-``fixest::feols(outcome ~ treated * time_f)`` to machine precision. The regression
-is algebraically identical: explicit intercept, treatment main effect, period dummies,
-and treatment × period interactions with cluster-robust SEs.
+``fixest::feols(outcome ~ treated * time_f | unit)`` to machine precision. The
+regression includes unit fixed effects (absorbed via ``| unit`` in R, within-
+transformation via ``absorb=["unit"]`` in Python) and treatment × period
+interactions with cluster-robust SEs.
 
 Synthetic DiD Results
 ~~~~~~~~~~~~~~~~~~~~~
@@ -646,8 +647,8 @@ When to Trust Results
 - **BasicDiD/TWFE**: Results are identical to R. Use with confidence.
 
 - **MultiPeriodDiD**: Results are identical to R's ``fixest::feols`` with
-  ``treated * time_f`` interaction syntax. Both average ATT and all period-level
-  effects match to machine precision. Use with confidence.
+  ``treated * time_f | unit`` interaction syntax (unit FE absorbed). Both average
+  ATT and all period-level effects match to machine precision. Use with confidence.
 
 - **SyntheticDiD**: Both point estimates (0.3% diff) and standard errors (3.1% diff)
   match R closely. Use ``variance_method="placebo"`` (default) to match R's

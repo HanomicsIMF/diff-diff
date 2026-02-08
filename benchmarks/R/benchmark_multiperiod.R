@@ -79,10 +79,12 @@ data[, time_f := relevel(factor(time), ref = as.character(ref_period))]
 message("Running MultiPeriodDiD estimation (fixest::feols)...")
 start_time <- Sys.time()
 
-# Regression: outcome ~ treated * time_f, clustered SEs
-# This expands to: outcome = const + treated + time_f dummies + treated:time_f interactions
+# Regression: outcome ~ treated * time_f | unit, clustered SEs
+# With | unit, fixest absorbs unit fixed effects. The unit-invariant 'treated'
+# main effect is collinear with unit FE and is absorbed automatically.
+# Interaction coefficients treated:time_fK remain identified.
 cluster_formula <- as.formula(paste0("~", config$cluster))
-model <- feols(outcome ~ treated * time_f, data = data, cluster = cluster_formula)
+model <- feols(outcome ~ treated * time_f | unit, data = data, cluster = cluster_formula)
 
 estimation_time <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
 
@@ -133,10 +135,18 @@ if (n_post_periods > 0) {
   avg_att <- mean(coefs[post_period_names])
   vcov_sub <- vcov_mat[post_period_names, post_period_names, drop = FALSE]
   avg_se <- sqrt(sum(vcov_sub) / n_post_periods^2)
-  avg_t <- avg_att / avg_se
-  avg_pval <- 2 * pt(abs(avg_t), df = model$nobs - length(coefs), lower.tail = FALSE)
-  avg_ci_lower <- avg_att - qt(0.975, df = model$nobs - length(coefs)) * avg_se
-  avg_ci_upper <- avg_att + qt(0.975, df = model$nobs - length(coefs)) * avg_se
+  # NaN guard: match registry convention (REGISTRY.md lines 179-183)
+  if (is.finite(avg_se) && avg_se > 0) {
+    avg_t <- avg_att / avg_se
+    avg_pval <- 2 * pt(abs(avg_t), df = model$nobs - length(coefs), lower.tail = FALSE)
+    avg_ci_lower <- avg_att - qt(0.975, df = model$nobs - length(coefs)) * avg_se
+    avg_ci_upper <- avg_att + qt(0.975, df = model$nobs - length(coefs)) * avg_se
+  } else {
+    avg_t <- NA
+    avg_pval <- NA
+    avg_ci_lower <- NA
+    avg_ci_upper <- NA
+  }
 } else {
   avg_att <- NA
   avg_se <- NA

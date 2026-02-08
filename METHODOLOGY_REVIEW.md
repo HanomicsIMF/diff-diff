@@ -135,7 +135,7 @@ Each estimator in diff-diff should be periodically reviewed to ensure:
 
 **Outstanding Concerns:**
 - ~~No R comparison benchmarks yet~~ — **Resolved**: R comparison benchmark added via
-  `benchmarks/R/benchmark_multiperiod.R` using `fixest::feols(outcome ~ treated * time_f)`.
+  `benchmarks/R/benchmark_multiperiod.R` using `fixest::feols(outcome ~ treated * time_f | unit)`.
   Results match R exactly: ATT diff < 1e-11, SE diff 0.0%, period effects correlation 1.0.
   Validated at small (200 units) and 1k scales.
 - Default SE is HC1 (not cluster-robust at unit level as fixest uses). Cluster-robust

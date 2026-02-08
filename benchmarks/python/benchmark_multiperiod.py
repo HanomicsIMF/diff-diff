@@ -99,6 +99,7 @@ def main():
             time="time",
             post_periods=post_periods,
             reference_period=ref_period,
+            absorb=["unit"],
         )
 
     total_time = timer.elapsed
