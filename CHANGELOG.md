@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-02-09
+
+### Added
+- **Borusyak-Jaravel-Spiess (2024) Imputation DiD estimator** (`ImputationDiD`)
+  - Efficient imputation estimator for staggered DiD designs
+  - OLS on untreated observations for unit+time FE, impute counterfactual Y(0), aggregate
+  - Conservative variance (Theorem 3) with `aux_partition` parameter for SE tightness
+  - Pre-trend test (Equation 9) via `results.pretrend_test()`
+  - Percentile bootstrap inference
+  - Influence-function bootstrap with sparse variance and weight/covariate fixes
+  - Absorbing-treatment validation for non-constant `first_treat`
+  - Empty event-study warning for unidentified long-run horizons
+- **`/paper-review` skill** for academic paper methodology extraction
+- **`/read-feedback-revise` skill** for addressing PR review comments
+- **`--pr` flag for `/review-plan` skill** to review plans posted as PR comments
+- **`--updated` flag for `/review-plan` skill** for re-reviewing revised plans
+- **MultiPeriodDiD vs R (fixest) benchmark** for cross-language validation
+
+### Changed
+- Shortened test suite runtime with parallel execution and reduced iterations
+
+### Fixed
+- **TWFE within-transformation bug** identified during methodology review
+- TWFE: added non-{0,1} binary time warning, ATT invariance tests, and R fixture caching
+- TWFE: single-pass demeaning, HC1 test fix, fixest coeftable comparison
+- MultiPeriodDiD: added unit FE and NaN guard for R comparison benchmark
+- Removed tracked PDF from repo and gitignored papers directory
+
 ## [2.2.1] - 2026-02-07
 
 ### Changed
@@ -658,6 +686,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.3.0]: https://github.com/igerber/diff-diff/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/igerber/diff-diff/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/igerber/diff-diff/compare/v2.1.9...v2.2.0
 [2.1.9]: https://github.com/igerber/diff-diff/compare/v2.1.8...v2.1.9
