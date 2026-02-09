@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from diff_diff.pretrends import PreTrendsPowerCurve, PreTrendsPowerResults
     from diff_diff.results import MultiPeriodDiDResults
     from diff_diff.staggered import CallawaySantAnnaResults
+    from diff_diff.imputation import ImputationDiDResults
     from diff_diff.sun_abraham import SunAbrahamResults
 
 # Type alias for results that can be plotted
@@ -23,6 +24,7 @@ PlottableResults = Union[
     "MultiPeriodDiDResults",
     "CallawaySantAnnaResults",
     "SunAbrahamResults",
+    "ImputationDiDResults",
     pd.DataFrame,
 ]
 
@@ -420,7 +422,7 @@ def _extract_plot_data(
             # Detect reference period from n_groups=0 marker (normalization constraint)
             # This handles anticipation > 0 where reference is at e = -1 - anticipation
             for period, effect_data in results.event_study_effects.items():
-                if effect_data.get("n_groups", 1) == 0:
+                if effect_data.get("n_groups", 1) == 0 or effect_data.get("n_obs", 1) == 0:
                     reference_period = period
                     break
             # Fallback to -1 if no marker found (backward compatibility)
@@ -438,7 +440,7 @@ def _extract_plot_data(
     raise TypeError(
         f"Cannot extract plot data from {type(results).__name__}. "
         "Expected MultiPeriodDiDResults, CallawaySantAnnaResults, "
-        "SunAbrahamResults, or DataFrame."
+        "SunAbrahamResults, ImputationDiDResults, or DataFrame."
     )
 
 

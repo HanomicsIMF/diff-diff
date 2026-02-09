@@ -11,6 +11,7 @@ This document provides the academic foundations and key implementation requireme
 2. [Modern Staggered Estimators](#modern-staggered-estimators)
    - [CallawaySantAnna](#callawaysantanna)
    - [SunAbraham](#sunabraham)
+   - [ImputationDiD](#imputationdid)
 3. [Advanced Estimators](#advanced-estimators)
    - [SyntheticDiD](#syntheticdid)
    - [TripleDifference](#tripledifference)
@@ -444,6 +445,111 @@ where weights ŵ_{g,e} = n_{g,e} / Σ_g n_{g,e} (sample share of cohort g at eve
 - [ ] Reference period defaults to e=-1, coefficient normalized to zero
 - [ ] Cohort-specific effects recoverable from results
 - [ ] Cluster-robust SEs with delta method for aggregates
+
+---
+
+## ImputationDiD
+
+**Primary source:** [Borusyak, K., Jaravel, X., & Spiess, J. (2024). Revisiting Event-Study Designs: Robust and Efficient Estimation. *Review of Economic Studies*, 91(6), 3253-3285.](https://doi.org/10.1093/restud/rdae007)
+
+**Key implementation requirements:**
+
+*Assumption checks / warnings:*
+- **Parallel trends (Assumption 1):** `E[Y_it(0)] = alpha_i + beta_t` for all observations. General form allows `E[Y_it(0)] = alpha_i + beta_t + X'_it * delta` with time-varying covariates.
+- **No-anticipation effects (Assumption 2):** `Y_it = Y_it(0)` for all untreated observations. Adjustable via `anticipation` parameter.
+- Treatment must be absorbing: `D_it` switches from 0 to 1 and stays at 1.
+- Covariate space of treated observations must be spanned by untreated observations (rank condition). For unit/period FE case: every treated unit must have ≥1 untreated period; every post-treatment period must have ≥1 untreated unit.
+- Without never-treated units, long-run effects at horizon `K_it >= H_bar` (where `H_bar = max(first_treat) - min(first_treat)`) are not identified (Proposition 5). Set to NaN with warning.
+
+*Estimator equation (Theorem 2, as implemented):*
+
+```
+Step 1. Estimate counterfactual model on untreated observations only (it in Omega_0):
+    Y_it = alpha_i + beta_t [+ X'_it * delta] + epsilon_it
+
+Step 2. For each treated observation (it in Omega_1), impute:
+    Y_hat_it(0) = alpha_hat_i + beta_hat_t [+ X'_it * delta_hat]
+    tau_hat_it  = Y_it - Y_hat_it(0)
+
+Step 3. Aggregate:
+    tau_hat_w = sum_{it in Omega_1} w_it * tau_hat_it
+```
+
+where:
+- `Omega_0 = {it : D_it = 0}` — all untreated observations (never-treated + not-yet-treated)
+- `Omega_1 = {it : D_it = 1}` — all treated observations
+- `w_it` = pre-specified weights (overall ATT: `w_it = 1/N_1`)
+
+*Common estimation targets (weighting schemes):*
+- Overall ATT: `w_it = 1/N_1` for all `it in Omega_1`
+- Horizon-specific: `w_it = 1[K_it = h] / |Omega_{1,h}|` for `K_it = t - E_i`
+- Group-specific: `w_it = 1[G_i = g] / |Omega_{1,g}|`
+
+*Standard errors (Theorem 3, Equation 7):*
+
+Conservative clustered variance estimator:
+```
+sigma_hat^2_w = sum_i ( sum_{t: it in Omega} v_it * epsilon_tilde_it )^2
+```
+
+Observation weights `v_it`:
+- For treated `(i,t) in Omega_1`: `v_it = w_it` (the aggregation weight)
+- For untreated `(i,t) in Omega_0` (FE-only case): `v_it = -(w_i./n_{0,i} + w_.t/n_{0,t} - w../N_0)`
+  where `w_i. = sum of w over treated obs of unit i`, `n_{0,i} = untreated periods for unit i`, etc.
+- For untreated with covariates: `v_untreated = -A_0 (A_0' A_0)^{-1} A_1' w_treated`
+  where `A_0`, `A_1` are design matrices for untreated/treated observations.
+
+**Note on v_it derivation:** The paper's Supplementary Proposition A3 provides the explicit formula for `v_it^*`, but was not in the extraction range for the paper review. The FE-only closed form above is reconstructed from Theorem 3's general form — it follows from the chain rule of the imputation estimator's dependence on the Step 1 OLS estimates. The covariate case uses the OLS projection matrix directly.
+
+Auxiliary model residuals (Equation 8):
+- Partition `Omega_1` into groups `G_g` (default: cohort × horizon)
+- Compute `tau_tilde_g` for each group (weighted average within group)
+- `epsilon_tilde_it = Y_it - alpha_hat_i - beta_hat_t [- X'delta_hat] - tau_tilde_g` (treated)
+- `epsilon_tilde_it = Y_it - alpha_hat_i - beta_hat_t [- X'delta_hat]` (untreated, i.e., Step 1 residuals)
+
+The `aux_partition` parameter controls the partition: `"cohort_horizon"` (default, tightest SEs), `"cohort"` (coarser, more conservative), `"horizon"` (groups by relative time only).
+
+*Pre-trend test (Test 1, Equation 9):*
+```
+Y_it = alpha_i + beta_t [+ X'_it * delta] + W'_it * gamma + epsilon_it
+```
+- Estimate on untreated observations only
+- Test `gamma = 0` via cluster-robust Wald F-test
+- Independent of treatment effect estimation (Proposition 9)
+
+*Edge cases:*
+- **Unbalanced panels:** FE estimated via iterative alternating projection (Gauss-Seidel), equivalent to OLS with unit+time dummies. Converges in O(max_iter) passes; typically 5-20 iterations for unbalanced panels, 1-2 for balanced. One-pass demeaning is only exact for balanced panels.
+- **No never-treated units (Proposition 5):** Long-run effects at horizons `h >= H_bar` are not identified. Set to NaN with warning listing affected horizons.
+- **Rank condition failure:** Every treated unit must have ≥1 untreated period; every post-treatment period must have ≥1 untreated unit. Behavior controlled by `rank_deficient_action`: "warn" (default), "error", or "silent". Missing FE produce NaN treatment effects for affected observations.
+- **Always-treated units:** Units with `first_treat` at or before the earliest time period have no untreated observations. Warning emitted; these units are excluded from Step 1 OLS but their treated observations contribute to aggregation if imputation is possible.
+- **NaN propagation:** If all `tau_hat` values for a given horizon or group are NaN, the aggregated effect and all inference fields (SE, t-stat, p-value, CI) are set to NaN. NaN in v*eps product (from missing FE) is zeroed for variance computation (matching R's did_imputation which drops unimputable obs).
+- **NaN inference for undefined statistics:** t_stat uses NaN when SE is non-finite or zero; p_value and CI also NaN. Matches CallawaySantAnna NaN convention.
+- **Pre-trend test:** Uses iterative demeaning (same as Step 1 FE) for exact within-transformation on unbalanced panels. One-pass demeaning is only exact for balanced panels.
+- **Overall ATT variance:** Weights zero out non-finite tau_hat and renormalize, matching the ATT estimand (which averages only finite tau_hat). `_compute_conservative_variance` returns 0.0 for all-zeros weights, so the n_valid==0 guard is necessary to return NaN SE.
+- **`balance_e` cohort filtering:** When `balance_e` is set, cohort balance is checked against the *full panel* (pre + post treatment) via `_build_cohort_rel_times()`, requiring observations at every relative time in `[-balance_e, max_h]`. Both analytical aggregation and bootstrap inference use the same `_compute_balanced_cohort_mask` with pre-computed cohort horizons.
+- **Bootstrap clustering:** Multiplier bootstrap generates weights at `cluster_var` granularity (defaults to `unit` if `cluster` not specified). Invalid cluster column raises ValueError.
+- **Non-constant `first_treat` within a unit:** Emits `UserWarning` identifying the count and example unit. The estimator proceeds using the first observed value per unit (via `.first()` aggregation), but results may be unreliable.
+- **treatment_effects DataFrame weights:** `weight` column uses `1/n_valid` for finite tau_hat and 0 for NaN tau_hat, consistent with the ATT estimand.
+- **Rank-deficient covariates in variance:** Covariates with NaN coefficients (dropped for rank deficiency in Step 1) are excluded from the variance design matrices `A_0`/`A_1`. Only covariates with finite coefficients participate in the `v_it` projection.
+- **Sparse variance solver:** `_compute_v_untreated_with_covariates` uses `scipy.sparse.linalg.spsolve` to solve `(A_0'A_0) z = A_1'w` without densifying the normal equations matrix. Falls back to dense `lstsq` if the sparse solver fails.
+- **Bootstrap inference:** Uses multiplier bootstrap on the Theorem 3 influence function: `psi_i = sum_t v_it * epsilon_tilde_it`. Cluster-level psi sums are pre-computed for each aggregation target (overall, per-horizon, per-group), then perturbed with Rademacher weights. This is a library extension (not in the paper) consistent with CallawaySantAnna/SunAbraham bootstrap patterns.
+- **Auxiliary residuals (Equation 8):** Uses v_it-weighted tau_tilde_g formula: `tau_tilde_g = sum(v_it * tau_hat_it) / sum(v_it)` within each partition group. Zero-weight groups (common in event-study SE computation) fall back to unweighted mean.
+
+**Reference implementation(s):**
+- Stata: `did_imputation` (Borusyak, Jaravel, Spiess; available from SSC)
+- R: `didimputation` package (Kyle Butts)
+
+**Requirements checklist:**
+- [x] Step 1: OLS on untreated observations only (never-treated + not-yet-treated)
+- [x] Step 2: Impute counterfactual `Y_hat_it(0)` for treated observations
+- [x] Step 3: Aggregate with researcher-chosen weights `w_it`
+- [x] Conservative clustered variance estimator (Theorem 3, Equation 7)
+- [x] Auxiliary model for treated residuals (Equation 8) with configurable partition (`aux_partition`)
+- [x] Supports unit FE, period FE, and time-varying covariates
+- [x] Refuses to estimate unidentified estimands (Proposition 5) — sets NaN with warning
+- [x] Pre-trend test uses only untreated observations (Test 1, Equation 9)
+- [x] Supports balanced and unbalanced panels (iterative Gauss-Seidel demeaning for exact FE)
+- [x] Event study and group aggregation
 
 ---
 
@@ -1075,6 +1181,7 @@ should be a deliberate user choice.
 | TwoWayFixedEffects | Cluster at unit | Wild bootstrap |
 | CallawaySantAnna | Analytical (influence fn) | Multiplier bootstrap |
 | SunAbraham | Cluster-robust + delta method | Pairs bootstrap |
+| ImputationDiD | Conservative clustered (Thm 3) | Multiplier bootstrap (library extension; percentile CIs and empirical p-values, consistent with CS/SA) |
 | SyntheticDiD | Placebo variance (Alg 4) | Block bootstrap |
 | TripleDifference | HC1 / cluster-robust | Influence function for IPW/DR |
 | TROP | Block bootstrap | — |
@@ -1094,6 +1201,7 @@ should be a deliberate user choice.
 | TwoWayFixedEffects | fixest | `feols(y ~ treat \| unit + time, ...)` |
 | CallawaySantAnna | did | `att_gt()` |
 | SunAbraham | fixest | `sunab()` |
+| ImputationDiD | didimputation | `did_imputation()` |
 | SyntheticDiD | synthdid | `synthdid_estimate()` |
 | TripleDifference | - | (forthcoming) |
 | TROP | - | (forthcoming) |
