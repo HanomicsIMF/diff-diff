@@ -535,6 +535,96 @@ class TestImputationDiD:
         assert results.overall_att is not None
         assert results.overall_se > 0
 
+    def test_balance_e_checks_pre_treatment_periods(self):
+        """balance_e should drop cohorts missing pre-treatment observations."""
+        # Cohort A (first_treat=4): units 0-4, all periods 0-7
+        #   rel_times: -4, -3, -2, -1, 0, 1, 2, 3
+        # Cohort B (first_treat=6): units 5-9, all periods 0-7 EXCEPT time=4
+        #   rel_times: -6, -5, -4, -3, -1, 0, 1  (missing -2)
+        # Never-treated: units 10-14, all periods
+        #
+        # horizon_max=1 caps post-treatment to {0,1} so both cohorts can
+        # cover the required post-treatment range. Without it, the union of
+        # all_horizons includes h=2,3 which cohort B can't reach (max h=1).
+        rows = []
+        rng = np.random.default_rng(123)
+
+        # Cohort A: complete panel
+        for u in range(5):
+            for t in range(8):
+                y = u * 0.5 + t * 0.1 + (3.0 if t >= 4 else 0.0)
+                rows.append(
+                    {
+                        "unit": u,
+                        "time": t,
+                        "first_treat": 4,
+                        "outcome": y + rng.normal(0, 0.01),
+                    }
+                )
+
+        # Cohort B: missing time=4 (which is rel_time = 4 - 6 = -2)
+        for u in range(5, 10):
+            for t in range(8):
+                if t == 4:
+                    continue  # drop => missing rel_time=-2
+                y = u * 0.5 + t * 0.1 + (3.0 if t >= 6 else 0.0)
+                rows.append(
+                    {
+                        "unit": u,
+                        "time": t,
+                        "first_treat": 6,
+                        "outcome": y + rng.normal(0, 0.01),
+                    }
+                )
+
+        # Never-treated
+        for u in range(10, 15):
+            for t in range(8):
+                y = u * 0.5 + t * 0.1
+                rows.append(
+                    {
+                        "unit": u,
+                        "time": t,
+                        "first_treat": 0,
+                        "outcome": y + rng.normal(0, 0.01),
+                    }
+                )
+
+        data = pd.DataFrame(rows)
+        est = ImputationDiD(horizon_max=1)
+
+        # balance_e=2, horizon_max=1: required = {-2,-1,0,1}
+        # Cohort B missing -2 => should be dropped
+        results_bal2 = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+            balance_e=2,
+        )
+
+        # balance_e=1, horizon_max=1: required = {-1,0,1}
+        # Both cohorts have -1 => both kept
+        results_bal1 = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+            balance_e=1,
+        )
+
+        # Cohort B dropped at balance_e=2 => fewer obs at horizon 0
+        n_obs_bal2_h0 = results_bal2.event_study_effects[0]["n_obs"]
+        n_obs_bal1_h0 = results_bal1.event_study_effects[0]["n_obs"]
+        assert n_obs_bal2_h0 < n_obs_bal1_h0, (
+            f"balance_e=2 should drop cohort B (missing rel_time=-2), "
+            f"got n_obs={n_obs_bal2_h0} vs {n_obs_bal1_h0}"
+        )
+
 
 # =============================================================================
 # TestImputationDiDResults
@@ -1780,3 +1870,24 @@ class TestImputationEdgeCases:
         assert results.bootstrap_results is None
         # Analytical SE still present
         assert results.overall_se > 0
+
+    def test_balanced_cohort_mask_requires_negative_horizons(self):
+        """_compute_balanced_cohort_mask must check negative relative times."""
+        cohort_rel_times = {
+            5: {-2, -1, 0, 1, 2},
+            7: {-1, 0, 1, 2},  # missing -2
+        }
+        df_treated = pd.DataFrame({"first_treat": [5, 5, 5, 7, 7, 7]})
+        all_horizons = [0, 1, 2]
+
+        # balance_e=2 requires {-2,-1,0,1,2}: only cohort 5 passes
+        mask2 = ImputationDiD._compute_balanced_cohort_mask(
+            df_treated, "first_treat", all_horizons, 2, cohort_rel_times
+        )
+        assert mask2.tolist() == [True, True, True, False, False, False]
+
+        # balance_e=1 requires {-1,0,1,2}: both pass
+        mask1 = ImputationDiD._compute_balanced_cohort_mask(
+            df_treated, "first_treat", all_horizons, 1, cohort_rel_times
+        )
+        assert all(mask1)

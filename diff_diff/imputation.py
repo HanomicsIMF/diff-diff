@@ -16,7 +16,7 @@ Inference uses the conservative clustered variance estimator (Theorem 3).
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -1106,38 +1106,63 @@ class ImputationDiD:
     def _compute_balanced_cohort_mask(
         df_treated: pd.DataFrame,
         first_treat: str,
-        rel_times: np.ndarray,
         all_horizons: List[int],
         balance_e: int,
+        cohort_rel_times: Dict[Any, Set[int]],
     ) -> np.ndarray:
         """Compute boolean mask selecting treated obs from balanced cohorts.
 
         A cohort is 'balanced' if it has observations at every relative time
         in [-balance_e, max(all_horizons)].
 
-        Returns an array of shape (len(df_treated),) with True for obs in
-        balanced cohorts.
+        Parameters
+        ----------
+        df_treated : pd.DataFrame
+            Post-treatment observations (Omega_1).
+        first_treat : str
+            Column name for cohort identifier.
+        all_horizons : list of int
+            Post-treatment horizons in the event study.
+        balance_e : int
+            Number of pre-treatment periods to require.
+        cohort_rel_times : dict
+            Maps each cohort value to the set of all observed relative times
+            (including pre-treatment) from the full panel. Built by
+            _build_cohort_rel_times().
         """
         if not all_horizons:
             return np.ones(len(df_treated), dtype=bool)
 
         max_h = max(all_horizons)
-        required_range = set(h for h in all_horizons if -balance_e <= h <= max_h)
-
-        cohort_horizons: Dict[Any, set] = {}
-        first_treat_vals = df_treated[first_treat].values
-        for i in range(len(df_treated)):
-            g = first_treat_vals[i]
-            h = int(rel_times[i]) if np.isfinite(rel_times[i]) else None
-            if h is not None:
-                cohort_horizons.setdefault(g, set()).add(h)
+        required_range = set(range(-balance_e, max_h + 1))
 
         balanced_cohorts = set()
-        for g, horizons in cohort_horizons.items():
+        for g, horizons in cohort_rel_times.items():
             if required_range.issubset(horizons):
                 balanced_cohorts.add(g)
 
         return df_treated[first_treat].isin(balanced_cohorts).values
+
+    @staticmethod
+    def _build_cohort_rel_times(
+        df: pd.DataFrame,
+        first_treat: str,
+    ) -> Dict[Any, Set[int]]:
+        """Build mapping of cohort -> set of observed relative times from full panel.
+
+        Precondition: df must have '_never_treated' and '_rel_time' columns
+        (set by fit() before any aggregation calls).
+        """
+        treated_mask = ~df["_never_treated"]
+        treated_df = df.loc[treated_mask]
+        result: Dict[Any, Set[int]] = {}
+        ft_vals = treated_df[first_treat].values
+        rt_vals = treated_df["_rel_time"].values
+        for i in range(len(treated_df)):
+            h = rt_vals[i]
+            if np.isfinite(h):
+                result.setdefault(ft_vals[i], set()).add(int(h))
+        return result
 
     def _fit_untreated_model(
         self,
@@ -1670,9 +1695,10 @@ class ImputationDiD:
 
         # Apply balance_e filter
         if balance_e is not None:
+            cohort_rel_times = self._build_cohort_rel_times(df, first_treat)
             balanced_mask = pd.Series(
                 self._compute_balanced_cohort_mask(
-                    df_1, first_treat, rel_times, all_horizons, balance_e
+                    df_1, first_treat, all_horizons, balance_e, cohort_rel_times
                 ),
                 index=df_1.index,
             )
@@ -2107,8 +2133,9 @@ class ImputationDiD:
                 all_horizons = sorted(set(int(h) for h in rel_times if np.isfinite(h)))
                 if self.horizon_max is not None:
                     all_horizons = [h for h in all_horizons if abs(h) <= self.horizon_max]
+                cohort_rel_times = self._build_cohort_rel_times(df, first_treat)
                 balanced_mask = self._compute_balanced_cohort_mask(
-                    df_1, first_treat, rel_times, all_horizons, balance_e
+                    df_1, first_treat, all_horizons, balance_e, cohort_rel_times
                 )
 
             ref_period = -1 - self.anticipation
