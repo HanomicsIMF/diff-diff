@@ -22,7 +22,7 @@ Each estimator in diff-diff should be periodically reviewed to ensure:
 |-----------|--------|-------------|--------|-------------|
 | DifferenceInDifferences | `estimators.py` | `fixest::feols()` | **Complete** | 2026-01-24 |
 | MultiPeriodDiD | `estimators.py` | `fixest::feols()` | **Complete** | 2026-02-02 |
-| TwoWayFixedEffects | `twfe.py` | `fixest::feols()` | Not Started | - |
+| TwoWayFixedEffects | `twfe.py` | `fixest::feols()` | **Complete** | 2026-02-08 |
 | CallawaySantAnna | `staggered.py` | `did::att_gt()` | **Complete** | 2026-01-24 |
 | SunAbraham | `sun_abraham.py` | `fixest::sunab()` | Not Started | - |
 | SyntheticDiD | `synthetic_did.py` | `synthdid::synthdid_estimate()` | Not Started | - |
