@@ -587,7 +587,7 @@ where A = Y_unit[:, :N_co], b = Y_unit[:, N_co], and centering is column-wise (i
 **Two-pass sparsification procedure** (matches R's `synthdid::sc.weight.fw` + `sparsify_function`):
 1. First pass: Run Frank-Wolfe for 100 iterations (max_iter_pre_sparsify) from uniform initialization
 2. Sparsify: `v[v <= max(v)/4] = 0; v = v / sum(v)` (zero out small weights, renormalize)
-3. Second pass: Run Frank-Wolfe for 1000 iterations (max_iter) starting from sparsified weights
+3. Second pass: Run Frank-Wolfe for 10000 iterations (max_iter) starting from sparsified weights
 
 The sparsification step concentrates weights on the most important control units, improving interpretability and stability.
 
@@ -659,13 +659,16 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 - **Noise level with < 2 pre-periods**: Returns 0.0, which makes both zeta_omega and zeta_lambda equal to 0.0 (no regularization).
 - **NaN inference for undefined statistics**: t_stat uses NaN when SE is zero or non-finite; p_value and CI also NaN. Matches CallawaySantAnna NaN convention.
 - **Placebo p-value floor**: `p_value = max(empirical_p, 1/(n_replications + 1))` to avoid reporting exactly zero.
+- **Varying treatment within unit**: Raises `ValueError`. SDID requires block treatment (constant within each unit). Suggests CallawaySantAnna or ImputationDiD for staggered adoption.
+- **Unbalanced panel**: Raises `ValueError`. SDID requires all units observed in all periods. Suggests `balance_panel()`.
+- **Poor pre-treatment fit**: Warns (`UserWarning`) when `pre_fit_rmse > std(treated_pre_outcomes, ddof=1)`. Diagnostic only; estimation proceeds.
 
 **Reference implementation(s):**
 - R: `synthdid::synthdid_estimate()` (Arkhangelsky et al.'s official package)
 - Key R functions matched: `sc.weight.fw()` (Frank-Wolfe), `sparsify_function` (sparsification), `vcov.synthdid_estimate()` (variance)
 
 **Requirements checklist:**
-- [x] Unit weights: Frank-Wolfe on collapsed form (T_pre, N_co+1), two-pass sparsification (100 iters -> sparsify -> 1000 iters)
+- [x] Unit weights: Frank-Wolfe on collapsed form (T_pre, N_co+1), two-pass sparsification (100 iters -> sparsify -> 10000 iters)
 - [x] Time weights: Frank-Wolfe on collapsed form (N_co, T_pre+1), last column = per-control post mean
 - [x] Unit and time weights: sum to 1, non-negative (simplex constraint)
 - [x] Auto-regularization: noise_level = sd(first_diffs), zeta_omega = (N1*T1)^0.25 * noise_level, zeta_lambda = 1e-6 * noise_level

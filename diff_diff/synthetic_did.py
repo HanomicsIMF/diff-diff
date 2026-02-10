@@ -267,6 +267,24 @@ class SyntheticDiD(DifferenceInDifferences):
         # Identify treated and control units
         # Treatment indicator should be constant within unit
         unit_treatment = data.groupby(unit)[treatment].first()
+
+        # Validate treatment is constant within unit (SDID requires block treatment)
+        treatment_nunique = data.groupby(unit)[treatment].nunique()
+        varying_units = treatment_nunique[treatment_nunique > 1]
+        if len(varying_units) > 0:
+            example_unit = varying_units.index[0]
+            example_vals = sorted(
+                data.loc[data[unit] == example_unit, treatment].unique()
+            )
+            raise ValueError(
+                f"Treatment indicator varies within {len(varying_units)} unit(s) "
+                f"(e.g., unit '{example_unit}' has values {example_vals}). "
+                f"SyntheticDiD requires 'block' treatment where treatment is "
+                f"constant within each unit across all time periods. "
+                f"For staggered adoption designs, use CallawaySantAnna or "
+                f"ImputationDiD instead."
+            )
+
         treated_units = unit_treatment[unit_treatment == 1].index.tolist()
         control_units = unit_treatment[unit_treatment == 0].index.tolist()
 
@@ -274,6 +292,21 @@ class SyntheticDiD(DifferenceInDifferences):
             raise ValueError("No treated units found")
         if len(control_units) == 0:
             raise ValueError("No control units found")
+
+        # Validate balanced panel (SDID requires all units observed in all periods)
+        periods_per_unit = data.groupby(unit)[time].nunique()
+        expected_n_periods = len(all_periods)
+        unbalanced_units = periods_per_unit[periods_per_unit != expected_n_periods]
+        if len(unbalanced_units) > 0:
+            example_unit = unbalanced_units.index[0]
+            actual_count = unbalanced_units.iloc[0]
+            raise ValueError(
+                f"Panel is not balanced: {len(unbalanced_units)} unit(s) do not "
+                f"have observations in all {expected_n_periods} periods "
+                f"(e.g., unit '{example_unit}' has {actual_count} periods). "
+                f"SyntheticDiD requires a balanced panel. Use "
+                f"diff_diff.prep.balance_panel() to balance the panel first."
+            )
 
         # Residualize covariates if provided
         working_data = data.copy()
@@ -337,6 +370,22 @@ class SyntheticDiD(DifferenceInDifferences):
         # Compute pre-treatment fit (RMSE)
         synthetic_pre = Y_pre_control @ unit_weights
         pre_fit_rmse = np.sqrt(np.mean((Y_pre_treated_mean - synthetic_pre) ** 2))
+
+        # Warn if pre-treatment fit is poor (Registry requirement).
+        # Threshold: 1× SD of treated pre-treatment outcomes — a natural baseline
+        # since RMSE exceeding natural variation indicates the synthetic control
+        # fails to reproduce the treated series' level or trend.
+        pre_treatment_sd = np.std(Y_pre_treated_mean, ddof=1) if len(Y_pre_treated_mean) > 1 else 0.0
+        if pre_treatment_sd > 0 and pre_fit_rmse > pre_treatment_sd:
+            warnings.warn(
+                f"Pre-treatment fit is poor: RMSE ({pre_fit_rmse:.4f}) exceeds "
+                f"the standard deviation of treated pre-treatment outcomes "
+                f"({pre_treatment_sd:.4f}). The synthetic control may not "
+                f"adequately reproduce treated unit trends. Consider adding "
+                f"more control units or adjusting regularization.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Compute standard errors based on variance_method
         if self.variance_method == "bootstrap":
@@ -814,7 +863,7 @@ class SyntheticDiD(DifferenceInDifferences):
 
                 # Re-estimate weights on permuted data (matching R's behavior)
                 # R passes update.omega=TRUE, update.lambda=TRUE via opts,
-                # using original weights as starting points for FW optimization.
+                # re-estimating weights from uniform initialization (fresh start).
                 # Unit weights: re-estimate on pseudo-control/pseudo-treated data
                 pseudo_omega = compute_sdid_unit_weights(
                     Y_pre_pseudo_control,

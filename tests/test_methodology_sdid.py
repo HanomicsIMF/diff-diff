@@ -11,6 +11,8 @@ import warnings
 import numpy as np
 import pytest
 
+import pandas as pd
+
 from diff_diff.synthetic_did import SyntheticDiD
 from diff_diff.utils import (
     _compute_noise_level,
@@ -729,4 +731,165 @@ class TestPlaceboReestimation:
                 f"Placebo SE ({actual_se:.6f}) matches fixed-weight SE "
                 f"({fixed_se:.6f}), suggesting weights are NOT being "
                 f"re-estimated as R's synthdid does."
+            )
+
+
+# =============================================================================
+# Treatment Validation
+# =============================================================================
+
+
+class TestTreatmentValidation:
+    """Test that SDID rejects time-varying treatment (staggered designs)."""
+
+    def test_varying_treatment_within_unit_raises(self):
+        """Unit whose treatment switches over time should raise ValueError."""
+        np.random.seed(42)
+        data = pd.DataFrame({
+            "unit": [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3],
+            "time": [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4],
+            "outcome": np.random.randn(12),
+            # Unit 1: treatment turns on at time 3 (staggered)
+            "treated": [0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        })
+        sdid = SyntheticDiD()
+        with pytest.raises(ValueError, match="Treatment indicator varies within"):
+            sdid.fit(
+                data, outcome="outcome", treatment="treated",
+                unit="unit", time="time", post_periods=[3, 4],
+            )
+
+    def test_constant_treatment_passes(self):
+        """Normal block-treatment data should pass validation."""
+        np.random.seed(42)
+        n_units, n_periods = 10, 8
+        rows = []
+        for u in range(n_units):
+            is_treated = 1 if u < 3 else 0
+            for t in range(n_periods):
+                rows.append({
+                    "unit": u, "time": t,
+                    "outcome": np.random.randn() + (2.0 if is_treated and t >= 5 else 0),
+                    "treated": is_treated,
+                })
+        data = pd.DataFrame(rows)
+        sdid = SyntheticDiD()
+        result = sdid.fit(
+            data, outcome="outcome", treatment="treated",
+            unit="unit", time="time", post_periods=[5, 6, 7],
+        )
+        assert result is not None
+
+
+# =============================================================================
+# Balanced Panel Validation
+# =============================================================================
+
+
+class TestBalancedPanelValidation:
+    """Test that SDID rejects unbalanced panels."""
+
+    def test_unbalanced_panel_raises(self):
+        """Unit missing a period should raise ValueError."""
+        np.random.seed(42)
+        rows = []
+        for u in range(6):
+            is_treated = 1 if u < 2 else 0
+            for t in range(5):
+                rows.append({
+                    "unit": u, "time": t,
+                    "outcome": np.random.randn(),
+                    "treated": is_treated,
+                })
+        data = pd.DataFrame(rows)
+        # Drop one observation to make panel unbalanced
+        data = data[~((data["unit"] == 3) & (data["time"] == 2))].reset_index(drop=True)
+
+        sdid = SyntheticDiD()
+        with pytest.raises(ValueError, match="Panel is not balanced"):
+            sdid.fit(
+                data, outcome="outcome", treatment="treated",
+                unit="unit", time="time", post_periods=[3, 4],
+            )
+
+    def test_balanced_panel_passes(self):
+        """Fully balanced panel should pass validation."""
+        np.random.seed(42)
+        rows = []
+        for u in range(8):
+            is_treated = 1 if u < 2 else 0
+            for t in range(6):
+                rows.append({
+                    "unit": u, "time": t,
+                    "outcome": np.random.randn() + (1.5 if is_treated and t >= 4 else 0),
+                    "treated": is_treated,
+                })
+        data = pd.DataFrame(rows)
+        sdid = SyntheticDiD()
+        result = sdid.fit(
+            data, outcome="outcome", treatment="treated",
+            unit="unit", time="time", post_periods=[4, 5],
+        )
+        assert result is not None
+
+
+# =============================================================================
+# Pre-treatment Fit Warning
+# =============================================================================
+
+
+class TestPreTreatmentFitWarning:
+    """Test that poor pre-treatment fit emits a warning."""
+
+    def test_poor_fit_emits_warning(self):
+        """Treated units at very different level from controls should warn."""
+        np.random.seed(42)
+        rows = []
+        for u in range(10):
+            is_treated = 1 if u < 2 else 0
+            # Large level difference: treated ~100, control ~10
+            level = 100.0 if is_treated else 10.0
+            for t in range(8):
+                rows.append({
+                    "unit": u, "time": t,
+                    "outcome": level + np.random.randn() * 0.5,
+                    "treated": is_treated,
+                })
+        data = pd.DataFrame(rows)
+        sdid = SyntheticDiD()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sdid.fit(
+                data, outcome="outcome", treatment="treated",
+                unit="unit", time="time", post_periods=[6, 7],
+            )
+            fit_warnings = [x for x in w if "Pre-treatment fit is poor" in str(x.message)]
+            assert len(fit_warnings) >= 1, (
+                "Expected warning about poor pre-treatment fit but none was raised"
+            )
+
+    def test_good_fit_no_warning(self):
+        """Parallel trends data with similar levels should not warn."""
+        np.random.seed(42)
+        rows = []
+        for u in range(10):
+            is_treated = 1 if u < 3 else 0
+            for t in range(8):
+                # Same level, parallel trends, treatment effect only in post
+                rows.append({
+                    "unit": u, "time": t,
+                    "outcome": t + np.random.randn() * 0.3 + (2.0 if is_treated and t >= 5 else 0),
+                    "treated": is_treated,
+                })
+        data = pd.DataFrame(rows)
+        sdid = SyntheticDiD()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sdid.fit(
+                data, outcome="outcome", treatment="treated",
+                unit="unit", time="time", post_periods=[5, 6, 7],
+            )
+            fit_warnings = [x for x in w if "Pre-treatment fit is poor" in str(x.message)]
+            assert len(fit_warnings) == 0, (
+                f"Unexpected pre-treatment fit warning: {fit_warnings[0].message}"
             )
