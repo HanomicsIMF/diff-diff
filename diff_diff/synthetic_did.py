@@ -164,6 +164,13 @@ class SyntheticDiD(DifferenceInDifferences):
         self.n_bootstrap = n_bootstrap
         self.seed = seed
 
+        # Validate n_bootstrap
+        if n_bootstrap < 2:
+            raise ValueError(
+                f"n_bootstrap must be >= 2 (got {n_bootstrap}). At least 2 "
+                f"iterations are needed to estimate standard errors."
+            )
+
         # Validate variance_method
         valid_methods = ("bootstrap", "placebo")
         if variance_method not in valid_methods:

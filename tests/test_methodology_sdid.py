@@ -470,6 +470,16 @@ class TestBootstrapSE:
 class TestEdgeCases:
     """Edge case handling."""
 
+    def test_n_bootstrap_validation(self):
+        """n_bootstrap < 2 should raise ValueError."""
+        with pytest.raises(ValueError, match="n_bootstrap must be >= 2"):
+            SyntheticDiD(n_bootstrap=0)
+        with pytest.raises(ValueError, match="n_bootstrap must be >= 2"):
+            SyntheticDiD(n_bootstrap=1)
+        # n_bootstrap=2 should be accepted
+        sdid = SyntheticDiD(n_bootstrap=2)
+        assert sdid.n_bootstrap == 2
+
     def test_single_treated_unit(self, ci_params):
         """Estimation should work with a single treated unit."""
         df = _make_panel(n_control=10, n_treated=1, n_pre=5, n_post=2,
