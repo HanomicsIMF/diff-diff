@@ -4,10 +4,6 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import os
-import sys
-
-# Add the project root to the path for autodoc
-sys.path.insert(0, os.path.abspath(".."))
 
 import diff_diff
 
@@ -16,6 +12,7 @@ project = "diff-diff"
 copyright = "2026, diff-diff contributors"
 author = "diff-diff contributors"
 release = diff_diff.__version__
+version = ".".join(diff_diff.__version__.split(".")[:2])
 
 # -- General configuration ---------------------------------------------------
 extensions = [
@@ -75,6 +72,22 @@ intersphinx_mapping = {
     "pandas": ("https://pandas.pydata.org/docs/", None),
     "scipy": ("https://docs.scipy.org/doc/scipy/", None),
 }
+
+# -- ReadTheDocs version-aware banner ----------------------------------------
+# Shows a warning on development builds so users know they may be reading
+# docs for unreleased features. Only activates on RTD (not local builds).
+rtd_version = os.environ.get("READTHEDOCS_VERSION", "")
+rtd_version_type = os.environ.get("READTHEDOCS_VERSION_TYPE", "")
+
+if rtd_version == "latest" or rtd_version_type == "branch":
+    rst_prolog = """
+.. warning::
+
+   This documentation is for the **development version** of diff-diff.
+   It may describe features not yet available in the latest PyPI release.
+   For stable documentation, use the version selector (bottom-left) to switch to **stable**.
+
+"""
 
 # -- Custom CSS --------------------------------------------------------------
 def setup(app):

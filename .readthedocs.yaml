@@ -3,18 +3,22 @@
 
 version: 2
 
-# Set the OS, Python version, and other tools you might need
 build:
   os: ubuntu-22.04
   tools:
     python: "3.11"
+    # Rust needed for maturin build. Pin for cache stability; update periodically.
+    rust: "1.82"
 
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:
   configuration: docs/conf.py
 
-# Install from PyPI (has pre-built wheels with Rust backend)
-# instead of building from source (which requires OpenBLAS)
+# Install from checked-out source so autodoc always matches the code at this ref.
+# Dependencies consolidated in pyproject.toml [project.optional-dependencies.docs].
 python:
   install:
-    - requirements: docs/requirements.txt
+    - method: pip
+      path: .
+      extra_requirements:
+        - docs

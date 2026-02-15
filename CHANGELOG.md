@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix docs/PyPI version mismatch (issue #146) — RTD now builds versioned docs from source
+
 ### Changed
 - Remove Rust outer-loop variance estimation for SyntheticDiD (placebo and bootstrap)
   - Fixes SE mismatch between pure Python and Rust backends (different RNG sequences)
