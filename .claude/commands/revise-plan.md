@@ -120,8 +120,9 @@ Source: <review-file-path>
 
 Compare file modification times. The review file is always in `~/.claude/plans/`:
 ```bash
-REVIEW_PATH="$HOME/.claude/plans/$(basename <plan-path> .md).review.md"
-[ <plan-path> -nt "$REVIEW_PATH" ] && echo "STALE" || echo "FRESH"
+PLAN_PATH="<plan-path>"
+REVIEW_PATH="$HOME/.claude/plans/$(basename "$PLAN_PATH" .md).review.md"
+[ "$PLAN_PATH" -nt "$REVIEW_PATH" ] && echo "STALE" || echo "FRESH"
 ```
 
 If the plan is newer than the review, warn:
