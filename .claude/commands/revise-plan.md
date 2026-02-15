@@ -67,7 +67,7 @@ If "Run a review now" is chosen:
   4. Number each issue sequentially within its severity section (CRITICAL #1, MEDIUM #1, etc.)
   5. Return the COMPLETE structured review output (from "## Overall Assessment" through "## Summary")
   ```
-- Save the agent's output to the review file path with YAML frontmatter (see Change 1, Step 6 for format)
+- Save the agent's output to the review file path with YAML frontmatter (see `.claude/commands/review-plan.md` Step 6 for format)
 - Write the plan path to `~/.claude/plans/.last-reviewed`
 - Proceed to Step 3 with the review content
 
@@ -93,6 +93,7 @@ If "Skip review" is chosen:
     ---
     Review skipped by user.
     ```
+  - Write the plan path to `~/.claude/plans/.last-reviewed` (same as the review-present path in Step 2)
   - In `## Revision Notes`, record: "Review skipped — revision based on user notes only"
   - All issue counts are zero in the Addressed/Dismissed/Open sections
 

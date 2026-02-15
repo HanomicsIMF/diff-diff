@@ -486,5 +486,3 @@ After displaying the review in the conversation (Step 5), persist it to a file a
   timestamp on any PR comment and selecting "Copy link".
 - For `pullrequestreview-` URLs, both the review body and its inline comments
   are fetched (matching `/read-feedback-revise` behavior).
-- Verification of these changes should be done manually before merging the PR
-  that adds this feature. See the Verification section of this plan.

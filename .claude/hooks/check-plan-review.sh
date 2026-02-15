@@ -38,6 +38,18 @@ deny() {
   exit 0
 }
 
+# Validate that a review file's YAML plan: field matches the expected plan path.
+# Usage: validate_review_plan_field <review-file> <expected-plan-path>
+# Returns 0 if match, 1 if mismatch. Returns 1 if plan: field is missing (safe default).
+validate_review_plan_field() {
+  local review_file="$1" expected="$2"
+  local yaml_plan
+  yaml_plan=$(sed -n '/^---$/,/^---$/{ /^plan:/{ s/^plan:[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//; p; q; } }' "$review_file")
+  # Expand ~ in the YAML value
+  yaml_plan="${yaml_plan/#\~/$HOME}"
+  [ "$yaml_plan" = "$expected" ]
+}
+
 PLANS_DIR="$HOME/.claude/plans"
 SENTINEL="$PLANS_DIR/.last-reviewed"
 
@@ -50,6 +62,9 @@ if [ -f "$SENTINEL" ]; then
     PLAN_BASENAME=$(basename "$PLAN_FILE")
     REVIEW_FILE="$PLANS_DIR/${PLAN_BASENAME%.md}.review.md"
     if [ -f "$REVIEW_FILE" ]; then
+      if ! validate_review_plan_field "$REVIEW_FILE" "$PLAN_FILE"; then
+        deny "Review file $REVIEW_FILE is for a different plan (expected: $PLAN_FILE). Re-run the review."
+      fi
       # Deny if plan was modified after its review (stale review)
       if [ "$PLAN_FILE" -nt "$REVIEW_FILE" ]; then
         deny "Plan review is stale: $PLAN_FILE was modified after $REVIEW_FILE. Re-run the review before approval."
@@ -74,6 +89,9 @@ PLAN_BASENAME=$(basename "$PLAN_FILE")
 REVIEW_FILE="$PLANS_DIR/${PLAN_BASENAME%.md}.review.md"
 
 if [ -f "$REVIEW_FILE" ]; then
+  if ! validate_review_plan_field "$REVIEW_FILE" "$PLAN_FILE"; then
+    deny "Review file $REVIEW_FILE is for a different plan (expected: $PLAN_FILE). Re-run the review."
+  fi
   if [ "$PLAN_FILE" -nt "$REVIEW_FILE" ]; then
     deny "Plan review is stale: $PLAN_FILE was modified after $REVIEW_FILE. Re-run the review before approval."
   fi
@@ -81,3 +99,14 @@ if [ -f "$REVIEW_FILE" ]; then
 else
   deny "No plan review found. Expected: $REVIEW_FILE. Follow the Plan Review Before Approval instructions in CLAUDE.md."
 fi
+
+# Manual verification checklist:
+#   1. No sentinel, no plans: ExitPlanMode should ALLOW (not a plan session)
+#   2. Sentinel points to plan with fresh review: ALLOW
+#   3. Sentinel points to plan with stale review: DENY
+#   4. Sentinel points to plan with no review: DENY
+#   5. Sentinel stale (wrong plan), review exists for fallback plan: validate plan: field
+#   6. No sentinel, fallback to most recent plan with review: ALLOW
+#   7. No sentinel, fallback to most recent plan without review: DENY
+#   8. Review file plan: field doesn't match plan path: DENY
+#   9. Review file has no plan: field (e.g., old format): DENY (empty string != plan path)
