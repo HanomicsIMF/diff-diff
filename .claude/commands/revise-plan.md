@@ -48,7 +48,7 @@ Verify the plan file exists by reading it. If it doesn't exist, report the error
 
 ### Step 2: Locate and Read Review File
 
-Derive the review file path by replacing the trailing `.md` in the plan file path with `.review.md`.
+Derive the review file path: extract the plan file's basename, replace the trailing `.md` with `.review.md`, and look in `~/.claude/plans/`. For example, `~/.claude/plans/foo.md` → `~/.claude/plans/foo.review.md`.
 
 **If the review file exists**: Read it, proceed to Step 3.
 
@@ -71,16 +71,45 @@ If "Run a review now" is chosen:
 - Write the plan path to `~/.claude/plans/.last-reviewed`
 - Proceed to Step 3 with the review content
 
-If "Skip review" is chosen: Skip to Step 6 with no review context.
+If "Skip review" is chosen:
+- Skip Steps 3-5 (no review to display, check, or parse)
+- In Step 6, since there are no review issues, present only:
+  - "Enter plan mode with general guidance" (Recommended)
+  - "Cancel"
+  If "Cancel" is chosen, stop and report "Revision cancelled."
+- In Step 7, since there are no review issues to address:
+  - Skip rule-based revision (no CRITICAL/MEDIUM/LOW to process)
+  - Apply user notes as general guidance for the revision
+  - Write a minimal "Skipped" review marker to `~/.claude/plans/<plan-basename>.review.md` (the centralized review path from Change 3) before calling `ExitPlanMode` to satisfy the hook:
+    ```yaml
+    ---
+    plan: <plan-file-path>
+    reviewed_at: <ISO 8601 timestamp>
+    verdict: "Skipped"
+    critical_count: 0
+    medium_count: 0
+    low_count: 0
+    flags: []
+    ---
+    Review skipped by user.
+    ```
+  - In `## Revision Notes`, record: "Review skipped — revision based on user notes only"
+  - All issue counts are zero in the Addressed/Dismissed/Open sections
 
-### Step 3: Display Review in Terminal
+### Step 3: Display Plan and Review in Terminal
 
-Display the full review content in the conversation (excluding YAML frontmatter). This is the primary reading surface — the user reads the review here, not by opening the file.
+Display both the plan content and the review in the conversation. The plan was already read in Step 1, and the review in Step 2. This is the primary reading surface — the user reads both here.
 
 ```
-## Plan Review for <plan-filename>
+## Plan: <plan-filename>
 
-<full review content>
+<full plan content>
+
+---
+
+## Review for <plan-filename>
+
+<full review content (excluding YAML frontmatter)>
 
 ---
 Source: <review-file-path>
@@ -88,9 +117,10 @@ Source: <review-file-path>
 
 ### Step 4: Staleness Check
 
-Compare file modification times:
+Compare file modification times. The review file is always in `~/.claude/plans/`:
 ```bash
-[ <plan-path> -nt <review-path> ] && echo "STALE" || echo "FRESH"
+REVIEW_PATH="$HOME/.claude/plans/$(basename <plan-path> .md).review.md"
+[ <plan-path> -nt "$REVIEW_PATH" ] && echo "STALE" || echo "FRESH"
 ```
 
 If the plan is newer than the review, warn:

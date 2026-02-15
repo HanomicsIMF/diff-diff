@@ -654,7 +654,7 @@ Before calling `ExitPlanMode`, offer the user an independent plan review. Use `A
 - "Run review agent for independent feedback" (Recommended)
 - "Present plan for approval as-is"
 
-If "present as-is" is chosen, write a minimal review marker to `<plan-stem>.review.md`:
+If "present as-is" is chosen, write a minimal review marker to `~/.claude/plans/<plan-basename>.review.md`:
 ```yaml
 ---
 plan: <plan-file-path>
@@ -677,9 +677,9 @@ If review is requested:
    - Return the complete structured review output
    Do NOT specify a model — let the agent inherit the current model for review quality.
 
-2. **Display the review** in the conversation. The user reads the review here in the terminal — this is the primary reading surface.
+2. **Display the review agent's output** in the conversation. The output includes the plan content (via Step 4b of review-plan.md) followed by the structured review. The user reads both here in the terminal — this is the primary reading surface.
 
-3. **Save to file**: Write the review to `<plan-stem>.review.md` alongside the plan file, with YAML frontmatter (plan path, timestamp, verdict, issue counts). Also write the plan path to `~/.claude/plans/.last-reviewed`. If write fails, warn but continue — the terminal display is what matters.
+3. **Save to file**: Write the review to `~/.claude/plans/<plan-basename>.review.md`, with YAML frontmatter (plan path, timestamp, verdict, issue counts). Also write the plan path to `~/.claude/plans/.last-reviewed`. If write fails, warn but continue — the terminal display is what matters.
 
 4. **Collect feedback**: Use `AskUserQuestion`:
    - "Address all issues and re-review" (Recommended)

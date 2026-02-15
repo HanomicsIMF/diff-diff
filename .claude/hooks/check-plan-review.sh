@@ -10,7 +10,8 @@
 #   1. Read ~/.claude/plans/.last-reviewed sentinel (written by review step)
 #   2. If sentinel exists, use its contents as the plan path
 #   3. If no sentinel, fall back to most recent .md in ~/.claude/plans/
-#   4. Check for sibling .review.md — deny if missing
+#   4. Check for .review.md in ~/.claude/plans/ (by plan basename) — deny if missing
+#   5. Check staleness — deny if plan is newer than review
 #
 # Known limitations:
 #   - The ls -t fallback (step 3) can pick the wrong plan if multiple files exist.
@@ -19,6 +20,12 @@
 #   - printf %s in deny() does not escape quotes/backslashes in $1. Plan file paths
 #     almost never contain these characters. If needed later, add sanitization:
 #     MSG=$(echo "$1" | sed 's/"/\\"/g')
+#   - The -nt comparison has 1-second granularity on macOS. A plan edited and
+#     reviewed within the same second could produce a false "fresh" result. In
+#     practice, reviews always take longer.
+#   - Review files are derived from plan basename only. Two plans with the same
+#     filename in different directories would map to the same review file. Claude
+#     Code always creates plans in ~/.claude/plans/, so this is unlikely.
 #
 # Dependencies: None (uses printf for JSON output, no jq required).
 
@@ -40,9 +47,14 @@ if [ -f "$SENTINEL" ]; then
   # Expand ~ if present
   PLAN_FILE="${PLAN_FILE/#\~/$HOME}"
   if [ -n "$PLAN_FILE" ] && [ -f "$PLAN_FILE" ]; then
-    REVIEW_FILE="${PLAN_FILE%.md}.review.md"
+    PLAN_BASENAME=$(basename "$PLAN_FILE")
+    REVIEW_FILE="$PLANS_DIR/${PLAN_BASENAME%.md}.review.md"
     if [ -f "$REVIEW_FILE" ]; then
-      exit 0  # Review exists, allow
+      # Deny if plan was modified after its review (stale review)
+      if [ "$PLAN_FILE" -nt "$REVIEW_FILE" ]; then
+        deny "Plan review is stale: $PLAN_FILE was modified after $REVIEW_FILE. Re-run the review before approval."
+      fi
+      exit 0  # Review exists and is fresh, allow
     else
       deny "No plan review found for: $PLAN_FILE. Expected: $REVIEW_FILE. Run a plan review before presenting for approval."
     fi
@@ -57,11 +69,15 @@ if [ -z "$PLAN_FILE" ]; then
   exit 0
 fi
 
-# Step 4: Check for review
-REVIEW_FILE="${PLAN_FILE%.md}.review.md"
+# Step 4-5: Check for review and staleness
+PLAN_BASENAME=$(basename "$PLAN_FILE")
+REVIEW_FILE="$PLANS_DIR/${PLAN_BASENAME%.md}.review.md"
 
 if [ -f "$REVIEW_FILE" ]; then
-  exit 0  # Review exists, allow
+  if [ "$PLAN_FILE" -nt "$REVIEW_FILE" ]; then
+    deny "Plan review is stale: $PLAN_FILE was modified after $REVIEW_FILE. Re-run the review before approval."
+  fi
+  exit 0  # Review exists and is fresh, allow
 else
   deny "No plan review found. Expected: $REVIEW_FILE. Follow the Plan Review Before Approval instructions in CLAUDE.md."
 fi
