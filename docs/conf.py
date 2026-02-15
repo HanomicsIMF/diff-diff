@@ -4,6 +4,14 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import os
+import sys
+
+# Add repository root to sys.path so autodoc imports from checked-out source
+# without needing pip install (which would require the Rust/maturin toolchain).
+# Note: visualization.py lazily imports matplotlib inside functions, so it is
+# not needed as a build dependency. If a future module adds a top-level
+# matplotlib import, add it to the RTD dep list in .readthedocs.yaml.
+sys.path.insert(0, os.path.abspath(".."))
 
 import diff_diff
 

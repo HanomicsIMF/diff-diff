@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fix docs/PyPI version mismatch (issue #146) — RTD now builds versioned docs from source
+- Fix RTD docs build failure caused by Rust/maturin compilation timeout on ReadTheDocs
 
 ### Changed
 - Remove Rust outer-loop variance estimation for SyntheticDiD (placebo and bootstrap)
