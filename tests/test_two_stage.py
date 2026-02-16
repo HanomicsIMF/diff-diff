@@ -794,24 +794,31 @@ class TestTwoStageDiDEdgeCases:
         ref_key = list(results.event_study_effects.keys())[0]
         assert results.event_study_effects[ref_key]["n_obs"] == 0
 
-    def test_event_study_nan_for_zero_obs_horizons(self):
-        """Zero-observation horizons from NaN y_tilde produce NaN inference."""
+    def test_proposition_5_nan_for_long_run_horizons(self):
+        """Prop 5 horizons have n_obs > 0 but NaN inference (unidentified)."""
         # No never-treated: cohorts 3, 5, 7; periods 0-9.
-        # Periods 7-9 have zero untreated obs → NaN y_tilde.
-        # Horizon 4 = cohort 3 at period 7 (NaN) + cohort 5 at period 9 (NaN) → 0 obs.
-        # Horizons 5, 6 = cohort 3 at periods 8, 9 (NaN) → 0 obs.
-        # Horizons 0-3 have valid observations from multiple cohorts.
+        # h_bar = max(groups) - min(groups) = 7 - 3 = 4.
+        # Horizons 0-3: identified, valid effects.
+        # Horizons 4, 5, 6: Prop 5 unidentified — treated obs exist but
+        # counterfactual is unidentified without never-treated units.
         data = generate_test_data(never_treated_frac=0.0)
-        results = TwoStageDiD().fit(
-            data,
-            outcome="outcome",
-            unit="unit",
-            time="time",
-            first_treat="first_treat",
-            aggregate="event_study",
-        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = TwoStageDiD().fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                aggregate="event_study",
+            )
 
         assert results.event_study_effects is not None
+
+        # Check Prop 5 warning was emitted
+        prop5_warnings = [x for x in w if "not identified without never-treated" in str(x.message)]
+        assert len(prop5_warnings) > 0, "Proposition 5 warning should be emitted"
 
         # Horizons 0-3 should have observations and finite effects
         for h in range(0, 4):
@@ -819,10 +826,10 @@ class TestTwoStageDiDEdgeCases:
             assert eff["n_obs"] > 0, f"Horizon {h} should have observations"
             assert np.isfinite(eff["effect"]), f"Horizon {h} effect should be finite"
 
-        # Horizons 4, 5, 6 should have zero obs and NaN inference
+        # Horizons 4, 5, 6: Prop 5 — n_obs > 0 but NaN inference
         for h in [4, 5, 6]:
             eff = results.event_study_effects[h]
-            assert eff["n_obs"] == 0, f"Horizon {h} should have 0 observations"
+            assert eff["n_obs"] > 0, f"Horizon {h} should have n_obs > 0 (Prop 5)"
             assert np.isnan(eff["effect"]), f"Horizon {h} effect should be NaN"
             assert np.isnan(eff["se"]), f"Horizon {h} SE should be NaN"
             assert np.isnan(eff["t_stat"]), f"Horizon {h} t_stat should be NaN"

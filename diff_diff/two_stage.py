@@ -1206,8 +1206,39 @@ class TwoStageDiD:
         else:
             balance_mask = np.ones(n, dtype=bool)
 
-        # Remove reference period from estimation horizons
-        est_horizons = [h for h in all_horizons if h != ref_period]
+        # Check Proposition 5: no never-treated units
+        has_never_treated = df["_never_treated"].any()
+        h_bar = np.inf
+        if not has_never_treated and len(treatment_groups) > 1:
+            h_bar = max(treatment_groups) - min(treatment_groups)
+
+        # Identify Prop 5 horizons and compute their actual treated obs counts.
+        # Treated obs have NaN y_tilde at these horizons (counterfactual
+        # unidentified), but actual_n counts them to distinguish from truly
+        # empty horizons. rel_times is NaN for untreated/never-treated obs
+        # (line ~653), so (rel_times == h) is False for them.
+        prop5_horizons = []
+        prop5_effects: Dict[int, Dict[str, Any]] = {}
+        if h_bar < np.inf:
+            for h in all_horizons:
+                if h == ref_period:
+                    continue
+                if h >= h_bar:
+                    actual_n = int(np.sum((rel_times == h) & omega_1_mask.values & balance_mask))
+                    if actual_n > 0:
+                        prop5_horizons.append(h)
+                        prop5_effects[h] = {
+                            "effect": np.nan,
+                            "se": np.nan,
+                            "t_stat": np.nan,
+                            "p_value": np.nan,
+                            "conf_int": (np.nan, np.nan),
+                            "n_obs": actual_n,
+                        }
+
+        # Remove reference period AND Prop 5 horizons from estimation
+        prop5_set = set(prop5_horizons)
+        est_horizons = [h for h in all_horizons if h != ref_period and h not in prop5_set]
 
         if len(est_horizons) == 0:
             # No horizons to estimate — return just reference period
@@ -1307,6 +1338,17 @@ class TwoStageDiD:
                 "conf_int": ci,
                 "n_obs": n_obs,
             }
+
+        # Add Proposition 5 entries (unidentified horizons with n_obs > 0)
+        event_study_effects.update(prop5_effects)
+
+        if prop5_horizons:
+            warnings.warn(
+                f"Horizons {prop5_horizons} are not identified without "
+                f"never-treated units (Proposition 5). Set to NaN.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         return event_study_effects
 
@@ -1869,6 +1911,15 @@ class TwoStageDiD:
                 balance_mask = np.ones(n, dtype=bool)
 
             est_horizons = [h for h in all_horizons if h != ref_period]
+
+            # Filter out Prop 5 horizons (same logic as _stage2_event_study)
+            has_never_treated = df["_never_treated"].any()
+            h_bar_boot = np.inf
+            if not has_never_treated and len(treatment_groups) > 1:
+                h_bar_boot = max(treatment_groups) - min(treatment_groups)
+            if h_bar_boot < np.inf:
+                est_horizons = [h for h in est_horizons if h < h_bar_boot]
+
             if est_horizons:
                 horizon_to_col = {h: j for j, h in enumerate(est_horizons)}
                 k_es = len(est_horizons)
@@ -1911,6 +1962,8 @@ class TwoStageDiD:
                 for h in original_event_study:
                     if original_event_study[h].get("n_obs", 0) == 0:
                         continue
+                    if np.isnan(original_event_study[h]["effect"]):
+                        continue  # Skip Prop 5 and other NaN-effect horizons
                     if h not in horizon_to_col:
                         continue
                     j = horizon_to_col[h]
