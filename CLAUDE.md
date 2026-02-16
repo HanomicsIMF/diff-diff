@@ -639,6 +639,65 @@ When implementing features or fixes, follow this workflow to ensure quality and 
 
 Address any warnings before proceeding.
 
+### Plan Review Before Approval
+
+When writing a new plan file (via EnterPlanMode), update the sentinel so the hook tracks the correct plan:
+```bash
+echo "<plan-file-path>" > ~/.claude/plans/.last-reviewed
+```
+
+Before calling `ExitPlanMode`, offer the user an independent plan review. Use `AskUserQuestion`:
+
+- "Run review agent for independent feedback" (Recommended)
+- "Present plan for approval as-is"
+
+If "present as-is" is chosen, ensure `~/.claude/plans` exists (`mkdir -p`), then write a minimal review marker to `~/.claude/plans/<plan-basename>.review.md`:
+```yaml
+---
+plan: <plan-file-path>
+reviewed_at: <ISO 8601 timestamp>
+verdict: "Skipped"
+critical_count: 0
+medium_count: 0
+low_count: 0
+flags: []
+---
+Review skipped by user.
+```
+Also write the plan path to `~/.claude/plans/.last-reviewed`. This satisfies the ExitPlanMode hook.
+
+If review is requested:
+
+1. **Spawn review agent**: Use the Task tool with `subagent_type: "general-purpose"`. Prompt the agent to:
+   - Read `.claude/commands/review-plan.md` and follow its Steps 2 through 5
+   - Review the plan file at the current plan path
+   - Return ONLY the structured review output (from "## Overall Assessment" through "## Summary") — do not include the "## Plan Content" display
+   Do NOT specify a model — let the agent inherit the current model for review quality.
+
+2. **Display the review agent's output** in the conversation, preceded by the plan content (display the plan yourself for terminal reading). The user reads both here in the terminal — this is the primary reading surface.
+
+3. **Save to file**: Ensure `~/.claude/plans` exists (`mkdir -p`) before writing. Write the review output (from "## Overall Assessment" through "## Summary") to `~/.claude/plans/<plan-basename>.review.md`, with YAML frontmatter (plan path, timestamp, verdict, issue counts). Also write the plan path to `~/.claude/plans/.last-reviewed`. If the review file write fails, report an error and stop — the hook requires this file. If the sentinel write fails, warn but continue (the hook falls back to `ls -t`).
+
+4. **Collect feedback**: Use `AskUserQuestion`:
+   - "Address all issues and re-review" (Recommended)
+   - "Address all issues and present for approval"
+   - "Let me specify which items to address or dismiss"
+   If the user selects the third option, they will provide free-form text with directives (e.g., "disagree with CRITICAL #2", "skip all LOW", "for MEDIUM #1, do X instead").
+
+5. **Revise the plan** based on review feedback and user directives:
+   - CRITICAL: address unless user explicitly dismissed with justification
+   - MEDIUM: address unless user dismissed
+   - LOW: skip unless user explicitly requested
+   - Checklist gaps: add missing items as plan steps
+   - Append a `## Revision Notes` section documenting what was addressed, dismissed, and why
+   - After writing the revised plan, touch the review file to update its mtime (`touch "$REVIEW_FILE"`) so the hook's staleness check passes after the intentional revision
+
+6. **Loop or exit**: If user chose "re-review", go back to step 1 (spawn a fresh review agent for the revised plan). Otherwise, call `ExitPlanMode`.
+
+If `ExitPlanMode` is blocked by the plan review hook (no `.review.md` found), follow the steps above to run a review before retrying.
+
+**Rollback**: To remove the plan review workflow, delete this subsection from CLAUDE.md, remove the `PreToolUse` entry from `.claude/settings.json`, and delete `.claude/hooks/check-plan-review.sh`.
+
 ### Phase 4: Submit
 - Use `/submit-pr` to create the PR
 - Automated AI review will run additional methodology and edge case checks
