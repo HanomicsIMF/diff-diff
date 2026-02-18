@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.4.2] - 2026-02-18
 
 ### Added
 - **Conditional BLAS linking for Rust backend** — Apple Accelerate on macOS, OpenBLAS on Linux.
@@ -771,6 +771,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.4.2]: https://github.com/igerber/diff-diff/compare/v2.4.1...v2.4.2
 [2.4.1]: https://github.com/igerber/diff-diff/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/igerber/diff-diff/compare/v2.3.2...v2.4.0
 [2.3.2]: https://github.com/igerber/diff-diff/compare/v2.3.1...v2.3.2
