@@ -21,10 +21,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import diff_diff
 from diff_diff import TripleDifference
 from diff_diff.prep_dgp import generate_ddd_data
 from diff_diff.utils import safe_inference
 from tests.conftest import assert_nan_inference
+
+# Resolve repo root from the package location (robust against pytest-xdist
+# chdir to temp directories, which breaks Path(__file__)-relative paths).
+_REPO_ROOT = Path(diff_diff.__file__).resolve().parent.parent
 
 
 # =============================================================================
@@ -78,13 +83,14 @@ def require_triplediff(triplediff_available):
 # =============================================================================
 
 _R_RESULTS_PATH = (
-    Path(__file__).parent.parent
-    / "benchmarks" / "data" / "synthetic" / "ddd_r_results.json"
+    _REPO_ROOT / "benchmarks" / "data" / "synthetic" / "ddd_r_results.json"
 )
 
 
 def _load_r_results():
     """Load pre-computed R benchmark results."""
+    if not _R_RESULTS_PATH.exists():
+        pytest.skip("R benchmark results JSON not available")
     with open(_R_RESULTS_PATH) as f:
         return json.load(f)
 
@@ -118,9 +124,10 @@ def _generate_hand_calculable_ddd() -> pd.DataFrame:
 def _load_r_dgp_data(dgp_num: int) -> pd.DataFrame:
     """Load R-generated DGP data, mapping columns to Python convention."""
     csv_path = (
-        Path(__file__).parent.parent
-        / "benchmarks" / "data" / "synthetic" / f"ddd_r_dgp{dgp_num}.csv"
+        _REPO_ROOT / "benchmarks" / "data" / "synthetic" / f"ddd_r_dgp{dgp_num}.csv"
     )
+    if not csv_path.exists():
+        pytest.skip(f"R DGP{dgp_num} data CSV not available")
     df = pd.read_csv(csv_path)
     # Map R columns to Python convention
     df = df.rename(columns={
