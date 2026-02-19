@@ -428,15 +428,51 @@ variables appear to the left of the `|` separator.
 |-------|-------|
 | Module | `triple_diff.py` |
 | Primary Reference | Ortiz-Villavicencio & Sant'Anna (2025) |
-| R Reference | (forthcoming) |
-| Status | Not Started |
-| Last Review | - |
+| R Reference | `triplediff::ddd()` (v0.2.1, CRAN) |
+| Status | **Complete** |
+| Last Review | 2026-02-18 |
+
+**Verified Components:**
+- [x] ATT matches R `triplediff::ddd()` for all 3 methods (DR, RA, IPW) — <0.001% relative difference
+- [x] SE matches R `triplediff::ddd()` for all 3 methods — <0.001% relative difference
+- [x] With-covariates ATT matches R — <0.001% relative difference
+- [x] With-covariates SE matches R — <0.001% relative difference
+- [x] Verified across all 4 DGP types from `gen_dgp_2periods()` (different model misspecification scenarios)
+- [x] Influence function-based SE: `SE = std(w3*IF_3 + w2*IF_2 - w1*IF_1, ddof=1) / sqrt(n)`
+- [x] Three-DiD decomposition: `DDD = DiD_3 + DiD_2 - DiD_1` matching R's approach
+- [x] safe_inference() used for all inference fields (t_stat, p_value, conf_int)
 
 **Corrections Made:**
-- (None yet)
+1. **Complete rewrite of estimation methods** (was naive cell-mean approach, now three-DiD
+   decomposition). The original implementation computed DDD directly from 8 cell means with
+   a naive cell-variance SE. Replaced with R's decomposition into three pairwise DiD
+   comparisons (subgroup j vs reference subgroup 4), each using DR/IPW/RA methodology
+   from Callaway & Sant'Anna. This fixed:
+   - DR SE: was off by >100% (naive cell variance vs influence function)
+   - IPW SE: was off by >200% (incorrect cell-probability-ratio weights)
+   - With-covariates ATT: was off by >1000% for all methods (incorrect cell-by-cell regression)
+2. **Influence function SE** replaces naive cell variance for all methods:
+   `SE = std(w3*IF_3 + w2*IF_2 - w1*IF_1, ddof=1) / sqrt(n)` where
+   `w_j = n / n_j` and `IF_j` is the per-observation influence function for pairwise DiD j.
+3. **Propensity score estimation** now runs per-pairwise-comparison (P(subgroup=4|X) within
+   {j, 4} subset) instead of global P(G=1|X).
+4. **Outcome regression** now fits separate OLS per subgroup-time cell within each pairwise
+   comparison, matching R's `compute_outcome_regression_rc()`.
 
 **Outstanding Concerns:**
-- (None yet)
+- Implementation uses `panel=FALSE` (repeated cross-section) mode. Panel mode (`panel=TRUE`)
+  with differenced outcomes not yet implemented.
+
+**R Comparison Results (panel=FALSE, n=500 per DGP):**
+| DGP | Method | Covariates | ATT Diff | SE Diff |
+|-----|--------|-----------|----------|---------|
+| 1 | DR | No | <0.001% | <0.001% |
+| 1 | DR | Yes | <0.001% | <0.001% |
+| 1 | REG | No | <0.001% | <0.001% |
+| 1 | REG | Yes | <0.001% | <0.001% |
+| 1 | IPW | No | <0.001% | <0.001% |
+| 1 | IPW | Yes | <0.001% | <0.001% |
+| 2-4 | All | Both | <0.001% | <0.001% |
 
 ---
 

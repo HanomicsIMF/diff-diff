@@ -780,45 +780,76 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 
 *Estimator equation (as implemented):*
 
-Eight-cell structure:
+Three-DiD decomposition (matching R's `triplediff::ddd()`):
 ```
-τ^DDD = [(Ȳ₁₁₁ - Ȳ₁₀₁) - (Ȳ₀₁₁ - Ȳ₀₀₁)] - [(Ȳ₁₁₀ - Ȳ₁₀₀) - (Ȳ₀₁₀ - Ȳ₀₀₀)]
+Subgroups: 4=G1P1, 3=G1P0, 2=G0P1, 1=G0P0
+DDD = DiD_3 + DiD_2 - DiD_1
 ```
-where subscripts are (Group, Period, Treatment eligibility).
+where `DiD_j` is a pairwise DiD comparing subgroup j vs subgroup 4 (reference).
 
-Regression form:
-```
-Y = β₀ + β_G(G) + β_P(P) + β_T(T) + β_{GP}(G×P) + β_{GT}(G×T) + β_{PT}(P×T) + τ(G×P×T) + X'γ + ε
-```
+Each pairwise DiD uses the selected estimation method (DR, IPW, or RA) with
+repeated cross-section implementation (`panel=FALSE` in R).
 
-Doubly robust estimator:
-```
-τ̂^DR = E[(ψ_IPW(Y,D,X;π̂) + ψ_RA(Y,X;μ̂) - ψ_bias(X;π̂,μ̂))]
-```
+Regression adjustment (RA): Separate OLS per subgroup-time cell within each
+pairwise comparison, imputed counterfactual means.
 
-*Standard errors:*
-- Regression adjustment: HC1 or cluster-robust
-- IPW: Influence function-based (accounts for estimated propensity)
-- Doubly robust: Efficient influence function
+IPW: Propensity score P(subgroup=4|X) within {j, 4} subset, Hajek normalization.
+
+Doubly robust (DR): Combines outcome regression and IPW with efficiency correction
+(OR bias correction term).
+
+*Standard errors (all methods):*
+
+Individual-level (default):
+```
+SE = std(w₃·IF₃ + w₂·IF₂ - w₁·IF₁, ddof=1) / sqrt(n)
+```
+where `w_j = n / n_j`, `n_j = |{subgroup=j}| + |{subgroup=4}|`, and `IF_j` is the
+per-observation influence function for pairwise DiD j (padded to full n with zeros).
+
+Cluster-robust (when `cluster` parameter is provided):
+```
+SE = sqrt( (G/(G-1)) * (1/n²) * Σ_c ψ_c² )
+```
+where `G` is the number of clusters, `ψ_c = Σ_{i∈c} IF_i` is the sum of the combined
+influence function within cluster `c`, and the `G/(G-1)` factor is the Liang-Zeger
+finite-sample adjustment.
+
+Note: IF-based SEs are inherently heteroskedasticity-robust; the `robust` parameter
+has no additional effect.
 
 *Edge cases:*
 - Propensity scores near 0/1: trimmed at `pscore_trim` (default 0.01)
 - Empty cells: raises ValueError with diagnostic message
-- Collinear covariates: automatic detection and warning
+- Low cell counts: warns when any cell has fewer than 10 observations
+- Cluster-robust SE: requires at least 2 clusters (raises `ValueError`)
+- Cluster IDs: must not contain NaN (raises `ValueError`)
+- Overlap warning: emitted when >5% of observations are trimmed at pscore bounds (IPW/DR only)
+- Propensity score estimation failure: falls back to unconditional probability P(subgroup=4),
+  sets hessian=None (skipping PS correction in influence function), emits UserWarning
+- Collinear covariates: detected via pivoted QR in `solve_ols()`, action controlled by
+  `rank_deficient_action` ("warn", "error", "silent")
+- Non-finite influence function values (e.g., from extreme propensity scores in IPW/DR
+  or near-singular design): warns and sets SE to NaN, propagated to t_stat/p_value/CI
+  via safe_inference()
 - NaN inference for undefined statistics:
   - t_stat: Uses NaN (not 0.0) when SE is non-finite or zero
   - p_value and CI: Also NaN when t_stat is NaN
   - **Note**: Defensive enhancement; reference implementation behavior not yet documented
 
 **Reference implementation(s):**
-- Authors' replication code (forthcoming)
+- R `triplediff::ddd()` (v0.2.1, CRAN) — official companion by paper authors
 
 **Requirements checklist:**
-- [ ] All 8 cells (G×P×T) must have observations
-- [ ] Propensity scores clipped at `pscore_trim` bounds
-- [ ] Doubly robust consistent if either propensity or outcome model correct
-- [ ] Returns cell means for diagnostic inspection
-- [ ] Supports RA, IPW, and DR estimation methods
+- [x] All 8 cells (G×P×T) must have observations
+- [x] Propensity scores clipped at `pscore_trim` bounds
+- [x] Doubly robust consistent if either propensity or outcome model correct
+- [x] Returns cell means for diagnostic inspection
+- [x] Supports RA, IPW, and DR estimation methods
+- [x] Three-DiD decomposition: DDD = DiD_3 + DiD_2 - DiD_1 (matching R)
+- [x] Influence function SE: std(w3·IF_3 + w2·IF_2 - w1·IF_1) / sqrt(n)
+- [x] Cluster-robust SE via Liang-Zeger variance on influence function
+- [x] ATT and SE match R within <0.001% for all methods and DGP types
 
 ---
 
@@ -1342,7 +1373,7 @@ should be a deliberate user choice.
 | ImputationDiD | Conservative clustered (Thm 3) | Multiplier bootstrap (library extension; percentile CIs and empirical p-values, consistent with CS/SA) |
 | TwoStageDiD | GMM sandwich (Newey & McFadden 1994) | Multiplier bootstrap on GMM influence function |
 | SyntheticDiD | Placebo variance (Alg 4) | Unit-level bootstrap (fixed weights) |
-| TripleDifference | HC1 / cluster-robust | Influence function for IPW/DR |
+| TripleDifference | Influence function (all methods) | SE = std(IF) / sqrt(n) |
 | TROP | Block bootstrap | — |
 | BaconDecomposition | N/A (exact decomposition) | Individual 2×2 SEs |
 | HonestDiD | Inherited from event study | FLCI, C-LF |
@@ -1363,7 +1394,7 @@ should be a deliberate user choice.
 | ImputationDiD | didimputation | `did_imputation()` |
 | TwoStageDiD | did2s | `did2s()` |
 | SyntheticDiD | synthdid | `synthdid_estimate()` |
-| TripleDifference | - | (forthcoming) |
+| TripleDifference | triplediff | `ddd()` |
 | TROP | - | (forthcoming) |
 | BaconDecomposition | bacondecomp | `bacon()` |
 | HonestDiD | HonestDiD | `createSensitivityResults()` |
