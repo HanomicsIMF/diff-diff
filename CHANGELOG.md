@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-02-19
+
+### Added
+- Stacked DiD estimator (`StackedDiD`) implementing Wing, Freedman & Hollingsworth (2024)
+  with corrective Q-weights for compositional balance across event times
+- Sub-experiment construction per adoption cohort with clean (never-yet-treated) controls
+- IC1/IC2 trimming for compositional balance across event times
+- Q-weights for aggregate, population, or sample share estimands (Table 1)
+- WLS event study regression via sqrt(w) transformation
+- `stacked_did()` convenience function
+- R benchmark scripts for Stacked DiD validation (`benchmarks/R/benchmark_stacked_did.R`)
+- Comprehensive test suite for Stacked DiD (`tests/test_stacked_did.py`)
+
+### Fixed
+- NaN inference handling in pure Python mode for edge cases
+
 ## [2.4.3] - 2026-02-19
 
 ### Changed
@@ -792,6 +808,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.5.0]: https://github.com/igerber/diff-diff/compare/v2.4.3...v2.5.0
 [2.4.3]: https://github.com/igerber/diff-diff/compare/v2.4.2...v2.4.3
 [2.4.2]: https://github.com/igerber/diff-diff/compare/v2.4.1...v2.4.2
 [2.4.1]: https://github.com/igerber/diff-diff/compare/v2.4.0...v2.4.1
