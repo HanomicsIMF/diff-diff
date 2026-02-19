@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.3] - 2026-02-19
+
+### Changed
+- Rewrite TripleDifference estimator to match R's `triplediff::ddd()` — all 3 estimation
+  methods (DR, IPW, RA) now use three-DiD decomposition with influence function SE, achieving
+  <0.001% relative difference from R across all 24 comparisons (4 DGPs × 3 methods × 2 covariate settings)
+- Validate cluster column in TripleDifference for proper cluster-robust SEs
+- Handle non-finite influence function propagation in TripleDifference edge cases
+- Propensity score fallback uses Hessian-based SE when score optimization fails
+- Improved R-squared consistency across estimation methods
+
+### Fixed
+- Fix low cell count warning and overlap detection in TripleDifference IPW
+- Fix cluster SE computation to use functional (groupby) approach instead of loop
+- Fix rank deficiency handling in TripleDifference regression adjustment
+
+### Added
+- 91 methodology verification tests for TripleDifference (`tests/test_methodology_triple_diff.py`)
+- R benchmark scripts for triple difference validation (`benchmarks/R/benchmark_triplediff.R`)
+- Update METHODOLOGY_REVIEW.md to reflect completed TripleDifference review
+
 ## [2.4.2] - 2026-02-18
 
 ### Added
@@ -771,6 +792,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.4.3]: https://github.com/igerber/diff-diff/compare/v2.4.2...v2.4.3
 [2.4.2]: https://github.com/igerber/diff-diff/compare/v2.4.1...v2.4.2
 [2.4.1]: https://github.com/igerber/diff-diff/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/igerber/diff-diff/compare/v2.3.2...v2.4.0
