@@ -405,6 +405,18 @@ class TestInputValidation:
                 time="time",
             )
 
+    def test_missing_cluster_column(self, simple_ddd_data):
+        """Test error when cluster column is missing from data."""
+        ddd = TripleDifference(cluster="nonexistent")
+        with pytest.raises(ValueError, match="Missing columns"):
+            ddd.fit(
+                simple_ddd_data,
+                outcome="outcome",
+                group="group",
+                partition="partition",
+                time="time",
+            )
+
     def test_missing_group_column(self, simple_ddd_data):
         """Test error when group column is missing."""
         ddd = TripleDifference()

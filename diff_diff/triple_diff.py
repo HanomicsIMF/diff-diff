@@ -609,6 +609,8 @@ class TripleDifference:
         required_cols = [outcome, group, partition, time]
         if covariates:
             required_cols.extend(covariates)
+        if self.cluster is not None:
+            required_cols.append(self.cluster)
 
         missing_cols = [col for col in required_cols if col not in data.columns]
         if missing_cols:
