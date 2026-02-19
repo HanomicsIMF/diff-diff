@@ -278,8 +278,7 @@ class StackedDiDResults:
         if level == "event_study":
             if self.event_study_effects is None:
                 raise ValueError(
-                    "Event study effects not computed. "
-                    "Use aggregate='event_study' or aggregate='all'."
+                    "Event study effects not computed. " "Use aggregate='event_study'."
                 )
             rows = []
             for h, data in sorted(self.event_study_effects.items()):
@@ -298,25 +297,12 @@ class StackedDiDResults:
             return pd.DataFrame(rows)
 
         elif level == "group":
-            if self.group_effects is None:
-                raise ValueError(
-                    "Group effects not computed. " "Use aggregate='group' or aggregate='all'."
-                )
-            rows = []
-            for g, data in sorted(self.group_effects.items()):
-                rows.append(
-                    {
-                        "group": g,
-                        "effect": data["effect"],
-                        "se": data["se"],
-                        "t_stat": data["t_stat"],
-                        "p_value": data["p_value"],
-                        "conf_int_lower": data["conf_int"][0],
-                        "conf_int_upper": data["conf_int"][1],
-                        "n_obs": data.get("n_obs", np.nan),
-                    }
-                )
-            return pd.DataFrame(rows)
+            raise ValueError(
+                "Group aggregation is not supported by StackedDiD. "
+                "The pooled stacked regression cannot produce cohort-specific "
+                "effects. Use CallawaySantAnna or ImputationDiD for "
+                "cohort-level estimates."
+            )
 
         else:
             raise ValueError(f"Unknown level: {level}. Use 'event_study' or 'group'.")

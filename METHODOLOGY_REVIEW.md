@@ -394,15 +394,15 @@ variables appear to the left of the `|` separator.
 - [x] IC1 trimming: `a - kappa_pre >= T_min AND a + kappa_post <= T_max` (matches R reference)
 - [x] IC2 trimming: Three clean control modes (not_yet_treated, strict, never_treated)
 - [x] Sub-experiment construction: treated + clean controls within `[a - kappa_pre, a + kappa_post]`
-- [x] Q-weights aggregate: treated Q=1, control `Q_a = (N_a^D / N^D) / (N_a^C / N^C)` (Table 1, Row 1)
+- [x] Q-weights aggregate: treated Q=1, control `Q = (sub_treat_n/stack_treat_n) / (sub_control_n/stack_control_n)` per (event_time, sub_exp) — matches R `compute_weights()`
 - [x] Q-weights population: `Q_a = (Pop_a^D / Pop^D) / (N_a^C / N^C)` (Table 1, Row 2)
 - [x] Q-weights sample_share: `Q_a = ((N_a^D + N_a^C)/(N^D+N^C)) / (N_a^C / N^C)` (Table 1, Row 3)
 - [x] WLS via sqrt(w) transformation (numerically equivalent to weighted regression)
 - [x] Event study regression: `Y = α_0 + α_1·D_sa + Σ_{h≠-1}[λ_h·1(e=h) + δ_h·D_sa·1(e=h)] + U` (Eq. 3)
-- [x] Reference period e=-1 normalized to zero (omitted from design matrix)
+- [x] Reference period e=-1-anticipation normalized to zero (omitted from design matrix)
 - [x] Delta-method SE for overall ATT: `SE = sqrt(ones' @ sub_vcv @ ones) / K`
 - [x] Cluster-robust SEs at unit level (default) and unit×sub-experiment level
-- [x] Anticipation parameter shifts treatment window
+- [x] Anticipation parameter: reference period shifts to e=-1-anticipation, post-treatment includes anticipation periods
 - [x] Rank deficiency handling (warn/error/silent via `solve_ols()`)
 - [x] Never-treated encoding: both `first_treat=0` and `first_treat=inf` handled
 - [x] R comparison: ATT matches within machine precision (diff < 2.1e-11)
@@ -413,7 +413,7 @@ variables appear to the left of the `|` separator.
 
 **Test Coverage:**
 - 72 tests in `tests/test_stacked_did.py` across 11 test classes:
-  - `TestStackedDiDBasic` (8): fit, event study, group/all/simple aggregation, known constant effect, dynamic effects
+  - `TestStackedDiDBasic` (8): fit, event study, group/all raises, simple aggregation, known constant effect, dynamic effects
   - `TestTrimming` (5): IC1 window, IC2 no-controls, trimmed groups reported, all-trimmed raises, wider window
   - `TestQWeights` (4): treated=1, aggregate formula, sample_share formula, positivity
   - `TestCleanControl` (5): not_yet_treated, strict, never_treated, missing never-treated raises
@@ -447,15 +447,32 @@ variables appear to the left of the `|` separator.
    IC1 check (`a - kappa_pre >= T_min`) and time window start. Discrepancy documented
    in `docs/methodology/papers/wing-2024-review.md` Gaps section.
 
+2. **Q-weight computation: event-time-specific for aggregate weighting** (`stacked_did.py`,
+   `_compute_q_weights()`): Changed aggregate Q-weights from unit counts per sub-experiment
+   to observation counts per (event_time, sub_exp), matching R reference `compute_weights()`.
+   For balanced panels, results are unchanged. For unbalanced panels, weights now adjust for
+   varying observation density. Population/sample_share retain unit-count formulas (paper notation).
+
+3. **Anticipation parameter: reference period and dummies** (`stacked_did.py`, `fit()`):
+   Reference period now shifts to `e = -1 - anticipation`. Event-time dummies cover the
+   full window `[-kappa_pre - anticipation, ..., kappa_post]`. Post-treatment effects include
+   anticipation periods. Consistent with ImputationDiD, TwoStageDiD, SunAbraham.
+
+4. **Group aggregation removed** (`stacked_did.py`): `aggregate="group"` and `aggregate="all"`
+   removed. The pooled stacked regression cannot produce cohort-specific effects without
+   cohort×event-time interactions. Use CallawaySantAnna or ImputationDiD for cohort-level estimates.
+
+5. **n_sub_experiments metadata** (`stacked_did.py`, `fit()`): Now tracks actual built
+   sub-experiments, not all events in omega_kappa. Warns if any sub-experiments are empty
+   after data filtering.
+
 **Outstanding Concerns:**
-- (None — implementation verified correct against R reference)
+- Population/sample_share Q-weights use paper's unit-count formulas (no R reference to validate)
+- Anticipation not validated against R (R reference doesn't test anticipation > 0)
 
 **Deviations from R's stacked-did-weights:**
 1. **NaN for invalid inference**: Python returns NaN for t_stat/p_value/conf_int when
    SE is non-finite or zero. R would propagate through `fixest::feols()` error handling.
-2. **Unit counting for Q-weights**: Python uses `nunique()` for distinct unit counts
-   per sub-experiment; R uses observation-level `sum(treat)` grouped by event_time.
-   These are equivalent for balanced panels and both produce identical Q-weights.
 
 ---
 

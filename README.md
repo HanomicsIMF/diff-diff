@@ -1005,17 +1005,20 @@ results = stacked_did(data, 'outcome', 'unit', 'period', 'first_treat',
 
 ```python
 StackedDiD(
-    kappa_pre=None,                   # Pre-treatment window length (None = all available)
-    kappa_post=None,                  # Post-treatment window length (None = all available)
-    control_group='not_yet_treated',  # 'not_yet_treated' or 'never_treated'
-    anticipation=0,                   # Periods of anticipation effects
-    alpha=0.05,                       # Significance level for CIs
-    cluster=None,                     # Column for cluster-robust SEs (defaults to unit)
-    n_bootstrap=0,                    # Bootstrap iterations (0 = analytical SEs)
-    bootstrap_weights='rademacher',   # 'rademacher', 'mammen', or 'webb'
-    seed=None,                        # Random seed
+    kappa_pre=1,                          # Pre-treatment event-study periods
+    kappa_post=1,                         # Post-treatment event-study periods
+    weighting='aggregate',                # 'aggregate', 'population', or 'sample_share'
+    clean_control='not_yet_treated',      # 'not_yet_treated', 'strict', or 'never_treated'
+    cluster='unit',                       # 'unit' or 'unit_subexp'
+    alpha=0.05,                           # Significance level
+    anticipation=0,                       # Anticipation periods
+    rank_deficient_action='warn',         # 'warn', 'error', or 'silent'
 )
 ```
+
+> **Note:** Group aggregation (`aggregate='group'`) is not supported because the pooled
+> stacked regression cannot produce cohort-specific effects. Use `CallawaySantAnna` or
+> `ImputationDiD` for cohort-level estimates.
 
 **When to use Stacked DiD vs Callaway-Sant'Anna:**
 
@@ -2276,15 +2279,14 @@ TwoStageDiD(
 
 ```python
 StackedDiD(
-    kappa_pre=None,                   # Pre-treatment window length (None = all available)
-    kappa_post=None,                  # Post-treatment window length (None = all available)
-    control_group='not_yet_treated',  # 'not_yet_treated' or 'never_treated'
-    anticipation=0,                   # Periods of anticipation effects
-    alpha=0.05,                       # Significance level for CIs
-    cluster=None,                     # Column for cluster-robust SEs (defaults to unit)
-    n_bootstrap=0,                    # Bootstrap iterations (0 = analytical SEs)
-    bootstrap_weights='rademacher',   # 'rademacher', 'mammen', or 'webb'
-    seed=None,                        # Random seed
+    kappa_pre=1,                          # Pre-treatment event-study periods
+    kappa_post=1,                         # Post-treatment event-study periods
+    weighting='aggregate',                # 'aggregate', 'population', or 'sample_share'
+    clean_control='not_yet_treated',      # 'not_yet_treated', 'strict', or 'never_treated'
+    cluster='unit',                       # 'unit' or 'unit_subexp'
+    alpha=0.05,                           # Significance level
+    anticipation=0,                       # Anticipation periods
+    rank_deficient_action='warn',         # 'warn', 'error', or 'silent'
 )
 ```
 
@@ -2297,8 +2299,8 @@ StackedDiD(
 | `unit` | str | Unit identifier column |
 | `time` | str | Time period column |
 | `first_treat` | str | First treatment period column (0 for never-treated) |
-| `covariates` | list | Covariate column names |
-| `aggregate` | str | Aggregation: None, `"event_study"`, `"group"`, `"all"` |
+| `population` | str, optional | Population column (required if weighting='population') |
+| `aggregate` | str | Aggregation: None, `"simple"`, or `"event_study"` |
 
 ### StackedDiDResults
 
@@ -2311,8 +2313,7 @@ StackedDiD(
 | `overall_t_stat` | T-statistic |
 | `overall_p_value` | P-value for H0: ATT = 0 |
 | `overall_conf_int` | Confidence interval |
-| `event_study_effects` | Dict of relative time -> effect dict (if `aggregate='event_study'` or `'all'`) |
-| `group_effects` | Dict of cohort -> effect dict (if `aggregate='group'` or `'all'`) |
+| `event_study_effects` | Dict of relative time -> effect dict (if `aggregate='event_study'`) |
 | `stacked_data` | The stacked dataset used for estimation |
 | `n_treated_obs` | Number of treated observations |
 | `n_untreated_obs` | Number of untreated (clean control) observations |
@@ -2326,7 +2327,7 @@ StackedDiD(
 |--------|-------------|
 | `summary(alpha)` | Get formatted summary string |
 | `print_summary(alpha)` | Print summary to stdout |
-| `to_dataframe(level)` | Convert to DataFrame ('event_study', 'group') |
+| `to_dataframe(level)` | Convert to DataFrame ('event_study') |
 
 ### TripleDifference
 

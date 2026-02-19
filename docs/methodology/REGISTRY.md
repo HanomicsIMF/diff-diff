@@ -688,13 +688,15 @@ Estimated via WLS with Q-weights. The delta_h coefficients identify theta_kappa^
 - Single cohort in trimmed set: Valid — Q-weights simplify
 - Duplicate observations: Same (unit, time) appears in multiple sub-experiments -> handled by clustering at unit level
 - Constant treatment share across sub-exps: Unweighted FE recovers correct estimand (special case, Section 5.5)
+- Anticipation > 0: Reference period shifts to e = -1 - anticipation. Post-treatment includes anticipation periods (e >= -anticipation). Window expands by anticipation pre-periods.
+- Group aggregation: Not supported — pooled stacked regression cannot produce cohort-specific effects. Use CallawaySantAnna or ImputationDiD.
 
 *Algorithm (Section 5):*
 1. Choose kappa_pre, kappa_post event window
 2. Apply IC1 (window fits in data) and IC2 (clean controls exist) to get Omega_kappa
-3. For each a in Omega_kappa: build sub-experiment with treated (A_s = a), clean controls (A_s > a + kappa_post), time window [a - kappa_pre - 1, a + kappa_post]
+3. For each a in Omega_kappa: build sub-experiment with treated (A_s = a), clean controls (A_s > a + kappa_post), time window [a - kappa_pre, a + kappa_post] (with anticipation: [a - kappa_pre - anticipation, a + kappa_post])
 4. Stack all sub-experiments vertically
-5. Compute Q-weights based on unit counts per sub-experiment
+5. Compute Q-weights: aggregate weighting uses observation counts per (event_time, sub_exp), matching R reference. Population/sample_share use unit counts per sub_exp (paper notation).
 6. Run WLS regression of Equation 3 with Q-weights
 7. Extract delta_h coefficients as event-study ATTs
 8. Compute cluster-robust SEs at unit level

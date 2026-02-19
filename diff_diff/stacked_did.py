@@ -67,7 +67,11 @@ class StackedDiD:
     alpha : float, default=0.05
         Significance level for confidence intervals.
     anticipation : int, default=0
-        Number of anticipation periods (shifts treatment timing).
+        Number of anticipation periods. When anticipation > 0:
+        - Reference period shifts from e=-1 to e=-1-anticipation
+        - Post-treatment includes anticipation periods (e >= -anticipation)
+        - Event window expands by anticipation pre-periods
+        Consistent with ImputationDiD, TwoStageDiD, SunAbraham.
     rank_deficient_action : str, default="warn"
         Action when design matrix is rank-deficient:
         - "warn": Issue warning and drop linearly dependent columns
@@ -181,8 +185,11 @@ class StackedDiD:
             Name of column indicating when unit was first treated.
             Use 0 or np.inf for never-treated units.
         aggregate : str, optional
-            Aggregation mode: None/"simple" (overall ATT only),
-            "event_study", "group", or "all".
+            Aggregation mode: None/"simple" (overall ATT only) or
+            "event_study". Group aggregation is not supported because
+            the pooled stacked regression cannot produce cohort-specific
+            effects. Use CallawaySantAnna or ImputationDiD for
+            cohort-level estimates.
         population : str, optional
             Column name for population weights. Required only when
             weighting="population".
@@ -198,10 +205,16 @@ class StackedDiD:
             If required columns are missing or data validation fails.
         """
         # ---- Validate inputs ----
-        if aggregate not in (None, "simple", "event_study", "group", "all"):
+        if aggregate in ("group", "all"):
             raise ValueError(
-                f"aggregate must be None, 'simple', 'event_study', 'group', "
-                f"or 'all', got '{aggregate}'"
+                f"aggregate='{aggregate}' is not supported by StackedDiD. "
+                "The pooled stacked regression cannot produce cohort-specific "
+                "effects. Use CallawaySantAnna or ImputationDiD for "
+                "cohort-level estimates."
+            )
+        if aggregate not in (None, "simple", "event_study"):
+            raise ValueError(
+                f"aggregate must be None, 'simple', or 'event_study', " f"got '{aggregate}'"
             )
 
         required_cols = [outcome, unit, time, first_treat]
@@ -248,10 +261,20 @@ class StackedDiD:
 
         # ---- Build stacked dataset ----
         sub_experiments = []
+        skipped_events = []
         for a in omega_kappa:
             sub_exp = self._build_sub_experiment(df, unit_info, a, unit, time, first_treat, outcome)
             if sub_exp is not None and len(sub_exp) > 0:
                 sub_experiments.append(sub_exp)
+            else:
+                skipped_events.append(a)
+
+        if skipped_events:
+            warnings.warn(
+                f"Sub-experiments for events {skipped_events} were empty " f"after filtering.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         if len(sub_experiments) == 0:
             raise ValueError(
@@ -272,11 +295,13 @@ class StackedDiD:
 
         # ---- Build design matrix and run WLS ----
         # Always run event study regression (Equation 3 in paper)
+        # Reference period: e = -1 - anticipation (shifts when anticipation > 0)
+        ref_period = -1 - self.anticipation
         event_times = sorted(
             [
                 h
-                for h in range(-self.kappa_pre, self.kappa_post + 1)
-                if h != -1  # omit reference period e=-1
+                for h in range(-self.kappa_pre - self.anticipation, self.kappa_post + 1)
+                if h != ref_period
             ]
         )
 
@@ -330,10 +355,10 @@ class StackedDiD:
 
         # ---- Extract event study effects ----
         event_study_effects: Optional[Dict[int, Dict[str, Any]]] = None
-        if aggregate in ("event_study", "all"):
+        if aggregate == "event_study":
             event_study_effects = {}
-            # Reference period (e=-1)
-            event_study_effects[-1] = {
+            # Reference period (e = -1 - anticipation)
+            event_study_effects[ref_period] = {
                 "effect": 0.0,
                 "se": 0.0,
                 "t_stat": np.nan,
@@ -358,7 +383,10 @@ class StackedDiD:
 
         # ---- Compute overall ATT ----
         # Average of post-treatment delta_h coefficients with delta-method SE
-        post_event_times = [h for h in event_times if h >= 0]
+        # Post-treatment includes anticipation periods (h >= -anticipation)
+        post_event_times = [
+            h for h in event_times if h >= -self.anticipation and h in interaction_indices
+        ]
         post_indices = [interaction_indices[h] for h in post_event_times]
         K = len(post_indices)
 
@@ -374,20 +402,6 @@ class StackedDiD:
 
         overall_t, overall_p, overall_ci = safe_inference(overall_att, overall_se, alpha=self.alpha)
 
-        # ---- Group aggregation ----
-        group_effects: Optional[Dict[Any, Dict[str, Any]]] = None
-        if aggregate in ("group", "all"):
-            group_effects = self._compute_group_effects(
-                stacked_df,
-                unit,
-                outcome,
-                coef,
-                vcov,
-                interaction_indices,
-                post_event_times,
-                omega_kappa,
-            )
-
         # ---- Construct results ----
         self.results_ = StackedDiDResults(
             overall_att=overall_att,
@@ -396,14 +410,14 @@ class StackedDiD:
             overall_p_value=overall_p,
             overall_conf_int=overall_ci,
             event_study_effects=event_study_effects,
-            group_effects=group_effects,
+            group_effects=None,
             stacked_data=stacked_df,
             groups=list(omega_kappa),
             trimmed_groups=list(trimmed),
             time_periods=time_periods,
             n_obs=len(data),
             n_stacked_obs=n,
-            n_sub_experiments=len(omega_kappa),
+            n_sub_experiments=len(sub_experiments),
             n_treated_units=n_treated_units,
             n_control_units=n_control_units,
             kappa_pre=self.kappa_pre,
@@ -598,10 +612,19 @@ class StackedDiD:
         Treated observations always get Q = 1.
         Control observations get Q based on the weighting scheme.
 
+        For aggregate weighting, Q-weights are computed using observation
+        counts per (event_time, sub_exp), matching the R reference
+        ``compute_weights()``. For balanced panels this is equivalent to
+        unit counts per sub-experiment. For unbalanced panels the weights
+        adjust for varying observation density per event time.
+
+        Population and sample_share weighting use unit counts per
+        sub-experiment, following the paper's notation (N_a^D, N_a^C).
+
         Parameters
         ----------
         stacked_df : pd.DataFrame
-            Stacked dataset with _sub_exp and _D_sa columns.
+            Stacked dataset with _sub_exp, _event_time, and _D_sa columns.
         unit_col : str
             Unit column name.
         population_col : str, optional
@@ -612,6 +635,11 @@ class StackedDiD:
         pd.DataFrame
             stacked_df with _Q_weight column added.
         """
+        if self.weighting == "aggregate":
+            return self._compute_q_weights_aggregate(stacked_df)
+
+        # --- Population and sample_share: unit-count-based formulas ---
+
         # Count distinct units per sub-experiment
         sub_exp_stats = (
             stacked_df.groupby(["_sub_exp", "_D_sa"])[unit_col].nunique().unstack(fill_value=0)
@@ -622,7 +650,6 @@ class StackedDiD:
         N_C = sub_exp_stats.get(0, pd.Series(dtype=float)).to_dict()
 
         # Totals
-        N_Omega_D = sum(N_D.values())
         N_Omega_C = sum(N_C.values())
 
         if self.weighting == "population":
@@ -636,44 +663,37 @@ class StackedDiD:
             )
             Pop_D_total = sum(treated_pop.values())
 
-        elif self.weighting == "sample_share":
-            # N_a^D + N_a^C per sub-experiment, and totals
-            N_total = {a: N_D.get(a, 0) + N_C.get(a, 0) for a in N_D}
-            N_grand_D = N_Omega_D
-            N_grand_C = N_Omega_C
-
-        # Compute per-sub-experiment Q for control units
-        q_control: Dict[Any, float] = {}
-        for a in N_D:
-            n_d = N_D.get(a, 0)
-            n_c = N_C.get(a, 0)
-
-            if n_c == 0 or N_Omega_C == 0:
-                q_control[a] = 1.0
-                continue
-
-            control_share = n_c / N_Omega_C
-
-            if self.weighting == "aggregate":
-                treated_share = n_d / N_Omega_D if N_Omega_D > 0 else 0.0
-                q_control[a] = treated_share / control_share if control_share > 0 else 1.0
-
-            elif self.weighting == "population":
+            q_control: Dict[Any, float] = {}
+            for a in N_D:
+                n_c = N_C.get(a, 0)
+                if n_c == 0 or N_Omega_C == 0:
+                    q_control[a] = 1.0
+                    continue
+                control_share = n_c / N_Omega_C
                 pop_d = treated_pop.get(a, 0)
                 pop_share = pop_d / Pop_D_total if Pop_D_total > 0 else 0.0
                 q_control[a] = pop_share / control_share if control_share > 0 else 1.0
 
-            else:  # sample_share
+        else:  # sample_share
+            N_Omega_D = sum(N_D.values())
+            N_total = {a: N_D.get(a, 0) + N_C.get(a, 0) for a in N_D}
+            N_grand = N_Omega_D + N_Omega_C
+
+            q_control = {}
+            for a in N_D:
+                n_c = N_C.get(a, 0)
+                if n_c == 0 or N_Omega_C == 0:
+                    q_control[a] = 1.0
+                    continue
+                control_share = n_c / N_Omega_C
                 n_total_a = N_total.get(a, 0)
-                n_grand = N_grand_D + N_grand_C
-                sample_share = n_total_a / n_grand if n_grand > 0 else 0.0
+                sample_share = n_total_a / N_grand if N_grand > 0 else 0.0
                 q_control[a] = sample_share / control_share if control_share > 0 else 1.0
 
         # Assign weights: treated=1, control=q_control[sub_exp]
         sub_exp_vals = stacked_df["_sub_exp"].values
         d_vals = stacked_df["_D_sa"].values
         weights = np.ones(len(stacked_df))
-
         for i in range(len(stacked_df)):
             if d_vals[i] == 0:
                 weights[i] = q_control.get(sub_exp_vals[i], 1.0)
@@ -681,98 +701,66 @@ class StackedDiD:
         stacked_df["_Q_weight"] = weights
         return stacked_df
 
-    # =========================================================================
-    # Group effects aggregation
-    # =========================================================================
-
-    def _compute_group_effects(
-        self,
-        stacked_df: pd.DataFrame,
-        unit_col: str,
-        outcome_col: str,
-        coef: np.ndarray,
-        vcov: np.ndarray,
-        interaction_indices: Dict[int, int],
-        post_event_times: List[int],
-        omega_kappa: List[Any],
-    ) -> Dict[Any, Dict[str, Any]]:
+    def _compute_q_weights_aggregate(self, stacked_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Compute per-cohort group effects.
+        Compute aggregate Q-weights using observation counts per (event_time, sub_exp).
 
-        For each cohort g in omega_kappa, the group ATT is the average of
-        post-treatment coefficients, weighted by the cohort's share of
-        treated observations at each event time.
+        Matches the R reference ``compute_weights()`` which computes shares at the
+        (event_time, sub_exp) level, not the sub_exp level. For balanced panels the
+        two approaches are equivalent. For unbalanced panels this adjusts for varying
+        observation density per event time.
 
-        Parameters
-        ----------
-        stacked_df : pd.DataFrame
-            Stacked dataset.
-        unit_col : str
-            Unit column name.
-        outcome_col : str
-            Outcome column name.
-        coef : np.ndarray
-            Regression coefficients.
-        vcov : np.ndarray
-            Variance-covariance matrix.
-        interaction_indices : dict
-            Mapping from event time h to column index.
-        post_event_times : list
-            Post-treatment event times.
-        omega_kappa : list
-            Included adoption events.
+        R reference pattern::
 
-        Returns
-        -------
-        dict
-            Mapping from cohort g to effect dict.
+            stack_treat_n  = count(D==1) BY event_time
+            stack_control_n = count(D==0) BY event_time
+            sub_treat_n    = count(D==1) BY (sub_exp, event_time)
+            sub_control_n  = count(D==0) BY (sub_exp, event_time)
+            sub_treat_share = sub_treat_n / stack_treat_n
+            sub_control_share = sub_control_n / stack_control_n
+            Q = sub_treat_share / sub_control_share  (for controls)
+            Q = 1  (for treated)
         """
-        group_effects: Dict[Any, Dict[str, Any]] = {}
+        # Step 1: Stack-level totals by (event_time, D_sa)
+        stack_counts = stacked_df.groupby(["_event_time", "_D_sa"]).size().unstack(fill_value=0)
+        stack_treat_n = stack_counts.get(1, pd.Series(0, index=stack_counts.index))
+        stack_control_n = stack_counts.get(0, pd.Series(0, index=stack_counts.index))
 
-        if len(post_event_times) == 0:
-            for g in omega_kappa:
-                group_effects[g] = {
-                    "effect": np.nan,
-                    "se": np.nan,
-                    "t_stat": np.nan,
-                    "p_value": np.nan,
-                    "conf_int": (np.nan, np.nan),
-                    "n_obs": 0,
-                }
-            return group_effects
+        # Step 2: Sub-experiment-level counts by (event_time, sub_exp, D_sa)
+        sub_counts = (
+            stacked_df.groupby(["_event_time", "_sub_exp", "_D_sa"]).size().unstack(fill_value=0)
+        )
+        sub_treat_n = sub_counts.get(1, pd.Series(0, index=sub_counts.index))
+        sub_control_n = sub_counts.get(0, pd.Series(0, index=sub_counts.index))
 
-        # For each cohort, compute its ATT as the average of post-period
-        # delta_h coefficients weighted by the cohort's share at each h.
-        # Since each cohort has one sub-experiment, the cohort-specific
-        # overall ATT is simply the average of the post-treatment delta_h
-        # (same regression, but the n_obs count differs per group).
-        post_indices = [interaction_indices[h] for h in post_event_times]
-        K = len(post_indices)
+        # Step 3: Compute shares and Q per (event_time, sub_exp)
+        # Q = (sub_treat_n / stack_treat_n) / (sub_control_n / stack_control_n)
+        q_lookup: Dict[Tuple[Any, Any], float] = {}
+        for et, sub_exp in sub_counts.index:
+            s_treat = sub_treat_n.get((et, sub_exp), 0)
+            s_control = sub_control_n.get((et, sub_exp), 0)
+            st_treat = stack_treat_n.get(et, 0)
+            st_control = stack_control_n.get(et, 0)
 
-        for g in omega_kappa:
-            sub_mask = (stacked_df["_sub_exp"] == g) & (stacked_df["_D_sa"] == 1)
-            n_obs_g = int(sub_mask.sum())
+            if s_control == 0 or st_treat == 0 or st_control == 0:
+                q_lookup[(et, sub_exp)] = 1.0
+            else:
+                treat_share = s_treat / st_treat
+                control_share = s_control / st_control
+                q_lookup[(et, sub_exp)] = treat_share / control_share if control_share > 0 else 1.0
 
-            # The group ATT is the same average of delta_h since the
-            # regression pools all sub-experiments. The effect is the
-            # same as overall ATT but n_obs tracks group contribution.
-            group_att = sum(float(coef[i]) for i in post_indices) / K
-            sub_vcv = vcov[np.ix_(post_indices, post_indices)]
-            ones = np.ones(K)
-            group_se = float(np.sqrt(max(ones @ sub_vcv @ ones, 0.0))) / K
+        # Step 4: Assign weights via vectorized merge
+        et_vals = stacked_df["_event_time"].values
+        sub_exp_vals = stacked_df["_sub_exp"].values
+        d_vals = stacked_df["_D_sa"].values
+        weights = np.ones(len(stacked_df))
 
-            t_stat, p_value, conf_int = safe_inference(group_att, group_se, alpha=self.alpha)
+        for i in range(len(stacked_df)):
+            if d_vals[i] == 0:
+                weights[i] = q_lookup.get((et_vals[i], sub_exp_vals[i]), 1.0)
 
-            group_effects[g] = {
-                "effect": group_att,
-                "se": group_se,
-                "t_stat": t_stat,
-                "p_value": p_value,
-                "conf_int": conf_int,
-                "n_obs": n_obs_g,
-            }
-
-        return group_effects
+        stacked_df["_Q_weight"] = weights
+        return stacked_df
 
     # =========================================================================
     # sklearn-compatible interface
@@ -851,7 +839,7 @@ def stacked_did(
     kappa_post : int, default=1
         Post-treatment event-time periods.
     aggregate : str, optional
-        Aggregation mode: None, "simple", "event_study", "group", "all".
+        Aggregation mode: None, "simple", or "event_study".
     population : str, optional
         Population column for weighting="population".
     **kwargs

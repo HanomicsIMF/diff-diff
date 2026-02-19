@@ -106,33 +106,31 @@ class TestStackedDiDBasic:
             if h in results.event_study_effects:
                 assert results.event_study_effects[h]["n_obs"] > 0
 
-    def test_group_aggregation(self, staggered_data):
-        """Group aggregation populates group_effects."""
+    def test_group_aggregate_raises(self, staggered_data):
+        """aggregate='group' raises ValueError."""
         est = StackedDiD(kappa_pre=2, kappa_post=2)
-        results = est.fit(
-            staggered_data,
-            outcome="outcome",
-            unit="unit",
-            time="period",
-            first_treat="first_treat",
-            aggregate="group",
-        )
-        assert results.group_effects is not None
-        assert len(results.group_effects) == len(results.groups)
+        with pytest.raises(ValueError, match="group.*not supported"):
+            est.fit(
+                staggered_data,
+                outcome="outcome",
+                unit="unit",
+                time="period",
+                first_treat="first_treat",
+                aggregate="group",
+            )
 
-    def test_all_aggregation(self, staggered_data):
-        """aggregate='all' populates both event_study and group effects."""
+    def test_all_aggregate_raises(self, staggered_data):
+        """aggregate='all' raises ValueError."""
         est = StackedDiD(kappa_pre=2, kappa_post=2)
-        results = est.fit(
-            staggered_data,
-            outcome="outcome",
-            unit="unit",
-            time="period",
-            first_treat="first_treat",
-            aggregate="all",
-        )
-        assert results.event_study_effects is not None
-        assert results.group_effects is not None
+        with pytest.raises(ValueError, match="all.*not supported"):
+            est.fit(
+                staggered_data,
+                outcome="outcome",
+                unit="unit",
+                time="period",
+                first_treat="first_treat",
+                aggregate="all",
+            )
 
     def test_simple_att(self, staggered_data):
         """aggregate='simple' produces overall ATT only."""
@@ -303,7 +301,7 @@ class TestQWeights:
         assert np.allclose(treated_weights, 1.0)
 
     def test_aggregate_weighting_formula(self, staggered_data):
-        """Verify aggregate Q matches Table 1 formula."""
+        """Q-weights match R's observation-count formula at (event_time, sub_exp) level."""
         est = StackedDiD(kappa_pre=2, kappa_post=2, weighting="aggregate")
         results = est.fit(
             staggered_data,
@@ -314,19 +312,21 @@ class TestQWeights:
         )
         sd = results.stacked_data
 
-        # Compute expected Q for first sub-experiment's controls
-        sub_exp_stats = sd.groupby(["_sub_exp", "_D_sa"])["unit"].nunique().unstack(fill_value=0)
-        N_D = sub_exp_stats.get(1, pd.Series(dtype=float)).to_dict()
-        N_C = sub_exp_stats.get(0, pd.Series(dtype=float)).to_dict()
-        N_Omega_D = sum(N_D.values())
-        N_Omega_C = sum(N_C.values())
-
-        for a in results.groups:
-            expected_q = (N_D[a] / N_Omega_D) / (N_C[a] / N_Omega_C)
-            actual_q = sd.loc[(sd["_sub_exp"] == a) & (sd["_D_sa"] == 0), "_Q_weight"].iloc[0]
-            assert (
-                abs(actual_q - expected_q) < 1e-10
-            ), f"Sub-exp {a}: expected Q={expected_q:.6f}, got {actual_q:.6f}"
+        # Compute expected Q per R formula at (event_time, sub_exp) level
+        for et in sd["_event_time"].unique():
+            et_data = sd[sd["_event_time"] == et]
+            stack_treat_n = (et_data["_D_sa"] == 1).sum()
+            stack_control_n = (et_data["_D_sa"] == 0).sum()
+            for sub_exp in results.groups:
+                sub_et = et_data[et_data["_sub_exp"] == sub_exp]
+                sub_treat_n = (sub_et["_D_sa"] == 1).sum()
+                sub_control_n = (sub_et["_D_sa"] == 0).sum()
+                if sub_control_n > 0 and stack_treat_n > 0 and stack_control_n > 0:
+                    expected_q = (sub_treat_n / stack_treat_n) / (sub_control_n / stack_control_n)
+                    actual_q = sub_et.loc[sub_et["_D_sa"] == 0, "_Q_weight"].iloc[0]
+                    assert (
+                        abs(actual_q - expected_q) < 1e-10
+                    ), f"Sub-exp {sub_exp}, et={et}: expected Q={expected_q:.6f}, got {actual_q:.6f}"
 
     def test_sample_share_weighting(self, staggered_data):
         """Verify sample_share Q formula."""
@@ -549,8 +549,8 @@ class TestEdgeCases:
         assert results.n_sub_experiments == 1
         assert np.isfinite(results.overall_att)
 
-    def test_anticipation(self):
-        """anticipation=1 shifts the treatment window."""
+    def test_anticipation_reference_period(self):
+        """anticipation=1 shifts reference period to e=-2."""
         data = generate_staggered_data(
             n_units=200,
             n_periods=12,
@@ -559,14 +559,31 @@ class TestEdgeCases:
             treatment_effect=5.0,
             seed=42,
         )
-        est = StackedDiD(kappa_pre=1, kappa_post=1, anticipation=1)
+        est = StackedDiD(kappa_pre=2, kappa_post=2, anticipation=1)
         results = est.fit(
             data,
             outcome="outcome",
             unit="unit",
             time="period",
             first_treat="first_treat",
+            aggregate="event_study",
         )
+
+        # Reference period is -2 (not -1)
+        assert -2 in results.event_study_effects
+        assert results.event_study_effects[-2]["effect"] == 0.0
+        assert results.event_study_effects[-2]["n_obs"] == 0  # sentinel
+
+        # -1 is NOT the reference; it should have a non-zero estimated effect
+        assert -1 in results.event_study_effects
+        assert results.event_study_effects[-1]["n_obs"] > 0
+
+        # Extra pre-period -3 should have a dummy
+        assert -3 in results.event_study_effects
+        assert results.event_study_effects[-3]["n_obs"] > 0
+
+        # Post-treatment includes anticipation period (-1)
+        # Overall ATT averages h in {-1, 0, 1, 2}
         assert np.isfinite(results.overall_att)
 
     def test_unbalanced_panel(self):
@@ -592,7 +609,10 @@ class TestEdgeCases:
             time="period",
             first_treat="first_treat",
         )
+        sd = results.stacked_data
         assert np.isfinite(results.overall_att)
+        assert np.all(sd["_Q_weight"] > 0)
+        assert np.all(np.isfinite(sd["_Q_weight"]))
 
     def test_nan_inference(self):
         """Degenerate case with NaN inference fields."""
@@ -737,7 +757,7 @@ class TestResultsMethods:
             unit="unit",
             time="period",
             first_treat="first_treat",
-            aggregate="all",
+            aggregate="event_study",
         )
         summary = results.summary()
         assert "Stacked DiD" in summary
@@ -759,8 +779,8 @@ class TestResultsMethods:
         assert "relative_period" in df.columns
         assert "effect" in df.columns
 
-    def test_to_dataframe_group(self, staggered_data):
-        """to_dataframe(level='group') returns DataFrame."""
+    def test_to_dataframe_group_raises(self, staggered_data):
+        """to_dataframe(level='group') raises ValueError."""
         est = StackedDiD(kappa_pre=2, kappa_post=2)
         results = est.fit(
             staggered_data,
@@ -768,11 +788,9 @@ class TestResultsMethods:
             unit="unit",
             time="period",
             first_treat="first_treat",
-            aggregate="group",
         )
-        df = results.to_dataframe(level="group")
-        assert isinstance(df, pd.DataFrame)
-        assert "group" in df.columns
+        with pytest.raises(ValueError, match="Group aggregation is not supported"):
+            results.to_dataframe(level="group")
 
     def test_to_dataframe_no_event_study_raises(self, staggered_data):
         """to_dataframe raises when event_study not computed."""
