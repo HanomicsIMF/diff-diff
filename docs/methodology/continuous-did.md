@@ -358,6 +358,13 @@ cont_did(yname, dname, gname, tname, idname, data,
 
 1. Extract 2x2 subset: target group (g) + control group, pre-period + post-period
 2. Construct B-spline basis from treated units' doses using `splines2::bSpline()`
+
+   > **Boundary knot note**: The B-spline boundary knots are set from the
+   > training doses (`range(dose_treated)`). Evaluation at `dvals` is clamped
+   > to these boundaries. R's `contdid` v0.1.0 uses `range(dvals)` as boundary
+   > knots when evaluating, which can cause extrapolation artifacts. This is an
+   > intentional deviation.
+
 3. OLS: regress Delta Y on B-spline basis
 4. Evaluate fitted spline at `dvals` -> ATT(d) vector
 5. Evaluate derivative of spline at `dvals` -> ACRT(d) vector

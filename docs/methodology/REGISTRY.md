@@ -427,10 +427,11 @@ This is stronger than standard PT because it conditions on specific dose values.
 - **All-same dose**: B-spline basis collapses; ACRT(d) = 0 everywhere.
 - **Rank deficiency**: When n_treated <= n_basis, cell is skipped.
 - **Balanced panel required**: Matches R `contdid` v0.1.0.
+- **Boundary knots**: Evaluation grid is clamped to training-dose boundary knots (`range(dose)`). R's `contdid` v0.1.0 has an inconsistency where `splines2::bSpline(dvals)` uses `range(dvals)` instead of `range(dose)`, which can produce extrapolation artifacts at dose grid extremes. Our approach avoids extrapolation and is methodologically sound.
 
 ### Implementation Checklist
 
-- [x] B-spline basis construction matching R's `splines2::bSpline`
+- [x] B-spline basis construction matching R's `splines2::bSpline` (boundary knots use training-dose range; see deviation note below)
 - [x] Multi-period (g,t) cell iteration with base period selection
 - [x] Dose-response and event-study aggregation with n_treated weights
 - [x] Multiplier bootstrap for inference

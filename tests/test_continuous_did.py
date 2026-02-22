@@ -296,6 +296,25 @@ class TestContinuousDiDFit:
         )
         assert len(results.group_time_effects) > 0
 
+    def test_results_contain_init_params(self, basic_data):
+        est = ContinuousDiD(
+            base_period="universal",
+            anticipation=0,
+            n_bootstrap=49,
+            bootstrap_weights="mammen",
+            seed=123,
+            rank_deficient_action="error",
+        )
+        results = est.fit(
+            basic_data, "outcome", "unit", "period", "first_treat", "dose"
+        )
+        assert results.base_period == "universal"
+        assert results.anticipation == 0
+        assert results.n_bootstrap == 49
+        assert results.bootstrap_weights == "mammen"
+        assert results.seed == 123
+        assert results.rank_deficient_action == "error"
+
     def test_not_yet_treated_control(self):
         data = generate_continuous_did_data(
             n_units=100, n_periods=4, cohort_periods=[2, 3], seed=42,

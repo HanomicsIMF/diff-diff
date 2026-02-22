@@ -86,6 +86,18 @@ class ContinuousDiDResults:
         Plug-in overall ACRT^{glob}.
     group_time_effects : dict
         Per (g,t) cell results.
+    base_period : str
+        Base period strategy (``"varying"`` or ``"universal"``).
+    anticipation : int
+        Number of anticipation periods.
+    n_bootstrap : int
+        Number of bootstrap iterations used.
+    bootstrap_weights : str
+        Bootstrap weight type (``"rademacher"`` or ``"mammen"``).
+    seed : int or None
+        Random seed used for bootstrap.
+    rank_deficient_action : str
+        How rank deficiency is handled (``"warn"``, ``"error"``, ``"silent"``).
     """
 
     dose_response_att: DoseResponseCurve
@@ -111,6 +123,12 @@ class ContinuousDiDResults:
     control_group: str = "never_treated"
     degree: int = 3
     num_knots: int = 0
+    base_period: str = "varying"
+    anticipation: int = 0
+    n_bootstrap: int = 0
+    bootstrap_weights: str = "rademacher"
+    seed: Optional[int] = None
+    rank_deficient_action: str = "warn"
     event_study_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None)
 
     def __repr__(self) -> str:
@@ -144,6 +162,8 @@ class ContinuousDiDResults:
             f"{'Control group:':<30} {self.control_group:>10}",
             f"{'B-spline degree:':<30} {self.degree:>10}",
             f"{'Interior knots:':<30} {self.num_knots:>10}",
+            f"{'Base period:':<30} {self.base_period:>10}",
+            f"{'Anticipation:':<30} {self.anticipation:>10}",
             "",
         ]
 

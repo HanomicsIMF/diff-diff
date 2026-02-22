@@ -568,6 +568,12 @@ class ContinuousDiD:
             control_group=self.control_group,
             degree=self.degree,
             num_knots=self.num_knots,
+            base_period=self.base_period,
+            anticipation=self.anticipation,
+            n_bootstrap=self.n_bootstrap,
+            bootstrap_weights=self.bootstrap_weights,
+            seed=self.seed,
+            rank_deficient_action=self.rank_deficient_action,
             event_study_effects=event_study_effects,
         )
 
@@ -725,9 +731,9 @@ class ContinuousDiD:
             return None
 
         # OLS regression
-        beta_hat, residuals, vcov = solve_ols(
+        beta_hat, residuals, _ = solve_ols(
             Psi, delta_tilde_y,
-            return_vcov=True,
+            return_vcov=False,
             rank_deficient_action=self.rank_deficient_action,
         )
 
