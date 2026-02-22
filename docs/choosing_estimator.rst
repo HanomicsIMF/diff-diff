@@ -8,6 +8,11 @@ Decision Flowchart
 
 Start here and follow the questions:
 
+0. **Is treatment continuous?** (Units receive different doses or intensities)
+
+   - **No** → Go to question 1
+   - **Yes** → Use :class:`~diff_diff.ContinuousDiD`
+
 1. **Is treatment staggered?** (Different units treated at different times)
 
    - **No** → Go to question 2
@@ -58,6 +63,10 @@ Quick Reference
      - Few treated units, many controls
      - Synthetic parallel trends
      - ATT with unit/time weights
+   * - ``ContinuousDiD``
+     - Continuous dose / treatment intensity
+     - Parallel trends across dose levels
+     - Dose-response curves ATT(d), ACRT(d)
 
 Detailed Guidance
 -----------------
@@ -173,6 +182,31 @@ Use :class:`~diff_diff.SyntheticDiD` when:
    # View the unit weights
    print(results.unit_weights)
 
+Continuous Treatment
+~~~~~~~~~~~~~~~~~~~~
+
+Use :class:`~diff_diff.ContinuousDiD` when:
+
+- Treatment varies in **intensity or dose** (e.g., subsidy amount, hours of training)
+- You want to estimate how effects change with treatment dose
+- You need the full dose-response curve, not just a single average effect
+- Staggered adoption where units receive different treatment levels
+
+.. code-block:: python
+
+   from diff_diff import ContinuousDiD, generate_continuous_did_data
+
+   data = generate_continuous_did_data(n_units=200, seed=42)
+
+   est = ContinuousDiD(n_bootstrap=199, seed=42)
+   results = est.fit(data, outcome='outcome', unit='unit',
+                     time='period', first_treat='first_treat',
+                     dose='dose', aggregate='dose')
+
+   # Overall effect and dose-response curve
+   print(f"Overall ATT: {results.overall_att:.3f}")
+   att_curve = results.dose_response_att.to_dataframe()
+
 Common Pitfalls
 ---------------
 
@@ -234,6 +268,9 @@ differences helps interpret results and choose appropriate inference.
    * - ``SyntheticDiD``
      - Bootstrap or placebo-based
      - Default uses bootstrap resampling. Set ``n_bootstrap=0`` for placebo-based inference using pre-treatment residuals.
+   * - ``ContinuousDiD``
+     - Analytical (default)
+     - Uses delta method SEs by default. Use ``n_bootstrap=199`` (or higher) for multiplier bootstrap inference with proper CIs.
 
 **Recommendations by sample size:**
 
