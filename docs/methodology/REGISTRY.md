@@ -347,7 +347,7 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
   - Parameter: `rank_deficient_action` controls behavior: "warn" (default), "error", or "silent"
 - Non-finite inference values:
   - Analytic SE: Returns NaN to signal invalid inference (not biased via zeroing)
-  - Bootstrap: Drops non-finite samples, warns, and adjusts p-value floor accordingly
+  - Bootstrap: Drops non-finite samples, warns, and adjusts p-value floor accordingly. SE, CI, and p-value are all NaN if SE is non-finite or zero (e.g., n_valid=1 with ddof=1, or identical samples)
   - Threshold: Returns NaN if <50% of bootstrap samples are valid
   - Per-effect t_stat: Uses NaN (not 0.0) when SE is non-finite or zero (consistent with overall_t_stat)
   - **Note**: This is a defensive enhancement over reference implementations (R's `did::att_gt`, Stata's `csdid`) which may error or produce unhandled inf/nan in edge cases without informative warnings
@@ -488,7 +488,7 @@ where weights ŵ_{g,e} = n_{g,e} / Σ_g n_{g,e} (sample share of cohort g at eve
 - NaN inference for undefined statistics:
   - t_stat: Uses NaN (not 0.0) when SE is non-finite or zero
   - Analytical inference: p_value and CI also NaN when t_stat is NaN (NaN propagates through `compute_p_value` and `compute_confidence_interval`)
-  - Bootstrap inference: p_value and CI computed from bootstrap distribution, may be valid even when SE/t_stat is NaN (only NaN if <50% of bootstrap samples are valid)
+  - Bootstrap inference: p_value and CI computed from bootstrap distribution. SE, CI, and p-value are all NaN if SE is non-finite or zero, or if <50% of bootstrap samples are valid
   - Applies to overall ATT, per-effect event study, and aggregated event study
   - **Note**: Defensive enhancement matching CallawaySantAnna behavior; R's `fixest::sunab()` may produce Inf/NaN without warning
 - Inference distribution:

@@ -258,6 +258,17 @@ def compute_effect_bootstrap_stats(
 
     valid_dist = boot_dist[finite_mask]
     se = float(np.std(valid_dist, ddof=1))
+
+    # Guard: if SE is not finite or zero, all inference fields must be NaN.
+    if not np.isfinite(se) or se <= 0:
+        warnings.warn(
+            f"Bootstrap SE is non-finite or zero (n_valid={n_valid}) in {context}. "
+            "Returning NaN for SE/CI/p-value.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return np.nan, (np.nan, np.nan), np.nan
+
     ci = compute_percentile_ci(valid_dist, alpha)
     p_value = compute_bootstrap_pvalue(
         original_effect, valid_dist, n_valid=len(valid_dist)
