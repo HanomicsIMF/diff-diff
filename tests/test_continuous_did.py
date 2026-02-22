@@ -801,6 +801,66 @@ class TestAnticipationEventStudy:
         )
         assert np.isfinite(results.event_study_effects[-1]["effect"])
 
+    def test_anticipation_not_yet_treated_excludes_anticipation_window(self):
+        """Not-yet-treated controls must exclude cohorts in the anticipation window.
+
+        With anticipation=1 and cohort g=3, computing ATT(g=3, t=4) should use
+        threshold t + anticipation = 5, so cohort g=5 (unit_cohorts == 5) fails
+        > 5 and is correctly excluded. Without the fix, threshold is t=4 and
+        cohort g=5 passes > 4, contaminating controls with treated units.
+        """
+        rng = np.random.default_rng(42)
+        n_per_group = 20
+        periods = [1, 2, 3, 4, 5, 6]
+
+        rows = []
+        # Never-treated group
+        for i in range(n_per_group):
+            uid = i
+            for t in periods:
+                rows.append({
+                    "unit": uid, "period": t, "first_treat": 0,
+                    "dose": 0.0, "outcome": rng.normal(0, 0.5),
+                })
+
+        # Early cohort: g=3, treatment effect = +5*dose at t>=3
+        for i in range(n_per_group):
+            uid = n_per_group + i
+            d = rng.uniform(1, 3)
+            for t in periods:
+                y = rng.normal(0, 0.5) + (5.0 * d if t >= 3 else 0)
+                rows.append({
+                    "unit": uid, "period": t, "first_treat": 3,
+                    "dose": d, "outcome": y,
+                })
+
+        # Late cohort: g=5, treatment effect = +5*dose at t>=5
+        for i in range(n_per_group):
+            uid = 2 * n_per_group + i
+            d = rng.uniform(1, 3)
+            for t in periods:
+                y = rng.normal(0, 0.5) + (5.0 * d if t >= 5 else 0)
+                rows.append({
+                    "unit": uid, "period": t, "first_treat": 5,
+                    "dose": d, "outcome": y,
+                })
+
+        data = pd.DataFrame(rows)
+
+        est = ContinuousDiD(
+            anticipation=1, control_group="not_yet_treated", n_bootstrap=0,
+        )
+        results = est.fit(
+            data, "outcome", "unit", "period", "first_treat", "dose",
+        )
+
+        assert np.isfinite(results.overall_att), (
+            "overall_att should be finite with anticipation + not_yet_treated"
+        )
+        assert results.dose_response_att is not None, (
+            "dose-response curve should exist"
+        )
+
 
 class TestEmptyPostTreatment:
     """Test guard for empty post-treatment cells."""

@@ -690,7 +690,9 @@ class ContinuousDiD:
             control_mask = never_treated_mask
         else:
             # Not-yet-treated: never-treated + first_treat > t
-            control_mask = never_treated_mask | ((unit_cohorts > t) & (unit_cohorts != g))
+            control_mask = never_treated_mask | (
+                (unit_cohorts > t + self.anticipation) & (unit_cohorts != g)
+            )
         n_control = int(np.sum(control_mask))
         if n_control == 0:
             warnings.warn(

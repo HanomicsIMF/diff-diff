@@ -341,6 +341,8 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
 - Anticipation: `anticipation` parameter shifts reference period
   - Group aggregation includes periods t >= g - anticipation (not just t >= g)
   - Both analytical SE and bootstrap SE aggregation respect anticipation
+  - Not-yet-treated + anticipation: control mask uses `G > t + anticipation`
+    (not just `G > t`) to exclude cohorts in the anticipation window
 - Rank-deficient design matrix (covariate collinearity):
   - Detection: Pivoted QR decomposition with tolerance `1e-07` (R's `qr()` default)
   - Handling: Warns and drops linearly dependent columns, sets NA for dropped coefficients (R-style, matches `lm()`)
@@ -378,7 +380,7 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
   - Always excludes cohort g from controls when computing ATT(g,t)
   - This applies to both pre-treatment (t < g) and post-treatment (t >= g) periods
   - For pre-treatment periods: even though cohort g hasn't been treated yet at time t, they are the treated group for this ATT(g,t) and cannot serve as their own controls
-  - Control mask: `never_treated OR (first_treat > t AND first_treat != g)`
+  - Control mask: `never_treated OR (first_treat > t + anticipation AND first_treat != g)`
 
 **Reference implementation(s):**
 - R: `did::att_gt()` (Callaway & Sant'Anna's official package)
@@ -427,6 +429,10 @@ This is stronger than standard PT because it conditions on specific dose values.
 - **All-same dose**: B-spline basis collapses; ACRT(d) = 0 everywhere.
 - **Rank deficiency**: When n_treated <= n_basis, cell is skipped.
 - **Balanced panel required**: Matches R `contdid` v0.1.0.
+- **Anticipation + not-yet-treated**: Control mask uses `G > t + anticipation`
+  (not just `G > t`) to exclude cohorts in the anticipation window from
+  not-yet-treated controls. When `anticipation=0` (default), behavior is
+  unchanged.
 - **Boundary knots**: Knots are built once from all treated doses (global, not per-cell) to ensure a common basis across (g,t) cells for aggregation. Evaluation grid is clamped to training-dose boundary knots (`range(dose)`). R's `contdid` v0.1.0 has an inconsistency where `splines2::bSpline(dvals)` uses `range(dvals)` instead of `range(dose)`, which can produce extrapolation artifacts at dose grid extremes. Our approach avoids extrapolation and is methodologically sound.
 
 ### Implementation Checklist
