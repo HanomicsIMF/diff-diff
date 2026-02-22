@@ -214,6 +214,33 @@ class TestContinuousDiDDataValidation:
         with pytest.raises(ValueError, match="[Uu]nbalanced"):
             est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
 
+    def test_unbalanced_panel_same_count_different_periods(self):
+        """Units with same period count but different periods should be caught."""
+        data = pd.DataFrame({
+            "unit": [1, 1, 1, 2, 2, 2],
+            "period": [1, 2, 3, 1, 2, 4],  # Same count (3) but unit 2 has {1,2,4} vs {1,2,3}
+            "outcome": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+            "first_treat": [2, 2, 2, 0, 0, 0],
+            "dose": [1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+        })
+        est = ContinuousDiD()
+        with pytest.raises(ValueError, match="[Uu]nbalanced"):
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+
+    def test_invalid_aggregate_raises(self):
+        """Invalid aggregate value should raise ValueError."""
+        data = pd.DataFrame({
+            "unit": [1, 1, 2, 2],
+            "period": [1, 2, 1, 2],
+            "outcome": [1.0, 2.0, 1.0, 2.0],
+            "first_treat": [2, 2, 0, 0],
+            "dose": [1.0, 1.0, 0.0, 0.0],
+        })
+        est = ContinuousDiD()
+        with pytest.raises(ValueError, match="Invalid aggregate"):
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose",
+                    aggregate="event_study")
+
     def test_no_never_treated_error(self):
         data = pd.DataFrame({
             "unit": [1, 1, 2, 2],
@@ -718,11 +745,11 @@ class TestBootstrapPercentileInference:
         assert lower_dist > 0
 
 
-class TestNotYetTreatedNoDZeroWarning:
-    """Test P(D=0)>0 warning for not_yet_treated with no never-treated units."""
+class TestNotYetTreatedNoDZeroError:
+    """Test P(D=0)>0 error for not_yet_treated with no never-treated units."""
 
-    def test_no_never_treated_warns(self):
-        """not_yet_treated with zero never-treated units should warn."""
+    def test_no_never_treated_raises(self):
+        """not_yet_treated with zero never-treated units should raise ValueError."""
         data = generate_continuous_did_data(
             n_units=100,
             n_periods=4,
@@ -731,13 +758,10 @@ class TestNotYetTreatedNoDZeroWarning:
             seed=42,
         )
         est = ContinuousDiD(control_group="not_yet_treated", degree=1, num_knots=0)
-        with pytest.warns(UserWarning, match="No never-treated.*D=0"):
-            results = est.fit(
+        with pytest.raises(ValueError, match="D=0"):
+            est.fit(
                 data, "outcome", "unit", "period", "first_treat", "dose"
             )
-        # Estimation should still complete (warn-and-continue)
-        assert isinstance(results, ContinuousDiDResults)
-        assert np.isfinite(results.overall_att)
 
 
 class TestEventStudyAnalyticalSE:

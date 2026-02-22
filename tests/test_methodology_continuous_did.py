@@ -6,6 +6,7 @@ Phase 2: R `contdid` benchmarks (skipped if R not installed).
 """
 
 import json
+import os
 import subprocess
 import tempfile
 
@@ -445,151 +446,163 @@ class TestRBenchmark:
         contdid's internal aggregation. Compares overall_att and overall_acrt
         via pte_default (with consistent control_group).
         """
-        r_code = """
-        library(contdid)
-        library(ptetools)
-        library(jsonlite)
+        tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        try:
+            r_code = f"""
+            library(contdid)
+            library(ptetools)
+            library(jsonlite)
 
-        set.seed(42)
-        df <- simulate_contdid_data(
-            n = 200, num_time_periods = 4, num_groups = 4,
-            dose_linear_effect = 2, dose_quadratic_effect = 0.5
-        )
+            set.seed(42)
+            df <- simulate_contdid_data(
+                n = 200, num_time_periods = 4, num_groups = 4,
+                dose_linear_effect = 2, dose_quadratic_effect = 0.5
+            )
 
-        # Overall ACRT via cont_did (dose aggregation)
-        res_slope <- cont_did(
-            yname = "Y", tname = "time_period", idname = "id",
-            gname = "G", dname = "D", data = df,
-            target_parameter = "slope", aggregation = "dose",
-            treatment_type = "continuous", control_group = "nevertreated",
-            degree = 3, num_knots = 0, bstrap = FALSE, print_details = FALSE
-        )
+            # Overall ACRT via cont_did (dose aggregation)
+            res_slope <- cont_did(
+                yname = "Y", tname = "time_period", idname = "id",
+                gname = "G", dname = "D", data = df,
+                target_parameter = "slope", aggregation = "dose",
+                treatment_type = "continuous", control_group = "nevertreated",
+                degree = 3, num_knots = 0, bstrap = FALSE, print_details = FALSE
+            )
 
-        # Overall ATT via pte_default (with matching control_group)
-        att_res <- suppressWarnings(pte_default(
-            yname = "Y", gname = "G", tname = "time_period",
-            idname = "id", data = df, d_outcome = TRUE,
-            anticipation = 0, base_period = "varying",
-            control_group = "nevertreated",
-            biters = 100, alp = 0.05
-        ))
+            # Overall ATT via pte_default (with matching control_group)
+            att_res <- suppressWarnings(pte_default(
+                yname = "Y", gname = "G", tname = "time_period",
+                idname = "id", data = df, d_outcome = TRUE,
+                anticipation = 0, base_period = "varying",
+                control_group = "nevertreated",
+                biters = 100, alp = 0.05
+            ))
 
-        write.csv(df, "/tmp/r_bench4.csv", row.names = FALSE)
-        out <- list(
-            overall_att = att_res$overall_att$overall.att,
-            overall_acrt = res_slope$overall_acrt,
-            dvals = as.numeric(res_slope$dose)
-        )
-        cat(toJSON(out, auto_unbox = TRUE, digits = 10))
-        """
-        result = subprocess.run(
-            ["Rscript", "-e", r_code],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
-            pytest.skip(f"R contdid failed: {result.stderr[:500]}")
-        r_out = json.loads(result.stdout)
+            write.csv(df, "{tmp_path}", row.names = FALSE)
+            out <- list(
+                overall_att = att_res$overall_att$overall.att,
+                overall_acrt = res_slope$overall_acrt,
+                dvals = as.numeric(res_slope$dose)
+            )
+            cat(toJSON(out, auto_unbox = TRUE, digits = 10))
+            """
+            result = subprocess.run(
+                ["Rscript", "-e", r_code],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                pytest.skip(f"R contdid failed: {result.stderr[:500]}")
+            r_out = json.loads(result.stdout)
 
-        data = pd.read_csv("/tmp/r_bench4.csv")
-        data = data.rename(columns={
-            "id": "unit", "time_period": "period",
-            "Y": "outcome", "G": "first_treat", "D": "dose",
-        })
-        dvals = np.array(r_out["dvals"])
-        est = ContinuousDiD(
-            degree=3, num_knots=0, dvals=dvals,
-            control_group="never_treated",
-        )
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
-            aggregate="dose",
-        )
+            data = pd.read_csv(tmp_path)
+            data = data.rename(columns={
+                "id": "unit", "time_period": "period",
+                "Y": "outcome", "G": "first_treat", "D": "dose",
+            })
+            dvals = np.array(r_out["dvals"])
+            est = ContinuousDiD(
+                degree=3, num_knots=0, dvals=dvals,
+                control_group="never_treated",
+            )
+            results = est.fit(
+                data, "outcome", "unit", "period", "first_treat", "dose",
+                aggregate="dose",
+            )
 
-        # Overall ATT
-        att_diff = abs(results.overall_att - r_out["overall_att"]) / (abs(r_out["overall_att"]) + 1e-10)
-        assert att_diff < 0.01, (
-            f"Overall ATT diff: {att_diff:.4f} "
-            f"(R={r_out['overall_att']:.6f}, Py={results.overall_att:.6f})"
-        )
+            # Overall ATT
+            att_diff = abs(results.overall_att - r_out["overall_att"]) / (abs(r_out["overall_att"]) + 1e-10)
+            assert att_diff < 0.01, (
+                f"Overall ATT diff: {att_diff:.4f} "
+                f"(R={r_out['overall_att']:.6f}, Py={results.overall_att:.6f})"
+            )
 
-        # Overall ACRT
-        acrt_diff = abs(results.overall_acrt - r_out["overall_acrt"]) / (abs(r_out["overall_acrt"]) + 1e-10)
-        assert acrt_diff < 0.01, (
-            f"Overall ACRT diff: {acrt_diff:.4f} "
-            f"(R={r_out['overall_acrt']:.6f}, Py={results.overall_acrt:.6f})"
-        )
+            # Overall ACRT
+            acrt_diff = abs(results.overall_acrt - r_out["overall_acrt"]) / (abs(r_out["overall_acrt"]) + 1e-10)
+            assert acrt_diff < 0.01, (
+                f"Overall ACRT diff: {acrt_diff:.4f} "
+                f"(R={r_out['overall_acrt']:.6f}, Py={results.overall_acrt:.6f})"
+            )
+        finally:
+            os.unlink(tmp_path)
 
     def test_benchmark_5_not_yet_treated(self):
         """4 periods, 3 cohorts, not-yet-treated control."""
-        r_code = """
-        library(contdid)
-        library(ptetools)
-        library(jsonlite)
+        tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        try:
+            r_code = f"""
+            library(contdid)
+            library(ptetools)
+            library(jsonlite)
 
-        set.seed(123)
-        df <- simulate_contdid_data(
-            n = 200, num_time_periods = 4, num_groups = 4,
-            dose_linear_effect = 1.5, dose_quadratic_effect = 0
-        )
+            set.seed(123)
+            df <- simulate_contdid_data(
+                n = 200, num_time_periods = 4, num_groups = 4,
+                dose_linear_effect = 1.5, dose_quadratic_effect = 0
+            )
 
-        res_slope <- cont_did(
-            yname = "Y", tname = "time_period", idname = "id",
-            gname = "G", dname = "D", data = df,
-            target_parameter = "slope", aggregation = "dose",
-            treatment_type = "continuous", control_group = "notyettreated",
-            degree = 3, num_knots = 0, bstrap = FALSE, print_details = FALSE
-        )
+            res_slope <- cont_did(
+                yname = "Y", tname = "time_period", idname = "id",
+                gname = "G", dname = "D", data = df,
+                target_parameter = "slope", aggregation = "dose",
+                treatment_type = "continuous", control_group = "notyettreated",
+                degree = 3, num_knots = 0, bstrap = FALSE, print_details = FALSE
+            )
 
-        att_res <- suppressWarnings(pte_default(
-            yname = "Y", gname = "G", tname = "time_period",
-            idname = "id", data = df, d_outcome = TRUE,
-            anticipation = 0, base_period = "varying",
-            control_group = "notyettreated",
-            biters = 100, alp = 0.05
-        ))
+            att_res <- suppressWarnings(pte_default(
+                yname = "Y", gname = "G", tname = "time_period",
+                idname = "id", data = df, d_outcome = TRUE,
+                anticipation = 0, base_period = "varying",
+                control_group = "notyettreated",
+                biters = 100, alp = 0.05
+            ))
 
-        write.csv(df, "/tmp/r_bench5.csv", row.names = FALSE)
-        out <- list(
-            overall_att = att_res$overall_att$overall.att,
-            overall_acrt = res_slope$overall_acrt,
-            dvals = as.numeric(res_slope$dose)
-        )
-        cat(toJSON(out, auto_unbox = TRUE, digits = 10))
-        """
-        result = subprocess.run(
-            ["Rscript", "-e", r_code],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
-            pytest.skip(f"R contdid failed: {result.stderr[:500]}")
-        r_out = json.loads(result.stdout)
+            write.csv(df, "{tmp_path}", row.names = FALSE)
+            out <- list(
+                overall_att = att_res$overall_att$overall.att,
+                overall_acrt = res_slope$overall_acrt,
+                dvals = as.numeric(res_slope$dose)
+            )
+            cat(toJSON(out, auto_unbox = TRUE, digits = 10))
+            """
+            result = subprocess.run(
+                ["Rscript", "-e", r_code],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                pytest.skip(f"R contdid failed: {result.stderr[:500]}")
+            r_out = json.loads(result.stdout)
 
-        data = pd.read_csv("/tmp/r_bench5.csv")
-        data = data.rename(columns={
-            "id": "unit", "time_period": "period",
-            "Y": "outcome", "G": "first_treat", "D": "dose",
-        })
-        dvals = np.array(r_out["dvals"])
-        est = ContinuousDiD(
-            degree=3, num_knots=0, dvals=dvals,
-            control_group="not_yet_treated",
-        )
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
-            aggregate="dose",
-        )
+            data = pd.read_csv(tmp_path)
+            data = data.rename(columns={
+                "id": "unit", "time_period": "period",
+                "Y": "outcome", "G": "first_treat", "D": "dose",
+            })
+            dvals = np.array(r_out["dvals"])
+            est = ContinuousDiD(
+                degree=3, num_knots=0, dvals=dvals,
+                control_group="not_yet_treated",
+            )
+            results = est.fit(
+                data, "outcome", "unit", "period", "first_treat", "dose",
+                aggregate="dose",
+            )
 
-        att_diff = abs(results.overall_att - r_out["overall_att"]) / (abs(r_out["overall_att"]) + 1e-10)
-        assert att_diff < 0.01, (
-            f"Overall ATT diff: {att_diff:.4f} "
-            f"(R={r_out['overall_att']:.6f}, Py={results.overall_att:.6f})"
-        )
+            att_diff = abs(results.overall_att - r_out["overall_att"]) / (abs(r_out["overall_att"]) + 1e-10)
+            assert att_diff < 0.01, (
+                f"Overall ATT diff: {att_diff:.4f} "
+                f"(R={r_out['overall_att']:.6f}, Py={results.overall_att:.6f})"
+            )
 
-        acrt_diff = abs(results.overall_acrt - r_out["overall_acrt"]) / (abs(r_out["overall_acrt"]) + 1e-10)
-        assert acrt_diff < 0.01, (
-            f"Overall ACRT diff: {acrt_diff:.4f} "
-            f"(R={r_out['overall_acrt']:.6f}, Py={results.overall_acrt:.6f})"
-        )
+            acrt_diff = abs(results.overall_acrt - r_out["overall_acrt"]) / (abs(r_out["overall_acrt"]) + 1e-10)
+            assert acrt_diff < 0.01, (
+                f"Overall ACRT diff: {acrt_diff:.4f} "
+                f"(R={r_out['overall_acrt']:.6f}, Py={results.overall_acrt:.6f})"
+            )
+        finally:
+            os.unlink(tmp_path)
 
     def test_benchmark_6_event_study(self):
         """4 periods, 3 cohorts, event study aggregation (binarized ATT).
@@ -598,57 +611,63 @@ class TestRBenchmark:
         per-cell estimation, then aggregates by relative period. We compare
         overall ATT (binarized) via pte_default with matching control_group.
         """
-        r_code = """
-        library(contdid)
-        library(ptetools)
-        library(jsonlite)
+        tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        try:
+            r_code = f"""
+            library(contdid)
+            library(ptetools)
+            library(jsonlite)
 
-        set.seed(99)
-        df <- simulate_contdid_data(
-            n = 200, num_time_periods = 4, num_groups = 4,
-            dose_linear_effect = 2, dose_quadratic_effect = 0
-        )
+            set.seed(99)
+            df <- simulate_contdid_data(
+                n = 200, num_time_periods = 4, num_groups = 4,
+                dose_linear_effect = 2, dose_quadratic_effect = 0
+            )
 
-        # Overall ATT via pte_default (matching control_group)
-        att_res <- suppressWarnings(pte_default(
-            yname = "Y", gname = "G", tname = "time_period",
-            idname = "id", data = df, d_outcome = TRUE,
-            anticipation = 0, base_period = "varying",
-            control_group = "nevertreated",
-            biters = 100, alp = 0.05
-        ))
+            # Overall ATT via pte_default (matching control_group)
+            att_res <- suppressWarnings(pte_default(
+                yname = "Y", gname = "G", tname = "time_period",
+                idname = "id", data = df, d_outcome = TRUE,
+                anticipation = 0, base_period = "varying",
+                control_group = "nevertreated",
+                biters = 100, alp = 0.05
+            ))
 
-        write.csv(df, "/tmp/r_bench6.csv", row.names = FALSE)
-        out <- list(
-            overall_att = att_res$overall_att$overall.att
-        )
-        cat(toJSON(out, auto_unbox = TRUE, digits = 10))
-        """
-        result = subprocess.run(
-            ["Rscript", "-e", r_code],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
-            pytest.skip(f"R contdid failed: {result.stderr[:500]}")
-        r_out = json.loads(result.stdout)
+            write.csv(df, "{tmp_path}", row.names = FALSE)
+            out <- list(
+                overall_att = att_res$overall_att$overall.att
+            )
+            cat(toJSON(out, auto_unbox = TRUE, digits = 10))
+            """
+            result = subprocess.run(
+                ["Rscript", "-e", r_code],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                pytest.skip(f"R contdid failed: {result.stderr[:500]}")
+            r_out = json.loads(result.stdout)
 
-        data = pd.read_csv("/tmp/r_bench6.csv")
-        data = data.rename(columns={
-            "id": "unit", "time_period": "period",
-            "Y": "outcome", "G": "first_treat", "D": "dose",
-        })
-        est = ContinuousDiD(
-            degree=3, num_knots=0,
-            control_group="never_treated",
-        )
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
-            aggregate="eventstudy",
-        )
+            data = pd.read_csv(tmp_path)
+            data = data.rename(columns={
+                "id": "unit", "time_period": "period",
+                "Y": "outcome", "G": "first_treat", "D": "dose",
+            })
+            est = ContinuousDiD(
+                degree=3, num_knots=0,
+                control_group="never_treated",
+            )
+            results = est.fit(
+                data, "outcome", "unit", "period", "first_treat", "dose",
+                aggregate="eventstudy",
+            )
 
-        # Compare overall ATT (binarized)
-        att_diff = abs(results.overall_att - r_out["overall_att"]) / (abs(r_out["overall_att"]) + 1e-10)
-        assert att_diff < 0.01, (
-            f"Overall ATT diff: {att_diff:.4f} "
-            f"(R={r_out['overall_att']:.6f}, Py={results.overall_att:.6f})"
-        )
+            # Compare overall ATT (binarized)
+            att_diff = abs(results.overall_att - r_out["overall_att"]) / (abs(r_out["overall_att"]) + 1e-10)
+            assert att_diff < 0.01, (
+                f"Overall ATT diff: {att_diff:.4f} "
+                f"(R={r_out['overall_att']:.6f}, Py={results.overall_att:.6f})"
+            )
+        finally:
+            os.unlink(tmp_path)

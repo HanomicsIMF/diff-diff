@@ -186,6 +186,13 @@ class ContinuousDiD:
         ContinuousDiDResults
         """
         # 1. Validate & prepare
+        _VALID_AGGREGATES = (None, "dose", "eventstudy")
+        if aggregate not in _VALID_AGGREGATES:
+            raise ValueError(
+                f"Invalid aggregate: '{aggregate}'. "
+                f"Must be one of {_VALID_AGGREGATES}."
+            )
+
         df = data.copy()
         for col in [outcome, unit, time, first_treat, dose]:
             if col not in df.columns:
@@ -245,10 +252,14 @@ class ContinuousDiD:
             df.loc[never_treated_mask, dose] = 0.0
 
         # Verify balanced panel
-        obs_per_unit = df.groupby(unit)[time].nunique()
-        if obs_per_unit.nunique() > 1:
+        all_periods = set(df[time].unique())
+        unit_periods = df.groupby(unit)[time].apply(set)
+        is_unbalanced = unit_periods.apply(lambda s: s != all_periods)
+        if is_unbalanced.any():
+            n_bad = int(is_unbalanced.sum())
             raise ValueError(
-                "Unbalanced panel detected. ContinuousDiD requires a balanced panel."
+                "Unbalanced panel detected. ContinuousDiD requires a balanced panel. "
+                f"{n_bad} unit(s) have missing periods."
             )
 
         # Identify groups and time periods
@@ -267,13 +278,11 @@ class ContinuousDiD:
             )
 
         if self.control_group == "not_yet_treated" and n_control == 0:
-            warnings.warn(
+            raise ValueError(
                 "No never-treated (D=0) units found. With control_group='not_yet_treated', "
-                "not-yet-treated units (D>0) serve as controls, but dose-response curve "
-                "identification requires P(D=0) > 0 (see Remark 3.1 in Callaway et al.). "
-                "Estimates may be unreliable.",
-                UserWarning,
-                stacklevel=2,
+                "dose-response curve identification requires P(D=0) > 0 "
+                "(Remark 3.1 in Callaway et al. is not yet implemented). "
+                "Add never-treated units or use a dataset with D=0 observations."
             )
 
         # 2. Precompute structures
