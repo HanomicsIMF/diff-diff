@@ -32,6 +32,7 @@ This module implements the methodology from Callaway, Goodman-Bacon & Sant'Anna 
 
 - An **untreated group** (D = 0) must be present in the data
 - A **balanced panel** is required (all units observed in all time periods)
+- **Dose must be time-invariant** — each unit's dose is fixed across periods
 
 **Reference:** Callaway, B., Goodman-Bacon, A., & Sant'Anna, P. H. C. (2024).
 Difference-in-Differences with a Continuous Treatment. *NBER Working Paper* 32117.

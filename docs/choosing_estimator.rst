@@ -196,7 +196,8 @@ Use :class:`~diff_diff.ContinuousDiD` when:
 
    Dose-response curves ATT(d) and ACRT(d) require **Strong Parallel Trends (SPT)**.
    Under standard PT only the binarized ATT\ :sup:`loc` is identified.
-   Data must include an untreated group (D = 0) and a balanced panel.
+   Data must include an untreated group (D = 0), a balanced panel, and
+   time-invariant dose (each unit's dose is fixed across periods).
 
 .. code-block:: python
 
