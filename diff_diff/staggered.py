@@ -13,7 +13,7 @@ import pandas as pd
 from scipy import linalg as scipy_linalg
 from scipy import optimize
 
-from diff_diff.linalg import solve_ols
+from diff_diff.linalg import solve_ols, _detect_rank_deficiency, _format_dropped_columns
 from diff_diff.utils import safe_inference, safe_inference_batch
 
 # Import from split modules
@@ -136,14 +136,9 @@ def _linear_regression(
     X_with_intercept = np.column_stack([np.ones(n), X])
 
     # Use unified OLS backend (no vcov needed)
-    # skip_rank_check + check_finite=False: data is validated upstream by
-    # _compute_att_gt_fast, matrices are small and programmatically constructed.
-    # Only skip rank check when user hasn't requested error on rank deficiency.
-    skip_rank = rank_deficient_action != "error"
     beta, residuals, _ = solve_ols(
         X_with_intercept, y, return_vcov=False,
         rank_deficient_action=rank_deficient_action,
-        skip_rank_check=skip_rank, check_finite=False,
     )
 
     return beta, residuals
@@ -599,9 +594,14 @@ class CallawaySantAnna(
         # precomputed['all_units']) for O(1) downstream lookups instead of
         # O(n) Python dict lookups.
         n_t = int(n_treated)
+        all_units = precomputed['all_units']
+        treated_positions = np.where(treated_valid)[0]
+        control_positions = np.where(control_valid)[0]
         inf_func_info = {
-            'treated_idx': np.where(treated_valid)[0],
-            'control_idx': np.where(control_valid)[0],
+            'treated_idx': treated_positions,
+            'control_idx': control_positions,
+            'treated_units': all_units[treated_positions],
+            'control_units': all_units[control_positions],
             'treated_inf': inf_func[:n_t],
             'control_inf': inf_func[n_t:],
         }
@@ -721,9 +721,14 @@ class CallawaySantAnna(
                 'n_control': n_c,
             }
 
+            all_units = precomputed['all_units']
+            treated_positions = np.where(treated_valid)[0]
+            control_positions = np.where(control_valid)[0]
             influence_func_info[(g, t)] = {
-                'treated_idx': np.where(treated_valid)[0],
-                'control_idx': np.where(control_valid)[0],
+                'treated_idx': treated_positions,
+                'control_idx': control_positions,
+                'treated_units': all_units[treated_positions],
+                'control_units': all_units[control_positions],
                 'treated_inf': inf_treated,
                 'control_inf': inf_control,
             }
@@ -859,14 +864,29 @@ class CallawaySantAnna(
             cho = None
             if not ctrl_has_nan:
                 X_ctrl = np.column_stack([np.ones(n_c_base), X_ctrl_raw])
-                with np.errstate(all='ignore'):
-                    XtX = X_ctrl.T @ X_ctrl
 
-                # Try Cholesky factorization
-                try:
-                    cho = scipy_linalg.cho_factor(XtX)
-                except np.linalg.LinAlgError:
-                    pass  # Fall back to lstsq per pair
+                # One-time rank check for this control group
+                rank, dropped_cols, _ = _detect_rank_deficiency(X_ctrl)
+
+                if len(dropped_cols) > 0:
+                    # Rank-deficient: force lstsq for both "warn" and "silent".
+                    # Cholesky on near-singular XtX could yield unstable coefficients.
+                    if self.rank_deficient_action == "warn":
+                        col_info = _format_dropped_columns(dropped_cols)
+                        warnings.warn(
+                            f"Rank-deficient covariate design (control_key={control_key}): "
+                            f"dropped columns {col_info}. Rank {rank} < {X_ctrl.shape[1]}. "
+                            "Using minimum-norm least-squares solution.",
+                            UserWarning, stacklevel=2,
+                        )
+                    cho = None  # Force lstsq path for ALL rank-deficient cases
+                else:
+                    with np.errstate(all='ignore'):
+                        XtX = X_ctrl.T @ X_ctrl
+                    try:
+                        cho = scipy_linalg.cho_factor(XtX)
+                    except np.linalg.LinAlgError:
+                        cho = None
 
             # Process each (g, t) pair in this group
             for g, t, _, base_col, post_col in tasks:
@@ -993,9 +1013,14 @@ class CallawaySantAnna(
                     'n_control': n_c,
                 }
 
+                all_units = precomputed['all_units']
+                treated_positions = np.where(treated_valid)[0]
+                control_positions = np.where(control_valid)[0]
                 influence_func_info[(g, t)] = {
-                    'treated_idx': np.where(treated_valid)[0],
-                    'control_idx': np.where(control_valid)[0],
+                    'treated_idx': treated_positions,
+                    'control_idx': control_positions,
+                    'treated_units': all_units[treated_positions],
+                    'control_units': all_units[control_positions],
                     'treated_inf': inf_treated,
                     'control_inf': inf_control,
                 }

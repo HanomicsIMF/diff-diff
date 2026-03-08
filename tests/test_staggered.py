@@ -980,6 +980,44 @@ class TestCallawaySantAnnaCovariates:
         assert results is not None
         assert results.overall_att is not None
 
+    def test_rank_deficient_action_warn_emits_warning(self):
+        """Test that rank_deficient_action='warn' emits rank-deficiency warning on batched path."""
+        import warnings
+
+        data = generate_staggered_data_with_covariates(seed=42)
+
+        # Add a covariate that is perfectly collinear with x1
+        data["x1_dup"] = data["x1"].copy()
+
+        # estimation_method="reg" + rank_deficient_action="warn" routes to
+        # _compute_all_att_gt_covariate_reg (batched path)
+        cs = CallawaySantAnna(
+            estimation_method="reg",
+            rank_deficient_action="warn",
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = cs.fit(
+                data,
+                outcome='outcome',
+                unit='unit',
+                time='time',
+                first_treat='first_treat',
+                covariates=['x1', 'x1_dup']
+            )
+
+            rank_warnings = [x for x in w if "rank-deficient" in str(x.message).lower()
+                           or "Rank-deficient" in str(x.message)]
+            assert len(rank_warnings) > 0, (
+                "Expected at least one rank-deficiency warning with collinear covariates"
+            )
+
+        # Should still produce valid results (lstsq fallback)
+        assert results is not None
+        assert results.overall_att is not None
+        assert results.overall_se > 0
+
 
 class TestCallawaySantAnnaBootstrap:
     """Tests for Callaway-Sant'Anna multiplier bootstrap inference."""

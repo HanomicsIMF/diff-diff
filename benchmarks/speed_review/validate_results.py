@@ -163,6 +163,16 @@ def check_results(path="benchmarks/speed_review/baseline_results.json", tol=1e-1
 
         compare(f"{name}/overall_att", baseline["overall_att"], current["overall_att"], scenario_tol)
         compare(f"{name}/overall_se", baseline["overall_se"], current["overall_se"], scenario_tol)
+        compare(f"{name}/overall_p_value", baseline["overall_p_value"], current["overall_p_value"], 0.02)
+
+        # Compare overall CI values
+        if "overall_ci" in baseline and "overall_ci" in current:
+            for i, label in enumerate(["lower", "upper"]):
+                compare(f"{name}/overall_ci.{label}",
+                        baseline["overall_ci"][i], current["overall_ci"][i], scenario_tol)
+
+        # Group-time SE tolerance: tight for covariate scenarios, relaxed for bootstrap
+        gt_se_tol = 1e-8 if scenario["n_cov"] > 0 else 0.01
 
         for key in baseline["group_time_effects"]:
             b = baseline["group_time_effects"][key]
@@ -171,7 +181,18 @@ def check_results(path="benchmarks/speed_review/baseline_results.json", tol=1e-1
                 failures.append(f"  {name}/Missing group-time effect: {key}")
                 continue
             compare(f"{name}/gt[{key}].effect", b["effect"], c["effect"], scenario_tol)
-            compare(f"{name}/gt[{key}].se", b["se"], c["se"], 0.01)
+            compare(f"{name}/gt[{key}].se", b["se"], c["se"], gt_se_tol)
+
+        # Compare event study effects/SEs if present
+        if "event_study" in baseline and "event_study" in current:
+            for e_key in baseline["event_study"]:
+                b_es = baseline["event_study"][e_key]
+                c_es = current["event_study"].get(e_key, {})
+                if not c_es:
+                    failures.append(f"  {name}/Missing event study effect: e={e_key}")
+                    continue
+                compare(f"{name}/es[{e_key}].effect", b_es["effect"], c_es["effect"], scenario_tol)
+                compare(f"{name}/es[{e_key}].se", b_es["se"], c_es["se"], gt_se_tol)
 
         if failures:
             all_failures.extend(failures)
