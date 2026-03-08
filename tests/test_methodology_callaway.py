@@ -1631,7 +1631,10 @@ class TestMPDTARComparison:
 
         Returns
         -------
-        Tuple of (DataFrame, dict) where dict has keys: overall_att, overall_se, etc.
+        Tuple of (DataFrame, dict) where dict has keys:
+            - overall_att, overall_se, n_groups, group_time (existing)
+            - event_study.event_time, event_study.att, event_study.se
+            - event_study_cband.crit_val
         """
         import json
 
@@ -1669,6 +1672,28 @@ class TestMPDTARComparison:
         # Simple aggregation
         agg <- aggte(result, type = "simple")
 
+        # Event study aggregation (analytical SEs)
+        agg_es <- aggte(result, type = "dynamic", cband = FALSE)
+
+        # Event study with cband (bootstrap)
+        set.seed(42)
+        result_boot <- att_gt(
+            yname = "lemp",
+            tname = "year",
+            idname = "countyreal",
+            gname = "first.treat",
+            xformla = ~ 1,
+            data = mpdta,
+            est_method = "dr",
+            control_group = "nevertreated",
+            anticipation = 0,
+            base_period = "varying",
+            bstrap = TRUE,
+            cband = TRUE,
+            biters = 999
+        )
+        agg_es_cband <- aggte(result_boot, type = "dynamic", cband = TRUE)
+
         output <- list(
             overall_att = unbox(agg$overall.att),
             overall_se = unbox(agg$overall.se),
@@ -1678,6 +1703,14 @@ class TestMPDTARComparison:
                 time = as.integer(result$t),
                 att = result$att,
                 se = result$se
+            ),
+            event_study = list(
+                event_time = as.integer(agg_es$egt),
+                att = agg_es$att.egt,
+                se = agg_es$se.egt
+            ),
+            event_study_cband = list(
+                crit_val = unbox(agg_es_cband$crit.val)
             )
         )
 
@@ -1688,7 +1721,7 @@ class TestMPDTARComparison:
             ["Rscript", "-e", r_script],
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=120
         )
 
         if result.returncode != 0:
@@ -1808,3 +1841,117 @@ class TestMPDTARComparison:
 
         assert len(mismatches) == 0, \
             f"MPDTA post-treatment ATT mismatches (>1% diff):\n" + "\n".join(mismatches)
+
+    def test_mpdta_event_study_ses_match_r(self, require_r, tmp_path):
+        """Test event study ATTs and SEs match R's aggte(type='dynamic').
+
+        Compares Python's event study aggregation against R's did::aggte()
+        with type="dynamic" using the MPDTA dataset. Both use varying base
+        period (default in both implementations).
+        """
+        mpdta, r_results = self._get_r_mpdta_and_results(tmp_path)
+
+        cs = CallawaySantAnna(estimation_method='dr', n_bootstrap=0)
+        py_results = cs.fit(
+            mpdta,
+            outcome='lemp',
+            unit='countyreal',
+            time='year',
+            first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert py_results.event_study_effects is not None, \
+            "Python event_study_effects is None"
+
+        r_es = r_results['event_study']
+        r_event_times = r_es['event_time']
+        r_atts = r_es['att']
+        r_ses = r_es['se']
+
+        n_compared = 0
+        mismatches = []
+        unmatched_r = []
+
+        for i, e in enumerate(r_event_times):
+            r_att = r_atts[i]
+            r_se = r_ses[i]
+
+            # Skip if R SE is NaN or zero
+            if r_se is None or np.isnan(r_se) or r_se == 0:
+                continue
+
+            if e not in py_results.event_study_effects:
+                unmatched_r.append(e)
+                continue
+
+            py_eff = py_results.event_study_effects[e]
+            py_att = py_eff['effect']
+            py_se = py_eff['se']
+
+            # Compare ATT: rtol=5%, atol=0.01
+            if not np.isclose(py_att, r_att, rtol=0.05, atol=0.01):
+                mismatches.append(
+                    f"e={e} ATT: Python={py_att:.6f}, R={r_att:.6f}"
+                )
+
+            # Compare SE: rtol=10%, atol=0.005 (wider for WIF sensitivity)
+            if not np.isclose(py_se, r_se, rtol=0.10, atol=0.005):
+                mismatches.append(
+                    f"e={e} SE: Python={py_se:.6f}, R={r_se:.6f}"
+                )
+
+            n_compared += 1
+
+        if unmatched_r:
+            # Log but don't fail for unmatched event times
+            warnings.warn(
+                f"R event times not in Python: {unmatched_r}"
+            )
+
+        assert n_compared > 0, \
+            "No event times were compared between Python and R"
+
+        assert len(mismatches) == 0, \
+            f"Event study mismatches ({n_compared} compared):\n" + \
+            "\n".join(mismatches)
+
+    def test_mpdta_cband_crit_value_vs_r(self, require_r, tmp_path):
+        """Test simultaneous confidence band critical value matches R.
+
+        Compares the sup-t bootstrap critical value from Python's
+        CallawaySantAnna(cband=True) against R's aggte(type='dynamic',
+        cband=TRUE). Uses 30% tolerance because bootstrap draws differ
+        between R's set.seed(42) and Python's seed=42.
+        """
+        mpdta, r_results = self._get_r_mpdta_and_results(tmp_path)
+
+        r_crit = r_results['event_study_cband']['crit_val']
+
+        cs = CallawaySantAnna(
+            estimation_method='dr',
+            n_bootstrap=999,
+            seed=42,
+            cband=True,
+        )
+        py_results = cs.fit(
+            mpdta,
+            outcome='lemp',
+            unit='countyreal',
+            time='year',
+            first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        py_crit = py_results.cband_crit_value
+
+        # Both should be finite and > 1.96 (exceed pointwise z-value)
+        assert np.isfinite(r_crit), f"R crit value not finite: {r_crit}"
+        assert np.isfinite(py_crit), f"Python crit value not finite: {py_crit}"
+        assert r_crit > 1.96, f"R crit value {r_crit} <= 1.96"
+        assert py_crit > 1.96, f"Python crit value {py_crit} <= 1.96"
+
+        # 30% tolerance for bootstrap variability across implementations
+        assert np.isclose(py_crit, r_crit, rtol=0.30), \
+            f"Cband crit value mismatch: Python={py_crit:.4f}, " \
+            f"R={r_crit:.4f}, rtol={abs(py_crit - r_crit) / r_crit:.2%}"
