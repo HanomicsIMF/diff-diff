@@ -58,6 +58,7 @@ def plot_event_study(
     shade_color: str = "#f0f0f0",
     ax: Optional[Any] = None,
     show: bool = True,
+    use_cband: bool = True,
 ) -> Any:
     """
     Create an event study plot showing treatment effects over time.
@@ -119,6 +120,10 @@ def plot_event_study(
         Axes to plot on. If None, creates new figure.
     show : bool, default=True
         Whether to call plt.show() at the end.
+    use_cband : bool, default=True
+        Whether to use simultaneous confidence band CIs when available
+        from CallawaySantAnna results. When False, pointwise CIs from
+        ``alpha`` are used regardless.
 
     Returns
     -------
@@ -182,16 +187,20 @@ def plot_event_study(
     reference_period_explicit = reference_period is not None
 
     # Extract data from results if provided
+    ci_lower_override = None
+    ci_upper_override = None
     if results is not None:
-        extracted = _extract_plot_data(
+        (effects, se, periods, pre_periods, post_periods, reference_period,
+         reference_inferred, ci_lower_override, ci_upper_override) = _extract_plot_data(
             results, periods, pre_periods, post_periods, reference_period
-        )
-        effects, se, periods, pre_periods, post_periods, reference_period, reference_inferred = (
-            extracted
         )
         # If reference was inferred from results, it was NOT explicitly provided
         if reference_inferred:
             reference_period_explicit = False
+        # Suppress simultaneous confidence band overrides when user opts out
+        if not use_cband:
+            ci_lower_override = None
+            ci_upper_override = None
     elif effects is None or se is None:
         raise ValueError("Must provide either 'results' or both 'effects' and 'se'")
 
@@ -229,8 +238,11 @@ def plot_event_study(
         if np.isnan(effect):
             continue
 
-        # Compute CI only if SE is finite
-        if np.isfinite(std_err):
+        # Use cband CI overrides when available, otherwise compute pointwise
+        if ci_lower_override is not None and period in ci_lower_override:
+            ci_lower = ci_lower_override[period]
+            ci_upper = ci_upper_override[period]
+        elif np.isfinite(std_err):
             ci_lower = effect - critical_value * std_err
             ci_upper = effect + critical_value * std_err
         else:
@@ -345,17 +357,31 @@ def _extract_plot_data(
     pre_periods: Optional[List[Any]],
     post_periods: Optional[List[Any]],
     reference_period: Optional[Any],
-) -> Tuple[Dict, Dict, List, List, List, Any, bool]:
+) -> Tuple[Dict, Dict, List, List, List, Any, bool, Optional[Dict], Optional[Dict]]:
     """
     Extract plotting data from various result types.
 
     Returns
     -------
-    tuple
-        (effects, se, periods, pre_periods, post_periods, reference_period, reference_inferred)
-
-        reference_inferred is True if reference_period was auto-detected from results
+    effects : dict
+        Mapping of period to effect estimate.
+    se : dict
+        Mapping of period to standard error.
+    periods : list
+        Ordered list of periods to plot.
+    pre_periods : list
+        Pre-treatment periods.
+    post_periods : list
+        Post-treatment periods.
+    reference_period : any
+        The reference period (explicit or inferred).
+    reference_inferred : bool
+        True if reference_period was auto-detected from results
         rather than explicitly provided by the user.
+    ci_lower_override : dict or None
+        Simultaneous confidence band lower bounds, if available.
+    ci_upper_override : dict or None
+        Simultaneous confidence band upper bounds, if available.
     """
     # Handle DataFrame input
     if isinstance(results, pd.DataFrame):
@@ -372,8 +398,18 @@ def _extract_plot_data(
         if periods is None:
             periods = list(results["period"])
 
+        # Extract simultaneous confidence bands if present and finite
+        ci_lower_override = None
+        ci_upper_override = None
+        if "cband_lower" in results.columns and "cband_upper" in results.columns:
+            finite_mask = results["cband_lower"].notna() & results["cband_upper"].notna()
+            if finite_mask.any():
+                finite_rows = results[finite_mask]
+                ci_lower_override = dict(zip(finite_rows["period"], finite_rows["cband_lower"]))
+                ci_upper_override = dict(zip(finite_rows["period"], finite_rows["cband_upper"]))
+
         # DataFrame input: reference_period was already set by caller, never inferred here
-        return effects, se, periods, pre_periods, post_periods, reference_period, False
+        return effects, se, periods, pre_periods, post_periods, reference_period, False, ci_lower_override, ci_upper_override
 
     # Handle MultiPeriodDiDResults
     if hasattr(results, "period_effects"):
@@ -403,16 +439,25 @@ def _extract_plot_data(
             reference_period = results.reference_period
             ref_inferred = True
 
-        return effects, se, periods, pre_periods, post_periods, reference_period, ref_inferred
+        return effects, se, periods, pre_periods, post_periods, reference_period, ref_inferred, None, None
 
     # Handle CallawaySantAnnaResults (event study aggregation)
     if hasattr(results, "event_study_effects") and results.event_study_effects is not None:
         effects = {}
         se = {}
+        ci_lower_override = {}
+        ci_upper_override = {}
+        has_cband = False
 
         for rel_period, effect_data in results.event_study_effects.items():
             effects[rel_period] = effect_data["effect"]
             se[rel_period] = effect_data["se"]
+            # Use simultaneous CIs when available
+            if 'cband_conf_int' in effect_data:
+                cband_ci = effect_data['cband_conf_int']
+                ci_lower_override[rel_period] = cband_ci[0]
+                ci_upper_override[rel_period] = cband_ci[1]
+                has_cband = True
 
         if periods is None:
             periods = sorted(effects.keys())
@@ -439,7 +484,9 @@ def _extract_plot_data(
         if post_periods is None:
             post_periods = [p for p in periods if p >= 0]
 
-        return effects, se, periods, pre_periods, post_periods, reference_period, reference_inferred
+        return (effects, se, periods, pre_periods, post_periods, reference_period, reference_inferred,
+                ci_lower_override if has_cband else None,
+                ci_upper_override if has_cband else None)
 
     raise TypeError(
         f"Cannot extract plot data from {type(results).__name__}. "

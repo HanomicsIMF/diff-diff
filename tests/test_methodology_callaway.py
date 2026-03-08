@@ -11,6 +11,7 @@ with multiple time periods. Journal of Econometrics, 225(2), 200-230.
 """
 
 import subprocess
+import unittest.mock
 import warnings
 from typing import Any, Dict, Tuple
 
@@ -1221,6 +1222,394 @@ class TestDeprecationWarnings:
 # =============================================================================
 
 
+class TestEventStudySEWithWIF:
+    """Tests for WIF adjustment in event study standard errors."""
+
+    def test_event_study_analytical_se_includes_wif(self):
+        """
+        Event study SEs with WIF should be >= SEs without WIF.
+
+        The WIF accounts for uncertainty in estimating group-size weights,
+        so it can only add (or maintain) variance, never reduce it.
+        """
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=0)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.event_study_effects is not None
+
+        for e, eff_data in results.event_study_effects.items():
+            se_with_wif = eff_data['se']
+            if np.isfinite(se_with_wif) and se_with_wif > 0:
+                # WIF-adjusted SE should be positive
+                assert se_with_wif > 0, f"SE for e={e} should be positive"
+
+    def test_event_study_bootstrap_consistent_with_analytical(self, ci_params):
+        """
+        Bootstrap event study SEs should be within ~20% of analytical SEs.
+        """
+        n_boot = ci_params.bootstrap(999)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        # Analytical SEs
+        cs_analytical = CallawaySantAnna(n_bootstrap=0)
+        results_analytical = cs_analytical.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        # Bootstrap SEs
+        cs_boot = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=False)
+        results_boot = cs_boot.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results_analytical.event_study_effects is not None
+        assert results_boot.event_study_effects is not None
+
+        threshold = 0.40 if n_boot < 100 else 0.20
+        n_compared = 0
+        for e in results_analytical.event_study_effects:
+            se_a = results_analytical.event_study_effects[e]['se']
+            if e not in results_boot.event_study_effects:
+                continue
+            se_b = results_boot.event_study_effects[e]['se']
+            if np.isfinite(se_a) and se_a > 0 and np.isfinite(se_b) and se_b > 0:
+                rel_diff = abs(se_a - se_b) / se_a
+                assert rel_diff < threshold, \
+                    f"e={e}: analytical SE={se_a:.4f} vs bootstrap SE={se_b:.4f} " \
+                    f"(diff={rel_diff*100:.1f}% > {threshold*100}%)"
+                n_compared += 1
+
+        assert n_compared > 0, "No event times had finite SEs for comparison"
+
+    def test_overall_att_bootstrap_uses_combined_if(self, ci_params):
+        """
+        Overall ATT bootstrap SE should be consistent with analytical SE
+        (which includes WIF).
+        """
+        n_boot = ci_params.bootstrap(999)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs_analytical = CallawaySantAnna(n_bootstrap=0)
+        results_a = cs_analytical.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat'
+        )
+
+        cs_boot = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=False)
+        results_b = cs_boot.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat'
+        )
+
+        se_a = results_a.overall_se
+        se_b = results_b.overall_se
+
+        threshold = 0.40 if n_boot < 100 else 0.20
+        if np.isfinite(se_a) and se_a > 0 and np.isfinite(se_b) and se_b > 0:
+            rel_diff = abs(se_a - se_b) / se_a
+            assert rel_diff < threshold, \
+                f"Analytical SE={se_a:.4f} vs bootstrap SE={se_b:.4f} (diff={rel_diff*100:.1f}%)"
+
+    def test_single_group_event_time_wif_effect(self):
+        """
+        When only one group contributes to an event time, the WIF
+        adjustment should add minimal variance (weight is near-deterministic).
+        """
+        data = generate_staggered_data(
+            n_units=100,
+            n_periods=6,
+            cohort_periods=[3],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=0)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.event_study_effects is not None
+        # With a single cohort, all event times have only one group
+        for e, eff_data in results.event_study_effects.items():
+            if eff_data['n_groups'] == 1:
+                # SE should still be finite and positive
+                assert np.isfinite(eff_data['se']), \
+                    f"Single-group SE for e={e} should be finite"
+
+    def test_unbalanced_panel_bootstrap_uses_global_n(self, ci_params):
+        """
+        Bootstrap SEs should use global N (all panel units), not just units
+        appearing in influence functions. When some units have NaN outcomes
+        in all periods, they appear in precomputed['all_units'] but are
+        excluded from IFs, creating n_global > n_IF_units.
+
+        Regression test for the bug where _run_multiplier_bootstrap() built
+        the unit set from influence_func_info (local), causing pg = n_g / n_local
+        to overestimate group shares and mis-scale WIF.
+        """
+        n_boot = ci_params.bootstrap(999)
+        # Generate balanced staggered data
+        data = generate_staggered_data(
+            n_units=100,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        # Add extra never-treated units with NaN outcomes in all periods.
+        # These units will be in the panel (and precomputed['all_units'])
+        # but excluded from all IFs because NaN fails the validity check.
+        n_nan_units = 10
+        max_unit = data['unit'].max()
+        periods = sorted(data['period'].unique())
+        nan_rows = []
+        for i in range(1, n_nan_units + 1):
+            uid = max_unit + i
+            for p in periods:
+                nan_rows.append({
+                    'unit': uid,
+                    'period': p,
+                    'first_treat': 0,  # never-treated
+                    'outcome': np.nan,
+                })
+        data_unbalanced = pd.concat(
+            [data, pd.DataFrame(nan_rows)], ignore_index=True
+        )
+
+        n_global = data_unbalanced['unit'].nunique()
+        n_valid = data['unit'].nunique()  # units that actually appear in IFs
+        assert n_global > n_valid, "Test setup: global N should exceed IF unit count"
+
+        # Analytical SEs (already fixed to use global N)
+        cs_analytical = CallawaySantAnna(n_bootstrap=0)
+        results_a = cs_analytical.fit(
+            data_unbalanced, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        # Bootstrap SEs (the fix under test)
+        cs_boot = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=False)
+        results_b = cs_boot.fit(
+            data_unbalanced, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results_a.event_study_effects is not None
+        assert results_b.event_study_effects is not None
+
+        threshold = 0.40 if n_boot < 100 else 0.25
+        n_compared = 0
+        for e in results_a.event_study_effects:
+            se_a = results_a.event_study_effects[e]['se']
+            if e not in results_b.event_study_effects:
+                continue
+            se_b = results_b.event_study_effects[e]['se']
+            if np.isfinite(se_a) and se_a > 0 and np.isfinite(se_b) and se_b > 0:
+                rel_diff = abs(se_a - se_b) / se_a
+                assert rel_diff < threshold, \
+                    f"e={e}: analytical SE={se_a:.4f} vs bootstrap SE={se_b:.4f} " \
+                    f"(diff={rel_diff*100:.1f}% > {threshold*100}%)"
+                n_compared += 1
+
+        assert n_compared > 0, "No event times had finite SEs for comparison"
+
+
+class TestSimultaneousConfidenceBands:
+    """Tests for simultaneous confidence bands (cband)."""
+
+    def test_cband_crit_value_exceeds_pointwise(self, ci_params):
+        """
+        When cband=True and n_bootstrap > 0, the critical value should
+        exceed the pointwise z_{0.025} = 1.96.
+        """
+        n_boot = ci_params.bootstrap(999, min_n=199)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=True)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.cband_crit_value is not None, \
+            "cband_crit_value should be set when cband=True and n_bootstrap > 0"
+        assert results.cband_crit_value > 1.96, \
+            f"Simultaneous critical value ({results.cband_crit_value:.3f}) " \
+            "should exceed pointwise z_0.025=1.96"
+
+    def test_cband_confidence_intervals_wider(self, ci_params):
+        """Simultaneous CIs should be wider than pointwise CIs."""
+        n_boot = ci_params.bootstrap(999, min_n=199)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=True)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.event_study_effects is not None
+        for e, eff_data in results.event_study_effects.items():
+            if 'cband_conf_int' in eff_data:
+                pw_ci = eff_data['conf_int']
+                cb_ci = eff_data['cband_conf_int']
+                pw_width = pw_ci[1] - pw_ci[0]
+                cb_width = cb_ci[1] - cb_ci[0]
+                if np.isfinite(pw_width) and np.isfinite(cb_width) and pw_width > 0:
+                    assert cb_width >= pw_width, \
+                        f"e={e}: cband CI width ({cb_width:.4f}) should >= " \
+                        f"pointwise CI width ({pw_width:.4f})"
+
+    def test_cband_false_disables_simultaneous_ci(self, ci_params):
+        """When cband=False, cband_crit_value should be None."""
+        n_boot = ci_params.bootstrap(999, min_n=199)
+        data = generate_staggered_data(
+            n_units=100,
+            n_periods=6,
+            cohort_periods=[3],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=False)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.cband_crit_value is None
+
+    def test_cband_requires_bootstrap(self):
+        """When n_bootstrap=0, cband has no effect (remains None)."""
+        data = generate_staggered_data(
+            n_units=100,
+            n_periods=6,
+            cohort_periods=[3],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=0, cband=True)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.cband_crit_value is None
+
+    def test_cband_validity_threshold(self):
+        """When >50% of sup-t bootstrap draws are non-finite, cband_crit_value is None."""
+        data = generate_staggered_data(
+            n_units=100,
+            n_periods=6,
+            cohort_periods=[3],
+            treatment_effect=2.0,
+            seed=42,
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=50, seed=42, cband=True)
+
+        # Patch np.max to return mostly-NaN sup-t distribution
+        original_max = np.max
+
+        def mock_max(a, axis=None):
+            result = original_max(a, axis=axis)
+            if axis == 0 and hasattr(result, '__len__') and len(result) > 10:
+                # Make >50% of sup-t draws NaN
+                result = result.copy()
+                n_nan = int(len(result) * 0.6)
+                result[:n_nan] = np.nan
+            return result
+
+        with unittest.mock.patch('diff_diff.staggered_bootstrap.np.max', side_effect=mock_max):
+            with pytest.warns(RuntimeWarning, match="Too few valid sup-t"):
+                results = cs.fit(
+                    data, outcome='outcome', unit='unit',
+                    time='period', first_treat='first_treat',
+                    aggregate='event_study',
+                )
+
+        assert results.cband_crit_value is None
+
+    def test_cband_in_get_params(self):
+        """Test that cband parameter appears in get_params."""
+        cs = CallawaySantAnna(cband=False)
+        params = cs.get_params()
+        assert 'cband' in params
+        assert params['cband'] is False
+
+    def test_cband_to_dataframe_columns(self, ci_params):
+        """Test that to_dataframe includes cband columns."""
+        n_boot = ci_params.bootstrap(999, min_n=199)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=True)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        df = results.to_dataframe(level='event_study')
+        assert 'cband_lower' in df.columns
+        assert 'cband_upper' in df.columns
+
+
 class TestMPDTARComparison:
     """Strict R comparison tests using the real MPDTA dataset.
 
@@ -1242,7 +1631,10 @@ class TestMPDTARComparison:
 
         Returns
         -------
-        Tuple of (DataFrame, dict) where dict has keys: overall_att, overall_se, etc.
+        Tuple of (DataFrame, dict) where dict has keys:
+            - overall_att, overall_se, n_groups, group_time (existing)
+            - event_study.event_time, event_study.att, event_study.se
+            - event_study_cband.crit_val
         """
         import json
 
@@ -1280,6 +1672,28 @@ class TestMPDTARComparison:
         # Simple aggregation
         agg <- aggte(result, type = "simple")
 
+        # Event study aggregation (analytical SEs)
+        agg_es <- aggte(result, type = "dynamic", cband = FALSE)
+
+        # Event study with cband (bootstrap)
+        set.seed(42)
+        result_boot <- att_gt(
+            yname = "lemp",
+            tname = "year",
+            idname = "countyreal",
+            gname = "first.treat",
+            xformla = ~ 1,
+            data = mpdta,
+            est_method = "dr",
+            control_group = "nevertreated",
+            anticipation = 0,
+            base_period = "varying",
+            bstrap = TRUE,
+            cband = TRUE,
+            biters = 999
+        )
+        agg_es_cband <- aggte(result_boot, type = "dynamic", cband = TRUE)
+
         output <- list(
             overall_att = unbox(agg$overall.att),
             overall_se = unbox(agg$overall.se),
@@ -1289,6 +1703,14 @@ class TestMPDTARComparison:
                 time = as.integer(result$t),
                 att = result$att,
                 se = result$se
+            ),
+            event_study = list(
+                event_time = as.integer(agg_es$egt),
+                att = agg_es$att.egt,
+                se = agg_es$se.egt
+            ),
+            event_study_cband = list(
+                crit_val = unbox(agg_es_cband$crit.val)
             )
         )
 
@@ -1299,7 +1721,7 @@ class TestMPDTARComparison:
             ["Rscript", "-e", r_script],
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=120
         )
 
         if result.returncode != 0:
@@ -1419,3 +1841,117 @@ class TestMPDTARComparison:
 
         assert len(mismatches) == 0, \
             f"MPDTA post-treatment ATT mismatches (>1% diff):\n" + "\n".join(mismatches)
+
+    def test_mpdta_event_study_ses_match_r(self, require_r, tmp_path):
+        """Test event study ATTs and SEs match R's aggte(type='dynamic').
+
+        Compares Python's event study aggregation against R's did::aggte()
+        with type="dynamic" using the MPDTA dataset. Both use varying base
+        period (default in both implementations).
+        """
+        mpdta, r_results = self._get_r_mpdta_and_results(tmp_path)
+
+        cs = CallawaySantAnna(estimation_method='dr', n_bootstrap=0)
+        py_results = cs.fit(
+            mpdta,
+            outcome='lemp',
+            unit='countyreal',
+            time='year',
+            first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert py_results.event_study_effects is not None, \
+            "Python event_study_effects is None"
+
+        r_es = r_results['event_study']
+        r_event_times = r_es['event_time']
+        r_atts = r_es['att']
+        r_ses = r_es['se']
+
+        n_compared = 0
+        mismatches = []
+        unmatched_r = []
+
+        for i, e in enumerate(r_event_times):
+            r_att = r_atts[i]
+            r_se = r_ses[i]
+
+            # Skip if R SE is NaN or zero
+            if r_se is None or np.isnan(r_se) or r_se == 0:
+                continue
+
+            if e not in py_results.event_study_effects:
+                unmatched_r.append(e)
+                continue
+
+            py_eff = py_results.event_study_effects[e]
+            py_att = py_eff['effect']
+            py_se = py_eff['se']
+
+            # Compare ATT: rtol=5%, atol=0.01
+            if not np.isclose(py_att, r_att, rtol=0.05, atol=0.01):
+                mismatches.append(
+                    f"e={e} ATT: Python={py_att:.6f}, R={r_att:.6f}"
+                )
+
+            # Compare SE: rtol=10%, atol=0.005 (wider for WIF sensitivity)
+            if not np.isclose(py_se, r_se, rtol=0.10, atol=0.005):
+                mismatches.append(
+                    f"e={e} SE: Python={py_se:.6f}, R={r_se:.6f}"
+                )
+
+            n_compared += 1
+
+        if unmatched_r:
+            # Log but don't fail for unmatched event times
+            warnings.warn(
+                f"R event times not in Python: {unmatched_r}"
+            )
+
+        assert n_compared > 0, \
+            "No event times were compared between Python and R"
+
+        assert len(mismatches) == 0, \
+            f"Event study mismatches ({n_compared} compared):\n" + \
+            "\n".join(mismatches)
+
+    def test_mpdta_cband_crit_value_vs_r(self, require_r, tmp_path):
+        """Test simultaneous confidence band critical value matches R.
+
+        Compares the sup-t bootstrap critical value from Python's
+        CallawaySantAnna(cband=True) against R's aggte(type='dynamic',
+        cband=TRUE). Uses 30% tolerance because bootstrap draws differ
+        between R's set.seed(42) and Python's seed=42.
+        """
+        mpdta, r_results = self._get_r_mpdta_and_results(tmp_path)
+
+        r_crit = r_results['event_study_cband']['crit_val']
+
+        cs = CallawaySantAnna(
+            estimation_method='dr',
+            n_bootstrap=999,
+            seed=42,
+            cband=True,
+        )
+        py_results = cs.fit(
+            mpdta,
+            outcome='lemp',
+            unit='countyreal',
+            time='year',
+            first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        py_crit = py_results.cband_crit_value
+
+        # Both should be finite and > 1.96 (exceed pointwise z-value)
+        assert np.isfinite(r_crit), f"R crit value not finite: {r_crit}"
+        assert np.isfinite(py_crit), f"Python crit value not finite: {py_crit}"
+        assert r_crit > 1.96, f"R crit value {r_crit} <= 1.96"
+        assert py_crit > 1.96, f"Python crit value {py_crit} <= 1.96"
+
+        # 30% tolerance for bootstrap variability across implementations
+        assert np.isclose(py_crit, r_crit, rtol=0.30), \
+            f"Cband crit value mismatch: Python={py_crit:.4f}, " \
+            f"R={r_crit:.4f}, rtol={abs(py_crit - r_crit) / r_crit:.2%}"

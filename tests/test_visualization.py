@@ -139,6 +139,68 @@ class TestPlotEventStudy:
         ax = plot_event_study(df, reference_period=0, show=False)
         assert ax is not None
 
+    def test_plot_from_dataframe_with_cband(self):
+        """Test that cband_lower/cband_upper columns are used as CI overrides."""
+        pytest.importorskip("matplotlib")
+        from diff_diff.visualization import _extract_plot_data
+
+        effects = [0.1, 0.05, 0.0, 0.5, 0.6]
+        se_vals = [0.1, 0.1, 0.0, 0.15, 0.15]
+        periods = [-2, -1, 0, 1, 2]
+        # cband bounds wider than pointwise 95% CI (effect ± 1.96*se)
+        cband_lower = [e - 3 * s for e, s in zip(effects, se_vals)]
+        cband_upper = [e + 3 * s for e, s in zip(effects, se_vals)]
+
+        df = pd.DataFrame(
+            {
+                "period": periods,
+                "effect": effects,
+                "se": se_vals,
+                "cband_lower": cband_lower,
+                "cband_upper": cband_upper,
+            }
+        )
+
+        # Verify _extract_plot_data returns cband overrides
+        result = _extract_plot_data(df, periods=None, pre_periods=None, post_periods=None, reference_period=0)
+        ci_lo = result[7]
+        ci_hi = result[8]
+        assert ci_lo is not None, "ci_lower_override should not be None with cband columns"
+        assert ci_hi is not None, "ci_upper_override should not be None with cband columns"
+        for p, el, eu in zip(periods, cband_lower, cband_upper):
+            assert ci_lo[p] == el
+            assert ci_hi[p] == eu
+
+        # Verify plot renders successfully
+        ax = plot_event_study(df, reference_period=0, show=False)
+        assert ax is not None
+
+    def test_plot_from_dataframe_with_nan_cband(self):
+        """Test that NaN cband columns fall back to pointwise CIs."""
+        pytest.importorskip("matplotlib")
+        from diff_diff.visualization import _extract_plot_data
+
+        df = pd.DataFrame(
+            {
+                "period": [-2, -1, 0, 1, 2],
+                "effect": [0.1, 0.05, 0.0, 0.5, 0.6],
+                "se": [0.1, 0.1, 0.0, 0.15, 0.15],
+                "cband_lower": [np.nan] * 5,
+                "cband_upper": [np.nan] * 5,
+            }
+        )
+
+        # All-NaN cband columns should not produce overrides
+        result = _extract_plot_data(df, periods=None, pre_periods=None, post_periods=None, reference_period=0)
+        ci_lo = result[7]
+        ci_hi = result[8]
+        assert ci_lo is None, "ci_lower_override should be None when cband is all-NaN"
+        assert ci_hi is None, "ci_upper_override should be None when cband is all-NaN"
+
+        # Plot should still work (falls back to pointwise CIs)
+        ax = plot_event_study(df, reference_period=0, show=False)
+        assert ax is not None
+
     def test_plot_from_dict(self):
         """Test plotting from dictionaries."""
         pytest.importorskip("matplotlib")
@@ -570,6 +632,54 @@ class TestPlotEventStudy:
             assert (
                 ref_x_idx not in errorbar_x_coords
             ), f"Reference period at x={ref_x_idx} should have no error bars"
+
+        plt.close()
+
+
+class TestPlotEventStudyCband:
+    """Tests for simultaneous confidence band (cband) support in plot_event_study."""
+
+    @pytest.fixture
+    def cs_cband_results(self):
+        """Fixture for CallawaySantAnna results with cband enabled."""
+        data = generate_staggered_data(n_units=50, n_periods=8, seed=42)
+        cs = CallawaySantAnna(n_bootstrap=199, seed=42, cband=True)
+        return cs.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+
+    def test_plot_uses_cband_cis_by_default(self, cs_cband_results):
+        """Test that cband CIs are used by default when available."""
+        pytest.importorskip("matplotlib")
+        import matplotlib.pyplot as plt
+        from diff_diff.visualization import _extract_plot_data
+
+        # Verify plot succeeds
+        ax = plot_event_study(cs_cband_results, show=False)
+        assert ax is not None
+
+        # Verify cband CIs are extracted
+        (_, _, _, _, _, _, _, ci_lower_override, ci_upper_override) = _extract_plot_data(
+            cs_cband_results, None, None, None, None
+        )
+        assert ci_lower_override is not None
+        assert ci_upper_override is not None
+
+        plt.close()
+
+    def test_plot_use_cband_false(self, cs_cband_results):
+        """Test that use_cband=False suppresses cband CIs."""
+        pytest.importorskip("matplotlib")
+        import matplotlib.pyplot as plt
+
+        # Should succeed and use pointwise CIs instead
+        ax = plot_event_study(cs_cband_results, use_cband=False, show=False)
+        assert ax is not None
 
         plt.close()
 

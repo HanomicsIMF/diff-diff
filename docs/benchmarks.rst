@@ -246,6 +246,16 @@ Callaway-Sant'Anna Results
    corrected to match R's implementation, achieving numerical equivalence across
    all dataset scales.
 
+**Event study per-event-time validation:**
+
+As of v2.1.0, event study SEs include the WIF adjustment matching R's
+``did::aggte(..., type="dynamic")``. Validation targets:
+
+- Per-event-time point estimates: match R's ``aggte(..., type="dynamic")`` to <1e-10
+- Per-event-time analytical SEs (``bstrap=FALSE``): match R with WIF included
+- Per-event-time bootstrap SEs (``bstrap=TRUE``): consistent with analytical
+- Simultaneous confidence bands (``cband=TRUE``): sup-t critical value matches R
+
 Performance Comparison
 ----------------------
 

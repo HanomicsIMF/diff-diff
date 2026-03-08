@@ -310,8 +310,17 @@ Aggregations:
 
 *Standard errors:*
 - Default: Analytical (influence function-based)
-- Bootstrap: Multiplier bootstrap with Rademacher, Mammen, or Webb weights
+- All aggregation SEs (simple, event study) include the weight influence function (WIF)
+  adjustment, matching R's `did::aggte()`. The WIF accounts for uncertainty in estimating
+  group-size aggregation weights. Group aggregation uses equal time weights (deterministic),
+  so WIF is zero.
+- Bootstrap: Multiplier bootstrap with Rademacher, Mammen, or Webb weights. Bootstrap
+  perturbs the combined influence function (standard IF + WIF) directly, not just fixed-weight
+  re-aggregation. This correctly propagates weight estimation uncertainty.
 - Block structure preserves within-unit correlation
+- Simultaneous confidence bands (`cband=True`, default): Uses sup-t bootstrap to compute
+  a uniform critical value across event times, controlling family-wise error rate. Matches
+  R's `did::aggte(..., cband=TRUE)` default. Requires `n_bootstrap > 0`.
 
 *Bootstrap weight distributions:*
 
@@ -364,9 +373,16 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
   - Uses NaN when SE is non-finite or zero (matches per-effect and overall t_stat behavior)
   - Previous behavior (0.0 default) was inconsistent and misleading
 - Base period selection (`base_period` parameter):
-  - "varying" (default): Pre-treatment uses t-1 as base (consecutive comparisons)
-  - "universal": All comparisons use g-anticipation-1 as base
+  - "varying" (default): Pre-treatment uses t-1 as base (consecutive comparisons).
+    Post-treatment uses long differences from g-1-anticipation. The parallel trends
+    assumption for treatment effects is about long-run trends, but pre-treatment tests
+    only check consecutive periods.
+  - "universal": ALL effects (pre and post) are long differences from g-1-anticipation.
+    The parallel trends assumption is about long-run trends. Pre-treatment coefficients
+    test cumulative divergence from the base period.
   - Both produce identical post-treatment ATT(g,t); differ only pre-treatment
+  - `anticipation` shifts the base period to g-1-anticipation, which moves it further
+    from treatment and strengthens the parallel trends assumption.
   - Matches R `did::att_gt()` base_period parameter
   - **Event study output**: With "universal", includes reference period (e=-1-anticipation)
     with effect=0, se=NaN, conf_int=(NaN, NaN). Inference fields are NaN since this is
