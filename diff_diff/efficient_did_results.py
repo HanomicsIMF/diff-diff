@@ -54,6 +54,14 @@ class EfficientDiDResults:
         Significance level.
     pt_assumption : str
         ``"all"`` or ``"post"``.
+    anticipation : int
+        Number of anticipation periods used.
+    n_bootstrap : int
+        Number of bootstrap iterations (0 = analytical only).
+    bootstrap_weights : str
+        Bootstrap weight distribution (``"rademacher"``, ``"mammen"``, ``"webb"``).
+    seed : int or None
+        Random seed used for bootstrap.
     event_study_effects : dict, optional
         ``{relative_time: effect_dict}``
     group_effects : dict, optional
@@ -81,6 +89,10 @@ class EfficientDiDResults:
     n_control_units: int
     alpha: float = 0.05
     pt_assumption: str = "all"
+    anticipation: int = 0
+    n_bootstrap: int = 0
+    bootstrap_weights: str = "rademacher"
+    seed: Optional[int] = None
     event_study_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None)
     group_effects: Optional[Dict[Any, Dict[str, Any]]] = field(default=None)
     efficient_weights: Optional[Dict[Tuple[Any, Any], "np.ndarray"]] = field(
@@ -118,8 +130,12 @@ class EfficientDiDResults:
             f"{'Treatment cohorts:':<30} {len(self.groups):>10}",
             f"{'Time periods:':<30} {len(self.time_periods):>10}",
             f"{'PT assumption:':<30} {self.pt_assumption:>10}",
-            "",
         ]
+        if self.anticipation > 0:
+            lines.append(f"{'Anticipation periods:':<30} {self.anticipation:>10}")
+        if self.n_bootstrap > 0:
+            lines.append(f"{'Bootstrap:':<30} {self.n_bootstrap:>10} ({self.bootstrap_weights})")
+        lines.append("")
 
         # Overall ATT
         lines.extend(

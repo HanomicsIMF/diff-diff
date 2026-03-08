@@ -69,6 +69,11 @@ def enumerate_valid_triples(
     pairs: List[Tuple[float, float]] = []
 
     # Candidate comparison groups: never-treated + not-yet-treated cohorts
+    # Note: We intentionally do NOT filter by effective_gp > target_t.
+    # Under PT-All, comparison group g' is only used at pre-treatment periods
+    # (Y_{t_pre} - Y_1), never at time t. The Y_t trend comes from the
+    # never-treated group. Bridging comparisons (g' treated at t) are valid
+    # per Section 3.2 of Chen et al. (2025).
     candidate_groups: List[float] = [never_treated_val]
     for gp in treatment_groups:
         if gp != target_g:

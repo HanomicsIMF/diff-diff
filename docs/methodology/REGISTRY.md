@@ -582,7 +582,7 @@ where `q_{g,e} = pi_g / sum_{g' in G_{trt,e}} pi_{g'}`.
 - **Single pre-treatment period (g=2)**: `V*_{gt}(X)` is 1x1, efficient weights are trivially 1, estimator collapses to standard DiD with single baseline
 - **Rank deficiency in `V*_{gt}(X)` or `Omega*_{gt}(X)`**: Inverse does not exist if outcome changes are linearly dependent conditional on covariates. Detect via matrix condition number; fall back to pseudoinverse or standard estimator
 - **Near-zero propensity scores**: Ratio `p_g(X)/p_{g'}(X)` explodes. Overlap assumption (O) rules this out in population; implement trimming or warn on finite-sample instability
-- **All units eventually treated**: Last cohort serves as "never-treated" by dropping last time period
+- **All units eventually treated**: Last cohort serves as "never-treated" by dropping last time period (Phase 1: raises ValueError; last-cohort-as-control fallback planned for Phase 2)
 - **Negative weights**: Explicitly stated as harmless for bias and beneficial for precision; arise from efficiency optimization under overidentification (Section 5.2)
 - **PT-Post regime (just-identified)**: Under PT-Post, EDiD automatically reduces to standard single-baseline estimator (Corollary 3.2). No downside to using EDiD -- it subsumes standard estimators
 
@@ -622,7 +622,7 @@ where `q_{g,e} = pi_g / sum_{g' in G_{trt,e}} pi_{g'}`.
 - [ ] With covariates: sieve-based propensity ratio estimation with AIC/BIC selection
 - [ ] Kernel-smoothed conditional covariance estimation
 - [x] Analytical SE from EIF sample variance
-- [x] Cluster bootstrap SE option (recommended for small samples)
+- [ ] Cluster bootstrap SE option (recommended for small samples)
 - [x] Event-study aggregation ES(e) with cohort-size weights
 - [ ] Hausman-type pre-test for PT-All vs PT-Post (Theorem A.1)
 - [x] Each ATT(g,t) can be estimated independently (parallelizable)

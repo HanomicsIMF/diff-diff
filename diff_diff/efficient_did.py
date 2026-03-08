@@ -233,18 +233,13 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         n_treated_units = int((unit_info[first_treat] > 0).sum())
         n_control_units = int(unit_info["_never_treated"].sum())
 
-        # Check for never-treated units
+        # Check for never-treated units — required for generated outcomes
+        # (the formula's second term mean(Y_t - Y_{t_pre} | G=inf) needs G=inf)
         if n_control_units == 0:
-            if self.pt_assumption == "post":
-                raise ValueError(
-                    "No never-treated units found. PT-Post requires a "
-                    "never-treated comparison group."
-                )
-            warnings.warn(
-                "No never-treated units. Under PT-All, not-yet-treated "
-                "cohorts will be used as comparisons.",
-                UserWarning,
-                stacklevel=2,
+            raise ValueError(
+                "No never-treated units found. EfficientDiD Phase 1 requires a "
+                "never-treated comparison group. The 'last cohort as control' "
+                "fallback will be added in a future version."
             )
 
         # ----- Prepare data -----
@@ -289,6 +284,18 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         stored_cond: Dict[Tuple[Any, Any], float] = {}
 
         for g in treatment_groups:
+            # Under PT-Post, use per-group baseline Y_{g-1-anticipation}
+            # instead of the universal Y_1.  This implements the weaker
+            # PT-Post assumption (parallel trends only from g-1 onward),
+            # matching the Callaway-Sant'Anna estimator exactly.
+            if self.pt_assumption == "post":
+                effective_base = g - 1 - self.anticipation
+                if effective_base not in period_to_col:
+                    continue  # skip this group — no valid baseline
+                effective_p1_col = period_to_col[effective_base]
+            else:
+                effective_p1_col = period_1_col
+
             for t in time_periods:
                 # Skip period_1 — it's the universal reference baseline,
                 # not a target period
@@ -334,7 +341,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                     cohort_masks=cohort_masks,
                     never_treated_mask=never_treated_mask,
                     period_to_col=period_to_col,
-                    period_1_col=period_1_col,
+                    period_1_col=effective_p1_col,
                     cohort_fractions=cohort_fractions,
                 )
 
@@ -353,7 +360,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                     cohort_masks=cohort_masks,
                     never_treated_mask=never_treated_mask,
                     period_to_col=period_to_col,
-                    period_1_col=period_1_col,
+                    period_1_col=effective_p1_col,
                 )
 
                 # ATT(g,t) = w @ y_hat
@@ -370,7 +377,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                     cohort_masks=cohort_masks,
                     never_treated_mask=never_treated_mask,
                     period_to_col=period_to_col,
-                    period_1_col=period_1_col,
+                    period_1_col=effective_p1_col,
                     cohort_fractions=cohort_fractions,
                     n_units=n_units,
                 )
@@ -399,7 +406,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
 
         # ----- Aggregation -----
         overall_att, overall_se = self._aggregate_overall(
-            group_time_effects, eif_by_gt, n_units, cohort_fractions
+            group_time_effects, eif_by_gt, n_units, cohort_fractions, unit_cohorts
         )
         overall_t, overall_p, overall_ci = safe_inference(overall_att, overall_se, alpha=self.alpha)
 
@@ -415,6 +422,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 treatment_groups,
                 time_periods,
                 balance_e,
+                unit_cohorts=unit_cohorts,
             )
         if aggregate in ("group", "all"):
             group_effects = self._aggregate_by_group(
@@ -423,6 +431,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 n_units,
                 cohort_fractions,
                 treatment_groups,
+                unit_cohorts=unit_cohorts,
             )
 
         # ----- Bootstrap -----
@@ -503,6 +512,10 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             n_control_units=n_control_units,
             alpha=self.alpha,
             pt_assumption=self.pt_assumption,
+            anticipation=self.anticipation,
+            n_bootstrap=self.n_bootstrap,
+            bootstrap_weights=self.bootstrap_weights,
+            seed=self.seed,
             event_study_effects=event_study_effects,
             group_effects=group_effects,
             efficient_weights=stored_weights if stored_weights else None,
@@ -515,14 +528,77 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
 
     # -- Aggregation helpers --------------------------------------------------
 
+    def _compute_wif_contribution(
+        self,
+        keepers: List[Tuple],
+        effects: np.ndarray,
+        unit_cohorts: np.ndarray,
+        cohort_fractions: Dict[float, float],
+        n_units: int,
+    ) -> np.ndarray:
+        """Compute weight influence function correction (O(1) scale, matching EIF).
+
+        This accounts for uncertainty in cohort-size aggregation weights.
+        Matches R's ``did`` package WIF formula (staggered_aggregation.py:282-309),
+        adapted to EDiD's EIF scale.
+
+        Parameters
+        ----------
+        keepers : list of (g, t) tuples
+            Post-treatment group-time pairs included in aggregation.
+        effects : ndarray, shape (n_keepers,)
+            ATT estimates for each keeper.
+        unit_cohorts : ndarray, shape (n_units,)
+            Cohort assignment for each unit (0 = never-treated).
+        cohort_fractions : dict
+            ``{cohort: n_cohort / n}`` for each cohort.
+        n_units : int
+            Total number of units.
+
+        Returns
+        -------
+        ndarray, shape (n_units,)
+            WIF contribution at O(1) scale, additive with ``agg_eif``.
+        """
+        groups_for_keepers = np.array([g for (g, t) in keepers])
+        pg_keepers = np.array([cohort_fractions.get(g, 0.0) for g, t in keepers])
+        sum_pg = pg_keepers.sum()
+        if sum_pg == 0:
+            return np.zeros(n_units)
+
+        indicator = (unit_cohorts[:, None] == groups_for_keepers[None, :]).astype(float)
+        indicator_sum = np.sum(indicator - pg_keepers, axis=1)
+
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            if1 = (indicator - pg_keepers) / sum_pg
+            if2 = np.outer(indicator_sum, pg_keepers) / sum_pg**2
+            wif_matrix = if1 - if2
+            wif_contrib = wif_matrix @ effects
+        return wif_contrib  # O(1) scale, same as agg_eif
+
     def _aggregate_overall(
         self,
         group_time_effects: Dict[Tuple[Any, Any], Dict[str, Any]],
         eif_by_gt: Dict[Tuple[Any, Any], np.ndarray],
         n_units: int,
         cohort_fractions: Dict[float, float],
+        unit_cohorts: np.ndarray,
     ) -> Tuple[float, float]:
-        """Compute overall ATT with WIF-adjusted SE."""
+        """Compute overall ATT with WIF-adjusted SE.
+
+        Parameters
+        ----------
+        group_time_effects : dict
+            Group-time ATT estimates.
+        eif_by_gt : dict
+            Per-unit EIF values for each (g, t).
+        n_units : int
+            Total number of units.
+        cohort_fractions : dict
+            Cohort size fractions.
+        unit_cohorts : ndarray, shape (n_units,)
+            Cohort assignment for each unit.
+        """
         # Filter to post-treatment effects
         keepers = [
             (g, t)
@@ -542,19 +618,19 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         effects = np.array([group_time_effects[gt]["effect"] for gt in keepers])
         overall_att = float(np.sum(w * effects))
 
-        # Aggregate EIF with WIF correction
+        # Aggregate EIF
         agg_eif = np.zeros(n_units)
         for k, gt in enumerate(keepers):
             agg_eif += w[k] * eif_by_gt[gt]
 
         # WIF correction: accounts for uncertainty in cohort-size weights
-        # wif_i = sum_k wif_ik * ATT_k  where:
-        #   wif_ik = (1{G_i == g_k} - pg_k) / sum_pg
-        #          - sum_j(1{G_i == g_j} - pg_j) * pg_k / sum_pg^2
-        # We implement this via vectorized operations.
+        wif = self._compute_wif_contribution(
+            keepers, effects, unit_cohorts, cohort_fractions, n_units
+        )
+        agg_eif_total = agg_eif + wif  # both O(1) scale
 
         # SE = sqrt(mean(EIF^2) / n) — standard IF-based SE
-        se = float(np.sqrt(np.mean(agg_eif**2) / n_units))
+        se = float(np.sqrt(np.mean(agg_eif_total**2) / n_units))
 
         return overall_att, se
 
@@ -567,8 +643,29 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         treatment_groups: List[Any],
         time_periods: List[Any],
         balance_e: Optional[int] = None,
+        unit_cohorts: Optional[np.ndarray] = None,
     ) -> Dict[int, Dict[str, Any]]:
-        """Aggregate ATT(g,t) by relative time e = t - g."""
+        """Aggregate ATT(g,t) by relative time e = t - g.
+
+        Parameters
+        ----------
+        group_time_effects : dict
+            Group-time ATT estimates.
+        eif_by_gt : dict
+            Per-unit EIF values for each (g, t).
+        n_units : int
+            Total number of units.
+        cohort_fractions : dict
+            Cohort size fractions.
+        treatment_groups : list
+            Treatment cohort identifiers.
+        time_periods : list
+            All time periods.
+        balance_e : int, optional
+            Balance event study at this relative period.
+        unit_cohorts : ndarray, optional
+            Cohort assignment for each unit (for WIF correction).
+        """
         # Organize by relative time
         effects_by_e: Dict[int, List[Tuple[Tuple[Any, Any], float, float]]] = {}
         for (g, t), data in group_time_effects.items():
@@ -607,6 +704,16 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             agg_eif = np.zeros(n_units)
             for k, gt in enumerate(gt_pairs):
                 agg_eif += w[k] * eif_by_gt[gt]
+
+            # WIF correction for event-study aggregation
+            if unit_cohorts is not None:
+                es_keepers = [(g, t) for (g, t) in gt_pairs]
+                es_effects = effs
+                wif = self._compute_wif_contribution(
+                    es_keepers, es_effects, unit_cohorts, cohort_fractions, n_units
+                )
+                agg_eif = agg_eif + wif
+
             agg_se = float(np.sqrt(np.mean(agg_eif**2) / n_units))
 
             t_stat, p_val, ci = safe_inference(agg_eff, agg_se, alpha=self.alpha)
@@ -628,8 +735,26 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         n_units: int,
         cohort_fractions: Dict[float, float],
         treatment_groups: List[Any],
+        unit_cohorts: Optional[np.ndarray] = None,
     ) -> Dict[Any, Dict[str, Any]]:
-        """Aggregate ATT(g,t) by treatment cohort."""
+        """Aggregate ATT(g,t) by treatment cohort.
+
+        Parameters
+        ----------
+        group_time_effects : dict
+            Group-time ATT estimates.
+        eif_by_gt : dict
+            Per-unit EIF values for each (g, t).
+        n_units : int
+            Total number of units.
+        cohort_fractions : dict
+            Cohort size fractions.
+        treatment_groups : list
+            Treatment cohort identifiers.
+        unit_cohorts : ndarray, optional
+            Cohort assignment for each unit (unused — group aggregation
+            uses equal weights, not cohort-size weights).
+        """
         result: Dict[Any, Dict[str, Any]] = {}
         for g in treatment_groups:
             g_gts = [

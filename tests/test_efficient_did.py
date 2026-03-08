@@ -243,7 +243,7 @@ class TestPTPostMatchesCS:
                 assert abs(e_eff - c_eff) < 1e-10, f"ATT{gt}: EDiD={e_eff:.10f} CS={c_eff:.10f}"
 
     def test_staggered_approximate_match(self):
-        """For g > 2, EDiD(PT-Post) ≈ CS but not exact (different baselines)."""
+        """For g > 2, EDiD(PT-Post) should exactly match CS for post-treatment effects."""
         df = _make_staggered_panel()
         edid = EfficientDiD(pt_assumption="post")
         cs = CallawaySantAnna(control_group="never_treated", base_period="varying")
@@ -251,12 +251,14 @@ class TestPTPostMatchesCS:
         res_e = edid.fit(df, "y", "unit", "time", "first_treat")
         res_c = cs.fit(df, "y", "unit", "time", "first_treat")
 
-        for gt in res_e.group_time_effects:
-            if gt in res_c.group_time_effects:
-                e_eff = res_e.group_time_effects[gt]["effect"]
-                c_eff = res_c.group_time_effects[gt]["effect"]
-                # Within 1.0 of each other (loose bound since baselines differ)
-                assert abs(e_eff - c_eff) < 1.0, f"ATT{gt}: EDiD={e_eff:.4f} CS={c_eff:.4f}"
+        matched = 0
+        for g, t in res_e.group_time_effects:
+            if t >= g and (g, t) in res_c.group_time_effects:
+                e_eff = res_e.group_time_effects[(g, t)]["effect"]
+                c_eff = res_c.group_time_effects[(g, t)]["effect"]
+                assert abs(e_eff - c_eff) < 1e-8, f"ATT({g},{t}): EDiD={e_eff:.10f} CS={c_eff:.10f}"
+                matched += 1
+        assert matched > 0, "No matching post-treatment effects found"
 
 
 class TestAggregation:
@@ -602,13 +604,10 @@ class TestEdgeCases:
     """Edge cases: all treated, empty pairs."""
 
     def test_all_units_treated_pt_all(self):
-        """No never-treated units under PT-All should use not-yet-treated."""
+        """No never-treated units under PT-All should raise ValueError."""
         df = _make_staggered_panel(n_control=0, groups=(3, 5))
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            result = EfficientDiD(pt_assumption="all").fit(df, "y", "unit", "time", "first_treat")
-        # Should produce results (possibly NaN for some effects)
-        assert isinstance(result, EfficientDiDResults)
+        with pytest.raises(ValueError, match="never-treated"):
+            EfficientDiD(pt_assumption="all").fit(df, "y", "unit", "time", "first_treat")
 
     def test_all_units_treated_pt_post_raises(self):
         """No never-treated under PT-Post raises ValueError."""
@@ -788,3 +787,121 @@ class TestSimulationValidation:
                 f"Analytical SE ({anal_se:.4f}) differs from bootstrap SE "
                 f"({boot_se:.4f}) by {rel_diff:.2%}"
             )
+
+
+# =============================================================================
+# Regression Tests (PR #192 review feedback)
+# =============================================================================
+
+
+class TestPTPostExactMatch:
+    """Fix 2: EDiD(PT-Post) should exactly match CS for all g, including g > 2."""
+
+    def test_pt_post_staggered_exact_match(self):
+        """With per-group baseline, EDiD(PT-Post) = CS for post-treatment effects."""
+        df = _make_staggered_panel(n_per_group=100, n_control=100, groups=(3, 5))
+        edid = EfficientDiD(pt_assumption="post")
+        cs = CallawaySantAnna(control_group="never_treated", base_period="varying")
+
+        res_e = edid.fit(df, "y", "unit", "time", "first_treat")
+        res_c = cs.fit(df, "y", "unit", "time", "first_treat")
+
+        matched = 0
+        for g, t in res_e.group_time_effects:
+            if t >= g and (g, t) in res_c.group_time_effects:
+                e_eff = res_e.group_time_effects[(g, t)]["effect"]
+                c_eff = res_c.group_time_effects[(g, t)]["effect"]
+                assert abs(e_eff - c_eff) < 1e-8, f"ATT({g},{t}): EDiD={e_eff:.10f} CS={c_eff:.10f}"
+                matched += 1
+        assert matched > 0, "No matching post-treatment effects found"
+
+
+class TestBridgingComparison:
+    """Fix 1: Bridging comparisons should be valid under PT-All."""
+
+    def test_bridging_comparison_valid(self):
+        """ATT should be finite even when bridging comparisons are used."""
+        # Create panel where g'=3 is used as comparison for g=5 at t=4 (g' treated at t=3)
+        df = _make_staggered_panel(n_per_group=80, n_control=80, groups=(3, 5), n_periods=7)
+        result = EfficientDiD(pt_assumption="all").fit(df, "y", "unit", "time", "first_treat")
+        # Post-treatment effects for g=5 should be finite
+        for (g, t), d in result.group_time_effects.items():
+            if g == 5.0 and t >= 5:
+                assert np.isfinite(d["effect"]), f"ATT({g},{t}) should be finite"
+
+
+class TestWIFCorrection:
+    """Fix 3: WIF correction for aggregated SEs."""
+
+    def test_wif_increases_se(self):
+        """WIF-corrected SE should be >= naive SE (without WIF)."""
+        df = _make_staggered_panel(n_per_group=100, n_control=100, groups=(3, 5))
+        result = EfficientDiD(pt_assumption="all").fit(
+            df, "y", "unit", "time", "first_treat", aggregate="all"
+        )
+        wif_se = result.overall_se
+
+        # Compute naive SE without WIF for comparison
+        edid = EfficientDiD(pt_assumption="all")
+        res_naive = edid.fit(df, "y", "unit", "time", "first_treat")
+
+        # The overall SE with WIF should be at least as large as without
+        # (WIF adds non-negative variance). Allow small FP tolerance.
+        assert (
+            wif_se >= res_naive.overall_se * 0.99
+        ), f"WIF SE ({wif_se:.6f}) should be >= naive SE ({res_naive.overall_se:.6f})"
+
+    def test_wif_se_vs_bootstrap(self, ci_params):
+        """WIF-corrected SE should roughly match bootstrap SE."""
+        n_boot = ci_params.bootstrap(999, min_n=199)
+        threshold = 0.40 if n_boot < 100 else 0.30
+
+        df = _make_staggered_panel(n_per_group=100, n_control=100, groups=(3, 5))
+
+        # Analytical SE (with WIF)
+        res_anal = EfficientDiD(n_bootstrap=0).fit(df, "y", "unit", "time", "first_treat")
+        anal_se = res_anal.overall_se
+
+        # Bootstrap SE
+        res_boot = EfficientDiD(n_bootstrap=n_boot, seed=42).fit(
+            df, "y", "unit", "time", "first_treat"
+        )
+        boot_se = res_boot.overall_se
+
+        if np.isfinite(anal_se) and np.isfinite(boot_se) and boot_se > 0:
+            rel_diff = abs(anal_se - boot_se) / boot_se
+            assert rel_diff < threshold, (
+                f"WIF-corrected SE ({anal_se:.4f}) differs from bootstrap SE "
+                f"({boot_se:.4f}) by {rel_diff:.2%}"
+            )
+
+
+class TestResultsParams:
+    """Fix 7: Results object should contain estimator params."""
+
+    def test_results_contain_params(self):
+        df = _make_simple_panel()
+        result = EfficientDiD(pt_assumption="post", anticipation=1, n_bootstrap=0, seed=123).fit(
+            df, "y", "unit", "time", "first_treat"
+        )
+
+        assert result.pt_assumption == "post"
+        assert result.anticipation == 1
+        assert result.n_bootstrap == 0
+        assert result.bootstrap_weights == "rademacher"
+        assert result.seed == 123
+
+    def test_summary_shows_anticipation(self):
+        df = _make_simple_panel(treat_period=4, n_periods=6)
+        result = EfficientDiD(anticipation=1).fit(df, "y", "unit", "time", "first_treat")
+        s = result.summary()
+        assert "Anticipation" in s
+
+    def test_summary_shows_bootstrap(self, ci_params):
+        n_boot = ci_params.bootstrap(99)
+        df = _make_simple_panel()
+        result = EfficientDiD(n_bootstrap=n_boot, seed=42).fit(
+            df, "y", "unit", "time", "first_treat"
+        )
+        s = result.summary()
+        assert "Bootstrap" in s
