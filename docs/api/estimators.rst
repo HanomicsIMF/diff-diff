@@ -17,7 +17,7 @@ for backward compatibility, so you can import any of them using:
 
     from diff_diff import DifferenceInDifferences, TwoWayFixedEffects, MultiPeriodDiD, SyntheticDiD
 
-Short aliases are available for all estimators:
+Most estimators have short aliases (``TROP`` already uses its short canonical name):
 
 .. code-block:: python
 
