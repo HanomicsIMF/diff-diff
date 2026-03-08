@@ -2846,18 +2846,32 @@ class TestTROPJointMethod:
 
     def test_method_in_get_params(self):
         """method parameter appears in get_params()."""
-        trop_est = TROP(method="joint")
+        trop_est = TROP(method="global")
         params = trop_est.get_params()
         assert "method" in params
-        assert params["method"] == "joint"
+        assert params["method"] == "global"
+
+    def test_method_in_get_params_joint_deprecated(self):
+        """'joint' alias maps to 'global' in get_params()."""
+        with pytest.warns(FutureWarning, match="deprecated"):
+            trop_est = TROP(method="joint")
+        params = trop_est.get_params()
+        assert params["method"] == "global"
 
     def test_method_in_set_params(self):
         """method parameter can be set via set_params()."""
         trop_est = TROP(method="twostep")
         assert trop_est.method == "twostep"
 
-        trop_est.set_params(method="joint")
-        assert trop_est.method == "joint"
+        trop_est.set_params(method="global")
+        assert trop_est.method == "global"
+
+    def test_method_set_params_joint_deprecated(self):
+        """'joint' alias maps to 'global' via set_params()."""
+        trop_est = TROP(method="twostep")
+        with pytest.warns(FutureWarning, match="deprecated"):
+            trop_est.set_params(method="joint")
+        assert trop_est.method == "global"
 
     def test_joint_bootstrap_variance(self, simple_panel_data, ci_params):
         """Joint method bootstrap variance estimation works."""
@@ -3212,9 +3226,9 @@ class TestTROPJointMethod:
         assert np.isfinite(results.se), f"SE should be finite, got {results.se}"
 
     def test_joint_rejects_staggered_adoption(self):
-        """Joint method raises ValueError for staggered adoption data.
+        """Global method raises ValueError for staggered adoption data.
 
-        The joint method assumes all treated units receive treatment at the
+        The global method assumes all treated units receive treatment at the
         same time. With staggered adoption (units first treated at different
         periods), the method's weights and variance estimation are invalid.
         """
@@ -3235,7 +3249,178 @@ class TestTROPJointMethod:
                 })
         df = pd.DataFrame(data)
 
-        trop = TROP(method="joint")
+        trop = TROP(method="global")
         with pytest.raises(ValueError, match="staggered adoption"):
             trop.fit(df, 'outcome', 'treated', 'unit', 'time')
+
+    def test_global_method_alias(self, simple_panel_data):
+        """method='global' works and produces same results as deprecated 'joint'."""
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[0.0, 1.0],
+            lambda_unit_grid=[0.0, 1.0],
+            lambda_nn_grid=[0.0, 0.1],
+            n_bootstrap=10,
+            seed=42,
+        )
+        results = trop_est.fit(
+            simple_panel_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="period",
+        )
+
+        assert isinstance(results, TROPResults)
+        assert results.att > 0
+
+    def test_global_uses_control_only_weights(self, simple_panel_data):
+        """Verify delta[t,i] == 0 for all D[t,i] == 1 (control-only weights)."""
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.0],
+            seed=42,
+        )
+
+        # Setup data matrices
+        all_units = sorted(simple_panel_data['unit'].unique())
+        all_periods = sorted(simple_panel_data['period'].unique())
+        n_units = len(all_units)
+        n_periods = len(all_periods)
+
+        Y = (
+            simple_panel_data.pivot(index='period', columns='unit', values='outcome')
+            .reindex(index=all_periods, columns=all_units)
+            .values
+        )
+        D = (
+            simple_panel_data.pivot(index='period', columns='unit', values='treated')
+            .reindex(index=all_periods, columns=all_units)
+            .fillna(0)
+            .astype(int)
+            .values
+        )
+
+        treated_periods = np.sum(np.any(D == 1, axis=1))
+
+        delta = trop_est._compute_joint_weights(
+            Y, D, 1.0, 1.0, int(treated_periods), n_units, n_periods
+        )
+
+        # All treated cells should have zero weight
+        assert np.all(delta[D == 1] == 0.0), (
+            "Treated observations should have zero weight after (1-W) masking"
+        )
+        # Some control cells should have non-zero weight
+        assert np.any(delta[D == 0] > 0.0), (
+            "Some control observations should have positive weight"
+        )
+
+    def test_global_tau_is_posthoc_residual(self, simple_panel_data):
+        """Verify ATT == mean(Y - mu - alpha - beta - L) over treated cells."""
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[0.0],
+            lambda_unit_grid=[0.0],
+            lambda_nn_grid=[0.1],
+            n_bootstrap=10,
+            seed=42,
+        )
+        results = trop_est.fit(
+            simple_panel_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="period",
+        )
+
+        # Reconstruct tau from treatment_effects
+        tau_values = [v for v in results.treatment_effects.values() if np.isfinite(v)]
+        assert len(tau_values) > 0, "Should have treatment effects"
+        reconstructed_att = np.mean(tau_values)
+        assert np.isclose(results.att, reconstructed_att, atol=1e-10), (
+            f"ATT ({results.att}) should equal mean of treatment effects ({reconstructed_att})"
+        )
+
+    def test_global_heterogeneous_treatment_effects(self, simple_panel_data):
+        """Treatment effects are heterogeneous (not all identical) with global method."""
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[0.0],
+            lambda_unit_grid=[0.0],
+            lambda_nn_grid=[float('inf')],
+            n_bootstrap=10,
+            seed=42,
+        )
+        results = trop_est.fit(
+            simple_panel_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="period",
+        )
+
+        te_values = list(results.treatment_effects.values())
+        # With post-hoc extraction, effects should vary across observations
+        assert len(set(te_values)) > 1, (
+            "Treatment effects should be heterogeneous with post-hoc extraction"
+        )
+
+    def test_global_treated_outcome_does_not_affect_fit(self, simple_panel_data):
+        """Perturbing treated outcomes should not change (mu, alpha, beta, L)."""
+        all_units = sorted(simple_panel_data['unit'].unique())
+        all_periods = sorted(simple_panel_data['period'].unique())
+        n_units = len(all_units)
+        n_periods = len(all_periods)
+
+        Y = (
+            simple_panel_data.pivot(index='period', columns='unit', values='outcome')
+            .reindex(index=all_periods, columns=all_units)
+            .values
+        )
+        D = (
+            simple_panel_data.pivot(index='period', columns='unit', values='treated')
+            .reindex(index=all_periods, columns=all_units)
+            .fillna(0)
+            .astype(int)
+            .values
+        )
+
+        treated_periods = int(np.sum(np.any(D == 1, axis=1)))
+
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            seed=42,
+        )
+
+        # Compute weights and fit with original data
+        delta = trop_est._compute_joint_weights(
+            Y, D, 1.0, 1.0, treated_periods, n_units, n_periods
+        )
+        mu1, alpha1, beta1, L1 = trop_est._solve_joint_with_lowrank(
+            Y, delta, 0.1, 100, 1e-6
+        )
+
+        # Perturb treated outcomes by large amount
+        Y_perturbed = Y.copy()
+        Y_perturbed[D == 1] += 1000.0
+
+        # Recompute (same weights since (1-W) zeroes treated cells)
+        delta2 = trop_est._compute_joint_weights(
+            Y_perturbed, D, 1.0, 1.0, treated_periods, n_units, n_periods
+        )
+        mu2, alpha2, beta2, L2 = trop_est._solve_joint_with_lowrank(
+            Y_perturbed, delta2, 0.1, 100, 1e-6
+        )
+
+        # Model parameters should be identical
+        assert np.isclose(mu1, mu2, atol=1e-8), f"mu changed: {mu1} vs {mu2}"
+        assert np.allclose(alpha1, alpha2, atol=1e-8), "alpha changed"
+        assert np.allclose(beta1, beta2, atol=1e-8), "beta changed"
+        assert np.allclose(L1, L2, atol=1e-8), "L changed"
 

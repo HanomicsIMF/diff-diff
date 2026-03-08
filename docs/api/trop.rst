@@ -119,26 +119,32 @@ This provides the **triple robustness** property (Theorem 5.1):
 the estimator is consistent if any one of the three components
 (unit weights, time weights, factor model) is correctly specified.
 
-**Joint Method** (``method='joint'``)
+**Global Method** (``method='global'``)
 
-An alternative approach that estimates a single scalar treatment effect:
+An alternative approach that fits a single model on control data and extracts
+treatment effects as post-hoc residuals:
 
 1. **Compute weights**: Distance-based unit and time weights computed once
-   (distance to center of treated block, RMSE to average treated trajectory)
+   (distance to center of treated block, RMSE to average treated trajectory),
+   with ``(1-W)`` masking to zero out treated observations (per paper Eq. 2).
 
-2. **Joint optimization**: Solve weighted least squares problem
+2. **Fit control model**: Solve weighted least squares on control data only
 
    .. math::
 
-      \min_{\mu, \alpha, \beta, L, \tau} \sum_{i,t} \delta_{it} (Y_{it} - \mu - \alpha_i - \beta_t - L_{it} - W_{it} \tau)^2 + \lambda_{nn} \|L\|_*
+      \min_{\mu, \alpha, \beta, L} \sum_{i,t} (1 - W_{it}) \delta_{it} (Y_{it} - \mu - \alpha_i - \beta_t - L_{it})^2 + \lambda_{nn} \|L\|_*
 
-   where τ is a **single scalar** (homogeneous treatment effect).
+3. **Post-hoc treatment effects**: For each treated observation:
 
-3. **With low-rank** (finite λ_nn): Uses alternating minimization between
-   weighted LS for (μ, α, β, τ) and soft-threshold SVD for L.
+   .. math::
 
-The joint method is **faster** (single optimization vs N_treated optimizations)
-but assumes **homogeneous treatment effects** across all treated observations.
+      \hat{\tau}_{it} = Y_{it} - \hat{\mu} - \hat{\alpha}_i - \hat{\beta}_t - \hat{L}_{it}, \quad \text{ATT} = \text{mean}(\hat{\tau}_{it})
+
+The global method is **faster** (single optimization vs N_treated optimizations).
+Treatment effects are **heterogeneous** per-observation residuals; ATT is their mean.
+
+``method='joint'`` is a deprecated alias for ``method='global'`` and will be
+removed in a future version.
 
 .. list-table::
    :header-rows: 1
@@ -146,13 +152,13 @@ but assumes **homogeneous treatment effects** across all treated observations.
 
    * - Feature
      - Two-Step (default)
-     - Joint
+     - Global
    * - Treatment effect
-     - Per-observation τ_{it}
-     - Single scalar τ
-   * - Flexibility
-     - Heterogeneous effects
-     - Homogeneous assumption
+     - Per-observation τ_{it} (per-obs models)
+     - Per-observation τ_{it} (single model)
+   * - Fitting
+     - N_treated models with tailored weights
+     - One model with global weights
    * - Speed
      - Slower (N_treated fits)
      - Faster (single fit)
@@ -160,8 +166,8 @@ but assumes **homogeneous treatment effects** across all treated observations.
      - Observation-specific
      - Global (center of treated block)
 
-Use ``method='twostep'`` when treatment effects may vary across observations.
-Use ``method='joint'`` for faster estimation when effects are expected to be homogeneous.
+Use ``method='twostep'`` for observation-specific weight optimization.
+Use ``method='global'`` for faster estimation with global weights.
 
 Example Usage
 -------------

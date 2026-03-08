@@ -1186,27 +1186,35 @@ fn compute_joint_weights(
         }
     }
 
+    // (1-W) masking: zero out treated observations per paper Eq. 2
+    for t in 0..n_periods {
+        for i in 0..n_units {
+            delta[[t, i]] *= 1.0 - d[[t, i]];
+        }
+    }
+
     delta
 }
 
-/// Solve joint TWFE + treatment via weighted least squares (no low-rank).
+/// Solve joint TWFE via weighted least squares (no low-rank, no tau).
 ///
-/// Minimizes: min Σ δ_{it}(Y_{it} - μ - α_i - β_t - τ*W_{it})²
+/// Minimizes: min Σ δ_{it}(Y_{it} - μ - α_i - β_t)²
+///
+/// tau is extracted post-hoc by the caller (ATT = mean residual over treated).
 ///
 /// # Returns
-/// (mu, alpha, beta, tau) estimated parameters
+/// (mu, alpha, beta) estimated parameters
 fn solve_joint_no_lowrank(
     y: &ArrayView2<f64>,
-    d: &ArrayView2<f64>,
     delta: &ArrayView2<f64>,
-) -> Option<(f64, Array1<f64>, Array1<f64>, f64)> {
+) -> Option<(f64, Array1<f64>, Array1<f64>)> {
     let n_periods = y.nrows();
     let n_units = y.ncols();
 
     // We solve using normal equations with the design matrix structure
     // Rather than build full X matrix, use block structure for efficiency
     //
-    // The model: Y_it = μ + α_i + β_t + τ*D_it + ε_it
+    // The model: Y_it = μ + α_i + β_t + ε_it
     // With identification: α_0 = β_0 = 0
 
     // Compute weighted sums needed for normal equations
@@ -1239,18 +1247,16 @@ fn solve_joint_no_lowrank(
         return None;
     }
 
-    // Use iterative approach: alternate between (alpha, beta, tau) and mu
+    // Use iterative approach: alternate between (alpha, beta) and mu
     // until convergence (simpler than full normal equations)
     let mut mu = sum_wy / sum_w;
     let mut alpha = Array1::<f64>::zeros(n_units);
     let mut beta = Array1::<f64>::zeros(n_periods);
-    let mut tau = 0.0;
 
     for _ in 0..50 {
         let mu_old = mu;
-        let tau_old = tau;
 
-        // Update alpha (fixing beta, tau, mu)
+        // Update alpha (fixing beta, mu)
         for i in 1..n_units {  // α_0 = 0 for identification
             if sum_w_by_unit[i] > 1e-10 {
                 let mut num = 0.0;
@@ -1258,13 +1264,13 @@ fn solve_joint_no_lowrank(
                     // NaN outcomes get zero weight
                     let w = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
                     let y_ti = if y[[t, i]].is_finite() { y[[t, i]] } else { 0.0 };
-                    num += w * (y_ti - mu - beta[t] - tau * d[[t, i]]);
+                    num += w * (y_ti - mu - beta[t]);
                 }
                 alpha[i] = num / sum_w_by_unit[i];
             }
         }
 
-        // Update beta (fixing alpha, tau, mu)
+        // Update beta (fixing alpha, mu)
         for t in 1..n_periods {  // β_0 = 0 for identification
             if sum_w_by_period[t] > 1e-10 {
                 let mut num = 0.0;
@@ -1272,68 +1278,63 @@ fn solve_joint_no_lowrank(
                     // NaN outcomes get zero weight
                     let w = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
                     let y_ti = if y[[t, i]].is_finite() { y[[t, i]] } else { 0.0 };
-                    num += w * (y_ti - mu - alpha[i] - tau * d[[t, i]]);
+                    num += w * (y_ti - mu - alpha[i]);
                 }
                 beta[t] = num / sum_w_by_period[t];
             }
         }
 
-        // Update tau (fixing alpha, beta, mu)
-        let mut num_tau = 0.0;
-        let mut denom_tau = 0.0;
-        for t in 0..n_periods {
-            for i in 0..n_units {
-                // NaN outcomes get zero weight
-                let w = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
-                let y_ti = if y[[t, i]].is_finite() { y[[t, i]] } else { 0.0 };
-                let d_ti = d[[t, i]];
-                if d_ti > 0.5 {  // Only treated observations contribute
-                    num_tau += w * d_ti * (y_ti - mu - alpha[i] - beta[t]);
-                    denom_tau += w * d_ti * d_ti;
-                }
-            }
-        }
-        if denom_tau > 1e-10 {
-            tau = num_tau / denom_tau;
-        }
-
-        // Update mu (fixing alpha, beta, tau)
+        // Update mu (fixing alpha, beta)
         let mut num_mu = 0.0;
         for t in 0..n_periods {
             for i in 0..n_units {
                 // NaN outcomes get zero weight
                 let w = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
                 let y_ti = if y[[t, i]].is_finite() { y[[t, i]] } else { 0.0 };
-                num_mu += w * (y_ti - alpha[i] - beta[t] - tau * d[[t, i]]);
+                num_mu += w * (y_ti - alpha[i] - beta[t]);
             }
         }
         mu = num_mu / sum_w;
 
         // Check convergence
-        if (mu - mu_old).abs() < 1e-8 && (tau - tau_old).abs() < 1e-8 {
+        if (mu - mu_old).abs() < 1e-8 {
             break;
         }
     }
 
-    Some((mu, alpha, beta, tau))
+    Some((mu, alpha, beta))
 }
 
-/// Solve joint TWFE + treatment + low-rank via alternating minimization.
+/// Solve joint TWFE + low-rank via alternating minimization (no tau).
 ///
-/// Minimizes: min Σ δ_{it}(Y_{it} - μ - α_i - β_t - L_{it} - τ*W_{it})² + λ_nn||L||_*
+/// Minimizes: min Σ δ_{it}(Y_{it} - μ - α_i - β_t - L_{it})² + λ_nn||L||_*
+///
+/// tau is extracted post-hoc by the caller (ATT = mean residual over treated).
 ///
 /// # Returns
-/// (mu, alpha, beta, L, tau) estimated parameters
+/// (mu, alpha, beta, L) estimated parameters
 fn solve_joint_with_lowrank(
     y: &ArrayView2<f64>,
-    d: &ArrayView2<f64>,
     delta: &ArrayView2<f64>,
     lambda_nn: f64,
     max_iter: usize,
     tol: f64,
-) -> Option<(f64, Array1<f64>, Array1<f64>, Array2<f64>, f64)> {
+) -> Option<(f64, Array1<f64>, Array1<f64>, Array2<f64>)> {
     let n_periods = y.nrows();
     let n_units = y.ncols();
+
+    // Precompute normalized weights and threshold (constant across iterations)
+    let delta_max = delta.iter().cloned().fold(0.0_f64, f64::max);
+    let threshold = if delta_max > 0.0 { lambda_nn / (2.0 * delta_max) } else { lambda_nn / 2.0 };
+
+    // Precompute delta_norm (masked for NaN outcomes)
+    let mut delta_norm = Array2::<f64>::zeros((n_periods, n_units));
+    for t in 0..n_periods {
+        for i in 0..n_units {
+            let d_ti = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
+            delta_norm[[t, i]] = if delta_max > 0.0 { d_ti / delta_max } else { d_ti };
+        }
+    }
 
     // Initialize L = 0
     let mut l = Array2::<f64>::zeros((n_periods, n_units));
@@ -1341,64 +1342,74 @@ fn solve_joint_with_lowrank(
     for _ in 0..max_iter {
         let l_old = l.clone();
 
-        // Step 1: Fix L, solve for (mu, alpha, beta, tau)
-        // Adjusted outcome: Y - L (preserve NaN so solve_joint_no_lowrank masks weights)
+        // Step 1: Fix L, solve for (mu, alpha, beta)
         let y_adj = Array2::from_shape_fn((n_periods, n_units), |(t, i)| {
             y[[t, i]] - l[[t, i]]  // NaN - finite = NaN (preserves NaN info)
         });
+        let (mu, alpha, beta) = solve_joint_no_lowrank(&y_adj.view(), delta)?;
 
-        let (mu, alpha, beta, tau) = solve_joint_no_lowrank(&y_adj.view(), d, delta)?;
-
-        // Step 2: Fix (mu, alpha, beta, tau), update L
-        // Residual: R = Y - mu - alpha - beta - tau*D (preserve NaN)
-        let mut r = Array2::<f64>::zeros((n_periods, n_units));
+        // Step 2: Fix (mu, alpha, beta), update L with FISTA acceleration
+        // Residual: R = Y - mu - alpha - beta
+        // For delta=0 observations (treated/NaN), keep L rather than R
+        let mut r_masked = Array2::<f64>::zeros((n_periods, n_units));
         for t in 0..n_periods {
             for i in 0..n_units {
-                // NaN - finite = NaN (will be masked in gradient step)
-                r[[t, i]] = y[[t, i]] - mu - alpha[i] - beta[t] - tau * d[[t, i]];
-            }
-        }
-
-        // Weighted proximal step for L (soft-threshold SVD)
-        // Lipschitz constant of ∇f is L_f = 2·max(δ), step size η = 1/L_f
-        let delta_max = delta.iter().cloned().fold(0.0_f64, f64::max);
-        let eta = if delta_max > 0.0 { 1.0 / (2.0 * delta_max) } else { 0.5 };
-
-        // gradient_step = L + eta * delta * (R - L)
-        // NaN outcomes get zero weight so they don't affect gradient
-        let mut gradient_step = Array2::<f64>::zeros((n_periods, n_units));
-        for t in 0..n_periods {
-            for i in 0..n_units {
-                // Mask delta for NaN outcomes
-                let delta_ti = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
-                let delta_norm = if delta_max > 0.0 {
-                    delta_ti / delta_max
+                if delta_norm[[t, i]] > 0.0 && y[[t, i]].is_finite() {
+                    r_masked[[t, i]] = y[[t, i]] - mu - alpha[i] - beta[t];
                 } else {
-                    delta_ti
-                };
-                // r[[t,i]] may be NaN, but delta_norm=0 for NaN obs, so contribution=0
-                let r_contrib = if r[[t, i]].is_finite() { r[[t, i]] } else { 0.0 };
-                gradient_step[[t, i]] = l[[t, i]] + delta_norm * (r_contrib - l[[t, i]]);
+                    r_masked[[t, i]] = l[[t, i]];
+                }
             }
         }
 
-        // Soft-threshold singular values
-        l = soft_threshold_svd(&gradient_step, eta * lambda_nn)?;
+        // Inner FISTA loop for L update
+        let mut l_inner = l.clone();
+        let mut l_inner_prev = l_inner.clone();
+        let mut t_fista = 1.0_f64;
 
-        // Check convergence
+        for _ in 0..20 {
+            // FISTA momentum
+            let t_fista_new = (1.0 + (1.0 + 4.0 * t_fista * t_fista).sqrt()) / 2.0;
+            let momentum = (t_fista - 1.0) / t_fista_new;
+
+            // Gradient step from momentum point
+            let mut gradient_step = Array2::<f64>::zeros((n_periods, n_units));
+            for t in 0..n_periods {
+                for i in 0..n_units {
+                    let l_mom = l_inner[[t, i]] + momentum * (l_inner[[t, i]] - l_inner_prev[[t, i]]);
+                    gradient_step[[t, i]] = l_mom + delta_norm[[t, i]] * (r_masked[[t, i]] - l_mom);
+                }
+            }
+
+            // Proximal step: soft-threshold singular values
+            // l_inner_prev holds pre-SVD value for both momentum and convergence check
+            l_inner_prev = l_inner;
+            l_inner = soft_threshold_svd(&gradient_step, threshold)?;
+            t_fista = t_fista_new;
+
+            // Convergence check
+            let inner_diff = max_abs_diff_2d(&l_inner, &l_inner_prev);
+            if inner_diff < tol {
+                break;
+            }
+        }
+
+        l = l_inner;
+
+        // Outer convergence check
         let l_diff = max_abs_diff_2d(&l, &l_old);
         if l_diff < tol {
             break;
         }
     }
 
-    // Final solve with converged L (preserve NaN so solve_joint_no_lowrank masks weights)
+    // Final solve with converged L
     let y_adj = Array2::from_shape_fn((n_periods, n_units), |(t, i)| {
-        y[[t, i]] - l[[t, i]]  // NaN - finite = NaN (preserves NaN info)
+        y[[t, i]] - l[[t, i]]
     });
-    let (mu, alpha, beta, tau) = solve_joint_no_lowrank(&y_adj.view(), d, delta)?;
+    let (mu, alpha, beta) = solve_joint_no_lowrank(&y_adj.view(), delta)?;
 
-    Some((mu, alpha, beta, l, tau))
+    Some((mu, alpha, beta, l))
 }
 
 /// Compute LOOCV score for joint method with specific parameter combination.
@@ -1442,17 +1453,17 @@ fn loocv_score_joint(
                 delta_ex[[t_ex, i_ex]] = 0.0;
 
                 let result = if lambda_nn >= 1e10 {
-                    solve_joint_no_lowrank(y, d, &delta_ex.view())
-                        .map(|(mu, alpha, beta, tau)| {
+                    solve_joint_no_lowrank(y, &delta_ex.view())
+                        .map(|(mu, alpha, beta)| {
                             let l = Array2::<f64>::zeros((n_periods, n_units));
-                            (mu, alpha, beta, l, tau)
+                            (mu, alpha, beta, l)
                         })
                 } else {
-                    solve_joint_with_lowrank(y, d, &delta_ex.view(), lambda_nn, max_iter, tol)
+                    solve_joint_with_lowrank(y, &delta_ex.view(), lambda_nn, max_iter, tol)
                 };
 
                 match result {
-                    Some((mu, alpha, beta, l, _tau)) => {
+                    Some((mu, alpha, beta, l)) => {
                         if y[[t_ex, i_ex]].is_finite() {
                             let tau_loocv = y[[t_ex, i_ex]] - mu - alpha[i_ex] - beta[t_ex] - l[[t_ex, i_ex]];
                             (sum + tau_loocv * tau_loocv, valid + 1, first_fail)
@@ -1570,16 +1581,14 @@ pub fn loocv_grid_search_joint<'py>(
         .into_par_iter()
         .map(|(lt, lu, ln)| {
             // Convert λ_nn=∞ → 1e10 (factor model disabled)
-            let lt_eff = lt;
-            let lu_eff = lu;
             let ln_eff = if ln.is_infinite() { 1e10 } else { ln };
 
             let (score, n_valid, first_failed) = loocv_score_joint(
                 &y_arr,
                 &d_arr,
                 &control_obs,
-                lt_eff,
-                lu_eff,
+                lt,
+                lu,
                 ln_eff,
                 treated_periods,
                 max_iter,
@@ -1677,8 +1686,6 @@ pub fn bootstrap_trop_variance_joint<'py>(
     let treated_periods = n_periods.saturating_sub(first_treat_period);
 
     // Convert λ_nn=∞ → 1e10 (factor model disabled)
-    let lt_eff = lambda_time;
-    let lu_eff = lambda_unit;
     let ln_eff = if lambda_nn.is_infinite() { 1e10 } else { lambda_nn };
 
     // Run bootstrap iterations in parallel
@@ -1724,27 +1731,45 @@ pub fn bootstrap_trop_variance_joint<'py>(
             let delta = compute_joint_weights(
                 &y_boot.view(),
                 &d_boot.view(),
-                lt_eff,
-                lu_eff,
+                lambda_time,
+                lambda_unit,
                 treated_periods,
             );
 
             let result = if ln_eff >= 1e10 {
-                solve_joint_no_lowrank(&y_boot.view(), &d_boot.view(), &delta.view())
-                    .map(|(_, _, _, tau)| tau)
+                solve_joint_no_lowrank(&y_boot.view(), &delta.view())
+                    .map(|(mu, alpha, beta)| {
+                        let l = Array2::<f64>::zeros((n_periods, n_units));
+                        (mu, alpha, beta, l)
+                    })
             } else {
                 solve_joint_with_lowrank(
                     &y_boot.view(),
-                    &d_boot.view(),
                     &delta.view(),
                     ln_eff,
                     max_iter,
                     tol,
                 )
-                .map(|(_, _, _, _, tau)| tau)
             };
 
-            result
+            // Post-hoc tau extraction: ATT = mean(Y - mu - alpha - beta - L) over treated
+            result.and_then(|(mu, alpha, beta, l)| {
+                let mut tau_sum = 0.0;
+                let mut tau_count = 0;
+                for t in 0..n_periods {
+                    for i in 0..n_units {
+                        if d_boot[[t, i]] == 1.0 && y_boot[[t, i]].is_finite() {
+                            tau_sum += y_boot[[t, i]] - mu - alpha[i] - beta[t] - l[[t, i]];
+                            tau_count += 1;
+                        }
+                    }
+                }
+                if tau_count > 0 {
+                    Some(tau_sum / tau_count as f64)
+                } else {
+                    None
+                }
+            })
         })
         .collect();
 

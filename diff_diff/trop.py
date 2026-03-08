@@ -71,11 +71,16 @@ class TROP:
           a model for each treated observation, averaging the individual
           treatment effects. More flexible but computationally intensive.
 
-        - 'joint': Joint weighted least squares optimization. Estimates a
-          single scalar treatment effect τ along with fixed effects and
-          optional low-rank factor adjustment. Faster but assumes homogeneous
-          treatment effects. Uses alternating minimization when nuclear norm
-          penalty is finite.
+        - 'global': Global weighted least squares with post-hoc treatment
+          effect extraction. Fits a single model on control observations
+          using (1-W) masked weights per paper Eq. 2, then computes
+          per-observation treatment effects as residuals:
+          tau_it = Y_it - mu - alpha_i - beta_t - L_it for treated cells.
+          ATT is the mean of these effects. Faster than twostep but uses
+          global weights instead of per-observation weights.
+
+        - 'joint': Deprecated alias for 'global'. Will be removed in a
+          future version.
 
     lambda_time_grid : list, optional
         Grid of time weight decay parameters. 0.0 = uniform weights (disabled).
@@ -144,11 +149,20 @@ class TROP:
         seed: Optional[int] = None,
     ):
         # Validate method parameter
-        valid_methods = ("twostep", "joint")
+        # 'global' is the preferred name; 'joint' is a deprecated alias
+        valid_methods = ("twostep", "joint", "global")
         if method not in valid_methods:
             raise ValueError(
                 f"method must be one of {valid_methods}, got '{method}'"
             )
+        if method == "joint":
+            warnings.warn(
+                "method='joint' is deprecated and will be removed in a future "
+                "version. Use method='global' instead.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            method = "global"
         self.method = method
 
         # Default grids from paper
@@ -635,7 +649,74 @@ class TROP:
         # Outer product: (n_periods x n_units)
         delta = np.outer(delta_time, delta_unit)
 
+        # (1-W) masking: zero out treated observations per paper Eq. 2
+        # Model is fit on control data only; tau extracted post-hoc
+        delta = delta * (1 - D)
+
         return delta
+
+    def _solve_joint_model(
+        self,
+        Y: np.ndarray,
+        delta: np.ndarray,
+        lambda_nn: float,
+    ) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Dispatch to no-lowrank or with-lowrank solver based on lambda_nn.
+
+        Returns (mu, alpha, beta, L) in all cases.
+        """
+        n_periods, n_units = Y.shape
+        if lambda_nn >= 1e10:
+            mu, alpha, beta = self._solve_joint_no_lowrank(Y, delta)
+            L = np.zeros((n_periods, n_units))
+        else:
+            mu, alpha, beta, L = self._solve_joint_with_lowrank(
+                Y, delta, lambda_nn, self.max_iter, self.tol
+            )
+        return mu, alpha, beta, L
+
+    @staticmethod
+    def _extract_posthoc_tau(
+        Y: np.ndarray,
+        D: np.ndarray,
+        mu: float,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        L: np.ndarray,
+        idx_to_unit: Optional[Dict] = None,
+        idx_to_period: Optional[Dict] = None,
+    ) -> Tuple[float, Dict, List[float]]:
+        """
+        Extract post-hoc treatment effects: tau_it = Y - mu - alpha - beta - L.
+
+        Returns (att, treatment_effects_dict, tau_values_list).
+        When idx_to_unit/idx_to_period are None, treatment_effects uses raw indices.
+        """
+        counterfactual = mu + alpha[np.newaxis, :] + beta[:, np.newaxis] + L
+        tau_matrix = Y - counterfactual
+
+        treated_mask = D == 1
+        finite_mask = np.isfinite(Y)
+        valid_treated = treated_mask & finite_mask
+
+        tau_values = tau_matrix[valid_treated].tolist()
+        att = float(np.mean(tau_values)) if tau_values else np.nan
+
+        # Build treatment effects dict
+        treatment_effects: Dict = {}
+        n_periods, n_units = D.shape
+        for t in range(n_periods):
+            for i in range(n_units):
+                if D[t, i] == 1:
+                    uid = idx_to_unit[i] if idx_to_unit is not None else i
+                    tid = idx_to_period[t] if idx_to_period is not None else t
+                    if finite_mask[t, i]:
+                        treatment_effects[(uid, tid)] = tau_matrix[t, i]
+                    else:
+                        treatment_effects[(uid, tid)] = np.nan
+
+        return att, treatment_effects, tau_values
 
     def _loocv_score_joint(
         self,
@@ -698,14 +779,7 @@ class TROP:
             delta_ex[t_ex, i_ex] = 0.0
 
             try:
-                # Fit joint model excluding this observation
-                if lambda_nn >= 1e10:
-                    mu, alpha, beta, tau = self._solve_joint_no_lowrank(Y, D, delta_ex)
-                    L = np.zeros((n_periods, n_units))
-                else:
-                    mu, alpha, beta, L, tau = self._solve_joint_with_lowrank(
-                        Y, D, delta_ex, lambda_nn, self.max_iter, self.tol
-                    )
+                mu, alpha, beta, L = self._solve_joint_model(Y, delta_ex, lambda_nn)
 
                 # Pseudo treatment effect: τ = Y - μ - α - β - L
                 if np.isfinite(Y[t_ex, i_ex]):
@@ -725,33 +799,32 @@ class TROP:
     def _solve_joint_no_lowrank(
         self,
         Y: np.ndarray,
-        D: np.ndarray,
         delta: np.ndarray,
-    ) -> Tuple[float, np.ndarray, np.ndarray, float]:
+    ) -> Tuple[float, np.ndarray, np.ndarray]:
         """
-        Solve joint TWFE + treatment via weighted least squares (no low-rank).
+        Solve TWFE via weighted least squares on control data (no low-rank).
 
-        Solves: min Σ δ_{it}(Y_{it} - μ - α_i - β_t - τ*W_{it})²
+        Solves: min Σ (1-W)*δ_{it}(Y_{it} - μ - α_i - β_t)²
+
+        The (1-W) masking is already applied to delta by _compute_joint_weights,
+        so treated observations have zero weight and do not affect the fit.
 
         Parameters
         ----------
         Y : np.ndarray
             Outcome matrix (n_periods x n_units).
-        D : np.ndarray
-            Treatment indicator matrix (n_periods x n_units).
         delta : np.ndarray
-            Weight matrix (n_periods x n_units).
+            Weight matrix (n_periods x n_units), already (1-W) masked.
 
         Returns
         -------
-        Tuple[float, np.ndarray, np.ndarray, float]
-            (mu, alpha, beta, tau) estimated parameters.
+        Tuple[float, np.ndarray, np.ndarray]
+            (mu, alpha, beta) estimated parameters.
         """
         n_periods, n_units = Y.shape
 
         # Flatten matrices for regression
         y = Y.flatten()  # length n_periods * n_units
-        w = D.flatten()
         weights = delta.flatten()
 
         # Handle NaN values: zero weight for NaN outcomes/weights, impute with 0
@@ -769,12 +842,10 @@ class TROP:
         if sum_w < 1e-10:
             raise ValueError("All weights are zero - cannot estimate")
 
-        # Build design matrix: [intercept, unit_dummies, time_dummies, treatment]
-        # Total columns: 1 + n_units + n_periods + 1
-        # But we need to drop one unit and one time dummy for identification
-        # Drop first unit (unit 0) and first time (time 0)
+        # Build design matrix: [intercept, unit_dummies, time_dummies]
+        # Drop first unit (unit 0) and first time (time 0) for identification
         n_obs = n_periods * n_units
-        n_params = 1 + (n_units - 1) + (n_periods - 1) + 1
+        n_params = 1 + (n_units - 1) + (n_periods - 1)
 
         X = np.zeros((n_obs, n_params))
         X[:, 0] = 1.0  # intercept
@@ -788,9 +859,6 @@ class TROP:
         for t in range(1, n_periods):
             for i in range(n_units):
                 X[t * n_units + i, (n_units - 1) + t] = 1.0
-
-        # Treatment indicator
-        X[:, -1] = w
 
         # Apply weights
         X_weighted = X * sqrt_weights[:, np.newaxis]
@@ -809,32 +877,31 @@ class TROP:
         alpha[1:] = coeffs[1:n_units]
         beta = np.zeros(n_periods)
         beta[1:] = coeffs[n_units:(n_units + n_periods - 1)]
-        tau = coeffs[-1]
 
-        return float(mu), alpha, beta, float(tau)
+        return float(mu), alpha, beta
 
     def _solve_joint_with_lowrank(
         self,
         Y: np.ndarray,
-        D: np.ndarray,
         delta: np.ndarray,
         lambda_nn: float,
         max_iter: int = 100,
         tol: float = 1e-6,
-    ) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray, float]:
+    ) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray]:
         """
-        Solve joint TWFE + treatment + low-rank via alternating minimization.
+        Solve TWFE + low-rank on control data via alternating minimization.
 
-        Solves: min Σ δ_{it}(Y_{it} - μ - α_i - β_t - L_{it} - τ*W_{it})² + λ_nn||L||_*
+        Solves: min Σ (1-W)*δ_{it}(Y_{it} - μ - α_i - β_t - L_{it})² + λ_nn||L||_*
+
+        The (1-W) masking is already applied to delta by _compute_joint_weights,
+        so treated observations have zero weight and do not affect the fit.
 
         Parameters
         ----------
         Y : np.ndarray
             Outcome matrix (n_periods x n_units).
-        D : np.ndarray
-            Treatment indicator matrix (n_periods x n_units).
         delta : np.ndarray
-            Weight matrix (n_periods x n_units).
+            Weight matrix (n_periods x n_units), already (1-W) masked.
         lambda_nn : float
             Nuclear norm regularization parameter.
         max_iter : int, default=100
@@ -844,8 +911,8 @@ class TROP:
 
         Returns
         -------
-        Tuple[float, np.ndarray, np.ndarray, np.ndarray, float]
-            (mu, alpha, beta, L, tau) estimated parameters.
+        Tuple[float, np.ndarray, np.ndarray, np.ndarray]
+            (mu, alpha, beta, L) estimated parameters.
         """
         n_periods, n_units = Y.shape
 
@@ -859,45 +926,60 @@ class TROP:
         delta_masked = delta.copy()
         delta_masked[nan_mask] = 0.0
 
+        # Precompute normalized weights and threshold (constant across iterations)
+        delta_max = np.max(delta_masked)
+        if delta_max > 0:
+            delta_norm = delta_masked / delta_max
+        else:
+            delta_norm = delta_masked
+        threshold = lambda_nn / (2.0 * delta_max) if delta_max > 0 else lambda_nn / 2.0
+
         # Initialize L = 0
         L = np.zeros((n_periods, n_units))
 
         for iteration in range(max_iter):
             L_old = L.copy()
 
-            # Step 1: Fix L, solve for (mu, alpha, beta, tau)
-            # Adjusted outcome: Y - L (using NaN-safe Y)
-            # Pass masked delta to exclude NaN observations from WLS
+            # Step 1: Fix L, solve for (mu, alpha, beta)
             Y_adj = Y_safe - L
-            mu, alpha, beta, tau = self._solve_joint_no_lowrank(Y_adj, D, delta_masked)
+            mu, alpha, beta = self._solve_joint_no_lowrank(Y_adj, delta_masked)
 
-            # Step 2: Fix (mu, alpha, beta, tau), update L
-            # Residual: R = Y - mu - alpha - beta - tau*D (using NaN-safe Y)
-            R = Y_safe - mu - alpha[np.newaxis, :] - beta[:, np.newaxis] - tau * D
+            # Step 2: Fix (mu, alpha, beta), update L with FISTA acceleration
+            R = Y_safe - mu - alpha[np.newaxis, :] - beta[:, np.newaxis]
 
-            # Weighted proximal step for L (soft-threshold SVD)
-            # Normalize weights (using masked delta to exclude NaN observations)
-            delta_max = np.max(delta_masked)
-            if delta_max > 0:
-                delta_norm = delta_masked / delta_max
-            else:
-                delta_norm = delta_masked
+            # For delta=0 observations (treated/NaN), keep L rather than R
+            R_masked = np.where(delta_masked > 0, R, L)
 
-            # Weighted average between current L and target R
-            # L_next = L + delta_norm * (R - L), then soft-threshold
-            # NaN observations have delta_norm=0, so they don't influence L update
-            gradient_step = L + delta_norm * (R - L)
+            # Inner FISTA loop for L update
+            L_inner = L.copy()
+            L_inner_prev = L_inner  # share reference initially (no copy needed)
+            t_fista = 1.0
 
-            # Soft-threshold singular values
-            # Lipschitz constant of ∇f is L_f = 2·max(δ), step size η = 1/L_f
-            eta = 1.0 / (2.0 * delta_max) if delta_max > 0 else 0.5
-            L = self._soft_threshold_svd(gradient_step, eta * lambda_nn)
+            for _ in range(20):
+                # FISTA momentum
+                t_fista_new = (1.0 + np.sqrt(1.0 + 4.0 * t_fista**2)) / 2.0
+                momentum = (t_fista - 1.0) / t_fista_new
+                L_momentum = L_inner + momentum * (L_inner - L_inner_prev)
 
-            # Check convergence
+                # Gradient step from momentum point
+                gradient_step = L_momentum + delta_norm * (R_masked - L_momentum)
+
+                # Proximal step: soft-threshold singular values
+                L_inner_prev = L_inner
+                L_inner = self._soft_threshold_svd(gradient_step, threshold)
+                t_fista = t_fista_new
+
+                # Convergence check (L_inner_prev holds the pre-SVD value)
+                if np.max(np.abs(L_inner - L_inner_prev)) < tol:
+                    break
+
+            L = L_inner
+
+            # Outer convergence check
             if np.max(np.abs(L - L_old)) < tol:
                 break
 
-        return mu, alpha, beta, L, tau
+        return mu, alpha, beta, L
 
     def _fit_joint(
         self,
@@ -908,10 +990,11 @@ class TROP:
         time: str,
     ) -> TROPResults:
         """
-        Fit TROP using joint weighted least squares method.
+        Fit TROP using global weighted least squares method.
 
-        This method estimates a single scalar treatment effect τ along with
-        fixed effects and optional low-rank factor adjustment.
+        Fits a single model on control observations using (1-W) masked weights,
+        then extracts per-observation treatment effects as post-hoc residuals.
+        ATT is the mean of these heterogeneous effects.
 
         Parameters
         ----------
@@ -1026,7 +1109,7 @@ class TROP:
         unique_starts = sorted(set(first_treat_by_unit))
         if len(unique_starts) > 1:
             raise ValueError(
-                f"method='joint' requires simultaneous treatment adoption, but your data "
+                f"method='global' requires simultaneous treatment adoption, but your data "
                 f"shows staggered adoption (units first treated at periods {unique_starts}). "
                 f"Use method='twostep' which properly handles staggered adoption designs."
             )
@@ -1140,25 +1223,12 @@ class TROP:
             Y, D, lambda_time, lambda_unit, treated_periods, n_units, n_periods
         )
 
-        if lambda_nn >= 1e10:
-            mu, alpha, beta, tau = self._solve_joint_no_lowrank(Y, D, delta)
-            L = np.zeros((n_periods, n_units))
-        else:
-            mu, alpha, beta, L, tau = self._solve_joint_with_lowrank(
-                Y, D, delta, lambda_nn, self.max_iter, self.tol
-            )
+        mu, alpha, beta, L = self._solve_joint_model(Y, delta, lambda_nn)
 
-        # ATT is the scalar treatment effect
-        att = tau
-
-        # Compute individual treatment effects for reporting (same τ for all)
-        treatment_effects = {}
-        for t in range(n_periods):
-            for i in range(n_units):
-                if D[t, i] == 1:
-                    unit_id = idx_to_unit[i]
-                    time_id = idx_to_period[t]
-                    treatment_effects[(unit_id, time_id)] = tau
+        # Post-hoc tau extraction (per paper Eq. 2)
+        att, treatment_effects, tau_values = self._extract_posthoc_tau(
+            Y, D, mu, alpha, beta, L, idx_to_unit, idx_to_period
+        )
 
         # Compute effective rank of L
         _, s, _ = np.linalg.svd(L, full_matrices=False)
@@ -1363,9 +1433,9 @@ class TROP:
         treated_periods: int,
     ) -> float:
         """
-        Fit joint model with fixed tuning parameters.
+        Fit global model with fixed tuning parameters.
 
-        Returns only the treatment effect τ.
+        Returns the ATT (mean of post-hoc per-observation treatment effects).
         """
         lambda_time, lambda_unit, lambda_nn = fixed_lambda
 
@@ -1388,20 +1458,15 @@ class TROP:
             .values
         )
 
-        # Compute weights
+        # Compute weights (includes (1-W) masking)
         delta = self._compute_joint_weights(
             Y, D, lambda_time, lambda_unit, treated_periods, n_units, n_periods
         )
 
-        # Fit model
-        if lambda_nn >= 1e10:
-            _, _, _, tau = self._solve_joint_no_lowrank(Y, D, delta)
-        else:
-            _, _, _, _, tau = self._solve_joint_with_lowrank(
-                Y, D, delta, lambda_nn, self.max_iter, self.tol
-            )
-
-        return tau
+        # Fit model on control data and extract post-hoc tau
+        mu, alpha, beta, L = self._solve_joint_model(Y, delta, lambda_nn)
+        att, _, _ = self._extract_posthoc_tau(Y, D, mu, alpha, beta, L)
+        return att
 
     def fit(
         self,
@@ -1456,7 +1521,7 @@ class TROP:
             raise ValueError(f"Missing columns: {missing}")
 
         # Dispatch based on estimation method
-        if self.method == "joint":
+        if self.method == "global":
             return self._fit_joint(data, outcome, treatment, unit, time)
 
         # Below is the twostep method (default)
@@ -2555,6 +2620,14 @@ class TROP:
     def set_params(self, **params) -> "TROP":
         """Set estimator parameters."""
         for key, value in params.items():
+            if key == "method" and value == "joint":
+                warnings.warn(
+                    "method='joint' is deprecated and will be removed in a "
+                    "future version. Use method='global' instead.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+                value = "global"
             if hasattr(self, key):
                 setattr(self, key, value)
             else:
