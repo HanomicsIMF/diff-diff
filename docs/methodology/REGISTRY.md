@@ -462,6 +462,175 @@ See `docs/methodology/continuous-did.md` Section 4 for full details.
 
 ---
 
+## EfficientDiD
+
+**Primary source:** Chen, X., Sant'Anna, P. H. C., & Xie, H. (2025). Efficient Difference-in-Differences and Event Study Estimators.
+
+**Key implementation requirements:**
+
+*Assumption checks / warnings:*
+- **Random Sampling (Assumption S)**: Data is a random sample of `(Y_{1}, ..., Y_{T}, X', G)'`
+- **Overlap (Assumption O)**: For each group g, generalized propensity score `E[G_g | X]` must be in `(0, 1)` a.s. Near-zero propensity scores cause ratio `p_g(X)/p_{g'}(X)` to explode; warn on finite-sample instability
+- **No-anticipation (Assumption NA)**: For all treated groups g and pre-treatment periods t < g: `E[Y_t(g) | G=g, X] = E[Y_t(infinity) | G=g, X]` a.s.
+- **Parallel Trends -- two variants**:
+  - **PT-Post** (weaker): PT holds only in post-treatment periods, comparison group = never-treated only, baseline = period g-1 only. Estimator is just-identified and reduces to standard single-baseline DiD (Corollary 3.2)
+  - **PT-All** (stronger): PT holds for all groups and all periods. Enables using any not-yet-treated cohort and any pre-treatment period as baseline. Model is overidentified (Lemma 2.1); paper derives optimal combination weights
+- **Absorbing treatment**: Binary treatment must be irreversible (once treated, stays treated)
+- **Balanced panel**: Short balanced panel required ("large-n, fixed-T" regime). Does not handle unbalanced panels or repeated cross-sections
+- Warn if treatment varies within units (non-absorbing treatment)
+- Warn if propensity score estimates are near boundary values
+
+*Estimator equation -- single treatment date (Equations 3.2, 3.5):*
+
+Transformed outcome (Equation 3.2):
+```
+Y_tilde_{g,t,t_pre} = (1/pi_g) * (G_g - p_g(X)/p_inf(X) * G_inf) * (Y_t - Y_{t_pre} - m_{inf,t,t_pre}(X))
+```
+
+Efficient ATT estimand (Equation 3.5):
+```
+ATT(g, t) = E[ (1' V*_{gt}(X)^{-1} / (1' V*_{gt}(X)^{-1} 1)) * Y_tilde_{g,t} ]
+```
+
+where:
+- `G_g = 1{G = g}` = indicator for belonging to treatment cohort g
+- `G_inf = 1{G = infinity}` = indicator for never-treated
+- `pi_g = P(G = g)` = population share of cohort g
+- `p_g(X) = E[G_g | X]` = generalized propensity score
+- `m_{inf,t,t_pre}(X) = E[Y_t - Y_{t_pre} | G = infinity, X]` = conditional mean outcome change for never-treated
+- `V*_{gt}(X)` = `(g-1) x (g-1)` conditional covariance matrix with `(j,k)`-th element (Equation 3.4):
+  ```
+  (1/p_g(X)) Cov(Y_t - Y_j, Y_t - Y_k | G=g, X) + (1/(1-p_g(X))) Cov(Y_t - Y_j, Y_t - Y_k | G=inf, X)
+  ```
+
+*Estimator equation -- staggered adoption (Equations 3.9, 3.13, 4.3, 4.4):*
+
+Generated outcome for each `(g', t_pre)` pair (Equation 3.9 / sample analog 4.4):
+```
+Y_hat^{att(g,t)}_{g',t_pre} = (G_g / pi_hat_g) * (Y_t - Y_1 - m_hat_{inf,t,t_pre}(X) - m_hat_{g',t_pre,1}(X))
+    - r_hat_{g,inf}(X) * (G_inf / pi_hat_g) * (Y_t - Y_{t_pre} - m_hat_{inf,t,t_pre}(X))
+    - r_hat_{g,g'}(X) * (G_{g'} / pi_hat_g) * (Y_{t_pre} - Y_1 - m_hat_{g',t_pre,1}(X))
+```
+
+where:
+- `r_hat_{g,g'}(X) = p_g(X)/p_{g'}(X)` = estimated propensity score ratio
+- `m_hat_{g',t,t_pre}(X) = E[Y_t - Y_{t_pre} | G = g', X]` = estimated conditional mean outcome change
+
+Efficient ATT for staggered adoption (Equation 4.3):
+```
+ATT_hat_stg(g,t) = E_n[ (1' Omega_hat*_{gt}(X)^{-1}) / (1' Omega_hat*_{gt}(X)^{-1} 1) * Y_hat^{att(g,t)}_stg ]
+```
+
+where `Omega*_{gt}(X)` is the conditional covariance matrix with `(j,k)`-th element (Equation 3.12):
+```
+(1/p_g(X)) Cov(Y_t - Y_1, Y_t - Y_1 | G=g, X)
++ (1/p_inf(X)) Cov(Y_t - Y_{t'_j}, Y_t - Y_{t'_k} | G=inf, X)
+- 1{g=g'_j}/p_g(X) * Cov(Y_t - Y_1, Y_{t'_j} - Y_1 | G=g, X)
+- 1{g=g'_k}/p_g(X) * Cov(Y_t - Y_1, Y_{t'_k} - Y_1 | G=g, X)
++ 1{g_j=g'_k}/p_{g'_j}(X) * Cov(Y_{t'_j} - Y_1, Y_{t'_k} - Y_1 | G=g'_j, X)
+```
+
+*Event study aggregation (Equations 3.8, 3.14, 4.5):*
+
+```
+ES_hat(e) = sum_{g in G_{trt,e}}  (pi_hat_g / sum_{g' in G_{trt,e}} pi_hat_{g'})  * ATT_hat_stg(g, g+e)
+```
+
+where `G_{trt,e} = {g in G_trt : g + e <= T}` and weights are cohort relative size weights.
+
+Overall average event-study parameter (Equation 2.3):
+```
+ES_avg = (1/N_E) * sum_{e in E} ES(e)
+```
+
+*With covariates / doubly robust:*
+
+The estimator is doubly robust by construction. Consistency requires correct specification of either:
+- Outcome regression: `m_{g',t,t_pre}(X) = E[Y_t - Y_{t_pre} | G = g', X]`, OR
+- Propensity score ratio: `r_{g,g'}(X) = p_g(X)/p_{g'}(X)`
+
+The Neyman orthogonality property (Remark 4.2) permits modern ML estimators (random forests, lasso, ridge, neural nets, boosted trees) for nuisance parameters without loss of efficiency.
+
+*Without covariates (Section 4.1):*
+
+Estimator simplifies to closed-form expressions using only within-group sample means and sample covariances. **No tuning parameters** are needed. The covariance matrix `Omega*_gt` uses unconditional within-group covariances with `pi_g` replacing `p_g(X)`.
+
+*Standard errors (Theorem 4.1, Section 4):*
+- Default: Analytical SE computed as the square root of the sample variance of estimated EIF values divided by n:
+  ```
+  SE_analytical = sqrt( (1/n^2) * sum_{i=1}^{n} EIF_hat_i^2 )
+  ```
+- Alternative: Cluster-robust SE at cross-sectional unit level (used in empirical application, page 34-35)
+- Bootstrap: Nonparametric clustered bootstrap (resampling clusters with replacement); 300 replications recommended (page 23, footnote 16)
+- **Small sample recommendation** (Section 5.1): Use cluster bootstrap SEs rather than analytical SEs when n is small (n <= 50). Analytical SEs are anticonservative with n=50 (coverage ~0.80) but perform well with n >= 200 (coverage ~0.94)
+- Simultaneous confidence bands: Multiplier bootstrap procedure for multiple `(g,t)` pairs (footnote 13, referencing Callaway and Sant'Anna 2021, Theorems 2-3, Algorithm 1)
+
+*Efficient influence function for ATT(g,t) (Theorem 3.2):*
+```
+EIF^{att(g,t)}_stg = (1' Omega*_{gt}(X)^{-1}) / (1' Omega*_{gt}(X)^{-1} 1) * IF^{att(g,t)}_stg
+```
+
+*Efficient influence function for ES(e) (following Theorem 3.2, page 17):*
+```
+EIF^{es(e)}_stg = sum_{g in G_{trt,e}} ( q_{g,e} * EIF^{att(g,g+e)}_stg
+    + ATT(g,g+e) / (sum_{g' in G_{trt,e}} pi_{g'}) * (G_g - pi_g)
+    - q_{g,e} * sum_{s in G_{trt,e}} (G_s - pi_s) )
+```
+where `q_{g,e} = pi_g / sum_{g' in G_{trt,e}} pi_{g'}`.
+
+*Edge cases:*
+- **Single pre-treatment period (g=2)**: `V*_{gt}(X)` is 1x1, efficient weights are trivially 1, estimator collapses to standard DiD with single baseline
+- **Rank deficiency in `V*_{gt}(X)` or `Omega*_{gt}(X)`**: Inverse does not exist if outcome changes are linearly dependent conditional on covariates. Detect via matrix condition number; fall back to pseudoinverse or standard estimator
+- **Near-zero propensity scores**: Ratio `p_g(X)/p_{g'}(X)` explodes. Overlap assumption (O) rules this out in population; implement trimming or warn on finite-sample instability
+- **All units eventually treated**: Last cohort serves as "never-treated" by dropping last time period
+- **Negative weights**: Explicitly stated as harmless for bias and beneficial for precision; arise from efficiency optimization under overidentification (Section 5.2)
+- **PT-Post regime (just-identified)**: Under PT-Post, EDiD automatically reduces to standard single-baseline estimator (Corollary 3.2). No downside to using EDiD -- it subsumes standard estimators
+
+*Algorithm (two-step semiparametric estimation, Section 4):*
+
+**Step 1: Estimate nuisance parameters**
+1. Estimate outcome regressions `m_hat_{g',t,t_pre}(X)` using sieve regression, kernel smoothing, or ML methods (for each valid `(g', t_pre)` pair)
+2. Estimate propensity score ratios `r_hat_{g,g'}(X) = p_g(X)/p_{g'}(X)` via convex minimization (Equation 4.1):
+   ```
+   r_{g,g'}(X) = arg min_{r} E[ r(X)^2 * G_{g'} - 2*r(X)*G_g ]
+   ```
+   Sieve estimator (Equation 4.2): `beta_hat_K = arg min_{beta_K} E_n[ G_{g'} * (psi^K(X)' beta_K)^2 - 2*G_g * (psi^K(X)' beta_K) ]`
+3. Select sieve index K via information criterion: `K_hat = arg min_K { 2*loss(K) + C_n * K / n }` where `C_n = 2` (AIC) or `C_n = log(n)` (BIC)
+4. Estimate `s_hat_{g'}(X) = 1/p_{g'}(X)` via analogous convex minimization
+5. Estimate conditional covariance `Omega_hat*_{gt}(X)` using kernel smoothing with bandwidth h
+
+**Step 2: Construct efficient estimator**
+6. Compute generated outcomes `Y_hat^{att(g,t)}_{g',t_pre}` for each valid `(g', t_pre)` pair using Equation 4.4
+7. Compute efficient weights `w(X) = 1' Omega_hat*_{gt}(X)^{-1} / (1' Omega_hat*_{gt}(X)^{-1} 1)`
+8. Compute `ATT_hat_stg(g,t) = E_n[ w(X_i) * Y_hat^{att(g,t)}_stg ]` (Equation 4.3)
+9. Aggregate to event-study: `ES_hat(e) = sum_g (pi_hat_g / sum pi_hat) * ATT_hat_stg(g, g+e)` (Equation 4.5)
+10. Compute SE from sample variance of estimated EIF values
+
+**Without covariates**: Steps 1-5 simplify to within-group sample means and sample covariances. No nuisance estimation or tuning needed.
+
+**Reference implementation(s):**
+- No specific software package named in the paper for the EDiD estimator
+- Estimators compared against: Callaway-Sant'Anna (`did` R package), de Chaisemartin-D'Haultfoeuille (`DIDmultiplegt` R package / `did_multiplegt` Stata), Borusyak-Jaravel-Spiess / Gardner / Wooldridge imputation estimators
+- Empirical replication: HRS data from Dobkin et al. (2018) following Sun and Abraham (2021) sample selection
+
+**Requirements checklist:**
+- [x] Implements two-step semiparametric estimator (Equation 4.3)
+- [x] Supports both PT-Post (just-identified) and PT-All (overidentified) regimes
+- [x] Computes efficient weights from conditional covariance matrix inverse
+- [ ] Doubly robust: consistent if either outcome regression or propensity score ratio is correct
+- [x] No-covariates case uses closed-form sample means/covariances (no tuning)
+- [ ] With covariates: sieve-based propensity ratio estimation with AIC/BIC selection
+- [ ] Kernel-smoothed conditional covariance estimation
+- [x] Analytical SE from EIF sample variance
+- [x] Cluster bootstrap SE option (recommended for small samples)
+- [x] Event-study aggregation ES(e) with cohort-size weights
+- [ ] Hausman-type pre-test for PT-All vs PT-Post (Theorem A.1)
+- [x] Each ATT(g,t) can be estimated independently (parallelizable)
+- [x] Absorbing treatment validation
+- [ ] Overlap diagnostics for propensity score ratios
+
+---
+
 ## SunAbraham
 
 **Primary source:** [Sun, L., & Abraham, S. (2021). Estimating dynamic treatment effects in event studies with heterogeneous treatment effects. *Journal of Econometrics*, 225(2), 175-199.](https://doi.org/10.1016/j.jeconom.2020.09.006)

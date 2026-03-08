@@ -128,6 +128,11 @@ from diff_diff.continuous_did import (
     ContinuousDiDResults,
     DoseResponseCurve,
 )
+from diff_diff.efficient_did import (
+    EfficientDiD,
+    EfficientDiDResults,
+    EDiDBootstrapResults,
+)
 from diff_diff.trop import (
     TROP,
     TROPResults,
@@ -172,6 +177,7 @@ Gardner = TwoStageDiD
 DDD = TripleDifference
 Stacked = StackedDiD
 Bacon = BaconDecomposition
+EDiD = EfficientDiD
 
 __version__ = "2.6.1"
 __all__ = [
@@ -231,6 +237,11 @@ __all__ = [
     "trop",
     "StackedDiDResults",
     "stacked_did",
+    # EfficientDiD
+    "EfficientDiD",
+    "EfficientDiDResults",
+    "EDiDBootstrapResults",
+    "EDiD",
     # Visualization
     "plot_event_study",
     "plot_group_effects",
