@@ -182,12 +182,12 @@ def plot_event_study(
     reference_period_explicit = reference_period is not None
 
     # Extract data from results if provided
+    ci_lower_override = None
+    ci_upper_override = None
     if results is not None:
-        extracted = _extract_plot_data(
+        (effects, se, periods, pre_periods, post_periods, reference_period,
+         reference_inferred, ci_lower_override, ci_upper_override) = _extract_plot_data(
             results, periods, pre_periods, post_periods, reference_period
-        )
-        effects, se, periods, pre_periods, post_periods, reference_period, reference_inferred = (
-            extracted
         )
         # If reference was inferred from results, it was NOT explicitly provided
         if reference_inferred:
@@ -229,8 +229,11 @@ def plot_event_study(
         if np.isnan(effect):
             continue
 
-        # Compute CI only if SE is finite
-        if np.isfinite(std_err):
+        # Use cband CI overrides when available, otherwise compute pointwise
+        if ci_lower_override is not None and period in ci_lower_override:
+            ci_lower = ci_lower_override[period]
+            ci_upper = ci_upper_override[period]
+        elif np.isfinite(std_err):
             ci_lower = effect - critical_value * std_err
             ci_upper = effect + critical_value * std_err
         else:
@@ -373,7 +376,7 @@ def _extract_plot_data(
             periods = list(results["period"])
 
         # DataFrame input: reference_period was already set by caller, never inferred here
-        return effects, se, periods, pre_periods, post_periods, reference_period, False
+        return effects, se, periods, pre_periods, post_periods, reference_period, False, None, None
 
     # Handle MultiPeriodDiDResults
     if hasattr(results, "period_effects"):
@@ -403,16 +406,25 @@ def _extract_plot_data(
             reference_period = results.reference_period
             ref_inferred = True
 
-        return effects, se, periods, pre_periods, post_periods, reference_period, ref_inferred
+        return effects, se, periods, pre_periods, post_periods, reference_period, ref_inferred, None, None
 
     # Handle CallawaySantAnnaResults (event study aggregation)
     if hasattr(results, "event_study_effects") and results.event_study_effects is not None:
         effects = {}
         se = {}
+        ci_lower_override = {}
+        ci_upper_override = {}
+        has_cband = False
 
         for rel_period, effect_data in results.event_study_effects.items():
             effects[rel_period] = effect_data["effect"]
             se[rel_period] = effect_data["se"]
+            # Use simultaneous CIs when available
+            if 'cband_conf_int' in effect_data:
+                cband_ci = effect_data['cband_conf_int']
+                ci_lower_override[rel_period] = cband_ci[0]
+                ci_upper_override[rel_period] = cband_ci[1]
+                has_cband = True
 
         if periods is None:
             periods = sorted(effects.keys())
@@ -439,7 +451,9 @@ def _extract_plot_data(
         if post_periods is None:
             post_periods = [p for p in periods if p >= 0]
 
-        return effects, se, periods, pre_periods, post_periods, reference_period, reference_inferred
+        return (effects, se, periods, pre_periods, post_periods, reference_period, reference_inferred,
+                ci_lower_override if has_cband else None,
+                ci_upper_override if has_cband else None)
 
     raise TypeError(
         f"Cannot extract plot data from {type(results).__name__}. "

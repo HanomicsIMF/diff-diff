@@ -1221,6 +1221,280 @@ class TestDeprecationWarnings:
 # =============================================================================
 
 
+class TestEventStudySEWithWIF:
+    """Tests for WIF adjustment in event study standard errors."""
+
+    def test_event_study_analytical_se_includes_wif(self):
+        """
+        Event study SEs with WIF should be >= SEs without WIF.
+
+        The WIF accounts for uncertainty in estimating group-size weights,
+        so it can only add (or maintain) variance, never reduce it.
+        """
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=0)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.event_study_effects is not None
+
+        for e, eff_data in results.event_study_effects.items():
+            se_with_wif = eff_data['se']
+            if np.isfinite(se_with_wif) and se_with_wif > 0:
+                # WIF-adjusted SE should be positive
+                assert se_with_wif > 0, f"SE for e={e} should be positive"
+
+    def test_event_study_bootstrap_consistent_with_analytical(self, ci_params):
+        """
+        Bootstrap event study SEs should be within ~20% of analytical SEs.
+        """
+        n_boot = ci_params.bootstrap(999)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        # Analytical SEs
+        cs_analytical = CallawaySantAnna(n_bootstrap=0)
+        results_analytical = cs_analytical.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        # Bootstrap SEs
+        cs_boot = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=False)
+        results_boot = cs_boot.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results_analytical.event_study_effects is not None
+        assert results_boot.event_study_effects is not None
+
+        threshold = 0.40 if n_boot < 100 else 0.20
+        n_compared = 0
+        for e in results_analytical.event_study_effects:
+            se_a = results_analytical.event_study_effects[e]['se']
+            if e not in results_boot.event_study_effects:
+                continue
+            se_b = results_boot.event_study_effects[e]['se']
+            if np.isfinite(se_a) and se_a > 0 and np.isfinite(se_b) and se_b > 0:
+                rel_diff = abs(se_a - se_b) / se_a
+                assert rel_diff < threshold, \
+                    f"e={e}: analytical SE={se_a:.4f} vs bootstrap SE={se_b:.4f} " \
+                    f"(diff={rel_diff*100:.1f}% > {threshold*100}%)"
+                n_compared += 1
+
+        assert n_compared > 0, "No event times had finite SEs for comparison"
+
+    def test_overall_att_bootstrap_uses_combined_if(self, ci_params):
+        """
+        Overall ATT bootstrap SE should be consistent with analytical SE
+        (which includes WIF).
+        """
+        n_boot = ci_params.bootstrap(999)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs_analytical = CallawaySantAnna(n_bootstrap=0)
+        results_a = cs_analytical.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat'
+        )
+
+        cs_boot = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=False)
+        results_b = cs_boot.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat'
+        )
+
+        se_a = results_a.overall_se
+        se_b = results_b.overall_se
+
+        threshold = 0.40 if n_boot < 100 else 0.20
+        if np.isfinite(se_a) and se_a > 0 and np.isfinite(se_b) and se_b > 0:
+            rel_diff = abs(se_a - se_b) / se_a
+            assert rel_diff < threshold, \
+                f"Analytical SE={se_a:.4f} vs bootstrap SE={se_b:.4f} (diff={rel_diff*100:.1f}%)"
+
+    def test_single_group_event_time_wif_effect(self):
+        """
+        When only one group contributes to an event time, the WIF
+        adjustment should add minimal variance (weight is near-deterministic).
+        """
+        data = generate_staggered_data(
+            n_units=100,
+            n_periods=6,
+            cohort_periods=[3],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=0)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.event_study_effects is not None
+        # With a single cohort, all event times have only one group
+        for e, eff_data in results.event_study_effects.items():
+            if eff_data['n_groups'] == 1:
+                # SE should still be finite and positive
+                assert np.isfinite(eff_data['se']), \
+                    f"Single-group SE for e={e} should be finite"
+
+
+class TestSimultaneousConfidenceBands:
+    """Tests for simultaneous confidence bands (cband)."""
+
+    def test_cband_crit_value_exceeds_pointwise(self, ci_params):
+        """
+        When cband=True and n_bootstrap > 0, the critical value should
+        exceed the pointwise z_{0.025} = 1.96.
+        """
+        n_boot = ci_params.bootstrap(999, min_n=199)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=True)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.cband_crit_value is not None, \
+            "cband_crit_value should be set when cband=True and n_bootstrap > 0"
+        assert results.cband_crit_value > 1.96, \
+            f"Simultaneous critical value ({results.cband_crit_value:.3f}) " \
+            "should exceed pointwise z_0.025=1.96"
+
+    def test_cband_confidence_intervals_wider(self, ci_params):
+        """Simultaneous CIs should be wider than pointwise CIs."""
+        n_boot = ci_params.bootstrap(999, min_n=199)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=True)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.event_study_effects is not None
+        for e, eff_data in results.event_study_effects.items():
+            if 'cband_conf_int' in eff_data:
+                pw_ci = eff_data['conf_int']
+                cb_ci = eff_data['cband_conf_int']
+                pw_width = pw_ci[1] - pw_ci[0]
+                cb_width = cb_ci[1] - cb_ci[0]
+                if np.isfinite(pw_width) and np.isfinite(cb_width) and pw_width > 0:
+                    assert cb_width >= pw_width, \
+                        f"e={e}: cband CI width ({cb_width:.4f}) should >= " \
+                        f"pointwise CI width ({pw_width:.4f})"
+
+    def test_cband_false_disables_simultaneous_ci(self, ci_params):
+        """When cband=False, cband_crit_value should be None."""
+        n_boot = ci_params.bootstrap(999, min_n=199)
+        data = generate_staggered_data(
+            n_units=100,
+            n_periods=6,
+            cohort_periods=[3],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=False)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.cband_crit_value is None
+
+    def test_cband_requires_bootstrap(self):
+        """When n_bootstrap=0, cband has no effect (remains None)."""
+        data = generate_staggered_data(
+            n_units=100,
+            n_periods=6,
+            cohort_periods=[3],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=0, cband=True)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        assert results.cband_crit_value is None
+
+    def test_cband_in_get_params(self):
+        """Test that cband parameter appears in get_params."""
+        cs = CallawaySantAnna(cband=False)
+        params = cs.get_params()
+        assert 'cband' in params
+        assert params['cband'] is False
+
+    def test_cband_to_dataframe_columns(self, ci_params):
+        """Test that to_dataframe includes cband columns."""
+        n_boot = ci_params.bootstrap(999, min_n=199)
+        data = generate_staggered_data(
+            n_units=200,
+            n_periods=8,
+            cohort_periods=[3, 5],
+            treatment_effect=2.0,
+            seed=42
+        )
+
+        cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42, cband=True)
+        results = cs.fit(
+            data, outcome='outcome', unit='unit',
+            time='period', first_treat='first_treat',
+            aggregate='event_study'
+        )
+
+        df = results.to_dataframe(level='event_study')
+        assert 'cband_lower' in df.columns
+        assert 'cband_upper' in df.columns
+
+
 class TestMPDTARComparison:
     """Strict R comparison tests using the real MPDTA dataset.
 

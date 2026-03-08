@@ -90,6 +90,7 @@ class CSBootstrapResults:
     group_effect_cis: Optional[Dict[Any, Tuple[float, float]]] = None
     group_effect_p_values: Optional[Dict[Any, float]] = None
     bootstrap_distribution: Optional[np.ndarray] = field(default=None, repr=False)
+    cband_crit_value: Optional[float] = None
 
 
 # =============================================================================
@@ -121,6 +122,10 @@ class CallawaySantAnnaBootstrapMixin:
         balance_e: Optional[int],
         treatment_groups: List[Any],
         time_periods: List[Any],
+        df: Any = None,
+        unit: Optional[str] = None,
+        precomputed: Any = None,
+        cband: bool = True,
     ) -> CSBootstrapResults:
         """
         Run multiplier bootstrap for inference on all parameters.
@@ -215,7 +220,10 @@ class CallawaySantAnnaBootstrapMixin:
 
         if aggregate in ["event_study", "all"]:
             event_study_info = self._prepare_event_study_aggregation(
-                gt_pairs, group_time_effects, balance_e
+                gt_pairs, group_time_effects, balance_e,
+                influence_func_info=influence_func_info,
+                df=df, unit=unit, precomputed=precomputed,
+                global_unit_to_idx=unit_to_idx, n_global_units=n_units,
             )
 
         if aggregate in ["group", "all"]:
@@ -271,16 +279,24 @@ class CallawaySantAnnaBootstrapMixin:
             # Let non-finite values propagate - they will be handled at statistics computation
             bootstrap_atts_gt[:, j] = original_atts[j] + perturbations
 
-        # Vectorized overall ATT: matrix-vector multiply (post-treatment only)
+        # Vectorized overall ATT using combined IF (includes WIF)
         # Shape: (n_bootstrap,)
         if skip_overall_aggregation:
             bootstrap_overall = np.full(self.n_bootstrap, np.nan)
         else:
-            # Suppress RuntimeWarnings for edge cases - non-finite values handled at statistics computation
+            # Use combined IF (standard IF + WIF) for proper bootstrap
+            post_gt_pairs = [gt_pairs[i] for i in post_treatment_indices]
+            post_groups = np.array([gt_pairs[i][0] for i in post_treatment_indices])
+            post_effects = original_atts[post_treatment_mask]
+            overall_combined_if, _ = self._compute_combined_influence_function(
+                post_gt_pairs, overall_weights_post, post_effects, post_groups,
+                influence_func_info, df, unit, precomputed,
+                global_unit_to_idx=unit_to_idx, n_global_units=n_units,
+            )
             with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
-                bootstrap_overall = bootstrap_atts_gt[:, post_treatment_indices] @ overall_weights_post
+                bootstrap_overall = original_overall + all_bootstrap_weights @ overall_combined_if
 
-        # Vectorized event study aggregation
+        # Vectorized event study aggregation using combined IFs
         # Non-finite values handled at statistics computation stage
         rel_periods: List[int] = []
         bootstrap_event_study: Optional[Dict[int, np.ndarray]] = None
@@ -289,12 +305,11 @@ class CallawaySantAnnaBootstrapMixin:
             bootstrap_event_study = {}
             for e in rel_periods:
                 agg_info = event_study_info[e]
-                gt_indices = agg_info['gt_indices']
-                weights = agg_info['weights']
-                # Vectorized: select columns and multiply by weights
-                # Suppress RuntimeWarnings for edge cases
+                # Use combined IF (standard IF + WIF) for proper bootstrap
                 with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
-                    bootstrap_event_study[e] = bootstrap_atts_gt[:, gt_indices] @ weights
+                    bootstrap_event_study[e] = (
+                        agg_info['effect'] + all_bootstrap_weights @ agg_info['combined_if']
+                    )
 
         # Vectorized group aggregation
         # Non-finite values handled at statistics computation stage
@@ -374,6 +389,32 @@ class CallawaySantAnnaBootstrapMixin:
                 group_effect_cis[g] = ci
                 group_effect_p_values[g] = p_value
 
+        # Compute simultaneous confidence band critical value (sup-t)
+        cband_crit_value = None
+        if (cband and bootstrap_event_study is not None
+                and event_study_ses is not None and event_study_info is not None):
+            valid_es = [
+                e for e in rel_periods
+                if e in event_study_ses
+                and np.isfinite(event_study_ses[e])
+                and event_study_ses[e] > 0
+            ]
+            if valid_es:
+                # Vectorized sup_t: max_e |(boot_att_e[b] - att_e) / se_e|
+                boot_matrix = np.array([bootstrap_event_study[e] for e in valid_es])
+                effects_vec = np.array([event_study_info[e]['effect'] for e in valid_es])
+                ses_vec = np.array([event_study_ses[e] for e in valid_es])
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    sup_t_dist = np.max(
+                        np.abs((boot_matrix - effects_vec[:, None]) / ses_vec[:, None]),
+                        axis=0,
+                    )
+                finite_mask = np.isfinite(sup_t_dist)
+                if np.sum(finite_mask) > 0:
+                    cband_crit_value = float(
+                        np.quantile(sup_t_dist[finite_mask], 1 - self.alpha)
+                    )
+
         return CSBootstrapResults(
             n_bootstrap=self.n_bootstrap,
             weight_type=self.bootstrap_weight_type,
@@ -391,6 +432,7 @@ class CallawaySantAnnaBootstrapMixin:
             group_effect_cis=group_effect_cis,
             group_effect_p_values=group_effect_p_values,
             bootstrap_distribution=bootstrap_overall,
+            cband_crit_value=cband_crit_value,
         )
 
     def _prepare_event_study_aggregation(
@@ -398,6 +440,12 @@ class CallawaySantAnnaBootstrapMixin:
         gt_pairs: List[Tuple[Any, Any]],
         group_time_effects: Dict,
         balance_e: Optional[int],
+        influence_func_info: Any = None,
+        df: Any = None,
+        unit: Optional[str] = None,
+        precomputed: Any = None,
+        global_unit_to_idx: Optional[Dict[Any, int]] = None,
+        n_global_units: Optional[int] = None,
     ) -> Dict[int, Dict[str, Any]]:
         """Prepare aggregation info for event study bootstrap."""
         # Organize by relative time
@@ -443,11 +491,25 @@ class CallawaySantAnnaBootstrapMixin:
             weights = n_treated / np.sum(n_treated)
             agg_effect = np.sum(weights * effects)
 
-            result[e] = {
+            entry: Dict[str, Any] = {
                 'gt_indices': indices,
                 'weights': weights,
                 'effect': agg_effect,
             }
+
+            # Compute combined IF for this event time if args available
+            if influence_func_info is not None and df is not None and unit is not None:
+                gt_pairs_for_e = [gt_pairs[i] for i in indices]
+                groups_for_gt = np.array([gt_pairs[i][0] for i in indices])
+                combined_if, _ = self._compute_combined_influence_function(
+                    gt_pairs_for_e, weights, effects, groups_for_gt,
+                    influence_func_info, df, unit, precomputed,
+                    global_unit_to_idx=global_unit_to_idx,
+                    n_global_units=n_global_units,
+                )
+                entry['combined_if'] = combined_if
+
+            result[e] = entry
 
         return result
 

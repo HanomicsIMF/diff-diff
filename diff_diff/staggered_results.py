@@ -111,6 +111,7 @@ class CallawaySantAnnaResults:
     group_effects: Optional[Dict[Any, Dict[str, Any]]] = field(default=None)
     influence_functions: Optional["np.ndarray"] = field(default=None, repr=False)
     bootstrap_results: Optional["CSBootstrapResults"] = field(default=None, repr=False)
+    cband_crit_value: Optional[float] = None
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -172,6 +173,7 @@ class CallawaySantAnnaResults:
 
         # Event study effects if available
         if self.event_study_effects:
+            ci_label = "Simult. CI" if self.cband_crit_value is not None else "Pointwise CI"
             lines.extend([
                 "-" * 85,
                 "Event Study (Dynamic) Effects".center(85),
@@ -188,7 +190,13 @@ class CallawaySantAnnaResults:
                     f"{eff['t_stat']:>10.3f} {eff['p_value']:>10.4f} {sig:>6}"
                 )
 
-            lines.extend(["-" * 85, ""])
+            lines.extend(["-" * 85])
+            if self.cband_crit_value is not None:
+                lines.append(
+                    f"{ci_label}: critical value = {self.cband_crit_value:.4f} "
+                    f"(sup-t bootstrap, {conf_level}% family-wise)"
+                )
+            lines.append("")
 
         # Group effects if available
         if self.group_effects:
@@ -255,6 +263,7 @@ class CallawaySantAnnaResults:
                 raise ValueError("Event study effects not computed. Use aggregate='event_study'.")
             rows = []
             for rel_t, data in sorted(self.event_study_effects.items()):
+                cband_ci = data.get('cband_conf_int', (np.nan, np.nan))
                 rows.append({
                     'relative_period': rel_t,
                     'effect': data['effect'],
@@ -263,6 +272,8 @@ class CallawaySantAnnaResults:
                     'p_value': data['p_value'],
                     'conf_int_lower': data['conf_int'][0],
                     'conf_int_upper': data['conf_int'][1],
+                    'cband_lower': cband_ci[0],
+                    'cband_upper': cband_ci[1],
                 })
             return pd.DataFrame(rows)
 

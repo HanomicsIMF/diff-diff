@@ -302,6 +302,7 @@ class CallawaySantAnna(
         seed: Optional[int] = None,
         rank_deficient_action: str = "warn",
         base_period: str = "varying",
+        cband: bool = True,
     ):
         import warnings
 
@@ -361,6 +362,8 @@ class CallawaySantAnna(
         self.seed = seed
         self.rank_deficient_action = rank_deficient_action
         self.base_period = base_period
+
+        self.cband = cband
 
         self.is_fitted_ = False
         self.results_: Optional[CallawaySantAnnaResults] = None
@@ -728,7 +731,8 @@ class CallawaySantAnna(
         if aggregate in ["event_study", "all"]:
             event_study_effects = self._aggregate_event_study(
                 group_time_effects, influence_func_info,
-                treatment_groups, time_periods, balance_e
+                treatment_groups, time_periods, balance_e,
+                df, unit, precomputed,
             )
 
         if aggregate in ["group", "all"]:
@@ -746,6 +750,10 @@ class CallawaySantAnna(
                 balance_e=balance_e,
                 treatment_groups=treatment_groups,
                 time_periods=time_periods,
+                df=df,
+                unit=unit,
+                precomputed=precomputed,
+                cband=self.cband,
             )
 
             # Update estimates with bootstrap inference
@@ -793,6 +801,20 @@ class CallawaySantAnna(
                         se = float(group_effects[g]['se'])
                         group_effects[g]['t_stat'] = safe_inference(effect, se, alpha=self.alpha)[0]
 
+        # Compute simultaneous confidence band CIs if cband is available
+        cband_crit_value = None
+        if bootstrap_results is not None:
+            cband_crit_value = bootstrap_results.cband_crit_value
+
+        if cband_crit_value is not None and event_study_effects is not None:
+            for e, eff_data in event_study_effects.items():
+                se_val = eff_data['se']
+                if np.isfinite(se_val) and se_val > 0:
+                    eff_data['cband_conf_int'] = (
+                        eff_data['effect'] - cband_crit_value * se_val,
+                        eff_data['effect'] + cband_crit_value * se_val,
+                    )
+
         # Store results
         self.results_ = CallawaySantAnnaResults(
             group_time_effects=group_time_effects,
@@ -812,6 +834,7 @@ class CallawaySantAnna(
             event_study_effects=event_study_effects,
             group_effects=group_effects,
             bootstrap_results=bootstrap_results,
+            cband_crit_value=cband_crit_value,
         )
 
         self.is_fitted_ = True
@@ -1085,6 +1108,7 @@ class CallawaySantAnna(
             "seed": self.seed,
             "rank_deficient_action": self.rank_deficient_action,
             "base_period": self.base_period,
+            "cband": self.cband,
         }
 
     def set_params(self, **params) -> "CallawaySantAnna":
