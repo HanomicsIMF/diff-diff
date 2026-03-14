@@ -107,6 +107,9 @@ def run_estimator(df, estimation_method="reg", covariates=None, control_group="n
             ge[str(g_key)] = {
                 "effect": float(data["effect"]),
                 "se": float(data["se"]),
+                "t_stat": float(data["t_stat"]),
+                "p_value": float(data["p_value"]),
+                "conf_int": [float(data["conf_int"][0]), float(data["conf_int"][1])],
             }
         out["group_effects"] = ge
 
@@ -235,6 +238,13 @@ def check_results(path="benchmarks/speed_review/baseline_results.json", tol=1e-1
                     continue
                 compare(f"{name}/ge[{g_key}].effect", b_ge["effect"], c_ge["effect"], scenario_tol)
                 compare(f"{name}/ge[{g_key}].se", b_ge["se"], c_ge["se"], gt_se_tol)
+                if "t_stat" in b_ge and "t_stat" in c_ge:
+                    compare(f"{name}/ge[{g_key}].t_stat", b_ge["t_stat"], c_ge["t_stat"], gt_se_tol)
+                if "p_value" in b_ge and "p_value" in c_ge:
+                    compare(f"{name}/ge[{g_key}].p_value", b_ge["p_value"], c_ge["p_value"], 0.02)
+                if "conf_int" in b_ge and "conf_int" in c_ge:
+                    for i, label in enumerate(["lower", "upper"]):
+                        compare(f"{name}/ge[{g_key}].ci.{label}", b_ge["conf_int"][i], c_ge["conf_int"][i], gt_se_tol)
 
         if failures:
             all_failures.extend(failures)

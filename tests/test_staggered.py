@@ -1107,6 +1107,71 @@ class TestCallawaySantAnnaCovariates:
         # Overall ATT should still be finite (NaN cells excluded from aggregation)
         assert np.isfinite(results.overall_att)
 
+    def test_nan_cell_bootstrap_aggregation_excludes_nan(self, ci_params):
+        """Bootstrap aggregation paths must exclude NaN ATT(g,t) cells."""
+        import warnings
+        from unittest.mock import patch
+
+        data = generate_staggered_data_with_covariates(seed=42, n_units=100)
+
+        original_lstsq = __import__('scipy').linalg.lstsq
+        call_count = [0]
+
+        def mock_lstsq(*args, **kwargs):
+            call_count[0] += 1
+            result = original_lstsq(*args, **kwargs)
+            if call_count[0] == 1:
+                bad_beta = np.full_like(result[0], np.inf)
+                return (bad_beta,) + result[1:]
+            return result
+
+        data['x1_dup'] = data['x1']
+        n_boot = ci_params.bootstrap(199)
+        cs = CallawaySantAnna(
+            n_bootstrap=n_boot, seed=42, estimation_method='reg',
+            rank_deficient_action='warn',
+        )
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            with patch('scipy.linalg.lstsq', side_effect=mock_lstsq):
+                results = cs.fit(
+                    data,
+                    outcome='outcome',
+                    unit='unit',
+                    time='time',
+                    first_treat='first_treat',
+                    covariates=['x1', 'x1_dup'],
+                    aggregate='all',
+                )
+
+        # NaN cell should be preserved in group_time_effects
+        nan_cells = [
+            (g, t) for (g, t), eff in results.group_time_effects.items()
+            if np.isnan(eff['effect'])
+        ]
+        assert len(nan_cells) > 0, "Expected at least one NaN cell from mock"
+
+        # Overall ATT bootstrap inference should be finite (NaN cells excluded)
+        assert np.isfinite(results.overall_att), "overall_att should be finite"
+        assert np.isfinite(results.overall_se), "overall_se should be finite"
+        assert np.isfinite(results.overall_p_value), "overall_p_value should be finite"
+        assert all(np.isfinite(x) for x in results.overall_conf_int), "overall CI should be finite"
+
+        # Event study: valid relative times should have finite bootstrap inference
+        if results.event_study_effects:
+            for e, data_es in results.event_study_effects.items():
+                if np.isfinite(data_es['effect']):
+                    assert np.isfinite(data_es['se']), f"ES e={e} se should be finite"
+                    assert np.isfinite(data_es['p_value']), f"ES e={e} p_value should be finite"
+
+        # Group effects: valid groups should have finite bootstrap inference
+        if results.group_effects:
+            for g, data_ge in results.group_effects.items():
+                if np.isfinite(data_ge['effect']):
+                    assert np.isfinite(data_ge['se']), f"Group {g} se should be finite"
+                    assert np.isfinite(data_ge['p_value']), f"Group {g} p_value should be finite"
+
 
 class TestCallawaySantAnnaRankDeficiencyPaths:
     """Tests for rank-deficiency handling in DR and reg not_yet_treated paths."""

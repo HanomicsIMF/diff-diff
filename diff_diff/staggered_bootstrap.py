@@ -204,6 +204,15 @@ class CallawaySantAnnaBootstrapMixin:
         ], dtype=float)
         post_n_treated = all_n_treated[post_treatment_mask]
 
+        # Filter out NaN ATT(g,t) cells from overall aggregation (matches analytical path)
+        post_effects_raw = np.array([
+            group_time_effects[gt_pairs[i]]['effect'] for i in post_treatment_indices
+        ])
+        finite_post = np.isfinite(post_effects_raw)
+        if not np.all(finite_post):
+            post_treatment_indices = post_treatment_indices[finite_post]
+            post_n_treated = post_n_treated[finite_post]
+
         # Flag to skip overall ATT aggregation when no post-treatment effects
         # But continue bootstrap for per-effect SEs (pre-treatment effects need bootstrap SEs too)
         skip_overall_aggregation = False
@@ -297,7 +306,7 @@ class CallawaySantAnnaBootstrapMixin:
             # Use combined IF (standard IF + WIF) for proper bootstrap
             post_gt_pairs = [gt_pairs[i] for i in post_treatment_indices]
             post_groups = np.array([gt_pairs[i][0] for i in post_treatment_indices])
-            post_effects = original_atts[post_treatment_mask]
+            post_effects = original_atts[post_treatment_indices]
             overall_combined_if, _ = self._compute_combined_influence_function(
                 post_gt_pairs, overall_weights_post, post_effects, post_groups,
                 influence_func_info, df, unit, precomputed,
@@ -503,6 +512,15 @@ class CallawaySantAnnaBootstrapMixin:
             effects = np.array([x[1] for x in effect_list])
             n_treated = np.array([x[2] for x in effect_list], dtype=float)
 
+            # Exclude NaN effects (matches analytical aggregation path)
+            finite_mask = np.isfinite(effects)
+            if not np.all(finite_mask):
+                indices = indices[finite_mask]
+                effects = effects[finite_mask]
+                n_treated = n_treated[finite_mask]
+                if len(effects) == 0:
+                    continue
+
             weights = n_treated / np.sum(n_treated)
             agg_effect = np.sum(weights * effects)
 
@@ -552,6 +570,14 @@ class CallawaySantAnnaBootstrapMixin:
 
             indices = np.array([x[0] for x in group_data])
             effects = np.array([x[1] for x in group_data])
+
+            # Exclude NaN effects (matches analytical aggregation path)
+            finite_mask = np.isfinite(effects)
+            if not np.all(finite_mask):
+                indices = indices[finite_mask]
+                effects = effects[finite_mask]
+                if len(effects) == 0:
+                    continue
 
             # Equal weights across time periods
             weights = np.ones(len(effects)) / len(effects)
