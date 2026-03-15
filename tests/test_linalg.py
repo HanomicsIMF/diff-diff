@@ -236,14 +236,20 @@ class TestSolveOLS:
 
         # Non-NaN coefficients should be finite and reasonable
         finite_coef = coef[~nan_mask]
-        assert np.all(np.isfinite(finite_coef)), f"Finite coefficients contain non-finite values: {finite_coef}"
-        assert np.all(np.abs(finite_coef) < 1e6), f"Finite coefficients are unreasonably large: {finite_coef}"
+        assert np.all(
+            np.isfinite(finite_coef)
+        ), f"Finite coefficients contain non-finite values: {finite_coef}"
+        assert np.all(
+            np.abs(finite_coef) < 1e6
+        ), f"Finite coefficients are unreasonably large: {finite_coef}"
 
         # VCoV should have NaN for dropped column's row and column
         assert vcov is not None
         dropped_idx = np.where(nan_mask)[0][0]
         assert np.all(np.isnan(vcov[dropped_idx, :])), "VCoV row for dropped column should be NaN"
-        assert np.all(np.isnan(vcov[:, dropped_idx])), "VCoV column for dropped column should be NaN"
+        assert np.all(
+            np.isnan(vcov[:, dropped_idx])
+        ), "VCoV column for dropped column should be NaN"
 
         # VCoV for identified coefficients should be finite
         kept_idx = np.where(~nan_mask)[0]
@@ -292,13 +298,14 @@ class TestSolveOLS:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            coef, resid, vcov = solve_ols(
-                X, y,
-                column_names=["intercept", "x1", "x2_collinear"]
-            )
+            coef, resid, vcov = solve_ols(X, y, column_names=["intercept", "x1", "x2_collinear"])
             assert len(w) == 1
             # Column name should appear in warning (not just index)
-            assert "x2_collinear" in str(w[0].message) or "intercept" in str(w[0].message) or "x1" in str(w[0].message)
+            assert (
+                "x2_collinear" in str(w[0].message)
+                or "intercept" in str(w[0].message)
+                or "x1" in str(w[0].message)
+            )
 
     def test_skip_rank_check_bypasses_qr_decomposition(self):
         """Test that skip_rank_check=True skips QR rank detection.
@@ -398,18 +405,18 @@ class TestSolveOLS:
             assert np.all(np.isfinite(coef)), f"Full-rank matrix: coefficients should be finite"
             assert np.all(np.abs(coef) < 1e6), f"Coefficients are unreasonably large: {coef}"
             # The treatment effect coefficient (last one) should be close to true effect
-            assert abs(coef[-1] - true_effect) < 2.0, (
-                f"Treatment effect {coef[-1]} is too far from true {true_effect}"
-            )
+            assert (
+                abs(coef[-1] - true_effect) < 2.0
+            ), f"Treatment effect {coef[-1]} is too far from true {true_effect}"
         else:
             # If rank-deficient, check that identified coefficients are valid
             finite_coef = coef[~np.isnan(coef)]
             assert np.all(np.isfinite(finite_coef)), f"Identified coefficients should be finite"
             # If treatment effect is identified, check it
             if not np.isnan(coef[-1]):
-                assert abs(coef[-1] - true_effect) < 2.0, (
-                    f"Treatment effect {coef[-1]} is too far from true {true_effect}"
-                )
+                assert (
+                    abs(coef[-1] - true_effect) < 2.0
+                ), f"Treatment effect {coef[-1]} is too far from true {true_effect}"
 
     def test_single_cluster_error(self):
         """Test that single cluster raises error."""
@@ -436,10 +443,12 @@ class TestSolveOLS:
 
         # Create clusters: one large cluster (50 obs), 50 singleton clusters
         # Total: 51 clusters, 50 of which are singletons
-        cluster_ids = np.concatenate([
-            np.zeros(50),           # Large cluster (id=0)
-            np.arange(1, 51)        # 50 singleton clusters (ids 1-50)
-        ])
+        cluster_ids = np.concatenate(
+            [
+                np.zeros(50),  # Large cluster (id=0)
+                np.arange(1, 51),  # 50 singleton clusters (ids 1-50)
+            ]
+        )
 
         coef, resid, vcov = solve_ols(X, y, cluster_ids=cluster_ids)
 
@@ -454,15 +463,15 @@ class TestSolveOLS:
 
         # Compare to case without singletons (only large clusters)
         # With fewer clusters, variance should be DIFFERENT (not necessarily larger)
-        cluster_ids_no_singletons = np.concatenate([
-            np.zeros(50),           # Cluster 0
-            np.ones(50)             # Cluster 1
-        ])
+        cluster_ids_no_singletons = np.concatenate(
+            [np.zeros(50), np.ones(50)]  # Cluster 0  # Cluster 1
+        )
         _, _, vcov_no_singletons = solve_ols(X, y, cluster_ids=cluster_ids_no_singletons)
 
         # The two variance estimates should differ (singletons change the calculation)
-        assert not np.allclose(vcov, vcov_no_singletons), \
-            "Singleton clusters should affect variance estimation"
+        assert not np.allclose(
+            vcov, vcov_no_singletons
+        ), "Singleton clusters should affect variance estimation"
 
 
 class TestComputeRobustVcov:
@@ -543,12 +552,11 @@ class TestComputeRobustVcov:
 
                 # Verify warning was emitted
                 instability_warnings = [
-                    w for w in caught_warnings
-                    if "numerical instability" in str(w.message).lower()
+                    w for w in caught_warnings if "numerical instability" in str(w.message).lower()
                 ]
-                assert len(instability_warnings) == 1, (
-                    f"Expected 1 numerical instability warning, got {len(instability_warnings)}"
-                )
+                assert (
+                    len(instability_warnings) == 1
+                ), f"Expected 1 numerical instability warning, got {len(instability_warnings)}"
 
                 # Verify fallback produced valid vcov matrix
                 assert vcov.shape == (X.shape[1], X.shape[1])
@@ -730,23 +738,20 @@ class TestInferenceResult:
         """Test is_significant with default alpha."""
         # Significant at 0.05
         result = InferenceResult(
-            coefficient=2.0, se=0.5, t_stat=4.0, p_value=0.001,
-            conf_int=(1.0, 3.0), alpha=0.05
+            coefficient=2.0, se=0.5, t_stat=4.0, p_value=0.001, conf_int=(1.0, 3.0), alpha=0.05
         )
         assert result.is_significant() is True
 
         # Not significant at 0.05
         result2 = InferenceResult(
-            coefficient=0.5, se=0.5, t_stat=1.0, p_value=0.3,
-            conf_int=(-0.5, 1.5), alpha=0.05
+            coefficient=0.5, se=0.5, t_stat=1.0, p_value=0.3, conf_int=(-0.5, 1.5), alpha=0.05
         )
         assert result2.is_significant() is False
 
     def test_is_significant_custom_alpha(self):
         """Test is_significant with custom alpha override."""
         result = InferenceResult(
-            coefficient=2.0, se=0.5, t_stat=4.0, p_value=0.02,
-            conf_int=(1.0, 3.0), alpha=0.05
+            coefficient=2.0, se=0.5, t_stat=4.0, p_value=0.02, conf_int=(1.0, 3.0), alpha=0.05
         )
 
         # Significant at 0.05 (default)
@@ -759,44 +764,44 @@ class TestInferenceResult:
         """Test significance_stars returns correct stars."""
         # p < 0.001 -> ***
         result = InferenceResult(
-            coefficient=1.0, se=0.1, t_stat=10.0, p_value=0.0001,
-            conf_int=(0.8, 1.2)
+            coefficient=1.0, se=0.1, t_stat=10.0, p_value=0.0001, conf_int=(0.8, 1.2)
         )
         assert result.significance_stars() == "***"
 
         # p < 0.01 -> **
         result2 = InferenceResult(
-            coefficient=1.0, se=0.2, t_stat=5.0, p_value=0.005,
-            conf_int=(0.6, 1.4)
+            coefficient=1.0, se=0.2, t_stat=5.0, p_value=0.005, conf_int=(0.6, 1.4)
         )
         assert result2.significance_stars() == "**"
 
         # p < 0.05 -> *
         result3 = InferenceResult(
-            coefficient=1.0, se=0.3, t_stat=3.0, p_value=0.03,
-            conf_int=(0.4, 1.6)
+            coefficient=1.0, se=0.3, t_stat=3.0, p_value=0.03, conf_int=(0.4, 1.6)
         )
         assert result3.significance_stars() == "*"
 
         # p < 0.1 -> .
         result4 = InferenceResult(
-            coefficient=1.0, se=0.4, t_stat=2.5, p_value=0.08,
-            conf_int=(0.2, 1.8)
+            coefficient=1.0, se=0.4, t_stat=2.5, p_value=0.08, conf_int=(0.2, 1.8)
         )
         assert result4.significance_stars() == "."
 
         # p >= 0.1 -> ""
         result5 = InferenceResult(
-            coefficient=1.0, se=0.5, t_stat=2.0, p_value=0.15,
-            conf_int=(0.0, 2.0)
+            coefficient=1.0, se=0.5, t_stat=2.0, p_value=0.15, conf_int=(0.0, 2.0)
         )
         assert result5.significance_stars() == ""
 
     def test_to_dict(self):
         """Test to_dict returns all fields."""
         result = InferenceResult(
-            coefficient=2.5, se=0.5, t_stat=5.0, p_value=0.001,
-            conf_int=(1.52, 3.48), df=100, alpha=0.05
+            coefficient=2.5,
+            se=0.5,
+            t_stat=5.0,
+            p_value=0.001,
+            conf_int=(1.52, 3.48),
+            df=100,
+            alpha=0.05,
         )
         d = result.to_dict()
 
@@ -1329,8 +1334,10 @@ class TestLinearRegression:
             reg.fit(X, y)
             # Should have a warning about rank deficiency
             assert len(w) > 0, "Expected warning about rank deficiency"
-            assert any("Rank-deficient" in str(x.message) or "rank-deficient" in str(x.message).lower()
-                      for x in w), f"Expected rank-deficient warning, got: {[str(x.message) for x in w]}"
+            assert any(
+                "Rank-deficient" in str(x.message) or "rank-deficient" in str(x.message).lower()
+                for x in w
+            ), f"Expected rank-deficient warning, got: {[str(x.message) for x in w]}"
 
 
 class TestNumericalStability:
@@ -1411,17 +1418,16 @@ class TestEstimatorIntegration:
         # Create reproducible test data
         np.random.seed(42)
         n = 200
-        data = pd.DataFrame({
-            "unit": np.repeat(range(20), 10),
-            "time": np.tile(range(10), 20),
-            "treated": np.repeat([0] * 10 + [1] * 10, 10),
-            "post": np.tile([0] * 5 + [1] * 5, 20),
-        })
-        # True ATT = 2.0
-        data["outcome"] = (
-            np.random.randn(n)
-            + 2.0 * data["treated"] * data["post"]
+        data = pd.DataFrame(
+            {
+                "unit": np.repeat(range(20), 10),
+                "time": np.tile(range(10), 20),
+                "treated": np.repeat([0] * 10 + [1] * 10, 10),
+                "post": np.tile([0] * 5 + [1] * 5, 20),
+            }
         )
+        # True ATT = 2.0
+        data["outcome"] = np.random.randn(n) + 2.0 * data["treated"] * data["post"]
 
         # Fit estimator
         did = DifferenceInDifferences(robust=True)
@@ -1444,11 +1450,13 @@ class TestEstimatorIntegration:
         n_times = 6
         n = n_units * n_times
 
-        data = pd.DataFrame({
-            "unit": np.repeat(np.arange(n_units), n_times),
-            "time": np.tile(np.arange(n_times), n_units),
-            "treated": np.repeat(np.random.binomial(1, 0.5, n_units), n_times),
-        })
+        data = pd.DataFrame(
+            {
+                "unit": np.repeat(np.arange(n_units), n_times),
+                "time": np.tile(np.arange(n_times), n_units),
+                "treated": np.repeat(np.random.binomial(1, 0.5, n_units), n_times),
+            }
+        )
         data["post"] = (data["time"] >= 3).astype(int)
 
         # Add unit and time effects with true ATT = 1.5
@@ -1462,9 +1470,7 @@ class TestEstimatorIntegration:
         )
 
         twfe = TwoWayFixedEffects()
-        result = twfe.fit(
-            data, outcome="y", treatment="treated", time="post", unit="unit"
-        )
+        result = twfe.fit(data, outcome="y", treatment="treated", time="post", unit="unit")
 
         # Should produce valid results
         assert result.se > 0
@@ -1480,10 +1486,12 @@ class TestEstimatorIntegration:
         n_times = 10
         n = n_units * n_times
 
-        data = pd.DataFrame({
-            "unit": np.repeat(np.arange(n_units), n_times),
-            "time": np.tile(np.arange(n_times), n_units),
-        })
+        data = pd.DataFrame(
+            {
+                "unit": np.repeat(np.arange(n_units), n_times),
+                "time": np.tile(np.arange(n_times), n_units),
+            }
+        )
 
         # Staggered treatment timing
         first_treat_map = {}
@@ -1500,14 +1508,137 @@ class TestEstimatorIntegration:
         data["y"] = np.random.randn(n) + data["treated"] * 2.0
 
         sa = SunAbraham(n_bootstrap=0)
-        result = sa.fit(
-            data, outcome="y", unit="unit", time="time", first_treat="first_treat"
-        )
+        result = sa.fit(data, outcome="y", unit="unit", time="time", first_treat="first_treat")
 
         # Should produce valid results
         assert result.overall_se > 0
         assert np.isfinite(result.overall_att)
         assert len(result.event_study_effects) > 0
+
+
+class TestSolveLogit:
+    """Tests for IRLS logistic regression (solve_logit)."""
+
+    def test_irls_coefficients_well_conditioned(self):
+        """IRLS produces correct coefficients on well-conditioned data."""
+        from diff_diff.linalg import solve_logit
+
+        rng = np.random.default_rng(42)
+        n = 500
+        X = rng.standard_normal((n, 3))
+        beta_true = np.array([0.5, -1.0, 0.8])
+        z = X @ beta_true
+        y = (rng.random(n) < 1 / (1 + np.exp(-z))).astype(float)
+
+        beta, probs = solve_logit(X, y)
+        # beta[0] is intercept, beta[1:] are coefficients
+        assert beta.shape == (4,)
+        assert probs.shape == (n,)
+        # Coefficients should be close to true values (intercept ~0)
+        assert np.abs(beta[0]) < 1.0, "Intercept should be near zero"
+        assert np.allclose(
+            beta[1:], beta_true, atol=0.3
+        ), f"Coefficients {beta[1:]} not close to {beta_true}"
+
+    def test_irls_convergence(self):
+        """IRLS converges without warnings on standard data."""
+        from diff_diff.linalg import solve_logit
+
+        rng = np.random.default_rng(123)
+        n = 200
+        X = rng.standard_normal((n, 2))
+        y = (rng.random(n) < 0.5).astype(float)
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            beta, probs = solve_logit(X, y)
+
+        convergence_warns = [x for x in w if "did not converge" in str(x.message)]
+        assert len(convergence_warns) == 0
+
+    def test_irls_non_convergence_warning(self):
+        """IRLS warns when max_iter=1 prevents convergence."""
+        from diff_diff.linalg import solve_logit
+
+        rng = np.random.default_rng(42)
+        n = 100
+        X = rng.standard_normal((n, 2))
+        y = (rng.random(n) < 0.5).astype(float)
+
+        with pytest.warns(UserWarning, match="did not converge"):
+            solve_logit(X, y, max_iter=1)
+
+    def test_near_separation_warning(self):
+        """Warns about near-separation when covariate perfectly predicts outcome."""
+        from diff_diff.linalg import solve_logit
+
+        rng = np.random.default_rng(42)
+        n = 200
+        # Create near-perfect separation: large coefficient -> probs near 0/1
+        X = rng.standard_normal((n, 1))
+        y = (X[:, 0] > 0).astype(float)
+        # Add a tiny bit of noise to avoid exact separation
+        flip_idx = rng.choice(n, size=3, replace=False)
+        y[flip_idx] = 1 - y[flip_idx]
+
+        with pytest.warns(UserWarning, match="Near-separation detected"):
+            solve_logit(X, y)
+
+    def test_predicted_probabilities_valid(self):
+        """Predicted probabilities are in (0, 1)."""
+        from diff_diff.linalg import solve_logit
+
+        rng = np.random.default_rng(42)
+        n = 100
+        X = rng.standard_normal((n, 2))
+        y = (rng.random(n) < 0.5).astype(float)
+
+        _, probs = solve_logit(X, y)
+        assert np.all(probs > 0) and np.all(probs < 1)
+
+    def test_rank_deficient_design_matrix(self):
+        """Handles rank-deficient X in logistic regression."""
+        from diff_diff.linalg import solve_logit
+
+        rng = np.random.default_rng(42)
+        n = 100
+        x1 = rng.standard_normal(n)
+        # x2 is a duplicate of x1 -> rank deficient
+        X = np.column_stack([x1, x1])
+        y = (rng.random(n) < 0.5).astype(float)
+
+        with pytest.warns(UserWarning, match="Rank-deficient"):
+            beta, probs = solve_logit(X, y)
+
+        assert beta.shape == (3,)  # intercept + 2 features
+        assert probs.shape == (n,)
+
+
+class TestCheckPropensityDiagnostics:
+    """Tests for propensity score diagnostic warnings."""
+
+    def test_no_warning_normal_scores(self):
+        """No warning when all scores are within bounds."""
+        from diff_diff.linalg import _check_propensity_diagnostics
+
+        import warnings
+
+        pscore = np.array([0.3, 0.5, 0.7, 0.4, 0.6])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _check_propensity_diagnostics(pscore, trim_bound=0.01)
+        user_warns = [x for x in w if issubclass(x.category, UserWarning)]
+        assert len(user_warns) == 0
+
+    def test_warning_extreme_scores(self):
+        """Warns when propensity scores are near 0 or 1."""
+        from diff_diff.linalg import _check_propensity_diagnostics
+
+        pscore = np.array([0.001, 0.5, 0.999, 0.3, 0.7])
+        with pytest.warns(UserWarning, match="outside"):
+            _check_propensity_diagnostics(pscore, trim_bound=0.01)
 
 
 class TestNoDotRuntimeWarnings:

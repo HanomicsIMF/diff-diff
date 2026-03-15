@@ -55,11 +55,7 @@ class TestCallawaySantAnna:
 
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         assert cs.is_fitted_
@@ -74,11 +70,7 @@ class TestCallawaySantAnna:
 
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Should detect positive effect
@@ -92,11 +84,7 @@ class TestCallawaySantAnna:
 
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Effect should be close to zero
@@ -121,9 +109,9 @@ class TestCallawaySantAnna:
         )
 
         # Results should be identical
-        assert np.isclose(results_inf.overall_att, results_zero.overall_att), (
-            f"ATT differs: inf={results_inf.overall_att}, zero={results_zero.overall_att}"
-        )
+        assert np.isclose(
+            results_inf.overall_att, results_zero.overall_att
+        ), f"ATT differs: inf={results_inf.overall_att}, zero={results_zero.overall_att}"
 
     def test_event_study_aggregation(self):
         """Test event study aggregation."""
@@ -132,11 +120,11 @@ class TestCallawaySantAnna:
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         assert results.event_study_effects is not None
@@ -153,11 +141,11 @@ class TestCallawaySantAnna:
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='group'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="group",
         )
 
         assert results.group_effects is not None
@@ -170,11 +158,11 @@ class TestCallawaySantAnna:
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='all'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="all",
         )
 
         assert results.event_study_effects is not None
@@ -187,21 +175,13 @@ class TestCallawaySantAnna:
         # Never treated only
         cs1 = CallawaySantAnna(control_group="never_treated")
         results1 = cs1.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Not yet treated
         cs2 = CallawaySantAnna(control_group="not_yet_treated")
         results2 = cs2.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         assert results1.control_group == "never_treated"
@@ -219,11 +199,7 @@ class TestCallawaySantAnna:
         for method in methods:
             cs = CallawaySantAnna(estimation_method=method)
             results[method] = cs.fit(
-                data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
+                data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
 
         # All methods should produce results
@@ -237,11 +213,11 @@ class TestCallawaySantAnna:
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         summary = results.summary()
@@ -257,34 +233,34 @@ class TestCallawaySantAnna:
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='all'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="all",
         )
 
         # Group-time DataFrame
-        df_gt = results.to_dataframe(level='group_time')
-        assert 'group' in df_gt.columns
-        assert 'time' in df_gt.columns
-        assert 'effect' in df_gt.columns
+        df_gt = results.to_dataframe(level="group_time")
+        assert "group" in df_gt.columns
+        assert "time" in df_gt.columns
+        assert "effect" in df_gt.columns
 
         # Event study DataFrame
-        df_es = results.to_dataframe(level='event_study')
-        assert 'relative_period' in df_es.columns
+        df_es = results.to_dataframe(level="event_study")
+        assert "relative_period" in df_es.columns
 
         # Group DataFrame
-        df_g = results.to_dataframe(level='group')
-        assert 'group' in df_g.columns
+        df_g = results.to_dataframe(level="group")
+        assert "group" in df_g.columns
 
     def test_get_set_params(self):
         """Test sklearn-compatible parameter access."""
         cs = CallawaySantAnna(alpha=0.10, control_group="not_yet_treated")
 
         params = cs.get_params()
-        assert params['alpha'] == 0.10
-        assert params['control_group'] == "not_yet_treated"
+        assert params["alpha"] == 0.10
+        assert params["control_group"] == "not_yet_treated"
 
         cs.set_params(alpha=0.05)
         assert cs.alpha == 0.05
@@ -296,13 +272,7 @@ class TestCallawaySantAnna:
         cs = CallawaySantAnna()
 
         with pytest.raises(ValueError, match="Missing columns"):
-            cs.fit(
-                data,
-                outcome='nonexistent',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
-            )
+            cs.fit(data, outcome="nonexistent", unit="unit", time="time", first_treat="first_treat")
 
     def test_no_control_units_error(self):
         """Test error when no control units exist."""
@@ -312,13 +282,7 @@ class TestCallawaySantAnna:
         cs = CallawaySantAnna()
 
         with pytest.raises(ValueError, match="No never-treated units"):
-            cs.fit(
-                data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
-            )
+            cs.fit(data, outcome="outcome", unit="unit", time="time", first_treat="first_treat")
 
     def test_significance_properties(self):
         """Test significance-related properties."""
@@ -326,11 +290,7 @@ class TestCallawaySantAnna:
 
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # With strong effect, should be significant
@@ -346,11 +306,7 @@ class TestCallawaySantAnnaResults:
         data = generate_staggered_data()
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         repr_str = repr(results)
@@ -362,30 +318,22 @@ class TestCallawaySantAnnaResults:
         data = generate_staggered_data()
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         with pytest.raises(ValueError, match="Unknown level"):
-            results.to_dataframe(level='invalid')
+            results.to_dataframe(level="invalid")
 
     def test_event_study_not_computed_error(self):
         """Test error when event study not computed."""
         data = generate_staggered_data()
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         with pytest.raises(ValueError, match="Event study effects not computed"):
-            results.to_dataframe(level='event_study')
+            results.to_dataframe(level="event_study")
 
 
 def generate_staggered_data_with_covariates(
@@ -441,22 +389,24 @@ def generate_staggered_data_with_covariates(
 
     # Outcome depends on covariates
     outcomes = (
-        unit_fe_expanded +
-        time_fe_expanded +
-        covariate_effect * x1_expanded +  # covariate effect
-        0.5 * x2_expanded +  # second covariate effect
-        treatment_effect * post +
-        np.random.randn(len(units)) * 0.5
+        unit_fe_expanded
+        + time_fe_expanded
+        + covariate_effect * x1_expanded  # covariate effect
+        + 0.5 * x2_expanded  # second covariate effect
+        + treatment_effect * post
+        + np.random.randn(len(units)) * 0.5
     )
 
-    df = pd.DataFrame({
-        'unit': units,
-        'time': times,
-        'outcome': outcomes,
-        'first_treat': first_treat_expanded.astype(int),
-        'x1': x1_expanded,
-        'x2': x2_expanded,
-    })
+    df = pd.DataFrame(
+        {
+            "unit": units,
+            "time": times,
+            "outcome": outcomes,
+            "first_treat": first_treat_expanded.astype(int),
+            "x1": x1_expanded,
+            "x2": x2_expanded,
+        }
+    )
 
     return df
 
@@ -471,22 +421,18 @@ class TestCallawaySantAnnaCovariates:
         # Fit without covariates
         cs1 = CallawaySantAnna()
         results1 = cs1.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Fit with covariates
         cs2 = CallawaySantAnna()
         results2 = cs2.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x1', 'x2']
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1", "x2"],
         )
 
         # Both should produce valid results
@@ -502,14 +448,14 @@ class TestCallawaySantAnnaCovariates:
         """Test outcome regression method with covariates."""
         data = generate_staggered_data_with_covariates(seed=123)
 
-        cs = CallawaySantAnna(estimation_method='reg')
+        cs = CallawaySantAnna(estimation_method="reg")
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x1', 'x2']
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1", "x2"],
         )
 
         assert results.overall_att is not None
@@ -520,14 +466,14 @@ class TestCallawaySantAnnaCovariates:
         """Test IPW method with covariates."""
         data = generate_staggered_data_with_covariates(seed=456)
 
-        cs = CallawaySantAnna(estimation_method='ipw')
+        cs = CallawaySantAnna(estimation_method="ipw")
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x1', 'x2']
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1", "x2"],
         )
 
         assert results.overall_att is not None
@@ -538,14 +484,14 @@ class TestCallawaySantAnnaCovariates:
         """Test doubly robust method with covariates."""
         data = generate_staggered_data_with_covariates(seed=789)
 
-        cs = CallawaySantAnna(estimation_method='dr')
+        cs = CallawaySantAnna(estimation_method="dr")
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x1', 'x2']
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1", "x2"],
         )
 
         assert results.overall_att is not None
@@ -556,18 +502,18 @@ class TestCallawaySantAnnaCovariates:
         """Test that all estimation methods work with covariates."""
         data = generate_staggered_data_with_covariates(seed=42)
 
-        methods = ['reg', 'ipw', 'dr']
+        methods = ["reg", "ipw", "dr"]
         results = {}
 
         for method in methods:
             cs = CallawaySantAnna(estimation_method=method)
             results[method] = cs.fit(
                 data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat',
-                covariates=['x1', 'x2']
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "x2"],
             )
 
         # All methods should produce valid results
@@ -582,12 +528,12 @@ class TestCallawaySantAnnaCovariates:
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x1', 'x2'],
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1", "x2"],
+            aggregate="event_study",
         )
 
         assert results.event_study_effects is not None
@@ -602,11 +548,11 @@ class TestCallawaySantAnnaCovariates:
         with pytest.raises(ValueError, match="Missing columns"):
             cs.fit(
                 data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat',
-                covariates=['x1', 'nonexistent']
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "nonexistent"],
             )
 
     def test_single_covariate(self):
@@ -616,11 +562,11 @@ class TestCallawaySantAnnaCovariates:
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x1']
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1"],
         )
 
         assert results.overall_att is not None
@@ -633,17 +579,17 @@ class TestCallawaySantAnnaCovariates:
             treatment_effect=3.0,
             covariate_effect=2.0,
             seed=123,
-            n_units=200  # More units for better precision
+            n_units=200,  # More units for better precision
         )
 
-        cs = CallawaySantAnna(estimation_method='dr')
+        cs = CallawaySantAnna(estimation_method="dr")
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x1', 'x2']
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1", "x2"],
         )
 
         # Effect should be roughly correct (within reasonable bounds)
@@ -680,23 +626,25 @@ class TestCallawaySantAnnaCovariates:
         post = (times >= first_treat_expanded) & (first_treat_expanded > 0)
         outcomes = 1.0 + 0.5 * x_strong_expanded + 2.0 * post + np.random.randn(len(units)) * 0.3
 
-        data = pd.DataFrame({
-            'unit': units,
-            'time': times,
-            'outcome': outcomes,
-            'first_treat': first_treat_expanded.astype(int),
-            'x_strong': x_strong_expanded,
-        })
+        data = pd.DataFrame(
+            {
+                "unit": units,
+                "time": times,
+                "outcome": outcomes,
+                "first_treat": first_treat_expanded.astype(int),
+                "x_strong": x_strong_expanded,
+            }
+        )
 
         # IPW should handle extreme propensity scores via clipping
-        cs = CallawaySantAnna(estimation_method='ipw')
+        cs = CallawaySantAnna(estimation_method="ipw")
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x_strong']
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x_strong"],
         )
 
         # Should produce valid results (not NaN or inf)
@@ -713,6 +661,7 @@ class TestCallawaySantAnnaCovariates:
         - Bootstrap drops invalid samples and adjusts inference accordingly
         """
         import warnings
+
         np.random.seed(42)
         n_boot = ci_params.bootstrap(100)
 
@@ -729,28 +678,27 @@ class TestCallawaySantAnnaCovariates:
         post = (times >= first_treat_expanded) & (first_treat_expanded > 0)
         outcomes = 1.0 + 2.0 * post + np.random.randn(len(units)) * 0.1
 
-        data = pd.DataFrame({
-            'unit': units,
-            'time': times,
-            'outcome': outcomes,
-            'first_treat': first_treat_expanded.astype(int),
-        })
+        data = pd.DataFrame(
+            {
+                "unit": units,
+                "time": times,
+                "outcome": outcomes,
+                "first_treat": first_treat_expanded.astype(int),
+            }
+        )
 
         # Test without bootstrap - ATT should be finite, SE may be NaN for edge cases
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # ATT point estimate should be finite
         assert np.isfinite(results.overall_att), "ATT should be finite"
         # SE is either finite (valid) or NaN (signals invalid inference) - not biased
-        assert np.isfinite(results.overall_se) or np.isnan(results.overall_se), \
-            "SE should be finite or NaN (not inf)"
+        assert np.isfinite(results.overall_se) or np.isnan(
+            results.overall_se
+        ), "SE should be finite or NaN (not inf)"
 
         # Test with bootstrap - should drop invalid samples with warning
         cs_boot = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
@@ -758,11 +706,7 @@ class TestCallawaySantAnnaCovariates:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             boot_results = cs_boot.fit(
-                data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
+                data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
 
         # Collect warning messages for inspection
@@ -773,13 +717,15 @@ class TestCallawaySantAnnaCovariates:
 
         # Bootstrap SE based on valid samples - may be finite or NaN
         assert boot_results.bootstrap_results is not None, "Bootstrap results should exist"
-        assert np.isfinite(boot_results.overall_se) or np.isnan(boot_results.overall_se), \
-            "Bootstrap SE should be finite or NaN (not inf)"
+        assert np.isfinite(boot_results.overall_se) or np.isnan(
+            boot_results.overall_se
+        ), "Bootstrap SE should be finite or NaN (not inf)"
 
         # If SE is NaN, verify it's due to validity threshold (should have warning)
         if np.isnan(boot_results.overall_se):
-            assert any("valid" in msg.lower() or "nan" in msg.lower() for msg in warning_messages), \
-                "NaN SE should be accompanied by warning about validity"
+            assert any(
+                "valid" in msg.lower() or "nan" in msg.lower() for msg in warning_messages
+            ), "NaN SE should be accompanied by warning about validity"
 
     def test_validity_threshold_nan_se(self):
         """Test that <50% valid bootstrap samples returns NaN SE with warning.
@@ -788,6 +734,7 @@ class TestCallawaySantAnnaCovariates:
         is signaled via NaN rather than biased estimates.
         """
         import warnings
+
         np.random.seed(42)
 
         # Create minimal dataset that might trigger edge cases
@@ -803,12 +750,14 @@ class TestCallawaySantAnnaCovariates:
         post = (times >= first_treat_expanded) & (first_treat_expanded > 0)
         outcomes = 1.0 + 2.0 * post + np.random.randn(len(units)) * 0.5
 
-        data = pd.DataFrame({
-            'unit': units,
-            'time': times,
-            'outcome': outcomes,
-            'first_treat': first_treat_expanded.astype(int),
-        })
+        data = pd.DataFrame(
+            {
+                "unit": units,
+                "time": times,
+                "outcome": outcomes,
+                "first_treat": first_treat_expanded.astype(int),
+            }
+        )
 
         # Use low n_bootstrap to trigger warning and potentially non-finite samples
         cs_boot = CallawaySantAnna(n_bootstrap=30, seed=42)
@@ -816,25 +765,23 @@ class TestCallawaySantAnnaCovariates:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             boot_results = cs_boot.fit(
-                data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
+                data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
 
         warning_messages = [str(warning.message) for warning in w]
 
         # Should get the low n_bootstrap warning
-        assert any("n_bootstrap" in msg for msg in warning_messages), \
-            "Should warn about low n_bootstrap"
+        assert any(
+            "n_bootstrap" in msg for msg in warning_messages
+        ), "Should warn about low n_bootstrap"
 
         # Bootstrap results should exist
         assert boot_results.bootstrap_results is not None, "Bootstrap results should exist"
 
         # SE constraints: finite or NaN (never inf)
-        assert np.isfinite(boot_results.overall_se) or np.isnan(boot_results.overall_se), \
-            "Bootstrap SE should be finite or NaN (not inf)"
+        assert np.isfinite(boot_results.overall_se) or np.isnan(
+            boot_results.overall_se
+        ), "Bootstrap SE should be finite or NaN (not inf)"
 
     def test_near_collinear_covariates(self):
         """Test that near-collinear covariates are handled gracefully."""
@@ -845,16 +792,16 @@ class TestCallawaySantAnnaCovariates:
         # of 1e-5 which is above the tolerance but still creates high collinearity.
         # With noise < 1e-07, the column would be considered linearly dependent.
         np.random.seed(42)
-        data['x1_copy'] = data['x1'] + np.random.randn(len(data)) * 1e-5
+        data["x1_copy"] = data["x1"] + np.random.randn(len(data)) * 1e-5
 
-        cs = CallawaySantAnna(estimation_method='reg')
+        cs = CallawaySantAnna(estimation_method="reg")
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x1', 'x1_copy']  # Nearly collinear
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1", "x1_copy"],  # Nearly collinear
         )
 
         # Should still produce valid results (noise is above tolerance)
@@ -866,7 +813,7 @@ class TestCallawaySantAnnaCovariates:
         data = generate_staggered_data_with_covariates(seed=42)
 
         # Introduce NaN in covariate
-        data.loc[data['time'] == 2, 'x1'] = np.nan
+        data.loc[data["time"] == 2, "x1"] = np.nan
 
         cs = CallawaySantAnna()
 
@@ -874,11 +821,11 @@ class TestCallawaySantAnnaCovariates:
         with pytest.warns(UserWarning, match="Missing values in covariates"):
             results = cs.fit(
                 data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat',
-                covariates=['x1', 'x2']
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "x2"],
             )
 
         # Should still produce valid results (using unconditional estimation)
@@ -893,37 +840,35 @@ class TestCallawaySantAnnaCovariates:
         """
         data = generate_staggered_data_with_covariates(seed=42, n_units=200)
 
-        for method in ['dr', 'reg']:
+        for method in ["dr", "reg"]:
             cs = CallawaySantAnna(
                 estimation_method=method,
-                control_group='not_yet_treated',
+                control_group="not_yet_treated",
             )
             results = cs.fit(
                 data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat',
-                covariates=['x1', 'x2'],
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "x2"],
             )
 
-            assert np.isfinite(results.overall_att), (
-                f"{method}/not_yet_treated: ATT should be finite"
-            )
-            assert results.overall_se > 0, (
-                f"{method}/not_yet_treated: SE should be positive"
-            )
-            assert len(results.group_time_effects) > 0, (
-                f"{method}/not_yet_treated: should have group-time effects"
-            )
+            assert np.isfinite(
+                results.overall_att
+            ), f"{method}/not_yet_treated: ATT should be finite"
+            assert results.overall_se > 0, f"{method}/not_yet_treated: SE should be positive"
+            assert (
+                len(results.group_time_effects) > 0
+            ), f"{method}/not_yet_treated: should have group-time effects"
             # All effects should be finite
             for (g, t), eff in results.group_time_effects.items():
-                assert np.isfinite(eff['effect']), (
-                    f"{method}/not_yet_treated: effect for ({g},{t}) should be finite"
-                )
-                assert np.isfinite(eff['se']), (
-                    f"{method}/not_yet_treated: SE for ({g},{t}) should be finite"
-                )
+                assert np.isfinite(
+                    eff["effect"]
+                ), f"{method}/not_yet_treated: effect for ({g},{t}) should be finite"
+                assert np.isfinite(
+                    eff["se"]
+                ), f"{method}/not_yet_treated: SE for ({g},{t}) should be finite"
 
     def test_rank_deficient_action_error_raises(self):
         """Test that rank_deficient_action='error' raises ValueError on collinear data."""
@@ -934,16 +879,16 @@ class TestCallawaySantAnnaCovariates:
 
         cs = CallawaySantAnna(
             estimation_method="reg",  # Use regression method to test OLS path
-            rank_deficient_action="error"
+            rank_deficient_action="error",
         )
         with pytest.raises(ValueError, match="rank-deficient"):
             cs.fit(
                 data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat',
-                covariates=['x1', 'x1_dup']
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "x1_dup"],
             )
 
     def test_rank_deficient_action_silent_no_warning(self):
@@ -957,23 +902,26 @@ class TestCallawaySantAnnaCovariates:
 
         cs = CallawaySantAnna(
             estimation_method="reg",  # Use regression method to test OLS path
-            rank_deficient_action="silent"
+            rank_deficient_action="silent",
         )
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             results = cs.fit(
                 data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat',
-                covariates=['x1', 'x1_dup']
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "x1_dup"],
             )
 
             # No warnings about rank deficiency should be emitted
-            rank_warnings = [x for x in w if "Rank-deficient" in str(x.message)
-                           or "rank-deficient" in str(x.message).lower()]
+            rank_warnings = [
+                x
+                for x in w
+                if "Rank-deficient" in str(x.message) or "rank-deficient" in str(x.message).lower()
+            ]
             assert len(rank_warnings) == 0, f"Expected no rank warnings, got {rank_warnings}"
 
         # Should still get valid results
@@ -1000,18 +948,21 @@ class TestCallawaySantAnnaCovariates:
             warnings.simplefilter("always")
             results = cs.fit(
                 data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat',
-                covariates=['x1', 'x1_dup']
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "x1_dup"],
             )
 
-            rank_warnings = [x for x in w if "rank-deficient" in str(x.message).lower()
-                           or "Rank-deficient" in str(x.message)]
-            assert len(rank_warnings) > 0, (
-                "Expected at least one rank-deficiency warning with collinear covariates"
-            )
+            rank_warnings = [
+                x
+                for x in w
+                if "rank-deficient" in str(x.message).lower() or "Rank-deficient" in str(x.message)
+            ]
+            assert (
+                len(rank_warnings) > 0
+            ), "Expected at least one rank-deficiency warning with collinear covariates"
 
         # Should still produce valid results (lstsq fallback)
         assert results is not None
@@ -1025,20 +976,20 @@ class TestCallawaySantAnnaCovariates:
         cs_none = CallawaySantAnna(n_bootstrap=0, seed=42)
         results_none = cs_none.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
             covariates=None,
         )
 
         cs_empty = CallawaySantAnna(n_bootstrap=0, seed=42)
         results_empty = cs_empty.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
             covariates=[],
         )
 
@@ -1054,7 +1005,7 @@ class TestCallawaySantAnnaCovariates:
         data = generate_staggered_data_with_covariates(seed=42, n_units=100)
 
         # Patch lstsq to return inf for one specific call to simulate numerical failure
-        original_lstsq = __import__('scipy').linalg.lstsq
+        original_lstsq = __import__("scipy").linalg.lstsq
         call_count = [0]
 
         def mock_lstsq(*args, **kwargs):
@@ -1068,41 +1019,39 @@ class TestCallawaySantAnnaCovariates:
 
         # Use rank_deficient_action="warn" to ensure we go through the covariate reg path
         # and also force lstsq fallback by using collinear covariates
-        data['x1_dup'] = data['x1']
+        data["x1_dup"] = data["x1"]
         cs = CallawaySantAnna(
-            n_bootstrap=0, seed=42, estimation_method='reg',
-            rank_deficient_action='warn',
+            n_bootstrap=0,
+            seed=42,
+            estimation_method="reg",
+            rank_deficient_action="warn",
         )
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            with patch('scipy.linalg.lstsq', side_effect=mock_lstsq):
+            with patch("scipy.linalg.lstsq", side_effect=mock_lstsq):
                 results = cs.fit(
                     data,
-                    outcome='outcome',
-                    unit='unit',
-                    time='time',
-                    first_treat='first_treat',
-                    covariates=['x1', 'x1_dup'],
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                    covariates=["x1", "x1_dup"],
                 )
 
         # Check that NaN cells are preserved (not dropped)
         nan_cells = [
-            (g, t) for (g, t), eff in results.group_time_effects.items()
-            if np.isnan(eff['effect'])
+            (g, t) for (g, t), eff in results.group_time_effects.items() if np.isnan(eff["effect"])
         ]
         # At least one cell should have NaN effect from our mock
         if call_count[0] > 0:
             # Verify warning about non-finite regression results
-            nan_warnings = [
-                x for x in w
-                if "non-finite regression results" in str(x.message)
-            ]
+            nan_warnings = [x for x in w if "non-finite regression results" in str(x.message)]
             if nan_cells:
                 assert len(nan_warnings) > 0
                 # NaN cells should have NaN SE too
                 for g, t in nan_cells:
-                    assert np.isnan(results.group_time_effects[(g, t)]['se'])
+                    assert np.isnan(results.group_time_effects[(g, t)]["se"])
 
         # Overall ATT should still be finite (NaN cells excluded from aggregation)
         assert np.isfinite(results.overall_att)
@@ -1114,7 +1063,7 @@ class TestCallawaySantAnnaCovariates:
 
         data = generate_staggered_data_with_covariates(seed=42, n_units=100)
 
-        original_lstsq = __import__('scipy').linalg.lstsq
+        original_lstsq = __import__("scipy").linalg.lstsq
         call_count = [0]
 
         def mock_lstsq(*args, **kwargs):
@@ -1127,38 +1076,39 @@ class TestCallawaySantAnnaCovariates:
                 return (bad_beta,) + result[1:]
             return result
 
-        data['x1_dup'] = data['x1']
+        data["x1_dup"] = data["x1"]
         n_boot = ci_params.bootstrap(199)
         cs = CallawaySantAnna(
-            n_bootstrap=n_boot, seed=42, estimation_method='reg',
-            rank_deficient_action='warn',
+            n_bootstrap=n_boot,
+            seed=42,
+            estimation_method="reg",
+            rank_deficient_action="warn",
         )
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            with patch('scipy.linalg.lstsq', side_effect=mock_lstsq):
+            with patch("scipy.linalg.lstsq", side_effect=mock_lstsq):
                 results = cs.fit(
                     data,
-                    outcome='outcome',
-                    unit='unit',
-                    time='time',
-                    first_treat='first_treat',
-                    covariates=['x1', 'x1_dup'],
-                    aggregate='all',
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                    covariates=["x1", "x1_dup"],
+                    aggregate="all",
                 )
 
         # NaN cell should be preserved in group_time_effects
         nan_cells = [
-            (g, t) for (g, t), eff in results.group_time_effects.items()
-            if np.isnan(eff['effect'])
+            (g, t) for (g, t), eff in results.group_time_effects.items() if np.isnan(eff["effect"])
         ]
         assert len(nan_cells) > 0, "Expected at least one NaN cell from mock"
 
         # Verify poisoned cell is post-treatment so overall ATT bootstrap path is exercised
         post_treatment_nan = [(g, t) for g, t in nan_cells if t >= g - cs.anticipation]
-        assert len(post_treatment_nan) > 0, (
-            "Poisoned cell must be post-treatment to exercise overall ATT bootstrap filtering"
-        )
+        assert (
+            len(post_treatment_nan) > 0
+        ), "Poisoned cell must be post-treatment to exercise overall ATT bootstrap filtering"
 
         # Overall ATT bootstrap inference should be finite (NaN cells excluded)
         assert np.isfinite(results.overall_att), "overall_att should be finite"
@@ -1169,17 +1119,16 @@ class TestCallawaySantAnnaCovariates:
         # Event study: valid relative times should have finite bootstrap inference
         if results.event_study_effects:
             for e, data_es in results.event_study_effects.items():
-                if np.isfinite(data_es['effect']):
-                    assert np.isfinite(data_es['se']), f"ES e={e} se should be finite"
-                    assert np.isfinite(data_es['p_value']), f"ES e={e} p_value should be finite"
+                if np.isfinite(data_es["effect"]):
+                    assert np.isfinite(data_es["se"]), f"ES e={e} se should be finite"
+                    assert np.isfinite(data_es["p_value"]), f"ES e={e} p_value should be finite"
 
         # Group effects: valid groups should have finite bootstrap inference
         if results.group_effects:
             for g, data_ge in results.group_effects.items():
-                if np.isfinite(data_ge['effect']):
-                    assert np.isfinite(data_ge['se']), f"Group {g} se should be finite"
-                    assert np.isfinite(data_ge['p_value']), f"Group {g} p_value should be finite"
-
+                if np.isfinite(data_ge["effect"]):
+                    assert np.isfinite(data_ge["se"]), f"Group {g} se should be finite"
+                    assert np.isfinite(data_ge["p_value"]), f"Group {g} p_value should be finite"
 
     def test_balance_e_excludes_nan_anchor_cohort(self, ci_params):
         """balance_e must exclude cohorts whose anchor-horizon effect is NaN."""
@@ -1188,7 +1137,7 @@ class TestCallawaySantAnnaCovariates:
 
         data = generate_staggered_data_with_covariates(seed=42, n_units=100)
 
-        original_lstsq = __import__('scipy').linalg.lstsq
+        original_lstsq = __import__("scipy").linalg.lstsq
         call_count = [0]
 
         def mock_lstsq(*args, **kwargs):
@@ -1200,53 +1149,53 @@ class TestCallawaySantAnnaCovariates:
                 return (bad_beta,) + result[1:]
             return result
 
-        data['x1_dup'] = data['x1']
+        data["x1_dup"] = data["x1"]
         n_boot = ci_params.bootstrap(199)
         cs = CallawaySantAnna(
-            n_bootstrap=n_boot, seed=42, estimation_method='reg',
-            rank_deficient_action='warn',
+            n_bootstrap=n_boot,
+            seed=42,
+            estimation_method="reg",
+            rank_deficient_action="warn",
         )
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            with patch('scipy.linalg.lstsq', side_effect=mock_lstsq):
+            with patch("scipy.linalg.lstsq", side_effect=mock_lstsq):
                 results = cs.fit(
                     data,
-                    outcome='outcome',
-                    unit='unit',
-                    time='time',
-                    first_treat='first_treat',
-                    covariates=['x1', 'x1_dup'],
-                    aggregate='event_study',
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                    covariates=["x1", "x1_dup"],
+                    aggregate="event_study",
                     balance_e=0,
                 )
 
         # Confirm the anchor cell is NaN and is specifically the anchor (t - g == 0)
-        assert np.isnan(results.group_time_effects[(3, 3)]['effect']), \
-            "Mock should have poisoned (g=3, t=3)"
+        assert np.isnan(
+            results.group_time_effects[(3, 3)]["effect"]
+        ), "Mock should have poisoned (g=3, t=3)"
         assert 3 - 3 == 0, "Poisoned cell must be the anchor at balance_e=0"
 
         # Cohort g=3 should be excluded from ALL event-study horizons
         # Only g=5 and g=8 should contribute (<=2 because not all balanced
         # cohorts have cells at extreme horizons)
         for e, es_data in results.event_study_effects.items():
-            assert es_data['n_groups'] <= 2, (
+            assert es_data["n_groups"] <= 2, (
                 f"Event time e={e} has n_groups={es_data['n_groups']}, "
                 "expected <=2 (cohort g=3 should be excluded due to NaN anchor)"
             )
 
         # Analytical effects and SEs should be finite for all horizons
         for e, es_data in results.event_study_effects.items():
-            assert np.isfinite(es_data['effect']), \
-                f"e={e}: analytical effect should be finite"
-            assert np.isfinite(es_data['se']), \
-                f"e={e}: analytical SE should be finite"
+            assert np.isfinite(es_data["effect"]), f"e={e}: analytical effect should be finite"
+            assert np.isfinite(es_data["se"]), f"e={e}: analytical SE should be finite"
 
         # Bootstrap SEs should also be finite
         if results.bootstrap_results and results.bootstrap_results.event_study_ses:
             for e, se in results.bootstrap_results.event_study_ses.items():
-                assert np.isfinite(se), \
-                    f"e={e}: bootstrap SE should be finite"
+                assert np.isfinite(se), f"e={e}: bootstrap SE should be finite"
 
 
 class TestCallawaySantAnnaRankDeficiencyPaths:
@@ -1277,11 +1226,14 @@ class TestCallawaySantAnnaRankDeficiencyPaths:
                 covariates=["x1", "x1_near"],
             )
 
-            rank_warnings = [x for x in w if "rank-deficient" in str(x.message).lower()
-                           or "Rank-deficient" in str(x.message)]
-            assert len(rank_warnings) > 0, (
-                "Expected at least one rank-deficiency warning from DR path"
-            )
+            rank_warnings = [
+                x
+                for x in w
+                if "rank-deficient" in str(x.message).lower() or "Rank-deficient" in str(x.message)
+            ]
+            assert (
+                len(rank_warnings) > 0
+            ), "Expected at least one rank-deficiency warning from DR path"
 
         assert results is not None
         assert results.overall_att is not None
@@ -1310,11 +1262,14 @@ class TestCallawaySantAnnaRankDeficiencyPaths:
                 covariates=["x1", "x1_dup"],
             )
 
-            rank_warnings = [x for x in w if "rank-deficient" in str(x.message).lower()
-                           or "Rank-deficient" in str(x.message)]
-            assert len(rank_warnings) > 0, (
-                "Expected at least one rank-deficiency warning from reg nyt path"
-            )
+            rank_warnings = [
+                x
+                for x in w
+                if "rank-deficient" in str(x.message).lower() or "Rank-deficient" in str(x.message)
+            ]
+            assert (
+                len(rank_warnings) > 0
+            ), "Expected at least one rank-deficiency warning from reg nyt path"
 
         assert results is not None
         assert results.overall_att is not None
@@ -1354,8 +1309,7 @@ class TestCallawaySantAnnaRankDeficiencyPaths:
         assert results is not None
         assert results.overall_att is not None
         # Single-unit cohort (g=5) effects should exist and have finite ATT
-        g5_effects = {(g, t): eff for (g, t), eff in results.group_time_effects.items()
-                      if g == 5}
+        g5_effects = {(g, t): eff for (g, t), eff in results.group_time_effects.items() if g == 5}
         assert len(g5_effects) > 0, "Expected group-time effects for cohort g=5"
         for (g, t), eff in g5_effects.items():
             assert np.isfinite(eff["effect"]), f"g={g},t={t}: ATT should be finite"
@@ -1371,11 +1325,7 @@ class TestCallawaySantAnnaBootstrap:
 
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         assert results.bootstrap_results is not None
@@ -1392,17 +1342,9 @@ class TestCallawaySantAnnaBootstrap:
         weight_types = ["rademacher", "mammen", "webb"]
 
         for wt in weight_types:
-            cs = CallawaySantAnna(
-                n_bootstrap=n_boot,
-                bootstrap_weight_type=wt,
-                seed=42
-            )
+            cs = CallawaySantAnna(n_bootstrap=n_boot, bootstrap_weight_type=wt, seed=42)
             results = cs.fit(
-                data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
+                data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
 
             assert results.bootstrap_results is not None
@@ -1417,11 +1359,11 @@ class TestCallawaySantAnnaBootstrap:
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         assert results.bootstrap_results is not None
@@ -1431,8 +1373,8 @@ class TestCallawaySantAnnaBootstrap:
 
         # Check event study effects have bootstrap SEs
         for e, effect in results.event_study_effects.items():
-            assert effect['se'] > 0
-            assert effect['conf_int'][0] < effect['conf_int'][1]
+            assert effect["se"] > 0
+            assert effect["conf_int"][0] < effect["conf_int"][1]
 
     def test_bootstrap_group_aggregation(self, ci_params):
         """Test bootstrap with group aggregation."""
@@ -1442,11 +1384,11 @@ class TestCallawaySantAnnaBootstrap:
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='group'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="group",
         )
 
         assert results.bootstrap_results is not None
@@ -1456,8 +1398,8 @@ class TestCallawaySantAnnaBootstrap:
 
         # Check group effects have bootstrap SEs
         for g, effect in results.group_effects.items():
-            assert effect['se'] > 0
-            assert effect['conf_int'][0] < effect['conf_int'][1]
+            assert effect["se"] > 0
+            assert effect["conf_int"][0] < effect["conf_int"][1]
 
     def test_bootstrap_all_aggregations(self, ci_params):
         """Test bootstrap with all aggregations."""
@@ -1467,11 +1409,11 @@ class TestCallawaySantAnnaBootstrap:
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='all'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="all",
         )
 
         assert results.bootstrap_results is not None
@@ -1485,20 +1427,12 @@ class TestCallawaySantAnnaBootstrap:
 
         cs1 = CallawaySantAnna(n_bootstrap=n_boot, seed=123)
         results1 = cs1.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         cs2 = CallawaySantAnna(n_bootstrap=n_boot, seed=123)
         results2 = cs2.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Results should be identical with same seed
@@ -1512,20 +1446,12 @@ class TestCallawaySantAnnaBootstrap:
 
         cs1 = CallawaySantAnna(n_bootstrap=n_boot, seed=123)
         results1 = cs1.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         cs2 = CallawaySantAnna(n_bootstrap=n_boot, seed=456)
         results2 = cs2.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Results should differ with different seeds
@@ -1533,20 +1459,12 @@ class TestCallawaySantAnnaBootstrap:
 
     def test_bootstrap_p_value_significance(self, ci_params):
         """Test that strong effect has significant p-value with bootstrap."""
-        data = generate_staggered_data(
-            n_units=100,
-            treatment_effect=5.0,
-            seed=42
-        )
+        data = generate_staggered_data(n_units=100, treatment_effect=5.0, seed=42)
         n_boot = ci_params.bootstrap(199)
 
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Strong effect should be significant
@@ -1555,20 +1473,12 @@ class TestCallawaySantAnnaBootstrap:
 
     def test_bootstrap_zero_effect_not_significant(self, ci_params):
         """Test that zero effect is not significant with bootstrap."""
-        data = generate_staggered_data(
-            n_units=50,
-            treatment_effect=0.0,
-            seed=42
-        )
+        data = generate_staggered_data(n_units=50, treatment_effect=0.0, seed=42)
         n_boot = ci_params.bootstrap(199)
 
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Zero effect should not be significant at 0.01 level
@@ -1582,11 +1492,7 @@ class TestCallawaySantAnnaBootstrap:
 
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         assert results.bootstrap_results.bootstrap_distribution is not None
@@ -1600,11 +1506,11 @@ class TestCallawaySantAnnaBootstrap:
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            covariates=['x1', 'x2']
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1", "x2"],
         )
 
         assert results.bootstrap_results is not None
@@ -1618,28 +1524,23 @@ class TestCallawaySantAnnaBootstrap:
         # Without bootstrap
         cs1 = CallawaySantAnna(n_bootstrap=0)
         results1 = cs1.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # With bootstrap
         cs2 = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results2 = cs2.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Group-time effects should have same point estimates
         for gt in results1.group_time_effects:
-            assert results1.group_time_effects[gt]['effect'] == results2.group_time_effects[gt]['effect']
+            assert (
+                results1.group_time_effects[gt]["effect"]
+                == results2.group_time_effects[gt]["effect"]
+            )
             # But SEs may differ (bootstrap vs analytical)
-            assert results2.group_time_effects[gt]['se'] > 0
+            assert results2.group_time_effects[gt]["se"] > 0
 
     def test_bootstrap_invalid_weight_type(self):
         """Test that invalid weight type raises error."""
@@ -1652,35 +1553,23 @@ class TestCallawaySantAnnaBootstrap:
 
     def test_bootstrap_get_params(self):
         """Test that get_params includes bootstrap_weights."""
-        cs = CallawaySantAnna(
-            n_bootstrap=99,
-            bootstrap_weights="mammen",
-            seed=42
-        )
+        cs = CallawaySantAnna(n_bootstrap=99, bootstrap_weights="mammen", seed=42)
         params = cs.get_params()
 
-        assert params['n_bootstrap'] == 99
-        assert params['bootstrap_weights'] == "mammen"
+        assert params["n_bootstrap"] == 99
+        assert params["bootstrap_weights"] == "mammen"
         # Deprecated attribute still accessible for backward compat
-        assert params['bootstrap_weight_type'] == "mammen"
-        assert params['seed'] == 42
+        assert params["bootstrap_weight_type"] == "mammen"
+        assert params["seed"] == 42
 
     def test_bootstrap_with_not_yet_treated(self, ci_params):
         """Test bootstrap with not_yet_treated control group."""
         data = generate_staggered_data(n_units=50, seed=42)
         n_boot = ci_params.bootstrap(99)
 
-        cs = CallawaySantAnna(
-            control_group="not_yet_treated",
-            n_bootstrap=n_boot,
-            seed=42
-        )
+        cs = CallawaySantAnna(control_group="not_yet_treated", n_bootstrap=n_boot, seed=42)
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         assert results.bootstrap_results is not None
@@ -1694,17 +1583,9 @@ class TestCallawaySantAnnaBootstrap:
         methods = ["reg", "ipw", "dr"]
 
         for method in methods:
-            cs = CallawaySantAnna(
-                estimation_method=method,
-                n_bootstrap=n_boot,
-                seed=42
-            )
+            cs = CallawaySantAnna(estimation_method=method, n_bootstrap=n_boot, seed=42)
             results = cs.fit(
-                data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
+                data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
 
             assert results.bootstrap_results is not None
@@ -1718,12 +1599,12 @@ class TestCallawaySantAnnaBootstrap:
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study',
-            balance_e=0  # Balance at treatment time
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+            balance_e=0,  # Balance at treatment time
         )
 
         assert results.bootstrap_results is not None
@@ -1732,8 +1613,8 @@ class TestCallawaySantAnnaBootstrap:
 
         # Check that event study effects have valid bootstrap SEs
         for e, effect in results.event_study_effects.items():
-            assert effect['se'] > 0
-            assert effect['conf_int'][0] < effect['conf_int'][1]
+            assert effect["se"] > 0
+            assert effect["conf_int"][0] < effect["conf_int"][1]
 
     def test_bootstrap_low_iterations_warning(self):
         """Test that low n_bootstrap triggers a warning."""
@@ -1742,13 +1623,7 @@ class TestCallawaySantAnnaBootstrap:
         cs = CallawaySantAnna(n_bootstrap=30, seed=42)
 
         with pytest.warns(UserWarning, match="n_bootstrap=30 is low"):
-            cs.fit(
-                data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
-            )
+            cs.fit(data, outcome="outcome", unit="unit", time="time", first_treat="first_treat")
 
 
 # =============================================================================
@@ -1788,23 +1663,19 @@ class TestCallawaySantAnnaSingleCohort:
 
                 y += np.random.normal(0, 0.5)
 
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': y,
-                    'first_treat': first_treat,
-                })
+                data.append(
+                    {
+                        "unit": unit,
+                        "time": t,
+                        "outcome": y,
+                        "first_treat": first_treat,
+                    }
+                )
 
         df = pd.DataFrame(data)
 
         cs = CallawaySantAnna()
-        results = cs.fit(
-            df,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
-        )
+        results = cs.fit(df, outcome="outcome", unit="unit", time="time", first_treat="first_treat")
 
         # Should produce valid results
         assert results.overall_att is not None
@@ -1846,23 +1717,25 @@ class TestCallawaySantAnnaSingleCohort:
 
                 y += np.random.normal(0, 0.4)
 
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': y,
-                    'first_treat': first_treat,
-                })
+                data.append(
+                    {
+                        "unit": unit,
+                        "time": t,
+                        "outcome": y,
+                        "first_treat": first_treat,
+                    }
+                )
 
         df = pd.DataFrame(data)
 
         cs = CallawaySantAnna()
         results = cs.fit(
             df,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         assert results.event_study_effects is not None
@@ -1877,8 +1750,10 @@ class TestCallawaySantAnnaSingleCohort:
         post_periods = [e for e in rel_periods if e >= 0]
         if post_periods:
             # At least some post-periods should show positive effect
-            post_effects = [results.event_study_effects[e]['effect'] for e in post_periods]
-            assert any(e > 0.5 for e in post_effects), f"Expected positive post-period effects, got {post_effects}"
+            post_effects = [results.event_study_effects[e]["effect"] for e in post_periods]
+            assert any(
+                e > 0.5 for e in post_effects
+            ), f"Expected positive post-period effects, got {post_effects}"
 
     def test_single_cohort_with_bootstrap(self, ci_params):
         """Test bootstrap inference with single cohort."""
@@ -1901,27 +1776,26 @@ class TestCallawaySantAnnaSingleCohort:
                 if first_treat > 0 and t >= first_treat:
                     y += 3.0
 
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': y,
-                    'first_treat': first_treat,
-                })
+                data.append(
+                    {
+                        "unit": unit,
+                        "time": t,
+                        "outcome": y,
+                        "first_treat": first_treat,
+                    }
+                )
 
         df = pd.DataFrame(data)
 
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
-        results = cs.fit(
-            df,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
-        )
+        results = cs.fit(df, outcome="outcome", unit="unit", time="time", first_treat="first_treat")
 
         assert results.bootstrap_results is not None
         assert results.bootstrap_results.overall_att_se > 0
-        assert results.bootstrap_results.overall_att_ci[0] < results.bootstrap_results.overall_att_ci[1]
+        assert (
+            results.bootstrap_results.overall_att_ci[0]
+            < results.bootstrap_results.overall_att_ci[1]
+        )
 
     def test_single_cohort_not_yet_treated_control(self):
         """Test single cohort with not_yet_treated control group.
@@ -1947,31 +1821,25 @@ class TestCallawaySantAnnaSingleCohort:
                 if first_treat > 0 and t >= first_treat:
                     y += 2.0
 
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': y,
-                    'first_treat': first_treat,
-                })
+                data.append(
+                    {
+                        "unit": unit,
+                        "time": t,
+                        "outcome": y,
+                        "first_treat": first_treat,
+                    }
+                )
 
         df = pd.DataFrame(data)
 
-        cs_never = CallawaySantAnna(control_group='never_treated')
+        cs_never = CallawaySantAnna(control_group="never_treated")
         results_never = cs_never.fit(
-            df,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            df, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
-        cs_not_yet = CallawaySantAnna(control_group='not_yet_treated')
+        cs_not_yet = CallawaySantAnna(control_group="not_yet_treated")
         results_not_yet = cs_not_yet.fit(
-            df,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            df, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Both should produce valid results
@@ -1995,28 +1863,20 @@ class TestCallawaySantAnnaAnalyticalSE:
             n_cohorts=3,
             treatment_effect=3.0,
             never_treated_frac=0.3,
-            seed=42
+            seed=42,
         )
         n_boot = ci_params.bootstrap(499, min_n=249)
 
         # Run with analytical SE (n_bootstrap=0)
         cs_analytical = CallawaySantAnna(n_bootstrap=0, seed=42)
         results_analytical = cs_analytical.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Run with bootstrap SE (n_bootstrap=499)
         cs_bootstrap = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results_bootstrap = cs_bootstrap.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Point estimates should match exactly
@@ -2024,9 +1884,10 @@ class TestCallawaySantAnnaAnalyticalSE:
 
         # SEs should be similar (within 15% with enough bootstrap iterations,
         # wider tolerance when min_n cap reduces iterations in pure Python mode)
-        rel_diff = abs(
-            results_analytical.overall_se - results_bootstrap.overall_se
-        ) / results_bootstrap.overall_se
+        rel_diff = (
+            abs(results_analytical.overall_se - results_bootstrap.overall_se)
+            / results_bootstrap.overall_se
+        )
         threshold = 0.40 if n_boot < 100 else 0.15
         assert rel_diff < threshold, (
             f"Analytical SE ({results_analytical.overall_se:.4f}) differs from "
@@ -2047,16 +1908,12 @@ class TestCallawaySantAnnaAnalyticalSE:
             n_cohorts=2,
             treatment_effect=2.0,
             never_treated_frac=0.4,  # Larger never-treated pool = more sharing
-            seed=123
+            seed=123,
         )
 
         cs = CallawaySantAnna(n_bootstrap=0)
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # The SE should be non-zero and positive
@@ -2067,15 +1924,15 @@ class TestCallawaySantAnnaAnalyticalSE:
         weights = []
         variances = []
         for (g, t), effect in gt_effects.items():
-            weights.append(effect['n_treated'])
-            variances.append(effect['se'] ** 2)
+            weights.append(effect["n_treated"])
+            variances.append(effect["se"] ** 2)
 
         weights = np.array(weights, dtype=float)
         weights = weights / weights.sum()
         variances = np.array(variances)
 
         # Independence SE formula (the old incorrect formula)
-        independence_var = np.sum(weights ** 2 * variances)
+        independence_var = np.sum(weights**2 * variances)
         independence_se = np.sqrt(independence_var)
 
         # The actual SE (with covariance) should generally be larger
@@ -2106,29 +1963,25 @@ class TestCallawaySantAnnaAnalyticalSE:
                     y += 2.0
                 y += np.random.normal(0, 0.5)
 
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': y,
-                    'first_treat': first_treat,
-                })
+                data.append(
+                    {
+                        "unit": unit,
+                        "time": t,
+                        "outcome": y,
+                        "first_treat": first_treat,
+                    }
+                )
 
         df = pd.DataFrame(data)
 
         # Use only the first post-treatment period
         cs = CallawaySantAnna(n_bootstrap=0)
-        results = cs.fit(
-            df,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
-        )
+        results = cs.fit(df, outcome="outcome", unit="unit", time="time", first_treat="first_treat")
 
         # If there's only one (g,t) pair, overall SE should match individual SE
         if len(results.group_time_effects) == 1:
             gt_key = list(results.group_time_effects.keys())[0]
-            individual_se = results.group_time_effects[gt_key]['se']
+            individual_se = results.group_time_effects[gt_key]["se"]
             # Should be close (may not be exact due to normalization)
             assert abs(results.overall_se - individual_se) < individual_se * 0.01
 
@@ -2140,7 +1993,7 @@ class TestCallawaySantAnnaAnalyticalSE:
             n_cohorts=3,
             treatment_effect=2.5,
             never_treated_frac=0.3,
-            seed=42
+            seed=42,
         )
         n_boot = ci_params.bootstrap(499, min_n=199)
 
@@ -2148,22 +2001,22 @@ class TestCallawaySantAnnaAnalyticalSE:
         cs_analytical = CallawaySantAnna(n_bootstrap=0, seed=42)
         results_analytical = cs_analytical.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         # Bootstrap
         cs_bootstrap = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results_bootstrap = cs_bootstrap.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         # Event study effects should exist
@@ -2175,8 +2028,8 @@ class TestCallawaySantAnnaAnalyticalSE:
         threshold = 0.40 if n_boot < 100 else 0.20
         for e in results_analytical.event_study_effects:
             if e in results_bootstrap.event_study_effects:
-                se_analytical = results_analytical.event_study_effects[e]['se']
-                se_bootstrap = results_bootstrap.event_study_effects[e]['se']
+                se_analytical = results_analytical.event_study_effects[e]["se"]
+                se_bootstrap = results_bootstrap.event_study_effects[e]["se"]
 
                 if se_bootstrap > 0:
                     rel_diff = abs(se_analytical - se_bootstrap) / se_bootstrap
@@ -2195,10 +2048,10 @@ class TestCallawaySantAnnaNonStandardColumnNames:
 
     def generate_data_with_custom_names(
         self,
-        outcome_name: str = 'y',
-        unit_name: str = 'id',
-        time_name: str = 'period',
-        first_treat_name: str = 'treatment_start',
+        outcome_name: str = "y",
+        unit_name: str = "id",
+        time_name: str = "period",
+        first_treat_name: str = "treatment_start",
         n_units: int = 100,
         n_periods: int = 10,
         seed: int = 42,
@@ -2213,8 +2066,8 @@ class TestCallawaySantAnnaNonStandardColumnNames:
         # 30% never-treated, rest treated at period 4 or 6
         n_never = int(n_units * 0.3)
         first_treat = np.zeros(n_units)
-        first_treat[n_never:n_never + (n_units - n_never) // 2] = 4
-        first_treat[n_never + (n_units - n_never) // 2:] = 6
+        first_treat[n_never : n_never + (n_units - n_never) // 2] = 4
+        first_treat[n_never + (n_units - n_never) // 2 :] = 6
         first_treat_expanded = np.repeat(first_treat, n_periods)
 
         # Generate outcomes
@@ -2223,26 +2076,22 @@ class TestCallawaySantAnnaNonStandardColumnNames:
         post = (times >= first_treat_expanded) & (first_treat_expanded > 0)
         outcomes = unit_fe + time_fe + 2.5 * post + np.random.randn(len(units)) * 0.5
 
-        return pd.DataFrame({
-            outcome_name: outcomes,
-            unit_name: units,
-            time_name: times,
-            first_treat_name: first_treat_expanded.astype(int),
-        })
+        return pd.DataFrame(
+            {
+                outcome_name: outcomes,
+                unit_name: units,
+                time_name: times,
+                first_treat_name: first_treat_expanded.astype(int),
+            }
+        )
 
     def test_non_standard_first_treat_name(self):
         """Test with non-standard first_treat column name."""
-        data = self.generate_data_with_custom_names(
-            first_treat_name='treatment_cohort'
-        )
+        data = self.generate_data_with_custom_names(first_treat_name="treatment_cohort")
 
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='y',
-            unit='id',
-            time='period',
-            first_treat='treatment_cohort'
+            data, outcome="y", unit="id", time="period", first_treat="treatment_cohort"
         )
 
         assert results.overall_att is not None
@@ -2254,19 +2103,19 @@ class TestCallawaySantAnnaNonStandardColumnNames:
     def test_non_standard_all_column_names(self):
         """Test with all non-standard column names."""
         data = self.generate_data_with_custom_names(
-            outcome_name='response_var',
-            unit_name='entity_id',
-            time_name='time_period',
-            first_treat_name='treatment_timing',
+            outcome_name="response_var",
+            unit_name="entity_id",
+            time_name="time_period",
+            first_treat_name="treatment_timing",
         )
 
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='response_var',
-            unit='entity_id',
-            time='time_period',
-            first_treat='treatment_timing'
+            outcome="response_var",
+            unit="entity_id",
+            time="time_period",
+            first_treat="treatment_timing",
         )
 
         assert results.overall_att is not None
@@ -2276,19 +2125,12 @@ class TestCallawaySantAnnaNonStandardColumnNames:
     def test_non_standard_names_with_bootstrap(self, ci_params):
         """Test non-standard column names with bootstrap inference."""
         data = self.generate_data_with_custom_names(
-            first_treat_name='g',  # Short name like R's `did` package uses
-            n_units=50
+            first_treat_name="g", n_units=50  # Short name like R's `did` package uses
         )
         n_boot = ci_params.bootstrap(99)
 
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
-        results = cs.fit(
-            data,
-            outcome='y',
-            unit='id',
-            time='period',
-            first_treat='g'
-        )
+        results = cs.fit(data, outcome="y", unit="id", time="period", first_treat="g")
 
         assert results.bootstrap_results is not None
         assert results.overall_se > 0
@@ -2296,19 +2138,16 @@ class TestCallawaySantAnnaNonStandardColumnNames:
 
     def test_non_standard_names_with_event_study(self):
         """Test non-standard column names with event study aggregation."""
-        data = self.generate_data_with_custom_names(
-            first_treat_name='cohort',
-            n_periods=12
-        )
+        data = self.generate_data_with_custom_names(first_treat_name="cohort", n_periods=12)
 
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='y',
-            unit='id',
-            time='period',
-            first_treat='cohort',
-            aggregate='event_study'
+            outcome="y",
+            unit="id",
+            time="period",
+            first_treat="cohort",
+            aggregate="event_study",
         )
 
         assert results.event_study_effects is not None
@@ -2317,21 +2156,19 @@ class TestCallawaySantAnnaNonStandardColumnNames:
     def test_non_standard_names_with_covariates(self):
         """Test non-standard column names with covariate adjustment."""
         # Generate data with covariates
-        data = self.generate_data_with_custom_names(
-            first_treat_name='treatment_time'
-        )
+        data = self.generate_data_with_custom_names(first_treat_name="treatment_time")
         # Add covariates with custom names
-        data['covariate_x'] = np.random.randn(len(data))
-        data['covariate_z'] = np.random.binomial(1, 0.5, len(data))
+        data["covariate_x"] = np.random.randn(len(data))
+        data["covariate_z"] = np.random.binomial(1, 0.5, len(data))
 
-        cs = CallawaySantAnna(estimation_method='dr')
+        cs = CallawaySantAnna(estimation_method="dr")
         results = cs.fit(
             data,
-            outcome='y',
-            unit='id',
-            time='period',
-            first_treat='treatment_time',
-            covariates=['covariate_x', 'covariate_z']
+            outcome="y",
+            unit="id",
+            time="period",
+            first_treat="treatment_time",
+            covariates=["covariate_x", "covariate_z"],
         )
 
         assert results.overall_att is not None
@@ -2339,21 +2176,13 @@ class TestCallawaySantAnnaNonStandardColumnNames:
 
     def test_non_standard_names_with_not_yet_treated(self):
         """Test non-standard column names with not_yet_treated control group."""
-        data = self.generate_data_with_custom_names(
-            first_treat_name='adoption_period'
-        )
+        data = self.generate_data_with_custom_names(first_treat_name="adoption_period")
 
-        cs = CallawaySantAnna(control_group='not_yet_treated')
-        results = cs.fit(
-            data,
-            outcome='y',
-            unit='id',
-            time='period',
-            first_treat='adoption_period'
-        )
+        cs = CallawaySantAnna(control_group="not_yet_treated")
+        results = cs.fit(data, outcome="y", unit="id", time="period", first_treat="adoption_period")
 
         assert results.overall_att is not None
-        assert results.control_group == 'not_yet_treated'
+        assert results.control_group == "not_yet_treated"
 
     def test_non_standard_names_matches_standard_names(self):
         """Verify results are identical regardless of column naming."""
@@ -2362,32 +2191,24 @@ class TestCallawaySantAnnaNonStandardColumnNames:
         # Generate identical data with different column names
         data_standard = generate_staggered_data(n_units=80, seed=42)
 
-        data_custom = data_standard.rename(columns={
-            'outcome': 'y',
-            'unit': 'entity',
-            'time': 't',
-            'first_treat': 'g',
-        })
+        data_custom = data_standard.rename(
+            columns={
+                "outcome": "y",
+                "unit": "entity",
+                "time": "t",
+                "first_treat": "g",
+            }
+        )
 
         # Fit with standard names
         cs1 = CallawaySantAnna(seed=123)
         results1 = cs1.fit(
-            data_standard,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data_standard, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Fit with custom names
         cs2 = CallawaySantAnna(seed=123)
-        results2 = cs2.fit(
-            data_custom,
-            outcome='y',
-            unit='entity',
-            time='t',
-            first_treat='g'
-        )
+        results2 = cs2.fit(data_custom, outcome="y", unit="entity", time="t", first_treat="g")
 
         # Results should be identical
         assert abs(results1.overall_att - results2.overall_att) < 1e-10
@@ -2396,18 +2217,20 @@ class TestCallawaySantAnnaNonStandardColumnNames:
     def test_column_name_with_spaces(self):
         """Test column names containing spaces."""
         data = self.generate_data_with_custom_names()
-        data = data.rename(columns={
-            'y': 'outcome variable',
-            'treatment_start': 'treatment period',
-        })
+        data = data.rename(
+            columns={
+                "y": "outcome variable",
+                "treatment_start": "treatment period",
+            }
+        )
 
         cs = CallawaySantAnna()
         results = cs.fit(
             data,
-            outcome='outcome variable',
-            unit='id',
-            time='period',
-            first_treat='treatment period'
+            outcome="outcome variable",
+            unit="id",
+            time="period",
+            first_treat="treatment period",
         )
 
         assert results.overall_att is not None
@@ -2416,17 +2239,15 @@ class TestCallawaySantAnnaNonStandardColumnNames:
     def test_column_name_with_special_characters(self):
         """Test column names with underscores and numbers."""
         data = self.generate_data_with_custom_names()
-        data = data.rename(columns={
-            'treatment_start': 'first_treat_2024',
-        })
+        data = data.rename(
+            columns={
+                "treatment_start": "first_treat_2024",
+            }
+        )
 
         cs = CallawaySantAnna()
         results = cs.fit(
-            data,
-            outcome='y',
-            unit='id',
-            time='period',
-            first_treat='first_treat_2024'
+            data, outcome="y", unit="id", time="period", first_treat="first_treat_2024"
         )
 
         assert results.overall_att is not None
@@ -2455,83 +2276,49 @@ class TestCallawaySantAnnaPreTreatment:
         """Varying mode computes pre-treatment ATT(g,t) for t < g."""
         # Generate data with enough pre-treatment periods
         data = generate_staggered_data(
-            n_units=100,
-            n_periods=10,
-            n_cohorts=2,
-            treatment_effect=2.0,
-            seed=42
+            n_units=100, n_periods=10, n_cohorts=2, treatment_effect=2.0, seed=42
         )
 
         cs = CallawaySantAnna(base_period="varying")
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Should have pre-treatment effects (t < g)
-        pre_treatment_effects = [
-            (g, t) for (g, t) in results.group_time_effects.keys()
-            if t < g
-        ]
+        pre_treatment_effects = [(g, t) for (g, t) in results.group_time_effects.keys() if t < g]
         assert len(pre_treatment_effects) > 0, "Should compute pre-treatment effects"
 
     def test_universal_pre_treatment_effects(self):
         """Universal mode computes pre-treatment ATT(g,t) for t < g."""
         data = generate_staggered_data(
-            n_units=100,
-            n_periods=10,
-            n_cohorts=2,
-            treatment_effect=2.0,
-            seed=42
+            n_units=100, n_periods=10, n_cohorts=2, treatment_effect=2.0, seed=42
         )
 
         cs = CallawaySantAnna(base_period="universal")
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Should have pre-treatment effects (t < g)
-        pre_treatment_effects = [
-            (g, t) for (g, t) in results.group_time_effects.keys()
-            if t < g
-        ]
+        pre_treatment_effects = [(g, t) for (g, t) in results.group_time_effects.keys() if t < g]
         assert len(pre_treatment_effects) > 0, "Should compute pre-treatment effects"
 
     def test_post_treatment_identical(self):
         """Post-treatment ATT(g,t) identical for both modes."""
         data = generate_staggered_data(
-            n_units=100,
-            n_periods=10,
-            n_cohorts=2,
-            treatment_effect=2.0,
-            seed=42
+            n_units=100, n_periods=10, n_cohorts=2, treatment_effect=2.0, seed=42
         )
 
         # Fit with varying
         cs_v = CallawaySantAnna(base_period="varying")
         res_v = cs_v.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Fit with universal
         cs_u = CallawaySantAnna(base_period="universal")
         res_u = cs_u.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Post-treatment effects should be identical
@@ -2539,7 +2326,7 @@ class TestCallawaySantAnnaPreTreatment:
             if t >= g:  # Post-treatment
                 if (g, t) in res_u.group_time_effects:
                     eff_u = res_u.group_time_effects[(g, t)]
-                    assert abs(eff_v['effect'] - eff_u['effect']) < 1e-10, (
+                    assert abs(eff_v["effect"] - eff_u["effect"]) < 1e-10, (
                         f"Post-treatment ATT({g},{t}) differs: "
                         f"varying={eff_v['effect']:.6f}, universal={eff_u['effect']:.6f}"
                     )
@@ -2547,21 +2334,17 @@ class TestCallawaySantAnnaPreTreatment:
     def test_event_study_negative_periods(self):
         """Event study includes negative relative periods."""
         data = generate_staggered_data(
-            n_units=100,
-            n_periods=12,
-            n_cohorts=2,
-            treatment_effect=2.0,
-            seed=42
+            n_units=100, n_periods=12, n_cohorts=2, treatment_effect=2.0, seed=42
         )
 
         cs = CallawaySantAnna(base_period="varying")
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         assert results.event_study_effects is not None
@@ -2569,9 +2352,9 @@ class TestCallawaySantAnnaPreTreatment:
         # Should have negative relative periods
         rel_periods = list(results.event_study_effects.keys())
         negative_periods = [e for e in rel_periods if e < 0]
-        assert len(negative_periods) > 0, (
-            f"Event study should include negative periods, got {rel_periods}"
-        )
+        assert (
+            len(negative_periods) > 0
+        ), f"Event study should include negative periods, got {rel_periods}"
 
     def test_base_period_in_results(self):
         """base_period is stored in results and shown in summary."""
@@ -2579,11 +2362,7 @@ class TestCallawaySantAnnaPreTreatment:
 
         cs = CallawaySantAnna(base_period="universal")
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         assert results.base_period == "universal"
@@ -2594,25 +2373,13 @@ class TestCallawaySantAnnaPreTreatment:
     def test_pre_treatment_bootstrap(self, ci_params):
         """Bootstrap handles pre-treatment effects."""
         data = generate_staggered_data(
-            n_units=60,
-            n_periods=8,
-            n_cohorts=2,
-            treatment_effect=2.0,
-            seed=42
+            n_units=60, n_periods=8, n_cohorts=2, treatment_effect=2.0, seed=42
         )
         n_boot = ci_params.bootstrap(99)
 
-        cs = CallawaySantAnna(
-            base_period="varying",
-            n_bootstrap=n_boot,
-            seed=42
-        )
+        cs = CallawaySantAnna(base_period="varying", n_bootstrap=n_boot, seed=42)
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         assert results.bootstrap_results is not None
@@ -2620,8 +2387,8 @@ class TestCallawaySantAnnaPreTreatment:
         # Pre-treatment effects should have valid bootstrap SEs
         for (g, t), eff in results.group_time_effects.items():
             if t < g:  # Pre-treatment
-                assert eff['se'] > 0, f"Pre-treatment ATT({g},{t}) should have positive SE"
-                assert np.isfinite(eff['se']), f"Pre-treatment ATT({g},{t}) SE should be finite"
+                assert eff["se"] > 0, f"Pre-treatment ATT({g},{t}) should have positive SE"
+                assert np.isfinite(eff["se"]), f"Pre-treatment ATT({g},{t}) SE should be finite"
 
     def test_pre_treatment_near_zero_under_parallel_trends(self):
         """Pre-treatment effects should be near zero when parallel trends holds."""
@@ -2631,29 +2398,22 @@ class TestCallawaySantAnnaPreTreatment:
             n_periods=10,
             n_cohorts=2,
             treatment_effect=3.0,  # Only post-treatment effect
-            seed=123
+            seed=123,
         )
 
         cs = CallawaySantAnna(base_period="varying")
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Pre-treatment effects should be close to zero
-        pre_effects = [
-            eff['effect'] for (g, t), eff in results.group_time_effects.items()
-            if t < g
-        ]
+        pre_effects = [eff["effect"] for (g, t), eff in results.group_time_effects.items() if t < g]
         if pre_effects:
             # Mean of pre-treatment effects should be close to 0
             mean_pre = np.mean(pre_effects)
-            assert abs(mean_pre) < 1.0, (
-                f"Pre-treatment effects mean={mean_pre:.3f} should be near zero"
-            )
+            assert (
+                abs(mean_pre) < 1.0
+            ), f"Pre-treatment effects mean={mean_pre:.3f} should be near zero"
 
     def test_set_params_base_period(self):
         """set_params() can change base_period."""
@@ -2676,28 +2436,20 @@ class TestCallawaySantAnnaPreTreatment:
         """Varying mode skips pre-treatment effects where t-1 doesn't exist."""
         # Create data where first period (e.g., period 1) has no t-1 predecessor
         data = generate_staggered_data(
-            n_units=100,
-            n_periods=6,  # periods 1-6
-            n_cohorts=2,
-            treatment_effect=2.0,
-            seed=42
+            n_units=100, n_periods=6, n_cohorts=2, treatment_effect=2.0, seed=42  # periods 1-6
         )
 
         # Identify the earliest time period in data
-        min_period = data['time'].min()
+        min_period = data["time"].min()
 
         cs = CallawaySantAnna(base_period="varying")
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # In varying mode, ATT(g, min_period) should NOT be computed for
         # any cohort g because t-1 (period 0) doesn't exist
-        for (g, t) in results.group_time_effects.keys():
+        for g, t in results.group_time_effects.keys():
             if t == min_period:
                 # This should not happen - the (g, min_period) pair should be skipped
                 pytest.fail(
@@ -2722,12 +2474,9 @@ class TestCallawaySantAnnaPreTreatment:
                 # Data only goes to period 5, so no post-treatment periods exist
                 first_treat = n_periods + 1 if unit < n_units // 2 else 0
                 outcome = np.random.randn()
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': outcome,
-                    'first_treat': first_treat
-                })
+                data.append(
+                    {"unit": unit, "time": t, "outcome": outcome, "first_treat": first_treat}
+                )
 
         df = pd.DataFrame(data)
 
@@ -2736,21 +2485,15 @@ class TestCallawaySantAnnaPreTreatment:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             results = cs.fit(
-                df,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
+                df, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
 
             # Should have emitted a warning about no post-treatment effects
             warning_messages = [str(warning.message) for warning in w]
-            has_warning = any(
-                "No post-treatment effects" in msg for msg in warning_messages
-            )
-            assert has_warning, (
-                f"Expected warning about no post-treatment effects, got: {warning_messages}"
-            )
+            has_warning = any("No post-treatment effects" in msg for msg in warning_messages)
+            assert (
+                has_warning
+            ), f"Expected warning about no post-treatment effects, got: {warning_messages}"
 
         # Overall ATT should be NaN
         assert np.isnan(results.overall_att), (
@@ -2758,19 +2501,20 @@ class TestCallawaySantAnnaPreTreatment:
             f"got {results.overall_att}"
         )
         # All inference fields should also be NaN
-        assert np.isnan(results.overall_se), (
-            f"Expected NaN for overall_se, got {results.overall_se}"
-        )
-        assert np.isnan(results.overall_t_stat), (
-            f"Expected NaN for overall_t_stat, got {results.overall_t_stat}"
-        )
-        assert np.isnan(results.overall_p_value), (
-            f"Expected NaN for overall_p_value, got {results.overall_p_value}"
-        )
+        assert np.isnan(
+            results.overall_se
+        ), f"Expected NaN for overall_se, got {results.overall_se}"
+        assert np.isnan(
+            results.overall_t_stat
+        ), f"Expected NaN for overall_t_stat, got {results.overall_t_stat}"
+        assert np.isnan(
+            results.overall_p_value
+        ), f"Expected NaN for overall_p_value, got {results.overall_p_value}"
 
     def test_no_post_treatment_effects_bootstrap_returns_nan(self, ci_params):
         """Bootstrap returns NaN inference when no post-treatment effects exist."""
         import warnings
+
         n_boot = ci_params.bootstrap(99)
 
         # Create data where treatment happens after the data ends
@@ -2783,12 +2527,9 @@ class TestCallawaySantAnnaPreTreatment:
             for t in range(1, n_periods + 1):
                 first_treat = n_periods + 1 if unit < n_units // 2 else 0
                 outcome = np.random.randn()
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': outcome,
-                    'first_treat': first_treat
-                })
+                data.append(
+                    {"unit": unit, "time": t, "outcome": outcome, "first_treat": first_treat}
+                )
 
         df = pd.DataFrame(data)
 
@@ -2797,18 +2538,12 @@ class TestCallawaySantAnnaPreTreatment:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             results = cs.fit(
-                df,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
+                df, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
 
             # Should have warning about no post-treatment effects
             warning_messages = [str(warning.message) for warning in w]
-            has_warning = any(
-                "No post-treatment effects" in msg for msg in warning_messages
-            )
+            has_warning = any("No post-treatment effects" in msg for msg in warning_messages)
             assert has_warning, f"Expected warning, got: {warning_messages}"
 
         # All overall inference fields should be NaN
@@ -2831,6 +2566,7 @@ class TestCallawaySantAnnaPreTreatment:
         but pre-treatment effects should still get bootstrap SEs (not analytical).
         """
         import warnings
+
         n_boot = ci_params.bootstrap(99)
 
         # Create data where all treatment happens after the data ends
@@ -2846,12 +2582,9 @@ class TestCallawaySantAnnaPreTreatment:
             first_treat = 10 if unit < n_units // 2 else 0
             for t in range(1, n_periods + 1):
                 outcome = np.random.randn() + (0.5 * t)  # Some time trend
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': outcome,
-                    'first_treat': first_treat
-                })
+                data.append(
+                    {"unit": unit, "time": t, "outcome": outcome, "first_treat": first_treat}
+                )
 
         df = pd.DataFrame(data)
 
@@ -2861,18 +2594,12 @@ class TestCallawaySantAnnaPreTreatment:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             results = cs.fit(
-                df,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
+                df, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
 
             # Should have warning about no post-treatment effects
             warning_messages = [str(warning.message) for warning in w]
-            has_warning = any(
-                "No post-treatment effects" in msg for msg in warning_messages
-            )
+            has_warning = any("No post-treatment effects" in msg for msg in warning_messages)
             assert has_warning, f"Expected warning about no post-treatment effects"
 
         # Verify overall ATT is NaN
@@ -2880,10 +2607,7 @@ class TestCallawaySantAnnaPreTreatment:
         assert np.isnan(results.overall_se), "overall_se should be NaN"
 
         # Verify we have pre-treatment effects
-        pre_treatment_effects = [
-            (g, t) for (g, t) in results.group_time_effects.keys()
-            if t < g
-        ]
+        pre_treatment_effects = [(g, t) for (g, t) in results.group_time_effects.keys() if t < g]
         assert len(pre_treatment_effects) > 0, "Should have pre-treatment effects"
 
         # Key test: bootstrap should have computed SEs for the pre-treatment effects
@@ -2895,17 +2619,17 @@ class TestCallawaySantAnnaPreTreatment:
             assert bootstrap_se is not None, f"Bootstrap SE missing for {gt}"
             # Bootstrap SE should be finite (it was computed, not analytical fallback)
             # Note: in the old code, these would be analytical SEs, not bootstrap
-            assert np.isfinite(bootstrap_se), (
-                f"Bootstrap SE for {gt} should be finite, got {bootstrap_se}"
-            )
+            assert np.isfinite(
+                bootstrap_se
+            ), f"Bootstrap SE for {gt} should be finite, got {bootstrap_se}"
 
         # Also verify overall bootstrap statistics are NaN
-        assert np.isnan(results.bootstrap_results.overall_att_se), (
-            "Overall ATT SE should be NaN when no post-treatment"
-        )
-        assert np.isnan(results.bootstrap_results.overall_att_p_value), (
-            "Overall ATT p-value should be NaN when no post-treatment"
-        )
+        assert np.isnan(
+            results.bootstrap_results.overall_att_se
+        ), "Overall ATT SE should be NaN when no post-treatment"
+        assert np.isnan(
+            results.bootstrap_results.overall_att_p_value
+        ), "Overall ATT p-value should be NaN when no post-treatment"
 
     def test_not_yet_treated_excludes_cohort_from_controls(self):
         """Not-yet-treated control excludes treated cohort g for pre-treatment periods.
@@ -2950,33 +2674,23 @@ class TestCallawaySantAnnaPreTreatment:
                     effect = 2.0
 
                 outcome = np.random.randn() + effect
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': outcome,
-                    'first_treat': first_treat
-                })
+                data.append(
+                    {"unit": unit, "time": t, "outcome": outcome, "first_treat": first_treat}
+                )
 
         df = pd.DataFrame(data)
 
         # Fit with not_yet_treated control group
         cs = CallawaySantAnna(
-            control_group="not_yet_treated",
-            base_period="varying"  # To get pre-treatment effects
+            control_group="not_yet_treated", base_period="varying"  # To get pre-treatment effects
         )
-        results = cs.fit(
-            df,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
-        )
+        results = cs.fit(df, outcome="outcome", unit="unit", time="time", first_treat="first_treat")
 
         # Check the group-time effects for pre-treatment ATT(g=7, t) where t < 7
         # These should have been computed using valid controls only
         for (g, t), eff in results.group_time_effects.items():
             if g == 7 and t < g:  # Pre-treatment for cohort 7
-                n_control = eff['n_control']
+                n_control = eff["n_control"]
                 # Control should include:
                 #   - 30 never-treated units
                 #   - 30 units from cohort g=4 (if t < 4, they're not yet treated either)
@@ -2997,9 +2711,9 @@ class TestCallawaySantAnnaPreTreatment:
                 )
 
                 # Also verify we have a reasonable number of controls
-                assert n_control >= 30, (
-                    f"ATT(g=7, t={t}): n_control={n_control} should be >= 30 (never-treated)."
-                )
+                assert (
+                    n_control >= 30
+                ), f"ATT(g=7, t={t}): n_control={n_control} should be >= 30 (never-treated)."
 
 
 class TestCallawaySantAnnaAnticipation:
@@ -3013,35 +2727,23 @@ class TestCallawaySantAnnaAnticipation:
         """
         # Generate staggered data with a clear treatment effect
         data = generate_staggered_data(
-            n_units=100,
-            n_periods=12,
-            n_cohorts=2,
-            treatment_effect=3.0,
-            seed=42
+            n_units=100, n_periods=12, n_cohorts=2, treatment_effect=3.0, seed=42
         )
 
         # Get treatment groups
-        groups = sorted(data[data['first_treat'] > 0]['first_treat'].unique())
+        groups = sorted(data[data["first_treat"] > 0]["first_treat"].unique())
         assert len(groups) >= 1, "Need at least one treatment group"
 
         # Fit without anticipation
         cs_no_antic = CallawaySantAnna(anticipation=0)
         res_no_antic = cs_no_antic.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Fit with anticipation=1
         cs_antic = CallawaySantAnna(anticipation=1)
         res_antic = cs_antic.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # With anticipation=1, group effects should include period g-1
@@ -3049,11 +2751,11 @@ class TestCallawaySantAnnaAnticipation:
         for g in groups:
             # Count effects included in group aggregation
             no_antic_effects = [
-                (gg, t) for (gg, t) in res_no_antic.group_time_effects.keys()
-                if gg == g and t >= g
+                (gg, t) for (gg, t) in res_no_antic.group_time_effects.keys() if gg == g and t >= g
             ]
             antic_effects = [
-                (gg, t) for (gg, t) in res_antic.group_time_effects.keys()
+                (gg, t)
+                for (gg, t) in res_antic.group_time_effects.keys()
                 if gg == g and t >= g - 1  # anticipation=1
             ]
 
@@ -3074,34 +2776,27 @@ class TestCallawaySantAnnaAnticipation:
             n_periods=10,
             n_cohorts=1,  # Single cohort for cleaner test
             treatment_effect=2.0,
-            seed=123
+            seed=123,
         )
 
         # Get the single treatment group
-        g = data[data['first_treat'] > 0]['first_treat'].iloc[0]
+        g = data[data["first_treat"] > 0]["first_treat"].iloc[0]
 
         # Fit with anticipation=2
         cs = CallawaySantAnna(anticipation=2)
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Check group effects exist
         if results.group_effects is not None and g in results.group_effects:
             # The group effect for g should aggregate periods t >= g - 2
             # Verify by checking which group-time effects exist
-            gt_for_group = [
-                (gg, t) for (gg, t) in results.group_time_effects.keys()
-                if gg == g
-            ]
+            gt_for_group = [(gg, t) for (gg, t) in results.group_time_effects.keys() if gg == g]
 
             # There should be effects at t = g - anticipation = g - 2
             # (if the data has that period)
-            min_period = data['time'].min()
+            min_period = data["time"].min()
             if g - 2 >= min_period:
                 # Period g-2 should be computed as an ATT(g,t)
                 has_antic_period = any(t == g - 2 for _, t in gt_for_group)
@@ -3121,19 +2816,23 @@ class TestCallawaySantAnnaAnticipation:
         the treatment effect (~3.0) instead of near zero.
         """
         data = generate_staggered_data(
-            n_units=100, n_periods=10, n_cohorts=2,
-            treatment_effect=3.0, seed=42,
+            n_units=100,
+            n_periods=10,
+            n_cohorts=2,
+            treatment_effect=3.0,
+            seed=42,
         )
 
         cs = CallawaySantAnna(anticipation=1, control_group="not_yet_treated")
         result = cs.fit(
-            data, outcome="outcome", unit="unit",
-            time="time", first_treat="first_treat",
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
         )
 
-        groups = sorted(
-            g for g in data[data["first_treat"] > 0]["first_treat"].unique()
-        )
+        groups = sorted(g for g in data[data["first_treat"] > 0]["first_treat"].unique())
 
         for g in groups:
             for (gg, t), eff in result.group_time_effects.items():
@@ -3155,37 +2854,29 @@ class TestCallawaySantAnnaTStatNaN:
         # Create data that will result in no valid post-treatment effects
         # This should produce NaN for overall statistics
         data = generate_staggered_data(
-            n_units=50,
-            n_periods=5,
-            n_cohorts=1,
-            treatment_effect=2.0,
-            seed=789
+            n_units=50, n_periods=5, n_cohorts=1, treatment_effect=2.0, seed=789
         )
         n_boot = ci_params.bootstrap(50)
 
         # Modify first_treat so all treatment happens after data ends
-        data['first_treat'] = data['first_treat'].replace(
-            data['first_treat'].unique()[data['first_treat'].unique() > 0],
-            data['time'].max() + 10
+        data["first_treat"] = data["first_treat"].replace(
+            data["first_treat"].unique()[data["first_treat"].unique() > 0], data["time"].max() + 10
         )
 
         import warnings
+
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
             results = cs.fit(
-                data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat'
+                data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
 
         # Overall t_stat should be NaN when SE is invalid
         if np.isnan(results.overall_se) or results.overall_se == 0:
-            assert np.isnan(results.overall_t_stat), (
-                "overall_t_stat should be NaN when SE is invalid"
-            )
+            assert np.isnan(
+                results.overall_t_stat
+            ), "overall_t_stat should be NaN when SE is invalid"
 
     def test_per_effect_tstat_consistency(self, ci_params):
         """Per-effect t_stat uses same NaN logic as overall t_stat.
@@ -3194,36 +2885,27 @@ class TestCallawaySantAnnaTStatNaN:
         """
         # Generate normal data
         data = generate_staggered_data(
-            n_units=60,
-            n_periods=8,
-            n_cohorts=2,
-            treatment_effect=2.0,
-            seed=456
+            n_units=60, n_periods=8, n_cohorts=2, treatment_effect=2.0, seed=456
         )
         n_boot = ci_params.bootstrap(100)
 
         cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
         results = cs.fit(
-            data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat'
+            data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
         )
 
         # Check all group-time effects
         for (g, t), effect_data in results.group_time_effects.items():
-            se = effect_data['se']
-            t_stat = effect_data['t_stat']
+            se = effect_data["se"]
+            t_stat = effect_data["t_stat"]
 
             if not np.isfinite(se) or se == 0:
                 assert np.isnan(t_stat), (
-                    f"t_stat for ({g}, {t}) should be NaN when SE={se}, "
-                    f"got t_stat={t_stat}"
+                    f"t_stat for ({g}, {t}) should be NaN when SE={se}, " f"got t_stat={t_stat}"
                 )
             else:
                 # t_stat should be effect / se
-                expected = effect_data['effect'] / se
+                expected = effect_data["effect"] / se
                 assert np.isclose(t_stat, expected), (
                     f"t_stat for ({g}, {t}) should be effect/SE, "
                     f"expected {expected}, got {t_stat}"
@@ -3232,24 +2914,22 @@ class TestCallawaySantAnnaTStatNaN:
         # Check event study effects if present
         if results.event_study_effects is not None:
             for e, effect_data in results.event_study_effects.items():
-                se = effect_data['se']
-                t_stat = effect_data['t_stat']
+                se = effect_data["se"]
+                t_stat = effect_data["t_stat"]
 
                 if not np.isfinite(se) or se == 0:
-                    assert np.isnan(t_stat), (
-                        f"event study t_stat for e={e} should be NaN when SE={se}"
-                    )
+                    assert np.isnan(
+                        t_stat
+                    ), f"event study t_stat for e={e} should be NaN when SE={se}"
 
         # Check group effects if present
         if results.group_effects is not None:
             for g, effect_data in results.group_effects.items():
-                se = effect_data['se']
-                t_stat = effect_data['t_stat']
+                se = effect_data["se"]
+                t_stat = effect_data["t_stat"]
 
                 if not np.isfinite(se) or se == 0:
-                    assert np.isnan(t_stat), (
-                        f"group t_stat for g={g} should be NaN when SE={se}"
-                    )
+                    assert np.isnan(t_stat), f"group t_stat for g={g} should be NaN when SE={se}"
 
     def test_aggregated_tstat_nan_when_se_zero(self):
         """Aggregated t_stat (event-study and group) is NaN when SE is zero or non-finite.
@@ -3268,12 +2948,9 @@ class TestCallawaySantAnnaTStatNaN:
             first_treat = 3 if unit < n_units // 2 else 0
             for t in range(1, n_periods + 1):
                 outcome = np.random.randn()
-                data.append({
-                    'unit': unit,
-                    'time': t,
-                    'outcome': outcome,
-                    'first_treat': first_treat
-                })
+                data.append(
+                    {"unit": unit, "time": t, "outcome": outcome, "first_treat": first_treat}
+                )
 
         df = pd.DataFrame(data)
 
@@ -3281,20 +2958,20 @@ class TestCallawaySantAnnaTStatNaN:
         cs = CallawaySantAnna(n_bootstrap=0)
         results = cs.fit(
             df,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='all'  # Get both event study and group effects
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="all",  # Get both event study and group effects
         )
 
         # Check that t_stat computation follows the correct pattern:
         # t_stat = effect / se if np.isfinite(se) and se > 0 else np.nan
         if results.event_study_effects:
             for e, data in results.event_study_effects.items():
-                se = data['se']
-                t_stat = data['t_stat']
-                effect = data['effect']
+                se = data["se"]
+                t_stat = data["t_stat"]
+                effect = data["effect"]
 
                 if not np.isfinite(se) or se <= 0:
                     assert np.isnan(t_stat), (
@@ -3310,9 +2987,9 @@ class TestCallawaySantAnnaTStatNaN:
 
         if results.group_effects:
             for g, data in results.group_effects.items():
-                se = data['se']
-                t_stat = data['t_stat']
-                effect = data['effect']
+                se = data["se"]
+                t_stat = data["t_stat"]
+                effect = data["effect"]
 
                 if not np.isfinite(se) or se <= 0:
                     assert np.isnan(t_stat), (
@@ -3322,8 +2999,7 @@ class TestCallawaySantAnnaTStatNaN:
                 else:
                     expected_t = effect / se
                     assert np.isclose(t_stat, expected_t, rtol=1e-10), (
-                        f"Group t_stat for g={g} should be effect/SE={expected_t}, "
-                        f"got {t_stat}"
+                        f"Group t_stat for g={g} should be effect/SE={expected_t}, " f"got {t_stat}"
                     )
 
     def test_event_study_universal_includes_reference_period(self):
@@ -3333,11 +3009,11 @@ class TestCallawaySantAnnaTStatNaN:
         cs = CallawaySantAnna(base_period="universal")
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         assert results.event_study_effects is not None, "event_study_effects should not be None"
@@ -3350,15 +3026,19 @@ class TestCallawaySantAnnaTStatNaN:
         ref = results.event_study_effects[-1]
 
         # Effect is 0 by construction (normalization)
-        assert ref['effect'] == 0.0, f"Reference period effect should be 0.0, got {ref['effect']}"
+        assert ref["effect"] == 0.0, f"Reference period effect should be 0.0, got {ref['effect']}"
         # Inference fields are NaN - this is a normalization constraint, not an estimated effect
-        assert np.isnan(ref['se']), f"Reference period SE should be NaN, got {ref['se']}"
-        assert np.isnan(ref['t_stat']), f"Reference period t_stat should be NaN, got {ref['t_stat']}"
-        assert np.isnan(ref['p_value']), f"Reference period p_value should be NaN, got {ref['p_value']}"
-        assert np.isnan(ref['conf_int'][0]) and np.isnan(ref['conf_int'][1]), (
-            f"Reference period CI should be (NaN, NaN), got {ref['conf_int']}"
-        )
-        assert ref['n_groups'] == 0, f"Reference period n_groups should be 0, got {ref['n_groups']}"
+        assert np.isnan(ref["se"]), f"Reference period SE should be NaN, got {ref['se']}"
+        assert np.isnan(
+            ref["t_stat"]
+        ), f"Reference period t_stat should be NaN, got {ref['t_stat']}"
+        assert np.isnan(
+            ref["p_value"]
+        ), f"Reference period p_value should be NaN, got {ref['p_value']}"
+        assert np.isnan(ref["conf_int"][0]) and np.isnan(
+            ref["conf_int"][1]
+        ), f"Reference period CI should be (NaN, NaN), got {ref['conf_int']}"
+        assert ref["n_groups"] == 0, f"Reference period n_groups should be 0, got {ref['n_groups']}"
 
     def test_event_study_varying_excludes_reference_period(self):
         """Test that varying base period does NOT artificially add e=-1 with effect=0."""
@@ -3367,11 +3047,11 @@ class TestCallawaySantAnnaTStatNaN:
         cs = CallawaySantAnna(base_period="varying")
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         assert results.event_study_effects is not None, "event_study_effects should not be None"
@@ -3380,9 +3060,9 @@ class TestCallawaySantAnnaTStatNaN:
         # The key is we don't artificially add a 0-effect entry
         if -1 in results.event_study_effects:
             # If it exists, it should be an actual computed effect, not 0.0 with n_groups=0
-            assert results.event_study_effects[-1]['n_groups'] > 0, (
-                "Varying mode should not artificially add e=-1 with n_groups=0"
-            )
+            assert (
+                results.event_study_effects[-1]["n_groups"] > 0
+            ), "Varying mode should not artificially add e=-1 with n_groups=0"
 
     def test_event_study_universal_with_anticipation(self):
         """Test reference period with anticipation > 0."""
@@ -3391,11 +3071,11 @@ class TestCallawaySantAnnaTStatNaN:
         cs = CallawaySantAnna(base_period="universal", anticipation=1)
         results = cs.fit(
             data,
-            outcome='outcome',
-            unit='unit',
-            time='time',
-            first_treat='first_treat',
-            aggregate='event_study'
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
         )
 
         assert results.event_study_effects is not None, "event_study_effects should not be None"
@@ -3406,12 +3086,12 @@ class TestCallawaySantAnnaTStatNaN:
             f"got periods: {list(results.event_study_effects.keys())}"
         )
         ref = results.event_study_effects[-2]
-        assert ref['effect'] == 0.0, f"Reference period effect should be 0.0, got {ref['effect']}"
+        assert ref["effect"] == 0.0, f"Reference period effect should be 0.0, got {ref['effect']}"
         # Inference fields are NaN - normalization constraint
-        assert np.isnan(ref['se']), f"Reference period SE should be NaN, got {ref['se']}"
-        assert np.isnan(ref['conf_int'][0]) and np.isnan(ref['conf_int'][1]), (
-            f"Reference period CI should be (NaN, NaN), got {ref['conf_int']}"
-        )
+        assert np.isnan(ref["se"]), f"Reference period SE should be NaN, got {ref['se']}"
+        assert np.isnan(ref["conf_int"][0]) and np.isnan(
+            ref["conf_int"][1]
+        ), f"Reference period CI should be (NaN, NaN), got {ref['conf_int']}"
 
     def test_event_study_universal_no_effects_raises_error(self):
         """Test that estimator raises error when no effects can be computed.
@@ -3423,22 +3103,24 @@ class TestCallawaySantAnnaTStatNaN:
 
         # Create minimal data with only never-treated units
         # This ensures no ATT(g,t) can be computed (no treatment groups)
-        data = pd.DataFrame({
-            'unit': [1, 1, 2, 2, 3, 3],
-            'time': [1, 2, 1, 2, 1, 2],
-            'outcome': [1.0, 1.1, 1.2, 1.3, 1.4, 1.5],
-            'first_treat': [0, 0, 0, 0, 0, 0],  # All never-treated
-        })
+        data = pd.DataFrame(
+            {
+                "unit": [1, 1, 2, 2, 3, 3],
+                "time": [1, 2, 1, 2, 1, 2],
+                "outcome": [1.0, 1.1, 1.2, 1.3, 1.4, 1.5],
+                "first_treat": [0, 0, 0, 0, 0, 0],  # All never-treated
+            }
+        )
 
         cs = CallawaySantAnna(base_period="universal")
         with pytest.raises(ValueError, match="Could not estimate any group-time effects"):
             cs.fit(
                 data,
-                outcome='outcome',
-                unit='unit',
-                time='time',
-                first_treat='first_treat',
-                aggregate='event_study'
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                aggregate="event_study",
             )
 
 
@@ -3472,9 +3154,239 @@ class TestCallawaySantAnnaCIBugFix:
         for (g, t), eff in results.group_time_effects.items():
             se = eff["se"]
             if not (np.isfinite(se) and se > 0):
-                assert_nan_inference({
-                    "se": se,
-                    "t_stat": eff["t_stat"],
-                    "p_value": eff["p_value"],
-                    "conf_int": eff["conf_int"],
-                })
+                assert_nan_inference(
+                    {
+                        "se": se,
+                        "t_stat": eff["t_stat"],
+                        "p_value": eff["p_value"],
+                        "conf_int": eff["conf_int"],
+                    }
+                )
+
+
+class TestPscoreTrimParameter:
+    """Tests for the pscore_trim parameter."""
+
+    def test_get_params_includes_pscore_trim(self):
+        """pscore_trim is included in get_params()."""
+        cs = CallawaySantAnna(pscore_trim=0.05)
+        params = cs.get_params()
+        assert "pscore_trim" in params
+        assert params["pscore_trim"] == 0.05
+
+    def test_set_params_pscore_trim(self):
+        """pscore_trim can be set via set_params()."""
+        cs = CallawaySantAnna()
+        cs.set_params(pscore_trim=0.1)
+        assert cs.pscore_trim == 0.1
+
+    def test_default_pscore_trim(self):
+        """Default pscore_trim is 0.01."""
+        cs = CallawaySantAnna()
+        assert cs.pscore_trim == 0.01
+
+
+class TestIRLSPropensityScore:
+    """Tests for IRLS-based propensity score estimation in CS estimator."""
+
+    def test_near_separation_warning_ipw(self):
+        """Near-separation emits warnings in the IPW path."""
+        np.random.seed(42)
+        n_units = 100
+        n_periods = 8
+
+        units = np.repeat(np.arange(n_units), n_periods)
+        times = np.tile(np.arange(n_periods), n_units)
+
+        # Create a covariate that strongly predicts treatment
+        x_strong = np.random.randn(n_units)
+        x_strong_expanded = np.repeat(x_strong, n_periods)
+
+        # Treatment perfectly aligned with covariate sign
+        first_treat = np.zeros(n_units)
+        first_treat[x_strong > 0] = 4
+        first_treat_expanded = np.repeat(first_treat, n_periods)
+
+        post = (times >= first_treat_expanded) & (first_treat_expanded > 0)
+        outcomes = 1.0 + x_strong_expanded + 2.0 * post + np.random.randn(len(units)) * 0.5
+
+        data = pd.DataFrame(
+            {
+                "unit": units,
+                "time": times,
+                "outcome": outcomes,
+                "first_treat": first_treat_expanded.astype(int),
+                "x_strong": x_strong_expanded,
+            }
+        )
+
+        cs = CallawaySantAnna(estimation_method="ipw")
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x_strong"],
+            )
+
+        # Should see propensity-related warnings
+        pscore_warns = [
+            x
+            for x in w
+            if "propensity" in str(x.message).lower()
+            or "separation" in str(x.message).lower()
+            or "trimmed" in str(x.message).lower()
+        ]
+        assert len(pscore_warns) > 0, "Expected propensity score warnings"
+        # ATT should still be reasonable (not wildly inflated)
+        assert results.overall_att is not None
+        assert np.isfinite(results.overall_att)
+
+    def test_near_separation_att_not_inflated(self):
+        """IRLS produces reasonable ATT even with near-separation covariates.
+
+        This is the key regression test for the reported bug: BFGS-based logit
+        produced wildly inflated ATT (~2.38 vs 0.45-1.15 in reference packages)
+        under near-separation conditions.
+        """
+        np.random.seed(123)
+        n_units = 200
+        n_periods = 8
+        true_effect = 2.0
+
+        units = np.repeat(np.arange(n_units), n_periods)
+        times = np.tile(np.arange(n_periods), n_units)
+
+        # Covariate that creates near-separation
+        x = np.random.randn(n_units) * 3  # large scale
+        x_expanded = np.repeat(x, n_periods)
+
+        # Treatment correlated with covariate but not perfect
+        treat_prob = 1 / (1 + np.exp(-x))
+        first_treat = np.zeros(n_units)
+        first_treat[treat_prob > 0.5] = 4
+        first_treat_expanded = np.repeat(first_treat, n_periods)
+
+        post = (times >= first_treat_expanded) & (first_treat_expanded > 0)
+        outcomes = 1.0 + x_expanded * 0.5 + true_effect * post + np.random.randn(len(units)) * 0.5
+
+        data = pd.DataFrame(
+            {
+                "unit": units,
+                "time": times,
+                "outcome": outcomes,
+                "first_treat": first_treat_expanded.astype(int),
+                "x": x_expanded,
+            }
+        )
+
+        cs = CallawaySantAnna(estimation_method="dr")
+
+        import warnings
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            results = cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x"],
+            )
+
+        # ATT should be in a reasonable range around the true effect
+        assert results.overall_att is not None
+        assert (
+            abs(results.overall_att - true_effect) < 3.0
+        ), f"ATT={results.overall_att} too far from true effect {true_effect}"
+
+    def test_dr_fallback_warning(self):
+        """DR path emits warning when propensity estimation fails."""
+        from unittest.mock import patch
+
+        data = generate_staggered_data_with_covariates(seed=42)
+
+        cs = CallawaySantAnna(estimation_method="dr")
+
+        with patch("diff_diff.staggered.solve_logit", side_effect=ValueError("test")):
+            import warnings
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                results = cs.fit(
+                    data,
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                    covariates=["x1"],
+                )
+
+            fallback_warns = [x for x in w if "Falling back to unconditional" in str(x.message)]
+            assert len(fallback_warns) > 0, "Expected fallback warning in DR path"
+            assert results.overall_att is not None
+
+    def test_large_scale_covariate_stability(self):
+        """IRLS handles large-scale covariates without wild ATT inflation.
+
+        Mimics scenario from Dias & Fontes (2024) audit where covariates
+        like poptotaltrend (population in millions) caused near-separation.
+        """
+        np.random.seed(456)
+        n_units = 150
+        n_periods = 8
+        true_effect = 1.5
+
+        units = np.repeat(np.arange(n_units), n_periods)
+        times = np.tile(np.arange(n_periods), n_units)
+
+        # Large-scale covariate (like population totals in millions)
+        x_large = np.random.randn(n_units) * 1e6
+        x_expanded = np.repeat(x_large, n_periods)
+
+        # Treatment mildly correlated with covariate
+        first_treat = np.zeros(n_units)
+        first_treat[x_large > np.median(x_large)] = 4
+        first_treat_expanded = np.repeat(first_treat, n_periods)
+
+        post = (times >= first_treat_expanded) & (first_treat_expanded > 0)
+        outcomes = 5.0 + x_expanded * 1e-7 + true_effect * post + np.random.randn(len(units)) * 0.5
+
+        data = pd.DataFrame(
+            {
+                "unit": units,
+                "time": times,
+                "outcome": outcomes,
+                "first_treat": first_treat_expanded.astype(int),
+                "x_large": x_expanded,
+            }
+        )
+
+        cs = CallawaySantAnna(estimation_method="dr")
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x_large"],
+            )
+
+        assert results.overall_att is not None
+        assert np.isfinite(results.overall_att)
+        # ATT should be in a plausible range
+        assert (
+            abs(results.overall_att - true_effect) < 5.0
+        ), f"ATT={results.overall_att} too far from true effect {true_effect}"

@@ -51,16 +51,15 @@ def _check_triplediff_available() -> bool:
             try:
                 result = subprocess.run(
                     [
-                        "Rscript", "-e",
+                        "Rscript",
+                        "-e",
                         "library(triplediff); library(jsonlite); cat('OK')",
                     ],
                     capture_output=True,
                     text=True,
                     timeout=30,
                 )
-                _triplediff_available_cache = (
-                    result.returncode == 0 and "OK" in result.stdout
-                )
+                _triplediff_available_cache = result.returncode == 0 and "OK" in result.stdout
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 _triplediff_available_cache = False
     return _triplediff_available_cache
@@ -83,9 +82,7 @@ def require_triplediff(triplediff_available):
 # Data Helpers
 # =============================================================================
 
-_R_RESULTS_PATH = (
-    _REPO_ROOT / "benchmarks" / "data" / "synthetic" / "ddd_r_results.json"
-)
+_R_RESULTS_PATH = _REPO_ROOT / "benchmarks" / "data" / "synthetic" / "ddd_r_results.json"
 
 
 def _load_r_results():
@@ -112,32 +109,34 @@ def _generate_hand_calculable_ddd() -> pd.DataFrame:
     DiD(control): (3 - 2) = 1
     DDD = 4 - 1 = 3.0
     """
-    data = pd.DataFrame({
-        "outcome": [10, 10, 18, 18,   6, 6, 10, 10,   5, 5, 8, 8,   3, 3, 5, 5],
-        "group":   [ 1,  1,  1,  1,   1, 1,  1,  1,   0, 0, 0, 0,   0, 0, 0, 0],
-        "partition":[1,  1,  1,  1,   0, 0,  0,  0,   1, 1, 1, 1,   0, 0, 0, 0],
-        "time":    [ 0,  0,  1,  1,   0, 0,  1,  1,   0, 0, 1, 1,   0, 0, 1, 1],
-        "unit_id": list(range(16)),
-    })
+    data = pd.DataFrame(
+        {
+            "outcome": [10, 10, 18, 18, 6, 6, 10, 10, 5, 5, 8, 8, 3, 3, 5, 5],
+            "group": [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+            "partition": [1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],
+            "time": [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1],
+            "unit_id": list(range(16)),
+        }
+    )
     return data
 
 
 def _load_r_dgp_data(dgp_num: int) -> pd.DataFrame:
     """Load R-generated DGP data, mapping columns to Python convention."""
-    csv_path = (
-        _REPO_ROOT / "benchmarks" / "data" / "synthetic" / f"ddd_r_dgp{dgp_num}.csv"
-    )
+    csv_path = _REPO_ROOT / "benchmarks" / "data" / "synthetic" / f"ddd_r_dgp{dgp_num}.csv"
     if not csv_path.exists():
         pytest.skip(f"R DGP{dgp_num} data CSV not available")
     df = pd.read_csv(csv_path)
     # Map R columns to Python convention
-    df = df.rename(columns={
-        "y": "outcome",
-        "state": "group",
-        "partition": "partition",
-        "time": "time",
-        "id": "unit_id",
-    })
+    df = df.rename(
+        columns={
+            "y": "outcome",
+            "state": "group",
+            "partition": "partition",
+            "time": "time",
+            "id": "unit_id",
+        }
+    )
     # R uses time in {1, 2}, map to {0, 1}
     df["time"] = (df["time"] - 1).astype(int)
     return df
@@ -152,7 +151,7 @@ def _run_r_triplediff(
     escaped_path = data_path.replace("\\", "/")
     xformla = "~cov1+cov2+cov3+cov4" if covariates else "~1"
 
-    r_script = f'''
+    r_script = f"""
     suppressMessages(library(triplediff))
     suppressMessages(library(jsonlite))
 
@@ -179,7 +178,7 @@ def _run_r_triplediff(
     )
 
     cat(toJSON(output, pretty = TRUE, digits = 15))
-    '''
+    """
 
     result = subprocess.run(
         ["Rscript", "-e", r_script],
@@ -217,7 +216,9 @@ class TestHandCalculation:
                 time="time",
             )
             np.testing.assert_allclose(
-                results.att, 3.0, atol=1e-10,
+                results.att,
+                3.0,
+                atol=1e-10,
                 err_msg=f"ATT ({method}) should be 3.0 by hand calculation",
             )
 
@@ -231,12 +232,18 @@ class TestHandCalculation:
         T = data["time"].values.astype(float)
         y = data["outcome"].values.astype(float)
 
-        X = np.column_stack([
-            np.ones(len(y)),
-            G, P, T,
-            G * P, G * T, P * T,
-            G * P * T,
-        ])
+        X = np.column_stack(
+            [
+                np.ones(len(y)),
+                G,
+                P,
+                T,
+                G * P,
+                G * T,
+                P * T,
+                G * P * T,
+            ]
+        )
         beta_ols = np.linalg.lstsq(X, y, rcond=None)[0]
         ols_att = beta_ols[7]  # coefficient on G*P*T
 
@@ -251,7 +258,9 @@ class TestHandCalculation:
         )
 
         np.testing.assert_allclose(
-            results.att, ols_att, rtol=1e-6,
+            results.att,
+            ols_att,
+            rtol=1e-6,
             err_msg="RA ATT should match G*P*T OLS coefficient (no covariates)",
         )
 
@@ -272,11 +281,15 @@ class TestHandCalculation:
             atts[method] = results.att
 
         np.testing.assert_allclose(
-            atts["ipw"], atts["reg"], rtol=1e-6,
+            atts["ipw"],
+            atts["reg"],
+            rtol=1e-6,
             err_msg="IPW and REG ATT should agree without covariates",
         )
         np.testing.assert_allclose(
-            atts["dr"], atts["reg"], rtol=1e-6,
+            atts["dr"],
+            atts["reg"],
+            rtol=1e-6,
             err_msg="DR and REG ATT should agree without covariates",
         )
 
@@ -297,11 +310,15 @@ class TestHandCalculation:
             ses[method] = results.se
 
         np.testing.assert_allclose(
-            ses["ipw"], ses["reg"], rtol=1e-4,
+            ses["ipw"],
+            ses["reg"],
+            rtol=1e-4,
             err_msg="IPW and REG SE should agree without covariates",
         )
         np.testing.assert_allclose(
-            ses["dr"], ses["reg"], rtol=1e-4,
+            ses["dr"],
+            ses["reg"],
+            rtol=1e-4,
             err_msg="DR and REG SE should agree without covariates",
         )
 
@@ -349,7 +366,10 @@ class TestHandCalculation:
         df = max(df, 1)
 
         t_stat, p_value, conf_int = safe_inference(
-            results.att, results.se, alpha=0.05, df=df,
+            results.att,
+            results.se,
+            alpha=0.05,
+            df=df,
         )
 
         np.testing.assert_allclose(results.t_stat, t_stat, rtol=1e-10)
@@ -384,7 +404,9 @@ class TestHandCalculation:
         for cell, expected in expected_means.items():
             actual = results.group_means[cell]
             np.testing.assert_allclose(
-                actual, expected, atol=1e-10,
+                actual,
+                expected,
+                atol=1e-10,
                 err_msg=f"Cell mean mismatch for {cell}",
             )
 
@@ -430,12 +452,16 @@ class TestRComparisonPrecomputed:
         # Use atol for near-zero ATTs
         if abs(r_att) < 0.1:
             np.testing.assert_allclose(
-                results.att, r_att, atol=0.05,
+                results.att,
+                r_att,
+                atol=0.05,
                 err_msg=f"ATT ({method} nocov DGP1): Py={results.att:.6f}, R={r_att:.6f}",
             )
         else:
             np.testing.assert_allclose(
-                results.att, r_att, rtol=0.01,
+                results.att,
+                r_att,
+                rtol=0.01,
                 err_msg=f"ATT ({method} nocov DGP1): Py={results.att:.6f}, R={r_att:.6f}",
             )
 
@@ -456,7 +482,9 @@ class TestRComparisonPrecomputed:
         )
 
         np.testing.assert_allclose(
-            results.se, r_se, rtol=0.01,
+            results.se,
+            r_se,
+            rtol=0.01,
             err_msg=f"SE ({method} nocov DGP1): Py={results.se:.6f}, R={r_se:.6f}",
         )
 
@@ -480,12 +508,16 @@ class TestRComparisonPrecomputed:
 
         if abs(r_att) < 0.1:
             np.testing.assert_allclose(
-                results.att, r_att, atol=0.05,
+                results.att,
+                r_att,
+                atol=0.05,
                 err_msg=f"ATT ({method} cov DGP1): Py={results.att:.6f}, R={r_att:.6f}",
             )
         else:
             np.testing.assert_allclose(
-                results.att, r_att, rtol=0.01,
+                results.att,
+                r_att,
+                rtol=0.01,
                 err_msg=f"ATT ({method} cov DGP1): Py={results.att:.6f}, R={r_att:.6f}",
             )
 
@@ -508,7 +540,9 @@ class TestRComparisonPrecomputed:
         )
 
         np.testing.assert_allclose(
-            results.se, r_se, rtol=0.01,
+            results.se,
+            r_se,
+            rtol=0.01,
             err_msg=f"SE ({method} cov DGP1): Py={results.se:.6f}, R={r_se:.6f}",
         )
 
@@ -536,18 +570,24 @@ class TestRComparisonPrecomputed:
             # ATT check
             if abs(r_att) < 0.1:
                 np.testing.assert_allclose(
-                    results.att, r_att, atol=0.05,
+                    results.att,
+                    r_att,
+                    atol=0.05,
                     err_msg=f"DR ATT (DGP{dgp} {cov_suffix}): Py={results.att:.6f}, R={r_att:.6f}",
                 )
             else:
                 np.testing.assert_allclose(
-                    results.att, r_att, rtol=0.01,
+                    results.att,
+                    r_att,
+                    rtol=0.01,
                     err_msg=f"DR ATT (DGP{dgp} {cov_suffix}): Py={results.att:.6f}, R={r_att:.6f}",
                 )
 
             # SE check
             np.testing.assert_allclose(
-                results.se, r_se, rtol=0.01,
+                results.se,
+                r_se,
+                rtol=0.01,
                 err_msg=f"DR SE (DGP{dgp} {cov_suffix}): Py={results.se:.6f}, R={r_se:.6f}",
             )
 
@@ -572,13 +612,15 @@ class TestRComparisonLive:
         csv_path = tmp_dir / "ddd_data.csv"
 
         # Map to R column convention
-        r_data = data.rename(columns={
-            "outcome": "y",
-            "group": "state",
-            "partition": "partition",
-            "time": "time",
-            "unit_id": "id",
-        })
+        r_data = data.rename(
+            columns={
+                "outcome": "y",
+                "group": "state",
+                "partition": "partition",
+                "time": "time",
+                "unit_id": "id",
+            }
+        )
         # R expects time in {1, 2}
         r_data["time"] = r_data["time"] + 1
         # Add covariate columns named cov1-cov4 if they exist
@@ -610,12 +652,16 @@ class TestRComparisonLive:
 
         if abs(r_att) < 0.1:
             np.testing.assert_allclose(
-                py_result.att, r_att, atol=0.05,
+                py_result.att,
+                r_att,
+                atol=0.05,
                 err_msg=f"Live ATT ({method} nocov): Py={py_result.att:.6f}, R={r_att:.6f}",
             )
         else:
             np.testing.assert_allclose(
-                py_result.att, r_att, rtol=0.01,
+                py_result.att,
+                r_att,
+                rtol=0.01,
                 err_msg=f"Live ATT ({method} nocov): Py={py_result.att:.6f}, R={r_att:.6f}",
             )
 
@@ -637,7 +683,9 @@ class TestRComparisonLive:
         )
 
         np.testing.assert_allclose(
-            py_result.se, r_se, rtol=0.01,
+            py_result.se,
+            r_se,
+            rtol=0.01,
             err_msg=f"Live SE ({method} nocov): Py={py_result.se:.6f}, R={r_se:.6f}",
         )
 
@@ -665,15 +713,17 @@ class TestEdgeCases:
             )
 
             assert np.isfinite(results.att), f"ATT should be finite ({method})"
-            assert np.isfinite(results.se) and results.se > 0, (
-                f"SE should be positive and finite ({method})"
-            )
+            assert (
+                np.isfinite(results.se) and results.se > 0
+            ), f"SE should be positive and finite ({method})"
             assert results.n_obs == 24  # 8 cells × 3
 
     def test_zero_treatment_effect(self):
         """ATT near zero when true effect is zero; inference still valid."""
         data = generate_ddd_data(
-            n_per_cell=200, treatment_effect=0.0, seed=42,
+            n_per_cell=200,
+            treatment_effect=0.0,
+            seed=42,
         )
 
         ddd = TripleDifference(estimation_method="dr")
@@ -686,9 +736,9 @@ class TestEdgeCases:
         )
 
         # ATT should be near zero (within ~2 SE)
-        assert abs(results.att) < 2 * results.se, (
-            f"ATT={results.att:.4f} too far from zero (SE={results.se:.4f})"
-        )
+        assert (
+            abs(results.att) < 2 * results.se
+        ), f"ATT={results.att:.4f} too far from zero (SE={results.se:.4f})"
         # Inference should still be valid
         assert np.isfinite(results.t_stat)
         assert 0 <= results.p_value <= 1
@@ -702,7 +752,7 @@ class TestEdgeCases:
         unit_id = 0
         # Heavily imbalanced: 5 in treated eligible, 200 in control ineligible
         sizes = {
-            (1, 1): 5,   # G=1, P=1 (very small)
+            (1, 1): 5,  # G=1, P=1 (very small)
             (1, 0): 200,  # G=1, P=0 (large)
             (0, 1): 200,  # G=0, P=1 (large)
             (0, 0): 200,  # G=0, P=0 (large)
@@ -713,13 +763,15 @@ class TestEdgeCases:
                     y = 10 + 2 * g + 1 * p + 0.5 * t + rng.normal(0, 1)
                     if g == 1 and p == 1 and t == 1:
                         y += 3.0
-                    records.append({
-                        "outcome": y,
-                        "group": g,
-                        "partition": p,
-                        "time": t,
-                        "unit_id": unit_id,
-                    })
+                    records.append(
+                        {
+                            "outcome": y,
+                            "group": g,
+                            "partition": p,
+                            "time": t,
+                            "unit_id": unit_id,
+                        }
+                    )
                     unit_id += 1
         data = pd.DataFrame(records)
 
@@ -738,16 +790,32 @@ class TestEdgeCases:
     def test_nan_inference_when_se_zero(self):
         """All inference fields are NaN when SE is zero or invalid."""
         # Create perfectly deterministic data (zero variance in all cells)
-        data = pd.DataFrame({
-            "outcome": [10.0, 10.0, 18.0, 18.0,
-                         6.0,  6.0, 10.0, 10.0,
-                         5.0,  5.0,  8.0,  8.0,
-                         3.0,  3.0,  5.0,  5.0],
-            "group":    [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-            "partition": [1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],
-            "time":      [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1],
-            "unit_id":  list(range(16)),
-        })
+        data = pd.DataFrame(
+            {
+                "outcome": [
+                    10.0,
+                    10.0,
+                    18.0,
+                    18.0,
+                    6.0,
+                    6.0,
+                    10.0,
+                    10.0,
+                    5.0,
+                    5.0,
+                    8.0,
+                    8.0,
+                    3.0,
+                    3.0,
+                    5.0,
+                    5.0,
+                ],
+                "group": [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+                "partition": [1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],
+                "time": [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1],
+                "unit_id": list(range(16)),
+            }
+        )
 
         ddd = TripleDifference(estimation_method="reg")
         results = ddd.fit(
@@ -761,17 +829,22 @@ class TestEdgeCases:
         # With zero within-cell variance, SE should be zero
         # and safe_inference should produce NaN t_stat/p_value
         if results.se == 0.0:
-            assert_nan_inference({
-                "se": results.se,
-                "t_stat": results.t_stat,
-                "p_value": results.p_value,
-                "conf_int": results.conf_int,
-            })
+            assert_nan_inference(
+                {
+                    "se": results.se,
+                    "t_stat": results.t_stat,
+                    "p_value": results.p_value,
+                    "conf_int": results.conf_int,
+                }
+            )
 
     def test_large_treatment_effect(self):
         """Large treatment effect is detected correctly."""
         data = generate_ddd_data(
-            n_per_cell=100, treatment_effect=50.0, noise_sd=1.0, seed=42,
+            n_per_cell=100,
+            treatment_effect=50.0,
+            noise_sd=1.0,
+            seed=42,
         )
 
         ddd = TripleDifference(estimation_method="dr")
@@ -784,7 +857,9 @@ class TestEdgeCases:
         )
 
         np.testing.assert_allclose(
-            results.att, 50.0, rtol=0.1,
+            results.att,
+            50.0,
+            rtol=0.1,
             err_msg=f"ATT={results.att:.2f} should be near 50.0",
         )
         assert results.p_value < 0.001, "Large effect should be highly significant"
@@ -792,7 +867,9 @@ class TestEdgeCases:
     def test_covariates_reduce_se(self):
         """Adding relevant covariates reduces SE."""
         data = generate_ddd_data(
-            n_per_cell=200, seed=42, add_covariates=True,
+            n_per_cell=200,
+            seed=42,
+            add_covariates=True,
         )
 
         # Without covariates
@@ -835,7 +912,9 @@ class TestScaleValidation:
         """ATT converges to true effect as sample size increases."""
         true_effect = 3.0
         data = generate_ddd_data(
-            n_per_cell=n_per_cell, treatment_effect=true_effect, seed=42,
+            n_per_cell=n_per_cell,
+            treatment_effect=true_effect,
+            seed=42,
         )
 
         ddd = TripleDifference(estimation_method="dr")
@@ -870,9 +949,7 @@ class TestScaleValidation:
 
         # Quadrupling n should halve SE (approximately)
         se_ratio = ses[100] / ses[400]
-        assert 1.3 < se_ratio < 3.0, (
-            f"SE ratio (n=100/n=400) = {se_ratio:.2f}, expected ~2.0"
-        )
+        assert 1.3 < se_ratio < 3.0, f"SE ratio (n=100/n=400) = {se_ratio:.2f}, expected ~2.0"
 
 
 # =============================================================================
@@ -911,12 +988,16 @@ class TestAllDGPMethods:
 
         if abs(r_att) < 0.1:
             np.testing.assert_allclose(
-                results.att, r_att, atol=0.05,
+                results.att,
+                r_att,
+                atol=0.05,
                 err_msg=f"ATT ({method} nocov DGP{dgp})",
             )
         else:
             np.testing.assert_allclose(
-                results.att, r_att, rtol=0.01,
+                results.att,
+                r_att,
+                rtol=0.01,
                 err_msg=f"ATT ({method} nocov DGP{dgp})",
             )
 
@@ -938,7 +1019,9 @@ class TestAllDGPMethods:
         )
 
         np.testing.assert_allclose(
-            results.se, r_se, rtol=0.01,
+            results.se,
+            r_se,
+            rtol=0.01,
             err_msg=f"SE ({method} nocov DGP{dgp})",
         )
 
@@ -963,12 +1046,16 @@ class TestAllDGPMethods:
 
         if abs(r_att) < 0.1:
             np.testing.assert_allclose(
-                results.att, r_att, atol=0.05,
+                results.att,
+                r_att,
+                atol=0.05,
                 err_msg=f"ATT ({method} cov DGP{dgp})",
             )
         else:
             np.testing.assert_allclose(
-                results.att, r_att, rtol=0.01,
+                results.att,
+                r_att,
+                rtol=0.01,
                 err_msg=f"ATT ({method} cov DGP{dgp})",
             )
 
@@ -992,7 +1079,9 @@ class TestAllDGPMethods:
         )
 
         np.testing.assert_allclose(
-            results.se, r_se, rtol=0.01,
+            results.se,
+            r_se,
+            rtol=0.01,
             err_msg=f"SE ({method} cov DGP{dgp})",
         )
 
@@ -1011,12 +1100,16 @@ class TestParamsAndResults:
         params = ddd.get_params()
 
         expected_keys = {
-            "estimation_method", "robust", "cluster", "alpha",
-            "pscore_trim", "rank_deficient_action",
+            "estimation_method",
+            "robust",
+            "cluster",
+            "alpha",
+            "pscore_trim",
+            "rank_deficient_action",
         }
-        assert expected_keys.issubset(params.keys()), (
-            f"Missing params: {expected_keys - params.keys()}"
-        )
+        assert expected_keys.issubset(
+            params.keys()
+        ), f"Missing params: {expected_keys - params.keys()}"
 
     def test_set_params_modifies_attributes(self):
         """set_params() modifies estimator attributes."""
@@ -1039,8 +1132,15 @@ class TestParamsAndResults:
         )
 
         d = results.to_dict()
-        for key in ["att", "se", "t_stat", "p_value", "n_obs",
-                     "estimation_method", "inference_method"]:
+        for key in [
+            "att",
+            "se",
+            "t_stat",
+            "p_value",
+            "n_obs",
+            "estimation_method",
+            "inference_method",
+        ]:
             assert key in d, f"Missing key '{key}' in to_dict()"
 
     def test_summary_contains_key_info(self):
@@ -1117,14 +1217,13 @@ class TestParameterFunctionality:
                 covariates=["age", "age_dup"],
             )
         rank_warnings = [
-            x for x in w
+            x
+            for x in w
             if "rank" in str(x.message).lower()
             or "collinear" in str(x.message).lower()
             or "dependent" in str(x.message).lower()
         ]
-        assert len(rank_warnings) > 0, (
-            "Expected rank deficiency warning for collinear covariates"
-        )
+        assert len(rank_warnings) > 0, "Expected rank deficiency warning for collinear covariates"
         assert np.isfinite(result.att)
 
     def test_rank_deficient_action_silent(self):
@@ -1133,7 +1232,8 @@ class TestParameterFunctionality:
         data["age_dup"] = data["age"]
 
         ddd = TripleDifference(
-            estimation_method="reg", rank_deficient_action="silent",
+            estimation_method="reg",
+            rank_deficient_action="silent",
         )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -1146,14 +1246,13 @@ class TestParameterFunctionality:
                 covariates=["age", "age_dup"],
             )
         rank_warnings = [
-            x for x in w
+            x
+            for x in w
             if "rank" in str(x.message).lower()
             or "collinear" in str(x.message).lower()
             or "dependent" in str(x.message).lower()
         ]
-        assert len(rank_warnings) == 0, (
-            "Expected no rank deficiency warnings with action='silent'"
-        )
+        assert len(rank_warnings) == 0, "Expected no rank deficiency warnings with action='silent'"
         assert np.isfinite(result.att)
 
     def test_cluster_se_functional(self):
@@ -1201,12 +1300,10 @@ class TestParameterFunctionality:
                 partition="partition",
                 time="time",
             )
-        low_count_warnings = [
-            x for x in w if "low observation" in str(x.message).lower()
-        ]
-        assert len(low_count_warnings) > 0, (
-            "Expected low observation count warning for n_per_cell=5"
-        )
+        low_count_warnings = [x for x in w if "low observation" in str(x.message).lower()]
+        assert (
+            len(low_count_warnings) > 0
+        ), "Expected low observation count warning for n_per_cell=5"
         assert np.isfinite(result.att)
 
     def test_robust_param_is_noop(self):
@@ -1238,8 +1335,7 @@ class TestParameterFunctionality:
 
         ddd = TripleDifference(estimation_method="dr", cluster="cluster_id")
         with pytest.raises(ValueError, match="at least 2 clusters"):
-            ddd.fit(data, outcome="outcome", group="group",
-                    partition="partition", time="time")
+            ddd.fit(data, outcome="outcome", group="group", partition="partition", time="time")
 
     def test_cluster_nan_ids_raises(self):
         """NaN cluster IDs raise ValueError."""
@@ -1249,8 +1345,7 @@ class TestParameterFunctionality:
 
         ddd = TripleDifference(estimation_method="dr", cluster="cluster_id")
         with pytest.raises(ValueError, match="missing values"):
-            ddd.fit(data, outcome="outcome", group="group",
-                    partition="partition", time="time")
+            ddd.fit(data, outcome="outcome", group="group", partition="partition", time="time")
 
     def test_overlap_warning_on_imbalanced_data(self):
         """Poor overlap triggers warning for IPW/DR."""
@@ -1265,21 +1360,35 @@ class TestParameterFunctionality:
                     y = 10 + 2 * g + p + 0.5 * t + rng.normal(0, 1)
                     if g == 1 and p == 1 and t == 1:
                         y += 3.0
-                    records.append({"outcome": y, "group": g, "partition": p,
-                                    "time": t, "unit_id": unit_id,
-                                    "cov1": rng.normal(0, 1)})
+                    records.append(
+                        {
+                            "outcome": y,
+                            "group": g,
+                            "partition": p,
+                            "time": t,
+                            "unit_id": unit_id,
+                            "cov1": rng.normal(0, 1),
+                        }
+                    )
                     unit_id += 1
         data = pd.DataFrame(records)
 
         ddd = TripleDifference(estimation_method="ipw")
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = ddd.fit(data, outcome="outcome", group="group",
-                             partition="partition", time="time",
-                             covariates=["cov1"])
-        overlap_warnings = [x for x in w
-                            if "overlap" in str(x.message).lower()
-                            and "trimmed" in str(x.message).lower()]
+            result = ddd.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                partition="partition",
+                time="time",
+                covariates=["cov1"],
+            )
+        overlap_warnings = [
+            x
+            for x in w
+            if "overlap" in str(x.message).lower() and "trimmed" in str(x.message).lower()
+        ]
         assert len(overlap_warnings) > 0
         assert np.isfinite(result.att)
 
@@ -1295,18 +1404,30 @@ class TestParameterFunctionality:
                     y = 10 + 2 * g + p + 0.5 * t + rng.normal(0, 1)
                     if g == 1 and p == 1 and t == 1:
                         y += 3.0
-                    records.append({"outcome": y, "group": g, "partition": p,
-                                    "time": t, "unit_id": unit_id,
-                                    "cov1": rng.normal(0, 1)})
+                    records.append(
+                        {
+                            "outcome": y,
+                            "group": g,
+                            "partition": p,
+                            "time": t,
+                            "unit_id": unit_id,
+                            "cov1": rng.normal(0, 1),
+                        }
+                    )
                     unit_id += 1
         data = pd.DataFrame(records)
 
         ddd = TripleDifference(estimation_method="reg")
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = ddd.fit(data, outcome="outcome", group="group",
-                             partition="partition", time="time",
-                             covariates=["cov1"])
+            result = ddd.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                partition="partition",
+                time="time",
+                covariates=["cov1"],
+            )
         overlap_warnings = [x for x in w if "overlap" in str(x.message).lower()]
         assert len(overlap_warnings) == 0
 
@@ -1319,17 +1440,23 @@ class TestParameterFunctionality:
             raise RuntimeError("Forced PS failure for testing")
 
         import diff_diff.triple_diff as td_module
-        monkeypatch.setattr(td_module, "_logistic_regression", _failing_lr)
+
+        monkeypatch.setattr(td_module, "solve_logit", _failing_lr)
 
         ddd = TripleDifference(estimation_method=method)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = ddd.fit(data, outcome="outcome", group="group",
-                             partition="partition", time="time",
-                             covariates=["age"])
-        ps_warnings = [x for x in w
-                       if "propensity score estimation failed"
-                       in str(x.message).lower()]
+            result = ddd.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                partition="partition",
+                time="time",
+                covariates=["age"],
+            )
+        ps_warnings = [
+            x for x in w if "propensity score estimation failed" in str(x.message).lower()
+        ]
         assert len(ps_warnings) > 0, "Expected PS fallback warning"
         assert np.isfinite(result.att)
         assert np.isfinite(result.se) and result.se > 0
@@ -1349,26 +1476,33 @@ class TestParameterFunctionality:
             return att, inf
 
         monkeypatch.setattr(
-            td_module.TripleDifference, "_compute_did_rc", _did_rc_with_nan,
+            td_module.TripleDifference,
+            "_compute_did_rc",
+            _did_rc_with_nan,
         )
 
         ddd = TripleDifference(estimation_method=method)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = ddd.fit(data, outcome="outcome", group="group",
-                             partition="partition", time="time",
-                             covariates=["age"])
-        nonfinite_warnings = [
-            x for x in w if "non-finite" in str(x.message).lower()
-        ]
+            result = ddd.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                partition="partition",
+                time="time",
+                covariates=["age"],
+            )
+        nonfinite_warnings = [x for x in w if "non-finite" in str(x.message).lower()]
         assert len(nonfinite_warnings) > 0, "Expected non-finite IF warning"
         assert np.isnan(result.se), "SE should be NaN when IF has non-finite values"
-        assert_nan_inference({
-            "se": result.se,
-            "t_stat": result.t_stat,
-            "p_value": result.p_value,
-            "conf_int": result.conf_int,
-        })
+        assert_nan_inference(
+            {
+                "se": result.se,
+                "t_stat": result.t_stat,
+                "p_value": result.p_value,
+                "conf_int": result.conf_int,
+            }
+        )
 
     def test_r_squared_respects_rank_deficient_action(self):
         """r_squared computation uses estimator's rank_deficient_action, not hardcoded 'silent'."""
@@ -1377,33 +1511,45 @@ class TestParameterFunctionality:
 
         # "silent" should suppress ALL rank warnings (both main and r_squared paths)
         ddd_silent = TripleDifference(
-            estimation_method="reg", rank_deficient_action="silent",
+            estimation_method="reg",
+            rank_deficient_action="silent",
         )
         with warnings.catch_warnings(record=True) as w_silent:
             warnings.simplefilter("always")
             result_silent = ddd_silent.fit(
-                data, outcome="outcome", group="group",
-                partition="partition", time="time",
+                data,
+                outcome="outcome",
+                group="group",
+                partition="partition",
+                time="time",
                 covariates=["age", "age_dup"],
             )
-        rank_silent = [x for x in w_silent
-                       if "rank" in str(x.message).lower()
-                       or "dependent" in str(x.message).lower()]
+        rank_silent = [
+            x
+            for x in w_silent
+            if "rank" in str(x.message).lower() or "dependent" in str(x.message).lower()
+        ]
 
         # "warn" should emit rank warnings from both main and r_squared paths
         ddd_warn = TripleDifference(
-            estimation_method="reg", rank_deficient_action="warn",
+            estimation_method="reg",
+            rank_deficient_action="warn",
         )
         with warnings.catch_warnings(record=True) as w_warn:
             warnings.simplefilter("always")
             result_warn = ddd_warn.fit(
-                data, outcome="outcome", group="group",
-                partition="partition", time="time",
+                data,
+                outcome="outcome",
+                group="group",
+                partition="partition",
+                time="time",
                 covariates=["age", "age_dup"],
             )
-        rank_warn = [x for x in w_warn
-                     if "rank" in str(x.message).lower()
-                     or "dependent" in str(x.message).lower()]
+        rank_warn = [
+            x
+            for x in w_warn
+            if "rank" in str(x.message).lower() or "dependent" in str(x.message).lower()
+        ]
 
         assert len(rank_silent) == 0, "silent should suppress all rank warnings"
         assert len(rank_warn) > 0, "warn should emit rank warnings"

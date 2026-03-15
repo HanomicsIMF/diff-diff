@@ -28,9 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy import optimize
-
-from diff_diff.linalg import solve_ols
+from diff_diff.linalg import solve_ols, solve_logit
 from diff_diff.results import _get_significance_stars
 from diff_diff.utils import safe_inference
 
@@ -155,44 +153,52 @@ class TripleDifferenceResults:
         if self.n_clusters is not None:
             lines.append(f"{'Number of clusters:':<30} {self.n_clusters:>15}")
 
-        lines.extend([
-            "",
-            "-" * 75,
-            f"{'Parameter':<15} {'Estimate':>12} {'Std. Err.':>12} {'t-stat':>10} {'P>|t|':>10} {'':>5}",
-            "-" * 75,
-            f"{'ATT':<15} {self.att:>12.4f} {self.se:>12.4f} {self.t_stat:>10.3f} {self.p_value:>10.4f} {self.significance_stars:>5}",
-            "-" * 75,
-            "",
-            f"{conf_level}% Confidence Interval: [{self.conf_int[0]:.4f}, {self.conf_int[1]:.4f}]",
-        ])
+        lines.extend(
+            [
+                "",
+                "-" * 75,
+                f"{'Parameter':<15} {'Estimate':>12} {'Std. Err.':>12} {'t-stat':>10} {'P>|t|':>10} {'':>5}",
+                "-" * 75,
+                f"{'ATT':<15} {self.att:>12.4f} {self.se:>12.4f} {self.t_stat:>10.3f} {self.p_value:>10.4f} {self.significance_stars:>5}",
+                "-" * 75,
+                "",
+                f"{conf_level}% Confidence Interval: [{self.conf_int[0]:.4f}, {self.conf_int[1]:.4f}]",
+            ]
+        )
 
         # Show group means if available
         if self.group_means:
-            lines.extend([
-                "",
-                "-" * 75,
-                "Cell Means (Y):",
-                "-" * 75,
-            ])
+            lines.extend(
+                [
+                    "",
+                    "-" * 75,
+                    "Cell Means (Y):",
+                    "-" * 75,
+                ]
+            )
             for cell, mean in self.group_means.items():
                 lines.append(f"  {cell:<35} {mean:>12.4f}")
 
         # Show propensity score diagnostics if available
         if self.pscore_stats:
-            lines.extend([
-                "",
-                "-" * 75,
-                "Propensity Score Diagnostics:",
-                "-" * 75,
-            ])
+            lines.extend(
+                [
+                    "",
+                    "-" * 75,
+                    "Propensity Score Diagnostics:",
+                    "-" * 75,
+                ]
+            )
             for stat, value in self.pscore_stats.items():
                 lines.append(f"  {stat:<35} {value:>12.4f}")
 
-        lines.extend([
-            "",
-            "Signif. codes: '***' 0.001, '**' 0.01, '*' 0.05, '.' 0.1",
-            "=" * 75,
-        ])
+        lines.extend(
+            [
+                "",
+                "Signif. codes: '***' 0.001, '**' 0.01, '*' 0.05, '.' 0.1",
+                "=" * 75,
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -257,66 +263,6 @@ class TripleDifferenceResults:
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-
-def _logistic_regression(
-    X: np.ndarray,
-    y: np.ndarray,
-    max_iter: int = 100,
-    tol: float = 1e-6,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Fit logistic regression using scipy optimize.
-
-    Parameters
-    ----------
-    X : np.ndarray
-        Feature matrix (n_samples, n_features). Intercept added automatically.
-    y : np.ndarray
-        Binary outcome (0/1).
-    max_iter : int
-        Maximum iterations.
-    tol : float
-        Convergence tolerance.
-
-    Returns
-    -------
-    beta : np.ndarray
-        Fitted coefficients (including intercept).
-    probs : np.ndarray
-        Predicted probabilities.
-    """
-    n, p = X.shape
-    X_with_intercept = np.column_stack([np.ones(n), X])
-
-    def neg_log_likelihood(beta: np.ndarray) -> float:
-        z = np.dot(X_with_intercept, beta)
-        z = np.clip(z, -500, 500)
-        log_lik = np.sum(y * z - np.log(1 + np.exp(z)))
-        return -log_lik
-
-    def gradient(beta: np.ndarray) -> np.ndarray:
-        z = np.dot(X_with_intercept, beta)
-        z = np.clip(z, -500, 500)
-        probs = 1 / (1 + np.exp(-z))
-        return -np.dot(X_with_intercept.T, y - probs)
-
-    beta_init = np.zeros(p + 1)
-
-    result = optimize.minimize(
-        neg_log_likelihood,
-        beta_init,
-        method='BFGS',
-        jac=gradient,
-        options={'maxiter': max_iter, 'gtol': tol}
-    )
-
-    beta = result.x
-    z = np.dot(X_with_intercept, beta)
-    z = np.clip(z, -500, 500)
-    probs = 1 / (1 + np.exp(-z))
-
-    return beta, probs
 
 
 # =============================================================================
@@ -445,8 +391,7 @@ class TripleDifference:
     ):
         if estimation_method not in ("dr", "reg", "ipw"):
             raise ValueError(
-                f"estimation_method must be 'dr', 'reg', or 'ipw', "
-                f"got '{estimation_method}'"
+                f"estimation_method must be 'dr', 'reg', or 'ipw', " f"got '{estimation_method}'"
             )
         if rank_deficient_action not in ["warn", "error", "silent"]:
             raise ValueError(
@@ -520,9 +465,7 @@ class TripleDifference:
         # Store cluster IDs for SE computation
         self._cluster_ids = data[self.cluster].values if self.cluster is not None else None
         if self._cluster_ids is not None and np.any(pd.isna(data[self.cluster])):
-            raise ValueError(
-                f"Cluster column '{self.cluster}' contains missing values"
-            )
+            raise ValueError(f"Cluster column '{self.cluster}' contains missing values")
 
         # Get covariates if specified
         X = None
@@ -543,17 +486,11 @@ class TripleDifference:
 
         # Estimate ATT based on method
         if self.estimation_method == "reg":
-            att, se, r_squared, pscore_stats = self._regression_adjustment(
-                y, G, P, T, X
-            )
+            att, se, r_squared, pscore_stats = self._regression_adjustment(y, G, P, T, X)
         elif self.estimation_method == "ipw":
-            att, se, r_squared, pscore_stats = self._ipw_estimation(
-                y, G, P, T, X
-            )
+            att, se, r_squared, pscore_stats = self._ipw_estimation(y, G, P, T, X)
         else:  # doubly robust
-            att, se, r_squared, pscore_stats = self._doubly_robust(
-                y, G, P, T, X
-            )
+            att, se, r_squared, pscore_stats = self._doubly_robust(y, G, P, T, X)
 
         # Compute inference
         df = n_obs - 8  # Approximate df (8 cell means)
@@ -626,13 +563,10 @@ class TripleDifference:
             unique_vals = set(data[col].unique())
             if not unique_vals.issubset({0, 1, 0.0, 1.0}):
                 raise ValueError(
-                    f"'{name}' column must be binary (0/1), "
-                    f"got values: {sorted(unique_vals)}"
+                    f"'{name}' column must be binary (0/1), " f"got values: {sorted(unique_vals)}"
                 )
             if len(unique_vals) < 2:
-                raise ValueError(
-                    f"'{name}' column must have both 0 and 1 values"
-                )
+                raise ValueError(f"'{name}' column must have both 0 and 1 values")
 
         # Check we have observations in all cells
         G = data[group].values
@@ -832,9 +766,7 @@ class TripleDifference:
                     # Logistic regression: P(subgroup=4 | X) within {j, 4}
                     ps_estimated = True
                     try:
-                        _, pscore_sub = _logistic_regression(
-                            covX_sub[:, 1:], PA4
-                        )
+                        _, pscore_sub = solve_logit(covX_sub[:, 1:], PA4)
                     except Exception:
                         pscore_sub = np.full(n_sub, np.mean(PA4))
                         ps_estimated = False
@@ -846,16 +778,17 @@ class TripleDifference:
                             stacklevel=3,
                         )
 
-                    pscore_sub = np.clip(pscore_sub, self.pscore_trim,
-                                         1 - self.pscore_trim)
+                    pscore_sub = np.clip(pscore_sub, self.pscore_trim, 1 - self.pscore_trim)
                     all_pscores[j] = pscore_sub
 
                     # Check overlap: count obs at trim bounds
                     # (1e-10 tolerance for floating-point after np.clip)
-                    n_trimmed = int(np.sum(
-                        (pscore_sub <= self.pscore_trim + 1e-10)
-                        | (pscore_sub >= 1 - self.pscore_trim - 1e-10)
-                    ))
+                    n_trimmed = int(
+                        np.sum(
+                            (pscore_sub <= self.pscore_trim + 1e-10)
+                            | (pscore_sub >= 1 - self.pscore_trim - 1e-10)
+                        )
+                    )
                     frac_trimmed = n_trimmed / len(pscore_sub)
                     if frac_trimmed > 0.05:
                         overlap_issues.append((j, frac_trimmed))
@@ -873,13 +806,14 @@ class TripleDifference:
                 else:
                     # No covariates: unconditional probability
                     pscore_sub = np.full(n_sub, np.mean(PA4))
-                    pscore_sub = np.clip(pscore_sub, self.pscore_trim,
-                                         1 - self.pscore_trim)
+                    pscore_sub = np.clip(pscore_sub, self.pscore_trim, 1 - self.pscore_trim)
                     # Check overlap (same logic as covariate branch)
-                    n_trimmed = int(np.sum(
-                        (pscore_sub <= self.pscore_trim + 1e-10)
-                        | (pscore_sub >= 1 - self.pscore_trim - 1e-10)
-                    ))
+                    n_trimmed = int(
+                        np.sum(
+                            (pscore_sub <= self.pscore_trim + 1e-10)
+                            | (pscore_sub >= 1 - self.pscore_trim - 1e-10)
+                        )
+                    )
                     frac_trimmed = n_trimmed / len(pscore_sub)
                     if frac_trimmed > 0.05:
                         overlap_issues.append((j, frac_trimmed))
@@ -895,19 +829,33 @@ class TripleDifference:
                 else:
                     # Fit separate OLS per subgroup-time cell, predict for all
                     or_ctrl_pre = self._fit_predict_mu(
-                        y_sub, covX_sub, sg_sub == j, post_sub == 0, n_sub)
+                        y_sub, covX_sub, sg_sub == j, post_sub == 0, n_sub
+                    )
                     or_ctrl_post = self._fit_predict_mu(
-                        y_sub, covX_sub, sg_sub == j, post_sub == 1, n_sub)
+                        y_sub, covX_sub, sg_sub == j, post_sub == 1, n_sub
+                    )
                     or_trt_pre = self._fit_predict_mu(
-                        y_sub, covX_sub, sg_sub == 4, post_sub == 0, n_sub)
+                        y_sub, covX_sub, sg_sub == 4, post_sub == 0, n_sub
+                    )
                     or_trt_post = self._fit_predict_mu(
-                        y_sub, covX_sub, sg_sub == 4, post_sub == 1, n_sub)
+                        y_sub, covX_sub, sg_sub == 4, post_sub == 1, n_sub
+                    )
 
                 # --- Compute DiD ATT and influence function ---
                 att_j, inf_j = self._compute_did_rc(
-                    y_sub, post_sub, PA4, PAa, pscore_sub, covX_sub,
-                    or_ctrl_pre, or_ctrl_post, or_trt_pre, or_trt_post,
-                    hessian, est_method, n_sub,
+                    y_sub,
+                    post_sub,
+                    PA4,
+                    PAa,
+                    pscore_sub,
+                    covX_sub,
+                    or_ctrl_pre,
+                    or_ctrl_post,
+                    or_trt_pre,
+                    or_trt_post,
+                    hessian,
+                    est_method,
+                    n_sub,
                 )
 
                 # Track non-finite IF values (flag for NaN SE later)
@@ -923,9 +871,7 @@ class TripleDifference:
 
         # Emit overlap warning if >5% of observations trimmed in any comparison
         if overlap_issues:
-            details = ", ".join(
-                f"subgroup {j} vs 4: {frac:.0%}" for j, frac in overlap_issues
-            )
+            details = ", ".join(f"subgroup {j} vs 4: {frac:.0%}" for j, frac in overlap_issues)
             warnings.warn(
                 f"Poor propensity score overlap ({details} of observations "
                 f"trimmed at bounds). IPW/DR estimates may be unreliable.",
@@ -944,9 +890,9 @@ class TripleDifference:
         w2 = n / n2
         w1 = n / n1
 
-        inf_func = (w3 * did_results[3]["inf"]
-                     + w2 * did_results[2]["inf"]
-                     - w1 * did_results[1]["inf"])
+        inf_func = (
+            w3 * did_results[3]["inf"] + w2 * did_results[2]["inf"] - w1 * did_results[1]["inf"]
+        )
 
         if self._cluster_ids is not None:
             # Cluster-robust SE: sum IF within clusters, then Liang-Zeger variance
@@ -954,17 +900,15 @@ class TripleDifference:
             n_clusters_val = len(unique_clusters)
             if n_clusters_val < 2:
                 raise ValueError(
-                    f"Need at least 2 clusters for cluster-robust SEs, "
-                    f"got {n_clusters_val}"
+                    f"Need at least 2 clusters for cluster-robust SEs, " f"got {n_clusters_val}"
                 )
-            cluster_sums = np.array([
-                np.sum(inf_func[self._cluster_ids == c]) for c in unique_clusters
-            ])
+            cluster_sums = np.array(
+                [np.sum(inf_func[self._cluster_ids == c]) for c in unique_clusters]
+            )
             # V = (G/(G-1)) * (1/n^2) * sum(psi_c^2)
-            se = float(np.sqrt(
-                (n_clusters_val / (n_clusters_val - 1))
-                * np.sum(cluster_sums**2) / n**2
-            ))
+            se = float(
+                np.sqrt((n_clusters_val / (n_clusters_val - 1)) * np.sum(cluster_sums**2) / n**2)
+            )
         else:
             se = float(np.std(inf_func, ddof=1) / np.sqrt(n))
 
@@ -1002,7 +946,8 @@ class TripleDifference:
                         y_fit = y[cell_mask]
                         try:
                             beta_rs, _, _ = solve_ols(
-                                X_fit, y_fit,
+                                X_fit,
+                                y_fit,
                                 rank_deficient_action=self.rank_deficient_action,
                             )
                             beta_rs = np.where(np.isnan(beta_rs), 0.0, beta_rs)
@@ -1035,7 +980,8 @@ class TripleDifference:
 
         try:
             beta, _, _ = solve_ols(
-                X_fit, y_fit,
+                X_fit,
+                y_fit,
                 rank_deficient_action=self.rank_deficient_action,
             )
             # Replace NaN coefficients (dropped columns) with 0 for prediction
@@ -1072,17 +1018,26 @@ class TripleDifference:
         Matches R's triplediff::compute_did_rc().
         """
         if est_method == "ipw":
-            return self._compute_did_rc_ipw(
-                y, post, PA4, PAa, pscore, covX, hessian, n)
+            return self._compute_did_rc_ipw(y, post, PA4, PAa, pscore, covX, hessian, n)
         elif est_method == "reg":
             return self._compute_did_rc_reg(
-                y, post, PA4, PAa, covX,
-                or_ctrl_pre, or_ctrl_post, or_trt_pre, or_trt_post, n)
+                y, post, PA4, PAa, covX, or_ctrl_pre, or_ctrl_post, or_trt_pre, or_trt_post, n
+            )
         else:
             return self._compute_did_rc_dr(
-                y, post, PA4, PAa, pscore, covX,
-                or_ctrl_pre, or_ctrl_post, or_trt_pre, or_trt_post,
-                hessian, n)
+                y,
+                post,
+                PA4,
+                PAa,
+                pscore,
+                covX,
+                or_ctrl_pre,
+                or_ctrl_post,
+                or_trt_pre,
+                or_trt_post,
+                hessian,
+                n,
+            )
 
     def _compute_did_rc_ipw(
         self,
@@ -1115,24 +1070,21 @@ class TripleDifference:
         eta_control_pre, att_control_pre = _hajek(riesz_control_pre, y)
         eta_control_post, att_control_post = _hajek(riesz_control_post, y)
 
-        att = ((att_treat_post - att_treat_pre)
-               - (att_control_post - att_control_pre))
+        att = (att_treat_post - att_treat_pre) - (att_control_post - att_control_pre)
 
         # Influence function
-        inf_treat_pre = (eta_treat_pre
-                         - riesz_treat_pre * att_treat_pre
-                         / np.mean(riesz_treat_pre))
-        inf_treat_post = (eta_treat_post
-                          - riesz_treat_post * att_treat_post
-                          / np.mean(riesz_treat_post))
+        inf_treat_pre = eta_treat_pre - riesz_treat_pre * att_treat_pre / np.mean(riesz_treat_pre)
+        inf_treat_post = eta_treat_post - riesz_treat_post * att_treat_post / np.mean(
+            riesz_treat_post
+        )
         inf_treat = inf_treat_post - inf_treat_pre
 
-        inf_control_pre = (eta_control_pre
-                           - riesz_control_pre * att_control_pre
-                           / np.mean(riesz_control_pre))
-        inf_control_post = (eta_control_post
-                            - riesz_control_post * att_control_post
-                            / np.mean(riesz_control_post))
+        inf_control_pre = eta_control_pre - riesz_control_pre * att_control_pre / np.mean(
+            riesz_control_pre
+        )
+        inf_control_post = eta_control_post - riesz_control_post * att_control_post / np.mean(
+            riesz_control_post
+        )
         inf_control = inf_control_post - inf_control_pre
 
         # Propensity score correction for influence function
@@ -1178,10 +1130,8 @@ class TripleDifference:
         reg_att_treat_post = riesz_treat_post * y
         reg_att_control = riesz_control * (or_ctrl_post - or_ctrl_pre)
 
-        eta_treat_pre = (np.mean(reg_att_treat_pre)
-                         / np.mean(riesz_treat_pre))
-        eta_treat_post = (np.mean(reg_att_treat_post)
-                          / np.mean(riesz_treat_post))
+        eta_treat_pre = np.mean(reg_att_treat_pre) / np.mean(riesz_treat_pre)
+        eta_treat_post = np.mean(reg_att_treat_post) / np.mean(riesz_treat_post)
         eta_control = np.mean(reg_att_control) / np.mean(riesz_control)
 
         att = (eta_treat_post - eta_treat_pre) - eta_control
@@ -1208,20 +1158,21 @@ class TripleDifference:
             XpX_inv_post = np.linalg.pinv(XpX_post)
         asy_lin_rep_ols_post = wols_eX_post @ XpX_inv_post
 
-        inf_treat_pre = ((reg_att_treat_pre
-                          - riesz_treat_pre * eta_treat_pre)
-                         / np.mean(riesz_treat_pre))
-        inf_treat_post = ((reg_att_treat_post
-                           - riesz_treat_post * eta_treat_post)
-                          / np.mean(riesz_treat_post))
+        inf_treat_pre = (reg_att_treat_pre - riesz_treat_pre * eta_treat_pre) / np.mean(
+            riesz_treat_pre
+        )
+        inf_treat_post = (reg_att_treat_post - riesz_treat_post * eta_treat_post) / np.mean(
+            riesz_treat_post
+        )
         inf_treat = inf_treat_post - inf_treat_pre
 
         inf_control_1 = reg_att_control - riesz_control * eta_control
         M1 = np.mean(riesz_control[:, None] * covX, axis=0)
         inf_control_2_post = asy_lin_rep_ols_post @ M1
         inf_control_2_pre = asy_lin_rep_ols_pre @ M1
-        inf_control = ((inf_control_1 + inf_control_2_post - inf_control_2_pre)
-                        / np.mean(riesz_control))
+        inf_control = (inf_control_1 + inf_control_2_post - inf_control_2_pre) / np.mean(
+            riesz_control
+        )
 
         inf_func = inf_treat - inf_control
         return att, inf_func
@@ -1257,24 +1208,22 @@ class TripleDifference:
         def _safe_ratio(num, denom):
             return num / denom if denom > 0 else 0.0
 
-        eta_treat_pre = (riesz_treat_pre * (y - or_ctrl)
-                         * _safe_ratio(1, np.mean(riesz_treat_pre)))
-        eta_treat_post = (riesz_treat_post * (y - or_ctrl)
-                          * _safe_ratio(1, np.mean(riesz_treat_post)))
-        eta_control_pre = (riesz_control_pre * (y - or_ctrl)
-                           * _safe_ratio(1, np.mean(riesz_control_pre)))
-        eta_control_post = (riesz_control_post * (y - or_ctrl)
-                            * _safe_ratio(1, np.mean(riesz_control_post)))
+        eta_treat_pre = riesz_treat_pre * (y - or_ctrl) * _safe_ratio(1, np.mean(riesz_treat_pre))
+        eta_treat_post = (
+            riesz_treat_post * (y - or_ctrl) * _safe_ratio(1, np.mean(riesz_treat_post))
+        )
+        eta_control_pre = (
+            riesz_control_pre * (y - or_ctrl) * _safe_ratio(1, np.mean(riesz_control_pre))
+        )
+        eta_control_post = (
+            riesz_control_post * (y - or_ctrl) * _safe_ratio(1, np.mean(riesz_control_post))
+        )
 
         # Efficiency correction (OR bias correction)
-        eta_d_post = (riesz_d * (or_trt_post - or_ctrl_post)
-                      * _safe_ratio(1, np.mean(riesz_d)))
-        eta_dt1_post = (riesz_dt1 * (or_trt_post - or_ctrl_post)
-                        * _safe_ratio(1, np.mean(riesz_dt1)))
-        eta_d_pre = (riesz_d * (or_trt_pre - or_ctrl_pre)
-                     * _safe_ratio(1, np.mean(riesz_d)))
-        eta_dt0_pre = (riesz_dt0 * (or_trt_pre - or_ctrl_pre)
-                       * _safe_ratio(1, np.mean(riesz_dt0)))
+        eta_d_post = riesz_d * (or_trt_post - or_ctrl_post) * _safe_ratio(1, np.mean(riesz_d))
+        eta_dt1_post = riesz_dt1 * (or_trt_post - or_ctrl_post) * _safe_ratio(1, np.mean(riesz_dt1))
+        eta_d_pre = riesz_d * (or_trt_pre - or_ctrl_pre) * _safe_ratio(1, np.mean(riesz_d))
+        eta_dt0_pre = riesz_dt0 * (or_trt_pre - or_ctrl_pre) * _safe_ratio(1, np.mean(riesz_dt0))
 
         att_treat_pre = float(np.mean(eta_treat_pre))
         att_treat_post = float(np.mean(eta_treat_post))
@@ -1285,10 +1234,12 @@ class TripleDifference:
         att_d_pre = float(np.mean(eta_d_pre))
         att_dt0_pre = float(np.mean(eta_dt0_pre))
 
-        att = ((att_treat_post - att_treat_pre)
-               - (att_control_post - att_control_pre)
-               + (att_d_post - att_dt1_post)
-               - (att_d_pre - att_dt0_pre))
+        att = (
+            (att_treat_post - att_treat_pre)
+            - (att_control_post - att_control_pre)
+            + (att_d_post - att_dt1_post)
+            - (att_d_pre - att_dt0_pre)
+        )
 
         # --- Influence function ---
         # OLS asymptotic linear representations (control subgroup)
@@ -1315,8 +1266,7 @@ class TripleDifference:
         # OLS representations (treated subgroup)
         weights_ols_pre_treat = PA4 * (1 - post)
         wols_x_pre_treat = weights_ols_pre_treat[:, None] * covX
-        wols_eX_pre_treat = (weights_ols_pre_treat
-                             * (y - or_trt_pre))[:, None] * covX
+        wols_eX_pre_treat = (weights_ols_pre_treat * (y - or_trt_pre))[:, None] * covX
         XpX_pre_treat = wols_x_pre_treat.T @ covX / n
         try:
             XpX_inv_pre_treat = np.linalg.inv(XpX_pre_treat)
@@ -1326,8 +1276,7 @@ class TripleDifference:
 
         weights_ols_post_treat = PA4 * post
         wols_x_post_treat = weights_ols_post_treat[:, None] * covX
-        wols_eX_post_treat = (weights_ols_post_treat
-                              * (y - or_trt_post))[:, None] * covX
+        wols_eX_post_treat = (weights_ols_post_treat * (y - or_trt_post))[:, None] * covX
         XpX_post_treat = wols_x_post_treat.T @ covX / n
         try:
             XpX_inv_post_treat = np.linalg.inv(XpX_post_treat)
@@ -1346,22 +1295,28 @@ class TripleDifference:
         m_riesz_treat_pre = np.mean(riesz_treat_pre)
         m_riesz_treat_post = np.mean(riesz_treat_post)
 
-        inf_treat_pre = (eta_treat_pre - riesz_treat_pre * att_treat_pre
-                         / m_riesz_treat_pre) if m_riesz_treat_pre > 0 \
+        inf_treat_pre = (
+            (eta_treat_pre - riesz_treat_pre * att_treat_pre / m_riesz_treat_pre)
+            if m_riesz_treat_pre > 0
             else np.zeros(n)
-        inf_treat_post = (eta_treat_post - riesz_treat_post * att_treat_post
-                          / m_riesz_treat_post) if m_riesz_treat_post > 0 \
+        )
+        inf_treat_post = (
+            (eta_treat_post - riesz_treat_post * att_treat_post / m_riesz_treat_post)
+            if m_riesz_treat_post > 0
             else np.zeros(n)
+        )
 
         # OR correction for treated
-        M1_post = (-np.mean(
-            (riesz_treat_post * post)[:, None] * covX, axis=0)
-            / m_riesz_treat_post) if m_riesz_treat_post > 0 \
+        M1_post = (
+            (-np.mean((riesz_treat_post * post)[:, None] * covX, axis=0) / m_riesz_treat_post)
+            if m_riesz_treat_post > 0
             else np.zeros(covX.shape[1])
-        M1_pre = (-np.mean(
-            (riesz_treat_pre * (1 - post))[:, None] * covX, axis=0)
-            / m_riesz_treat_pre) if m_riesz_treat_pre > 0 \
+        )
+        M1_pre = (
+            (-np.mean((riesz_treat_pre * (1 - post))[:, None] * covX, axis=0) / m_riesz_treat_pre)
+            if m_riesz_treat_pre > 0
             else np.zeros(covX.shape[1])
+        )
         inf_treat_or_post = asy_lin_rep_ols_post @ M1_post
         inf_treat_or_pre = asy_lin_rep_ols_pre @ M1_pre
 
@@ -1369,37 +1324,54 @@ class TripleDifference:
         m_riesz_control_pre = np.mean(riesz_control_pre)
         m_riesz_control_post = np.mean(riesz_control_post)
 
-        inf_control_pre = (eta_control_pre
-                           - riesz_control_pre * att_control_pre
-                           / m_riesz_control_pre) if m_riesz_control_pre > 0 \
+        inf_control_pre = (
+            (eta_control_pre - riesz_control_pre * att_control_pre / m_riesz_control_pre)
+            if m_riesz_control_pre > 0
             else np.zeros(n)
-        inf_control_post = (eta_control_post
-                            - riesz_control_post * att_control_post
-                            / m_riesz_control_post) if m_riesz_control_post > 0 \
+        )
+        inf_control_post = (
+            (eta_control_post - riesz_control_post * att_control_post / m_riesz_control_post)
+            if m_riesz_control_post > 0
             else np.zeros(n)
+        )
 
         # PS correction for control
-        M2_pre = (np.mean(
-            (riesz_control_pre * (y - or_ctrl - att_control_pre))[:, None]
-            * covX, axis=0)
-            / m_riesz_control_pre) if m_riesz_control_pre > 0 \
+        M2_pre = (
+            (
+                np.mean(
+                    (riesz_control_pre * (y - or_ctrl - att_control_pre))[:, None] * covX, axis=0
+                )
+                / m_riesz_control_pre
+            )
+            if m_riesz_control_pre > 0
             else np.zeros(covX.shape[1])
-        M2_post = (np.mean(
-            (riesz_control_post * (y - or_ctrl - att_control_post))[:, None]
-            * covX, axis=0)
-            / m_riesz_control_post) if m_riesz_control_post > 0 \
+        )
+        M2_post = (
+            (
+                np.mean(
+                    (riesz_control_post * (y - or_ctrl - att_control_post))[:, None] * covX, axis=0
+                )
+                / m_riesz_control_post
+            )
+            if m_riesz_control_post > 0
             else np.zeros(covX.shape[1])
+        )
         inf_control_ps = asy_lin_rep_ps @ (M2_post - M2_pre)
 
         # OR correction for control
-        M3_post = (-np.mean(
-            (riesz_control_post * post)[:, None] * covX, axis=0)
-            / m_riesz_control_post) if m_riesz_control_post > 0 \
+        M3_post = (
+            (-np.mean((riesz_control_post * post)[:, None] * covX, axis=0) / m_riesz_control_post)
+            if m_riesz_control_post > 0
             else np.zeros(covX.shape[1])
-        M3_pre = (-np.mean(
-            (riesz_control_pre * (1 - post))[:, None] * covX, axis=0)
-            / m_riesz_control_pre) if m_riesz_control_pre > 0 \
+        )
+        M3_pre = (
+            (
+                -np.mean((riesz_control_pre * (1 - post))[:, None] * covX, axis=0)
+                / m_riesz_control_pre
+            )
+            if m_riesz_control_pre > 0
             else np.zeros(covX.shape[1])
+        )
         inf_control_or_post = asy_lin_rep_ols_post @ M3_post
         inf_control_or_pre = asy_lin_rep_ols_pre @ M3_pre
 
@@ -1408,41 +1380,46 @@ class TripleDifference:
         m_riesz_dt1 = np.mean(riesz_dt1)
         m_riesz_dt0 = np.mean(riesz_dt0)
 
-        inf_eff1 = ((eta_d_post - riesz_d * att_d_post / m_riesz_d)
-                     if m_riesz_d > 0 else np.zeros(n))
-        inf_eff2 = ((eta_dt1_post - riesz_dt1 * att_dt1_post / m_riesz_dt1)
-                     if m_riesz_dt1 > 0 else np.zeros(n))
-        inf_eff3 = ((eta_d_pre - riesz_d * att_d_pre / m_riesz_d)
-                     if m_riesz_d > 0 else np.zeros(n))
-        inf_eff4 = ((eta_dt0_pre - riesz_dt0 * att_dt0_pre / m_riesz_dt0)
-                     if m_riesz_dt0 > 0 else np.zeros(n))
+        inf_eff1 = (eta_d_post - riesz_d * att_d_post / m_riesz_d) if m_riesz_d > 0 else np.zeros(n)
+        inf_eff2 = (
+            (eta_dt1_post - riesz_dt1 * att_dt1_post / m_riesz_dt1)
+            if m_riesz_dt1 > 0
+            else np.zeros(n)
+        )
+        inf_eff3 = (eta_d_pre - riesz_d * att_d_pre / m_riesz_d) if m_riesz_d > 0 else np.zeros(n)
+        inf_eff4 = (
+            (eta_dt0_pre - riesz_dt0 * att_dt0_pre / m_riesz_dt0)
+            if m_riesz_dt0 > 0
+            else np.zeros(n)
+        )
         inf_eff = (inf_eff1 - inf_eff2) - (inf_eff3 - inf_eff4)
 
         # OR combination
-        mom_post = np.mean(
-            (riesz_d[:, None] / m_riesz_d
-             - riesz_dt1[:, None] / m_riesz_dt1) * covX,
-            axis=0,
-        ) if (m_riesz_d > 0 and m_riesz_dt1 > 0) \
+        mom_post = (
+            np.mean(
+                (riesz_d[:, None] / m_riesz_d - riesz_dt1[:, None] / m_riesz_dt1) * covX,
+                axis=0,
+            )
+            if (m_riesz_d > 0 and m_riesz_dt1 > 0)
             else np.zeros(covX.shape[1])
-        mom_pre = np.mean(
-            (riesz_d[:, None] / m_riesz_d
-             - riesz_dt0[:, None] / m_riesz_dt0) * covX,
-            axis=0,
-        ) if (m_riesz_d > 0 and m_riesz_dt0 > 0) \
+        )
+        mom_pre = (
+            np.mean(
+                (riesz_d[:, None] / m_riesz_d - riesz_dt0[:, None] / m_riesz_dt0) * covX,
+                axis=0,
+            )
+            if (m_riesz_d > 0 and m_riesz_dt0 > 0)
             else np.zeros(covX.shape[1])
-        inf_or_post = ((asy_lin_rep_ols_post_treat - asy_lin_rep_ols_post)
-                        @ mom_post)
-        inf_or_pre = ((asy_lin_rep_ols_pre_treat - asy_lin_rep_ols_pre)
-                       @ mom_pre)
+        )
+        inf_or_post = (asy_lin_rep_ols_post_treat - asy_lin_rep_ols_post) @ mom_post
+        inf_or_pre = (asy_lin_rep_ols_pre_treat - asy_lin_rep_ols_pre) @ mom_pre
 
         inf_treat_or = inf_treat_or_post + inf_treat_or_pre
         inf_control_or = inf_control_or_post + inf_control_or_pre
         inf_or = inf_or_post - inf_or_pre
 
         inf_treat = inf_treat_post - inf_treat_pre + inf_treat_or
-        inf_control = (inf_control_post - inf_control_pre
-                       + inf_control_ps + inf_control_or)
+        inf_control = inf_control_post - inf_control_pre + inf_control_ps + inf_control_or
 
         inf_func = inf_treat - inf_control + inf_eff + inf_or
         return att, inf_func

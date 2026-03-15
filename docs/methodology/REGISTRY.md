@@ -393,6 +393,16 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
   - This is expected: CS uses consecutive comparisons, SA uses fixed reference (e=-1-anticipation)
   - Use `base_period="universal"` for methodologically comparable pre-treatment effects
   - Post-treatment effects match regardless of base_period setting
+- Propensity score estimation:
+  - Algorithm: IRLS (Fisher scoring), matching R's `glm(family=binomial)` default
+  - **Note:** Uses IRLS (Fisher scoring) for propensity score estimation, consistent
+    with R's `did::att_gt()` which uses `glm(family=binomial)` internally
+  - Near-separation detection: Warns when predicted probabilities are within 1e-5
+    of 0 or 1, or when IRLS fails to converge
+  - Trimming: Propensity scores clipped to `[pscore_trim, 1-pscore_trim]` (default
+    0.01) before weight computation. Warning emitted when scores are trimmed.
+  - Fallback: If IRLS fails entirely (LinAlgError/ValueError), falls back to
+    unconditional propensity score with warning
 - Control group with `control_group="not_yet_treated"`:
   - Always excludes cohort g from controls when computing ATT(g,t)
   - This applies to both pre-treatment (t < g) and post-treatment (t >= g) periods

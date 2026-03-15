@@ -11,9 +11,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy import linalg as scipy_linalg
-from scipy import optimize
-
-from diff_diff.linalg import solve_ols, _detect_rank_deficiency, _format_dropped_columns
+from diff_diff.linalg import (
+    solve_ols,
+    solve_logit,
+    _check_propensity_diagnostics,
+    _detect_rank_deficiency,
+    _format_dropped_columns,
+)
 from diff_diff.utils import safe_inference, safe_inference_batch
 
 # Import from split modules
@@ -39,69 +43,6 @@ __all__ = [
 
 # Type alias for pre-computed structures
 PrecomputedData = Dict[str, Any]
-
-
-def _logistic_regression(
-    X: np.ndarray,
-    y: np.ndarray,
-    max_iter: int = 100,
-    tol: float = 1e-6,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Fit logistic regression using scipy optimize.
-
-    Parameters
-    ----------
-    X : np.ndarray
-        Feature matrix (n_samples, n_features). Intercept added automatically.
-    y : np.ndarray
-        Binary outcome (0/1).
-    max_iter : int
-        Maximum iterations.
-    tol : float
-        Convergence tolerance.
-
-    Returns
-    -------
-    beta : np.ndarray
-        Fitted coefficients (including intercept).
-    probs : np.ndarray
-        Predicted probabilities.
-    """
-    n, p = X.shape
-    # Add intercept
-    X_with_intercept = np.column_stack([np.ones(n), X])
-
-    def neg_log_likelihood(beta: np.ndarray) -> float:
-        z = np.dot(X_with_intercept, beta)
-        # Clip to prevent overflow
-        z = np.clip(z, -500, 500)
-        log_lik = np.sum(y * z - np.log(1 + np.exp(z)))
-        return -log_lik
-
-    def gradient(beta: np.ndarray) -> np.ndarray:
-        z = np.dot(X_with_intercept, beta)
-        z = np.clip(z, -500, 500)
-        probs = 1 / (1 + np.exp(-z))
-        return -np.dot(X_with_intercept.T, y - probs)
-
-    # Initialize with zeros
-    beta_init = np.zeros(p + 1)
-
-    result = optimize.minimize(
-        neg_log_likelihood,
-        beta_init,
-        method='BFGS',
-        jac=gradient,
-        options={'maxiter': max_iter, 'gtol': tol}
-    )
-
-    beta = result.x
-    z = np.dot(X_with_intercept, beta)
-    z = np.clip(z, -500, 500)
-    probs = 1 / (1 + np.exp(-z))
-
-    return beta, probs
 
 
 def _linear_regression(
@@ -137,7 +78,9 @@ def _linear_regression(
 
     # Use unified OLS backend (no vcov needed)
     beta, residuals, _ = solve_ols(
-        X_with_intercept, y, return_vcov=False,
+        X_with_intercept,
+        y,
+        return_vcov=False,
         rank_deficient_action=rank_deficient_action,
     )
 
@@ -309,6 +252,7 @@ class CallawaySantAnna(
         rank_deficient_action: str = "warn",
         base_period: str = "varying",
         cband: bool = True,
+        pscore_trim: float = 0.01,
     ):
         import warnings
 
@@ -319,8 +263,7 @@ class CallawaySantAnna(
             )
         if estimation_method not in ["dr", "ipw", "reg"]:
             raise ValueError(
-                f"estimation_method must be 'dr', 'ipw', or 'reg', "
-                f"got '{estimation_method}'"
+                f"estimation_method must be 'dr', 'ipw', or 'reg', " f"got '{estimation_method}'"
             )
 
         # Handle bootstrap_weight_type deprecation
@@ -329,7 +272,7 @@ class CallawaySantAnna(
                 "bootstrap_weight_type is deprecated and will be removed in v3.0. "
                 "Use bootstrap_weights instead.",
                 DeprecationWarning,
-                stacklevel=2
+                stacklevel=2,
             )
             if bootstrap_weights is None:
                 bootstrap_weights = bootstrap_weight_type
@@ -352,8 +295,7 @@ class CallawaySantAnna(
 
         if base_period not in ["varying", "universal"]:
             raise ValueError(
-                f"base_period must be 'varying' or 'universal', "
-                f"got '{base_period}'"
+                f"base_period must be 'varying' or 'universal', " f"got '{base_period}'"
             )
 
         self.control_group = control_group
@@ -370,6 +312,7 @@ class CallawaySantAnna(
         self.base_period = base_period
 
         self.cband = cband
+        self.pscore_trim = pscore_trim
 
         self.is_fitted_ = False
         self.results_: Optional[CallawaySantAnnaResults] = None
@@ -418,7 +361,7 @@ class CallawaySantAnna(
         # Pre-compute cohort masks (boolean arrays)
         cohort_masks = {}
         for g in treatment_groups:
-            cohort_masks[g] = (unit_cohorts == g)
+            cohort_masks[g] = unit_cohorts == g
 
         # Never-treated mask
         # np.inf was normalized to 0 in fit(), so the np.inf check is defensive only
@@ -437,16 +380,16 @@ class CallawaySantAnna(
         is_balanced = not np.any(np.isnan(outcome_matrix))
 
         return {
-            'all_units': all_units,
-            'unit_to_idx': unit_to_idx,
-            'unit_cohorts': unit_cohorts,
-            'outcome_matrix': outcome_matrix,
-            'period_to_col': period_to_col,
-            'cohort_masks': cohort_masks,
-            'never_treated_mask': never_treated_mask,
-            'covariate_by_period': covariate_by_period,
-            'time_periods': time_periods,
-            'is_balanced': is_balanced,
+            "all_units": all_units,
+            "unit_to_idx": unit_to_idx,
+            "unit_cohorts": unit_cohorts,
+            "outcome_matrix": outcome_matrix,
+            "period_to_col": period_to_col,
+            "cohort_masks": cohort_masks,
+            "never_treated_mask": never_treated_mask,
+            "covariate_by_period": covariate_by_period,
+            "time_periods": time_periods,
+            "is_balanced": is_balanced,
         }
 
     def _compute_att_gt_fast(
@@ -464,12 +407,12 @@ class CallawaySantAnna(
         Uses vectorized numpy operations on pre-pivoted outcome matrix
         instead of repeated pandas filtering.
         """
-        period_to_col = precomputed['period_to_col']
-        outcome_matrix = precomputed['outcome_matrix']
-        cohort_masks = precomputed['cohort_masks']
-        never_treated_mask = precomputed['never_treated_mask']
-        unit_cohorts = precomputed['unit_cohorts']
-        covariate_by_period = precomputed['covariate_by_period']
+        period_to_col = precomputed["period_to_col"]
+        outcome_matrix = precomputed["outcome_matrix"]
+        cohort_masks = precomputed["cohort_masks"]
+        never_treated_mask = precomputed["never_treated_mask"]
+        unit_cohorts = precomputed["unit_cohorts"]
+        covariate_by_period = precomputed["covariate_by_period"]
 
         # Base period selection based on mode
         if self.base_period == "universal":
@@ -553,7 +496,7 @@ class CallawaySantAnna(
         # Compute cache key for propensity score reuse
         pscore_key = None
         if pscore_cache is not None and X_treated is not None:
-            is_balanced = precomputed.get('is_balanced', False)
+            is_balanced = precomputed.get("is_balanced", False)
             if is_balanced and self.control_group == "never_treated":
                 pscore_key = (g, base_period_val)
             else:
@@ -562,7 +505,7 @@ class CallawaySantAnna(
         # Compute cache key for Cholesky reuse (DR outcome regression)
         cho_key = None
         if cho_cache is not None and X_control is not None:
-            is_balanced = precomputed.get('is_balanced', False)
+            is_balanced = precomputed.get("is_balanced", False)
             if is_balanced and self.control_group == "never_treated":
                 cho_key = base_period_val
             else:
@@ -575,15 +518,21 @@ class CallawaySantAnna(
             )
         elif self.estimation_method == "ipw":
             att_gt, se_gt, inf_func = self._ipw_estimation(
-                treated_change, control_change,
-                int(n_treated), int(n_control),
-                X_treated, X_control,
+                treated_change,
+                control_change,
+                int(n_treated),
+                int(n_control),
+                X_treated,
+                X_control,
                 pscore_cache=pscore_cache,
                 pscore_key=pscore_key,
             )
         else:  # doubly robust
             att_gt, se_gt, inf_func = self._doubly_robust(
-                treated_change, control_change, X_treated, X_control,
+                treated_change,
+                control_change,
+                X_treated,
+                X_control,
                 pscore_cache=pscore_cache,
                 pscore_key=pscore_key,
                 cho_cache=cho_cache,
@@ -594,16 +543,16 @@ class CallawaySantAnna(
         # precomputed['all_units']) for O(1) downstream lookups instead of
         # O(n) Python dict lookups.
         n_t = int(n_treated)
-        all_units = precomputed['all_units']
+        all_units = precomputed["all_units"]
         treated_positions = np.where(treated_valid)[0]
         control_positions = np.where(control_valid)[0]
         inf_func_info = {
-            'treated_idx': treated_positions,
-            'control_idx': control_positions,
-            'treated_units': all_units[treated_positions],
-            'control_units': all_units[control_positions],
-            'treated_inf': inf_func[:n_t],
-            'control_inf': inf_func[n_t:],
+            "treated_idx": treated_positions,
+            "control_idx": control_positions,
+            "treated_units": all_units[treated_positions],
+            "control_units": all_units[control_positions],
+            "treated_inf": inf_func[:n_t],
+            "control_inf": inf_func[n_t:],
         }
 
         return att_gt, se_gt, int(n_treated), int(n_control), inf_func_info
@@ -628,11 +577,11 @@ class CallawaySantAnna(
         influence_func_info : dict
             Mapping (g, t) -> influence function info dict.
         """
-        period_to_col = precomputed['period_to_col']
-        outcome_matrix = precomputed['outcome_matrix']
-        cohort_masks = precomputed['cohort_masks']
-        never_treated_mask = precomputed['never_treated_mask']
-        unit_cohorts = precomputed['unit_cohorts']
+        period_to_col = precomputed["period_to_col"]
+        outcome_matrix = precomputed["outcome_matrix"]
+        cohort_masks = precomputed["cohort_masks"]
+        never_treated_mask = precomputed["never_treated_mask"]
+        unit_cohorts = precomputed["unit_cohorts"]
 
         group_time_effects = {}
         influence_func_info = {}
@@ -645,8 +594,7 @@ class CallawaySantAnna(
                 valid_periods = [t for t in time_periods if t != universal_base]
             else:
                 valid_periods = [
-                    t for t in time_periods
-                    if t >= g - self.anticipation or t > min_period
+                    t for t in time_periods if t >= g - self.anticipation or t > min_period
                 ]
 
             for t in valid_periods:
@@ -711,26 +659,26 @@ class CallawaySantAnna(
             inf_control = -(control_change - np.mean(control_change)) / n_c
 
             group_time_effects[(g, t)] = {
-                'effect': att,
-                'se': se,
+                "effect": att,
+                "se": se,
                 # t_stat, p_value, conf_int filled by batch inference below
-                't_stat': np.nan,
-                'p_value': np.nan,
-                'conf_int': (np.nan, np.nan),
-                'n_treated': n_t,
-                'n_control': n_c,
+                "t_stat": np.nan,
+                "p_value": np.nan,
+                "conf_int": (np.nan, np.nan),
+                "n_treated": n_t,
+                "n_control": n_c,
             }
 
-            all_units = precomputed['all_units']
+            all_units = precomputed["all_units"]
             treated_positions = np.where(treated_valid)[0]
             control_positions = np.where(control_valid)[0]
             influence_func_info[(g, t)] = {
-                'treated_idx': treated_positions,
-                'control_idx': control_positions,
-                'treated_units': all_units[treated_positions],
-                'control_units': all_units[control_positions],
-                'treated_inf': inf_treated,
-                'control_inf': inf_control,
+                "treated_idx": treated_positions,
+                "control_idx": control_positions,
+                "treated_units": all_units[treated_positions],
+                "control_units": all_units[control_positions],
+                "treated_inf": inf_treated,
+                "control_inf": inf_control,
             }
 
             atts.append(att)
@@ -743,11 +691,9 @@ class CallawaySantAnna(
                 np.array(atts), np.array(ses), alpha=self.alpha
             )
             for idx, key in enumerate(task_keys):
-                group_time_effects[key]['t_stat'] = float(t_stats[idx])
-                group_time_effects[key]['p_value'] = float(p_values[idx])
-                group_time_effects[key]['conf_int'] = (
-                    float(ci_lowers[idx]), float(ci_uppers[idx])
-                )
+                group_time_effects[key]["t_stat"] = float(t_stats[idx])
+                group_time_effects[key]["p_value"] = float(p_values[idx])
+                group_time_effects[key]["conf_int"] = (float(ci_lowers[idx]), float(ci_uppers[idx]))
 
         return group_time_effects, influence_func_info
 
@@ -772,13 +718,13 @@ class CallawaySantAnna(
         influence_func_info : dict
             Mapping (g, t) -> influence function info dict.
         """
-        period_to_col = precomputed['period_to_col']
-        outcome_matrix = precomputed['outcome_matrix']
-        cohort_masks = precomputed['cohort_masks']
-        never_treated_mask = precomputed['never_treated_mask']
-        unit_cohorts = precomputed['unit_cohorts']
-        covariate_by_period = precomputed['covariate_by_period']
-        is_balanced = precomputed['is_balanced']
+        period_to_col = precomputed["period_to_col"]
+        outcome_matrix = precomputed["outcome_matrix"]
+        cohort_masks = precomputed["cohort_masks"]
+        never_treated_mask = precomputed["never_treated_mask"]
+        unit_cohorts = precomputed["unit_cohorts"]
+        covariate_by_period = precomputed["covariate_by_period"]
+        is_balanced = precomputed["is_balanced"]
 
         group_time_effects = {}
         influence_func_info = {}
@@ -795,8 +741,7 @@ class CallawaySantAnna(
                 valid_periods = [t for t in time_periods if t != universal_base]
             else:
                 valid_periods = [
-                    t for t in time_periods
-                    if t >= g - self.anticipation or t > min_period
+                    t for t in time_periods if t >= g - self.anticipation or t > min_period
                 ]
 
             for t in valid_periods:
@@ -878,14 +823,16 @@ class CallawaySantAnna(
                             f"Rank-deficient covariate design (control_key={control_key}): "
                             f"dropped columns {col_info}. Rank {rank} < {X_ctrl.shape[1]}. "
                             "Using minimum-norm least-squares solution.",
-                            UserWarning, stacklevel=2,
+                            UserWarning,
+                            stacklevel=2,
                         )
                     cho = None  # Force lstsq path for ALL rank-deficient cases
-                    kept_cols = np.array([i for i in range(X_ctrl.shape[1])
-                                         if i not in dropped_cols])
+                    kept_cols = np.array(
+                        [i for i in range(X_ctrl.shape[1]) if i not in dropped_cols]
+                    )
                 else:
                     kept_cols = None  # Full rank — use all columns
-                    with np.errstate(all='ignore'):
+                    with np.errstate(all="ignore"):
                         XtX = X_ctrl.T @ X_ctrl
                     try:
                         cho = scipy_linalg.cho_factor(XtX)
@@ -947,8 +894,7 @@ class CallawaySantAnna(
                     inf_control = -(control_change - np.mean(control_change)) / n_c
                 else:
                     # Build per-pair X_ctrl if control_valid differs from base
-                    if (is_balanced and self.control_group == "never_treated"
-                            and X_ctrl is not None):
+                    if is_balanced and self.control_group == "never_treated" and X_ctrl is not None:
                         pair_X_ctrl = X_ctrl
                         pair_n_c = n_c_base
                     else:
@@ -957,9 +903,12 @@ class CallawaySantAnna(
 
                     # Solve for beta
                     beta = None
-                    with np.errstate(all='ignore'):
-                        if (cho is not None and is_balanced
-                                and self.control_group == "never_treated"):
+                    with np.errstate(all="ignore"):
+                        if (
+                            cho is not None
+                            and is_balanced
+                            and self.control_group == "never_treated"
+                        ):
                             # Use cached Cholesky
                             Xty = pair_X_ctrl.T @ control_change
                             beta = scipy_linalg.cho_solve(cho, Xty)
@@ -981,7 +930,8 @@ class CallawaySantAnna(
                             if kept_cols is not None:
                                 # Reduced solve for rank-deficient design
                                 result = scipy_linalg.lstsq(
-                                    pair_X_ctrl[:, kept_cols], control_change,
+                                    pair_X_ctrl[:, kept_cols],
+                                    control_change,
                                     cond=1e-07,
                                 )
                                 beta = np.zeros(pair_X_ctrl.shape[1])
@@ -989,7 +939,9 @@ class CallawaySantAnna(
                             else:
                                 # Full-rank lstsq fallback (Cholesky numerical failure)
                                 result = scipy_linalg.lstsq(
-                                    pair_X_ctrl, control_change, cond=1e-07,
+                                    pair_X_ctrl,
+                                    control_change,
+                                    cond=1e-07,
                                 )
                                 beta = result[0]
 
@@ -1001,7 +953,7 @@ class CallawaySantAnna(
 
                     if not nan_cell:
                         X_treated_w_intercept = np.column_stack([np.ones(n_t), X_treated_pair])
-                        with np.errstate(all='ignore'):
+                        with np.errstate(all="ignore"):
                             predicted_control = X_treated_w_intercept @ beta
                         treated_residuals = treated_change - predicted_control
                         if np.any(~np.isfinite(predicted_control)):
@@ -1010,7 +962,7 @@ class CallawaySantAnna(
 
                     if not nan_cell:
                         att = float(np.mean(treated_residuals))
-                        with np.errstate(all='ignore'):
+                        with np.errstate(all="ignore"):
                             residuals = control_change - pair_X_ctrl @ beta
                         if np.any(~np.isfinite(residuals)):
                             nan_cell = True
@@ -1029,25 +981,25 @@ class CallawaySantAnna(
                         inf_control = -residuals / pair_n_c
 
                 group_time_effects[(g, t)] = {
-                    'effect': att,
-                    'se': se,
-                    't_stat': np.nan,
-                    'p_value': np.nan,
-                    'conf_int': (np.nan, np.nan),
-                    'n_treated': n_t,
-                    'n_control': n_c,
+                    "effect": att,
+                    "se": se,
+                    "t_stat": np.nan,
+                    "p_value": np.nan,
+                    "conf_int": (np.nan, np.nan),
+                    "n_treated": n_t,
+                    "n_control": n_c,
                 }
 
-                all_units = precomputed['all_units']
+                all_units = precomputed["all_units"]
                 treated_positions = np.where(treated_valid)[0]
                 control_positions = np.where(control_valid)[0]
                 influence_func_info[(g, t)] = {
-                    'treated_idx': treated_positions,
-                    'control_idx': control_positions,
-                    'treated_units': all_units[treated_positions],
-                    'control_units': all_units[control_positions],
-                    'treated_inf': inf_treated,
-                    'control_inf': inf_control,
+                    "treated_idx": treated_positions,
+                    "control_idx": control_positions,
+                    "treated_units": all_units[treated_positions],
+                    "control_units": all_units[control_positions],
+                    "treated_inf": inf_treated,
+                    "control_inf": inf_control,
                 }
 
                 atts.append(att)
@@ -1068,11 +1020,9 @@ class CallawaySantAnna(
                 np.array(atts), np.array(ses), alpha=self.alpha
             )
             for idx, key in enumerate(task_keys):
-                group_time_effects[key]['t_stat'] = float(t_stats[idx])
-                group_time_effects[key]['p_value'] = float(p_values[idx])
-                group_time_effects[key]['conf_int'] = (
-                    float(ci_lowers[idx]), float(ci_uppers[idx])
-                )
+                group_time_effects[key]["t_stat"] = float(t_stats[idx])
+                group_time_effects[key]["p_value"] = float(p_values[idx])
+                group_time_effects[key]["conf_int"] = (float(ci_lowers[idx]), float(ci_uppers[idx]))
 
         return group_time_effects, influence_func_info
 
@@ -1148,10 +1098,10 @@ class CallawaySantAnna(
 
         # Standardize the first_treat column name for internal use
         # This avoids hardcoding column names in internal methods
-        df['first_treat'] = df[first_treat]
+        df["first_treat"] = df[first_treat]
 
         # Never-treated indicator (must precede treatment_groups to exclude np.inf)
-        df['_never_treated'] = (df[first_treat] == 0) | (df[first_treat] == np.inf)
+        df["_never_treated"] = (df[first_treat] == 0) | (df[first_treat] == np.inf)
         # Normalize np.inf → 0 so all downstream `> 0` checks exclude never-treated
         df.loc[df[first_treat] == np.inf, first_treat] = 0
 
@@ -1160,21 +1110,19 @@ class CallawaySantAnna(
         treatment_groups = sorted([g for g in df[first_treat].unique() if g > 0])
 
         # Get unique units
-        unit_info = df.groupby(unit).agg({
-            first_treat: 'first',
-            '_never_treated': 'first'
-        }).reset_index()
+        unit_info = (
+            df.groupby(unit).agg({first_treat: "first", "_never_treated": "first"}).reset_index()
+        )
 
         n_treated_units = (unit_info[first_treat] > 0).sum()
-        n_control_units = (unit_info['_never_treated']).sum()
+        n_control_units = (unit_info["_never_treated"]).sum()
 
         if n_control_units == 0:
             raise ValueError("No never-treated units found. Check 'first_treat' column.")
 
         # Pre-compute data structures for efficient ATT(g,t) computation
         precomputed = self._precompute_structures(
-            df, outcome, unit, time, first_treat,
-            covariates, time_periods, treatment_groups
+            df, outcome, unit, time, first_treat, covariates, time_periods, treatment_groups
         )
 
         # Compute ATT(g,t) for each group-time combination
@@ -1182,18 +1130,17 @@ class CallawaySantAnna(
 
         if covariates is None and self.estimation_method == "reg":
             # Fast vectorized path for the common no-covariates regression case
-            group_time_effects, influence_func_info = (
-                self._compute_all_att_gt_vectorized(
-                    precomputed, treatment_groups, time_periods, min_period
-                )
+            group_time_effects, influence_func_info = self._compute_all_att_gt_vectorized(
+                precomputed, treatment_groups, time_periods, min_period
             )
-        elif (covariates is not None and self.estimation_method == "reg"
-              and self.rank_deficient_action != "error"):
+        elif (
+            covariates is not None
+            and self.estimation_method == "reg"
+            and self.rank_deficient_action != "error"
+        ):
             # Optimized covariate regression path with Cholesky caching
-            group_time_effects, influence_func_info = (
-                self._compute_all_att_gt_covariate_reg(
-                    precomputed, treatment_groups, time_periods, min_period
-                )
+            group_time_effects, influence_func_info = self._compute_all_att_gt_covariate_reg(
+                precomputed, treatment_groups, time_periods, min_period
             )
         else:
             # General path: IPW, DR, rank_deficient_action="error", or edge cases
@@ -1201,14 +1148,17 @@ class CallawaySantAnna(
             influence_func_info = {}
 
             # Propensity score cache for IPW/DR with covariates
-            pscore_cache = {} if (
-                covariates and self.estimation_method in ("ipw", "dr")
-            ) else None
+            pscore_cache = {} if (covariates and self.estimation_method in ("ipw", "dr")) else None
             # Cholesky cache for DR outcome regression component
-            cho_cache = {} if (
-                covariates and self.estimation_method == "dr"
-                and self.rank_deficient_action != "error"
-            ) else None
+            cho_cache = (
+                {}
+                if (
+                    covariates
+                    and self.estimation_method == "dr"
+                    and self.rank_deficient_action != "error"
+                )
+                else None
+            )
 
             for g in treatment_groups:
                 if self.base_period == "universal":
@@ -1216,13 +1166,15 @@ class CallawaySantAnna(
                     valid_periods = [t for t in time_periods if t != universal_base]
                 else:
                     valid_periods = [
-                        t for t in time_periods
-                        if t >= g - self.anticipation or t > min_period
+                        t for t in time_periods if t >= g - self.anticipation or t > min_period
                     ]
 
                 for t in valid_periods:
                     att_gt, se_gt, n_treat, n_ctrl, inf_info = self._compute_att_gt_fast(
-                        precomputed, g, t, covariates,
+                        precomputed,
+                        g,
+                        t,
+                        covariates,
                         pscore_cache=pscore_cache,
                         cho_cache=cho_cache,
                     )
@@ -1231,13 +1183,13 @@ class CallawaySantAnna(
                         t_stat, p_val, ci = safe_inference(att_gt, se_gt, alpha=self.alpha)
 
                         group_time_effects[(g, t)] = {
-                            'effect': att_gt,
-                            'se': se_gt,
-                            't_stat': t_stat,
-                            'p_value': p_val,
-                            'conf_int': ci,
-                            'n_treated': n_treat,
-                            'n_control': n_ctrl,
+                            "effect": att_gt,
+                            "se": se_gt,
+                            "t_stat": t_stat,
+                            "p_value": p_val,
+                            "conf_int": ci,
+                            "n_treated": n_treat,
+                            "n_control": n_ctrl,
                         }
 
                         if inf_info is not None:
@@ -1253,9 +1205,7 @@ class CallawaySantAnna(
         overall_att, overall_se = self._aggregate_simple(
             group_time_effects, influence_func_info, df, unit, precomputed
         )
-        overall_t, overall_p, overall_ci = safe_inference(
-            overall_att, overall_se, alpha=self.alpha
-        )
+        overall_t, overall_p, overall_ci = safe_inference(overall_att, overall_se, alpha=self.alpha)
 
         # Compute additional aggregations if requested
         event_study_effects = None
@@ -1263,14 +1213,21 @@ class CallawaySantAnna(
 
         if aggregate in ["event_study", "all"]:
             event_study_effects = self._aggregate_event_study(
-                group_time_effects, influence_func_info,
-                treatment_groups, time_periods, balance_e,
-                df, unit, precomputed,
+                group_time_effects,
+                influence_func_info,
+                treatment_groups,
+                time_periods,
+                balance_e,
+                df,
+                unit,
+                precomputed,
             )
 
         if aggregate in ["group", "all"]:
             group_effects = self._aggregate_by_group(
-                group_time_effects, influence_func_info, treatment_groups,
+                group_time_effects,
+                influence_func_info,
+                treatment_groups,
                 precomputed=precomputed,
             )
 
@@ -1299,46 +1256,70 @@ class CallawaySantAnna(
             # Update group-time effects with bootstrap SEs (batched)
             gt_keys = [gt for gt in group_time_effects if gt in bootstrap_results.group_time_ses]
             if gt_keys:
-                gt_effects_arr = np.array([float(group_time_effects[gt]['effect']) for gt in gt_keys])
-                gt_ses_arr = np.array([float(bootstrap_results.group_time_ses[gt]) for gt in gt_keys])
-                gt_t_stats, _, _, _ = safe_inference_batch(gt_effects_arr, gt_ses_arr, alpha=self.alpha)
+                gt_effects_arr = np.array(
+                    [float(group_time_effects[gt]["effect"]) for gt in gt_keys]
+                )
+                gt_ses_arr = np.array(
+                    [float(bootstrap_results.group_time_ses[gt]) for gt in gt_keys]
+                )
+                gt_t_stats, _, _, _ = safe_inference_batch(
+                    gt_effects_arr, gt_ses_arr, alpha=self.alpha
+                )
                 for idx, gt in enumerate(gt_keys):
-                    group_time_effects[gt]['se'] = bootstrap_results.group_time_ses[gt]
-                    group_time_effects[gt]['conf_int'] = bootstrap_results.group_time_cis[gt]
-                    group_time_effects[gt]['p_value'] = bootstrap_results.group_time_p_values[gt]
-                    group_time_effects[gt]['t_stat'] = float(gt_t_stats[idx])
+                    group_time_effects[gt]["se"] = bootstrap_results.group_time_ses[gt]
+                    group_time_effects[gt]["conf_int"] = bootstrap_results.group_time_cis[gt]
+                    group_time_effects[gt]["p_value"] = bootstrap_results.group_time_p_values[gt]
+                    group_time_effects[gt]["t_stat"] = float(gt_t_stats[idx])
 
             # Update event study effects with bootstrap SEs (batched)
-            if (event_study_effects is not None
+            if (
+                event_study_effects is not None
                 and bootstrap_results.event_study_ses is not None
                 and bootstrap_results.event_study_cis is not None
-                and bootstrap_results.event_study_p_values is not None):
+                and bootstrap_results.event_study_p_values is not None
+            ):
                 es_keys = [e for e in event_study_effects if e in bootstrap_results.event_study_ses]
                 if es_keys:
-                    es_effects_arr = np.array([float(event_study_effects[e]['effect']) for e in es_keys])
-                    es_ses_arr = np.array([float(bootstrap_results.event_study_ses[e]) for e in es_keys])
-                    es_t_stats, _, _, _ = safe_inference_batch(es_effects_arr, es_ses_arr, alpha=self.alpha)
+                    es_effects_arr = np.array(
+                        [float(event_study_effects[e]["effect"]) for e in es_keys]
+                    )
+                    es_ses_arr = np.array(
+                        [float(bootstrap_results.event_study_ses[e]) for e in es_keys]
+                    )
+                    es_t_stats, _, _, _ = safe_inference_batch(
+                        es_effects_arr, es_ses_arr, alpha=self.alpha
+                    )
                     for idx, e in enumerate(es_keys):
-                        event_study_effects[e]['se'] = bootstrap_results.event_study_ses[e]
-                        event_study_effects[e]['conf_int'] = bootstrap_results.event_study_cis[e]
-                        event_study_effects[e]['p_value'] = bootstrap_results.event_study_p_values[e]
-                        event_study_effects[e]['t_stat'] = float(es_t_stats[idx])
+                        event_study_effects[e]["se"] = bootstrap_results.event_study_ses[e]
+                        event_study_effects[e]["conf_int"] = bootstrap_results.event_study_cis[e]
+                        event_study_effects[e]["p_value"] = bootstrap_results.event_study_p_values[
+                            e
+                        ]
+                        event_study_effects[e]["t_stat"] = float(es_t_stats[idx])
 
             # Update group effects with bootstrap SEs (batched)
-            if (group_effects is not None
+            if (
+                group_effects is not None
                 and bootstrap_results.group_effect_ses is not None
                 and bootstrap_results.group_effect_cis is not None
-                and bootstrap_results.group_effect_p_values is not None):
+                and bootstrap_results.group_effect_p_values is not None
+            ):
                 grp_keys = [g for g in group_effects if g in bootstrap_results.group_effect_ses]
                 if grp_keys:
-                    grp_effects_arr = np.array([float(group_effects[g]['effect']) for g in grp_keys])
-                    grp_ses_arr = np.array([float(bootstrap_results.group_effect_ses[g]) for g in grp_keys])
-                    grp_t_stats, _, _, _ = safe_inference_batch(grp_effects_arr, grp_ses_arr, alpha=self.alpha)
+                    grp_effects_arr = np.array(
+                        [float(group_effects[g]["effect"]) for g in grp_keys]
+                    )
+                    grp_ses_arr = np.array(
+                        [float(bootstrap_results.group_effect_ses[g]) for g in grp_keys]
+                    )
+                    grp_t_stats, _, _, _ = safe_inference_batch(
+                        grp_effects_arr, grp_ses_arr, alpha=self.alpha
+                    )
                     for idx, g in enumerate(grp_keys):
-                        group_effects[g]['se'] = bootstrap_results.group_effect_ses[g]
-                        group_effects[g]['conf_int'] = bootstrap_results.group_effect_cis[g]
-                        group_effects[g]['p_value'] = bootstrap_results.group_effect_p_values[g]
-                        group_effects[g]['t_stat'] = float(grp_t_stats[idx])
+                        group_effects[g]["se"] = bootstrap_results.group_effect_ses[g]
+                        group_effects[g]["conf_int"] = bootstrap_results.group_effect_cis[g]
+                        group_effects[g]["p_value"] = bootstrap_results.group_effect_p_values[g]
+                        group_effects[g]["t_stat"] = float(grp_t_stats[idx])
 
         # Compute simultaneous confidence band CIs if cband is available
         cband_crit_value = None
@@ -1347,11 +1328,11 @@ class CallawaySantAnna(
 
         if cband_crit_value is not None and event_study_effects is not None:
             for e, eff_data in event_study_effects.items():
-                se_val = eff_data['se']
+                se_val = eff_data["se"]
                 if np.isfinite(se_val) and se_val > 0:
-                    eff_data['cband_conf_int'] = (
-                        eff_data['effect'] - cband_crit_value * se_val,
-                        eff_data['effect'] + cband_crit_value * se_val,
+                    eff_data["cband_conf_int"] = (
+                        eff_data["effect"] - cband_crit_value * se_val,
+                        eff_data["effect"] + cband_crit_value * se_val,
                     )
 
         # Store results
@@ -1404,7 +1385,8 @@ class CallawaySantAnna(
             # Covariate-adjusted outcome regression
             # Fit regression on control units: E[Delta Y | X, D=0]
             beta, residuals = _linear_regression(
-                X_control, control_change,
+                X_control,
+                control_change,
                 rank_deficient_action=self.rank_deficient_action,
             )
 
@@ -1492,9 +1474,10 @@ class CallawaySantAnna(
                 X_all = np.vstack([X_treated, X_control])
                 D = np.concatenate([np.ones(n_t), np.zeros(n_c)])
 
-                # Estimate propensity scores using logistic regression
+                # Estimate propensity scores using IRLS logistic regression
                 try:
-                    beta_logistic, pscore = _logistic_regression(X_all, D)
+                    beta_logistic, pscore = solve_logit(X_all, D)
+                    _check_propensity_diagnostics(pscore, self.pscore_trim)
                     # Cache the fitted coefficients
                     if pscore_cache is not None and pscore_key is not None:
                         pscore_cache[pscore_key] = beta_logistic
@@ -1513,8 +1496,8 @@ class CallawaySantAnna(
             pscore_control = pscore[n_t:]
 
             # Clip propensity scores to avoid extreme weights
-            pscore_control = np.clip(pscore_control, 0.01, 0.99)
-            pscore_treated = np.clip(pscore_treated, 0.01, 0.99)
+            pscore_control = np.clip(pscore_control, self.pscore_trim, 1 - self.pscore_trim)
+            pscore_treated = np.clip(pscore_treated, self.pscore_trim, 1 - self.pscore_trim)
 
             # IPW weights for control units: p(X) / (1 - p(X))
             # This reweights controls to have same covariate distribution as treated
@@ -1529,13 +1512,17 @@ class CallawaySantAnna(
             var_t = np.var(treated_change, ddof=1) if n_t > 1 else 0.0
 
             # Variance of weighted control mean
-            weighted_var_c = np.sum(weights_control * (control_change - np.sum(weights_control * control_change)) ** 2)
+            weighted_var_c = np.sum(
+                weights_control * (control_change - np.sum(weights_control * control_change)) ** 2
+            )
 
             se = np.sqrt(var_t / n_t + weighted_var_c) if (n_t > 0 and n_c > 0) else 0.0
 
             # Influence function
             inf_treated = (treated_change - np.mean(treated_change)) / n_t
-            inf_control = -weights_control * (control_change - np.sum(weights_control * control_change))
+            inf_control = -weights_control * (
+                control_change - np.sum(weights_control * control_change)
+            )
             inf_func = np.concatenate([inf_treated, inf_control])
         else:
             # Unconditional IPW (reduces to difference in means)
@@ -1547,7 +1534,11 @@ class CallawaySantAnna(
             var_c = np.var(control_change, ddof=1) if n_c > 1 else 0.0
 
             # Adjusted variance for IPW
-            se = np.sqrt(var_t / n_t + var_c * (1 - p_treat) / (n_c * p_treat)) if (n_t > 0 and n_c > 0 and p_treat > 0) else 0.0
+            se = (
+                np.sqrt(var_t / n_t + var_c * (1 - p_treat) / (n_c * p_treat))
+                if (n_t > 0 and n_c > 0 and p_treat > 0)
+                else 0.0
+            )
 
             # Influence function (for aggregation)
             inf_treated = (treated_change - np.mean(treated_change)) / n_t
@@ -1622,7 +1613,8 @@ class CallawaySantAnna(
 
             if beta is None:
                 beta, _ = _linear_regression(
-                    X_control, control_change,
+                    X_control,
+                    control_change,
                     rank_deficient_action=self.rank_deficient_action,
                 )
                 # Zero NaN coefficients for prediction only — dropped columns
@@ -1654,17 +1646,24 @@ class CallawaySantAnna(
                 D = np.concatenate([np.ones(n_t), np.zeros(n_c)])
 
                 try:
-                    beta_logistic, pscore = _logistic_regression(X_all, D)
+                    beta_logistic, pscore = solve_logit(X_all, D)
+                    _check_propensity_diagnostics(pscore, self.pscore_trim)
                     if pscore_cache is not None and pscore_key is not None:
                         pscore_cache[pscore_key] = beta_logistic
                 except (np.linalg.LinAlgError, ValueError):
                     # Fallback to unconditional if logistic regression fails
+                    warnings.warn(
+                        "Propensity score estimation failed. "
+                        "Falling back to unconditional estimation.",
+                        UserWarning,
+                        stacklevel=4,
+                    )
                     pscore = np.full(len(D), n_t / (n_t + n_c))
 
             pscore_control = pscore[n_t:]
 
             # Clip propensity scores
-            pscore_control = np.clip(pscore_control, 0.01, 0.99)
+            pscore_control = np.clip(pscore_control, self.pscore_trim, 1 - self.pscore_trim)
 
             # IPW weights for control: p(X) / (1 - p(X))
             weights_control = pscore_control / (1 - pscore_control)
@@ -1685,7 +1684,7 @@ class CallawaySantAnna(
             psi_control = (weights_control * (m_control - control_change)) / n_t
 
             # Variance is sum of squared influence functions
-            var_psi = np.sum(psi_treated ** 2) + np.sum(psi_control ** 2)
+            var_psi = np.sum(psi_treated**2) + np.sum(psi_control**2)
             se = np.sqrt(var_psi) if var_psi > 0 else 0.0
 
             # Full influence function
@@ -1722,6 +1721,7 @@ class CallawaySantAnna(
             "rank_deficient_action": self.rank_deficient_action,
             "base_period": self.base_period,
             "cband": self.cband,
+            "pscore_trim": self.pscore_trim,
         }
 
     def set_params(self, **params) -> "CallawaySantAnna":
