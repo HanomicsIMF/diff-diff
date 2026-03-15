@@ -10,10 +10,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy import linalg as scipy_linalg
 from scipy import optimize
 
-from diff_diff.linalg import solve_ols
-from diff_diff.utils import safe_inference
+from diff_diff.linalg import solve_ols, _detect_rank_deficiency, _format_dropped_columns
+from diff_diff.utils import safe_inference, safe_inference_batch
 
 # Import from split modules
 from diff_diff.staggered_results import (
@@ -433,6 +434,8 @@ class CallawaySantAnna(
                 period_cov = period_data.reindex(all_units)[covariates]
                 covariate_by_period[t] = period_cov.values  # Shape: (n_units, n_covariates)
 
+        is_balanced = not np.any(np.isnan(outcome_matrix))
+
         return {
             'all_units': all_units,
             'unit_to_idx': unit_to_idx,
@@ -443,6 +446,7 @@ class CallawaySantAnna(
             'never_treated_mask': never_treated_mask,
             'covariate_by_period': covariate_by_period,
             'time_periods': time_periods,
+            'is_balanced': is_balanced,
         }
 
     def _compute_att_gt_fast(
@@ -451,6 +455,8 @@ class CallawaySantAnna(
         g: Any,
         t: Any,
         covariates: Optional[List[str]],
+        pscore_cache: Optional[Dict] = None,
+        cho_cache: Optional[Dict] = None,
     ) -> Tuple[Optional[float], float, int, int, Optional[Dict[str, Any]]]:
         """
         Compute ATT(g,t) using pre-computed data structures (fast version).
@@ -458,13 +464,11 @@ class CallawaySantAnna(
         Uses vectorized numpy operations on pre-pivoted outcome matrix
         instead of repeated pandas filtering.
         """
-        time_periods = precomputed['time_periods']
         period_to_col = precomputed['period_to_col']
         outcome_matrix = precomputed['outcome_matrix']
         cohort_masks = precomputed['cohort_masks']
         never_treated_mask = precomputed['never_treated_mask']
         unit_cohorts = precomputed['unit_cohorts']
-        all_units = precomputed['all_units']
         covariate_by_period = precomputed['covariate_by_period']
 
         # Base period selection based on mode
@@ -527,10 +531,6 @@ class CallawaySantAnna(
         treated_change = outcome_change[treated_valid]
         control_change = outcome_change[control_valid]
 
-        # Get unit IDs for influence function
-        treated_units = all_units[treated_valid]
-        control_units = all_units[control_valid]
-
         # Get covariates if specified (from the base period)
         X_treated = None
         X_control = None
@@ -550,6 +550,24 @@ class CallawaySantAnna(
                 X_treated = None
                 X_control = None
 
+        # Compute cache key for propensity score reuse
+        pscore_key = None
+        if pscore_cache is not None and X_treated is not None:
+            is_balanced = precomputed.get('is_balanced', False)
+            if is_balanced and self.control_group == "never_treated":
+                pscore_key = (g, base_period_val)
+            else:
+                pscore_key = (g, base_period_val, t)
+
+        # Compute cache key for Cholesky reuse (DR outcome regression)
+        cho_key = None
+        if cho_cache is not None and X_control is not None:
+            is_balanced = precomputed.get('is_balanced', False)
+            if is_balanced and self.control_group == "never_treated":
+                cho_key = base_period_val
+            else:
+                cho_key = (g, base_period_val, t)
+
         # Estimation method
         if self.estimation_method == "reg":
             att_gt, se_gt, inf_func = self._outcome_regression(
@@ -559,23 +577,504 @@ class CallawaySantAnna(
             att_gt, se_gt, inf_func = self._ipw_estimation(
                 treated_change, control_change,
                 int(n_treated), int(n_control),
-                X_treated, X_control
+                X_treated, X_control,
+                pscore_cache=pscore_cache,
+                pscore_key=pscore_key,
             )
         else:  # doubly robust
             att_gt, se_gt, inf_func = self._doubly_robust(
-                treated_change, control_change, X_treated, X_control
+                treated_change, control_change, X_treated, X_control,
+                pscore_cache=pscore_cache,
+                pscore_key=pscore_key,
+                cho_cache=cho_cache,
+                cho_key=cho_key,
             )
 
-        # Package influence function info with unit IDs for bootstrap
+        # Package influence function info with index arrays (positions into
+        # precomputed['all_units']) for O(1) downstream lookups instead of
+        # O(n) Python dict lookups.
         n_t = int(n_treated)
+        all_units = precomputed['all_units']
+        treated_positions = np.where(treated_valid)[0]
+        control_positions = np.where(control_valid)[0]
         inf_func_info = {
-            'treated_units': list(treated_units),
-            'control_units': list(control_units),
+            'treated_idx': treated_positions,
+            'control_idx': control_positions,
+            'treated_units': all_units[treated_positions],
+            'control_units': all_units[control_positions],
             'treated_inf': inf_func[:n_t],
             'control_inf': inf_func[n_t:],
         }
 
         return att_gt, se_gt, int(n_treated), int(n_control), inf_func_info
+
+    def _compute_all_att_gt_vectorized(
+        self,
+        precomputed: PrecomputedData,
+        treatment_groups: List[Any],
+        time_periods: List[Any],
+        min_period: Any,
+    ) -> Tuple[Dict, Dict]:
+        """
+        Vectorized computation of all ATT(g,t) for the no-covariates regression case.
+
+        This inlines the simple difference-in-means path from _outcome_regression()
+        and eliminates per-(g,t) Python function call overhead.
+
+        Returns
+        -------
+        group_time_effects : dict
+            Mapping (g, t) -> effect dict.
+        influence_func_info : dict
+            Mapping (g, t) -> influence function info dict.
+        """
+        period_to_col = precomputed['period_to_col']
+        outcome_matrix = precomputed['outcome_matrix']
+        cohort_masks = precomputed['cohort_masks']
+        never_treated_mask = precomputed['never_treated_mask']
+        unit_cohorts = precomputed['unit_cohorts']
+
+        group_time_effects = {}
+        influence_func_info = {}
+
+        # Collect all valid (g, t, base_col, post_col) tuples
+        tasks = []
+        for g in treatment_groups:
+            if self.base_period == "universal":
+                universal_base = g - 1 - self.anticipation
+                valid_periods = [t for t in time_periods if t != universal_base]
+            else:
+                valid_periods = [
+                    t for t in time_periods
+                    if t >= g - self.anticipation or t > min_period
+                ]
+
+            for t in valid_periods:
+                # Base period selection
+                if self.base_period == "universal":
+                    base_period_val = g - 1 - self.anticipation
+                else:
+                    if t < g - self.anticipation:
+                        base_period_val = t - 1
+                    else:
+                        base_period_val = g - 1 - self.anticipation
+
+                if base_period_val not in period_to_col or t not in period_to_col:
+                    continue
+
+                tasks.append((g, t, period_to_col[base_period_val], period_to_col[t]))
+
+        # Process all tasks
+        atts = []
+        ses = []
+        task_keys = []
+
+        for g, t, base_col, post_col in tasks:
+            treated_mask = cohort_masks[g]
+
+            if self.control_group == "never_treated":
+                control_mask = never_treated_mask
+            else:
+                control_mask = never_treated_mask | (
+                    (unit_cohorts > t + self.anticipation) & (unit_cohorts != g)
+                )
+
+            y_base = outcome_matrix[:, base_col]
+            y_post = outcome_matrix[:, post_col]
+            outcome_change = y_post - y_base
+            valid_mask = ~(np.isnan(y_base) | np.isnan(y_post))
+
+            treated_valid = treated_mask & valid_mask
+            control_valid = control_mask & valid_mask
+
+            n_treated = np.sum(treated_valid)
+            n_control = np.sum(control_valid)
+
+            if n_treated == 0 or n_control == 0:
+                continue
+
+            treated_change = outcome_change[treated_valid]
+            control_change = outcome_change[control_valid]
+
+            n_t = int(n_treated)
+            n_c = int(n_control)
+
+            # Inline no-covariates regression (difference in means)
+            att = float(np.mean(treated_change) - np.mean(control_change))
+
+            var_t = float(np.var(treated_change, ddof=1)) if n_t > 1 else 0.0
+            var_c = float(np.var(control_change, ddof=1)) if n_c > 1 else 0.0
+            se = float(np.sqrt(var_t / n_t + var_c / n_c)) if (n_t > 0 and n_c > 0) else 0.0
+
+            # Influence function
+            inf_treated = (treated_change - np.mean(treated_change)) / n_t
+            inf_control = -(control_change - np.mean(control_change)) / n_c
+
+            group_time_effects[(g, t)] = {
+                'effect': att,
+                'se': se,
+                # t_stat, p_value, conf_int filled by batch inference below
+                't_stat': np.nan,
+                'p_value': np.nan,
+                'conf_int': (np.nan, np.nan),
+                'n_treated': n_t,
+                'n_control': n_c,
+            }
+
+            all_units = precomputed['all_units']
+            treated_positions = np.where(treated_valid)[0]
+            control_positions = np.where(control_valid)[0]
+            influence_func_info[(g, t)] = {
+                'treated_idx': treated_positions,
+                'control_idx': control_positions,
+                'treated_units': all_units[treated_positions],
+                'control_units': all_units[control_positions],
+                'treated_inf': inf_treated,
+                'control_inf': inf_control,
+            }
+
+            atts.append(att)
+            ses.append(se)
+            task_keys.append((g, t))
+
+        # Batch inference for all (g,t) pairs at once
+        if task_keys:
+            t_stats, p_values, ci_lowers, ci_uppers = safe_inference_batch(
+                np.array(atts), np.array(ses), alpha=self.alpha
+            )
+            for idx, key in enumerate(task_keys):
+                group_time_effects[key]['t_stat'] = float(t_stats[idx])
+                group_time_effects[key]['p_value'] = float(p_values[idx])
+                group_time_effects[key]['conf_int'] = (
+                    float(ci_lowers[idx]), float(ci_uppers[idx])
+                )
+
+        return group_time_effects, influence_func_info
+
+    def _compute_all_att_gt_covariate_reg(
+        self,
+        precomputed: PrecomputedData,
+        treatment_groups: List[Any],
+        time_periods: List[Any],
+        min_period: Any,
+    ) -> Tuple[Dict, Dict]:
+        """
+        Optimized computation of all ATT(g,t) for the covariate regression case.
+
+        Groups (g,t) pairs by their control regression key to reuse Cholesky
+        factorizations of X^T X across pairs that share the same control design
+        matrix.
+
+        Returns
+        -------
+        group_time_effects : dict
+            Mapping (g, t) -> effect dict.
+        influence_func_info : dict
+            Mapping (g, t) -> influence function info dict.
+        """
+        period_to_col = precomputed['period_to_col']
+        outcome_matrix = precomputed['outcome_matrix']
+        cohort_masks = precomputed['cohort_masks']
+        never_treated_mask = precomputed['never_treated_mask']
+        unit_cohorts = precomputed['unit_cohorts']
+        covariate_by_period = precomputed['covariate_by_period']
+        is_balanced = precomputed['is_balanced']
+
+        group_time_effects = {}
+        influence_func_info = {}
+        atts = []
+        ses = []
+        task_keys = []
+        n_nan_cells = 0
+
+        # Collect all valid (g, t) tasks with their base periods
+        tasks_by_group = {}  # control_key -> list of (g, t, base_period_val, base_col, post_col)
+        for g in treatment_groups:
+            if self.base_period == "universal":
+                universal_base = g - 1 - self.anticipation
+                valid_periods = [t for t in time_periods if t != universal_base]
+            else:
+                valid_periods = [
+                    t for t in time_periods
+                    if t >= g - self.anticipation or t > min_period
+                ]
+
+            for t in valid_periods:
+                if self.base_period == "universal":
+                    base_period_val = g - 1 - self.anticipation
+                else:
+                    if t < g - self.anticipation:
+                        base_period_val = t - 1
+                    else:
+                        base_period_val = g - 1 - self.anticipation
+
+                if base_period_val not in period_to_col or t not in period_to_col:
+                    continue
+
+                # Determine control regression grouping key.
+                # For balanced panels with never_treated control, X_control depends
+                # only on base_period_val (control mask is time-invariant).
+                # For not_yet_treated, the control mask excludes cohort g, so include g.
+                if is_balanced and self.control_group == "never_treated":
+                    control_key = base_period_val
+                else:
+                    control_key = (g, base_period_val, t)
+
+                tasks_by_group.setdefault(control_key, []).append(
+                    (g, t, base_period_val, period_to_col[base_period_val], period_to_col[t])
+                )
+
+        # Process each group of tasks sharing the same control regression
+        for control_key, tasks in tasks_by_group.items():
+            # Use the first task to build X_control (same for all in the group)
+            first_g, first_t, base_period_val, first_base_col, first_post_col = tasks[0]
+
+            cov_matrix = covariate_by_period[base_period_val]
+
+            # Build control mask (same for all tasks in this group)
+            if self.control_group == "never_treated":
+                control_mask = never_treated_mask
+            else:
+                # For not_yet_treated, control_key includes t
+                ref_t = first_t
+                control_mask = never_treated_mask | (
+                    (unit_cohorts > ref_t + self.anticipation) & (unit_cohorts != first_g)
+                )
+
+            # For balanced panels, valid_mask is all True so control_valid = control_mask
+            if is_balanced:
+                control_valid_base = control_mask
+            else:
+                y_base_first = outcome_matrix[:, first_base_col]
+                y_post_first = outcome_matrix[:, first_post_col]
+                valid_first = ~(np.isnan(y_base_first) | np.isnan(y_post_first))
+                control_valid_base = control_mask & valid_first
+
+            X_ctrl_raw = cov_matrix[control_valid_base]
+
+            # Check for NaN in control covariates
+            ctrl_has_nan = bool(np.any(np.isnan(X_ctrl_raw)))
+
+            # Build X_ctrl with intercept
+            n_c_base = int(np.sum(control_valid_base))
+            if n_c_base == 0:
+                continue
+
+            X_ctrl = None
+            cho = None
+            kept_cols = None
+            if not ctrl_has_nan:
+                X_ctrl = np.column_stack([np.ones(n_c_base), X_ctrl_raw])
+
+                # One-time rank check for this control group
+                rank, dropped_cols, _ = _detect_rank_deficiency(X_ctrl)
+
+                if len(dropped_cols) > 0:
+                    # Rank-deficient: force lstsq for both "warn" and "silent".
+                    # Cholesky on near-singular XtX could yield unstable coefficients.
+                    if self.rank_deficient_action == "warn":
+                        col_info = _format_dropped_columns(dropped_cols)
+                        warnings.warn(
+                            f"Rank-deficient covariate design (control_key={control_key}): "
+                            f"dropped columns {col_info}. Rank {rank} < {X_ctrl.shape[1]}. "
+                            "Using minimum-norm least-squares solution.",
+                            UserWarning, stacklevel=2,
+                        )
+                    cho = None  # Force lstsq path for ALL rank-deficient cases
+                    kept_cols = np.array([i for i in range(X_ctrl.shape[1])
+                                         if i not in dropped_cols])
+                else:
+                    kept_cols = None  # Full rank — use all columns
+                    with np.errstate(all='ignore'):
+                        XtX = X_ctrl.T @ X_ctrl
+                    try:
+                        cho = scipy_linalg.cho_factor(XtX)
+                    except np.linalg.LinAlgError:
+                        cho = None
+
+            # Process each (g, t) pair in this group
+            for g, t, _, base_col, post_col in tasks:
+                treated_mask = cohort_masks[g]
+
+                # Recompute control mask for not_yet_treated (varies by g, t)
+                if self.control_group == "not_yet_treated":
+                    control_mask = never_treated_mask | (
+                        (unit_cohorts > t + self.anticipation) & (unit_cohorts != g)
+                    )
+
+                y_base = outcome_matrix[:, base_col]
+                y_post = outcome_matrix[:, post_col]
+                outcome_change = y_post - y_base
+
+                if is_balanced:
+                    valid_mask_pair = np.ones(len(y_base), dtype=bool)
+                else:
+                    valid_mask_pair = ~(np.isnan(y_base) | np.isnan(y_post))
+
+                treated_valid = treated_mask & valid_mask_pair
+                # For balanced + never_treated, control_valid is same as control_valid_base
+                if is_balanced and self.control_group == "never_treated":
+                    control_valid = control_valid_base
+                else:
+                    control_valid = control_mask & valid_mask_pair
+
+                n_t = int(np.sum(treated_valid))
+                n_c = int(np.sum(control_valid))
+
+                if n_t == 0 or n_c == 0:
+                    continue
+
+                treated_change = outcome_change[treated_valid]
+                control_change = outcome_change[control_valid]
+
+                X_treated_pair = cov_matrix[treated_valid]
+                X_control_pair = cov_matrix[control_valid]
+
+                # Check for NaN in this pair's covariates
+                if np.any(np.isnan(X_treated_pair)) or np.any(np.isnan(X_control_pair)):
+                    # Fall back to unconditional (difference in means)
+                    warnings.warn(
+                        f"Missing values in covariates for group {g}, time {t}. "
+                        "Falling back to unconditional estimation.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                    att = float(np.mean(treated_change) - np.mean(control_change))
+                    var_t = float(np.var(treated_change, ddof=1)) if n_t > 1 else 0.0
+                    var_c = float(np.var(control_change, ddof=1)) if n_c > 1 else 0.0
+                    se = float(np.sqrt(var_t / n_t + var_c / n_c))
+                    inf_treated = (treated_change - np.mean(treated_change)) / n_t
+                    inf_control = -(control_change - np.mean(control_change)) / n_c
+                else:
+                    # Build per-pair X_ctrl if control_valid differs from base
+                    if (is_balanced and self.control_group == "never_treated"
+                            and X_ctrl is not None):
+                        pair_X_ctrl = X_ctrl
+                        pair_n_c = n_c_base
+                    else:
+                        pair_X_ctrl = np.column_stack([np.ones(n_c), X_control_pair])
+                        pair_n_c = n_c
+
+                    # Solve for beta
+                    beta = None
+                    with np.errstate(all='ignore'):
+                        if (cho is not None and is_balanced
+                                and self.control_group == "never_treated"):
+                            # Use cached Cholesky
+                            Xty = pair_X_ctrl.T @ control_change
+                            beta = scipy_linalg.cho_solve(cho, Xty)
+                        else:
+                            # Compute per-pair Cholesky or lstsq fallback
+                            if kept_cols is not None:
+                                # Rank-deficient: skip Cholesky, use reduced lstsq
+                                pass
+                            else:
+                                pair_XtX = pair_X_ctrl.T @ pair_X_ctrl
+                                try:
+                                    pair_cho = scipy_linalg.cho_factor(pair_XtX)
+                                    Xty = pair_X_ctrl.T @ control_change
+                                    beta = scipy_linalg.cho_solve(pair_cho, Xty)
+                                except np.linalg.LinAlgError:
+                                    pass
+
+                        if beta is None or np.any(~np.isfinite(beta)):
+                            if kept_cols is not None:
+                                # Reduced solve for rank-deficient design
+                                result = scipy_linalg.lstsq(
+                                    pair_X_ctrl[:, kept_cols], control_change,
+                                    cond=1e-07,
+                                )
+                                beta = np.zeros(pair_X_ctrl.shape[1])
+                                beta[kept_cols] = result[0]
+                            else:
+                                # Full-rank lstsq fallback (Cholesky numerical failure)
+                                result = scipy_linalg.lstsq(
+                                    pair_X_ctrl, control_change, cond=1e-07,
+                                )
+                                beta = result[0]
+
+                    nan_cell = False
+
+                    if beta is None or np.any(~np.isfinite(beta)):
+                        nan_cell = True
+                        n_nan_cells += 1
+
+                    if not nan_cell:
+                        X_treated_w_intercept = np.column_stack([np.ones(n_t), X_treated_pair])
+                        with np.errstate(all='ignore'):
+                            predicted_control = X_treated_w_intercept @ beta
+                        treated_residuals = treated_change - predicted_control
+                        if np.any(~np.isfinite(predicted_control)):
+                            nan_cell = True
+                            n_nan_cells += 1
+
+                    if not nan_cell:
+                        att = float(np.mean(treated_residuals))
+                        with np.errstate(all='ignore'):
+                            residuals = control_change - pair_X_ctrl @ beta
+                        if np.any(~np.isfinite(residuals)):
+                            nan_cell = True
+                            n_nan_cells += 1
+
+                    if nan_cell:
+                        att = np.nan
+                        se = np.nan
+                        inf_treated = np.zeros(n_t)
+                        inf_control = np.zeros(n_c)
+                    else:
+                        var_t = float(np.var(treated_residuals, ddof=1)) if n_t > 1 else 0.0
+                        var_c = float(np.var(residuals, ddof=1)) if pair_n_c > 1 else 0.0
+                        se = float(np.sqrt(var_t / n_t + var_c / pair_n_c))
+                        inf_treated = (treated_residuals - np.mean(treated_residuals)) / n_t
+                        inf_control = -residuals / pair_n_c
+
+                group_time_effects[(g, t)] = {
+                    'effect': att,
+                    'se': se,
+                    't_stat': np.nan,
+                    'p_value': np.nan,
+                    'conf_int': (np.nan, np.nan),
+                    'n_treated': n_t,
+                    'n_control': n_c,
+                }
+
+                all_units = precomputed['all_units']
+                treated_positions = np.where(treated_valid)[0]
+                control_positions = np.where(control_valid)[0]
+                influence_func_info[(g, t)] = {
+                    'treated_idx': treated_positions,
+                    'control_idx': control_positions,
+                    'treated_units': all_units[treated_positions],
+                    'control_units': all_units[control_positions],
+                    'treated_inf': inf_treated,
+                    'control_inf': inf_control,
+                }
+
+                atts.append(att)
+                ses.append(se)
+                task_keys.append((g, t))
+
+        if n_nan_cells > 0:
+            warnings.warn(
+                f"{n_nan_cells} group-time cell(s) have non-finite regression results "
+                "(near-singular covariates). These cells are preserved with NaN inference.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # Batch inference
+        if task_keys:
+            t_stats, p_values, ci_lowers, ci_uppers = safe_inference_batch(
+                np.array(atts), np.array(ses), alpha=self.alpha
+            )
+            for idx, key in enumerate(task_keys):
+                group_time_effects[key]['t_stat'] = float(t_stats[idx])
+                group_time_effects[key]['p_value'] = float(p_values[idx])
+                group_time_effects[key]['conf_int'] = (
+                    float(ci_lowers[idx]), float(ci_uppers[idx])
+                )
+
+        return group_time_effects, influence_func_info
 
     def fit(
         self,
@@ -627,6 +1126,10 @@ class CallawaySantAnna(
         ValueError
             If required columns are missing or data validation fails.
         """
+        # Normalize empty covariates list to None
+        if covariates is not None and len(covariates) == 0:
+            covariates = None
+
         # Validate inputs
         required_cols = [outcome, unit, time, first_treat]
         if covariates:
@@ -675,45 +1178,70 @@ class CallawaySantAnna(
         )
 
         # Compute ATT(g,t) for each group-time combination
-        group_time_effects = {}
-        influence_func_info = {}  # Store influence functions for bootstrap
-
-        # Get minimum period for determining valid pre-treatment periods
         min_period = min(time_periods)
 
-        for g in treatment_groups:
-            # Compute valid periods including pre-treatment
-            if self.base_period == "universal":
-                # Universal: all periods except the base period (which is normalized to 0)
-                universal_base = g - 1 - self.anticipation
-                valid_periods = [t for t in time_periods if t != universal_base]
-            else:
-                # Varying: post-treatment + pre-treatment where t-1 exists
-                valid_periods = [
-                    t for t in time_periods
-                    if t >= g - self.anticipation or t > min_period
-                ]
-
-            for t in valid_periods:
-                att_gt, se_gt, n_treat, n_ctrl, inf_info = self._compute_att_gt_fast(
-                    precomputed, g, t, covariates
+        if covariates is None and self.estimation_method == "reg":
+            # Fast vectorized path for the common no-covariates regression case
+            group_time_effects, influence_func_info = (
+                self._compute_all_att_gt_vectorized(
+                    precomputed, treatment_groups, time_periods, min_period
                 )
+            )
+        elif (covariates is not None and self.estimation_method == "reg"
+              and self.rank_deficient_action != "error"):
+            # Optimized covariate regression path with Cholesky caching
+            group_time_effects, influence_func_info = (
+                self._compute_all_att_gt_covariate_reg(
+                    precomputed, treatment_groups, time_periods, min_period
+                )
+            )
+        else:
+            # General path: IPW, DR, rank_deficient_action="error", or edge cases
+            group_time_effects = {}
+            influence_func_info = {}
 
-                if att_gt is not None:
-                    t_stat, p_val, ci = safe_inference(att_gt, se_gt, alpha=self.alpha)
+            # Propensity score cache for IPW/DR with covariates
+            pscore_cache = {} if (
+                covariates and self.estimation_method in ("ipw", "dr")
+            ) else None
+            # Cholesky cache for DR outcome regression component
+            cho_cache = {} if (
+                covariates and self.estimation_method == "dr"
+                and self.rank_deficient_action != "error"
+            ) else None
 
-                    group_time_effects[(g, t)] = {
-                        'effect': att_gt,
-                        'se': se_gt,
-                        't_stat': t_stat,
-                        'p_value': p_val,
-                        'conf_int': ci,
-                        'n_treated': n_treat,
-                        'n_control': n_ctrl,
-                    }
+            for g in treatment_groups:
+                if self.base_period == "universal":
+                    universal_base = g - 1 - self.anticipation
+                    valid_periods = [t for t in time_periods if t != universal_base]
+                else:
+                    valid_periods = [
+                        t for t in time_periods
+                        if t >= g - self.anticipation or t > min_period
+                    ]
 
-                    if inf_info is not None:
-                        influence_func_info[(g, t)] = inf_info
+                for t in valid_periods:
+                    att_gt, se_gt, n_treat, n_ctrl, inf_info = self._compute_att_gt_fast(
+                        precomputed, g, t, covariates,
+                        pscore_cache=pscore_cache,
+                        cho_cache=cho_cache,
+                    )
+
+                    if att_gt is not None:
+                        t_stat, p_val, ci = safe_inference(att_gt, se_gt, alpha=self.alpha)
+
+                        group_time_effects[(g, t)] = {
+                            'effect': att_gt,
+                            'se': se_gt,
+                            't_stat': t_stat,
+                            'p_value': p_val,
+                            'conf_int': ci,
+                            'n_treated': n_treat,
+                            'n_control': n_ctrl,
+                        }
+
+                        if inf_info is not None:
+                            influence_func_info[(g, t)] = inf_info
 
         if not group_time_effects:
             raise ValueError(
@@ -742,7 +1270,8 @@ class CallawaySantAnna(
 
         if aggregate in ["group", "all"]:
             group_effects = self._aggregate_by_group(
-                group_time_effects, influence_func_info, treatment_groups
+                group_time_effects, influence_func_info, treatment_groups,
+                precomputed=precomputed,
             )
 
         # Run bootstrap inference if requested
@@ -767,44 +1296,49 @@ class CallawaySantAnna(
             overall_p = bootstrap_results.overall_att_p_value
             overall_ci = bootstrap_results.overall_att_ci
 
-            # Update group-time effects with bootstrap SEs
-            for gt in group_time_effects:
-                if gt in bootstrap_results.group_time_ses:
+            # Update group-time effects with bootstrap SEs (batched)
+            gt_keys = [gt for gt in group_time_effects if gt in bootstrap_results.group_time_ses]
+            if gt_keys:
+                gt_effects_arr = np.array([float(group_time_effects[gt]['effect']) for gt in gt_keys])
+                gt_ses_arr = np.array([float(bootstrap_results.group_time_ses[gt]) for gt in gt_keys])
+                gt_t_stats, _, _, _ = safe_inference_batch(gt_effects_arr, gt_ses_arr, alpha=self.alpha)
+                for idx, gt in enumerate(gt_keys):
                     group_time_effects[gt]['se'] = bootstrap_results.group_time_ses[gt]
                     group_time_effects[gt]['conf_int'] = bootstrap_results.group_time_cis[gt]
                     group_time_effects[gt]['p_value'] = bootstrap_results.group_time_p_values[gt]
-                    effect = float(group_time_effects[gt]['effect'])
-                    se = float(group_time_effects[gt]['se'])
-                    group_time_effects[gt]['t_stat'] = safe_inference(effect, se, alpha=self.alpha)[0]
+                    group_time_effects[gt]['t_stat'] = float(gt_t_stats[idx])
 
-            # Update event study effects with bootstrap SEs
+            # Update event study effects with bootstrap SEs (batched)
             if (event_study_effects is not None
                 and bootstrap_results.event_study_ses is not None
                 and bootstrap_results.event_study_cis is not None
                 and bootstrap_results.event_study_p_values is not None):
-                for e in event_study_effects:
-                    if e in bootstrap_results.event_study_ses:
+                es_keys = [e for e in event_study_effects if e in bootstrap_results.event_study_ses]
+                if es_keys:
+                    es_effects_arr = np.array([float(event_study_effects[e]['effect']) for e in es_keys])
+                    es_ses_arr = np.array([float(bootstrap_results.event_study_ses[e]) for e in es_keys])
+                    es_t_stats, _, _, _ = safe_inference_batch(es_effects_arr, es_ses_arr, alpha=self.alpha)
+                    for idx, e in enumerate(es_keys):
                         event_study_effects[e]['se'] = bootstrap_results.event_study_ses[e]
                         event_study_effects[e]['conf_int'] = bootstrap_results.event_study_cis[e]
-                        p_val = bootstrap_results.event_study_p_values[e]
-                        event_study_effects[e]['p_value'] = p_val
-                        effect = float(event_study_effects[e]['effect'])
-                        se = float(event_study_effects[e]['se'])
-                        event_study_effects[e]['t_stat'] = safe_inference(effect, se, alpha=self.alpha)[0]
+                        event_study_effects[e]['p_value'] = bootstrap_results.event_study_p_values[e]
+                        event_study_effects[e]['t_stat'] = float(es_t_stats[idx])
 
-            # Update group effects with bootstrap SEs
+            # Update group effects with bootstrap SEs (batched)
             if (group_effects is not None
                 and bootstrap_results.group_effect_ses is not None
                 and bootstrap_results.group_effect_cis is not None
                 and bootstrap_results.group_effect_p_values is not None):
-                for g in group_effects:
-                    if g in bootstrap_results.group_effect_ses:
+                grp_keys = [g for g in group_effects if g in bootstrap_results.group_effect_ses]
+                if grp_keys:
+                    grp_effects_arr = np.array([float(group_effects[g]['effect']) for g in grp_keys])
+                    grp_ses_arr = np.array([float(bootstrap_results.group_effect_ses[g]) for g in grp_keys])
+                    grp_t_stats, _, _, _ = safe_inference_batch(grp_effects_arr, grp_ses_arr, alpha=self.alpha)
+                    for idx, g in enumerate(grp_keys):
                         group_effects[g]['se'] = bootstrap_results.group_effect_ses[g]
                         group_effects[g]['conf_int'] = bootstrap_results.group_effect_cis[g]
                         group_effects[g]['p_value'] = bootstrap_results.group_effect_p_values[g]
-                        effect = float(group_effects[g]['effect'])
-                        se = float(group_effects[g]['se'])
-                        group_effects[g]['t_stat'] = safe_inference(effect, se, alpha=self.alpha)[0]
+                        group_effects[g]['t_stat'] = float(grp_t_stats[idx])
 
         # Compute simultaneous confidence band CIs if cband is available
         cband_crit_value = None
@@ -920,6 +1454,8 @@ class CallawaySantAnna(
         n_control: int,
         X_treated: Optional[np.ndarray] = None,
         X_control: Optional[np.ndarray] = None,
+        pscore_cache: Optional[Dict] = None,
+        pscore_key: Optional[Any] = None,
     ) -> Tuple[float, float, np.ndarray]:
         """
         Estimate ATT using inverse probability weighting.
@@ -938,22 +1474,39 @@ class CallawaySantAnna(
 
         if X_treated is not None and X_control is not None and X_treated.shape[1] > 0:
             # Covariate-adjusted IPW estimation
-            # Stack covariates and create treatment indicator
-            X_all = np.vstack([X_treated, X_control])
-            D = np.concatenate([np.ones(n_t), np.zeros(n_c)])
+            # Check propensity score cache
+            cached_pscore = None
+            if pscore_cache is not None and pscore_key is not None:
+                cached_pscore = pscore_cache.get(pscore_key)
 
-            # Estimate propensity scores using logistic regression
-            try:
-                _, pscore = _logistic_regression(X_all, D)
-            except (np.linalg.LinAlgError, ValueError):
-                # Fallback to unconditional if logistic regression fails
-                warnings.warn(
-                    "Propensity score estimation failed. "
-                    "Falling back to unconditional estimation.",
-                    UserWarning,
-                    stacklevel=4,
-                )
-                pscore = np.full(len(D), n_t / (n_t + n_c))
+            if cached_pscore is not None:
+                # Use cached propensity scores (beta coefficients)
+                beta_logistic = cached_pscore
+                X_all = np.vstack([X_treated, X_control])
+                X_all_with_intercept = np.column_stack([np.ones(n_t + n_c), X_all])
+                z = np.dot(X_all_with_intercept, beta_logistic)
+                z = np.clip(z, -500, 500)
+                pscore = 1 / (1 + np.exp(-z))
+            else:
+                # Stack covariates and create treatment indicator
+                X_all = np.vstack([X_treated, X_control])
+                D = np.concatenate([np.ones(n_t), np.zeros(n_c)])
+
+                # Estimate propensity scores using logistic regression
+                try:
+                    beta_logistic, pscore = _logistic_regression(X_all, D)
+                    # Cache the fitted coefficients
+                    if pscore_cache is not None and pscore_key is not None:
+                        pscore_cache[pscore_key] = beta_logistic
+                except (np.linalg.LinAlgError, ValueError):
+                    # Fallback to unconditional if logistic regression fails
+                    warnings.warn(
+                        "Propensity score estimation failed. "
+                        "Falling back to unconditional estimation.",
+                        UserWarning,
+                        stacklevel=4,
+                    )
+                    pscore = np.full(len(D), n_t / (n_t + n_c))
 
             # Propensity scores for treated and control
             pscore_treated = pscore[:n_t]
@@ -1009,6 +1562,10 @@ class CallawaySantAnna(
         control_change: np.ndarray,
         X_treated: Optional[np.ndarray] = None,
         X_control: Optional[np.ndarray] = None,
+        pscore_cache: Optional[Dict] = None,
+        pscore_key: Optional[Any] = None,
+        cho_cache: Optional[Dict] = None,
+        cho_key: Optional[Any] = None,
     ) -> Tuple[float, float, np.ndarray]:
         """
         Estimate ATT using doubly robust estimation.
@@ -1032,26 +1589,77 @@ class CallawaySantAnna(
         if X_treated is not None and X_control is not None and X_treated.shape[1] > 0:
             # Doubly robust estimation with covariates
             # Step 1: Outcome regression - fit E[Delta Y | X] on control
-            beta, _ = _linear_regression(
-                X_control, control_change,
-                rank_deficient_action=self.rank_deficient_action,
-            )
+            # Try Cholesky cache for outcome regression
+            beta = None
+            X_control_with_intercept = np.column_stack([np.ones(n_c), X_control])
+            if cho_cache is not None and cho_key is not None:
+                cached_cho = cho_cache.get(cho_key)
+
+                if cached_cho is False:
+                    # Rank-deficient sentinel: skip Cholesky, fall through
+                    pass
+                elif cached_cho is not None:
+                    Xty = X_control_with_intercept.T @ control_change
+                    beta = scipy_linalg.cho_solve(cached_cho, Xty)
+                    if np.any(~np.isfinite(beta)):
+                        beta = None
+                else:
+                    # First time for this cho_key: check rank before Cholesky
+                    rank_info = _detect_rank_deficiency(X_control_with_intercept)
+                    if len(rank_info[1]) > 0:
+                        cho_cache[cho_key] = False  # Sentinel
+                    else:
+                        XtX = X_control_with_intercept.T @ X_control_with_intercept
+                        try:
+                            cho_factor = scipy_linalg.cho_factor(XtX)
+                            cho_cache[cho_key] = cho_factor
+                            Xty = X_control_with_intercept.T @ control_change
+                            beta = scipy_linalg.cho_solve(cho_factor, Xty)
+                            if np.any(~np.isfinite(beta)):
+                                beta = None
+                        except np.linalg.LinAlgError:
+                            pass
+
+            if beta is None:
+                beta, _ = _linear_regression(
+                    X_control, control_change,
+                    rank_deficient_action=self.rank_deficient_action,
+                )
+                # Zero NaN coefficients for prediction only — dropped columns
+                # contribute 0 to the column space projection. Note: solve_ols
+                # deliberately uses NaN (R's lm() convention) for inference, but
+                # here we only need beta for prediction (m_treated, m_control).
+                beta = np.where(np.isfinite(beta), beta, 0.0)
 
             # Predict counterfactual for both treated and control
             X_treated_with_intercept = np.column_stack([np.ones(n_t), X_treated])
-            X_control_with_intercept = np.column_stack([np.ones(n_c), X_control])
             m_treated = np.dot(X_treated_with_intercept, beta)
             m_control = np.dot(X_control_with_intercept, beta)
 
             # Step 2: Propensity score estimation
-            X_all = np.vstack([X_treated, X_control])
-            D = np.concatenate([np.ones(n_t), np.zeros(n_c)])
+            # Check propensity score cache
+            cached_pscore = None
+            if pscore_cache is not None and pscore_key is not None:
+                cached_pscore = pscore_cache.get(pscore_key)
 
-            try:
-                _, pscore = _logistic_regression(X_all, D)
-            except (np.linalg.LinAlgError, ValueError):
-                # Fallback to unconditional if logistic regression fails
-                pscore = np.full(len(D), n_t / (n_t + n_c))
+            if cached_pscore is not None:
+                beta_logistic = cached_pscore
+                X_all = np.vstack([X_treated, X_control])
+                X_all_with_intercept = np.column_stack([np.ones(n_t + n_c), X_all])
+                z = np.dot(X_all_with_intercept, beta_logistic)
+                z = np.clip(z, -500, 500)
+                pscore = 1 / (1 + np.exp(-z))
+            else:
+                X_all = np.vstack([X_treated, X_control])
+                D = np.concatenate([np.ones(n_t), np.zeros(n_c)])
+
+                try:
+                    beta_logistic, pscore = _logistic_regression(X_all, D)
+                    if pscore_cache is not None and pscore_key is not None:
+                        pscore_cache[pscore_key] = beta_logistic
+                except (np.linalg.LinAlgError, ValueError):
+                    # Fallback to unconditional if logistic regression fails
+                    pscore = np.full(len(D), n_t / (n_t + n_c))
 
             pscore_control = pscore[n_t:]
 

@@ -29,6 +29,20 @@ _OPTIMIZATION_MAX_ITER = 1000  # Maximum iterations for weight optimization
 _OPTIMIZATION_TOL = 1e-8  # Convergence tolerance for optimization
 _NUMERICAL_EPS = 1e-10  # Small constant to prevent division by zero
 
+# Cache for critical values to avoid repeated scipy calls
+_critical_value_cache: Dict[Tuple[float, Optional[int]], float] = {}
+
+
+def _get_critical_value(alpha: float, df: Optional[int] = None) -> float:
+    """Return cached critical value for (alpha, df) pair."""
+    key = (alpha, df)
+    if key not in _critical_value_cache:
+        if df is not None:
+            _critical_value_cache[key] = float(stats.t.ppf(1 - alpha / 2, df))
+        else:
+            _critical_value_cache[key] = float(stats.norm.ppf(1 - alpha / 2))
+    return _critical_value_cache[key]
+
 
 def validate_binary(arr: np.ndarray, name: str) -> None:
     """
@@ -107,11 +121,7 @@ def compute_confidence_interval(
     tuple
         (lower_bound, upper_bound) of confidence interval.
     """
-    if df is not None:
-        critical_value = stats.t.ppf(1 - alpha / 2, df)
-    else:
-        critical_value = stats.norm.ppf(1 - alpha / 2)
-
+    critical_value = _get_critical_value(alpha, df)
     lower = estimate - critical_value * se
     upper = estimate + critical_value * se
 
@@ -179,6 +189,54 @@ def safe_inference(effect, se, alpha=0.05, df=None):
     p_value = compute_p_value(t_stat, df=df)
     conf_int = compute_confidence_interval(effect, se, alpha, df=df)
     return t_stat, p_value, conf_int
+
+
+def safe_inference_batch(effects, ses, alpha=0.05, df=None):
+    """Vectorized batch inference for arrays of effects and SEs.
+
+    Parameters
+    ----------
+    effects : np.ndarray
+        Array of point estimates.
+    ses : np.ndarray
+        Array of standard errors.
+    alpha : float, optional
+        Significance level (default 0.05).
+    df : int, optional
+        Degrees of freedom. If None, uses normal distribution.
+
+    Returns
+    -------
+    t_stats : np.ndarray
+    p_values : np.ndarray
+    ci_lowers : np.ndarray
+    ci_uppers : np.ndarray
+    """
+    effects = np.asarray(effects, dtype=float)
+    ses = np.asarray(ses, dtype=float)
+    n = len(effects)
+
+    t_stats = np.full(n, np.nan)
+    p_values = np.full(n, np.nan)
+    ci_lowers = np.full(n, np.nan)
+    ci_uppers = np.full(n, np.nan)
+
+    valid = np.isfinite(ses) & (ses > 0)
+    if not np.any(valid):
+        return t_stats, p_values, ci_lowers, ci_uppers
+
+    t_stats[valid] = effects[valid] / ses[valid]
+
+    if df is not None:
+        p_values[valid] = 2.0 * stats.t.sf(np.abs(t_stats[valid]), df)
+    else:
+        p_values[valid] = 2.0 * stats.norm.sf(np.abs(t_stats[valid]))
+
+    crit = _get_critical_value(alpha, df)
+    ci_lowers[valid] = effects[valid] - crit * ses[valid]
+    ci_uppers[valid] = effects[valid] + crit * ses[valid]
+
+    return t_stats, p_values, ci_lowers, ci_uppers
 
 
 # =============================================================================

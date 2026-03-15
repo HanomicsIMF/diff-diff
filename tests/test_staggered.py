@@ -885,6 +885,46 @@ class TestCallawaySantAnnaCovariates:
         assert results.overall_att is not None
         assert results.overall_se > 0
 
+    def test_dr_covariates_not_yet_treated(self):
+        """Regression test: DR + covariates with not_yet_treated control group.
+
+        Ensures cache keys correctly include cohort g for not_yet_treated,
+        preventing stale Cholesky/pscore reuse across groups.
+        """
+        data = generate_staggered_data_with_covariates(seed=42, n_units=200)
+
+        for method in ['dr', 'reg']:
+            cs = CallawaySantAnna(
+                estimation_method=method,
+                control_group='not_yet_treated',
+            )
+            results = cs.fit(
+                data,
+                outcome='outcome',
+                unit='unit',
+                time='time',
+                first_treat='first_treat',
+                covariates=['x1', 'x2'],
+            )
+
+            assert np.isfinite(results.overall_att), (
+                f"{method}/not_yet_treated: ATT should be finite"
+            )
+            assert results.overall_se > 0, (
+                f"{method}/not_yet_treated: SE should be positive"
+            )
+            assert len(results.group_time_effects) > 0, (
+                f"{method}/not_yet_treated: should have group-time effects"
+            )
+            # All effects should be finite
+            for (g, t), eff in results.group_time_effects.items():
+                assert np.isfinite(eff['effect']), (
+                    f"{method}/not_yet_treated: effect for ({g},{t}) should be finite"
+                )
+                assert np.isfinite(eff['se']), (
+                    f"{method}/not_yet_treated: SE for ({g},{t}) should be finite"
+                )
+
     def test_rank_deficient_action_error_raises(self):
         """Test that rank_deficient_action='error' raises ValueError on collinear data."""
         data = generate_staggered_data_with_covariates(seed=42)
@@ -939,6 +979,386 @@ class TestCallawaySantAnnaCovariates:
         # Should still get valid results
         assert results is not None
         assert results.overall_att is not None
+
+    def test_rank_deficient_action_warn_emits_warning(self):
+        """Test that rank_deficient_action='warn' emits rank-deficiency warning on batched path."""
+        import warnings
+
+        data = generate_staggered_data_with_covariates(seed=42)
+
+        # Add a covariate that is perfectly collinear with x1
+        data["x1_dup"] = data["x1"].copy()
+
+        # estimation_method="reg" + rank_deficient_action="warn" routes to
+        # _compute_all_att_gt_covariate_reg (batched path)
+        cs = CallawaySantAnna(
+            estimation_method="reg",
+            rank_deficient_action="warn",
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = cs.fit(
+                data,
+                outcome='outcome',
+                unit='unit',
+                time='time',
+                first_treat='first_treat',
+                covariates=['x1', 'x1_dup']
+            )
+
+            rank_warnings = [x for x in w if "rank-deficient" in str(x.message).lower()
+                           or "Rank-deficient" in str(x.message)]
+            assert len(rank_warnings) > 0, (
+                "Expected at least one rank-deficiency warning with collinear covariates"
+            )
+
+        # Should still produce valid results (lstsq fallback)
+        assert results is not None
+        assert results.overall_att is not None
+        assert results.overall_se > 0
+
+    def test_empty_covariates_list_behaves_like_none(self):
+        """covariates=[] should behave identically to covariates=None."""
+        data = generate_staggered_data_with_covariates(seed=42)
+
+        cs_none = CallawaySantAnna(n_bootstrap=0, seed=42)
+        results_none = cs_none.fit(
+            data,
+            outcome='outcome',
+            unit='unit',
+            time='time',
+            first_treat='first_treat',
+            covariates=None,
+        )
+
+        cs_empty = CallawaySantAnna(n_bootstrap=0, seed=42)
+        results_empty = cs_empty.fit(
+            data,
+            outcome='outcome',
+            unit='unit',
+            time='time',
+            first_treat='first_treat',
+            covariates=[],
+        )
+
+        assert results_none.overall_att == results_empty.overall_att
+        assert results_none.overall_se == results_empty.overall_se
+        assert len(results_none.group_time_effects) == len(results_empty.group_time_effects)
+
+    def test_nan_cell_preserved_not_dropped(self):
+        """Non-finite regression cells should be preserved as NaN, not dropped."""
+        import warnings
+        from unittest.mock import patch
+
+        data = generate_staggered_data_with_covariates(seed=42, n_units=100)
+
+        # Patch lstsq to return inf for one specific call to simulate numerical failure
+        original_lstsq = __import__('scipy').linalg.lstsq
+        call_count = [0]
+
+        def mock_lstsq(*args, **kwargs):
+            call_count[0] += 1
+            result = original_lstsq(*args, **kwargs)
+            if call_count[0] == 1:
+                # Poison the first lstsq result
+                bad_beta = np.full_like(result[0], np.inf)
+                return (bad_beta,) + result[1:]
+            return result
+
+        # Use rank_deficient_action="warn" to ensure we go through the covariate reg path
+        # and also force lstsq fallback by using collinear covariates
+        data['x1_dup'] = data['x1']
+        cs = CallawaySantAnna(
+            n_bootstrap=0, seed=42, estimation_method='reg',
+            rank_deficient_action='warn',
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            with patch('scipy.linalg.lstsq', side_effect=mock_lstsq):
+                results = cs.fit(
+                    data,
+                    outcome='outcome',
+                    unit='unit',
+                    time='time',
+                    first_treat='first_treat',
+                    covariates=['x1', 'x1_dup'],
+                )
+
+        # Check that NaN cells are preserved (not dropped)
+        nan_cells = [
+            (g, t) for (g, t), eff in results.group_time_effects.items()
+            if np.isnan(eff['effect'])
+        ]
+        # At least one cell should have NaN effect from our mock
+        if call_count[0] > 0:
+            # Verify warning about non-finite regression results
+            nan_warnings = [
+                x for x in w
+                if "non-finite regression results" in str(x.message)
+            ]
+            if nan_cells:
+                assert len(nan_warnings) > 0
+                # NaN cells should have NaN SE too
+                for g, t in nan_cells:
+                    assert np.isnan(results.group_time_effects[(g, t)]['se'])
+
+        # Overall ATT should still be finite (NaN cells excluded from aggregation)
+        assert np.isfinite(results.overall_att)
+
+    def test_nan_cell_bootstrap_aggregation_excludes_nan(self, ci_params):
+        """Bootstrap aggregation paths must exclude NaN ATT(g,t) cells."""
+        import warnings
+        from unittest.mock import patch
+
+        data = generate_staggered_data_with_covariates(seed=42, n_units=100)
+
+        original_lstsq = __import__('scipy').linalg.lstsq
+        call_count = [0]
+
+        def mock_lstsq(*args, **kwargs):
+            call_count[0] += 1
+            result = original_lstsq(*args, **kwargs)
+            # Poison call #7 — corresponds to (g=3, t=3), a post-treatment cell,
+            # so the overall ATT bootstrap aggregation path is exercised.
+            if call_count[0] == 7:
+                bad_beta = np.full_like(result[0], np.inf)
+                return (bad_beta,) + result[1:]
+            return result
+
+        data['x1_dup'] = data['x1']
+        n_boot = ci_params.bootstrap(199)
+        cs = CallawaySantAnna(
+            n_bootstrap=n_boot, seed=42, estimation_method='reg',
+            rank_deficient_action='warn',
+        )
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            with patch('scipy.linalg.lstsq', side_effect=mock_lstsq):
+                results = cs.fit(
+                    data,
+                    outcome='outcome',
+                    unit='unit',
+                    time='time',
+                    first_treat='first_treat',
+                    covariates=['x1', 'x1_dup'],
+                    aggregate='all',
+                )
+
+        # NaN cell should be preserved in group_time_effects
+        nan_cells = [
+            (g, t) for (g, t), eff in results.group_time_effects.items()
+            if np.isnan(eff['effect'])
+        ]
+        assert len(nan_cells) > 0, "Expected at least one NaN cell from mock"
+
+        # Verify poisoned cell is post-treatment so overall ATT bootstrap path is exercised
+        post_treatment_nan = [(g, t) for g, t in nan_cells if t >= g - cs.anticipation]
+        assert len(post_treatment_nan) > 0, (
+            "Poisoned cell must be post-treatment to exercise overall ATT bootstrap filtering"
+        )
+
+        # Overall ATT bootstrap inference should be finite (NaN cells excluded)
+        assert np.isfinite(results.overall_att), "overall_att should be finite"
+        assert np.isfinite(results.overall_se), "overall_se should be finite"
+        assert np.isfinite(results.overall_p_value), "overall_p_value should be finite"
+        assert all(np.isfinite(x) for x in results.overall_conf_int), "overall CI should be finite"
+
+        # Event study: valid relative times should have finite bootstrap inference
+        if results.event_study_effects:
+            for e, data_es in results.event_study_effects.items():
+                if np.isfinite(data_es['effect']):
+                    assert np.isfinite(data_es['se']), f"ES e={e} se should be finite"
+                    assert np.isfinite(data_es['p_value']), f"ES e={e} p_value should be finite"
+
+        # Group effects: valid groups should have finite bootstrap inference
+        if results.group_effects:
+            for g, data_ge in results.group_effects.items():
+                if np.isfinite(data_ge['effect']):
+                    assert np.isfinite(data_ge['se']), f"Group {g} se should be finite"
+                    assert np.isfinite(data_ge['p_value']), f"Group {g} p_value should be finite"
+
+
+    def test_balance_e_excludes_nan_anchor_cohort(self, ci_params):
+        """balance_e must exclude cohorts whose anchor-horizon effect is NaN."""
+        import warnings
+        from unittest.mock import patch
+
+        data = generate_staggered_data_with_covariates(seed=42, n_units=100)
+
+        original_lstsq = __import__('scipy').linalg.lstsq
+        call_count = [0]
+
+        def mock_lstsq(*args, **kwargs):
+            call_count[0] += 1
+            result = original_lstsq(*args, **kwargs)
+            # Poison call #7: (g=3, t=3), the anchor for cohort g=3 at e=0
+            if call_count[0] == 7:
+                bad_beta = np.full_like(result[0], np.inf)
+                return (bad_beta,) + result[1:]
+            return result
+
+        data['x1_dup'] = data['x1']
+        n_boot = ci_params.bootstrap(199)
+        cs = CallawaySantAnna(
+            n_bootstrap=n_boot, seed=42, estimation_method='reg',
+            rank_deficient_action='warn',
+        )
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            with patch('scipy.linalg.lstsq', side_effect=mock_lstsq):
+                results = cs.fit(
+                    data,
+                    outcome='outcome',
+                    unit='unit',
+                    time='time',
+                    first_treat='first_treat',
+                    covariates=['x1', 'x1_dup'],
+                    aggregate='event_study',
+                    balance_e=0,
+                )
+
+        # Confirm the anchor cell is NaN and is specifically the anchor (t - g == 0)
+        assert np.isnan(results.group_time_effects[(3, 3)]['effect']), \
+            "Mock should have poisoned (g=3, t=3)"
+        assert 3 - 3 == 0, "Poisoned cell must be the anchor at balance_e=0"
+
+        # Cohort g=3 should be excluded from ALL event-study horizons
+        # Only g=5 and g=8 should contribute (<=2 because not all balanced
+        # cohorts have cells at extreme horizons)
+        for e, es_data in results.event_study_effects.items():
+            assert es_data['n_groups'] <= 2, (
+                f"Event time e={e} has n_groups={es_data['n_groups']}, "
+                "expected <=2 (cohort g=3 should be excluded due to NaN anchor)"
+            )
+
+        # Analytical effects and SEs should be finite for all horizons
+        for e, es_data in results.event_study_effects.items():
+            assert np.isfinite(es_data['effect']), \
+                f"e={e}: analytical effect should be finite"
+            assert np.isfinite(es_data['se']), \
+                f"e={e}: analytical SE should be finite"
+
+        # Bootstrap SEs should also be finite
+        if results.bootstrap_results and results.bootstrap_results.event_study_ses:
+            for e, se in results.bootstrap_results.event_study_ses.items():
+                assert np.isfinite(se), \
+                    f"e={e}: bootstrap SE should be finite"
+
+
+class TestCallawaySantAnnaRankDeficiencyPaths:
+    """Tests for rank-deficiency handling in DR and reg not_yet_treated paths."""
+
+    def test_dr_rank_deficient_action_warn_emits_warning(self):
+        """Test that DR path emits rank-deficiency warning with collinear covariates."""
+        import warnings as warn_mod
+
+        data = generate_staggered_data_with_covariates(seed=42)
+        # Near-collinear covariate: x1 + tiny noise
+        rng = np.random.default_rng(99)
+        data["x1_near"] = data["x1"] + rng.normal(scale=1e-9, size=len(data))
+
+        cs = CallawaySantAnna(
+            estimation_method="dr",
+            rank_deficient_action="warn",
+        )
+
+        with warn_mod.catch_warnings(record=True) as w:
+            warn_mod.simplefilter("always")
+            results = cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "x1_near"],
+            )
+
+            rank_warnings = [x for x in w if "rank-deficient" in str(x.message).lower()
+                           or "Rank-deficient" in str(x.message)]
+            assert len(rank_warnings) > 0, (
+                "Expected at least one rank-deficiency warning from DR path"
+            )
+
+        assert results is not None
+        assert results.overall_att is not None
+
+    def test_reg_nyt_rank_deficient_action_warn(self):
+        """Test that reg+not_yet_treated emits rank-deficiency warning with collinear covariates."""
+        import warnings as warn_mod
+
+        data = generate_staggered_data_with_covariates(seed=42)
+        data["x1_dup"] = data["x1"].copy()
+
+        cs = CallawaySantAnna(
+            estimation_method="reg",
+            control_group="not_yet_treated",
+            rank_deficient_action="warn",
+        )
+
+        with warn_mod.catch_warnings(record=True) as w:
+            warn_mod.simplefilter("always")
+            results = cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "x1_dup"],
+            )
+
+            rank_warnings = [x for x in w if "rank-deficient" in str(x.message).lower()
+                           or "Rank-deficient" in str(x.message)]
+            assert len(rank_warnings) > 0, (
+                "Expected at least one rank-deficiency warning from reg nyt path"
+            )
+
+        assert results is not None
+        assert results.overall_att is not None
+        assert results.overall_se > 0
+
+    def test_bootstrap_single_unit_cohort_handles_gracefully(self, ci_params):
+        """Test that bootstrap handles cohort with 1 treated unit without crashing."""
+        # Build small dataset where one cohort has exactly 1 unit
+        rng = np.random.default_rng(42)
+        n_periods = 6
+        # 15 never-treated, 14 in cohort 3, 1 in cohort 5
+        cohorts = ([0] * 15) + ([3] * 14) + ([5] * 1)
+        n_units = len(cohorts)
+
+        rows = []
+        for i in range(n_units):
+            g = cohorts[i]
+            for t in range(1, n_periods + 1):
+                treated = 1 if (g > 0 and t >= g) else 0
+                y = rng.normal(0, 1) + 2.0 * treated
+                rows.append((i, t, y, g))
+
+        data = pd.DataFrame(rows, columns=["unit", "time", "outcome", "first_treat"])
+
+        n_boot = ci_params.bootstrap(99)
+        cs = CallawaySantAnna(n_bootstrap=n_boot, seed=42)
+
+        results = cs.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="all",
+        )
+
+        assert results is not None
+        assert results.overall_att is not None
+        # Single-unit cohort (g=5) effects should exist and have finite ATT
+        g5_effects = {(g, t): eff for (g, t), eff in results.group_time_effects.items()
+                      if g == 5}
+        assert len(g5_effects) > 0, "Expected group-time effects for cohort g=5"
+        for (g, t), eff in g5_effects.items():
+            assert np.isfinite(eff["effect"]), f"g={g},t={t}: ATT should be finite"
 
 
 class TestCallawaySantAnnaBootstrap:

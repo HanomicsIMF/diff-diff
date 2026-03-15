@@ -321,6 +321,13 @@ class TestValidation:
         with pytest.raises(ValueError, match="never-treated"):
             EfficientDiD(pt_assumption="post").fit(df, "y", "unit", "time", "first_treat")
 
+    def test_nan_outcome_raises(self):
+        """Non-finite outcomes in a balanced panel should be rejected."""
+        df = _make_simple_panel()
+        df.loc[df.index[0], "y"] = np.nan
+        with pytest.raises(ValueError, match="non-finite"):
+            EfficientDiD().fit(df, "y", "unit", "time", "first_treat")
+
     def test_duplicate_unit_time_raises(self):
         """Duplicate (unit, time) rows should be rejected."""
         df = _make_simple_panel()

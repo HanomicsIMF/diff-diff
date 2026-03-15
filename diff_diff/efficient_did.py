@@ -217,6 +217,15 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 "panel where every unit is observed in every time period."
             )
 
+        # Reject non-finite outcomes (NaN/Inf corrupt Omega*/EIF calculations)
+        non_finite_mask = ~np.isfinite(df[outcome])
+        if non_finite_mask.any():
+            n_bad = int(non_finite_mask.sum())
+            raise ValueError(
+                f"Found {n_bad} non-finite value(s) in outcome column '{outcome}'. "
+                "EfficientDiD requires finite outcomes for all unit-period observations."
+            )
+
         # Reject duplicate (unit, time) rows
         dup_mask = df.duplicated(subset=[unit, time], keep=False)
         if dup_mask.any():

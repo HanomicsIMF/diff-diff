@@ -1,9 +1,14 @@
 """Tests for bootstrap utility edge cases (NaN propagation)."""
 
+import warnings
+
 import numpy as np
 import pytest
 
-from diff_diff.bootstrap_utils import compute_effect_bootstrap_stats
+from diff_diff.bootstrap_utils import (
+    compute_effect_bootstrap_stats,
+    compute_effect_bootstrap_stats_batch,
+)
 
 
 class TestBootstrapStatsNaNPropagation:
@@ -81,3 +86,55 @@ class TestBootstrapStatsNaNPropagation:
         assert ci[0] < ci[1]
         assert np.isfinite(p_value)
         assert 0 < p_value <= 1
+
+
+class TestBatchBootstrapStatsWarnings:
+    """Tests for warning emission in compute_effect_bootstrap_stats_batch."""
+
+    def test_batch_warns_insufficient_valid_samples(self):
+        """Batch function should warn when >50% of bootstrap samples are NaN."""
+        rng = np.random.default_rng(42)
+        n_bootstrap = 100
+        n_effects = 3
+        # Column 1 has >50% NaN -> should trigger warning
+        matrix = rng.normal(size=(n_bootstrap, n_effects))
+        matrix[:60, 1] = np.nan  # 60% NaN
+
+        effects = np.array([1.0, 2.0, 3.0])
+        with pytest.warns(RuntimeWarning, match="too few valid"):
+            ses, ci_lo, ci_hi, pvals = compute_effect_bootstrap_stats_batch(
+                effects, matrix
+            )
+        # Effect 1 (index 1) should be NaN
+        assert np.isnan(ses[1])
+        # Other effects should be finite
+        assert np.isfinite(ses[0])
+        assert np.isfinite(ses[2])
+
+    def test_batch_warns_zero_se(self):
+        """Batch function should warn when bootstrap SE is zero (identical values)."""
+        n_bootstrap = 100
+        n_effects = 2
+        matrix = np.ones((n_bootstrap, n_effects)) * 5.0  # All identical -> SE=0
+
+        effects = np.array([5.0, 5.0])
+        with pytest.warns(RuntimeWarning, match="non-finite or zero"):
+            ses, ci_lo, ci_hi, pvals = compute_effect_bootstrap_stats_batch(
+                effects, matrix
+            )
+        assert np.isnan(ses[0])
+        assert np.isnan(ses[1])
+
+    def test_batch_no_warning_for_normal_case(self):
+        """Batch function should not warn when all values are normal."""
+        rng = np.random.default_rng(42)
+        n_bootstrap = 200
+        n_effects = 3
+        matrix = rng.normal(size=(n_bootstrap, n_effects))
+        effects = np.array([0.5, -0.3, 1.0])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            ses, ci_lo, ci_hi, pvals = compute_effect_bootstrap_stats_batch(
+                effects, matrix
+            )
