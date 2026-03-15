@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-03-15
+
+### Added
+- **EfficientDiD estimator** (`EfficientDiD`) implementing Chen, Sant'Anna & Xie (2025) efficient DiD
+- CallawaySantAnna event study SEs (WIF-based) and simultaneous confidence bands (sup-t)
+- R comparison tests for event-study SEs and cband critical values
+- Non-finite outcome validation in `EfficientDiD.fit()`
+- CallawaySantAnna speed benchmarks with baseline results
+- Estimator alias documentation in README, quickstart, and API docs
+
 ### Changed
 - **BREAKING: TROP nuclear norm solver step size fix** — The proximal gradient
   threshold for the L matrix (both `method="global"` and `method="twostep"` with
@@ -17,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agreement with exact convex optimization solutions. Users with finite
   `lambda_nn` will observe different ATT estimates. Added FISTA/Nesterov
   acceleration to the twostep inner solver for faster L convergence.
+- Add (1-W) weight masking to TROP global method, rename joint→global
+- Optimize CallawaySantAnna covariate path with Cholesky and pscore caching
+- Update Codex AI review model from gpt-5.2-codex to gpt-5.4
+
+### Fixed
+- Fix CallawaySantAnna event study SEs (missing WIF) and simultaneous confidence bands
+- Fix analytical and bootstrap WIF pg scaling to use global N
+- Fix TROP nuclear norm solver threshold scaling for non-uniform weights
+- Fix stale coefficients in TROP global low-rank solver and NaN bootstrap poisoning
+- Fix NaN-cell preservation in CallawaySantAnna balance_e aggregation
+- Fix not-yet-treated cache keys and dropped-cell warning
+- Fix rank-deficiency handling with Cholesky rank checks and reduced-column solve
+- Fix Rust convergence criterion, n_valid_treated consistency, and NaN bootstrap SE
 
 ## [2.6.1] - 2026-03-08
 
@@ -865,6 +888,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.7.0]: https://github.com/igerber/diff-diff/compare/v2.6.1...v2.7.0
 [2.6.1]: https://github.com/igerber/diff-diff/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/igerber/diff-diff/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/igerber/diff-diff/compare/v2.4.3...v2.5.0

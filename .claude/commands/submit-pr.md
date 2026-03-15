@@ -310,6 +310,26 @@ git remote get-url origin
 # Extract owner from URL
 ```
 
+### 10b. Ensure PR ref exists
+
+After PR creation, GitHub may not immediately create `refs/pull/<number>/head` (especially
+when the PR is created via API). Push a no-op to the branch to force ref creation:
+
+```bash
+git push <push-remote> <branch-name>
+```
+
+Then verify:
+```bash
+git ls-remote <push-remote> refs/pull/<number>/head
+```
+
+If still missing, push an empty commit:
+```bash
+git commit --allow-empty -m "Trigger PR ref creation"
+git push <push-remote> <branch-name>
+```
+
 ### 11. Report Results
 
 ```
