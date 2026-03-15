@@ -61,6 +61,7 @@ Deferred items from PR reviews that were not addressed before merge.
 |-------|----------|----|----------|
 | Tutorial notebooks not executed in CI | `docs/tutorials/*.ipynb` | #159 | Low |
 | R comparison tests spawn separate `Rscript` per test (slow CI) | `tests/test_methodology_twfe.py:294` | #139 | Low |
+| CS R helpers hard-code `xformla = ~ 1`; no covariate-adjusted R benchmark for IRLS path | `tests/test_methodology_callaway.py` | #202 | Low |
 
 ---
 
