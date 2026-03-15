@@ -16,7 +16,7 @@ Start here and follow the questions:
 1. **Is treatment staggered?** (Different units treated at different times)
 
    - **No** → Go to question 2
-   - **Yes** → Use :class:`~diff_diff.CallawaySantAnna`
+   - **Yes** → Use :class:`~diff_diff.CallawaySantAnna` (or :class:`~diff_diff.EfficientDiD` for tighter SEs under PT-All)
 
 2. **Do you have panel data?** (Multiple observations per unit over time)
 
@@ -63,6 +63,10 @@ Quick Reference
      - Few treated units, many controls
      - Synthetic parallel trends
      - ATT with unit/time weights
+   * - ``EfficientDiD``
+     - Staggered adoption with optimal efficiency
+     - PT-All (overidentified) or PT-Post
+     - Group-time ATT(g,t), aggregations
    * - ``ContinuousDiD``
      - Continuous dose / treatment intensity
      - Strong Parallel Trends (SPT) for dose-response; PT for binarized ATT
@@ -213,6 +217,32 @@ Use :class:`~diff_diff.ContinuousDiD` when:
    # Overall effect and dose-response curve
    print(f"Overall ATT: {results.overall_att:.3f}")
    att_curve = results.dose_response_att.to_dataframe()
+
+Efficient DiD
+~~~~~~~~~~~~~
+
+Use :class:`~diff_diff.EfficientDiD` when:
+
+- You have staggered adoption and want **maximum statistical efficiency**
+- You believe parallel trends holds across all pre-treatment periods (PT-All)
+- You want tighter confidence intervals than Callaway-Sant'Anna
+- You need a formal efficiency benchmark for comparing estimators
+
+.. note::
+
+   Phase 1 supports the **no-covariates** path only. If you need covariate
+   adjustment, use :class:`~diff_diff.CallawaySantAnna` with ``estimation_method='dr'``
+   or :class:`~diff_diff.ImputationDiD`.
+
+.. code-block:: python
+
+   from diff_diff import EfficientDiD
+
+   edid = EfficientDiD(pt_assumption="all")  # or "post" for post-treatment CS match
+   results = edid.fit(data, outcome='y', unit='unit_id',
+                      time='period', first_treat='first_treat',
+                      aggregate='all')
+   results.print_summary()
 
 Common Pitfalls
 ---------------

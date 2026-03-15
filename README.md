@@ -70,7 +70,7 @@ Signif. codes: '***' 0.001, '**' 0.01, '*' 0.05, '.' 0.1
 - **Wild cluster bootstrap**: Valid inference with few clusters (<50) using Rademacher, Webb, or Mammen weights
 - **Panel data support**: Two-way fixed effects estimator for panel designs
 - **Multi-period analysis**: Event-study style DiD with period-specific treatment effects
-- **Staggered adoption**: Callaway-Sant'Anna (2021), Sun-Abraham (2021), Borusyak-Jaravel-Spiess (2024) imputation, Two-Stage DiD (Gardner 2022), and Stacked DiD (Wing, Freedman & Hollingsworth 2024) estimators for heterogeneous treatment timing
+- **Staggered adoption**: Callaway-Sant'Anna (2021), Sun-Abraham (2021), Borusyak-Jaravel-Spiess (2024) imputation, Two-Stage DiD (Gardner 2022), Stacked DiD (Wing, Freedman & Hollingsworth 2024), and Efficient DiD (Chen, Sant'Anna & Xie 2025) estimators for heterogeneous treatment timing
 - **Triple Difference (DDD)**: Ortiz-Villavicencio & Sant'Anna (2025) estimators with proper covariate handling
 - **Synthetic DiD**: Combined DiD with synthetic control for improved robustness
 - **Triply Robust Panel (TROP)**: Factor-adjusted DiD with synthetic weights (Athey et al. 2025)
@@ -125,6 +125,7 @@ We provide Jupyter notebook tutorials in `docs/tutorials/`:
 | `11_imputation_did.ipynb` | Imputation DiD (Borusyak et al. 2024), pre-trend test, efficiency comparison |
 | `12_two_stage_did.ipynb` | Two-Stage DiD (Gardner 2022), GMM sandwich variance, per-observation effects |
 | `13_stacked_did.ipynb` | Stacked DiD (Wing et al. 2024), Q-weights, sub-experiment inspection, trimming, clean control definitions |
+| `15_efficient_did.ipynb` | Efficient DiD (Chen et al. 2025), optimal weighting, PT-All vs PT-Post, efficiency gains, bootstrap inference |
 
 ## Data Preparation
 
@@ -1070,6 +1071,56 @@ results = stacked_did(
     aggregate='event_study'
 )
 ```
+
+### Efficient DiD (Chen, Sant'Anna & Xie 2025)
+
+Efficient DiD achieves the semiparametric efficiency bound for ATT estimation in staggered adoption designs. It optimally weights across all valid comparison groups and baselines via the inverse covariance matrix Omega*, producing tighter confidence intervals than standard estimators like Callaway-Sant'Anna when the stronger PT-All assumption holds.
+
+```python
+from diff_diff import EfficientDiD, generate_staggered_data
+
+# Generate sample data
+data = generate_staggered_data(n_units=300, n_periods=10,
+                                cohort_periods=[4, 6, 8], seed=42)
+
+# Fit with PT-All (overidentified, tighter SEs)
+edid = EfficientDiD(pt_assumption="all")
+results = edid.fit(data, outcome='outcome', unit='unit',
+                   time='period', first_treat='first_treat',
+                   aggregate='all')
+results.print_summary()
+
+# PT-Post mode (matches CS for post-treatment effects)
+edid_post = EfficientDiD(pt_assumption="post")
+results_post = edid_post.fit(data, outcome='outcome', unit='unit',
+                              time='period', first_treat='first_treat')
+```
+
+**Parameters:**
+
+```python
+EfficientDiD(
+    pt_assumption='all',            # 'all' (overidentified) or 'post' (matches CS post-treatment ATT)
+    alpha=0.05,                     # Significance level
+    n_bootstrap=0,                  # Bootstrap iterations (0 = analytical only)
+    bootstrap_weights='rademacher', # 'rademacher', 'mammen', or 'webb'
+    seed=None,                      # Random seed
+    anticipation=0,                 # Anticipation periods
+)
+```
+
+> **Note:** Phase 1 supports the no-covariates path only. Use CallawaySantAnna with
+> `estimation_method='dr'` if you need covariate adjustment.
+
+**When to use Efficient DiD vs Callaway-Sant'Anna:**
+
+| Aspect | Efficient DiD | Callaway-Sant'Anna |
+|--------|--------------|-------------------|
+| Approach | Optimal EIF-based weighting | Separate 2x2 DiD aggregation |
+| PT assumption | PT-All (stronger) or PT-Post | Conditional PT |
+| Efficiency | Achieves semiparametric bound | Not efficient |
+| Covariates | Not yet (Phase 2) | Supported (OR, IPW, DR) |
+| When to choose | Maximum efficiency, PT-All credible | Covariates needed, weaker PT |
 
 ### Triple Difference (DDD)
 

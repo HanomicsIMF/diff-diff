@@ -43,6 +43,14 @@ Testing assumptions and diagnostics:
 - Event study as a diagnostic
 - What to do if parallel trends fails
 
+### 15. Efficient DiD (`15_efficient_did.ipynb`)
+Efficient Difference-in-Differences (Chen, Sant'Anna & Xie 2025):
+- Optimal weighting across comparison groups and baselines
+- PT-All vs PT-Post assumptions
+- Efficiency gains vs Callaway-Sant'Anna
+- Event study and group-level aggregation
+- Bootstrap inference and diagnostics
+
 ## Running the Notebooks
 
 1. Install diff-diff with dependencies:

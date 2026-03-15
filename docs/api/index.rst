@@ -23,6 +23,7 @@ Core estimator classes for DiD analysis:
    diff_diff.TripleDifference
    diff_diff.TROP
    diff_diff.ContinuousDiD
+   diff_diff.EfficientDiD
 
 Results Classes
 ---------------
@@ -49,6 +50,8 @@ Result containers returned by estimators:
    diff_diff.trop.TROPResults
    diff_diff.ContinuousDiDResults
    diff_diff.DoseResponseCurve
+   diff_diff.EfficientDiDResults
+   diff_diff.EDiDBootstrapResults
 
 Visualization
 -------------
@@ -195,6 +198,7 @@ Detailed documentation by module:
    triple_diff
    trop
    continuous_did
+   efficient_did
    results
    visualization
    diagnostics
