@@ -402,7 +402,8 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
   - Trimming: Propensity scores clipped to `[pscore_trim, 1-pscore_trim]` (default
     0.01) before weight computation. Warning emitted when scores are trimmed.
   - Fallback: If IRLS fails entirely (LinAlgError/ValueError), falls back to
-    unconditional propensity score with warning
+    unconditional propensity score with warning. Exception: when
+    `rank_deficient_action="error"`, the error is re-raised instead of falling back.
 - Control group with `control_group="not_yet_treated"`:
   - Always excludes cohort g from controls when computing ATT(g,t)
   - This applies to both pre-treatment (t < g) and post-treatment (t >= g) periods

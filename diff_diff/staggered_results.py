@@ -93,6 +93,8 @@ class CallawaySantAnnaResults:
         Effects aggregated by relative time (event study).
     group_effects : dict, optional
         Effects aggregated by treatment cohort.
+    pscore_trim : float
+        Propensity score trimming bound used during estimation.
     """
 
     group_time_effects: Dict[Tuple[Any, Any], Dict[str, Any]]

@@ -164,6 +164,10 @@ class CallawaySantAnna(
         event study aggregation. Requires ``n_bootstrap > 0``.
         When True, results include ``cband_crit_value`` and per-event-time
         ``cband_conf_int`` entries controlling family-wise error rate.
+    pscore_trim : float, default=0.01
+        Trimming bound for propensity scores. Scores are clipped to
+        ``[pscore_trim, 1 - pscore_trim]`` before weight computation
+        in IPW and DR estimation. Must be in ``(0, 0.5)``.
 
     Attributes
     ----------
@@ -265,8 +269,8 @@ class CallawaySantAnna(
             raise ValueError(
                 f"estimation_method must be 'dr', 'ipw', or 'reg', " f"got '{estimation_method}'"
             )
-        if not (0 <= pscore_trim < 0.5):
-            raise ValueError(f"pscore_trim must be in [0, 0.5), got {pscore_trim}")
+        if not (0 < pscore_trim < 0.5):
+            raise ValueError(f"pscore_trim must be in (0, 0.5), got {pscore_trim}")
 
         # Handle bootstrap_weight_type deprecation
         if bootstrap_weight_type is not None:

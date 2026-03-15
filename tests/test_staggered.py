@@ -3240,10 +3240,10 @@ class TestPscoreTrimParameter:
         with pytest.raises(ValueError, match="pscore_trim must be in"):
             CallawaySantAnna(pscore_trim=0.6)
 
-    def test_pscore_trim_zero_succeeds(self):
-        """pscore_trim=0.0 is valid (no trimming)."""
-        cs = CallawaySantAnna(pscore_trim=0.0)
-        assert cs.pscore_trim == 0.0
+    def test_pscore_trim_zero_raises(self):
+        """pscore_trim=0.0 raises ValueError (would cause division by zero in IPW weights)."""
+        with pytest.raises(ValueError, match="pscore_trim must be in"):
+            CallawaySantAnna(pscore_trim=0.0)
 
     def test_pscore_trim_in_results(self):
         """results.pscore_trim matches the estimator's setting after fit()."""
