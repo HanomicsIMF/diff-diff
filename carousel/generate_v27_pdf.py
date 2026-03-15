@@ -330,9 +330,8 @@ class CarouselV27PDF(FPDF):
         self._centered_text(55, "Efficient DiD", size=52, color=CYAN)
 
         # Positioning statement
-        self._centered_text(118, "First & Only", size=30, color=WHITE)
-        self._centered_text(150, "Open-Source Implementation", size=30,
-                            color=WHITE)
+        self._centered_text(118, "First Open-Source", size=30, color=WHITE)
+        self._centered_text(150, "Implementation", size=30, color=WHITE)
 
         # Badge
         badge_w = 170
@@ -417,8 +416,8 @@ class CarouselV27PDF(FPDF):
 
         # Equation
         eq_path, epw, eph = self._render_equations(
-            [r"$w^* = \frac{\mathbf{1}' \Omega^{*-1}"
-             r"}{\mathbf{1}' \Omega^{*-1} \mathbf{1}}$"],
+            [r"$w^* = \frac{\mathbf{1}' (\Omega^*)^{-1}"
+             r"}{\mathbf{1}' (\Omega^*)^{-1} \mathbf{1}}$"],
             fontsize=34,
         )
         eq_y = fan_y + fan_h + 8
@@ -460,7 +459,7 @@ class CarouselV27PDF(FPDF):
                 "label_color": ORANGE,
                 "line1": "Trends hold between treated",
                 "line2": "cohort and comparison group",
-                "result": "= Callaway-Sant'Anna",
+                "result": "= CS post-treatment ATT",
             },
             {
                 "x": margin + panel_w + gap,
@@ -531,20 +530,18 @@ class CarouselV27PDF(FPDF):
 
         self._add_footer()
 
-    def slide_04_payoff(self):
-        """Slide 4: The Payoff — tightest possible CIs."""
+    def slide_05_payoff(self):
+        """Slide 5: The Payoff — tightest possible CIs."""
         self.add_page()
         self._add_dark_bg()
 
         self._centered_text(30, "The Payoff", size=38, color=WHITE)
 
         # Body text
-        self._centered_text(78, "Achieves the semiparametric efficiency",
+        self._centered_text(80, "Achieves the semiparametric efficiency bound",
                             size=18, bold=False, color=GRAY)
-        self._centered_text(98, "bound -- tightest possible", size=18,
-                            bold=False, color=GRAY)
-        self._centered_text(118, "confidence intervals.", size=18,
-                            bold=False, color=GRAY)
+        self._centered_text(98, "-- tightest possible confidence intervals.",
+                            size=18, bold=False, color=GRAY)
 
         # CI comparison
         ci_path, cpw, cph = self._render_ci_comparison()
@@ -573,8 +570,8 @@ class CarouselV27PDF(FPDF):
 
         self._add_footer()
 
-    def slide_05_code(self):
-        """Slide 5: The Code — syntax-highlighted API example."""
+    def slide_06_code(self):
+        """Slide 6: The Code — syntax-highlighted API example."""
         self.add_page()
         self._add_dark_bg()
 
@@ -615,89 +612,35 @@ class CarouselV27PDF(FPDF):
 
         self._add_footer()
 
-    def slide_06_safety_net(self):
-        """Slide 6: Safety Net — PT-Post reduces to CS."""
+    def slide_07_safety_net(self):
+        """Slide 7: Safety Net — PT-Post post-treatment ATT matches CS."""
         self.add_page()
         self._add_dark_bg()
 
         self._centered_text(30, "Safety Net", size=38, color=WHITE)
 
-        # Body text
-        self._centered_text(78, "Under PT-Post, reduces exactly to",
+        # Body text — scoped to post-treatment ATT
+        self._centered_text(78, "Under PT-Post, post-treatment ATT(g,t)",
                             size=18, bold=False, color=GRAY)
-        self._centered_text(100, "Callaway-Sant'Anna", size=22, bold=True,
-                            color=CYAN)
+        self._centered_text(100, "matches Callaway-Sant'Anna exactly",
+                            size=22, bold=True, color=CYAN)
 
-        # Comparison table
-        table_margin = 35
-        table_w = WIDTH - table_margin * 2
-        table_y = 135
-        col_w = table_w / 3
-        row_h = 28
-        header_h = 30
-
-        # Table background
-        total_h = header_h + 3 * row_h
-        self.set_fill_color(*DARK_PANEL)
-        self.rect(table_margin, table_y, table_w, total_h, "F")
-
-        # Header row
-        headers = ["", "CS (PT-Post)", "EDiD (PT-Post)"]
-        self.set_font("Helvetica", "B", 14)
-        for j, header in enumerate(headers):
-            x = table_margin + j * col_w
-            self.set_xy(x, table_y + 5)
-            self.set_text_color(*CYAN)
-            self.cell(col_w, 18, header, align="C")
-
-        # Header rule
-        self.set_draw_color(*CYAN)
-        self.set_line_width(0.5)
-        rule_y = table_y + header_h
-        self.line(table_margin + 8, rule_y, table_margin + table_w - 8,
-                  rule_y)
-
-        # Data rows
-        rows = [
-            ("ATT estimate", "1.234", "1.234"),
-            ("Standard error", "0.456", "0.456"),
-            ("95% CI", "[0.34, 2.13]", "[0.34, 2.13]"),
-        ]
-
-        for i, (label, cs_val, edid_val) in enumerate(rows):
-            y = table_y + header_h + i * row_h + 5
-
-            # Label
-            self.set_xy(table_margin, y)
-            self.set_font("Helvetica", "", 15)
-            self.set_text_color(*GRAY)
-            self.cell(col_w, 16, "  " + label, align="L")
-
-            # CS value
-            self.set_xy(table_margin + col_w, y)
-            self.set_text_color(*WHITE)
-            self.cell(col_w, 16, cs_val, align="C")
-
-            # EDiD value
-            self.set_xy(table_margin + 2 * col_w, y)
-            self.set_text_color(*WHITE)
-            self.cell(col_w, 16, edid_val, align="C")
-
-        # "Identical" badge below table (cyan outline, matching slide 1 style)
-        badge_y = table_y + total_h + 15
-        badge_w = 130
-        badge_h = 28
+        # Prominent equivalence badge
+        badge_w = 200
+        badge_h = 36
         badge_x = (WIDTH - badge_w) / 2
+        badge_y = 150
         self.set_draw_color(*CYAN)
         self.set_line_width(1.5)
         self.rect(badge_x, badge_y, badge_w, badge_h, "D")
-        self.set_xy(badge_x, badge_y + 5)
-        self.set_font("Helvetica", "B", 16)
+        self.set_xy(badge_x, badge_y + 8)
+        self.set_font("Helvetica", "B", 18)
         self.set_text_color(*CYAN)
-        self.cell(badge_w, 16, "= identical", align="C")
+        self.cell(badge_w, 18, "ATT point estimates identical",
+                  align="C")
 
-        # Footnote
-        self.set_xy(0, badge_y + badge_h + 18)
+        # Corollary citation
+        self.set_xy(0, badge_y + badge_h + 25)
         self.set_font("Helvetica", "I", 14)
         self.set_text_color(*GRAY)
         self.cell(WIDTH, 10,
@@ -706,8 +649,8 @@ class CarouselV27PDF(FPDF):
 
         self._add_footer()
 
-    def slide_07_cta(self):
-        """Slide 7: CTA — Get Started."""
+    def slide_08_cta(self):
+        """Slide 8: CTA — Get Started."""
         self.add_page()
         self._add_dark_bg()
 
@@ -760,10 +703,10 @@ def main():
     pdf.slide_02_problem()
     pdf.slide_03_insight()
     pdf.slide_04_assumption()
-    pdf.slide_04_payoff()
-    pdf.slide_05_code()
-    pdf.slide_06_safety_net()
-    pdf.slide_07_cta()
+    pdf.slide_05_payoff()
+    pdf.slide_06_code()
+    pdf.slide_07_safety_net()
+    pdf.slide_08_cta()
 
     output_path = Path(__file__).parent / "diff-diff-v27-carousel.pdf"
     pdf.output(str(output_path))
