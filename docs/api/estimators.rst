@@ -25,8 +25,8 @@ Most estimators have short aliases (``TROP`` already uses its short canonical na
 
 .. module:: diff_diff.estimators
 
-DifferenceInDifferences
------------------------
+DifferenceInDifferences (alias: ``DiD``)
+----------------------------------------
 
 Basic 2x2 DiD estimator.
 
@@ -44,8 +44,8 @@ Basic 2x2 DiD estimator.
       ~DifferenceInDifferences.get_params
       ~DifferenceInDifferences.set_params
 
-MultiPeriodDiD
---------------
+MultiPeriodDiD (alias: ``EventStudy``)
+--------------------------------------
 
 Event study estimator with period-specific treatment effects.
 
@@ -55,8 +55,8 @@ Event study estimator with period-specific treatment effects.
    :show-inheritance:
    :inherited-members:
 
-TwoWayFixedEffects
-------------------
+TwoWayFixedEffects (alias: ``TWFE``)
+-------------------------------------
 
 Panel DiD with unit and time fixed effects.
 
@@ -68,8 +68,8 @@ Panel DiD with unit and time fixed effects.
    :show-inheritance:
    :inherited-members:
 
-SyntheticDiD
-------------
+SyntheticDiD (alias: ``SDiD``)
+------------------------------
 
 Synthetic control combined with DiD (Arkhangelsky et al. 2021).
 
@@ -81,8 +81,8 @@ Synthetic control combined with DiD (Arkhangelsky et al. 2021).
    :show-inheritance:
    :inherited-members:
 
-TripleDifference
-----------------
+TripleDifference (alias: ``DDD``)
+----------------------------------
 
 Triple Difference (DDD) estimator for settings where treatment requires two criteria
 (Ortiz-Villavicencio & Sant'Anna, 2025).

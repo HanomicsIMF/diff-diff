@@ -20,7 +20,7 @@ pip install -e .
 
 ```python
 import pandas as pd
-from diff_diff import DifferenceInDifferences
+from diff_diff import DifferenceInDifferences  # or: DiD
 
 # Create sample data
 data = pd.DataFrame({
@@ -83,6 +83,28 @@ Signif. codes: '***' 0.001, '**' 0.01, '*' 0.05, '.' 0.1
 - **Power analysis**: MDE, sample size, and power calculations for study design; simulation-based power for any estimator
 - **Data prep utilities**: Helper functions for common data preparation tasks
 - **Validated against R**: Benchmarked against `did`, `synthdid`, and `fixest` packages (see [benchmarks](docs/benchmarks.rst))
+
+## Estimator Aliases
+
+All estimators have short aliases for convenience:
+
+| Alias | Full Name | Method |
+|-------|-----------|--------|
+| `DiD` | `DifferenceInDifferences` | Basic 2x2 DiD |
+| `TWFE` | `TwoWayFixedEffects` | Two-way fixed effects |
+| `EventStudy` | `MultiPeriodDiD` | Event study / multi-period |
+| `CS` | `CallawaySantAnna` | Callaway & Sant'Anna (2021) |
+| `SA` | `SunAbraham` | Sun & Abraham (2021) |
+| `BJS` | `ImputationDiD` | Borusyak, Jaravel & Spiess (2024) |
+| `Gardner` | `TwoStageDiD` | Gardner (2022) two-stage |
+| `SDiD` | `SyntheticDiD` | Synthetic DiD |
+| `DDD` | `TripleDifference` | Triple difference |
+| `CDiD` | `ContinuousDiD` | Continuous treatment DiD |
+| `Stacked` | `StackedDiD` | Stacked DiD |
+| `Bacon` | `BaconDecomposition` | Goodman-Bacon decomposition |
+| `EDiD` | `EfficientDiD` | Efficient DiD |
+
+`TROP` already uses its short canonical name and needs no alias.
 
 ## Tutorials
 

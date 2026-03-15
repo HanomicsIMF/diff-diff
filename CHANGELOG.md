@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.1] - 2026-03-08
 
 ### Added
-- Short aliases for all estimators (e.g., `DID`, `TWFE`, `MPID`, `CSAN`, `SDID`)
+- Short aliases for all estimators (e.g., `DiD`, `TWFE`, `EventStudy`, `CS`, `SDiD`)
 
 ### Changed
 - Update roadmap for v2.6.0: reflect completed work and refresh priorities
