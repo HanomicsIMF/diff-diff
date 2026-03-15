@@ -238,7 +238,7 @@ Use :class:`~diff_diff.EfficientDiD` when:
 
    from diff_diff import EfficientDiD
 
-   edid = EfficientDiD(pt_assumption="all")  # or "post" for CS-equivalent
+   edid = EfficientDiD(pt_assumption="all")  # or "post" for post-treatment CS match
    results = edid.fit(data, outcome='y', unit='unit_id',
                       time='period', first_treat='first_treat',
                       aggregate='all')

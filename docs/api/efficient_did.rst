@@ -27,7 +27,7 @@ This module implements the efficiency-bound-attaining estimator that:
 - You need a formal efficiency benchmark for comparing estimators
 
 **Reference:** Chen, X., Sant'Anna, P. H. C., & Xie, H. (2025). Efficient
-Difference-in-Differences and Event Study Estimators. *Working Paper*.
+Difference-in-Differences and Event Study Estimators.
 
 .. module:: diff_diff.efficient_did
 
