@@ -135,24 +135,24 @@ jobs:
       - name: Run Rust backend tests (Unix)
         if: runner.os != 'Windows'
         working-directory: /tmp
-        run: pytest tests/test_rust_backend.py -v
+        run: pytest tests/test_rust_backend.py -v -m ''
 
       - name: Run Rust backend tests (Windows)
         if: runner.os == 'Windows'
         working-directory: ${{ runner.temp }}
-        run: pytest tests/test_rust_backend.py -v
+        run: pytest tests/test_rust_backend.py -v -m ''
 
       - name: Run tests with Rust backend (Unix)
         if: runner.os != 'Windows'
         working-directory: /tmp
-        run: DIFF_DIFF_BACKEND=rust pytest tests/ -q -n auto --dist worksteal
+        run: DIFF_DIFF_BACKEND=rust pytest tests/ -q -n auto --dist worksteal -m ''
 
       - name: Run tests with Rust backend (Windows)
         if: runner.os == 'Windows'
         working-directory: ${{ runner.temp }}
         run: |
           $env:DIFF_DIFF_BACKEND="rust"
-          pytest tests/ -q -n auto --dist worksteal
+          pytest tests/ -q -n auto --dist worksteal -m ''
         shell: pwsh
 
   # Test pure Python fallback (without Rust extension)
@@ -177,4 +177,4 @@ jobs:
           PYTHONPATH=. python -c "from diff_diff import HAS_RUST_BACKEND; print(f'HAS_RUST_BACKEND: {HAS_RUST_BACKEND}'); assert not HAS_RUST_BACKEND"
 
       - name: Run tests in pure Python mode
-        run: PYTHONPATH=. DIFF_DIFF_BACKEND=python pytest tests/ -q --ignore=tests/test_rust_backend.py -n auto --dist worksteal
+        run: PYTHONPATH=. DIFF_DIFF_BACKEND=python pytest tests/ -q --ignore=tests/test_rust_backend.py -n auto --dist worksteal -m ''

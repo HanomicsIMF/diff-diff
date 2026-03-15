@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+pytestmark = pytest.mark.slow
+
 from diff_diff import SyntheticDiD
 from diff_diff.trop import TROP, TROPResults, trop
 from diff_diff.prep import generate_factor_data

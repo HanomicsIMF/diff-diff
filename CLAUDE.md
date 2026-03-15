@@ -122,8 +122,9 @@ category (`Methodology/Correctness`, `Performance`, or `Testing/Docs`):
   `threshold = 0.40 if n_boot < 100 else 0.15`.
 - **`assert_nan_inference()`** from conftest.py: Use to validate ALL inference fields are
   NaN-consistent. Don't check individual fields separately.
-- **Slow test suites**: `tests/test_trop.py` is very time-consuming. Skip with
-  `pytest --ignore=tests/test_trop.py` for unrelated changes.
+- **Slow tests**: TROP, Sun-Abraham bootstrap, and TROP-parity tests are marked
+  `@pytest.mark.slow` and excluded by default via `addopts`. Run `pytest -m ''`
+  to include them, or `pytest -m slow` to run only slow tests.
 - **Behavioral assertions**: Always assert expected outcomes, not just no-exception.
   Bad: `result = func(bad_input)`. Good: `result = func(bad_input); assert np.isnan(result.coef)`.
 

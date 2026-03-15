@@ -340,6 +340,7 @@ class TestSunAbrahamResults:
             results.to_dataframe(level="invalid")
 
 
+@pytest.mark.slow
 class TestSunAbrahamBootstrap:
     """Tests for Sun-Abraham bootstrap inference."""
 

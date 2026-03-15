@@ -1000,6 +1000,10 @@ class SunAbraham:
         all_units = df[unit].unique()
         n_units = len(all_units)
 
+        # Pre-compute unit -> row indices mapping (avoids repeated boolean scans)
+        unit_row_indices = {u: df.index[df[unit] == u].values for u in all_units}
+        unit_row_counts = {u: len(idx) for u, idx in unit_row_indices.items()}
+
         # Store bootstrap samples
         rel_periods = sorted(original_event_study.keys())
         bootstrap_effects = {e: np.zeros(self.n_bootstrap) for e in rel_periods}
@@ -1009,23 +1013,13 @@ class SunAbraham:
             # Resample units with replacement (pairs bootstrap)
             boot_units = rng.choice(all_units, size=n_units, replace=True)
 
-            # Create bootstrap sample efficiently
-            # Build index array for all selected units
-            boot_indices = np.concatenate([
-                df.index[df[unit] == u].values for u in boot_units
-            ])
+            # Create bootstrap sample using pre-computed index mapping
+            boot_indices = np.concatenate([unit_row_indices[u] for u in boot_units])
             df_b = df.iloc[boot_indices].copy()
 
-            # Reassign unique unit IDs for bootstrap sample
-            # Each resampled unit gets a unique ID
-            new_unit_ids = []
-            current_id = 0
-            for u in boot_units:
-                unit_rows = df[df[unit] == u]
-                for _ in range(len(unit_rows)):
-                    new_unit_ids.append(current_id)
-                current_id += 1
-            df_b[unit] = new_unit_ids[:len(df_b)]
+            # Reassign unique unit IDs (vectorized)
+            rows_per_unit = np.array([unit_row_counts[u] for u in boot_units])
+            df_b[unit] = np.repeat(np.arange(n_units), rows_per_unit)
 
             # Recompute relative time (vectorized)
             df_b["_rel_time"] = np.where(

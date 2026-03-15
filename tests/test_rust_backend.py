@@ -1149,6 +1149,7 @@ class TestTROPRustVsNumpy:
         assert results.lambda_nn in [0.0, 0.1]
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not HAS_RUST_BACKEND, reason="Rust backend not available")
 class TestTROPJointRustBackend:
     """Test suite for TROP joint method Rust backend functions."""
@@ -1269,6 +1270,7 @@ class TestTROPJointRustBackend:
         np.testing.assert_almost_equal(se1, se2)
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not HAS_RUST_BACKEND, reason="Rust backend not available")
 class TestTROPJointRustVsNumpy:
     """Tests comparing TROP joint Rust and NumPy implementations."""
