@@ -141,7 +141,7 @@ Estimator Comparison
      - Identical to TwoStageDiD
    * - Variance estimator
      - GMM sandwich (accounts for first-stage uncertainty)
-     - Cluster-robust or bootstrap
+     - Analytical IF/WIF or multiplier bootstrap
      - Conservative (Theorem 3)
    * - Control group
      - Never-treated + not-yet-treated

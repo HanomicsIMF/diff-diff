@@ -155,9 +155,9 @@ Use :class:`~diff_diff.MultiPeriodDiD` when:
 
    from diff_diff import MultiPeriodDiD, plot_event_study
 
-   event = MultiPeriodDiD(reference_period=-1)
+   event = MultiPeriodDiD()
    results = event.fit(data, outcome='y', treatment='treated',
-                       time='period', unit='unit_id', treatment_start=5)
+                       time='period', unit='unit_id', reference_period=-1)
 
    # Visualize
    plot_event_study(results)
@@ -185,11 +185,14 @@ This is the recommended estimator for most applied work with staggered adoption.
                     time='period', first_treat='first_treat',
                     covariates=['x1', 'x2'])
 
-   # Get aggregated effects
-   print(f"Overall ATT: {results.att:.3f}")
+   # Overall ATT
+   print(f"Overall ATT: {results.overall_att:.3f}")
 
    # Event study aggregation
-   event_study = results.aggregate('event_time')
+   es = cs.fit(data, outcome='y', unit='unit_id',
+               time='period', first_treat='first_treat',
+               covariates=['x1', 'x2'], aggregate='event_study')
+   event_study_df = es.to_dataframe('event_study')
 
 Synthetic DiD
 ~~~~~~~~~~~~~
@@ -206,8 +209,7 @@ Use :class:`~diff_diff.SyntheticDiD` when:
 
    sdid = SyntheticDiD()
    results = sdid.fit(data, outcome='y', unit='unit_id',
-                      time='period', treatment='treated',
-                      treatment_start=5)
+                      time='period', treatment='treated')
 
    # View the unit weights
    print(results.unit_weights)
@@ -421,7 +423,7 @@ all 2x2 DiD comparisons and their weights.
 
    bacon = BaconDecomposition()
    results = bacon.fit(data, outcome='y', unit='unit_id',
-                       time='period', treatment='treated')
+                       time='period', first_treat='treated')
    results.print_summary()
 
    # Visualize the decomposition
@@ -488,8 +490,8 @@ differences helps interpret results and choose appropriate inference.
      - HC1 (heteroskedasticity-robust)
      - Same as basic DiD. Cluster-robust available via ``cluster_col``. Wild bootstrap not yet supported for multi-coefficient inference.
    * - ``CallawaySantAnna``
-     - Analytical (simple difference)
-     - Uses simple variance of group-time means. Use ``bootstrap()`` method for multiplier bootstrap inference with proper SEs, CIs, and p-values.
+     - Analytical (influence function)
+     - Uses influence-function SEs with WIF adjustment by default. Set ``n_bootstrap=999`` with ``bootstrap_weights='bayes'`` for multiplier bootstrap inference.
    * - ``SyntheticDiD``
      - Bootstrap or placebo-based
      - Default uses bootstrap resampling. Set ``n_bootstrap=0`` for placebo-based inference using pre-treatment residuals.
@@ -534,14 +536,14 @@ For panel data, always cluster at the unit level unless you have a strong reason
 .. code-block:: python
 
    # Good: Cluster at unit level for panel data
-   did = DifferenceInDifferences()
+   did = DifferenceInDifferences(cluster='unit_id')
    results = did.fit(data, outcome='y', treatment='treated',
-                     time='post', cluster_col='unit_id')
+                     time='post')
 
    # Better for few clusters: Wild bootstrap
-   did = DifferenceInDifferences(inference='wild_bootstrap')
+   did = DifferenceInDifferences(inference='wild_bootstrap', cluster='state')
    results = did.fit(data, outcome='y', treatment='treated',
-                     time='post', cluster_col='state')
+                     time='post')
 
 When in Doubt
 -------------

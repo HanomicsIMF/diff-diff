@@ -90,9 +90,10 @@ Example
    from diff_diff import DifferenceInDifferences
 
    # Use wild bootstrap via the estimator's inference parameter (recommended)
-   did = DifferenceInDifferences(inference='wild_bootstrap', n_bootstrap=999)
+   did = DifferenceInDifferences(inference='wild_bootstrap', n_bootstrap=999,
+                                  cluster='unit_id')
    results = did.fit(data, outcome='y', treatment='treated',
-                     time='post', cluster_col='unit_id')
+                     time='post')
 
    print(f"Bootstrap SE: {results.se:.3f}")
    print(f"Bootstrap 95% CI: [{results.conf_int[0]:.3f}, {results.conf_int[1]:.3f}]")
@@ -124,10 +125,11 @@ The wild bootstrap supports several weight distributions:
 
 .. code-block:: python
 
-   # Using different weight types
-   boot_rad = wild_bootstrap_se(data, ..., weight_type='rademacher')
-   boot_webb = wild_bootstrap_se(data, ..., weight_type='webb')
-   boot_mammen = wild_bootstrap_se(data, ..., weight_type='mammen')
+   # Using different weight types (low-level array API)
+   # wild_bootstrap_se(X, y, residuals, cluster_ids, coefficient_index, ...)
+   boot_rad = wild_bootstrap_se(X, y, resid, clusters, 0, weight_type='rademacher')
+   boot_webb = wild_bootstrap_se(X, y, resid, clusters, 0, weight_type='webb')
+   boot_mammen = wild_bootstrap_se(X, y, resid, clusters, 0, weight_type='mammen')
 
 Recommendation
 ^^^^^^^^^^^^^^

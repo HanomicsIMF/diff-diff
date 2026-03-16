@@ -35,7 +35,7 @@ Example
        fake_treatment_period=3  # Test earlier period
    )
 
-   print(f"Placebo effect: {result.effect:.3f}")
+   print(f"Placebo effect: {result.placebo_effect:.3f}")
    print(f"p-value: {result.p_value:.3f}")
 
 placebo_group_test
@@ -62,7 +62,7 @@ Example
    )
 
    # Should find no effect if parallel trends holds
-   print(f"Placebo effect: {result.effect:.3f}")
+   print(f"Placebo effect: {result.placebo_effect:.3f}")
 
 permutation_test
 ----------------

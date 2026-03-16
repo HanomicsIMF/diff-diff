@@ -29,7 +29,7 @@ Data Issues
 
    # Or use make_treatment_indicator
    from diff_diff import make_treatment_indicator
-   data['treated'] = make_treatment_indicator(data, 'group', treated_value='treatment')
+   data = make_treatment_indicator(data, 'group', treated_values='treatment')
 
 "Panel is unbalanced"
 ~~~~~~~~~~~~~~~~~~~~~
@@ -48,13 +48,13 @@ Data Issues
    from diff_diff import balance_panel
 
    # Balance the panel (keeps only units with all periods)
-   balanced = balance_panel(data, unit='unit_id', time='period')
+   balanced = balance_panel(data, unit_column='unit_id', time_column='period')
    print(f"Dropped {len(data) - len(balanced)} observations")
 
    # Alternative: check balance first
    from diff_diff import validate_did_data
    issues = validate_did_data(data, outcome='y', treatment='treated',
-                               unit='unit_id', time='period')
+                               time='period', unit='unit_id')
    print(issues)
 
 Estimation Errors
@@ -278,20 +278,22 @@ Performance Issues
 
 .. code-block:: python
 
-   # Use absorb instead of fixed_effects for high-dimensional FE
+   # TWFE already handles unit + time FE via within-transformation
    twfe = TwoWayFixedEffects()
    results = twfe.fit(data, outcome='y', treatment='treated',
-                      unit='unit_id', time='period',
-                      absorb=['unit_id', 'period'])  # Faster than fixed_effects
+                      unit='unit_id', time='period')
 
    # Reduce bootstrap iterations for initial exploration
    did = DifferenceInDifferences(inference='wild_bootstrap', n_bootstrap=99)
 
    # For CallawaySantAnna, start without bootstrap
    cs = CallawaySantAnna()
-   results = cs.fit(data, ...)
-   # Only bootstrap for final results
-   bootstrap_results = results.bootstrap(n_bootstrap=999)
+   results = cs.fit(data, outcome='y', unit='unit_id',
+                    time='period', first_treat='first_treat')
+   # Use n_bootstrap for final results
+   cs_boot = CallawaySantAnna(n_bootstrap=999)
+   results = cs_boot.fit(data, outcome='y', unit='unit_id',
+                         time='period', first_treat='first_treat')
 
 Rust Backend Issues
 -------------------
@@ -340,7 +342,7 @@ during leave-one-out cross-validation (LOOCV).
 
 **Causes:**
 
-1. Insufficient pre-treatment periods (need at least 4)
+1. Insufficient pre-treatment periods (minimum 2; recommend 4+ for stability)
 2. Near-constant outcomes that leave no variation to fit
 3. Data is too sparse for the requested lambda grids
 
@@ -352,13 +354,14 @@ during leave-one-out cross-validation (LOOCV).
 
    # Widen the lambda grids to give the optimizer more room
    trop = TROP(
-       lambda_L_grid=[0.01, 0.1, 1.0, 10.0],
-       lambda_nn_grid=[0.01, 0.1, 1.0, 10.0],
+       lambda_time_grid=[0.0, 0.5, 1.0, 2.0, 5.0],
+       lambda_unit_grid=[0.0, 0.5, 1.0, 2.0, 5.0],
+       lambda_nn_grid=[0.0, 0.1, 1.0, 10.0],
    )
 
-   # Ensure at least 4 pre-treatment periods in your data
+   # TROP requires at least 2 pre-treatment periods (4+ recommended)
    pre_periods = data.loc[data['post'] == 0, 'period'].nunique()
-   print(f"Pre-treatment periods: {pre_periods}")  # Should be >= 4
+   print(f"Pre-treatment periods: {pre_periods}")  # Must be >= 2; stability improves with >= 4
 
    # If TROP cannot find valid parameters, try SyntheticDiD as a fallback
    from diff_diff import SyntheticDiD
@@ -538,9 +541,8 @@ never-treated units for identification (Proposition 5 in Borusyak et al.).
 
    # Option 1: Include never-treated units in your sample
    # Option 2: Accept NaN for unidentified horizons
-   results = imputation.fit(data, outcome='y', treatment='treatment',
-                            unit='unit_id', time='period',
-                            first_treat='first_treat')
+   results = ImputationDiD().fit(data, outcome='y', unit='unit_id',
+                                time='period', first_treat='first_treat')
    # NaN horizons are expected when never-treated units are absent
 
 Bacon Decomposition Issues
@@ -564,13 +566,13 @@ unbalanced. Bacon decomposition requires a balanced panel.
    from diff_diff import balance_panel, BaconDecomposition
 
    # Balance the panel first
-   balanced = balance_panel(data, unit='unit_id', time='period')
+   balanced = balance_panel(data, unit_column='unit_id', time_column='period')
    print(f"Dropped {len(data) - len(balanced)} observations to balance panel")
 
    # Then run decomposition
    bacon = BaconDecomposition()
-   results = bacon.fit(balanced, outcome='y', treatment='treatment',
-                       unit='unit_id', time='period')
+   results = bacon.fit(balanced, outcome='y', unit='unit_id',
+                       time='period', first_treat='treatment')
 
 Deprecation Warnings
 --------------------

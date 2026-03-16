@@ -67,7 +67,7 @@ Example
        outcome="homicide_rate",
        unit="state",
        time="year",
-       cohort="first_treat"
+       first_treat="first_treat"
    )
 
 load_divorce_laws
@@ -94,7 +94,7 @@ Example
        outcome="divorce_rate",
        unit="state",
        time="year",
-       cohort="first_treat"
+       first_treat="first_treat"
    )
 
 load_mpdta
@@ -121,7 +121,7 @@ Example
        outcome="lemp",
        unit="countyreal",
        time="year",
-       cohort="first_treat"
+       first_treat="first_treat"
    )
 
 Utility Functions

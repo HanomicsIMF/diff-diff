@@ -27,7 +27,7 @@ Example
        n_units=100,
        n_periods=10,
        treatment_effect=5.0,
-       treatment_start=5,
+       treatment_period=5,
        treatment_fraction=0.5,
        noise_sd=1.0
    )
@@ -109,17 +109,18 @@ Example
    from diff_diff import make_treatment_indicator
 
    # From categorical
-   data['treated'] = make_treatment_indicator(
+   data = make_treatment_indicator(
        data,
        column='group',
-       treated_value='treatment'
+       treated_values='treatment'
    )
 
    # From numeric threshold
-   data['high_exposure'] = make_treatment_indicator(
+   data = make_treatment_indicator(
        data,
        column='exposure',
-       threshold=0.5
+       threshold=0.5,
+       new_column='high_exposure'
    )
 
 make_post_indicator
@@ -185,17 +186,17 @@ Example
    # Fill missing periods with NaN
    balanced = balance_panel(
        data,
-       unit='unit_id',
-       time='period',
+       unit_column='unit_id',
+       time_column='period',
        method='fill'
    )
 
-   # Or drop units with missing periods
+   # Or keep only units with all periods (default)
    balanced = balance_panel(
        data,
-       unit='unit_id',
-       time='period',
-       method='drop'
+       unit_column='unit_id',
+       time_column='period',
+       method='inner'
    )
 
 Staggered Adoption Utilities
@@ -215,13 +216,13 @@ Example
 
    from diff_diff import create_event_time
 
-   data['event_time'] = create_event_time(
+   data = create_event_time(
        data,
-       time_col='period',
-       first_treat_col='first_treatment'
+       time_column='period',
+       treatment_time_column='first_treat'
    )
 
-   # event_time = period - first_treatment
+   # event_time = period - first_treat
    # Negative values: pre-treatment
    # Zero: treatment period
    # Positive values: post-treatment
@@ -243,10 +244,10 @@ Example
 
    cohort_data = aggregate_to_cohorts(
        data,
-       outcome='outcome',
-       time='period',
-       cohort='first_treatment',
-       agg_func='mean'
+       unit_column='unit_id',
+       time_column='period',
+       treatment_column='first_treat',
+       outcome='outcome'
    )
 
 Data Validation
