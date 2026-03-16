@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-03-15
+
+### Changed
+- Replace BFGS logit with IRLS for propensity score estimation in CallawaySantAnna
+- Reject `pscore_trim=0.0` to prevent infinite IPW weights
+- Honor `rank_deficient_action="error"` in propensity score paths
+- Validate `pscore_trim` at `fit()` to guard against `set_params` bypass
+- Mark slow tests (`@pytest.mark.slow`) and exclude by default for faster local iteration
+- Use per-class slow markers in `test_trop.py` for faster pure Python CI
+
+### Fixed
+- Vectorize Sun-Abraham bootstrap resampling loop for improved performance
+
 ## [2.7.0] - 2026-03-15
 
 ### Added
@@ -888,6 +901,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.7.1]: https://github.com/igerber/diff-diff/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/igerber/diff-diff/compare/v2.6.1...v2.7.0
 [2.6.1]: https://github.com/igerber/diff-diff/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/igerber/diff-diff/compare/v2.5.0...v2.6.0
