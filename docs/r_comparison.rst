@@ -197,7 +197,7 @@ The synthdid package implements Arkhangelsky et al. (2021):
        outcome='Y',
        unit='unit',
        time='time',
-       treated='treatment',
+       treatment='treatment',
        treatment_start=T0
    )
 
@@ -320,6 +320,57 @@ Feature Comparison Table
      - ❌
      - ❌
      - ❌
+   * - Sun-Abraham
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Imputation DiD
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Two-Stage DiD (did2s)
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Stacked DiD
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Continuous DiD
+     - ✅
+     - ✅
+     - ❌
+     - ❌
+   * - Triple Difference (DDD)
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - TROP
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Efficient DiD
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+
+.. note::
+
+   R equivalents for estimators not covered by the ``did``, ``HonestDiD``, or
+   ``synthdid`` packages: Sun-Abraham is available via ``fixest::sunab()``;
+   Imputation DiD via the ``didimputation`` package; Two-Stage DiD via the
+   ``did2s`` package; Bacon Decomposition via the ``bacondecomp`` package;
+   Stacked DiD requires manual implementation or the ``stackedev`` package;
+   Continuous DiD is available via the ``did`` package continuous extension;
+   Triple Difference requires manual implementation in R.
+   TROP and Efficient DiD have no direct R equivalents.
 
 Migration Tips
 --------------

@@ -48,7 +48,7 @@ Example
 
    # First fit an event study
    model = MultiPeriodDiD(reference_period=-1)
-   results = model.fit(data, outcome='y', treated='treated',
+   results = model.fit(data, outcome='y', treatment='treated',
                        time='period', unit='unit_id', treatment_start=5)
 
    # Compute bounds under relative magnitudes restriction
@@ -146,7 +146,7 @@ Complete Example
 
    # Fit event study
    model = MultiPeriodDiD(reference_period=-1)
-   results = model.fit(data, outcome='y', treated='treated',
+   results = model.fit(data, outcome='y', treatment='treated',
                        time='period', unit='unit_id', treatment_start=5)
 
    # Sensitivity analysis under relative magnitudes

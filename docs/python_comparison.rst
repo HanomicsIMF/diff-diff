@@ -36,7 +36,7 @@ Overview
      - ❌
      - ❌
    * - Sun-Abraham
-     - ❌
+     - ✅
      - ✅
      - ❌
      - ❌
@@ -197,13 +197,13 @@ Feature Comparison Table
      - ❌
      - ❌
    * - Sun-Abraham estimator
-     - ❌
+     - ✅
      - ✅
      - ❌
      - ❌
      - ❌
    * - Gardner's did2s
-     - ❌
+     - ✅
      - ✅
      - ❌
      - ❌
@@ -310,6 +310,48 @@ Feature Comparison Table
      - ✅
      - ✅
      - ❌
+   * - Triple Difference (DDD)
+     - ✅
+     - ❌
+     - ✅
+     - ❌
+     - ❌
+   * - TROP
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+     - ❌
+   * - Stacked DiD
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+     - ❌
+   * - Bacon Decomposition
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+     - ❌
+   * - Continuous DiD
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+     - ❌
+   * - Efficient DiD
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+     - ❌
+   * - Built-in datasets
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+     - ❌
    * - Bayesian inference
      - ❌
      - ❌
@@ -329,7 +371,7 @@ Basic DiD
    from diff_diff import DifferenceInDifferences
 
    did = DifferenceInDifferences()
-   results = did.fit(data, outcome='y', treated='treated', post='post')
+   results = did.fit(data, outcome='y', treatment='treated', time='post')
    print(results.summary())
 
 .. code-block:: python

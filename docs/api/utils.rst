@@ -26,10 +26,9 @@ Example
    result = check_parallel_trends(
        data,
        outcome='y',
-       unit='unit_id',
        time='period',
-       treated='treated',
-       pre_periods=4
+       treatment_group='treated',
+       pre_periods=[0, 1, 2, 3]
    )
 
    print(f"F-statistic: {result['f_stat']:.3f}")
@@ -65,10 +64,9 @@ Example
    result = equivalence_test_trends(
        data,
        outcome='y',
-       unit='unit_id',
        time='period',
-       treated='treated',
-       equivalence_bound=0.5  # Effect size bound
+       treatment_group='treated',
+       equivalence_margin=0.5  # Effect size bound
    )
 
    if result['equivalent']:
@@ -89,25 +87,21 @@ Example
 
 .. code-block:: python
 
-   from diff_diff import DifferenceInDifferences, wild_bootstrap_se
+   from diff_diff import DifferenceInDifferences
 
-   # Fit model
-   did = DifferenceInDifferences()
-   results = did.fit(data, outcome='y', treated='treated', post='post')
+   # Use wild bootstrap via the estimator's inference parameter (recommended)
+   did = DifferenceInDifferences(inference='wild_bootstrap', n_bootstrap=999)
+   results = did.fit(data, outcome='y', treatment='treated',
+                     time='post', cluster_col='unit_id')
 
-   # Bootstrap standard errors
-   boot_results = wild_bootstrap_se(
-       data,
-       outcome='y',
-       treated='treated',
-       post='post',
-       cluster='unit_id',
-       n_bootstrap=999,
-       weight_type='rademacher'
-   )
+   print(f"Bootstrap SE: {results.se:.3f}")
+   print(f"Bootstrap 95% CI: [{results.conf_int[0]:.3f}, {results.conf_int[1]:.3f}]")
 
-   print(f"Bootstrap SE: {boot_results.se:.3f}")
-   print(f"Bootstrap 95% CI: [{boot_results.ci[0]:.3f}, {boot_results.ci[1]:.3f}]")
+.. note::
+
+   ``wild_bootstrap_se()`` is a low-level function that operates on numpy arrays
+   (X, y, residuals, cluster_ids). For most users, the estimator-level
+   ``inference='wild_bootstrap'`` parameter shown above is more convenient.
 
 WildBootstrapResults
 ~~~~~~~~~~~~~~~~~~~~

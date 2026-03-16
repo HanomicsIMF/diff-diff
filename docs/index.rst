@@ -10,17 +10,19 @@ It provides sklearn-like estimators with statsmodels-style output for econometri
 
    # Fit a basic DiD model
    did = DifferenceInDifferences()
-   results = did.fit(data, outcome='y', treated='treated', post='post')
+   results = did.fit(data, outcome='y', treatment='treated', time='post')
    print(results.summary())
 
 Key Features
 ------------
 
-- **Multiple Estimators**: Basic DiD, Two-Way Fixed Effects, Multi-Period Event Studies, Synthetic DiD, and Callaway-Sant'Anna for staggered adoption
-- **Modern Inference**: Robust standard errors, cluster-robust SEs, and wild cluster bootstrap
-- **Assumption Testing**: Parallel trends tests, placebo tests, and comprehensive diagnostics
+- **13+ Estimators**: Basic DiD, TWFE, Event Study, Synthetic DiD, plus modern staggered estimators (Callaway-Sant'Anna, Sun-Abraham, Imputation, Two-Stage, Stacked DiD), advanced methods (TROP, Continuous DiD, Efficient DiD, Triple Difference), and Bacon Decomposition diagnostics
+- **Modern Inference**: Robust standard errors, cluster-robust SEs, wild cluster bootstrap, and multiplier bootstrap
+- **Assumption Testing**: Parallel trends tests, placebo tests, Bacon decomposition, and comprehensive diagnostics
 - **Sensitivity Analysis**: Honest DiD (Rambachan & Roth 2023) for robust inference under parallel trends violations
-- **Publication-Ready Output**: Summary tables and event study plots
+- **Built-in Datasets**: Real-world datasets from published studies (Card & Krueger, Castle Doctrine, and more)
+- **High Performance**: Optional Rust backend for compute-intensive estimators like Synthetic DiD and TROP
+- **Publication-Ready Output**: Summary tables, event study plots, and sensitivity analysis figures
 
 Installation
 ------------
@@ -64,16 +66,6 @@ Quick Links
    :hidden:
 
    api/index
-   api/estimators
-   api/staggered
-   api/results
-   api/visualization
-   api/diagnostics
-   api/honest_did
-   api/power
-   api/pretrends
-   api/utils
-   api/prep
 
 Indices and tables
 ------------------

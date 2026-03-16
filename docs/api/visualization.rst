@@ -21,7 +21,7 @@ Example
 
    # Fit event study model
    model = MultiPeriodDiD(reference_period=-1)
-   results = model.fit(data, outcome='y', treated='treated',
+   results = model.fit(data, outcome='y', treatment='treated',
                        time='period', unit='unit_id', treatment_start=5)
 
    # Create plot

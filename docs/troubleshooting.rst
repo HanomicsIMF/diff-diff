@@ -53,7 +53,7 @@ Data Issues
 
    # Alternative: check balance first
    from diff_diff import validate_did_data
-   issues = validate_did_data(data, outcome='y', treated='treated',
+   issues = validate_did_data(data, outcome='y', treatment='treated',
                                unit='unit_id', time='period')
    print(issues)
 
@@ -128,19 +128,19 @@ Standard Error Issues
 .. code-block:: python
 
    # For panel data, always cluster at unit level
-   results = did.fit(data, outcome='y', treated='treated',
-                     post='post', cluster_col='unit_id')
+   results = did.fit(data, outcome='y', treatment='treated',
+                     time='post', cluster_col='unit_id')
 
    # Compare SE methods
    did_robust = DifferenceInDifferences()
    did_cluster = DifferenceInDifferences()
    did_wild = DifferenceInDifferences(inference='wild_bootstrap')
 
-   r1 = did_robust.fit(data, outcome='y', treated='treated', post='post')
-   r2 = did_cluster.fit(data, outcome='y', treated='treated',
-                        post='post', cluster_col='unit_id')
-   r3 = did_wild.fit(data, outcome='y', treated='treated',
-                     post='post', cluster_col='unit_id')
+   r1 = did_robust.fit(data, outcome='y', treatment='treated', time='post')
+   r2 = did_cluster.fit(data, outcome='y', treatment='treated',
+                        time='post', cluster_col='unit_id')
+   r3 = did_wild.fit(data, outcome='y', treatment='treated',
+                     time='post', cluster_col='unit_id')
 
    print(f"Robust SE: {r1.se:.4f}")
    print(f"Cluster SE: {r2.se:.4f}")
@@ -280,7 +280,7 @@ Performance Issues
 
    # Use absorb instead of fixed_effects for high-dimensional FE
    twfe = TwoWayFixedEffects()
-   results = twfe.fit(data, outcome='y', treated='treated',
+   results = twfe.fit(data, outcome='y', treatment='treated',
                       unit='unit_id', time='period',
                       absorb=['unit_id', 'period'])  # Faster than fixed_effects
 
@@ -292,6 +292,308 @@ Performance Issues
    results = cs.fit(data, ...)
    # Only bootstrap for final results
    bootstrap_results = results.bootstrap(n_bootstrap=999)
+
+Rust Backend Issues
+-------------------
+
+"Rust backend is not available"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** ``ImportError`` when using ``DIFF_DIFF_BACKEND=rust`` or attempting to
+use Rust-accelerated operations.
+
+**Causes:**
+
+1. Rust backend was not compiled during installation
+2. The ``maturin`` build step was skipped or failed
+3. Platform does not have a pre-built wheel available
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Check if Rust backend is available
+   from diff_diff import HAS_RUST_BACKEND
+   print(f"Rust backend available: {HAS_RUST_BACKEND}")
+
+   # Force pure Python mode (no Rust required)
+   import os
+   os.environ['DIFF_DIFF_BACKEND'] = 'python'
+
+.. code-block:: bash
+
+   # Rebuild with Rust backend
+   pip install -e ".[dev]"
+   maturin develop --release
+
+   # On macOS with Apple Accelerate
+   maturin develop --release --features accelerate
+
+TROP Issues
+-----------
+
+"All tuning parameter combinations failed"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** TROP raises an error that all tuning parameter combinations failed
+during leave-one-out cross-validation (LOOCV).
+
+**Causes:**
+
+1. Insufficient pre-treatment periods (need at least 4)
+2. Near-constant outcomes that leave no variation to fit
+3. Data is too sparse for the requested lambda grids
+
+**Solutions:**
+
+.. code-block:: python
+
+   from diff_diff import TROP
+
+   # Widen the lambda grids to give the optimizer more room
+   trop = TROP(
+       lambda_L_grid=[0.01, 0.1, 1.0, 10.0],
+       lambda_nn_grid=[0.01, 0.1, 1.0, 10.0],
+   )
+
+   # Ensure at least 4 pre-treatment periods in your data
+   pre_periods = data.loc[data['post'] == 0, 'period'].nunique()
+   print(f"Pre-treatment periods: {pre_periods}")  # Should be >= 4
+
+   # If TROP cannot find valid parameters, try SyntheticDiD as a fallback
+   from diff_diff import SyntheticDiD
+   sdid = SyntheticDiD()
+   results = sdid.fit(data, outcome='y', treatment='treatment',
+                      unit='unit_id', time='period')
+
+"LOOCV fits failed / numerical instability"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** Partial LOOCV failures during TROP tuning, or warnings about
+numerical instability in cross-validation fits.
+
+**Causes:**
+
+1. Poor data quality (missing values, outliers)
+2. Regularization parameters too small for the data scale
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Check data quality
+   print(data[['y', 'treatment', 'post']].describe())
+   print(f"Missing values:\n{data.isnull().sum()}")
+
+   # Increase regularization to improve numerical stability
+   trop = TROP(
+       lambda_nn_grid=[0.1, 1.0, 10.0, 100.0],  # Larger minimum lambda
+   )
+
+"Few bootstrap iterations succeeded"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** TROP warns that only N of M bootstrap iterations completed
+successfully, leading to imprecise standard errors.
+
+**Causes:**
+
+1. Small sample sizes cause singular matrices in bootstrap resamples
+2. Complex model specification amplifies resampling instability
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Increase total bootstrap iterations to get enough successes
+   trop = TROP(n_bootstrap=999)
+
+   # Simplify the model to reduce bootstrap failures
+   trop = TROP(method='global', n_bootstrap=999)
+
+Continuous DiD Issues
+---------------------
+
+"Dose appears discrete"
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** ``ContinuousDiD`` warns that the dose variable appears to contain
+only integer or discrete values.
+
+**Causes:**
+
+1. Treatment is truly binary (0/1) and should use standard DiD
+2. Dose variable is coded as integers but represents a continuous measure
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Check dose distribution
+   print(data['dose'].value_counts())
+
+   # If treatment is truly binary, use standard DiD instead
+   from diff_diff import DifferenceInDifferences
+   did = DifferenceInDifferences()
+   results = did.fit(data, outcome='y', treatment='treatment', time='post')
+
+   # If dose is continuous but stored as int, convert
+   data['dose'] = data['dose'].astype(float)
+
+"No post-treatment cells available for aggregation"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** No (g, t) cells are available after filtering, so aggregation
+cannot produce an ATT estimate.
+
+**Causes:**
+
+1. ``first_treat`` is miscoded (e.g., all zeros or all the same value)
+2. No post-treatment periods exist in the data for treated cohorts
+3. Filtering removed all valid cells
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Check first_treat coding
+   print(data['first_treat'].value_counts())
+
+   # Verify that post-treatment periods exist for treated units
+   treated = data[data['first_treat'] > 0]
+   for g, group in treated.groupby('first_treat'):
+       post_obs = group[group['period'] >= g]
+       print(f"Cohort {g}: {len(post_obs)} post-treatment observations")
+
+Imputation / Two-Stage DiD Issues
+----------------------------------
+
+"Non-constant first_treat values"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** ``ImputationDiD`` or ``TwoStageDiD`` raises an error because
+``first_treat`` varies within units.
+
+**Causes:**
+
+1. Units switch treatment status back and forth
+2. Data merge errors created inconsistent ``first_treat`` values
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Check for non-constant first_treat within units
+   varying = data.groupby('unit_id')['first_treat'].nunique()
+   bad_units = varying[varying > 1].index
+   print(f"Units with varying first_treat: {len(bad_units)}")
+
+   # Fix: ensure first_treat is constant per unit (absorbing state)
+   first_treat_map = data.groupby('unit_id')['first_treat'].first()
+   data['first_treat'] = data['unit_id'].map(first_treat_map)
+
+"Units treated in all observed periods"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** All observed periods for some units are post-treatment, so no
+pre-treatment outcomes exist to construct counterfactuals.
+
+**Causes:**
+
+1. Always-treated units entered the panel already treated
+2. Observation window starts after treatment onset for some cohorts
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Identify always-treated units
+   always_treated = data.groupby('unit_id').apply(
+       lambda g: (g['period'] >= g['first_treat']).all()
+   )
+   print(f"Always-treated units: {always_treated.sum()}")
+
+   # Drop always-treated units
+   keep_units = always_treated[~always_treated].index
+   data = data[data['unit_id'].isin(keep_units)]
+
+"Horizons not identified without never-treated units"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** Certain event study horizons return NaN because they require
+never-treated units for identification (Proposition 5 in Borusyak et al.).
+
+**Causes:**
+
+1. No never-treated units in the data
+2. Specific long-horizon estimates need a comparison group that spans those periods
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Check for never-treated units
+   never_treated = data.groupby('unit_id')['first_treat'].first()
+   print(f"Never-treated units: {(never_treated == 0).sum()}")
+
+   # Option 1: Include never-treated units in your sample
+   # Option 2: Accept NaN for unidentified horizons
+   results = imputation.fit(data, outcome='y', treatment='treatment',
+                            unit='unit_id', time='period',
+                            first_treat='first_treat')
+   # NaN horizons are expected when never-treated units are absent
+
+Bacon Decomposition Issues
+--------------------------
+
+"Unbalanced panel detected"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** ``BaconDecomposition`` raises an error because the panel is
+unbalanced. Bacon decomposition requires a balanced panel.
+
+**Causes:**
+
+1. Some units are missing observations for certain time periods
+2. Units entered or exited the panel at different times
+
+**Solutions:**
+
+.. code-block:: python
+
+   from diff_diff import balance_panel, BaconDecomposition
+
+   # Balance the panel first
+   balanced = balance_panel(data, unit='unit_id', time='period')
+   print(f"Dropped {len(data) - len(balanced)} observations to balance panel")
+
+   # Then run decomposition
+   bacon = BaconDecomposition()
+   results = bacon.fit(balanced, outcome='y', treatment='treatment',
+                       unit='unit_id', time='period')
+
+Deprecation Warnings
+--------------------
+
+"method='joint' is deprecated"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** TROP emits a ``FutureWarning`` that ``method='joint'`` is
+deprecated.
+
+**Causes:**
+
+1. Code uses the old ``method='joint'`` parameter name
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Old (deprecated)
+   trop = TROP(method='joint')
+
+   # New (use 'global' instead)
+   trop = TROP(method='global')
 
 Getting Help
 ------------
@@ -310,7 +612,7 @@ If you encounter issues not covered here:
 
    data = generate_did_data(n_units=100, n_periods=10, treatment_effect=2.0)
    did = DifferenceInDifferences()
-   results = did.fit(data, outcome='y', treated='treated', post='post')
+   results = did.fit(data, outcome='y', treatment='treated', time='post')
    print(f"True effect: 2.0, Estimated: {results.att:.3f}")
 
 For bugs or feature requests, please open an issue on

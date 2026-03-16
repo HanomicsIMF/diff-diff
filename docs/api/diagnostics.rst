@@ -30,11 +30,9 @@ Example
    result = placebo_timing_test(
        data,
        outcome='y',
-       treated='treated',
+       treatment='treated',
        time='period',
-       unit='unit_id',
-       true_treatment_start=5,
-       placebo_treatment_start=3  # Test earlier period
+       fake_treatment_period=3  # Test earlier period
    )
 
    print(f"Placebo effect: {result.effect:.3f}")
@@ -60,8 +58,7 @@ Example
        outcome='y',
        time='period',
        unit='unit_id',
-       treated='treated',
-       post='post'
+       fake_treated_units=[10, 11, 12]  # Assign some control units as fake-treated
    )
 
    # Should find no effect if parallel trends holds
@@ -84,8 +81,9 @@ Example
    result = permutation_test(
        data,
        outcome='y',
-       treated='treated',
-       post='post',
+       treatment='treated',
+       time='period',
+       unit='unit_id',
        n_permutations=1000
    )
 
@@ -108,8 +106,8 @@ Example
    result = leave_one_out_test(
        data,
        outcome='y',
-       treated='treated',
-       post='post',
+       treatment='treated',
+       time='period',
        unit='unit_id'
    )
 

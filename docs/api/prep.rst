@@ -35,6 +35,62 @@ Example
    print(data.head())
    # Columns: unit_id, period, outcome, treated, post
 
+generate_staggered_data
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Generate synthetic staggered adoption data for testing.
+
+.. autofunction:: diff_diff.generate_staggered_data
+
+Example
+^^^^^^^
+
+.. code-block:: python
+
+   from diff_diff import generate_staggered_data
+
+   data = generate_staggered_data(
+       n_units=200,
+       n_periods=10,
+       cohort_periods=[4, 6, 8],
+       seed=42
+   )
+
+generate_event_study_data
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Generate synthetic event study data for testing.
+
+.. autofunction:: diff_diff.generate_event_study_data
+
+generate_ddd_data
+~~~~~~~~~~~~~~~~~
+
+Generate synthetic Triple Difference data.
+
+.. autofunction:: diff_diff.generate_ddd_data
+
+generate_factor_data
+~~~~~~~~~~~~~~~~~~~~
+
+Generate synthetic data with factor structure for TROP testing.
+
+.. autofunction:: diff_diff.generate_factor_data
+
+generate_panel_data
+~~~~~~~~~~~~~~~~~~~
+
+Generate generic synthetic panel data.
+
+.. autofunction:: diff_diff.generate_panel_data
+
+generate_continuous_did_data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Generate synthetic continuous treatment DiD data with known dose-response.
+
+.. autofunction:: diff_diff.generate_continuous_did_data
+
 Indicator Creation
 ------------------
 
@@ -213,10 +269,9 @@ Example
    is_valid, issues = validate_did_data(
        data,
        outcome='outcome',
-       treated='treated',
-       post='post',
-       unit='unit_id',
-       time='period'
+       treatment='treated',
+       time='period',
+       unit='unit_id'
    )
 
    if not is_valid:
@@ -240,10 +295,9 @@ Example
    summary = summarize_did_data(
        data,
        outcome='outcome',
-       treated='treated',
-       post='post',
-       unit='unit_id',
-       time='period'
+       treatment='treated',
+       time='period',
+       unit='unit_id'
    )
 
    print(f"N units: {summary['n_units']}")
@@ -269,12 +323,11 @@ Example
 
    ranked = rank_control_units(
        data,
-       outcome='outcome',
-       unit='unit_id',
-       time='period',
-       treated='treated',
-       pre_periods=4,
-       method='correlation'  # or 'rmse'
+       unit_column='unit_id',
+       time_column='period',
+       outcome_column='outcome',
+       treatment_column='treated',
+       pre_periods=[0, 1, 2, 3]
    )
 
    # Select top 10 control units
