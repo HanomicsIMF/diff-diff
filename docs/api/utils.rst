@@ -31,7 +31,7 @@ Example
        pre_periods=[0, 1, 2, 3]
    )
 
-   print(f"F-statistic: {result['f_stat']:.3f}")
+   print(f"t-statistic: {result['t_statistic']:.3f}")
    print(f"p-value: {result['p_value']:.3f}")
 
    if result['p_value'] > 0.05:
@@ -87,12 +87,14 @@ Example
 
 .. code-block:: python
 
-   from diff_diff import DifferenceInDifferences
+   from diff_diff import DifferenceInDifferences, generate_did_data
+
+   panel = generate_did_data(n_units=200, n_periods=10, treatment_effect=2.0)
 
    # Use wild bootstrap via the estimator's inference parameter (recommended)
    did = DifferenceInDifferences(inference='wild_bootstrap', n_bootstrap=999,
-                                  cluster='unit_id')
-   results = did.fit(data, outcome='y', treatment='treated',
+                                  cluster='unit')
+   results = did.fit(panel, outcome='outcome', treatment='treated',
                      time='post')
 
    print(f"Bootstrap SE: {results.se:.3f}")

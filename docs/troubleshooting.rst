@@ -363,11 +363,11 @@ during leave-one-out cross-validation (LOOCV).
    pre_periods = data.loc[data['post'] == 0, 'period'].nunique()
    print(f"Pre-treatment periods: {pre_periods}")  # Must be >= 2; stability improves with >= 4
 
-   # If TROP cannot find valid parameters, try SyntheticDiD as a fallback
-   from diff_diff import SyntheticDiD
-   sdid = SyntheticDiD()
-   results = sdid.fit(data, outcome='y', treatment='treatment',
-                      unit='unit_id', time='period')
+   # If TROP cannot find valid parameters, try CallawaySantAnna as a fallback
+   from diff_diff import CallawaySantAnna
+   cs = CallawaySantAnna()
+   results = cs.fit(data, outcome='y', unit='unit_id',
+                    time='period', first_treat='first_treat')
 
 "LOOCV fits failed / numerical instability"
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -572,7 +572,7 @@ unbalanced. Bacon decomposition requires a balanced panel.
    # Then run decomposition
    bacon = BaconDecomposition()
    results = bacon.fit(balanced, outcome='y', unit='unit_id',
-                       time='period', first_treat='treatment')
+                       time='period', first_treat='first_treat')
 
 Deprecation Warnings
 --------------------
@@ -614,7 +614,7 @@ If you encounter issues not covered here:
 
    data = generate_did_data(n_units=100, n_periods=10, treatment_effect=2.0)
    did = DifferenceInDifferences()
-   results = did.fit(data, outcome='y', treatment='treated', time='post')
+   results = did.fit(data, outcome='outcome', treatment='treated', time='post')
    print(f"True effect: 2.0, Estimated: {results.att:.3f}")
 
 For bugs or feature requests, please open an issue on

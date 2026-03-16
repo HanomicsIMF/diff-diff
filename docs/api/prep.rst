@@ -137,7 +137,7 @@ Example
 
    from diff_diff import make_post_indicator
 
-   data['post'] = make_post_indicator(
+   data = make_post_indicator(
        data,
        time_column='period',
        treatment_start=5
@@ -267,7 +267,7 @@ Example
 
    from diff_diff import validate_did_data
 
-   is_valid, issues = validate_did_data(
+   result = validate_did_data(
        data,
        outcome='outcome',
        treatment='treated',
@@ -275,9 +275,11 @@ Example
        unit='unit_id'
    )
 
-   if not is_valid:
-       for issue in issues:
-           print(f"Issue: {issue}")
+   if not result['valid']:
+       for error in result['errors']:
+           print(f"Error: {error}")
+       for warning in result['warnings']:
+           print(f"Warning: {warning}")
 
 summarize_did_data
 ~~~~~~~~~~~~~~~~~~
@@ -301,9 +303,7 @@ Example
        unit='unit_id'
    )
 
-   print(f"N units: {summary['n_units']}")
-   print(f"N periods: {summary['n_periods']}")
-   print(f"Treatment fraction: {summary['treatment_fraction']:.1%}")
+   print(summary)
 
 Control Unit Selection
 ----------------------
@@ -320,16 +320,17 @@ Example
 
 .. code-block:: python
 
-   from diff_diff import rank_control_units
+   from diff_diff import rank_control_units, generate_did_data
 
+   panel = generate_did_data(n_units=100, n_periods=10, treatment_effect=2.0)
    ranked = rank_control_units(
-       data,
-       unit_column='unit_id',
+       panel,
+       unit_column='unit',
        time_column='period',
        outcome_column='outcome',
        treatment_column='treated',
-       pre_periods=[0, 1, 2, 3]
+       pre_periods=[0, 1, 2, 3, 4]
    )
 
    # Select top 10 control units
-   best_controls = ranked.head(10)['unit_id'].tolist()
+   best_controls = ranked.head(10)['unit'].tolist()

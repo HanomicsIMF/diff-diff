@@ -22,7 +22,7 @@ Example
    # Fit event study model
    model = MultiPeriodDiD()
    results = model.fit(data, outcome='y', treatment='treated',
-                       time='period', unit='unit_id', reference_period=-1)
+                       time='period', unit='unit_id', reference_period=2)
 
    # Create plot
    fig = plot_event_study(results)

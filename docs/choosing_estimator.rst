@@ -157,7 +157,7 @@ Use :class:`~diff_diff.MultiPeriodDiD` when:
 
    event = MultiPeriodDiD()
    results = event.fit(data, outcome='y', treatment='treated',
-                       time='period', unit='unit_id', reference_period=-1)
+                       time='period', unit='unit_id', reference_period=2)
 
    # Visualize
    plot_event_study(results)
@@ -205,10 +205,12 @@ Use :class:`~diff_diff.SyntheticDiD` when:
 
 .. code-block:: python
 
-   from diff_diff import SyntheticDiD
+   from diff_diff import SyntheticDiD, generate_did_data
 
+   # SyntheticDiD requires block treatment (constant within units)
+   block_data = generate_did_data(n_units=40, n_periods=10, treatment_effect=2.0)
    sdid = SyntheticDiD()
-   results = sdid.fit(data, outcome='y', unit='unit_id',
+   results = sdid.fit(block_data, outcome='outcome', unit='unit',
                       time='period', treatment='treated')
 
    # View the unit weights
@@ -412,7 +414,7 @@ Use :class:`~diff_diff.BaconDecomposition` when:
 
 - You want to **diagnose** whether TWFE is biased in your staggered setting
 - You need to see which 2x2 comparisons drive the TWFE estimate
-- You want to check for negative weights from forbidden comparisons
+- You want to check whether later-vs-earlier or already-treated-as-control comparisons carry substantial weight
 
 Goodman-Bacon (2021) decomposes the TWFE estimate into a weighted average of
 all 2x2 DiD comparisons and their weights.
@@ -423,7 +425,7 @@ all 2x2 DiD comparisons and their weights.
 
    bacon = BaconDecomposition()
    results = bacon.fit(data, outcome='y', unit='unit_id',
-                       time='period', first_treat='treated')
+                       time='period', first_treat='first_treat')
    results.print_summary()
 
    # Visualize the decomposition
@@ -535,14 +537,18 @@ For panel data, always cluster at the unit level unless you have a strong reason
 
 .. code-block:: python
 
+   from diff_diff import generate_did_data
+
+   panel = generate_did_data(n_units=200, n_periods=10, treatment_effect=2.0)
+
    # Good: Cluster at unit level for panel data
-   did = DifferenceInDifferences(cluster='unit_id')
-   results = did.fit(data, outcome='y', treatment='treated',
+   did = DifferenceInDifferences(cluster='unit')
+   results = did.fit(panel, outcome='outcome', treatment='treated',
                      time='post')
 
    # Better for few clusters: Wild bootstrap
-   did = DifferenceInDifferences(inference='wild_bootstrap', cluster='state')
-   results = did.fit(data, outcome='y', treatment='treated',
+   did = DifferenceInDifferences(inference='wild_bootstrap', cluster='unit')
+   results = did.fit(panel, outcome='outcome', treatment='treated',
                      time='post')
 
 When in Doubt

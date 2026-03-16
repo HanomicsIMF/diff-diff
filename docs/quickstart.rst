@@ -131,7 +131,7 @@ Examine treatment effects over time:
        outcome='outcome',
        treatment='treated',
        time='period',
-       post_periods=[5, 6, 7, 8, 9],
+       post_periods=[5, 6, 7],
        reference_period=4
    )
 
@@ -154,7 +154,7 @@ When treatment is adopted at different times across units:
        outcome='outcome',
        unit='unit_id',
        time='period',
-       first_treat='first_treatment_period'
+       first_treat='first_treat'
    )
 
    # View aggregated treatment effect
