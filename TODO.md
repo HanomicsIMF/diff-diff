@@ -63,6 +63,7 @@ Deferred items from PR reviews that were not addressed before merge.
 | R comparison tests spawn separate `Rscript` per test (slow CI) | `tests/test_methodology_twfe.py:294` | #139 | Low |
 | CS R helpers hard-code `xformla = ~ 1`; no covariate-adjusted R benchmark for IRLS path | `tests/test_methodology_callaway.py` | #202 | Low |
 | Context-dependent doc snippets pass via blanket NameError; no standalone validation | `tests/test_doc_snippets.py`, `docs/api/visualization.rst`, `docs/python_comparison.rst`, `docs/r_comparison.rst` | #206 | Low |
+| ~1,460 `duplicate object description` Sphinx warnings — each class attribute is documented in both module API pages and autosummary stubs; fix by adding `:no-index:` to one location or restructuring API docs to avoid overlap | `docs/api/*.rst`, `docs/api/_autosummary/` | — | Low |
 
 ---
 

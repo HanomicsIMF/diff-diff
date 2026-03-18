@@ -1,5 +1,11 @@
 # diff-diff
 
+[![PyPI version](https://img.shields.io/pypi/v/diff-diff.svg)](https://pypi.org/project/diff-diff/)
+[![Python versions](https://img.shields.io/pypi/pyversions/diff-diff.svg)](https://pypi.org/project/diff-diff/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Downloads](https://img.shields.io/pypi/dm/diff-diff.svg)](https://pypi.org/project/diff-diff/)
+[![Documentation](https://readthedocs.org/projects/diff-diff/badge/?version=stable)](https://diff-diff.readthedocs.io/en/stable/)
+
 A Python library for Difference-in-Differences (DiD) causal inference analysis with an sklearn-like API and statsmodels-style outputs.
 
 ## Installation
@@ -2908,6 +2914,21 @@ The `HonestDiD` module implements sensitivity analysis methods for relaxing the 
 - **Imbens, G. W., & Rubin, D. B. (2015).** *Causal Inference for Statistics, Social, and Biomedical Sciences: An Introduction*. Cambridge University Press.
 
 - **Cunningham, S. (2021).** *Causal Inference: The Mixtape*. Yale University Press. [https://mixtape.scunning.com/](https://mixtape.scunning.com/)
+
+## Citing diff-diff
+
+If you use diff-diff in your research, please cite it:
+
+```bibtex
+@software{diff_diff,
+  title = {diff-diff: Difference-in-Differences Causal Inference for Python},
+  author = {{diff-diff contributors}},
+  url = {https://github.com/igerber/diff-diff},
+  license = {MIT},
+}
+```
+
+See [`CITATION.cff`](CITATION.cff) for the full citation metadata.
 
 ## License
 

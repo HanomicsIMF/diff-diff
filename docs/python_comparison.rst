@@ -1,3 +1,7 @@
+.. meta::
+   :description: Compare diff-diff with other Python DiD libraries including pyfixest, causalimpact, and linearmodels. Feature matrix, API comparison, and migration guide.
+   :keywords: python DiD library comparison, pyfixest vs diff-diff, causalimpact alternative, python difference-in-differences packages
+
 Comparison with Python Packages
 ================================
 

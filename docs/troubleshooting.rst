@@ -1,3 +1,7 @@
+.. meta::
+   :description: Troubleshooting guide for diff-diff. Solutions for common DiD issues including singular matrices, collinear covariates, insufficient variation, and convergence problems.
+   :keywords: difference-in-differences troubleshooting, DiD singular matrix, collinear covariates fix, parallel trends test fails
+
 Troubleshooting
 ===============
 
