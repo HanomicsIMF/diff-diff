@@ -40,6 +40,7 @@ from diff_diff.power import (
     _extract_staggered,
     _factor_dgp_kwargs,
     _get_registry,
+    _sdid_dgp_kwargs,
     _staggered_dgp_kwargs,
     _staggered_fit_kwargs,
     _trop_fit_kwargs,
@@ -707,6 +708,7 @@ class TestEstimatorRegistry:
             _basic_dgp_kwargs,
             _staggered_dgp_kwargs,
             _factor_dgp_kwargs,
+            _sdid_dgp_kwargs,
             _ddd_dgp_kwargs,
         ]:
             result = builder(**params)
@@ -968,6 +970,21 @@ class TestEstimatorCoverage:
             progress=False,
         )
         self._assert_valid_result(result, "SyntheticDiD")
+
+    @pytest.mark.slow
+    def test_synthetic_did_default_fraction(self):
+        """Default treatment_fraction=0.5 must not produce zero power."""
+        result = simulate_power(
+            SyntheticDiD(),
+            n_units=50,
+            n_periods=6,
+            treatment_period=3,
+            n_simulations=10,
+            seed=42,
+            progress=False,
+        )
+        self._assert_valid_result(result, "SyntheticDiD")
+        assert result.power > 0, "Default SyntheticDiD path gave zero power"
 
 
 # ---------------------------------------------------------------------------
