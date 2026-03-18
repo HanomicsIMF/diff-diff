@@ -2722,9 +2722,11 @@ class TestTROPNuclearNormSolver:
 class TestTROPGlobalMethod:
     """Tests for TROP method='global'.
 
-    The global method estimates a single scalar treatment effect τ via
-    weighted least squares, as opposed to the local method which
-    computes per-observation effects.
+    The global method fits a single model on control data with global
+    weights, then extracts per-observation treatment effects as
+    residuals (τ_it = Y_it - μ - α_i - β_t - L_it). ATT is the mean
+    of these effects. The local method instead fits a separate model
+    per treated observation with observation-specific weights.
     """
 
     def test_global_basic(self, simple_panel_data):

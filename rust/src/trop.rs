@@ -1081,12 +1081,12 @@ pub fn bootstrap_trop_variance<'py>(
 }
 
 // ============================================================================
-// Joint method implementation
+// Global method implementation
 // ============================================================================
 
-/// Compute global weights for joint method estimation.
+/// Compute global weights for global method estimation.
 ///
-/// Unlike twostep (which computes per-observation weights), joint uses global
+/// Unlike local (which computes per-observation weights), global uses
 /// weights based on:
 /// - Time weights: distance to center of treated block
 /// - Unit weights: RMSE to average treated trajectory over pre-periods
@@ -1196,7 +1196,7 @@ fn compute_joint_weights(
     delta
 }
 
-/// Solve joint TWFE via weighted least squares (no low-rank, no tau).
+/// Solve global TWFE via weighted least squares (no low-rank, no tau).
 ///
 /// Minimizes: min Σ δ_{it}(Y_{it} - μ - α_i - β_t)²
 ///
@@ -1315,7 +1315,7 @@ fn solve_joint_no_lowrank(
     Some((mu, alpha, beta))
 }
 
-/// Solve joint TWFE + low-rank via alternating minimization (no tau).
+/// Solve global TWFE + low-rank via alternating minimization (no tau).
 ///
 /// Minimizes: min Σ δ_{it}(Y_{it} - μ - α_i - β_t - L_{it})² + λ_nn||L||_*
 ///
@@ -1422,12 +1422,12 @@ fn solve_joint_with_lowrank(
     Some((mu, alpha, beta, l))
 }
 
-/// Compute LOOCV score for joint method with specific parameter combination.
+/// Compute LOOCV score for global method with specific parameter combination.
 ///
 /// Following paper's Equation 5:
 /// Q(λ) = Σ_{j,s: D_js=0} [τ̂_js^loocv(λ)]²
 ///
-/// For joint method, we exclude each control observation, fit the joint model
+/// For global method, we exclude each control observation, fit the global model
 /// on remaining data, and compute the pseudo-treatment effect at the excluded obs.
 ///
 /// # Returns
@@ -1502,7 +1502,7 @@ fn loocv_score_joint(
     }
 }
 
-/// Perform LOOCV grid search for joint method using parallel grid search.
+/// Perform LOOCV grid search for global method using parallel grid search.
 ///
 /// Evaluates all combinations of (lambda_time, lambda_unit, lambda_nn) in parallel
 /// and returns the combination with lowest LOOCV score.
@@ -1630,7 +1630,7 @@ pub fn loocv_grid_search_global<'py>(
     Ok((best_lt, best_lu, best_ln, best_score, n_valid, n_attempted, first_failed))
 }
 
-/// Compute bootstrap variance estimation for TROP joint method in parallel.
+/// Compute bootstrap variance estimation for TROP global method in parallel.
 ///
 /// Performs unit-level block bootstrap, parallelizing across bootstrap iterations.
 /// Uses stratified sampling to preserve treated/control unit ratio.
@@ -1737,7 +1737,7 @@ pub fn bootstrap_trop_variance_global<'py>(
                 }
             }
 
-            // Compute weights and fit joint model
+            // Compute weights and fit global model
             let delta = compute_joint_weights(
                 &y_boot.view(),
                 &d_boot.view(),
