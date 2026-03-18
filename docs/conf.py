@@ -75,6 +75,9 @@ html_extra_path = ["llms.txt", "llms-full.txt"]
 sitemap_url_scheme = "{link}"
 
 html_theme_options = {
+    "logo": {
+        "text": "diff-diff",
+    },
     "icon_links": [
         {
             "name": "GitHub",
@@ -87,16 +90,9 @@ html_theme_options = {
             "icon": "fa-brands fa-python",
         },
     ],
+    "navbar_end": ["theme-switcher", "navbar-icon-links"],
     "navigation_depth": 4,
     "show_toc_level": 2,
-    "use_edit_page_button": True,
-}
-
-html_context = {
-    "github_user": "igerber",
-    "github_repo": "diff-diff",
-    "github_version": "main",
-    "doc_path": "docs",
 }
 
 # -- Options for sphinxext-opengraph -----------------------------------------
