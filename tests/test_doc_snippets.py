@@ -4,7 +4,8 @@ Smoke tests for Python code blocks in RST documentation.
 Extracts ``.. code-block:: python`` snippets from RST files and executes them
 in isolated namespaces with synthetic data and mock dataset loaders. Fails on
 all exceptions except NameError (context-dependent snippets) and
-ImportError for known third-party packages (comparison-page snippets).
+ImportError for known third-party/optional packages (comparison-page
+snippets and optional-dependency guards like matplotlib).
 """
 
 import re
@@ -104,7 +105,7 @@ _SKIP_PATTERNS = [
 # Third-party packages imported by comparison-page snippets that may not
 # be installed in the test environment.  Only these are exempt from
 # ImportError failures — diff_diff and stdlib imports must succeed.
-_THIRD_PARTY_MODULES = {"pyfixest", "linearmodels", "differences"}
+_THIRD_PARTY_MODULES = {"pyfixest", "linearmodels", "differences", "matplotlib"}
 
 
 def _should_skip(code: str) -> Optional[str]:
@@ -362,11 +363,17 @@ def test_doc_snippet(test_id: str, code: str, skip_reason: Optional[str]):
         pass
     except ImportError as exc:
         # Only suppress ImportError for known third-party packages that
-        # comparison-page snippets import. In-package (diff_diff.*) and
-        # stdlib import failures should still fail the test.
+        # comparison-page snippets import (or optional-dependency guards
+        # that raise ImportError manually with the package name in the
+        # message). In-package (diff_diff.*) and stdlib import failures
+        # should still fail the test.
         mod_name = getattr(exc, "name", "") or ""
         top_level = mod_name.split(".")[0]
-        if top_level not in _THIRD_PARTY_MODULES:
+        msg = str(exc).lower()
+        is_known = top_level in _THIRD_PARTY_MODULES or any(
+            pkg in msg for pkg in _THIRD_PARTY_MODULES
+        )
+        if not is_known:
             pytest.fail(
                 f"Snippet {test_id} raised ImportError for "
                 f"'{mod_name}': {exc}\n\n"
