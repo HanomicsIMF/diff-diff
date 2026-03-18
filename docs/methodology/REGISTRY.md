@@ -1500,7 +1500,7 @@ For global method, LOOCV works as follows:
 *Assumption checks / warnings:*
 - Requires variation in treatment timing (staggered adoption)
 - Warns if only one treatment cohort (decomposition not meaningful)
-- Assumes no never-treated: uses not-yet-treated as controls
+- Uses never-treated units as controls when present; falls back to timing-only comparisons otherwise
 
 *Estimator equation (as implemented):*
 

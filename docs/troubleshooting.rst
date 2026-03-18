@@ -252,15 +252,15 @@ Visualization Issues
    import matplotlib.pyplot as plt
 
    # Option 1: Use plt.show()
-   fig = plot_event_study(results)
+   ax = plot_event_study(results)
    plt.show()
 
    # Option 2: Use inline magic (Jupyter)
    %matplotlib inline
 
    # Option 3: Return and display figure
-   fig = plot_event_study(results)
-   fig  # Display in Jupyter
+   ax = plot_event_study(results)
+   ax  # Display in Jupyter
 
 Performance Issues
 ------------------

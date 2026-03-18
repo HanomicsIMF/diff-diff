@@ -47,7 +47,7 @@ Example
                     time='period', first_treat='first_treat')
 
    # Plot effects by treatment cohort
-   fig = plot_group_effects(results)
+   ax = plot_group_effects(results)
 
 plot_sensitivity
 ----------------
@@ -69,7 +69,7 @@ Example
        M_grid=[0, 0.5, 1.0, 1.5, 2.0]
    )
 
-   fig = plot_sensitivity(sensitivity)
+   ax = plot_sensitivity(sensitivity)
 
 plot_honest_event_study
 -----------------------

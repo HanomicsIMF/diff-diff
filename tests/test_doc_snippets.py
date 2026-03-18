@@ -3,7 +3,8 @@ Smoke tests for Python code blocks in RST documentation.
 
 Extracts ``.. code-block:: python`` snippets from RST files and executes them
 in isolated namespaces with synthetic data and mock dataset loaders. Fails on
-all exceptions except NameError (context-dependent snippets).
+all exceptions except NameError (context-dependent snippets) and
+ImportError for known third-party packages (comparison-page snippets).
 """
 
 import re
@@ -99,6 +100,11 @@ _SKIP_PATTERNS = [
     r"wild_bootstrap_se\(X,",  # low-level array API pseudo-code
     r"wide_to_long\(",  # references undefined wide_data variable
 ]
+
+# Third-party packages imported by comparison-page snippets that may not
+# be installed in the test environment.  Only these are exempt from
+# ImportError failures — diff_diff and stdlib imports must succeed.
+_THIRD_PARTY_MODULES = {"pyfixest", "linearmodels", "differences"}
 
 
 def _should_skip(code: str) -> Optional[str]:
@@ -354,11 +360,18 @@ def test_doc_snippet(test_id: str, code: str, skip_reason: Optional[str]):
         # context block (e.g. ``results`` from an earlier fit).  This is
         # expected for isolated execution — not an API mismatch.
         pass
-    except ImportError:
-        # ImportError covers both ModuleNotFoundError (comparison pages
-        # importing pyfixest, linearmodels, etc.) and optional-dependency
-        # guards (e.g. matplotlib required for plotting functions).
-        pass
+    except ImportError as exc:
+        # Only suppress ImportError for known third-party packages that
+        # comparison-page snippets import. In-package (diff_diff.*) and
+        # stdlib import failures should still fail the test.
+        mod_name = getattr(exc, "name", "") or ""
+        top_level = mod_name.split(".")[0]
+        if top_level not in _THIRD_PARTY_MODULES:
+            pytest.fail(
+                f"Snippet {test_id} raised ImportError for "
+                f"'{mod_name}': {exc}\n\n"
+                f"Code:\n{textwrap.indent(code, '  ')}"
+            )
     except Exception as exc:
         pytest.fail(
             f"Snippet {test_id} raised {type(exc).__name__}: {exc}\n\n"
