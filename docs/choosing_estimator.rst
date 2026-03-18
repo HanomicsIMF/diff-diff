@@ -537,7 +537,7 @@ For panel data, always cluster at the unit level unless you have a strong reason
 
 .. code-block:: python
 
-   from diff_diff import generate_did_data
+   from diff_diff import DifferenceInDifferences, generate_did_data
 
    panel = generate_did_data(n_units=200, n_periods=10, treatment_effect=2.0)
 

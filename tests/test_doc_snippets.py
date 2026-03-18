@@ -321,6 +321,22 @@ def _build_namespace() -> dict:
 # ---------------------------------------------------------------------------
 # Test
 # ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _restore_datasets_module():
+    """Restore diff_diff.datasets after each test to prevent mock leaking."""
+    import sys as _sys
+    import diff_diff as _dd
+    orig_mod = _sys.modules.get("diff_diff.datasets")
+    orig_attr = getattr(_dd, "datasets", None)
+    yield
+    if orig_mod is not None:
+        _sys.modules["diff_diff.datasets"] = orig_mod
+    elif "diff_diff.datasets" in _sys.modules:
+        del _sys.modules["diff_diff.datasets"]
+    if orig_attr is not None:
+        _dd.datasets = orig_attr
+
+
 @pytest.mark.parametrize(
     "test_id, code, skip_reason",
     [pytest.param(tid, c, s, id=tid) for tid, c, s in _CASES],
