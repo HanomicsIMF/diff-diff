@@ -1111,6 +1111,7 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 - **Single pre-period**: `compute_time_weights` returns `[1.0]` when `n_pre <= 1` (Frank-Wolfe on a 1-element simplex is trivial).
 - **Bootstrap with 0 control or 0 treated in resample**: Skip iteration (`continue`). If ALL bootstrap iterations fail, raises `ValueError`. If only 1 succeeds, warns and returns SE=0.0. If >5% failure rate, warns about reliability.
 - **Placebo with n_control <= n_treated**: Warns that not enough control units for placebo variance estimation, returns SE=0.0 and empty placebo effects array. The check is `n_control - n_treated < 1`.
+- **Note:** Power analysis functions (`simulate_power`, `simulate_mde`, `simulate_sample_size`) raise `ValueError` for placebo variance when `n_control <= n_treated` (fail-fast before simulation).
 - **Negative weights attempted**: Frank-Wolfe operates on the simplex (non-negative, sum-to-1), so weights are always feasible by construction. The step size is clipped to [0, 1] and the move is toward a simplex vertex.
 - **Perfect pre-treatment fit**: Regularization (ζ² ||ω||²) prevents overfitting by penalizing weight concentration.
 - **Single treated unit**: Valid; placebo variance uses jackknife-style permutations of controls.

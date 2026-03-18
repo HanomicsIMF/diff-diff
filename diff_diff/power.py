@@ -109,27 +109,6 @@ def _factor_dgp_kwargs(
     )
 
 
-def _sdid_dgp_kwargs(
-    n_units: int,
-    n_periods: int,
-    treatment_effect: float,
-    treatment_fraction: float,
-    treatment_period: int,
-    sigma: float,
-) -> Dict[str, Any]:
-    # SyntheticDiD placebo variance requires n_control > n_treated;
-    # cap at 40% treated to ensure adequate pseudo-controls.
-    safe_fraction = min(treatment_fraction, 0.4)
-    return _factor_dgp_kwargs(
-        n_units=n_units,
-        n_periods=n_periods,
-        treatment_effect=treatment_effect,
-        treatment_fraction=safe_fraction,
-        treatment_period=treatment_period,
-        sigma=sigma,
-    )
-
-
 def _ddd_dgp_kwargs(
     n_units: int,
     n_periods: int,
@@ -336,7 +315,7 @@ def _get_registry() -> Dict[str, _EstimatorProfile]:
         ),
         "SyntheticDiD": _EstimatorProfile(
             default_dgp=generate_factor_data,
-            dgp_kwargs_builder=_sdid_dgp_kwargs,
+            dgp_kwargs_builder=_factor_dgp_kwargs,
             fit_kwargs_builder=_sdid_fit_kwargs,
             result_extractor=_extract_simple,
             min_n=30,
@@ -1329,6 +1308,21 @@ def simulate_power(
 
     # When a custom data_generator is provided, bypass registry DGP
     use_custom_dgp = data_generator is not None
+
+    # SyntheticDiD placebo variance requires n_control > n_treated
+    if estimator_name == "SyntheticDiD" and not use_custom_dgp:
+        vm = getattr(estimator, "variance_method", "placebo")
+        n_treated = max(1, int(n_units * treatment_fraction))
+        n_control = n_units - n_treated
+        if vm == "placebo" and n_control <= n_treated:
+            raise ValueError(
+                f"SyntheticDiD placebo variance requires more control than "
+                f"treated units (got n_control={n_control}, "
+                f"n_treated={n_treated} from treatment_fraction="
+                f"{treatment_fraction}). Either lower treatment_fraction "
+                f"so that n_control > n_treated, or use "
+                f"SyntheticDiD(variance_method='bootstrap')."
+            )
 
     data_gen_kwargs = data_generator_kwargs or {}
     est_kwargs = estimator_kwargs or {}

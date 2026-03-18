@@ -40,7 +40,6 @@ from diff_diff.power import (
     _extract_staggered,
     _factor_dgp_kwargs,
     _get_registry,
-    _sdid_dgp_kwargs,
     _staggered_dgp_kwargs,
     _staggered_fit_kwargs,
     _trop_fit_kwargs,
@@ -708,7 +707,6 @@ class TestEstimatorRegistry:
             _basic_dgp_kwargs,
             _staggered_dgp_kwargs,
             _factor_dgp_kwargs,
-            _sdid_dgp_kwargs,
             _ddd_dgp_kwargs,
         ]:
             result = builder(**params)
@@ -971,20 +969,102 @@ class TestEstimatorCoverage:
         )
         self._assert_valid_result(result, "SyntheticDiD")
 
+    def test_sdid_placebo_rejects_high_fraction(self):
+        """SyntheticDiD placebo variance raises when n_control <= n_treated."""
+        with pytest.raises(ValueError, match="placebo variance requires more control"):
+            simulate_power(
+                SyntheticDiD(),
+                treatment_fraction=0.5,
+                n_simulations=5,
+                seed=42,
+                progress=False,
+            )
+
     @pytest.mark.slow
-    def test_synthetic_did_default_fraction(self):
-        """Default treatment_fraction=0.5 must not produce zero power."""
+    def test_sdid_placebo_boundary_fraction(self):
+        """treatment_fraction=0.49 with 50 units gives n_control=26 > n_treated=24."""
         result = simulate_power(
             SyntheticDiD(),
+            treatment_fraction=0.49,
             n_units=50,
             n_periods=6,
             treatment_period=3,
-            n_simulations=10,
+            n_simulations=5,
             seed=42,
             progress=False,
         )
         self._assert_valid_result(result, "SyntheticDiD")
-        assert result.power > 0, "Default SyntheticDiD path gave zero power"
+
+    @pytest.mark.slow
+    def test_sdid_bootstrap_allows_high_fraction(self):
+        """Bootstrap variance method bypasses the placebo constraint."""
+        result = simulate_power(
+            SyntheticDiD(variance_method="bootstrap"),
+            treatment_fraction=0.5,
+            n_units=50,
+            n_periods=6,
+            treatment_period=3,
+            n_simulations=5,
+            seed=42,
+            progress=False,
+        )
+        self._assert_valid_result(result, "SyntheticDiD")
+        assert result.power >= 0
+
+    def test_sdid_mde_rejects_high_fraction(self):
+        """simulate_mde raises for SyntheticDiD placebo with high treatment_fraction."""
+        with pytest.raises(ValueError, match="placebo variance requires more control"):
+            simulate_mde(
+                SyntheticDiD(),
+                treatment_fraction=0.5,
+                n_simulations=5,
+                seed=42,
+                progress=False,
+            )
+
+    def test_sdid_sample_size_rejects_high_fraction(self):
+        """simulate_sample_size raises for SyntheticDiD placebo with high fraction."""
+        with pytest.raises(ValueError, match="placebo variance requires more control"):
+            simulate_sample_size(
+                SyntheticDiD(),
+                treatment_fraction=0.5,
+                n_simulations=5,
+                seed=42,
+                progress=False,
+            )
+
+    @pytest.mark.slow
+    def test_sdid_mde(self):
+        """simulate_mde works for SyntheticDiD with valid treatment_fraction."""
+        result = simulate_mde(
+            SyntheticDiD(),
+            treatment_fraction=0.3,
+            n_units=50,
+            n_periods=6,
+            treatment_period=3,
+            n_simulations=5,
+            effect_range=(0.5, 3.0),
+            seed=42,
+            progress=False,
+        )
+        assert isinstance(result, SimulationMDEResults)
+        assert result.mde > 0
+
+    @pytest.mark.slow
+    def test_sdid_sample_size(self):
+        """simulate_sample_size works for SyntheticDiD with valid fraction."""
+        result = simulate_sample_size(
+            SyntheticDiD(),
+            treatment_fraction=0.3,
+            n_periods=6,
+            treatment_period=3,
+            n_simulations=5,
+            n_range=(30, 80),
+            seed=42,
+            progress=False,
+        )
+        assert isinstance(result, SimulationSampleSizeResults)
+        assert result.required_n > 0
 
 
 # ---------------------------------------------------------------------------
