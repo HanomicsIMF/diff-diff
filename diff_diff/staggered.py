@@ -450,10 +450,12 @@ class CallawaySantAnna(
         if self.control_group == "never_treated":
             control_mask = never_treated_mask
         else:  # not_yet_treated
-            # Not yet treated at time t: never-treated OR (first_treat > t AND not cohort g)
-            # Must exclude cohort g since they are the treated group for this ATT(g,t)
+            # Not yet treated at BOTH time t and the base period:
+            # Controls must be untreated at whichever is later, otherwise
+            # their outcome at the base period is contaminated by treatment.
+            nyt_threshold = max(t, base_period_val) + self.anticipation
             control_mask = never_treated_mask | (
-                (unit_cohorts > t + self.anticipation) & (unit_cohorts != g)
+                (unit_cohorts > nyt_threshold) & (unit_cohorts != g)
             )
 
         # Extract outcomes for base and post periods
@@ -616,21 +618,23 @@ class CallawaySantAnna(
                 if base_period_val not in period_to_col or t not in period_to_col:
                     continue
 
-                tasks.append((g, t, period_to_col[base_period_val], period_to_col[t]))
+                tasks.append((g, t, period_to_col[base_period_val], period_to_col[t], base_period_val))
 
         # Process all tasks
         atts = []
         ses = []
         task_keys = []
 
-        for g, t, base_col, post_col in tasks:
+        for g, t, base_col, post_col, base_period_val in tasks:
             treated_mask = cohort_masks[g]
 
             if self.control_group == "never_treated":
                 control_mask = never_treated_mask
             else:
+                # Controls must be untreated at both t and base_period_val
+                nyt_threshold = max(t, base_period_val) + self.anticipation
                 control_mask = never_treated_mask | (
-                    (unit_cohorts > t + self.anticipation) & (unit_cohorts != g)
+                    (unit_cohorts > nyt_threshold) & (unit_cohorts != g)
                 )
 
             y_base = outcome_matrix[:, base_col]
@@ -786,10 +790,10 @@ class CallawaySantAnna(
             if self.control_group == "never_treated":
                 control_mask = never_treated_mask
             else:
-                # For not_yet_treated, control_key includes t
-                ref_t = first_t
+                # Controls must be untreated at both t and base_period_val
+                nyt_threshold = max(first_t, base_period_val) + self.anticipation
                 control_mask = never_treated_mask | (
-                    (unit_cohorts > ref_t + self.anticipation) & (unit_cohorts != first_g)
+                    (unit_cohorts > nyt_threshold) & (unit_cohorts != first_g)
                 )
 
             # For balanced panels, valid_mask is all True so control_valid = control_mask
@@ -846,13 +850,15 @@ class CallawaySantAnna(
                         cho = None
 
             # Process each (g, t) pair in this group
-            for g, t, _, base_col, post_col in tasks:
+            for g, t, bp_val, base_col, post_col in tasks:
                 treated_mask = cohort_masks[g]
 
                 # Recompute control mask for not_yet_treated (varies by g, t)
                 if self.control_group == "not_yet_treated":
+                    # Controls must be untreated at both t and base period
+                    nyt_threshold = max(t, bp_val) + self.anticipation
                     control_mask = never_treated_mask | (
-                        (unit_cohorts > t + self.anticipation) & (unit_cohorts != g)
+                        (unit_cohorts > nyt_threshold) & (unit_cohorts != g)
                     )
 
                 y_base = outcome_matrix[:, base_col]
@@ -1127,8 +1133,19 @@ class CallawaySantAnna(
         n_treated_units = (unit_info[first_treat] > 0).sum()
         n_control_units = (unit_info["_never_treated"]).sum()
 
-        if n_control_units == 0:
-            raise ValueError("No never-treated units found. Check 'first_treat' column.")
+        if n_control_units == 0 and self.control_group == "never_treated":
+            raise ValueError(
+                "No never-treated units found. Check 'first_treat' column. "
+                "Use control_group='not_yet_treated' if all units are eventually treated."
+            )
+        if n_control_units == 0 and self.control_group == "not_yet_treated":
+            # With not_yet_treated, controls are units not yet treated at each
+            # (g, t) pair — never-treated units are not required.
+            if len(treatment_groups) < 2:
+                raise ValueError(
+                    "not_yet_treated control group requires at least 2 treatment "
+                    "cohorts when there are no never-treated units."
+                )
 
         # Pre-compute data structures for efficient ATT(g,t) computation
         precomputed = self._precompute_structures(

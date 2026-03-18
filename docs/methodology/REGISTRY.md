@@ -351,8 +351,10 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
 - Anticipation: `anticipation` parameter shifts reference period
   - Group aggregation includes periods t >= g - anticipation (not just t >= g)
   - Both analytical SE and bootstrap SE aggregation respect anticipation
-  - Not-yet-treated + anticipation: control mask uses `G > t + anticipation`
-    (not just `G > t`) to exclude cohorts in the anticipation window
+  - Not-yet-treated + anticipation: control mask uses `G > max(t, base_period) + anticipation`
+    to exclude cohorts treated at either the evaluation period or the base period.
+    This prevents control contamination when `base_period="universal"` and the base
+    period is later than the evaluation period (e.g., pre-treatment ATT with universal base)
 - Rank-deficient design matrix (covariate collinearity):
   - Detection: Pivoted QR decomposition with tolerance `1e-07` (R's `qr()` default)
   - Handling: Warns and drops linearly dependent columns, sets NA for dropped coefficients (R-style, matches `lm()`)
@@ -408,14 +410,19 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
   - Always excludes cohort g from controls when computing ATT(g,t)
   - This applies to both pre-treatment (t < g) and post-treatment (t >= g) periods
   - For pre-treatment periods: even though cohort g hasn't been treated yet at time t, they are the treated group for this ATT(g,t) and cannot serve as their own controls
-  - Control mask: `never_treated OR (first_treat > t + anticipation AND first_treat != g)`
+  - Control mask: `never_treated OR (first_treat > max(t, base_period) + anticipation AND first_treat != g)`
+  - The `max(t, base_period)` ensures controls are untreated at both the evaluation period
+    and the base period, preventing contamination when `base_period="universal"` uses
+    a base period later than `t` (matching R's `did::att_gt()`)
+  - Does not require never-treated units: when all units are eventually treated,
+    not-yet-treated cohorts serve as controls for each other (requires ≥2 cohorts)
 
 **Reference implementation(s):**
 - R: `did::att_gt()` (Callaway & Sant'Anna's official package)
 - Stata: `csdid`
 
 **Requirements checklist:**
-- [ ] Requires never-treated units (first_treat=0 or equivalent)
+- [ ] Requires never-treated units when `control_group="never_treated"` (default); not required for `"not_yet_treated"`
 - [ ] Bootstrap weights support Rademacher, Mammen, Webb distributions
 - [ ] Aggregations: simple, event_study, group all implemented
 - [ ] Doubly robust estimation when covariates provided

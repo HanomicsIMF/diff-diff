@@ -154,6 +154,18 @@ Spurious RuntimeWarnings ("divide by zero", "overflow", "invalid value") are emi
 
 ---
 
+## Feature Gaps (from R `did` package comparison)
+
+Features in R's `did` package that block porting additional tests:
+
+| Feature | R tests blocked | Priority |
+|---------|----------------|----------|
+| Repeated cross-sections (`panel=FALSE`) | ~7 tests in test-att_gt.R + test-user_bug_fixes.R | Medium |
+| Sampling/population weights | 7 tests incl. all JEL replication | Medium |
+| Calendar time aggregation | 1 test in test-att_gt.R | Low |
+
+---
+
 ## Performance Optimizations
 
 Potential future optimizations:
