@@ -2,8 +2,8 @@
    :description: Compare diff-diff with R packages for DiD analysis. Migration guide from R did, fixest, synthdid, and HonestDiD to Python with side-by-side code examples.
    :keywords: R did package python alternative, fixest python, synthdid python, R to python DiD, econometrics R vs python
 
-Comparison with R Packages
-==========================
+R Comparison
+============
 
 This guide compares diff-diff with popular R packages for DiD analysis, helping
 users familiar with R transition to Python.

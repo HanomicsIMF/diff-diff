@@ -44,17 +44,24 @@ For development:
 Quick Links
 -----------
 
+- :doc:`api/index` - Full API reference
 - :doc:`quickstart` - Get started with basic examples
 - :doc:`choosing_estimator` - Which estimator should I use?
 - :doc:`troubleshooting` - Common issues and solutions
 - :doc:`r_comparison` - Comparison with R packages
 - :doc:`python_comparison` - Comparison with Python packages
-- :doc:`benchmarks` - Performance benchmarks vs R packages
-- :doc:`api/index` - Full API reference
+- :doc:`benchmarks` - Validation benchmarks vs R
 
 .. toctree::
    :maxdepth: 2
-   :caption: User Guide
+   :caption: API
+   :hidden:
+
+   api/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Guide
    :hidden:
 
    quickstart
@@ -63,13 +70,6 @@ Quick Links
    r_comparison
    python_comparison
    benchmarks
-
-.. toctree::
-   :maxdepth: 2
-   :caption: API Reference
-   :hidden:
-
-   api/index
 
 .. toctree::
    :maxdepth: 1
