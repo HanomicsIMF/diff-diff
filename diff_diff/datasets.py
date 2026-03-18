@@ -266,7 +266,7 @@ def load_castle_doctrine(force_download: bool = False) -> pd.DataFrame:
     ...     outcome="homicide_rate",
     ...     unit="state",
     ...     time="year",
-    ...     cohort="first_treat"
+    ...     first_treat="first_treat"
     ... )
     """
     url = "https://raw.githubusercontent.com/causaldata/causal_datasets/main/castle/castle.csv"
@@ -412,7 +412,7 @@ def load_divorce_laws(force_download: bool = False) -> pd.DataFrame:
     ...     outcome="divorce_rate",
     ...     unit="state",
     ...     time="year",
-    ...     cohort="first_treat"
+    ...     first_treat="first_treat"
     ... )
     """
     # Try to load from causaldata repository
@@ -571,7 +571,7 @@ def load_mpdta(force_download: bool = False) -> pd.DataFrame:
     ...     outcome="lemp",
     ...     unit="countyreal",
     ...     time="year",
-    ...     cohort="first_treat"
+    ...     first_treat="first_treat"
     ... )
     """
     # mpdta is available from the did package documentation

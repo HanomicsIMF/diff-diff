@@ -157,8 +157,8 @@ Complete Example
 
    # Power curve
    pa = PowerAnalysis(n_treated=100, n_control=100, n_pre=4, n_post=4, sigma=1.0)
-   fig = plot_power_curve(pa, effect_range=(0, 1), n_points=50)
-   fig.savefig('power_curve.png')
+   ax = plot_power_curve(pa, effect_range=(0, 1), n_points=50)
+   ax.figure.savefig('power_curve.png')
 
 See Also
 --------

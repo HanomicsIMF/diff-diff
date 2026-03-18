@@ -114,10 +114,12 @@ staggered DiD. Here's how to translate common operations:
 
 .. code-block:: python
 
-   # Python
-   overall_att = results.att  # Simple aggregation
-   event_study = results.aggregate('event_time')  # Dynamic
-   by_group = results.aggregate('group')  # By cohort
+   # Python (unlike R's aggte(), aggregation is requested at fit time)
+   results = cs.fit(data, outcome='Y', time='period', unit='id',
+                    first_treat='G', aggregate='all')
+   overall_att = results.overall_att  # Simple aggregation
+   event_study = results.event_study_effects  # Dynamic
+   by_group = results.group_effects  # By cohort
 
 R ``HonestDiD`` Package → diff-diff
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -141,9 +143,9 @@ The HonestDiD package implements Rambachan & Roth (2023) sensitivity analysis:
 .. code-block:: python
 
    # Python
-   from diff_diff import HonestDiD, DeltaRM
+   from diff_diff import HonestDiD
 
-   honest = HonestDiD(delta=DeltaRM(M_bar=1.0))
+   honest = HonestDiD(method='relative_magnitude', M=1.0)
    results = honest.fit(event_study_results)
 
    # Sensitivity analysis over M grid
@@ -168,9 +170,9 @@ The HonestDiD package implements Rambachan & Roth (2023) sensitivity analysis:
 .. code-block:: python
 
    # Python
-   from diff_diff import HonestDiD, DeltaSD
+   from diff_diff import HonestDiD
 
-   honest = HonestDiD(delta=DeltaSD(M=0.05))
+   honest = HonestDiD(method='smoothness', M=0.05)
    results = honest.fit(event_study_results)
 
 R ``synthdid`` Package → diff-diff
@@ -191,14 +193,20 @@ The synthdid package implements Arkhangelsky et al. (2021):
    # Python
    from diff_diff import SyntheticDiD
 
+   # SyntheticDiD requires a time-invariant ever-treated indicator
+   data['ever_treated'] = data.groupby('unit')['treatment'].transform('max')
+
+   # Derive post-treatment periods from treatment timing
+   post_periods = sorted(data.loc[data['treatment'] == 1, 'time'].unique())
+
    sdid = SyntheticDiD()
    results = sdid.fit(
        data,
        outcome='Y',
        unit='unit',
        time='time',
-       treated='treatment',
-       treatment_start=T0
+       treatment='ever_treated',
+       post_periods=post_periods
    )
 
 Key Differences
@@ -320,6 +328,57 @@ Feature Comparison Table
      - ❌
      - ❌
      - ❌
+   * - Sun-Abraham
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Imputation DiD
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Two-Stage DiD (did2s)
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Stacked DiD
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Continuous DiD
+     - ✅
+     - ✅
+     - ❌
+     - ❌
+   * - Triple Difference (DDD)
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - TROP
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+   * - Efficient DiD
+     - ✅
+     - ❌
+     - ❌
+     - ❌
+
+.. note::
+
+   R equivalents for estimators not covered by the ``did``, ``HonestDiD``, or
+   ``synthdid`` packages: Sun-Abraham is available via ``fixest::sunab()``;
+   Imputation DiD via the ``didimputation`` package; Two-Stage DiD via the
+   ``did2s`` package; Bacon Decomposition via the ``bacondecomp`` package;
+   Stacked DiD requires manual implementation or the ``stackedev`` package;
+   Continuous DiD is available via the ``did`` package continuous extension;
+   Triple Difference requires manual implementation in R.
+   TROP and Efficient DiD have no direct R equivalents.
 
 Migration Tips
 --------------
