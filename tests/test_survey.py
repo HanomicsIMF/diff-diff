@@ -512,12 +512,11 @@ class TestConsistencyInvariance:
         )
         survey_vcov = compute_survey_vcov(X, resid, resolved)
 
-        # Hand-compute weighted HC1: (X'WX)^{-1} * (sum w_i^2 X_i X_i' e_i^2) * n/(n-k) * (X'WX)^{-1}
+        # Correct weighted HC1: (X'WX)^{-1} * X' diag(w * e²) X * n/(n-k) * (X'WX)^{-1}
         k = X.shape[1]
         XtWX = X.T @ (X * weights[:, np.newaxis])
         XtWX_inv = np.linalg.inv(XtWX)
-        scores = X * (weights * resid)[:, np.newaxis]
-        meat = scores.T @ scores
+        meat = np.dot(X.T, X * (weights * resid**2)[:, np.newaxis])
         meat *= n / (n - k)
         oracle_vcov = XtWX_inv @ meat @ XtWX_inv
 
@@ -1461,6 +1460,147 @@ class TestWeightedRankDeficiency:
         kept = np.where(~np.isnan(coef))[0]
         for i in kept:
             assert np.isfinite(vcov[i, i]) and vcov[i, i] > 0
+
+    def test_fweight_survey_oracle(self):
+        """fweight SurveyDesign: survey vcov matches expanded-data unweighted HC1."""
+        np.random.seed(55)
+        n = 30
+        X_base = np.column_stack([np.ones(n), np.random.randn(n)])
+        y_base = 2.0 + X_base[:, 1] * 1.5 + np.random.randn(n) * 0.3
+        freq = np.random.choice([1, 2, 3], n).astype(float)
+
+        # WLS with fweights via survey
+        coef_fw, resid_fw, _ = solve_ols(
+            X_base, y_base, weights=freq, weight_type="fweight"
+        )
+        resolved = ResolvedSurveyDesign(
+            weights=freq,
+            weight_type="fweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
+        )
+        survey_vcov = compute_survey_vcov(X_base, resid_fw, resolved)
+
+        # Oracle: expand data and compute unweighted HC1
+        X_exp = np.repeat(X_base, freq.astype(int), axis=0)
+        y_exp = np.repeat(y_base, freq.astype(int))
+        coef_exp, resid_exp, _ = solve_ols(X_exp, y_exp)
+        n_exp = X_exp.shape[0]
+        k = X_exp.shape[1]
+        XtX = X_exp.T @ X_exp
+        XtX_inv = np.linalg.inv(XtX)
+        meat = np.dot(X_exp.T, X_exp * (resid_exp**2)[:, np.newaxis])
+        meat *= n_exp / (n_exp - k)
+        oracle_vcov = XtX_inv @ meat @ XtX_inv
+
+        np.testing.assert_allclose(survey_vcov, oracle_vcov, atol=1e-10)
+
+    def test_survey_rank_deficient_with_psu(self):
+        """LinearRegression + survey design (PSU) + rank deficiency: no crash."""
+        np.random.seed(43)
+        n = 50
+        x1 = np.random.randn(n)
+        X = np.column_stack([np.ones(n), x1, x1])  # duplicate col
+        y = 2.0 + 1.5 * x1 + np.random.randn(n) * 0.3
+        pw = np.random.uniform(0.5, 3.0, size=n)
+        psu = np.arange(n)  # each obs is its own PSU
+
+        resolved = ResolvedSurveyDesign(
+            weights=pw,
+            weight_type="pweight",
+            strata=None,
+            psu=psu,
+            fpc=None,
+            n_strata=0,
+            n_psu=n,
+            lonely_psu="remove",
+        )
+
+        model = LinearRegression(
+            survey_design=resolved,
+            include_intercept=False,
+            rank_deficient_action="warn",
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            model.fit(X, y)
+
+        coef = model.coefficients_
+        resid = model.residuals_
+        vcov = model.vcov_
+
+        # One dropped coefficient
+        assert np.sum(np.isnan(coef)) == 1
+
+        # Residuals all finite
+        assert np.all(np.isfinite(resid))
+
+        # Identified coefficients have positive, finite SEs
+        kept = np.where(~np.isnan(coef))[0]
+        for i in kept:
+            assert np.isfinite(vcov[i, i]) and vcov[i, i] > 0
+
+        # Dropped column has NaN vcov
+        dropped = np.where(np.isnan(coef))[0]
+        for i in dropped:
+            assert np.all(np.isnan(vcov[i, :]))
+            assert np.all(np.isnan(vcov[:, i]))
+
+    def test_survey_rank_deficient_weights_only(self):
+        """Weights-only survey + rank deficiency: no crash, correct NaN pattern."""
+        np.random.seed(44)
+        n = 50
+        x1 = np.random.randn(n)
+        X = np.column_stack([np.ones(n), x1, x1])  # duplicate col
+        y = 2.0 + 1.5 * x1 + np.random.randn(n) * 0.3
+        pw = np.random.uniform(0.5, 3.0, size=n)
+
+        resolved = ResolvedSurveyDesign(
+            weights=pw,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
+        )
+
+        model = LinearRegression(
+            survey_design=resolved,
+            include_intercept=False,
+            rank_deficient_action="warn",
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            model.fit(X, y)
+
+        coef = model.coefficients_
+        resid = model.residuals_
+        vcov = model.vcov_
+
+        # One dropped coefficient
+        assert np.sum(np.isnan(coef)) == 1
+
+        # Residuals all finite
+        assert np.all(np.isfinite(resid))
+
+        # Identified coefficients have positive, finite SEs
+        kept = np.where(~np.isnan(coef))[0]
+        for i in kept:
+            assert np.isfinite(vcov[i, i]) and vcov[i, i] > 0
+
+        # Dropped column has NaN vcov
+        dropped = np.where(np.isnan(coef))[0]
+        for i in dropped:
+            assert np.all(np.isnan(vcov[i, :]))
+            assert np.all(np.isnan(vcov[:, i]))
 
     def test_linear_regression_weighted_rank_deficient_classical(self):
         """LinearRegression with weights + classical vcov + rank deficiency."""

@@ -447,11 +447,15 @@ def compute_survey_vcov(
 
     if strata is None and psu is None:
         # No survey structure beyond weights — fall back to weighted HC1
+        # HC1 meat = X' diag(w * e²) X, NOT scores'scores which gives w²*e²
         # For fweights, df uses sum(w) - k (effective sample size)
         n_eff = n
         if resolved.weight_type == "fweight":
             n_eff = int(np.sum(weights))
-        meat = scores.T @ scores
+        if resolved.weight_type == "aweight":
+            meat = np.dot(X.T, X * (residuals**2)[:, np.newaxis])
+        else:
+            meat = np.dot(X.T, X * (weights * residuals**2)[:, np.newaxis])
         adjustment = n_eff / (n_eff - k)
         meat *= adjustment
     elif strata is None and psu is not None:

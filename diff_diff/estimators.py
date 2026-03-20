@@ -20,6 +20,7 @@ import pandas as pd
 
 from diff_diff.linalg import (
     LinearRegression,
+    _expand_vcov_with_nan,
     compute_r_squared,
     compute_robust_vcov,
     solve_ols,
@@ -1056,7 +1057,18 @@ class MultiPeriodDiD(DifferenceInDifferences):
         if _use_survey_vcov:
             from diff_diff.survey import compute_survey_vcov
 
-            vcov = compute_survey_vcov(X, residuals, resolved_survey)
+            nan_mask = np.isnan(coefficients)
+            if np.any(nan_mask):
+                kept_cols = np.where(~nan_mask)[0]
+                if len(kept_cols) > 0:
+                    vcov_reduced = compute_survey_vcov(
+                        X[:, kept_cols], residuals, resolved_survey
+                    )
+                    vcov = _expand_vcov_with_nan(vcov_reduced, X.shape[1], kept_cols)
+                else:
+                    vcov = np.full((X.shape[1], X.shape[1]), np.nan)
+            else:
+                vcov = compute_survey_vcov(X, residuals, resolved_survey)
         r_squared = compute_r_squared(y, residuals)
 
         # Degrees of freedom: survey df overrides standard df
