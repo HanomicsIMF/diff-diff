@@ -53,11 +53,15 @@ from diff_diff.honest_did import (
 from diff_diff.power import (
     PowerAnalysis,
     PowerResults,
+    SimulationMDEResults,
     SimulationPowerResults,
+    SimulationSampleSizeResults,
     compute_mde,
     compute_power,
     compute_sample_size,
+    simulate_mde,
     simulate_power,
+    simulate_sample_size,
 )
 from diff_diff.pretrends import (
     PreTrendsPower,
@@ -291,11 +295,15 @@ __all__ = [
     # Power analysis
     "PowerAnalysis",
     "PowerResults",
+    "SimulationMDEResults",
     "SimulationPowerResults",
+    "SimulationSampleSizeResults",
     "compute_mde",
     "compute_power",
     "compute_sample_size",
+    "simulate_mde",
     "simulate_power",
+    "simulate_sample_size",
     "plot_power_curve",
     # Pre-trends power analysis
     "PreTrendsPower",

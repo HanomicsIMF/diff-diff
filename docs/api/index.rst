@@ -148,10 +148,14 @@ Power analysis for study design:
    diff_diff.PowerAnalysis
    diff_diff.PowerResults
    diff_diff.SimulationPowerResults
+   diff_diff.SimulationMDEResults
+   diff_diff.SimulationSampleSizeResults
    diff_diff.compute_power
    diff_diff.compute_mde
    diff_diff.compute_sample_size
    diff_diff.simulate_power
+   diff_diff.simulate_mde
+   diff_diff.simulate_sample_size
 
 Pre-Trends Power Analysis
 -------------------------
