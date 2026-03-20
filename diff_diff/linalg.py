@@ -1414,6 +1414,15 @@ class LinearRegression:
         - "warn": Issue warning and drop linearly dependent columns (default)
         - "error": Raise ValueError
         - "silent": Drop columns silently without warning
+    weights : array-like, optional
+        Observation weights. When survey_design is provided, weights are
+        automatically derived from it (explicit weights are overridden).
+    weight_type : str, default "pweight"
+        Weight type: "pweight", "fweight", or "aweight".
+    survey_design : ResolvedSurveyDesign, optional
+        Resolved survey design for Taylor Series Linearization variance
+        estimation. When provided, weights and weight_type are canonicalized
+        from this object.
 
     Attributes
     ----------
@@ -1541,10 +1550,22 @@ class LinearRegression:
 
             if isinstance(self.survey_design, ResolvedSurveyDesign):
                 _use_survey_vcov = self.survey_design.needs_survey_vcov
-                # Auto-derive weights from survey_design if not explicitly provided
-                if self.weights is None:
-                    self.weights = self.survey_design.weights
-                    self.weight_type = self.survey_design.weight_type
+                # Canonicalize weights from survey_design to ensure consistency
+                # between coefficient estimation and survey vcov computation
+                if (
+                    self.weights is not None
+                    and self.weights is not self.survey_design.weights
+                ):
+                    warnings.warn(
+                        "Explicit weights= differ from survey_design.weights. "
+                        "Using survey_design weights for both coefficient "
+                        "estimation and variance computation to ensure "
+                        "consistency.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                self.weights = self.survey_design.weights
+                self.weight_type = self.survey_design.weight_type
 
         if self.robust or effective_cluster_ids is not None:
             # Use solve_ols with robust/cluster SEs

@@ -1858,6 +1858,10 @@ unequal selection probabilities).
 - **Note:** For unstratified designs with a single PSU, all `lonely_psu` modes
   produce NaN variance. The "adjust" mode cannot center against a global mean
   when there is only one stratum (the single PSU is the entire sample).
+- **Note:** Weights-only designs (no explicit PSU or strata) use implicit
+  per-observation PSUs for the TSL meat computation, consistent with the
+  stratified-no-PSU path. The adjustment factor is `n/(n-1)` (not HC1's
+  `n/(n-k)`).
 
 ### Weight Type Effects on Inference
 

@@ -490,7 +490,7 @@ class TestConsistencyInvariance:
         np.testing.assert_allclose(survey_vcov, oracle_vcov, atol=1e-12)
 
     def test_weights_only_oracle(self):
-        """Weights-only design: survey vcov matches hand-computed weighted HC1."""
+        """Weights-only design: survey vcov uses implicit-PSU TSL."""
         np.random.seed(81)
         n = 60
         raw_weights = np.random.uniform(0.5, 3.0, n)
@@ -512,12 +512,17 @@ class TestConsistencyInvariance:
         )
         survey_vcov = compute_survey_vcov(X, resid, resolved)
 
-        # Correct weighted HC1: (X'WX)^{-1} * X' diag(w * e²) X * n/(n-k) * (X'WX)^{-1}
+        # TSL with implicit per-observation PSUs:
+        # meat = sum_i (s_i - s_bar)(s_i - s_bar)' * n/(n-1)
+        # where s_i = w_i * X_i * e_i
         k = X.shape[1]
         XtWX = X.T @ (X * weights[:, np.newaxis])
         XtWX_inv = np.linalg.inv(XtWX)
-        meat = np.dot(X.T, X * (weights * resid**2)[:, np.newaxis])
-        meat *= n / (n - k)
+        scores = X * (weights * resid)[:, np.newaxis]
+        scores_mean = scores.mean(axis=0, keepdims=True)
+        centered = scores - scores_mean
+        adjustment = n / (n - 1)
+        meat = adjustment * (centered.T @ centered)
         oracle_vcov = XtWX_inv @ meat @ XtWX_inv
 
         np.testing.assert_allclose(survey_vcov, oracle_vcov, atol=1e-12)
@@ -1462,7 +1467,7 @@ class TestWeightedRankDeficiency:
             assert np.isfinite(vcov[i, i]) and vcov[i, i] > 0
 
     def test_fweight_survey_oracle(self):
-        """fweight SurveyDesign: survey vcov matches expanded-data unweighted HC1."""
+        """fweight SurveyDesign: survey vcov uses implicit-PSU TSL."""
         np.random.seed(55)
         n = 30
         X_base = np.column_stack([np.ones(n), np.random.randn(n)])
@@ -1485,17 +1490,17 @@ class TestWeightedRankDeficiency:
         )
         survey_vcov = compute_survey_vcov(X_base, resid_fw, resolved)
 
-        # Oracle: expand data and compute unweighted HC1
-        X_exp = np.repeat(X_base, freq.astype(int), axis=0)
-        y_exp = np.repeat(y_base, freq.astype(int))
-        coef_exp, resid_exp, _ = solve_ols(X_exp, y_exp)
-        n_exp = X_exp.shape[0]
-        k = X_exp.shape[1]
-        XtX = X_exp.T @ X_exp
-        XtX_inv = np.linalg.inv(XtX)
-        meat = np.dot(X_exp.T, X_exp * (resid_exp**2)[:, np.newaxis])
-        meat *= n_exp / (n_exp - k)
-        oracle_vcov = XtX_inv @ meat @ XtX_inv
+        # Oracle: TSL with implicit per-observation PSUs
+        # scores = w_i * X_i * e_i, meat = n/(n-1) * (scores - mean)' (scores - mean)
+        k = X_base.shape[1]
+        XtWX = X_base.T @ (X_base * freq[:, np.newaxis])
+        XtWX_inv = np.linalg.inv(XtWX)
+        scores = X_base * (freq * resid_fw)[:, np.newaxis]
+        scores_mean = scores.mean(axis=0, keepdims=True)
+        centered = scores - scores_mean
+        adjustment = n / (n - 1)
+        meat = adjustment * (centered.T @ centered)
+        oracle_vcov = XtWX_inv @ meat @ XtWX_inv
 
         np.testing.assert_allclose(survey_vcov, oracle_vcov, atol=1e-10)
 
@@ -1832,3 +1837,109 @@ class TestRound5Fixes:
             )
             with pytest.warns(UserWarning, match=r"Only 1 PSU"):
                 design.resolve(df)
+
+
+class TestRound6Fixes:
+    """Tests for round-6 review fixes (PR #218)."""
+
+    def test_weights_only_matches_explicit_individual_psu(self):
+        """Weights-only design produces identical vcov to explicit psu=arange(n)."""
+        np.random.seed(600)
+        n = 50
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = 1.0 + X[:, 1] * 0.5 + np.random.randn(n) * 0.4
+        weights = np.random.uniform(0.5, 3.0, n)
+        weights = weights * (n / np.sum(weights))
+
+        coef, resid, _ = solve_ols(X, y, weights=weights, weight_type="pweight")
+
+        # Weights-only design (no PSU)
+        resolved_wo = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
+        )
+        vcov_wo = compute_survey_vcov(X, resid, resolved_wo)
+
+        # Explicit individual-PSU design
+        resolved_psu = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=np.arange(n),
+            fpc=None,
+            n_strata=0,
+            n_psu=n,
+            lonely_psu="remove",
+        )
+        vcov_psu = compute_survey_vcov(X, resid, resolved_psu)
+
+        np.testing.assert_allclose(vcov_wo, vcov_psu, atol=1e-12)
+
+    def test_conflicting_weights_warns_and_uses_survey(self):
+        """Explicit weights differing from survey_design triggers warning."""
+        np.random.seed(601)
+        n = 40
+        X = np.random.randn(n, 2)
+        y = X @ [1.0, 0.5] + np.random.randn(n) * 0.3
+        survey_weights = np.random.uniform(0.5, 3.0, n)
+        different_weights = np.random.uniform(1.0, 5.0, n)
+
+        resolved = ResolvedSurveyDesign(
+            weights=survey_weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
+        )
+
+        # Fit with conflicting explicit weights — should warn
+        reg_conflict = LinearRegression(
+            weights=different_weights, survey_design=resolved
+        )
+        with pytest.warns(UserWarning, match="differ from survey_design"):
+            reg_conflict.fit(X, y)
+
+        # Fit with only survey_design — no explicit weights
+        reg_survey = LinearRegression(survey_design=resolved)
+        reg_survey.fit(X, y)
+
+        np.testing.assert_allclose(
+            reg_conflict.coefficients_, reg_survey.coefficients_, atol=1e-14
+        )
+        np.testing.assert_allclose(
+            reg_conflict.vcov_, reg_survey.vcov_, atol=1e-14
+        )
+
+    def test_matching_weights_no_warning(self):
+        """Same array object passed as weights and in survey_design: no warning."""
+        np.random.seed(602)
+        n = 40
+        X = np.random.randn(n, 2)
+        y = X @ [1.0, 0.5] + np.random.randn(n) * 0.3
+        weights = np.random.uniform(0.5, 3.0, n)
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
+        )
+
+        # Same array object — should NOT warn
+        reg = LinearRegression(weights=weights, survey_design=resolved)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            reg.fit(X, y)
