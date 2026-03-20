@@ -352,6 +352,7 @@ class StackedDiD:
             return_vcov=True,
             rank_deficient_action=self.rank_deficient_action,
         )
+        assert vcov is not None
 
         # ---- Extract event study effects ----
         event_study_effects: Optional[Dict[int, Dict[str, Any]]] = None

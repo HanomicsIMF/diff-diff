@@ -62,16 +62,11 @@ def validate_binary(arr: np.ndarray, name: str) -> None:
     """
     unique_values = np.unique(arr[~np.isnan(arr)])
     if not np.all(np.isin(unique_values, [0, 1])):
-        raise ValueError(
-            f"{name} must be binary (0 or 1). "
-            f"Found values: {unique_values}"
-        )
+        raise ValueError(f"{name} must be binary (0 or 1). " f"Found values: {unique_values}")
 
 
 def compute_robust_se(
-    X: np.ndarray,
-    residuals: np.ndarray,
-    cluster_ids: Optional[np.ndarray] = None
+    X: np.ndarray, residuals: np.ndarray, cluster_ids: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """
     Compute heteroskedasticity-robust (HC1) or cluster-robust standard errors.
@@ -97,10 +92,7 @@ def compute_robust_se(
 
 
 def compute_confidence_interval(
-    estimate: float,
-    se: float,
-    alpha: float = 0.05,
-    df: Optional[int] = None
+    estimate: float, se: float, alpha: float = 0.05, df: Optional[int] = None
 ) -> Tuple[float, float]:
     """
     Compute confidence interval for an estimate.
@@ -359,10 +351,16 @@ def _generate_webb_weights(n_clusters: int, rng: np.random.Generator) -> np.ndar
     Note: Uses equal probabilities (1/6 each) matching R's `did` package,
     which gives unit variance for consistency with other weight distributions.
     """
-    values = np.array([
-        -np.sqrt(3 / 2), -np.sqrt(2 / 2), -np.sqrt(1 / 2),
-        np.sqrt(1 / 2), np.sqrt(2 / 2), np.sqrt(3 / 2)
-    ])
+    values = np.array(
+        [
+            -np.sqrt(3 / 2),
+            -np.sqrt(2 / 2),
+            -np.sqrt(1 / 2),
+            np.sqrt(1 / 2),
+            np.sqrt(2 / 2),
+            np.sqrt(3 / 2),
+        ]
+    )
     # Equal probabilities (1/6 each) matching R's did package, giving Var(w) = 1.0
     return np.asarray(rng.choice(values, size=n_clusters))
 
@@ -397,7 +395,7 @@ def _generate_mammen_weights(n_clusters: int, rng: np.random.Generator) -> np.nd
     sqrt5 = np.sqrt(5)
     # Values from Mammen (1993)
     val1 = -(sqrt5 - 1) / 2  # approximately -0.618
-    val2 = (sqrt5 + 1) / 2   # approximately 1.618 (golden ratio)
+    val2 = (sqrt5 + 1) / 2  # approximately 1.618 (golden ratio)
 
     # Probability of val1
     p1 = (sqrt5 + 1) / (2 * sqrt5)  # approximately 0.724
@@ -416,7 +414,7 @@ def wild_bootstrap_se(
     null_hypothesis: float = 0.0,
     alpha: float = 0.05,
     seed: Optional[int] = None,
-    return_distribution: bool = False
+    return_distribution: bool = False,
 ) -> WildBootstrapResults:
     """
     Compute wild cluster bootstrap standard errors and p-values.
@@ -499,24 +497,20 @@ def wild_bootstrap_se(
     # Validate inputs
     valid_weight_types = ["rademacher", "webb", "mammen"]
     if weight_type not in valid_weight_types:
-        raise ValueError(
-            f"weight_type must be one of {valid_weight_types}, got '{weight_type}'"
-        )
+        raise ValueError(f"weight_type must be one of {valid_weight_types}, got '{weight_type}'")
 
     unique_clusters = np.unique(cluster_ids)
     n_clusters = len(unique_clusters)
 
     if n_clusters < 2:
-        raise ValueError(
-            f"Wild cluster bootstrap requires at least 2 clusters, got {n_clusters}"
-        )
+        raise ValueError(f"Wild cluster bootstrap requires at least 2 clusters, got {n_clusters}")
 
     if n_clusters < 5:
         warnings.warn(
             f"Only {n_clusters} clusters detected. Wild bootstrap inference may be "
             "unreliable with fewer than 5 clusters. Consider using Webb weights "
             "(weight_type='webb') for improved finite-sample properties.",
-            UserWarning
+            UserWarning,
         )
 
     # Initialize RNG
@@ -533,10 +527,9 @@ def wild_bootstrap_se(
     n = X.shape[0]
 
     # Step 1: Compute original coefficient and cluster-robust SE
-    beta_hat, _, vcov_original = _solve_ols_linalg(
-        X, y, cluster_ids=cluster_ids, return_vcov=True
-    )
+    beta_hat, _, vcov_original = _solve_ols_linalg(X, y, cluster_ids=cluster_ids, return_vcov=True)
     original_coef = beta_hat[coefficient_index]
+    assert vcov_original is not None
     se_original = np.sqrt(vcov_original[coefficient_index, coefficient_index])
     t_stat_original = (original_coef - null_hypothesis) / se_original
 
@@ -548,9 +541,7 @@ def wild_bootstrap_se(
     # Fit restricted model (but we need to drop the column for the restricted coef)
     # Actually, for WCR bootstrap we keep all columns but impose the null via residuals
     # Re-estimate with the restricted dependent variable
-    beta_restricted, residuals_restricted, _ = _solve_ols_linalg(
-        X, y_restricted, return_vcov=False
-    )
+    beta_restricted, residuals_restricted, _ = _solve_ols_linalg(X, y_restricted, return_vcov=False)
 
     # Create cluster-to-observation mapping for efficiency
     cluster_map = {c: np.where(cluster_ids == c)[0] for c in unique_clusters}
@@ -577,6 +568,7 @@ def wild_bootstrap_se(
             X, y_star, cluster_ids=cluster_ids, return_vcov=True
         )
         bootstrap_coefs[b] = beta_star[coefficient_index]
+        assert vcov_star is not None
         se_star = np.sqrt(vcov_star[coefficient_index, coefficient_index])
 
         # Compute bootstrap t-statistic (under null hypothesis)
@@ -612,7 +604,7 @@ def wild_bootstrap_se(
         n_bootstrap=n_bootstrap,
         weight_type=weight_type,
         alpha=alpha,
-        bootstrap_distribution=bootstrap_coefs if return_distribution else None
+        bootstrap_distribution=bootstrap_coefs if return_distribution else None,
     )
 
 
@@ -621,7 +613,7 @@ def check_parallel_trends(
     outcome: str,
     time: str,
     treatment_group: str,
-    pre_periods: Optional[List[Any]] = None
+    pre_periods: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """
     Perform a simple check for parallel trends assumption.
@@ -685,7 +677,7 @@ def check_parallel_trends(
         # Compute standard error of slope
         y_hat = mean_y + slope * (time_norm - mean_t)
         residuals = outcome_values - y_hat
-        mse = np.sum(residuals ** 2) / (n - 2)
+        mse = np.sum(residuals**2) / (n - 2)
         se_slope = np.sqrt(mse / time_var)
 
         return slope, se_slope
@@ -695,7 +687,7 @@ def check_parallel_trends(
 
     # Test for difference in trends
     slope_diff = treated_slope - control_slope
-    se_diff = np.sqrt(treated_se ** 2 + control_se ** 2)
+    se_diff = np.sqrt(treated_se**2 + control_se**2)
     t_stat, p_value, _ = safe_inference(slope_diff, se_diff)
 
     return {
@@ -720,7 +712,7 @@ def check_parallel_trends_robust(
     pre_periods: Optional[List[Any]] = None,
     n_permutations: int = 1000,
     seed: Optional[int] = None,
-    wasserstein_threshold: float = 0.2
+    wasserstein_threshold: float = 0.2,
 ) -> Dict[str, Any]:
     """
     Perform robust parallel trends testing using distributional comparisons.
@@ -850,8 +842,12 @@ def check_parallel_trends_robust(
     # Assessment: parallel trends plausible if p-value > 0.05
     # and normalized Wasserstein is small (below threshold)
     plausible = bool(
-        wasserstein_p > 0.05 and
-        (wasserstein_normalized < wasserstein_threshold if not np.isnan(wasserstein_normalized) else True)
+        wasserstein_p > 0.05
+        and (
+            wasserstein_normalized < wasserstein_threshold
+            if not np.isnan(wasserstein_normalized)
+            else True
+        )
     )
 
     return {
@@ -871,11 +867,7 @@ def check_parallel_trends_robust(
 
 
 def _compute_outcome_changes(
-    data: pd.DataFrame,
-    outcome: str,
-    time: str,
-    treatment_group: str,
-    unit: Optional[str] = None
+    data: pd.DataFrame, outcome: str, time: str, treatment_group: str, unit: Optional[str] = None
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute period-to-period outcome changes for treated and control groups.
@@ -906,13 +898,9 @@ def _compute_outcome_changes(
         # Remove NaN from first period of each unit
         changes_data = data_sorted.dropna(subset=["_outcome_change"])
 
-        treated_changes = changes_data[
-            changes_data[treatment_group] == 1
-        ]["_outcome_change"].values
+        treated_changes = changes_data[changes_data[treatment_group] == 1]["_outcome_change"].values
 
-        control_changes = changes_data[
-            changes_data[treatment_group] == 0
-        ]["_outcome_change"].values
+        control_changes = changes_data[changes_data[treatment_group] == 0]["_outcome_change"].values
     else:
         # Aggregate changes: compute mean change per period per group
         treated_data = data[data[treatment_group] == 1]
@@ -936,7 +924,7 @@ def equivalence_test_trends(
     treatment_group: str,
     unit: Optional[str] = None,
     pre_periods: Optional[List[Any]] = None,
-    equivalence_margin: Optional[float] = None
+    equivalence_margin: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Perform equivalence testing (TOST) for parallel trends.
@@ -1052,9 +1040,9 @@ def equivalence_test_trends(
 
     # Degrees of freedom (Welch-Satterthwaite approximation)
     # Guard against division by zero when one group has zero variance
-    numerator = (var_t/n_t + var_c/n_c)**2
-    denom_t = (var_t/n_t)**2/(n_t-1) if var_t > 0 else 0
-    denom_c = (var_c/n_c)**2/(n_c-1) if var_c > 0 else 0
+    numerator = (var_t / n_t + var_c / n_c) ** 2
+    denom_t = (var_t / n_t) ** 2 / (n_t - 1) if var_t > 0 else 0
+    denom_c = (var_c / n_c) ** 2 / (n_c - 1) if var_c > 0 else 0
     denominator = denom_t + denom_c
 
     if denominator == 0:
@@ -1090,10 +1078,7 @@ def equivalence_test_trends(
 
 
 def compute_synthetic_weights(
-    Y_control: np.ndarray,
-    Y_treated: np.ndarray,
-    lambda_reg: float = 0.0,
-    min_weight: float = 1e-6
+    Y_control: np.ndarray, Y_treated: np.ndarray, lambda_reg: float = 0.0, min_weight: float = 1e-6
 ) -> np.ndarray:
     """
     Compute synthetic control unit weights using constrained optimization.
@@ -1143,8 +1128,7 @@ def compute_synthetic_weights(
         Y_control = np.ascontiguousarray(Y_control, dtype=np.float64)
         Y_treated = np.ascontiguousarray(Y_treated, dtype=np.float64)
         weights = _rust_synthetic_weights(
-            Y_control, Y_treated, lambda_reg,
-            _OPTIMIZATION_MAX_ITER, _OPTIMIZATION_TOL
+            Y_control, Y_treated, lambda_reg, _OPTIMIZATION_MAX_ITER, _OPTIMIZATION_TOL
         )
     else:
         # Fallback to NumPy implementation
@@ -1400,12 +1384,20 @@ def _sc_weight_fw(
         Weights of shape (T0,) on the simplex.
     """
     if HAS_RUST_BACKEND:
-        return np.asarray(_rust_sc_weight_fw(
-            np.ascontiguousarray(Y, dtype=np.float64),
-            zeta, intercept,
-            np.ascontiguousarray(init_weights, dtype=np.float64) if init_weights is not None else None,
-            min_decrease, max_iter,
-        ))
+        return np.asarray(
+            _rust_sc_weight_fw(
+                np.ascontiguousarray(Y, dtype=np.float64),
+                zeta,
+                intercept,
+                (
+                    np.ascontiguousarray(init_weights, dtype=np.float64)
+                    if init_weights is not None
+                    else None
+                ),
+                min_decrease,
+                max_iter,
+            )
+        )
     return _sc_weight_fw_numpy(Y, zeta, intercept, init_weights, min_decrease, max_iter)
 
 
@@ -1430,7 +1422,7 @@ def _sc_weight_fw_numpy(
 
     A = Y[:, :T0]
     b = Y[:, T0]
-    eta = N * zeta ** 2
+    eta = N * zeta**2
 
     if init_weights is not None:
         lam = init_weights.copy()
@@ -1441,8 +1433,8 @@ def _sc_weight_fw_numpy(
     for t in range(max_iter):
         lam = _fw_step(A, lam, b, eta)
         err = Y @ np.append(lam, -1.0)
-        vals[t] = zeta ** 2 * np.sum(lam ** 2) + np.sum(err ** 2) / N
-        if t >= 1 and vals[t - 1] - vals[t] < min_decrease ** 2:
+        vals[t] = zeta**2 * np.sum(lam**2) + np.sum(err**2) / N
+        if t >= 1 and vals[t - 1] - vals[t] < min_decrease**2:
             break
 
     return lam
@@ -1518,12 +1510,17 @@ def compute_time_weights(
         )
 
     if HAS_RUST_BACKEND:
-        return np.asarray(_rust_compute_time_weights(
-            np.ascontiguousarray(Y_pre_control, dtype=np.float64),
-            np.ascontiguousarray(Y_post_control, dtype=np.float64),
-            zeta_lambda, intercept, min_decrease,
-            max_iter_pre_sparsify, max_iter,
-        ))
+        return np.asarray(
+            _rust_compute_time_weights(
+                np.ascontiguousarray(Y_pre_control, dtype=np.float64),
+                np.ascontiguousarray(Y_post_control, dtype=np.float64),
+                zeta_lambda,
+                intercept,
+                min_decrease,
+                max_iter_pre_sparsify,
+                max_iter,
+            )
+        )
 
     n_pre = Y_pre_control.shape[0]
 
@@ -1603,12 +1600,17 @@ def compute_sdid_unit_weights(
         return np.asarray([1.0])
 
     if HAS_RUST_BACKEND:
-        return np.asarray(_rust_sdid_unit_weights(
-            np.ascontiguousarray(Y_pre_control, dtype=np.float64),
-            np.ascontiguousarray(Y_pre_treated_mean, dtype=np.float64),
-            zeta_omega, intercept, min_decrease,
-            max_iter_pre_sparsify, max_iter,
-        ))
+        return np.asarray(
+            _rust_sdid_unit_weights(
+                np.ascontiguousarray(Y_pre_control, dtype=np.float64),
+                np.ascontiguousarray(Y_pre_treated_mean, dtype=np.float64),
+                zeta_omega,
+                intercept,
+                min_decrease,
+                max_iter_pre_sparsify,
+                max_iter,
+            )
+        )
 
     # Build collapsed form: (T_pre, N_co + 1), last col = treated pre means
     Y_unit = np.column_stack([Y_pre_control, Y_pre_treated_mean.reshape(-1, 1)])
@@ -1644,7 +1646,7 @@ def compute_sdid_estimator(
     Y_pre_treated: np.ndarray,
     Y_post_treated: np.ndarray,
     unit_weights: np.ndarray,
-    time_weights: np.ndarray
+    time_weights: np.ndarray,
 ) -> float:
     """
     Compute the Synthetic DiD estimator.

@@ -36,7 +36,10 @@ _SPARSE_DENSE_THRESHOLD = 10_000_000
 
 from diff_diff.linalg import solve_ols
 from diff_diff.two_stage_bootstrap import TwoStageDiDBootstrapMixin
-from diff_diff.two_stage_results import TwoStageBootstrapResults, TwoStageDiDResults  # noqa: F401 (re-export)
+from diff_diff.two_stage_results import (
+    TwoStageBootstrapResults,
+    TwoStageDiDResults,
+)  # noqa: F401 (re-export)
 from diff_diff.utils import safe_inference
 
 
@@ -373,9 +376,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             kept_cov_mask=kept_cov_mask,
         )
 
-        overall_t, overall_p, overall_ci = safe_inference(
-            overall_att, overall_se, alpha=self.alpha
-        )
+        overall_t, overall_p, overall_ci = safe_inference(overall_att, overall_se, alpha=self.alpha)
 
         # Event study and group aggregation
         event_study_effects = None
@@ -481,9 +482,11 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                             and event_study_effects[h].get("n_obs", 1) > 0
                         ):
                             event_study_effects[h]["se"] = bootstrap_results.event_study_ses[h]
+                            assert bootstrap_results.event_study_cis is not None
                             event_study_effects[h]["conf_int"] = bootstrap_results.event_study_cis[
                                 h
                             ]
+                            assert bootstrap_results.event_study_p_values is not None
                             event_study_effects[h]["p_value"] = (
                                 bootstrap_results.event_study_p_values[h]
                             )
@@ -498,7 +501,9 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                     for g in group_effects:
                         if g in bootstrap_results.group_ses:
                             group_effects[g]["se"] = bootstrap_results.group_ses[g]
+                            assert bootstrap_results.group_cis is not None
                             group_effects[g]["conf_int"] = bootstrap_results.group_cis[g]
+                            assert bootstrap_results.group_p_values is not None
                             group_effects[g]["p_value"] = bootstrap_results.group_p_values[g]
                             eff_val = group_effects[g]["effect"]
                             se_val = group_effects[g]["se"]

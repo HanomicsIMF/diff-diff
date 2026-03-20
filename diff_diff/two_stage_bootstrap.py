@@ -13,12 +13,18 @@ import numpy as np
 import pandas as pd
 from scipy.sparse.linalg import factorized as sparse_factorized
 
+from diff_diff.bootstrap_utils import (
+    compute_effect_bootstrap_stats as _compute_effect_bootstrap_stats,
+)
+from diff_diff.bootstrap_utils import (
+    generate_bootstrap_weights_batch as _generate_bootstrap_weights_batch,
+)
 from diff_diff.linalg import solve_ols
-from diff_diff.staggered_bootstrap import _generate_bootstrap_weights_batch
+from diff_diff.two_stage_results import TwoStageBootstrapResults
+
 # Maximum number of elements before falling back to per-column sparse aggregation.
 # Keep in sync with two_stage.py.
 _SPARSE_DENSE_THRESHOLD = 10_000_000
-from diff_diff.two_stage_results import TwoStageBootstrapResults
 
 __all__ = [
     "TwoStageDiDBootstrapMixin",
@@ -27,6 +33,13 @@ __all__ = [
 
 class TwoStageDiDBootstrapMixin:
     """Mixin providing bootstrap inference methods for TwoStageDiD."""
+
+    # Type hints for attributes accessed from the main class
+    n_bootstrap: int
+    bootstrap_weights: str
+    alpha: float
+    seed: Optional[int]
+    horizon_max: Optional[int]
 
     def _compute_cluster_S_scores(
         self,
@@ -223,16 +236,11 @@ class TwoStageDiDBootstrapMixin:
         boot_overall = boot_att_vec[:, 0]
 
         boot_overall_shifted = boot_overall + original_att
-        overall_se = float(np.std(boot_overall, ddof=1))
-        overall_ci = (
-            self._compute_percentile_ci(boot_overall_shifted, self.alpha)
-            if overall_se > 0
-            else (np.nan, np.nan)
-        )
-        overall_p = (
-            self._compute_bootstrap_pvalue(original_att, boot_overall_shifted)
-            if overall_se > 0
-            else np.nan
+        overall_se, overall_ci, overall_p = _compute_effect_bootstrap_stats(
+            original_att,
+            boot_overall_shifted,
+            alpha=self.alpha,
+            context="TwoStageDiD overall ATT",
         )
 
         # --- Event study bootstrap ---
@@ -323,17 +331,16 @@ class TwoStageDiDBootstrapMixin:
                     j = horizon_to_col[h]
                     orig_eff = original_event_study[h]["effect"]
                     boot_h = boot_coef_es[:, j]
-                    se_h = float(np.std(boot_h, ddof=1))
+                    shifted_h = boot_h + orig_eff
+                    se_h, ci_h, p_h = _compute_effect_bootstrap_stats(
+                        orig_eff,
+                        shifted_h,
+                        alpha=self.alpha,
+                        context=f"TwoStageDiD event study (h={h})",
+                    )
                     event_study_ses[h] = se_h
-                    if se_h > 0 and np.isfinite(orig_eff):
-                        shifted_h = boot_h + orig_eff
-                        event_study_p_values[h] = self._compute_bootstrap_pvalue(
-                            orig_eff, shifted_h
-                        )
-                        event_study_cis[h] = self._compute_percentile_ci(shifted_h, self.alpha)
-                    else:
-                        event_study_p_values[h] = np.nan
-                        event_study_cis[h] = (np.nan, np.nan)
+                    event_study_cis[h] = ci_h
+                    event_study_p_values[h] = p_h
 
         # --- Group bootstrap ---
         group_ses = None
@@ -383,15 +390,16 @@ class TwoStageDiDBootstrapMixin:
                 j = group_to_col[g]
                 orig_eff = original_group[g]["effect"]
                 boot_g = boot_coef_grp[:, j]
-                se_g = float(np.std(boot_g, ddof=1))
+                shifted_g = boot_g + orig_eff
+                se_g, ci_g, p_g = _compute_effect_bootstrap_stats(
+                    orig_eff,
+                    shifted_g,
+                    alpha=self.alpha,
+                    context=f"TwoStageDiD group effect (g={g})",
+                )
                 group_ses[g] = se_g
-                if se_g > 0 and np.isfinite(orig_eff):
-                    shifted_g = boot_g + orig_eff
-                    group_p_values[g] = self._compute_bootstrap_pvalue(orig_eff, shifted_g)
-                    group_cis[g] = self._compute_percentile_ci(shifted_g, self.alpha)
-                else:
-                    group_p_values[g] = np.nan
-                    group_cis[g] = (np.nan, np.nan)
+                group_cis[g] = ci_g
+                group_p_values[g] = p_g
 
         return TwoStageBootstrapResults(
             n_bootstrap=self.n_bootstrap,
@@ -408,34 +416,6 @@ class TwoStageDiDBootstrapMixin:
             group_p_values=group_p_values,
             bootstrap_distribution=boot_overall_shifted,
         )
-
-    # =========================================================================
-    # Bootstrap helpers
-    # =========================================================================
-
-    @staticmethod
-    def _compute_percentile_ci(
-        boot_dist: np.ndarray,
-        alpha: float,
-    ) -> Tuple[float, float]:
-        """Compute percentile confidence interval from bootstrap distribution."""
-        lower = float(np.percentile(boot_dist, alpha / 2 * 100))
-        upper = float(np.percentile(boot_dist, (1 - alpha / 2) * 100))
-        return (lower, upper)
-
-    @staticmethod
-    def _compute_bootstrap_pvalue(
-        original_effect: float,
-        boot_dist: np.ndarray,
-    ) -> float:
-        """Compute two-sided bootstrap p-value."""
-        if original_effect >= 0:
-            p_one_sided = float(np.mean(boot_dist <= 0))
-        else:
-            p_one_sided = float(np.mean(boot_dist >= 0))
-        p_value = min(2 * p_one_sided, 1.0)
-        p_value = max(p_value, 1 / (len(boot_dist) + 1))
-        return p_value
 
     # =========================================================================
     # Utility

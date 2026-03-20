@@ -12,8 +12,8 @@ Current limitations that may affect users:
 
 | Issue | Location | Priority | Notes |
 |-------|----------|----------|-------|
-| MultiPeriodDiD wild bootstrap not supported | `estimators.py:779-785` | Low | Edge case |
-| `predict()` raises NotImplementedError | `estimators.py:568-587` | Low | Rarely needed |
+| MultiPeriodDiD wild bootstrap not supported | `estimators.py:778-784` | Low | Edge case |
+| `predict()` raises NotImplementedError | `estimators.py:567-588` | Low | Rarely needed |
 
 ## Code Quality
 
@@ -23,14 +23,20 @@ Target: < 1000 lines per module for maintainability.
 
 | File | Lines | Action |
 |------|-------|--------|
-| `utils.py` | 1780 | Monitor -- legacy placebo function removed |
-| `visualization.py` | 1678 | Monitor -- growing but cohesive |
-| `linalg.py` | 1537 | Monitor -- unified backend, splitting would hurt cohesion |
+| `trop.py` | 2738 | Consider splitting — 2.7× target |
+| `utils.py` | 1838 | Monitor |
+| `staggered.py` | 1785 | Monitor |
+| `imputation.py` | 1756 | Monitor |
+| `visualization.py` | 1727 | Monitor — growing but cohesive |
+| `linalg.py` | 1727 | Monitor — unified backend, splitting would hurt cohesion |
+| `triple_diff.py` | 1581 | Monitor |
 | `honest_did.py` | 1511 | Acceptable |
+| `two_stage.py` | 1451 | Acceptable |
 | `power.py` | 1350 | Acceptable |
-| `triple_diff.py` | 1322 | Acceptable |
-| `sun_abraham.py` | 1227 | Acceptable |
-| `estimators.py` | 1161 | Acceptable |
+| `prep.py` | 1242 | Acceptable |
+| `sun_abraham.py` | 1162 | Acceptable |
+| `continuous_did.py` | 1155 | Acceptable |
+| `estimators.py` | 1147 | Acceptable |
 | `pretrends.py` | 1104 | Acceptable |
 
 ---
@@ -44,7 +50,6 @@ Deferred items from PR reviews that were not addressed before merge.
 | Issue | Location | PR | Priority |
 |-------|----------|----|----------|
 | ImputationDiD dense `(A0'A0).toarray()` scales O((U+T+K)^2), OOM risk on large panels | `imputation.py` | #141 | Medium (deferred — only triggers when sparse solver fails; fixing requires sparse least-squares alternatives) |
-| Bootstrap NaN-gating gap: manual SE/CI/p-value without non-finite filtering or SE<=0 guard | `imputation_bootstrap.py`, `two_stage_bootstrap.py` | #177 | Medium — migrate to `compute_effect_bootstrap_stats` from `bootstrap_utils.py` |
 | EfficientDiD: warn when cohort share is very small (< 2 units or < 1% of sample) — inverted in Omega*/EIF | `efficient_did_weights.py` | #192 | Low |
 | EfficientDiD: API docs / tutorial page for new public estimator | `docs/` | #192 | Medium |
 
@@ -62,7 +67,7 @@ Deferred items from PR reviews that were not addressed before merge.
 | Tutorial notebooks not executed in CI | `docs/tutorials/*.ipynb` | #159 | Low |
 | R comparison tests spawn separate `Rscript` per test (slow CI) | `tests/test_methodology_twfe.py:294` | #139 | Low |
 | CS R helpers hard-code `xformla = ~ 1`; no covariate-adjusted R benchmark for IRLS path | `tests/test_methodology_callaway.py` | #202 | Low |
-| Context-dependent doc snippets pass via blanket NameError; no standalone validation | `tests/test_doc_snippets.py`, `docs/api/visualization.rst`, `docs/python_comparison.rst`, `docs/r_comparison.rst` | #206 | Low |
+| ~~Context-dependent doc snippets pass via blanket NameError~~ | `tests/test_doc_snippets.py` | #206 | ~~Low~~ — resolved: allow-list replaces blanket catch |
 | ~1,460 `duplicate object description` Sphinx warnings — each class attribute is documented in both module API pages and autosummary stubs; fix by adding `:no-index:` to one location or restructuring API docs to avoid overlap | `docs/api/*.rst`, `docs/api/_autosummary/` | — | Low |
 
 ---
@@ -82,22 +87,20 @@ Different estimators compute SEs differently. Consider unified interface.
 
 ### Type Annotations
 
-Pyright reports 282 type errors. Most are false positives from numpy/pandas type stubs.
+Mypy reports 9 errors (down from 81 before spring cleanup). All remaining are
+mixin `attr-defined` errors — methods accessed via `self` that live on the
+concrete class, not the mixin. Fixing these requires Protocol classes, which is
+low priority.
 
 | Category | Count | Notes |
 |----------|-------|-------|
-| reportArgumentType | 94 | numpy/pandas stub mismatches |
-| reportAttributeAccessIssue | 89 | Union types (results classes) |
-| reportReturnType | 21 | Return type mismatches |
-| reportOperatorIssue | 16 | Operators on incompatible types |
-| Others | 62 | Various minor issues |
+| attr-defined (mixin methods) | 9 | Structural — requires Protocol refactor |
 
-**Genuine issues to fix (low priority):**
-- [ ] Optional handling in `estimators.py:291,297,308` - None checks needed
-- [ ] Union type narrowing in `visualization.py:325-345` - results classes
-- [ ] numpy floating conversion in `diagnostics.py:669-673`
-
-**Note:** Most errors are false positives from imprecise type stubs. Mypy config in pyproject.toml already handles these via `disable_error_code`.
+**Resolved in spring cleanup:**
+- [x] `@overload` on `solve_ols` / `_solve_ols_numpy` — eliminated all unpacking mismatches
+- [x] `assert X is not None` guards — eliminated all Optional indexing errors
+- [x] Mixin scalar attribute stubs — eliminated 26 mixin attr-defined errors
+- [x] Matplotlib `tab10` lookup fix
 
 ## Deprecated Code
 

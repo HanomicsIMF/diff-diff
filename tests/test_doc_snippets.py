@@ -62,12 +62,8 @@ _SHORTHAND_BLOCK_RE = re.compile(
 )
 
 # Heuristic: skip ``::`` blocks that look like shell or prose, not Python.
-_SHELL_HINTS_RE = re.compile(
-    r"^\s*(\$\s|#!|pip\s+install|maturin\s)", re.MULTILINE
-)
-_PROSE_HINT_RE = re.compile(
-    r"^[A-Z][a-z]+ [a-z]+ [a-z]+", re.MULTILINE  # English prose sentence
-)
+_SHELL_HINTS_RE = re.compile(r"^\s*(\$\s|#!|pip\s+install|maturin\s)", re.MULTILINE)
+_PROSE_HINT_RE = re.compile(r"^[A-Z][a-z]+ [a-z]+ [a-z]+", re.MULTILINE)  # English prose sentence
 
 
 def _extract_snippets(rst_path: Path) -> List[Tuple[int, str]]:
@@ -140,6 +136,7 @@ def _collect_cases() -> List[Tuple[str, str, Optional[str]]]:
 
 _CASES = _collect_cases()
 
+
 # ---------------------------------------------------------------------------
 # Shared namespace builder
 # ---------------------------------------------------------------------------
@@ -167,9 +164,7 @@ def _build_namespace() -> dict:
 
     # Synthetic datasets that doc snippets commonly reference
     rng = np.random.default_rng(42)
-    staggered = diff_diff.generate_staggered_data(
-        n_units=60, n_periods=10, seed=42
-    )
+    staggered = diff_diff.generate_staggered_data(n_units=60, n_periods=10, seed=42)
     # Add alias columns that doc snippets expect
     # Use a simple time split (not unit-specific) so basic 2x2 DID works
     mid = staggered["period"].median()
@@ -219,16 +214,18 @@ def _build_namespace() -> dict:
     # ------------------------------------------------------------------
     def _mock_load_card_krueger(**kwargs):
         n = 40
-        return pd.DataFrame({
-            "store_id": range(n),
-            "state": ["NJ"] * (n // 2) + ["PA"] * (n // 2),
-            "chain": (["bk", "kfc", "roys", "wendys"] * 10)[:n],
-            "emp_pre": rng.normal(20, 5, n),
-            "emp_post": rng.normal(21, 5, n),
-            "wage_pre": rng.normal(4.5, 0.3, n),
-            "wage_post": rng.normal(5.0, 0.3, n),
-            "treated": [1] * (n // 2) + [0] * (n // 2),
-        })
+        return pd.DataFrame(
+            {
+                "store_id": range(n),
+                "state": ["NJ"] * (n // 2) + ["PA"] * (n // 2),
+                "chain": (["bk", "kfc", "roys", "wendys"] * 10)[:n],
+                "emp_pre": rng.normal(20, 5, n),
+                "emp_post": rng.normal(21, 5, n),
+                "wage_pre": rng.normal(4.5, 0.3, n),
+                "wage_post": rng.normal(5.0, 0.3, n),
+                "treated": [1] * (n // 2) + [0] * (n // 2),
+            }
+        )
 
     def _mock_load_castle_doctrine(**kwargs):
         states = [f"S{i:02d}" for i in range(10)]
@@ -236,17 +233,18 @@ def _build_namespace() -> dict:
         rows = [(s, y) for s in states for y in years]
         n = len(rows)
         ft = [0] * 55 + [2005] * 22 + [2007] * 22 + [2009] * 11
-        return pd.DataFrame({
-            "state": [r[0] for r in rows],
-            "year": [r[1] for r in rows],
-            "first_treat": ft[:n],
-            "homicide_rate": rng.normal(5, 1, n),
-            "population": rng.integers(500000, 5000000, n),
-            "income": rng.normal(30000, 5000, n),
-            "treated": [1 if ft[i] and r[1] >= ft[i] else 0
-                        for i, r in enumerate(rows)][:n],
-            "cohort": ft[:n],
-        })
+        return pd.DataFrame(
+            {
+                "state": [r[0] for r in rows],
+                "year": [r[1] for r in rows],
+                "first_treat": ft[:n],
+                "homicide_rate": rng.normal(5, 1, n),
+                "population": rng.integers(500000, 5000000, n),
+                "income": rng.normal(30000, 5000, n),
+                "treated": [1 if ft[i] and r[1] >= ft[i] else 0 for i, r in enumerate(rows)][:n],
+                "cohort": ft[:n],
+            }
+        )
 
     def _mock_load_divorce_laws(**kwargs):
         states = [f"S{i:02d}" for i in range(10)]
@@ -254,17 +252,18 @@ def _build_namespace() -> dict:
         rows = [(s, y) for s in states for y in years]
         n = len(rows)
         ft = [0] * 125 + [1970] * 50 + [1975] * 50 + [1980] * 25
-        return pd.DataFrame({
-            "state": [r[0] for r in rows],
-            "year": [r[1] for r in rows],
-            "first_treat": ft[:n],
-            "divorce_rate": rng.normal(4, 1, n),
-            "female_lfp": rng.normal(50, 5, n),
-            "suicide_rate": rng.normal(5, 2, n),
-            "treated": [1 if ft[i] and r[1] >= ft[i] else 0
-                        for i, r in enumerate(rows)][:n],
-            "cohort": ft[:n],
-        })
+        return pd.DataFrame(
+            {
+                "state": [r[0] for r in rows],
+                "year": [r[1] for r in rows],
+                "first_treat": ft[:n],
+                "divorce_rate": rng.normal(4, 1, n),
+                "female_lfp": rng.normal(50, 5, n),
+                "suicide_rate": rng.normal(5, 2, n),
+                "treated": [1 if ft[i] and r[1] >= ft[i] else 0 for i, r in enumerate(rows)][:n],
+                "cohort": ft[:n],
+            }
+        )
 
     def _mock_load_mpdta(**kwargs):
         counties = list(range(1, 21))
@@ -272,14 +271,16 @@ def _build_namespace() -> dict:
         rows = [(c, y) for c in counties for y in years]
         n = len(rows)
         ft = ([0] * 25 + [2004] * 25 + [2006] * 25 + [2007] * 25)[:n]
-        return pd.DataFrame({
-            "countyreal": [r[0] for r in rows],
-            "year": [r[1] for r in rows],
-            "lpop": rng.normal(10, 1, n),
-            "lemp": rng.normal(8, 0.5, n),
-            "first_treat": ft,
-            "treat": [1 if f != 0 else 0 for f in ft],
-        })
+        return pd.DataFrame(
+            {
+                "countyreal": [r[0] for r in rows],
+                "year": [r[1] for r in rows],
+                "lpop": rng.normal(10, 1, n),
+                "lemp": rng.normal(8, 0.5, n),
+                "first_treat": ft,
+                "treat": [1 if f != 0 else 0 for f in ft],
+            }
+        )
 
     _dataset_dispatch = {
         "card_krueger": _mock_load_card_krueger,
@@ -303,6 +304,7 @@ def _build_namespace() -> dict:
 
     # Inject mocks into namespace so `from diff_diff.datasets import ...` works
     import types
+
     mock_datasets_mod = types.ModuleType("diff_diff.datasets")
     mock_datasets_mod.load_card_krueger = _mock_load_card_krueger
     mock_datasets_mod.load_castle_doctrine = _mock_load_castle_doctrine
@@ -311,6 +313,7 @@ def _build_namespace() -> dict:
     mock_datasets_mod.load_dataset = _mock_load_dataset
     mock_datasets_mod.list_datasets = _mock_list_datasets
     import sys
+
     sys.modules["diff_diff.datasets"] = mock_datasets_mod
     diff_diff.datasets = mock_datasets_mod
 
@@ -333,6 +336,7 @@ def _restore_datasets_module():
     """Restore diff_diff.datasets after each test to prevent mock leaking."""
     import sys as _sys
     import diff_diff as _dd
+
     orig_mod = _sys.modules.get("diff_diff.datasets")
     orig_attr = getattr(_dd, "datasets", None)
     yield
@@ -342,6 +346,25 @@ def _restore_datasets_module():
         del _sys.modules["diff_diff.datasets"]
     if orig_attr is not None:
         _dd.datasets = orig_attr
+
+
+# Snippets that reference variables from prior context blocks (e.g. ``results``
+# from an earlier fit).  Generated by running discovery step — do not add
+# entries without verifying the NameError is truly context-dependent.
+_CONTEXT_DEPENDENT_SNIPPETS = {
+    "api_bacon:block1",
+    "api_bacon:block2",
+    "api_visualization:block2",
+    "api_visualization:block3",
+    "python_comparison:block5",
+    "quickstart:block3",
+    "quickstart:block9",
+    "r_comparison:block2",
+    "r_comparison:block3",
+    "r_comparison:block4",
+    "r_comparison:block6",
+    "troubleshooting:block8",
+}
 
 
 @pytest.mark.parametrize(
@@ -356,11 +379,12 @@ def test_doc_snippet(test_id: str, code: str, skip_reason: Optional[str]):
     ns = _build_namespace()
     try:
         exec(compile(code, f"<{test_id}>", "exec"), ns)
-    except NameError:
-        # NameError means the snippet references a variable from a prior
-        # context block (e.g. ``results`` from an earlier fit).  This is
-        # expected for isolated execution — not an API mismatch.
-        pass
+    except NameError as exc:
+        if test_id not in _CONTEXT_DEPENDENT_SNIPPETS:
+            pytest.fail(
+                f"Snippet {test_id} raised unexpected NameError: {exc}\n\n"
+                f"Code:\n{textwrap.indent(code, '  ')}"
+            )
     except ImportError as exc:
         # Only suppress ImportError for known third-party packages that
         # comparison-page snippets import (or optional-dependency guards

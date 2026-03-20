@@ -886,7 +886,11 @@ class TripleDifference:
             )
 
         # --- Combine three DiDs ---
-        att = did_results[3]["att"] + did_results[2]["att"] - did_results[1]["att"]
+        att = (
+            float(did_results[3]["att"])
+            + float(did_results[2]["att"])
+            - float(did_results[1]["att"])
+        )
 
         # Influence function weights (matching R's att_dr_rc)
         n3 = np.sum((subgroup == 3) | (subgroup == 4))

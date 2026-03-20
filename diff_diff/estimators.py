@@ -296,6 +296,7 @@ class DifferenceInDifferences:
         coefficients = reg.coefficients_
         residuals = reg.residuals_
         fitted = reg.fitted_values_
+        assert coefficients is not None
         att = coefficients[att_idx]
 
         # Get inference - either from bootstrap or analytical
@@ -1029,6 +1030,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
         post_effect_values = []
         post_effect_indices = []
 
+        assert vcov is not None
         for period in non_ref_periods:
             idx = interaction_indices[period]
             effect = coefficients[idx]

@@ -23,11 +23,12 @@ from scipy import sparse, stats
 from scipy.sparse.linalg import spsolve
 
 from diff_diff.imputation_bootstrap import ImputationDiDBootstrapMixin, _compute_target_weights
-from diff_diff.imputation_results import ImputationBootstrapResults, ImputationDiDResults  # noqa: F401 (re-export)
+from diff_diff.imputation_results import (  # noqa: F401 (re-export)
+    ImputationBootstrapResults,
+    ImputationDiDResults,
+)
 from diff_diff.linalg import solve_ols
 from diff_diff.utils import safe_inference
-
-
 
 # =============================================================================
 # Main Estimator
@@ -417,9 +418,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 kept_cov_mask=kept_cov_mask,
             )
 
-        overall_t, overall_p, overall_ci = safe_inference(
-            overall_att, overall_se, alpha=self.alpha
-        )
+        overall_t, overall_p, overall_ci = safe_inference(overall_att, overall_se, alpha=self.alpha)
 
         # Event study and group aggregation
         event_study_effects = None
@@ -553,7 +552,9 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                         and event_study_effects[h].get("n_obs", 1) > 0
                     ):
                         event_study_effects[h]["se"] = bootstrap_results.event_study_ses[h]
+                        assert bootstrap_results.event_study_cis is not None
                         event_study_effects[h]["conf_int"] = bootstrap_results.event_study_cis[h]
+                        assert bootstrap_results.event_study_p_values is not None
                         event_study_effects[h]["p_value"] = bootstrap_results.event_study_p_values[
                             h
                         ]
@@ -568,7 +569,9 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 for g in group_effects:
                     if g in bootstrap_results.group_ses:
                         group_effects[g]["se"] = bootstrap_results.group_ses[g]
+                        assert bootstrap_results.group_cis is not None
                         group_effects[g]["conf_int"] = bootstrap_results.group_cis[g]
+                        assert bootstrap_results.group_p_values is not None
                         group_effects[g]["p_value"] = bootstrap_results.group_p_values[g]
                         eff_val = group_effects[g]["effect"]
                         se_val = group_effects[g]["se"]
@@ -1614,6 +1617,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         )
         coefficients = result[0]
         vcov = result[2]
+        assert vcov is not None
 
         # Extract lead coefficients and their sub-VCV
         n_leads_actual = len(lead_cols)

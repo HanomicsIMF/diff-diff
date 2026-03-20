@@ -21,6 +21,8 @@ from diff_diff.linalg import LinearRegression, compute_robust_vcov
 from diff_diff.results import _get_significance_stars
 from diff_diff.utils import (
     safe_inference,
+)
+from diff_diff.utils import (
     within_transform as _within_transform_util,
 )
 
@@ -229,9 +231,7 @@ class SunAbrahamResults:
             return pd.DataFrame(rows)
 
         else:
-            raise ValueError(
-                f"Unknown level: {level}. Use 'event_study' or 'cohort'."
-            )
+            raise ValueError(f"Unknown level: {level}. Use 'event_study' or 'cohort'.")
 
     @property
     def is_significant(self) -> bool:
@@ -491,30 +491,20 @@ class SunAbraham:
 
         # Get unique units
         unit_info = (
-            df.groupby(unit)
-            .agg({first_treat: "first", "_never_treated": "first"})
-            .reset_index()
+            df.groupby(unit).agg({first_treat: "first", "_never_treated": "first"}).reset_index()
         )
 
         n_treated_units = int((unit_info[first_treat] > 0).sum())
         n_control_units = int((unit_info["_never_treated"]).sum())
 
         if n_control_units == 0:
-            raise ValueError(
-                "No never-treated units found. Check 'first_treat' column."
-            )
+            raise ValueError("No never-treated units found. Check 'first_treat' column.")
 
         if len(treatment_groups) == 0:
-            raise ValueError(
-                "No treated units found. Check 'first_treat' column."
-            )
+            raise ValueError("No treated units found. Check 'first_treat' column.")
 
         # Compute relative time for each observation (vectorized)
-        df["_rel_time"] = np.where(
-            df[first_treat] > 0,
-            df[time] - df[first_treat],
-            np.nan
-        )
+        df["_rel_time"] = np.where(df[first_treat] > 0, df[time] - df[first_treat], np.nan)
 
         # Identify the range of relative time periods to estimate
         rel_times_by_cohort = {}
@@ -625,12 +615,8 @@ class SunAbraham:
             for e in event_study_effects:
                 if e in bootstrap_results.event_study_ses:
                     event_study_effects[e]["se"] = bootstrap_results.event_study_ses[e]
-                    event_study_effects[e]["conf_int"] = (
-                        bootstrap_results.event_study_cis[e]
-                    )
-                    event_study_effects[e]["p_value"] = (
-                        bootstrap_results.event_study_p_values[e]
-                    )
+                    event_study_effects[e]["conf_int"] = bootstrap_results.event_study_cis[e]
+                    event_study_effects[e]["p_value"] = bootstrap_results.event_study_p_values[e]
                     eff_val = event_study_effects[e]["effect"]
                     se_val = event_study_effects[e]["se"]
                     event_study_effects[e]["t_stat"] = safe_inference(
@@ -719,10 +705,7 @@ class SunAbraham:
             for e in rel_periods:
                 col_name = f"_D_{g}_{e}"
                 # Indicator: unit is in cohort g AND at relative time e
-                indicator = (
-                    (df[first_treat] == g) &
-                    (df["_rel_time"] == e)
-                ).astype(float)
+                indicator = ((df[first_treat] == g) & (df["_rel_time"] == e)).astype(float)
 
                 # Only include if there are observations
                 if indicator.sum() > 0:
@@ -738,8 +721,7 @@ class SunAbraham:
 
         if len(interaction_cols) == 0:
             raise ValueError(
-                "No valid cohort × relative-time interactions found. "
-                "Check your data structure."
+                "No valid cohort × relative-time interactions found. " "Check your data structure."
             )
 
         # Apply within-transformation for unit and time fixed effects
@@ -786,6 +768,7 @@ class SunAbraham:
             cohort_ses[(g, e)] = inference.se
 
         # Extract just the vcov for cohort effects (excluding covariates)
+        assert vcov is not None
         vcov_cohort = vcov[:n_interactions, :n_interactions]
 
         return cohort_effects, cohort_ses, vcov_cohort, coef_index_map
@@ -839,10 +822,7 @@ class SunAbraham:
 
         for e in rel_periods:
             # Get cohorts that have observations at this relative time
-            cohorts_at_e = [
-                g for g in treatment_groups
-                if (g, e) in cohort_effects
-            ]
+            cohorts_at_e = [g for g in treatment_groups if (g, e) in cohort_effects]
 
             if not cohorts_at_e:
                 continue
@@ -906,11 +886,7 @@ class SunAbraham:
 
         Returns (att, se) tuple.
         """
-        post_effects = [
-            (e, eff)
-            for e, eff in event_study_effects.items()
-            if e >= 0
-        ]
+        post_effects = [(e, eff) for e, eff in event_study_effects.items() if e >= 0]
 
         if not post_effects:
             return np.nan, np.nan
@@ -924,10 +900,10 @@ class SunAbraham:
             post_weights.append(max(n_at_e, 1))
             post_estimates.append(eff["effect"])
 
-        post_weights = np.array(post_weights, dtype=float)
-        post_weights = post_weights / post_weights.sum()
+        post_weights_arr = np.array(post_weights, dtype=float)
+        post_weights_arr = post_weights_arr / post_weights_arr.sum()
 
-        overall_att = float(np.sum(post_weights * np.array(post_estimates)))
+        overall_att = float(np.sum(post_weights_arr * np.array(post_estimates)))
 
         # Compute SE using delta method
         # Need to trace back through the full weighting scheme
@@ -936,7 +912,7 @@ class SunAbraham:
         overall_weights_by_coef: Dict[Tuple[Any, int], float] = {}
 
         for i, (e, _) in enumerate(post_effects):
-            period_weight = post_weights[i]
+            period_weight = post_weights_arr[i]
             if e in cohort_weights:
                 for g, cw in cohort_weights[e].items():
                     key = (g, e)
@@ -954,7 +930,9 @@ class SunAbraham:
                 stacklevel=2,
             )
             overall_var = float(
-                np.sum((post_weights ** 2) * np.array([eff["se"] ** 2 for _, eff in post_effects]))
+                np.sum(
+                    (post_weights_arr**2) * np.array([eff["se"] ** 2 for _, eff in post_effects])
+                )
             )
             return overall_att, np.sqrt(overall_var)
 
@@ -1023,14 +1001,10 @@ class SunAbraham:
 
             # Recompute relative time (vectorized)
             df_b["_rel_time"] = np.where(
-                df_b[first_treat] > 0,
-                df_b[time] - df_b[first_treat],
-                np.nan
+                df_b[first_treat] > 0, df_b[time] - df_b[first_treat], np.nan
             )
             # np.inf was normalized to 0 in fit(), so the np.inf check is defensive only
-            df_b["_never_treated"] = (
-                (df_b[first_treat] == 0) | (df_b[first_treat] == np.inf)
-            )
+            df_b["_never_treated"] = (df_b[first_treat] == 0) | (df_b[first_treat] == np.inf)
 
             try:
                 # Re-estimate saturated regression
@@ -1103,7 +1077,9 @@ class SunAbraham:
             boot_dist = bootstrap_effects[e]
             original_effect = original_event_study[e]["effect"]
             se, ci, p_value = compute_effect_bootstrap_stats(
-                original_effect, boot_dist, alpha=self.alpha,
+                original_effect,
+                boot_dist,
+                alpha=self.alpha,
                 context=f"event study e={e}",
             )
             event_study_ses[e] = se
@@ -1112,7 +1088,9 @@ class SunAbraham:
 
         # Overall ATT statistics
         overall_se, overall_ci, overall_p = compute_effect_bootstrap_stats(
-            original_overall_att, bootstrap_overall, alpha=self.alpha,
+            original_overall_att,
+            bootstrap_overall,
+            alpha=self.alpha,
             context="overall ATT",
         )
 

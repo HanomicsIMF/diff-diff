@@ -34,7 +34,7 @@ This is controlled by the `rank_deficient_action` parameter:
 
 import warnings
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union, overload
 
 import numpy as np
 import pandas as pd
@@ -48,7 +48,6 @@ from diff_diff._backend import (
     _rust_compute_robust_vcov,
     _rust_solve_ols,
 )
-
 
 # =============================================================================
 # Utility Functions
@@ -336,6 +335,54 @@ def _solve_ols_rust(
         return coefficients, residuals, vcov
 
 
+@overload
+def solve_ols(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    cluster_ids: Optional[np.ndarray] = ...,
+    return_vcov: bool = ...,
+    return_fitted: Literal[False] = ...,
+    check_finite: bool = ...,
+    rank_deficient_action: str = ...,
+    column_names: Optional[List[str]] = ...,
+    skip_rank_check: bool = ...,
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]: ...
+
+
+@overload
+def solve_ols(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    cluster_ids: Optional[np.ndarray] = ...,
+    return_vcov: bool = ...,
+    return_fitted: Literal[True],
+    check_finite: bool = ...,
+    rank_deficient_action: str = ...,
+    column_names: Optional[List[str]] = ...,
+    skip_rank_check: bool = ...,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]: ...
+
+
+@overload
+def solve_ols(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    cluster_ids: Optional[np.ndarray] = ...,
+    return_vcov: bool = ...,
+    return_fitted: bool,
+    check_finite: bool = ...,
+    rank_deficient_action: str = ...,
+    column_names: Optional[List[str]] = ...,
+    skip_rank_check: bool = ...,
+) -> Union[
+    Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]],
+    Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]],
+]: ...
+
+
 def solve_ols(
     X: np.ndarray,
     y: np.ndarray,
@@ -584,6 +631,54 @@ def solve_ols(
         # Pass pre-computed rank info to avoid redundant computation
         _precomputed_rank_info=(rank, dropped_cols, pivot),
     )
+
+
+@overload
+def _solve_ols_numpy(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    cluster_ids: Optional[np.ndarray] = ...,
+    return_vcov: bool = ...,
+    return_fitted: Literal[False] = ...,
+    rank_deficient_action: str = ...,
+    column_names: Optional[List[str]] = ...,
+    _precomputed_rank_info: Optional[Tuple[int, np.ndarray, np.ndarray]] = ...,
+    _skip_rank_check: bool = ...,
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]: ...
+
+
+@overload
+def _solve_ols_numpy(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    cluster_ids: Optional[np.ndarray] = ...,
+    return_vcov: bool = ...,
+    return_fitted: Literal[True],
+    rank_deficient_action: str = ...,
+    column_names: Optional[List[str]] = ...,
+    _precomputed_rank_info: Optional[Tuple[int, np.ndarray, np.ndarray]] = ...,
+    _skip_rank_check: bool = ...,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]: ...
+
+
+@overload
+def _solve_ols_numpy(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    cluster_ids: Optional[np.ndarray] = ...,
+    return_vcov: bool = ...,
+    return_fitted: bool,
+    rank_deficient_action: str = ...,
+    column_names: Optional[List[str]] = ...,
+    _precomputed_rank_info: Optional[Tuple[int, np.ndarray, np.ndarray]] = ...,
+    _skip_rank_check: bool = ...,
+) -> Union[
+    Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]],
+    Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]],
+]: ...
 
 
 def _solve_ols_numpy(
@@ -1424,6 +1519,7 @@ class LinearRegression:
             Coefficient value.
         """
         self._check_fitted()
+        assert self.coefficients_ is not None
         return float(self.coefficients_[index])
 
     def get_se(self, index: int) -> float:
@@ -1441,6 +1537,7 @@ class LinearRegression:
             Standard error.
         """
         self._check_fitted()
+        assert self.vcov_ is not None
         return float(np.sqrt(self.vcov_[index, index]))
 
     def get_inference(
@@ -1480,6 +1577,8 @@ class LinearRegression:
         ...     print("Statistically significant!")
         """
         self._check_fitted()
+        assert self.coefficients_ is not None
+        assert self.vcov_ is not None
 
         coef = float(self.coefficients_[index])
         se = float(np.sqrt(self.vcov_[index, index]))
@@ -1614,6 +1713,8 @@ class LinearRegression:
         corrected degrees of freedom.
         """
         self._check_fitted()
+        assert self._y is not None
+        assert self.residuals_ is not None
         # Use effective params for adjusted R² to match df correction
         n_params = self.n_params_effective_ if adjusted else self.n_params_
         return compute_r_squared(self._y, self.residuals_, adjusted=adjusted, n_params=n_params)
@@ -1647,6 +1748,7 @@ class LinearRegression:
 
         # Handle rank-deficient case: use only identified coefficients
         # Replace NaN with 0 so they don't contribute to prediction
+        assert self.coefficients_ is not None
         coef = self.coefficients_.copy()
         coef[np.isnan(coef)] = 0.0
 

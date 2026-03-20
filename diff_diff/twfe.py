@@ -61,7 +61,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         treatment: str,
         time: str,
         unit: str,
-        covariates: Optional[List[str]] = None
+        covariates: Optional[List[str]] = None,
     ) -> DiDResults:
         """
         Fit Two-Way Fixed Effects model.
@@ -129,9 +129,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
 
         # Demean outcome, covariates, AND interaction in a single pass
         all_vars = [outcome] + (covariates or []) + ["_treatment_post"]
-        data_demeaned = _within_transform_util(
-            data, all_vars, unit, time, suffix="_demeaned"
-        )
+        data_demeaned = _within_transform_util(data, all_vars, unit, time, suffix="_demeaned")
 
         # Extract variables for regression
         y = data_demeaned[f"{outcome}_demeaned"].values
@@ -183,6 +181,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         residuals = reg.residuals_
         fitted = reg.fitted_values_
         r_squared = reg.r_squared()
+        assert coefficients is not None
         att = coefficients[att_idx]
 
         # Check for unidentified coefficients (collinearity)
@@ -194,8 +193,9 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         nan_mask = np.isnan(coefficients)
         if np.any(nan_mask):
             dropped_indices = np.where(nan_mask)[0]
-            dropped_names = [column_names[i] if i < len(column_names)
-                            else f"column {i}" for i in dropped_indices]
+            dropped_names = [
+                column_names[i] if i < len(column_names) else f"column {i}" for i in dropped_indices
+            ]
 
             # Determine the source of collinearity for better error message
             if att_idx in dropped_indices:
@@ -278,7 +278,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         outcome: str,
         unit: str,
         time: str,
-        covariates: Optional[List[str]] = None
+        covariates: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """
         Apply within transformation to remove unit and time fixed effects.
