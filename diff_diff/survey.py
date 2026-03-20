@@ -226,6 +226,27 @@ class SurveyDesign:
                     elif self.lonely_psu == "adjust":
                         pass  # Handled in compute_survey_vcov
 
+        # Validate PSU count for unstratified designs
+        if psu_arr is not None and strata_arr is None:
+            if n_psu < 2:
+                if self.lonely_psu == "remove":
+                    msg = (
+                        f"Only {n_psu} PSU(s) found (unstratified design). "
+                        "Variance cannot be estimated (lonely_psu='remove')."
+                    )
+                elif self.lonely_psu == "certainty":
+                    msg = (
+                        f"Only {n_psu} PSU(s) found (unstratified design). "
+                        "Treated as certainty PSU; zero variance contribution."
+                    )
+                else:
+                    msg = (
+                        f"Only {n_psu} PSU(s) found (unstratified design). "
+                        "Cannot adjust with a single cluster and no strata; "
+                        "variance will be NaN."
+                    )
+                warnings.warn(msg, UserWarning, stacklevel=3)
+
         return ResolvedSurveyDesign(
             weights=weights,
             weight_type=self.weight_type,
@@ -262,7 +283,11 @@ class ResolvedSurveyDesign:
             if self.strata is not None and self.n_strata > 0:
                 return self.n_psu - self.n_strata
             return self.n_psu - 1
-        return None
+        # Implicit PSU: each observation is its own PSU
+        n_obs = len(self.weights)
+        if self.strata is not None and self.n_strata > 0:
+            return n_obs - self.n_strata
+        return n_obs - 1
 
     @property
     def needs_survey_vcov(self) -> bool:
@@ -331,7 +356,11 @@ def compute_survey_metadata(
     design_effect = n * sum_w2 / (sum_w**2) if sum_w > 0 else 1.0
 
     n_strata = resolved.n_strata if resolved.strata is not None else None
-    n_psu = resolved.n_psu if resolved.psu is not None else None
+    if resolved.psu is not None:
+        n_psu = resolved.n_psu
+    else:
+        # Implicit PSU: each observation is its own PSU
+        n_psu = len(resolved.weights)
     df_survey = resolved.df_survey
 
     return SurveyMetadata(
@@ -462,15 +491,22 @@ def compute_survey_vcov(
         # No strata, but PSU present — single-stratum cluster-robust
         psu_scores = pd.DataFrame(scores).groupby(psu).sum().values
         n_psu = psu_scores.shape[0]
-        # Center around grand mean
-        psu_mean = psu_scores.mean(axis=0, keepdims=True)
-        centered = psu_scores - psu_mean
-        f_h = 0.0  # No FPC
-        if resolved.fpc is not None:
-            N_h = resolved.fpc[0]
-            f_h = n_psu / N_h
-        adjustment = (1.0 - f_h) * (n_psu / (n_psu - 1))
-        meat = adjustment * (centered.T @ centered)
+
+        if n_psu < 2:
+            # With only 1 PSU and no strata, variance estimation is impossible
+            # regardless of lonely_psu mode. The "adjust" mode cannot help
+            # because there is no global-vs-stratum distinction to exploit.
+            meat = np.zeros((k, k))
+        else:
+            # Center around grand mean
+            psu_mean = psu_scores.mean(axis=0, keepdims=True)
+            centered = psu_scores - psu_mean
+            f_h = 0.0  # No FPC
+            if resolved.fpc is not None:
+                N_h = resolved.fpc[0]
+                f_h = n_psu / N_h
+            adjustment = (1.0 - f_h) * (n_psu / (n_psu - 1))
+            meat = adjustment * (centered.T @ centered)
     else:
         # Stratified with or without PSU
         unique_strata = np.unique(strata)

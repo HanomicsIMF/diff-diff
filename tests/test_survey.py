@@ -1637,3 +1637,198 @@ class TestWeightedRankDeficiency:
         kept = np.where(~np.isnan(coef))[0]
         for i in kept:
             assert np.isfinite(vcov[i, i]) and vcov[i, i] > 0
+
+
+# =============================================================================
+# Round 5 Fixes (PR #218)
+# =============================================================================
+
+
+class TestRound5Fixes:
+    """Tests for P1-A (implicit PSU df), P1-B (lonely_psu unstratified),
+    P1-C (LinearRegression weight auto-derivation)."""
+
+    def test_weights_only_survey_df(self):
+        """P1-A: weights-only design uses n_obs - 1 for df."""
+        n = 50
+        weights = np.random.uniform(0.5, 3.0, size=n)
+        weights = weights * (n / np.sum(weights))  # normalize
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
+        )
+
+        assert resolved.df_survey == n - 1
+
+        # Metadata should also report implicit n_psu
+        raw_w = np.random.uniform(0.5, 3.0, size=n)
+        meta = compute_survey_metadata(resolved, raw_w)
+        assert meta.n_psu == n
+
+    def test_stratified_no_psu_survey_df(self):
+        """P1-A: stratified-no-PSU design uses n_obs - n_strata for df."""
+        n = 60
+        n_strata = 3
+        weights = np.ones(n, dtype=np.float64)
+        strata = np.repeat(np.arange(n_strata), n // n_strata)
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=strata,
+            psu=None,
+            fpc=None,
+            n_strata=n_strata,
+            n_psu=0,
+            lonely_psu="remove",
+        )
+
+        assert resolved.df_survey == n - n_strata
+
+    def test_single_psu_unstratified_lonely_psu_remove(self):
+        """P1-B: single PSU unstratified, lonely_psu='remove' -> NaN vcov."""
+        np.random.seed(42)
+        n = 20
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = 1.0 + 0.5 * X[:, 1] + np.random.randn(n) * 0.3
+        weights = np.ones(n, dtype=np.float64)
+        residuals = y - X @ np.linalg.lstsq(X, y, rcond=None)[0]
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=np.zeros(n, dtype=int),  # all same PSU
+            fpc=None,
+            n_strata=0,
+            n_psu=1,
+            lonely_psu="remove",
+        )
+
+        vcov = compute_survey_vcov(X, residuals, resolved)
+        assert np.all(np.isnan(vcov))
+
+    def test_single_psu_unstratified_lonely_psu_certainty(self):
+        """P1-B: single PSU unstratified, lonely_psu='certainty' -> NaN vcov."""
+        np.random.seed(42)
+        n = 20
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = 1.0 + 0.5 * X[:, 1] + np.random.randn(n) * 0.3
+        weights = np.ones(n, dtype=np.float64)
+        residuals = y - X @ np.linalg.lstsq(X, y, rcond=None)[0]
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=np.zeros(n, dtype=int),
+            fpc=None,
+            n_strata=0,
+            n_psu=1,
+            lonely_psu="certainty",
+        )
+
+        vcov = compute_survey_vcov(X, residuals, resolved)
+        assert np.all(np.isnan(vcov))
+
+    def test_single_psu_unstratified_lonely_psu_adjust(self):
+        """P1-B: single PSU unstratified, lonely_psu='adjust' -> NaN vcov."""
+        np.random.seed(42)
+        n = 20
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = 1.0 + 0.5 * X[:, 1] + np.random.randn(n) * 0.3
+        weights = np.ones(n, dtype=np.float64)
+        residuals = y - X @ np.linalg.lstsq(X, y, rcond=None)[0]
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=np.zeros(n, dtype=int),
+            fpc=None,
+            n_strata=0,
+            n_psu=1,
+            lonely_psu="adjust",
+        )
+
+        vcov = compute_survey_vcov(X, residuals, resolved)
+        assert np.all(np.isnan(vcov))
+
+    def test_linear_regression_auto_derives_weights_from_survey(self):
+        """P1-C: LinearRegression auto-derives weights from survey_design."""
+        np.random.seed(42)
+        n = 100
+        x1 = np.random.randn(n)
+        y = 2.0 + 1.5 * x1 + np.random.randn(n) * 0.5
+        weights = np.random.uniform(0.5, 3.0, size=n)
+        weights_norm = weights * (n / np.sum(weights))
+
+        psu = np.repeat(np.arange(10), n // 10)
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights_norm,
+            weight_type="pweight",
+            strata=None,
+            psu=psu,
+            fpc=None,
+            n_strata=0,
+            n_psu=10,
+            lonely_psu="remove",
+        )
+
+        # Explicit weights path
+        model_explicit = LinearRegression(
+            weights=weights_norm,
+            weight_type="pweight",
+            robust=True,
+            survey_design=resolved,
+        )
+        X = np.column_stack([np.ones(n), x1])
+        model_explicit.fit(X, y)
+
+        # Auto-derive path: no explicit weights
+        model_auto = LinearRegression(
+            robust=True,
+            survey_design=resolved,
+        )
+        model_auto.fit(X, y)
+
+        # Weights should be populated after fit
+        assert model_auto.weights is not None
+
+        # Coefficients should match
+        np.testing.assert_allclose(
+            model_auto.coefficients_, model_explicit.coefficients_, rtol=1e-10
+        )
+
+        # Vcov should match
+        np.testing.assert_allclose(
+            model_auto.vcov_, model_explicit.vcov_, rtol=1e-10
+        )
+
+    def test_resolve_warns_single_psu_unstratified(self):
+        """P1-B: SurveyDesign.resolve() warns for single PSU unstratified."""
+        n = 10
+        df = pd.DataFrame(
+            {
+                "w": np.ones(n),
+                "psu_col": np.zeros(n, dtype=int),
+                "y": np.random.randn(n),
+            }
+        )
+
+        for mode in ["remove", "certainty", "adjust"]:
+            design = SurveyDesign(
+                weights="w",
+                psu="psu_col",
+                lonely_psu=mode,
+            )
+            with pytest.warns(UserWarning, match=r"Only 1 PSU"):
+                design.resolve(df)

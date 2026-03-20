@@ -1855,6 +1855,9 @@ unequal selection probabilities).
   to "remove" with warning, matching common applied practice
 - **Edge case**: Singleton strata (one PSU per stratum) — handled via
   `lonely_psu` parameter ("remove", "certainty", or "adjust")
+- **Note:** For unstratified designs with a single PSU, all `lonely_psu` modes
+  produce NaN variance. The "adjust" mode cannot center against a global mean
+  when there is only one stratum (the single PSU is the entire sample).
 
 ### Weight Type Effects on Inference
 
@@ -1873,6 +1876,9 @@ unequal selection probabilities).
   inference)
 - **Deviation from R:** Some software uses Satterthwaite-type df approximation;
   we use the simpler and more common `n_PSU - n_strata` convention.
+- **Note:** When no explicit PSU is specified (weights-only or stratified-no-PSU
+  designs), each observation is treated as its own PSU for df purposes. Survey df
+  becomes `n_obs - n_strata` (or `n_obs - 1` when unstratified).
 
 ---
 

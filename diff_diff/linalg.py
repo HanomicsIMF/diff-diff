@@ -1541,6 +1541,10 @@ class LinearRegression:
 
             if isinstance(self.survey_design, ResolvedSurveyDesign):
                 _use_survey_vcov = self.survey_design.needs_survey_vcov
+                # Auto-derive weights from survey_design if not explicitly provided
+                if self.weights is None:
+                    self.weights = self.survey_design.weights
+                    self.weight_type = self.survey_design.weight_type
 
         if self.robust or effective_cluster_ids is not None:
             # Use solve_ols with robust/cluster SEs
