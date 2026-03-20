@@ -122,7 +122,7 @@ category (`Methodology/Correctness`, `Performance`, or `Testing/Docs`):
   `threshold = 0.40 if n_boot < 100 else 0.15`.
 - **`assert_nan_inference()`** from conftest.py: Use to validate ALL inference fields are
   NaN-consistent. Don't check individual fields separately.
-- **Slow tests**: TROP methodology/joint-method tests, Sun-Abraham bootstrap, and
+- **Slow tests**: TROP methodology/global-method tests, Sun-Abraham bootstrap, and
   TROP-parity tests are marked `@pytest.mark.slow` and excluded by default via `addopts`.
   `test_trop.py` uses per-class markers (not file-level) so that validation, API, and
   solver tests still run in the pure Python CI fallback. Run `pytest -m ''` to include

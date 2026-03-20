@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.3] - 2026-03-19
+
+### Added
+- Add aarch64 Linux wheel builds to publish workflow
+
+### Changed
+- Improve documentation information architecture
+- Fix silent interpreter skip and consolidate Linux jobs in publish workflow
+
+## [2.7.2] - 2026-03-18
+
+### Added
+- SEO infrastructure: meta tags, sitemap, llms.txt/llms-full.txt for AI discoverability
+
+### Changed
+- Rename TROP `method="twostep"` to `method="local"`; `"twostep"` deprecated, removal in v3.0
+- Rename internal TROP `_joint_*` methods to `_global_*` for consistency
+
+### Fixed
+- Fix TROPResults schema: report unit counts not observation counts
+- Fix llms-full.txt accuracy and dynamic canonical URLs
+
 ## [2.7.1] - 2026-03-15
 
 ### Changed
@@ -901,6 +923,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.7.3]: https://github.com/igerber/diff-diff/compare/v2.7.2...v2.7.3
+[2.7.2]: https://github.com/igerber/diff-diff/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/igerber/diff-diff/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/igerber/diff-diff/compare/v2.6.1...v2.7.0
 [2.6.1]: https://github.com/igerber/diff-diff/compare/v2.6.0...v2.6.1

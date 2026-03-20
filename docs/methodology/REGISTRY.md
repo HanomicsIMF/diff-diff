@@ -1276,14 +1276,16 @@ Optimization (Equation 2):
 ```
 (α̂, β̂, L̂) = argmin_{α,β,L} Σ_j Σ_s θ_s^{i,t} ω_j^{i,t} (1-W_js)(Y_js - α_j - β_s - L_js)² + λ_nn ||L||_*
 ```
-Solved via alternating minimization. For α, β (or μ, α, β, τ in joint): weighted least
-squares (closed form). For L: proximal gradient with step size η = 1/(2·max(W)):
+Solved via alternating minimization. For α, β: weighted least squares (closed form).
+The global solver adds an intercept μ and solves for (μ, α, β, L) on control data only,
+extracting τ_it post-hoc as residuals (see Global section below).
+For L: proximal gradient with step size η = 1/(2·max(W)):
 ```
 Gradient step: G = L + (W/max(W)) ⊙ (R - L)
 Proximal step: L = U × soft_threshold(Σ, η·λ_nn) × V'  (SVD of G = UΣV')
 ```
-where R is the residual after removing fixed effects (and τ·D in joint mode).
-Both the twostep and global solvers use FISTA/Nesterov acceleration for the
+where R is the residual after removing fixed effects.
+Both the local and global solvers use FISTA/Nesterov acceleration for the
 inner L update (O(1/k²) convergence rate, up to 20 inner iterations per
 outer alternating step).
 
@@ -1373,12 +1375,13 @@ Q(λ) = Σ_{j,s: D_js=0} [τ̂_js^loocv(λ)]²
 
 ### TROP Global Estimation Method
 
-**Method**: `method="global"` in TROP estimator (`method="joint"` is a deprecated alias)
+**Method**: `method="global"` in TROP estimator (`method="joint"` is a deprecated alias;
+`method="twostep"` is a deprecated alias for `method="local"`)
 
 **Approach**: Computationally efficient adaptation using the (1-W) masking
 principle from Eq. 2. Fits a single global model on control data, then
 extracts treatment effects as post-hoc residuals. For the paper's full
-per-treated-cell estimator (Algorithm 2), use `method='twostep'`.
+per-treated-cell estimator (Algorithm 2), use `method='local'`.
 
 **Objective function** (Equation G1):
 ```
@@ -1401,7 +1404,7 @@ ATT = mean(τ̂_{it})  over all treated observations
 
 Treatment effects are **heterogeneous** per-observation values. ATT is their mean.
 
-**Weight computation** (differs from twostep):
+**Weight computation** (differs from local):
 - Time weights: δ_time(t) = exp(-λ_time × |t - center|) where center = T - treated_periods/2
 - Unit weights: δ_unit(i) = exp(-λ_unit × RMSE(i, treated_avg))
   where RMSE is computed over pre-treatment periods comparing to average treated trajectory
@@ -1425,7 +1428,7 @@ Treatment effects are **heterogeneous** per-observation values. ATT is their mea
 
 3. **Post-hoc**: Extract τ̂_{it} = Y_{it} - μ̂ - α̂_i - β̂_t - L̂_{it} for treated cells
 
-**LOOCV parameter selection** (unified with twostep, Equation 5):
+**LOOCV parameter selection** (unified with local, Equation 5):
 Following paper's Equation 5 and footnote 2:
 ```
 Q(λ) = Σ_{j,s: D_js=0} [τ̂_js^loocv(λ)]²
@@ -1442,14 +1445,14 @@ For global method, LOOCV works as follows:
 3. Select λ combination that minimizes Q(λ)
 
 **Rust acceleration**: The LOOCV grid search is parallelized in Rust for 5-10x speedup.
-- `loocv_grid_search_joint()` - Parallel LOOCV across all λ combinations
-- `bootstrap_trop_variance_joint()` - Parallel bootstrap variance estimation
+- `loocv_grid_search_global()` - Parallel LOOCV across all λ combinations
+- `bootstrap_trop_variance_global()` - Parallel bootstrap variance estimation
 
-**Key differences from twostep method**:
+**Key differences from local method**:
 - Global weights (distance to treated block center) vs. per-observation weights
 - Single model fit per λ combination vs. N_treated fits
 - Treatment effects are post-hoc residuals from a single global model (global)
-  vs. post-hoc residuals from per-observation models (twostep)
+  vs. post-hoc residuals from per-observation models (local)
 - Both use (1-W) masking (control-only fitting)
 - Faster computation for large panels
 
@@ -1458,14 +1461,14 @@ For global method, LOOCV works as follows:
   to receive treatment at the same time. A `ValueError` is raised if staggered
   adoption is detected (units first treated at different periods). Treatment timing is
   inferred once and held constant for bootstrap variance estimation.
-  For staggered adoption designs, use `method="twostep"`.
+  For staggered adoption designs, use `method="local"`.
 
 **Reference**: Adapted from reference implementation. See also Athey et al. (2025).
 
 **Edge Cases (treated NaN outcomes):**
 - **Partial NaN**: When some treated outcomes Y_{it} are NaN/missing:
   - `_extract_posthoc_tau()` (global) skips these cells; only finite τ̂ values are averaged
-  - Twostep loop skips NaN outcomes entirely (no model fit, no tau appended)
+  - Local loop skips NaN outcomes entirely (no model fit, no tau appended)
   - `n_treated_obs` in results reflects valid (finite) count, not total D==1 count
   - `df_trop = max(1, n_valid_treated - 1)` uses valid count
   - Warning issued when n_valid_treated < total treated count
@@ -1476,12 +1479,14 @@ For global method, LOOCV works as follows:
   iterations succeed. `safe_inference()` propagates NaN downstream.
 
 **Requirements checklist:**
-- [x] Same LOOCV framework as twostep (Equation 5)
+- [x] Same LOOCV framework as local (Equation 5)
 - [x] Global weight computation using treated block center
 - [x] (1-W) masking for control-only fitting (per paper Eq. 2)
 - [x] Alternating minimization for nuclear norm penalty
 - [x] Returns ATT = mean of per-observation post-hoc τ̂_{it}
 - [x] Rust acceleration for LOOCV and bootstrap
+
+- **Note:** `method="twostep"` renamed to `method="local"` and `method="joint"` renamed to `method="global"` to form a natural local/global pair. Both old names are deprecated aliases, removal planned for v3.0.
 
 ---
 

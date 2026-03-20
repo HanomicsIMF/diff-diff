@@ -1,3 +1,7 @@
+.. meta::
+   :description: Troubleshooting guide for diff-diff. Solutions for common DiD issues including singular matrices, collinear covariates, insufficient variation, and convergence problems.
+   :keywords: difference-in-differences troubleshooting, DiD singular matrix, collinear covariates fix, parallel trends test fails
+
 Troubleshooting
 ===============
 
@@ -581,6 +585,26 @@ inaccurate with missing observations.
 
 Deprecation Warnings
 --------------------
+
+"method='twostep' is deprecated"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** TROP emits a ``FutureWarning`` that ``method='twostep'`` is
+deprecated.
+
+**Causes:**
+
+1. Code uses the old ``method='twostep'`` parameter name
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Old (deprecated)
+   trop = TROP(method='twostep')
+
+   # New (use 'local' instead)
+   trop = TROP(method='local')
 
 "method='joint' is deprecated"
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

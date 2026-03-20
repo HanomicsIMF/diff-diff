@@ -1,5 +1,11 @@
 # diff-diff
 
+[![PyPI version](https://img.shields.io/pypi/v/diff-diff.svg)](https://pypi.org/project/diff-diff/)
+[![Python versions](https://img.shields.io/pypi/pyversions/diff-diff.svg)](https://pypi.org/project/diff-diff/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Downloads](https://img.shields.io/pypi/dm/diff-diff.svg)](https://pypi.org/project/diff-diff/)
+[![Documentation](https://readthedocs.org/projects/diff-diff/badge/?version=stable)](https://diff-diff.readthedocs.io/en/stable/)
+
 A Python library for Difference-in-Differences (DiD) causal inference analysis with an sklearn-like API and statsmodels-style outputs.
 
 ## Installation
@@ -1517,7 +1523,7 @@ trop = TROP(
 
 ```python
 TROP(
-    method='twostep',           # Estimation method: 'twostep' (default) or 'joint'
+    method='local',             # Estimation method: 'local' (default) or 'global'
     lambda_time_grid=None,      # Time decay grid (default: [0, 0.1, 0.5, 1, 2, 5])
     lambda_unit_grid=None,      # Unit distance grid (default: [0, 0.1, 0.5, 1, 2, 5])
     lambda_nn_grid=None,        # Nuclear norm grid (default: [0, 0.01, 0.1, 1, 10])
@@ -1530,8 +1536,8 @@ TROP(
 ```
 
 **Estimation methods:**
-- `'twostep'` (default): Per-observation model fitting following Algorithm 2 of the paper. Computes observation-specific weights and fits a model for each treated observation, then averages the individual treatment effects. More flexible but computationally intensive.
-- `'joint'`: Joint weighted least squares optimization. Estimates a single scalar treatment effect τ along with fixed effects and optional low-rank factor adjustment. Faster but assumes homogeneous treatment effects.
+- `'local'` (default): Per-observation model fitting following Algorithm 2 of the paper. Computes observation-specific weights and fits a model for each treated observation, then averages the individual treatment effects. More flexible but computationally intensive.
+- `'global'`: Global weighted least squares optimization. Fits a single model on control observations with global weights, then computes per-observation treatment effects as residuals. Faster but uses global rather than observation-specific weights.
 
 **Convenience function:**
 
@@ -2908,6 +2914,21 @@ The `HonestDiD` module implements sensitivity analysis methods for relaxing the 
 - **Imbens, G. W., & Rubin, D. B. (2015).** *Causal Inference for Statistics, Social, and Biomedical Sciences: An Introduction*. Cambridge University Press.
 
 - **Cunningham, S. (2021).** *Causal Inference: The Mixtape*. Yale University Press. [https://mixtape.scunning.com/](https://mixtape.scunning.com/)
+
+## Citing diff-diff
+
+If you use diff-diff in your research, please cite it:
+
+```bibtex
+@software{diff_diff,
+  title = {diff-diff: Difference-in-Differences Causal Inference for Python},
+  author = {{diff-diff contributors}},
+  url = {https://github.com/igerber/diff-diff},
+  license = {MIT},
+}
+```
+
+See [`CITATION.cff`](CITATION.cff) for the full citation metadata.
 
 ## License
 

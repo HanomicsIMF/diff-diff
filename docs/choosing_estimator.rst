@@ -1,3 +1,7 @@
+.. meta::
+   :description: Guide to choosing the right Difference-in-Differences estimator. Covers basic DiD, TWFE, staggered adoption methods (Callaway-Sant'Anna, Sun-Abraham), Synthetic DiD, and more.
+   :keywords: which DiD estimator, staggered DiD estimator, difference-in-differences method selection, TWFE alternatives
+
 Choosing an Estimator
 =====================
 
@@ -405,7 +409,7 @@ exponential unit distance weights, and time decay weights with LOOCV tuning.
 .. note::
 
    TROP is computationally intensive. Use ``method='global'`` for faster
-   estimation at the cost of some flexibility vs. ``method='twostep'``.
+   estimation at the cost of some flexibility vs. ``method='local'``.
 
 Bacon Decomposition
 ~~~~~~~~~~~~~~~~~~~

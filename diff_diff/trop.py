@@ -31,8 +31,8 @@ from diff_diff._backend import (
     _rust_unit_distance_matrix,
     _rust_loocv_grid_search,
     _rust_bootstrap_trop_variance,
-    _rust_loocv_grid_search_joint,
-    _rust_bootstrap_trop_variance_joint,
+    _rust_loocv_grid_search_global,
+    _rust_bootstrap_trop_variance_global,
 )
 from diff_diff.trop_results import (
     _LAMBDA_INF,
@@ -63,10 +63,10 @@ class TROP:
 
     Parameters
     ----------
-    method : str, default='twostep'
+    method : str, default='local'
         Estimation method to use:
 
-        - 'twostep': Per-observation model fitting following Algorithm 2 of
+        - 'local': Per-observation model fitting following Algorithm 2 of
           Athey et al. (2025). Computes observation-specific weights and fits
           a model for each treated observation, averaging the individual
           treatment effects. More flexible but computationally intensive.
@@ -77,10 +77,11 @@ class TROP:
           treatment effects as residuals:
           tau_it = Y_it - mu - alpha_i - beta_t - L_it for treated cells.
           ATT is the mean of these effects. For the paper's full
-          per-treated-cell estimator, use ``method='twostep'``.
+          per-treated-cell estimator, use ``method='local'``.
 
-        - 'joint': Deprecated alias for 'global'. Will be removed in a
-          future version.
+        - 'twostep': Deprecated alias for 'local'. Will be removed in v3.0.
+
+        - 'joint': Deprecated alias for 'global'. Will be removed in v3.0.
 
     lambda_time_grid : list, optional
         Grid of time weight decay parameters. 0.0 = uniform weights (disabled).
@@ -138,7 +139,7 @@ class TROP:
 
     def __init__(
         self,
-        method: str = "twostep",
+        method: str = "local",
         lambda_time_grid: Optional[List[float]] = None,
         lambda_unit_grid: Optional[List[float]] = None,
         lambda_nn_grid: Optional[List[float]] = None,
@@ -149,16 +150,24 @@ class TROP:
         seed: Optional[int] = None,
     ):
         # Validate method parameter
-        # 'global' is the preferred name; 'joint' is a deprecated alias
-        valid_methods = ("twostep", "joint", "global")
+        # 'local'/'global' are preferred; 'twostep'/'joint' are deprecated aliases
+        valid_methods = ("local", "twostep", "joint", "global")
         if method not in valid_methods:
             raise ValueError(
                 f"method must be one of {valid_methods}, got '{method}'"
             )
+        if method == "twostep":
+            warnings.warn(
+                "method='twostep' is deprecated and will be removed in v3.0. "
+                "Use method='local' instead.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            method = "local"
         if method == "joint":
             warnings.warn(
-                "method='joint' is deprecated and will be removed in a future "
-                "version. Use method='global' instead.",
+                "method='joint' is deprecated and will be removed in v3.0. "
+                "Use method='global' instead.",
                 FutureWarning,
                 stacklevel=2,
             )
@@ -556,7 +565,7 @@ class TROP:
     # Joint estimation method
     # =========================================================================
 
-    def _compute_joint_weights(
+    def _compute_global_weights(
         self,
         Y: np.ndarray,
         D: np.ndarray,
@@ -567,7 +576,7 @@ class TROP:
         n_periods: int,
     ) -> np.ndarray:
         """
-        Compute distance-based weights for joint estimation.
+        Compute distance-based weights for global estimation.
 
         Following the reference implementation, weights are computed based on:
         - Time distance: distance to center of treated block
@@ -655,7 +664,7 @@ class TROP:
 
         return delta
 
-    def _solve_joint_model(
+    def _solve_global_model(
         self,
         Y: np.ndarray,
         delta: np.ndarray,
@@ -668,10 +677,10 @@ class TROP:
         """
         n_periods, n_units = Y.shape
         if lambda_nn >= 1e10:
-            mu, alpha, beta = self._solve_joint_no_lowrank(Y, delta)
+            mu, alpha, beta = self._solve_global_no_lowrank(Y, delta)
             L = np.zeros((n_periods, n_units))
         else:
-            mu, alpha, beta, L = self._solve_joint_with_lowrank(
+            mu, alpha, beta, L = self._solve_global_with_lowrank(
                 Y, delta, lambda_nn, self.max_iter, self.tol
             )
         return mu, alpha, beta, L
@@ -718,7 +727,7 @@ class TROP:
 
         return att, treatment_effects, tau_values
 
-    def _loocv_score_joint(
+    def _loocv_score_global(
         self,
         Y: np.ndarray,
         D: np.ndarray,
@@ -731,12 +740,12 @@ class TROP:
         n_periods: int,
     ) -> float:
         """
-        Compute LOOCV score for joint method with specific parameter combination.
+        Compute LOOCV score for global method with specific parameter combination.
 
         Following paper's Equation 5:
         Q(λ) = Σ_{j,s: D_js=0} [τ̂_js^loocv(λ)]²
 
-        For joint method, we exclude each control observation, fit the joint model
+        For global method, we exclude each control observation, fit the global model
         on remaining data, and compute the pseudo-treatment effect at the excluded obs.
 
         Parameters
@@ -766,7 +775,7 @@ class TROP:
             LOOCV score (sum of squared pseudo-treatment effects).
         """
         # Compute global weights (same for all LOOCV iterations)
-        delta = self._compute_joint_weights(
+        delta = self._compute_global_weights(
             Y, D, lambda_time, lambda_unit, treated_periods, n_units, n_periods
         )
 
@@ -779,7 +788,7 @@ class TROP:
             delta_ex[t_ex, i_ex] = 0.0
 
             try:
-                mu, alpha, beta, L = self._solve_joint_model(Y, delta_ex, lambda_nn)
+                mu, alpha, beta, L = self._solve_global_model(Y, delta_ex, lambda_nn)
 
                 # Pseudo treatment effect: τ = Y - μ - α - β - L
                 if np.isfinite(Y[t_ex, i_ex]):
@@ -796,7 +805,7 @@ class TROP:
 
         return tau_sq_sum
 
-    def _solve_joint_no_lowrank(
+    def _solve_global_no_lowrank(
         self,
         Y: np.ndarray,
         delta: np.ndarray,
@@ -806,7 +815,7 @@ class TROP:
 
         Solves: min Σ (1-W)*δ_{it}(Y_{it} - μ - α_i - β_t)²
 
-        The (1-W) masking is already applied to delta by _compute_joint_weights,
+        The (1-W) masking is already applied to delta by _compute_global_weights,
         so treated observations have zero weight and do not affect the fit.
 
         Parameters
@@ -880,7 +889,7 @@ class TROP:
 
         return float(mu), alpha, beta
 
-    def _solve_joint_with_lowrank(
+    def _solve_global_with_lowrank(
         self,
         Y: np.ndarray,
         delta: np.ndarray,
@@ -893,7 +902,7 @@ class TROP:
 
         Solves: min Σ (1-W)*δ_{it}(Y_{it} - μ - α_i - β_t - L_{it})² + λ_nn||L||_*
 
-        The (1-W) masking is already applied to delta by _compute_joint_weights,
+        The (1-W) masking is already applied to delta by _compute_global_weights,
         so treated observations have zero weight and do not affect the fit.
 
         Parameters
@@ -942,7 +951,7 @@ class TROP:
 
             # Step 1: Fix L, solve for (mu, alpha, beta)
             Y_adj = Y_safe - L
-            mu, alpha, beta = self._solve_joint_no_lowrank(Y_adj, delta_masked)
+            mu, alpha, beta = self._solve_global_no_lowrank(Y_adj, delta_masked)
 
             # Step 2: Fix (mu, alpha, beta), update L with FISTA acceleration
             R = Y_safe - mu - alpha[np.newaxis, :] - beta[:, np.newaxis]
@@ -981,11 +990,11 @@ class TROP:
 
         # Final re-solve with converged L (match Rust behavior)
         Y_adj = Y_safe - L
-        mu, alpha, beta = self._solve_joint_no_lowrank(Y_adj, delta_masked)
+        mu, alpha, beta = self._solve_global_no_lowrank(Y_adj, delta_masked)
 
         return mu, alpha, beta, L
 
-    def _fit_joint(
+    def _fit_global(
         self,
         data: pd.DataFrame,
         outcome: str,
@@ -1024,10 +1033,10 @@ class TROP:
         (fixed `treated_periods` across resamples). The treatment timing is
         inferred from the data once and held constant for all bootstrap
         iterations. For staggered adoption designs where treatment timing varies
-        across units, use `method="twostep"` which computes observation-specific
+        across units, use `method="local"` which computes observation-specific
         weights that naturally handle heterogeneous timing.
         """
-        # Data setup (same as twostep method)
+        # Data setup (same as local method)
         all_units = sorted(data[unit].unique())
         all_periods = sorted(data[time].unique())
 
@@ -1097,7 +1106,7 @@ class TROP:
         if n_pre_periods < 2:
             raise ValueError("Need at least 2 pre-treatment periods")
 
-        # Check for staggered adoption (joint method requires simultaneous treatment)
+        # Check for staggered adoption (global method requires simultaneous treatment)
         # Use only observed periods (skip missing) to avoid false positives on unbalanced panels
         first_treat_by_unit = []
         for i in treated_unit_idx:
@@ -1115,7 +1124,7 @@ class TROP:
             raise ValueError(
                 f"method='global' requires simultaneous treatment adoption, but your data "
                 f"shows staggered adoption (units first treated at periods {unique_starts}). "
-                f"Use method='twostep' which properly handles staggered adoption designs."
+                f"Use method='local' which properly handles staggered adoption designs."
             )
 
         # LOOCV grid search for tuning parameters
@@ -1124,7 +1133,7 @@ class TROP:
         best_score = np.inf
         control_mask = D == 0
 
-        if HAS_RUST_BACKEND and _rust_loocv_grid_search_joint is not None:
+        if HAS_RUST_BACKEND and _rust_loocv_grid_search_global is not None:
             try:
                 # Prepare inputs for Rust function
                 control_mask_u8 = control_mask.astype(np.uint8)
@@ -1133,7 +1142,7 @@ class TROP:
                 lambda_unit_arr = np.array(self.lambda_unit_grid, dtype=np.float64)
                 lambda_nn_arr = np.array(self.lambda_nn_grid, dtype=np.float64)
 
-                result = _rust_loocv_grid_search_joint(
+                result = _rust_loocv_grid_search_global(
                     Y, D.astype(np.float64), control_mask_u8,
                     lambda_time_arr, lambda_unit_arr, lambda_nn_arr,
                     self.max_iter, self.tol,
@@ -1170,7 +1179,7 @@ class TROP:
             except Exception as e:
                 # Fall back to Python implementation on error
                 logger.debug(
-                    "Rust LOOCV grid search (joint) failed, falling back to Python: %s", e
+                    "Rust LOOCV grid search (global) failed, falling back to Python: %s", e
                 )
                 best_lambda = None
                 best_score = np.inf
@@ -1193,7 +1202,7 @@ class TROP:
                         ln = 1e10 if np.isinf(lambda_nn_val) else lambda_nn_val
 
                         try:
-                            score = self._loocv_score_joint(
+                            score = self._loocv_score_global(
                                 Y, D, control_obs, lt, lu, ln,
                                 treated_periods, n_units, n_periods
                             )
@@ -1223,11 +1232,11 @@ class TROP:
             lambda_nn = 1e10
 
         # Compute final weights and fit
-        delta = self._compute_joint_weights(
+        delta = self._compute_global_weights(
             Y, D, lambda_time, lambda_unit, treated_periods, n_units, n_periods
         )
 
-        mu, alpha, beta, L = self._solve_joint_model(Y, delta, lambda_nn)
+        mu, alpha, beta, L = self._solve_global_model(Y, delta, lambda_nn)
 
         # Post-hoc tau extraction (per paper Eq. 2)
         att, treatment_effects, tau_values = self._extract_posthoc_tau(
@@ -1258,7 +1267,7 @@ class TROP:
         # Bootstrap variance estimation
         effective_lambda = (lambda_time, lambda_unit, lambda_nn)
 
-        se, bootstrap_dist = self._bootstrap_variance_joint(
+        se, bootstrap_dist = self._bootstrap_variance_global(
             data, outcome, treatment, unit, time,
             effective_lambda, treated_periods
         )
@@ -1300,7 +1309,7 @@ class TROP:
         self.is_fitted_ = True
         return self.results_
 
-    def _bootstrap_variance_joint(
+    def _bootstrap_variance_global(
         self,
         data: pd.DataFrame,
         outcome: str,
@@ -1311,7 +1320,7 @@ class TROP:
         treated_periods: int,
     ) -> Tuple[float, np.ndarray]:
         """
-        Compute bootstrap standard error for joint method.
+        Compute bootstrap standard error for global method.
 
         Uses Rust backend when available for parallel bootstrap (5-15x speedup).
 
@@ -1340,7 +1349,7 @@ class TROP:
         lambda_time, lambda_unit, lambda_nn = optimal_lambda
 
         # Try Rust backend for parallel bootstrap (5-15x speedup)
-        if HAS_RUST_BACKEND and _rust_bootstrap_trop_variance_joint is not None:
+        if HAS_RUST_BACKEND and _rust_bootstrap_trop_variance_global is not None:
             try:
                 # Create matrices for Rust function
                 all_units = sorted(data[unit].unique())
@@ -1359,7 +1368,7 @@ class TROP:
                     .values
                 )
 
-                bootstrap_estimates, se = _rust_bootstrap_trop_variance_joint(
+                bootstrap_estimates, se = _rust_bootstrap_trop_variance_global(
                     Y, D,
                     lambda_time, lambda_unit, lambda_nn,
                     self.n_bootstrap, self.max_iter, self.tol,
@@ -1378,7 +1387,7 @@ class TROP:
 
             except Exception as e:
                 logger.debug(
-                    "Rust bootstrap (joint) failed, falling back to Python: %s", e
+                    "Rust bootstrap (global) failed, falling back to Python: %s", e
                 )
 
         # Python fallback implementation
@@ -1419,7 +1428,7 @@ class TROP:
             ], ignore_index=True)
 
             try:
-                tau = self._fit_joint_with_fixed_lambda(
+                tau = self._fit_global_with_fixed_lambda(
                     boot_data, outcome, treatment, unit, time,
                     optimal_lambda, treated_periods
                 )
@@ -1441,7 +1450,7 @@ class TROP:
         se = np.std(bootstrap_estimates, ddof=1)
         return float(se), bootstrap_estimates
 
-    def _fit_joint_with_fixed_lambda(
+    def _fit_global_with_fixed_lambda(
         self,
         data: pd.DataFrame,
         outcome: str,
@@ -1478,12 +1487,12 @@ class TROP:
         )
 
         # Compute weights (includes (1-W) masking)
-        delta = self._compute_joint_weights(
+        delta = self._compute_global_weights(
             Y, D, lambda_time, lambda_unit, treated_periods, n_units, n_periods
         )
 
         # Fit model on control data and extract post-hoc tau
-        mu, alpha, beta, L = self._solve_joint_model(Y, delta, lambda_nn)
+        mu, alpha, beta, L = self._solve_global_model(Y, delta, lambda_nn)
         att, _, _ = self._extract_posthoc_tau(Y, D, mu, alpha, beta, L)
         return att
 
@@ -1541,9 +1550,9 @@ class TROP:
 
         # Dispatch based on estimation method
         if self.method == "global":
-            return self._fit_joint(data, outcome, treatment, unit, time)
+            return self._fit_global(data, outcome, treatment, unit, time)
 
-        # Below is the twostep method (default)
+        # Below is the local method (default)
         # Get unique units and periods
         all_units = sorted(data[unit].unique())
         all_periods = sorted(data[time].unique())
@@ -2660,10 +2669,18 @@ class TROP:
     def set_params(self, **params) -> "TROP":
         """Set estimator parameters."""
         for key, value in params.items():
+            if key == "method" and value == "twostep":
+                warnings.warn(
+                    "method='twostep' is deprecated and will be removed in "
+                    "v3.0. Use method='local' instead.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+                value = "local"
             if key == "method" and value == "joint":
                 warnings.warn(
-                    "method='joint' is deprecated and will be removed in a "
-                    "future version. Use method='global' instead.",
+                    "method='joint' is deprecated and will be removed in "
+                    "v3.0. Use method='global' instead.",
                     FutureWarning,
                     stacklevel=2,
                 )
