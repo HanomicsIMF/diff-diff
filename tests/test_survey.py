@@ -19,6 +19,7 @@ from diff_diff.survey import (
     compute_survey_vcov,
 )
 from diff_diff.twfe import TwoWayFixedEffects
+from diff_diff.utils import within_transform
 
 # =============================================================================
 # Shared Fixtures
@@ -254,106 +255,66 @@ class TestAnalyticalVerification:
 
 
 # =============================================================================
-# Tier 2: R Cross-Validation (pre-computed reference values)
+# Tier 2: Exact Manual Oracle Tests
 # =============================================================================
 
 
 class TestReferenceValues:
-    """Compare against pre-computed reference values from R.
+    """Tier 2: Exact manual oracle tests (replaces placeholder R cross-validation)."""
 
-    Reference values were generated using:
-      library(survey)
-      set.seed(42)
-      ...
-      svyglm(outcome ~ treated * post, design = svy_design)
-    """
-
-    @pytest.fixture
-    def reference_data(self):
-        """Small dataset with known R reference values."""
-        # Deterministic 2x2 DGP — 40 obs, no randomness
-        np.random.seed(42)
-        n = 40
-        treated = np.array([1] * 20 + [0] * 20)
-        post = np.tile([0, 1], 20)
-        # Deterministic outcome: base + treat_effect + time_effect + interaction
-        y = (
-            10.0 + 2.0 * treated + 3.0 * post + 5.0 * treated * post + np.random.randn(n) * 0.01
-        )  # tiny noise for realism
-        weights = np.where(treated == 1, 2.0, 1.0)
-
-        df = pd.DataFrame(
-            {
-                "outcome": y,
-                "treated": treated,
-                "post": post,
-                "weight": weights,
-            }
-        )
-        return df
-
-    def test_wls_coefficients_vs_reference(self, reference_data):
-        """WLS coefficients match R lm() with weights."""
-        df = reference_data
-        n = len(df)
-        intercept = np.ones(n)
-        X = np.column_stack(
+    def test_wls_coefficients_exact_oracle(self):
+        """Verify WLS coefficients against hand-computed (X'WX)^{-1}X'Wy for n=4."""
+        # 2x2 DiD design with 2 obs per cell (n=8 > k=4)
+        X = np.array(
             [
-                intercept,
-                df["treated"].values,
-                df["post"].values,
-                (df["treated"] * df["post"]).values,
+                [1, 0, 0, 0],
+                [1, 0, 0, 0],
+                [1, 0, 1, 0],
+                [1, 0, 1, 0],
+                [1, 1, 0, 0],
+                [1, 1, 0, 0],
+                [1, 1, 1, 1],
+                [1, 1, 1, 1],
             ]
         )
-        y = df["outcome"].values
-        raw_w = df["weight"].values
-        w = raw_w * (n / np.sum(raw_w))
+        y = np.array([10.0, 10.5, 12.0, 12.5, 11.0, 11.5, 16.0, 16.5])
+        w = np.array([1.0, 1.5, 2.0, 1.0, 1.0, 1.5, 2.0, 1.0])
 
-        coef, _resid, _vcov = solve_ols(X, y, weights=w, weight_type="pweight")
+        # Hand-compute: beta = (X'WX)^{-1} X'Wy
+        W = np.diag(w)
+        XtWX = X.T @ W @ X
+        XtWy = X.T @ W @ y
+        beta_expected = np.linalg.solve(XtWX, XtWy)
 
-        # R reference: lm(outcome ~ treated * post, weights = weight)
-        # With seed(42) and noise 0.01, these are near-exact DGP values.
-        # Intercept ~ 10, treated ~ 2, post ~ 3, interaction (ATT) ~ 5
-        assert abs(coef[0] - 10.0) < 0.05  # intercept
-        assert abs(coef[1] - 2.0) < 0.05  # treated main effect
-        assert abs(coef[2] - 3.0) < 0.05  # post main effect
-        assert abs(coef[3] - 5.0) < 0.05  # interaction (ATT)
+        coef, resid, vcov = solve_ols(X, y, weights=w, weight_type="pweight")
+        np.testing.assert_allclose(coef, beta_expected, atol=1e-10)
 
-    def test_tsl_se_vs_reference(self):
-        """TSL sandwich SEs are positive and consistent with cluster-robust."""
+    def test_weighted_hc1_vcov_exact_oracle(self):
+        """Verify weighted HC1 vcov against hand-computed sandwich formula."""
         np.random.seed(42)
-        n = 100
-        strata = np.repeat(np.arange(5), 20)
-        psu = np.repeat(np.arange(20), 5)
-        weights = 1.0 + 0.3 * strata.astype(float)
-        weights = weights * (n / np.sum(weights))
+        X = np.column_stack([np.ones(8), np.random.randn(8)])
+        y = 1.0 + 2.0 * X[:, 1] + np.random.randn(8) * 0.5
+        w = np.array([1.0, 2.0, 1.5, 0.5, 2.0, 1.0, 1.5, 0.5])
 
-        X = np.column_stack([np.ones(n), np.random.randn(n)])
-        y = 2.0 + X[:, 1] * 1.5 + np.random.randn(n) * 0.5
+        # Normalize weights to sum=n
+        w_norm = w * len(w) / np.sum(w)
 
-        resolved = ResolvedSurveyDesign(
-            weights=weights,
-            weight_type="pweight",
-            strata=strata,
-            psu=psu,
-            fpc=None,
-            n_strata=5,
-            n_psu=20,
-            lonely_psu="remove",
-        )
+        # Hand-compute WLS
+        W = np.diag(w_norm)
+        XtWX = X.T @ W @ X
+        beta = np.linalg.solve(XtWX, X.T @ W @ y)
+        u = y - X @ beta
 
-        coef, resid, _vcov = solve_ols(X, y, weights=weights, weight_type="pweight")
-        tsl_vcov = compute_survey_vcov(X, resid, resolved)
-        tsl_se = np.sqrt(np.diag(tsl_vcov))
+        # Hand-compute weighted HC1 sandwich: (X'WX)^{-1} X'diag(w*u²)X (X'WX)^{-1}
+        n, k = X.shape
+        meat = X.T @ np.diag(w_norm * u**2) @ X
+        bread_inv = np.linalg.inv(XtWX)
+        adjustment = n / (n - k)
+        vcov_expected = adjustment * bread_inv @ meat @ bread_inv
 
-        # TSL SEs should be positive and finite
-        assert np.all(tsl_se > 0)
-        assert np.all(np.isfinite(tsl_se))
-
-        # TSL SEs should be in a plausible range (not wildly different from HC1)
-        hc1_se = np.sqrt(np.diag(_vcov))
-        ratio = tsl_se / hc1_se
-        assert np.all(ratio > 0.1) and np.all(ratio < 10.0)
+        coef, resid, vcov = solve_ols(X, y, weights=w_norm, weight_type="pweight")
+        np.testing.assert_allclose(vcov, vcov_expected, atol=1e-10)
+        np.testing.assert_allclose(coef, beta, atol=1e-10)
 
 
 # =============================================================================
@@ -1128,3 +1089,188 @@ class TestMonteCarlo:
             f"95% CI coverage = {coverage:.3f} ({covers}/{n_sims}) "
             f"outside [{tol_low}, {tol_high}]"
         )
+
+
+# =============================================================================
+# Tier 6: P0/P1 Fix Verification Tests
+# =============================================================================
+
+
+class TestP0P1Fixes:
+    """Verification tests for P0 and P1 fixes."""
+
+    def test_all_singleton_strata_nan_inference(self):
+        """All-singleton strata design returns NaN inference (P0-3)."""
+        np.random.seed(200)
+        n = 30
+        # Every stratum has exactly 1 PSU -> no within-stratum variance
+        strata = np.arange(n)
+        psu = np.arange(n)
+        weights = np.ones(n)
+
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = 1.0 + X[:, 1] * 0.5 + np.random.randn(n) * 0.3
+
+        coef, resid, _ = solve_ols(X, y, weights=weights, weight_type="pweight")
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=strata,
+            psu=psu,
+            fpc=None,
+            n_strata=n,
+            n_psu=n,
+            lonely_psu="remove",
+        )
+        vcov = compute_survey_vcov(X, resid, resolved)
+
+        # All singleton strata -> all removed -> NaN vcov
+        assert np.all(np.isnan(vcov))
+
+    def test_fpc_validates_against_psu_count(self):
+        """FPC >= n_PSU passes validation even when n_obs > FPC (P1)."""
+        n = 40
+        # 2 strata, 4 PSUs per stratum, 5 obs per PSU
+        strata = np.repeat([0, 1], 20)
+        psu = np.repeat(np.arange(8), 5)
+        # FPC = 10 (>= 4 PSUs per stratum, but < 20 obs per stratum)
+        fpc_arr = np.full(n, 10.0)
+
+        df = pd.DataFrame(
+            {
+                "y": np.ones(n),
+                "w": np.ones(n),
+                "s": strata,
+                "psu": psu,
+                "fpc": fpc_arr,
+            }
+        )
+        sd = SurveyDesign(weights="w", strata="s", psu="psu", fpc="fpc")
+        # Should not raise: FPC=10 >= n_PSU=4 per stratum
+        resolved = sd.resolve(df)
+        assert resolved.fpc is not None
+
+    def test_fpc_nonconstant_within_stratum(self):
+        """Non-constant FPC within a stratum raises ValueError (P1)."""
+        n = 20
+        strata = np.repeat([0, 1], 10)
+        psu = np.repeat(np.arange(4), 5)
+        # FPC varies within stratum 0
+        fpc_arr = np.array([100.0] * 5 + [200.0] * 5 + [150.0] * 10)
+
+        df = pd.DataFrame(
+            {
+                "y": np.ones(n),
+                "w": np.ones(n),
+                "s": strata,
+                "psu": psu,
+                "fpc": fpc_arr,
+            }
+        )
+        sd = SurveyDesign(weights="w", strata="s", psu="psu", fpc="fpc")
+        with pytest.raises(ValueError, match="constant within each stratum"):
+            sd.resolve(df)
+
+    def test_fpc_only_without_psu_raises(self):
+        """FPC without psu or strata raises ValueError (P1)."""
+        n = 10
+        df = pd.DataFrame(
+            {
+                "y": np.ones(n),
+                "w": np.ones(n),
+                "fpc": np.full(n, 100.0),
+            }
+        )
+        sd = SurveyDesign(weights="w", fpc="fpc")
+        with pytest.raises(ValueError, match="FPC requires either psu or strata"):
+            sd.resolve(df)
+
+    def test_weighted_within_transform_matches_explicit_wls(self):
+        """Weighted within_transform + OLS matches explicit WLS with dummies (P0-2).
+
+        For a balanced panel with 2-way FE, the within-transformed WLS
+        should yield the same treatment coefficient as WLS with explicit
+        unit + time dummies.
+        """
+        np.random.seed(300)
+        n_units = 10
+        n_periods = 3
+        rows = []
+        for u in range(n_units):
+            for t in range(n_periods):
+                treated = 1 if u < 5 else 0
+                post = 1 if t >= 2 else 0
+                y = 5.0 + u * 0.1 + t * 0.5 + 3.0 * treated * post
+                y += np.random.randn() * 0.1
+                rows.append(
+                    {
+                        "unit": u,
+                        "time": t,
+                        "treated": treated,
+                        "post": post,
+                        "outcome": y,
+                    }
+                )
+        df = pd.DataFrame(rows)
+        weights = np.array([1.0 + 0.5 * (i % 3) for i in range(len(df))])
+        weights = weights * len(df) / np.sum(weights)
+
+        # Method 1: Within-transform + OLS on treatment*post
+        df["treat_post"] = df["treated"] * df["post"]
+        df_wt = within_transform(df, ["outcome", "treat_post"], "unit", "time", weights=weights)
+        y_wt = df_wt["outcome_demeaned"].values
+        X_wt = np.column_stack([np.ones(len(df)), df_wt["treat_post_demeaned"].values])
+        coef_wt, _, _ = solve_ols(X_wt, y_wt, weights=weights, weight_type="pweight")
+
+        # Method 2: Explicit WLS with unit + time dummies
+        unit_dummies = pd.get_dummies(df["unit"], prefix="u", drop_first=True)
+        time_dummies = pd.get_dummies(df["time"], prefix="t", drop_first=True)
+        X_full = np.column_stack(
+            [
+                np.ones(len(df)),
+                df["treat_post"].values,
+                unit_dummies.values,
+                time_dummies.values,
+            ]
+        )
+        y_full = df["outcome"].values
+        coef_full, _, _ = solve_ols(X_full, y_full, weights=weights, weight_type="pweight")
+
+        # Treatment coefficient should match
+        np.testing.assert_allclose(coef_wt[1], coef_full[1], atol=1e-6)
+
+    def test_multiperiod_survey_metadata_populated(self, multiperiod_data):
+        """MultiPeriodDiD populates survey_metadata in results (P2-1)."""
+        mpd = MultiPeriodDiD()
+        sd = SurveyDesign(
+            weights="weight",
+            strata="stratum",
+            psu="psu",
+            weight_type="pweight",
+        )
+        result = mpd.fit(
+            multiperiod_data,
+            outcome="outcome",
+            treatment="treated",
+            time="period",
+            post_periods=[3, 4, 5],
+            survey_design=sd,
+        )
+
+        assert result.survey_metadata is not None
+        assert isinstance(result.survey_metadata, SurveyMetadata)
+        assert result.survey_metadata.weight_type == "pweight"
+        assert result.survey_metadata.n_strata == 3
+        assert result.survey_metadata.n_psu == 20
+
+        # Survey info should appear in summary
+        summary_text = result.summary()
+        assert "Survey Design" in summary_text
+        assert "pweight" in summary_text
+
+        # Survey info should appear in to_dict
+        d = result.to_dict()
+        assert "weight_type" in d
+        assert d["weight_type"] == "pweight"
+        assert "effective_n" in d

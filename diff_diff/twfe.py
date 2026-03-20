@@ -79,6 +79,10 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             Name of unit identifier column.
         covariates : list, optional
             List of covariate column names.
+        survey_design : SurveyDesign, optional
+            Survey design specification for design-based inference. When provided,
+            uses Taylor Series Linearization for variance estimation and
+            applies sampling weights to the regression.
 
         Returns
         -------

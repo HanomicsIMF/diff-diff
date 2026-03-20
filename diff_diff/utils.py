@@ -1833,33 +1833,40 @@ def within_transform(
         data = data.copy()
 
     if weights is not None:
-        # Weighted within-transformation
+        # Weighted within-transformation via iterative alternating projections
         w = np.asarray(weights, dtype=np.float64)
         unit_groups = data[unit].values
         time_groups = data[time].values
-        total_w = np.sum(w)
 
         # Cache weight sums per group (invariant across variables)
-        unit_w_sum = pd.Series(w).groupby(unit_groups).transform("sum")
-        time_w_sum = pd.Series(w).groupby(time_groups).transform("sum")
+        unit_w_sum = pd.Series(w).groupby(unit_groups).transform("sum").values
+        time_w_sum = pd.Series(w).groupby(time_groups).transform("sum").values
+
+        def _weighted_group_demean(x, groups, w, w_sum):
+            wx_sum = pd.Series(w * x).groupby(groups).transform("sum").values
+            return x - wx_sum / w_sum
 
         if inplace:
             for var in variables:
                 x = data[var].values.astype(np.float64)
-                unit_means = pd.Series(w * x).groupby(unit_groups).transform("sum") / unit_w_sum
-                time_means = pd.Series(w * x).groupby(time_groups).transform("sum") / time_w_sum
-                grand_mean = np.sum(w * x) / total_w
-                data[var] = x - unit_means.values - time_means.values + grand_mean
+                for _iter in range(100):  # max iterations
+                    x_old = x.copy()
+                    x = _weighted_group_demean(x, unit_groups, w, unit_w_sum)
+                    x = _weighted_group_demean(x, time_groups, w, time_w_sum)
+                    if np.max(np.abs(x - x_old)) < 1e-8:
+                        break
+                data[var] = x
         else:
             demeaned_data = {}
             for var in variables:
                 x = data[var].values.astype(np.float64)
-                unit_means = pd.Series(w * x).groupby(unit_groups).transform("sum") / unit_w_sum
-                time_means = pd.Series(w * x).groupby(time_groups).transform("sum") / time_w_sum
-                grand_mean = np.sum(w * x) / total_w
-                demeaned_data[f"{var}{suffix}"] = (
-                    x - unit_means.values - time_means.values + grand_mean
-                )
+                for _iter in range(100):
+                    x_old = x.copy()
+                    x = _weighted_group_demean(x, unit_groups, w, unit_w_sum)
+                    x = _weighted_group_demean(x, time_groups, w, time_w_sum)
+                    if np.max(np.abs(x - x_old)) < 1e-8:
+                        break
+                demeaned_data[f"{var}{suffix}"] = x
             demeaned_df = pd.DataFrame(demeaned_data, index=data.index)
             data = pd.concat([data, demeaned_df], axis=1)
     else:

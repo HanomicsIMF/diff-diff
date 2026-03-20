@@ -160,17 +160,40 @@ class SurveyDesign:
             if np.any(np.isnan(fpc_arr)) or np.any(~np.isfinite(fpc_arr)):
                 raise ValueError("FPC values must be finite and non-NaN")
 
+            # FPC requires survey structure (psu or strata)
+            if self.psu is None and self.strata is None:
+                raise ValueError(
+                    "FPC requires either psu or strata to be specified. "
+                    "FPC alone without survey structure is not supported."
+                )
+
             # Validate FPC >= n_h per stratum
             if strata_arr is not None:
                 for h in np.unique(strata_arr):
                     mask_h = strata_arr == h
-                    n_h = np.sum(mask_h)
-                    fpc_h = fpc_arr[mask_h][0]  # FPC should be constant within stratum
-                    if fpc_h < n_h:
+                    fpc_vals = fpc_arr[mask_h]
+                    # Enforce FPC is constant within stratum
+                    if len(np.unique(fpc_vals)) > 1:
                         raise ValueError(
-                            f"FPC ({fpc_h}) is less than the number of observations "
-                            f"({n_h}) in stratum {h}. FPC must be >= n_h."
+                            f"FPC values must be constant within each stratum. "
+                            f"Stratum {h} has values: {np.unique(fpc_vals)}"
                         )
+                    fpc_h = fpc_vals[0]
+                    # Validate FPC >= number of sampled PSUs (not obs count)
+                    if psu_arr is not None:
+                        n_psu_h = len(np.unique(psu_arr[mask_h]))
+                        if fpc_h < n_psu_h:
+                            raise ValueError(
+                                f"FPC ({fpc_h}) is less than the number of PSUs "
+                                f"({n_psu_h}) in stratum {h}. FPC must be >= n_PSU."
+                            )
+                    else:
+                        n_h = np.sum(mask_h)
+                        if fpc_h < n_h:
+                            raise ValueError(
+                                f"FPC ({fpc_h}) is less than the number of observations "
+                                f"({n_h}) in stratum {h}. FPC must be >= n_obs."
+                            )
             elif psu_arr is not None:
                 # No strata: single stratum — FPC should be >= n_psu
                 if fpc_arr[0] < n_psu:
@@ -359,9 +382,10 @@ def _resolve_effective_cluster(resolved_survey, cluster_ids, cluster_name=None):
         return cluster_ids
 
     if cluster_ids is not None and cluster_name is not None:
-        psu_unique = set(np.unique(resolved_survey.psu))
-        cluster_unique = set(np.unique(cluster_ids))
-        if psu_unique != cluster_unique:
+        # Compare partition equivalence (not label equality)
+        psu_codes, _ = pd.factorize(resolved_survey.psu)
+        cluster_codes, _ = pd.factorize(cluster_ids)
+        if not np.array_equal(psu_codes, cluster_codes):
             warnings.warn(
                 f"Both survey_design.psu and cluster='{cluster_name}' specified "
                 "with different groupings. PSU will be used for variance "
@@ -491,6 +515,10 @@ def compute_survey_vcov(
             adjustment = (1.0 - f_h) * (n_psu_h / (n_psu_h - 1))
             V_h = adjustment * (centered.T @ centered)
             meat += V_h
+
+    # Guard: if no stratum contributed variance, return NaN vcov
+    if not np.any(meat != 0):
+        return np.full((k, k), np.nan)
 
     # Sandwich: (X'WX)^{-1} meat (X'WX)^{-1}
     try:

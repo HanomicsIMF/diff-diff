@@ -181,6 +181,10 @@ class DifferenceInDifferences:
             List of categorical column names for high-dimensional fixed effects.
             Uses within-transformation (demeaning) instead of dummy variables.
             More efficient for large numbers of categories (e.g., firm, individual).
+        survey_design : SurveyDesign, optional
+            Survey design specification for design-based inference. When provided,
+            uses Taylor Series Linearization for variance estimation and
+            applies sampling weights to the regression.
 
         Returns
         -------
@@ -788,6 +792,10 @@ class MultiPeriodDiD(DifferenceInDifferences):
             is detected (suggests CallawaySantAnna instead). Does NOT affect
             standard error computation -- use the ``cluster`` parameter for
             cluster-robust SEs.
+        survey_design : SurveyDesign, optional
+            Survey design specification for design-based inference. When provided,
+            uses Taylor Series Linearization for variance estimation and
+            applies sampling weights to the regression.
 
         Returns
         -------
@@ -952,8 +960,8 @@ class MultiPeriodDiD(DifferenceInDifferences):
         # Resolve survey design if provided
         from diff_diff.survey import _resolve_effective_cluster, _resolve_survey_for_fit
 
-        resolved_survey, survey_weights, survey_weight_type, _ = _resolve_survey_for_fit(
-            survey_design, data, self.inference
+        resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
+            _resolve_survey_for_fit(survey_design, data, self.inference)
         )
 
         # Handle absorbed fixed effects (within-transformation)
@@ -1163,6 +1171,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
             r_squared=r_squared,
             reference_period=reference_period,
             interaction_indices=interaction_indices,
+            survey_metadata=survey_metadata,
         )
 
         self._coefficients = coefficients

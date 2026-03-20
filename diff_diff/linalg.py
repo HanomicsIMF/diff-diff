@@ -437,6 +437,14 @@ def solve_ols(
         rank-deficient matrices. Use only when you know the design matrix is
         full rank. If the matrix is actually rank-deficient, results may be
         incorrect (minimum-norm solution instead of R-style NA handling).
+    weights : ndarray of shape (n,), optional
+        Observation weights for Weighted Least Squares. When provided,
+        minimizes sum(w_i * (y_i - X_i @ beta)^2). Weights should be
+        pre-normalized (e.g., mean=1 for pweights).
+    weight_type : str, default "pweight"
+        Type of weights: "pweight" (inverse selection probability),
+        "fweight" (frequency), or "aweight" (inverse variance).
+        Affects variance estimation but not coefficient computation.
 
     Returns
     -------
@@ -544,6 +552,11 @@ def solve_ols(
         X = X * sqrt_w[:, np.newaxis]
         y = y * sqrt_w
 
+    # When weights are present, compute vcov separately on original-scale data
+    # to avoid double-weighting. The backend only computes point estimates.
+    _weighted_vcov_external = weights is not None
+    _backend_return_vcov = return_vcov and not _weighted_vcov_external
+
     # Fast path: skip rank check and use Rust directly when requested
     # This saves O(nk²) QR overhead but won't detect rank-deficient matrices
     result = None  # Will hold the tuple from backend functions
@@ -554,23 +567,20 @@ def solve_ols(
                 X,
                 y,
                 cluster_ids=cluster_ids,
-                return_vcov=return_vcov,
+                return_vcov=_backend_return_vcov,
                 return_fitted=return_fitted,
             )
             # result is None on numerical instability → fall through
         if result is None:
-            # Fall through to Python without rank check (user guarantees full rank)
             result = _solve_ols_numpy(
                 X,
                 y,
                 cluster_ids=cluster_ids,
-                return_vcov=return_vcov,
+                return_vcov=_backend_return_vcov,
                 return_fitted=return_fitted,
                 rank_deficient_action=rank_deficient_action,
                 column_names=column_names,
                 _skip_rank_check=True,
-                weights=weights,
-                weight_type=weight_type,
             )
     else:
         # Check for rank deficiency using fast pivoted QR decomposition.
@@ -593,14 +603,13 @@ def solve_ols(
                 X,
                 y,
                 cluster_ids=cluster_ids,
-                return_vcov=return_vcov,
+                return_vcov=_backend_return_vcov,
                 return_fitted=return_fitted,
             )
 
             if result is not None:
-                # Check for NaN vcov: Rust SVD may detect rank-deficiency that QR missed
                 vcov_check = result[-1]
-                if return_vcov and vcov_check is not None and np.any(np.isnan(vcov_check)):
+                if _backend_return_vcov and vcov_check is not None and np.any(np.isnan(vcov_check)):
                     warnings.warn(
                         "Rust backend detected ill-conditioned matrix (NaN in variance-covariance). "
                         "Re-running with Python backend for proper rank detection.",
@@ -610,35 +619,41 @@ def solve_ols(
                     result = None  # Force Python fallback below
 
         if result is None:
-            # Python backend for: weighted, rank-deficient, Rust instability, no Rust
             result = _solve_ols_numpy(
                 X,
                 y,
                 cluster_ids=cluster_ids,
-                return_vcov=return_vcov,
+                return_vcov=_backend_return_vcov,
                 return_fitted=return_fitted,
                 rank_deficient_action=rank_deficient_action,
                 column_names=column_names,
-                _precomputed_rank_info=(
-                    (rank, dropped_cols, pivot)
-                    if not (weights is not None and _original_X is not None)
-                    else None
-                ),
+                _precomputed_rank_info=(rank, dropped_cols, pivot),
+            )
+
+    # Back-transform residuals and compute weighted vcov on original-scale data.
+    # The WLS transform (sqrt(w) scaling) is for point estimates only. Vcov must
+    # be computed on original X and residuals with weights applied exactly once.
+    if _original_X is not None and _original_y is not None:
+        if return_fitted:
+            coefficients, _resid_w, _fitted_w, vcov_out = result
+        else:
+            coefficients, _resid_w, vcov_out = result
+
+        fitted_orig = np.dot(_original_X, coefficients)
+        residuals_orig = _original_y - fitted_orig
+
+        if return_vcov:
+            vcov_out = _compute_robust_vcov_numpy(
+                _original_X,
+                residuals_orig,
+                cluster_ids,
                 weights=weights,
                 weight_type=weight_type,
             )
 
-    # Back-transform residuals to original scale when WLS was applied.
-    # WLS solves on transformed (X_w, y_w) but residuals should be y - X @ beta.
-    if _original_X is not None and _original_y is not None:
         if return_fitted:
-            coefficients, _resid_w, _fitted_w, vcov_out = result
-            fitted_orig = np.dot(_original_X, coefficients)
-            residuals_orig = _original_y - fitted_orig
             result = (coefficients, residuals_orig, fitted_orig, vcov_out)
         else:
-            coefficients, _resid_w, vcov_out = result
-            residuals_orig = _original_y - np.dot(_original_X, coefficients)
             result = (coefficients, residuals_orig, vcov_out)
 
     return result
@@ -703,8 +718,6 @@ def _solve_ols_numpy(
     column_names: Optional[List[str]] = None,
     _precomputed_rank_info: Optional[Tuple[int, np.ndarray, np.ndarray]] = None,
     _skip_rank_check: bool = False,
-    weights: Optional[np.ndarray] = None,
-    weight_type: str = "pweight",
 ) -> Union[
     Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]],
     Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]],
@@ -811,8 +824,6 @@ def _solve_ols_numpy(
                 X_reduced,
                 residuals,
                 cluster_ids,
-                weights=weights,
-                weight_type=weight_type,
             )
             vcov = _expand_vcov_with_nan(vcov_reduced, k, kept_cols)
     else:
@@ -827,13 +838,7 @@ def _solve_ols_numpy(
         # Compute variance-covariance matrix if requested
         vcov = None
         if return_vcov:
-            vcov = _compute_robust_vcov_numpy(
-                X,
-                residuals,
-                cluster_ids,
-                weights=weights,
-                weight_type=weight_type,
-            )
+            vcov = _compute_robust_vcov_numpy(X, residuals, cluster_ids)
 
     if return_fitted:
         return coefficients, residuals, fitted, vcov
@@ -987,8 +992,8 @@ def _compute_robust_vcov_numpy(
     if weights is not None and weight_type == "fweight":
         n_eff = int(np.sum(weights))
 
-    # Compute weighted scores: pweight/fweight multiply by w; aweight and
-    # unweighted use raw residuals (aweight errors are ~homoskedastic after WLS)
+    # Compute weighted scores for cluster-robust meat (outer product of sums).
+    # pweight/fweight multiply by w; aweight and unweighted use raw residuals.
     _use_weighted_scores = weights is not None and weight_type not in ("aweight",)
     if _use_weighted_scores:
         scores = X * (weights * residuals)[:, np.newaxis]
@@ -997,8 +1002,12 @@ def _compute_robust_vcov_numpy(
 
     if cluster_ids is None:
         # HC1 (heteroskedasticity-robust) standard errors
+        # For HC1, meat = X' diag(w * u²) X (NOT scores'scores which gives w²*u²)
         adjustment = n_eff / (n_eff - k)
-        meat = scores.T @ scores
+        if _use_weighted_scores:
+            meat = np.dot(X.T, X * (weights * residuals**2)[:, np.newaxis])
+        else:
+            meat = np.dot(X.T, X * (residuals**2)[:, np.newaxis])
     else:
         # Cluster-robust standard errors (vectorized via groupby)
         cluster_ids = np.asarray(cluster_ids)
@@ -1545,22 +1554,42 @@ class LinearRegression:
                 # Rank-deficient: compute vcov for identified coefficients only
                 kept_cols = np.where(~nan_mask)[0]
                 X_reduced = X[:, kept_cols]
-                mse = np.sum(residuals**2) / (n - k_effective)
-                try:
-                    vcov_reduced = np.linalg.solve(
-                        X_reduced.T @ X_reduced, mse * np.eye(k_effective)
-                    )
-                except np.linalg.LinAlgError:
-                    vcov_reduced = np.linalg.pinv(X_reduced.T @ X_reduced) * mse
+                if self.weights is not None:
+                    # Weighted classical vcov: use weighted RSS and X'WX
+                    w = self.weights
+                    mse = np.sum(w * residuals**2) / (n - k_effective)
+                    XtWX_reduced = X_reduced.T @ (X_reduced * w[:, np.newaxis])
+                    try:
+                        vcov_reduced = np.linalg.solve(XtWX_reduced, mse * np.eye(k_effective))
+                    except np.linalg.LinAlgError:
+                        vcov_reduced = np.linalg.pinv(XtWX_reduced) * mse
+                else:
+                    mse = np.sum(residuals**2) / (n - k_effective)
+                    try:
+                        vcov_reduced = np.linalg.solve(
+                            X_reduced.T @ X_reduced, mse * np.eye(k_effective)
+                        )
+                    except np.linalg.LinAlgError:
+                        vcov_reduced = np.linalg.pinv(X_reduced.T @ X_reduced) * mse
                 # Expand to full size with NaN for dropped columns
                 vcov = _expand_vcov_with_nan(vcov_reduced, k, kept_cols)
             else:
                 # Full rank: standard computation
-                mse = np.sum(residuals**2) / (n - k)
-                try:
-                    vcov = np.linalg.solve(X.T @ X, mse * np.eye(k))
-                except np.linalg.LinAlgError:
-                    vcov = np.linalg.pinv(X.T @ X) * mse
+                if self.weights is not None:
+                    # Weighted classical vcov: use weighted RSS and X'WX
+                    w = self.weights
+                    mse = np.sum(w * residuals**2) / (n - k)
+                    XtWX = X.T @ (X * w[:, np.newaxis])
+                    try:
+                        vcov = np.linalg.solve(XtWX, mse * np.eye(k))
+                    except np.linalg.LinAlgError:
+                        vcov = np.linalg.pinv(XtWX) * mse
+                else:
+                    mse = np.sum(residuals**2) / (n - k)
+                    try:
+                        vcov = np.linalg.solve(X.T @ X, mse * np.eye(k))
+                    except np.linalg.LinAlgError:
+                        vcov = np.linalg.pinv(X.T @ X) * mse
 
         # Compute survey vcov if applicable
         if _use_survey_vcov:
