@@ -167,7 +167,12 @@ Determine if this is a fork-based workflow:
 ### 6. Commit Changes
 
 1. **Secret scanning check** (files already staged from 5b):
-   - **Run deterministic pattern check** using the content pattern and sensitive filename pattern from `/pre-merge-check` Section 2.6. Apply the content pattern to `git diff --cached` with `--name-only` to avoid leaking secrets. Apply the filename pattern to `git diff --cached --name-only`. Use `|| true` on both.
+   - **Run deterministic pattern check** using the canonical patterns from `/pre-merge-check` Section 2.6:
+     ```bash
+     secret_files=$(git diff --cached -G "<content pattern from Section 2.6>" --name-only 2>/dev/null || true)
+     sensitive_files=$(git diff --cached --name-only | grep -iE "<filename pattern from Section 2.6>" || true)
+     ```
+     Read the actual regex values from `/pre-merge-check` Section 2.6 at execution time. Uses `-G` to search diff content but `--name-only` to output only file names, preventing secret values from appearing in logs.
    - **Optional**: For more thorough scanning, use dedicated tools if available:
      ```bash
      # gitleaks detect --staged --no-git  # If gitleaks installed
@@ -177,7 +182,7 @@ Determine if this is a fork-based workflow:
      ```bash
      git diff --cached --name-only --diff-filter=A
      ```
-   - **If patterns detected** (i.e., `secret_files` or sensitive file names non-empty), **unstage and warn**:
+   - **If patterns detected** (i.e., `secret_files` or `sensitive_files` is non-empty), **unstage and warn**:
      ```bash
      git reset HEAD  # Unstage all files
      ```
