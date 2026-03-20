@@ -15,7 +15,7 @@ References
 """
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, Tuple
 
 import numpy as np
@@ -428,6 +428,25 @@ def _resolve_effective_cluster(resolved_survey, cluster_ids, cluster_name=None):
                 stacklevel=3,
             )
     return resolved_survey.psu
+
+
+def _inject_cluster_as_psu(resolved, cluster_ids):
+    """
+    When survey design has no PSU but cluster_ids are provided,
+    inject cluster_ids as the effective PSU for TSL variance estimation.
+
+    Returns a new ResolvedSurveyDesign (no mutation) or the original unchanged.
+    """
+    if resolved is None or cluster_ids is None:
+        return resolved
+    if resolved.psu is not None:
+        return resolved  # PSU already present; _resolve_effective_cluster handles this
+
+    # Factorize cluster_ids for consistent integer encoding
+    codes, uniques = pd.factorize(cluster_ids)
+    n_clusters = len(uniques)
+
+    return replace(resolved, psu=codes, n_psu=n_clusters)
 
 
 def compute_survey_vcov(

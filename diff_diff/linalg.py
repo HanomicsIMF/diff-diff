@@ -383,6 +383,34 @@ def solve_ols(
 ]: ...
 
 
+_VALID_WEIGHT_TYPES = {"pweight", "fweight", "aweight"}
+
+
+def _validate_weights(weights, weight_type, n):
+    """Validate weights array and weight_type for solve_ols/LinearRegression."""
+    if weight_type not in _VALID_WEIGHT_TYPES:
+        raise ValueError(
+            f"weight_type must be one of {_VALID_WEIGHT_TYPES}, "
+            f"got '{weight_type}'"
+        )
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float64)
+        if weights.shape[0] != n:
+            raise ValueError(
+                f"weights length ({weights.shape[0]}) must match "
+                f"X rows ({n})"
+            )
+        if np.any(np.isnan(weights)):
+            raise ValueError("Weights contain NaN values")
+        if np.any(np.isinf(weights)):
+            raise ValueError("Weights contain Inf values")
+        if np.any(weights < 0):
+            raise ValueError(
+                "Weights must be non-negative"
+            )
+    return weights
+
+
 def solve_ols(
     X: np.ndarray,
     y: np.ndarray,
@@ -543,9 +571,7 @@ def solve_ols(
     _original_X = None
     _original_y = None
     if weights is not None:
-        weights = np.asarray(weights, dtype=np.float64)
-        if weights.shape[0] != n:
-            raise ValueError(f"weights length ({weights.shape[0]}) must match X rows ({n})")
+        weights = _validate_weights(weights, weight_type, n)
         _original_X = X
         _original_y = y
         sqrt_w = np.sqrt(weights)
@@ -1566,6 +1592,23 @@ class LinearRegression:
                     )
                 self.weights = self.survey_design.weights
                 self.weight_type = self.survey_design.weight_type
+
+        if self.weights is not None:
+            self.weights = _validate_weights(
+                self.weights, self.weight_type, X.shape[0]
+            )
+
+        # Inject cluster as PSU for survey variance when no PSU specified
+        if (
+            effective_cluster_ids is not None
+            and self.survey_design is not None
+            and _use_survey_vcov
+        ):
+            from diff_diff.survey import ResolvedSurveyDesign as _RSD, _inject_cluster_as_psu
+            if isinstance(self.survey_design, _RSD) and self.survey_design.psu is None:
+                self.survey_design = _inject_cluster_as_psu(
+                    self.survey_design, effective_cluster_ids
+                )
 
         if self.robust or effective_cluster_ids is not None:
             # Use solve_ols with robust/cluster SEs

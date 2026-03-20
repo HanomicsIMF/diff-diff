@@ -1883,6 +1883,10 @@ unequal selection probabilities).
 - **Note:** When no explicit PSU is specified (weights-only or stratified-no-PSU
   designs), each observation is treated as its own PSU for df purposes. Survey df
   becomes `n_obs - n_strata` (or `n_obs - 1` when unstratified).
+- **Note:** When survey_design specifies weights only (no PSU) and cluster=
+  is specified, cluster IDs are injected as effective PSUs for Taylor Series
+  Linearization variance estimation, matching the R `survey` package
+  convention that clusters are the primary sampling units.
 
 ---
 

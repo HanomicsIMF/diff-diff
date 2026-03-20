@@ -308,6 +308,14 @@ class DifferenceInDifferences:
             resolved_survey, cluster_ids, self.cluster
         )
 
+        # Inject cluster as effective PSU for survey variance estimation
+        if resolved_survey is not None and effective_cluster_ids is not None:
+            from diff_diff.survey import _inject_cluster_as_psu, compute_survey_metadata
+            resolved_survey = _inject_cluster_as_psu(resolved_survey, effective_cluster_ids)
+            if resolved_survey.psu is not None and survey_metadata is not None:
+                raw_w = data[survey_design.weights].values.astype(np.float64) if survey_design.weights else np.ones(len(data), dtype=np.float64)
+                survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
+
         reg = LinearRegression(
             include_intercept=False,  # Intercept already in X
             robust=self.robust,
@@ -1035,6 +1043,14 @@ class MultiPeriodDiD(DifferenceInDifferences):
         effective_cluster_ids = _resolve_effective_cluster(
             resolved_survey, cluster_ids, self.cluster
         )
+
+        # Inject cluster as effective PSU for survey variance estimation
+        if resolved_survey is not None and effective_cluster_ids is not None:
+            from diff_diff.survey import _inject_cluster_as_psu, compute_survey_metadata
+            resolved_survey = _inject_cluster_as_psu(resolved_survey, effective_cluster_ids)
+            if resolved_survey.psu is not None and survey_metadata is not None:
+                raw_w = data[survey_design.weights].values.astype(np.float64) if survey_design.weights else np.ones(len(data), dtype=np.float64)
+                survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
 
         # Determine if survey vcov should be used
         _use_survey_vcov = resolved_survey is not None and resolved_survey.needs_survey_vcov

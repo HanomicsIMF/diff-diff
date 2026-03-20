@@ -1943,3 +1943,176 @@ class TestRound6Fixes:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             reg.fit(X, y)
+
+
+class TestRound7Fixes:
+    """Tests for round-7 review fixes (PR #218)."""
+
+    @staticmethod
+    def _make_cluster_data(seed=700):
+        """Create 2-period DiD data with 10 clusters of 5 obs each."""
+        np.random.seed(seed)
+        n_clusters = 10
+        obs_per_cluster = 5
+        rows = []
+        for c in range(n_clusters):
+            is_treated = c >= 5
+            for i in range(obs_per_cluster):
+                for period in [0, 1]:
+                    y = 10.0 + c * 0.3 + np.random.randn() * 0.5
+                    if period == 1 and is_treated:
+                        y += 3.0
+                    rows.append({
+                        "unit": c * obs_per_cluster + i,
+                        "period": period,
+                        "treated": int(is_treated),
+                        "y": y,
+                        "cluster_id": c,
+                        "w": 1.0 + 0.2 * c,
+                    })
+        return pd.DataFrame(rows)
+
+    def test_cluster_injected_as_psu_did(self):
+        """Cluster IDs injected as PSU produce identical SEs to explicit PSU."""
+        data = self._make_cluster_data()
+
+        # Fit with cluster= and weights-only survey (no PSU)
+        result_inject = DifferenceInDifferences(cluster="cluster_id").fit(
+            data, "y", "treated", "period",
+            survey_design=SurveyDesign(weights="w"),
+        )
+
+        # Fit with explicit PSU in survey design
+        result_explicit = DifferenceInDifferences(cluster="cluster_id").fit(
+            data, "y", "treated", "period",
+            survey_design=SurveyDesign(weights="w", psu="cluster_id"),
+        )
+
+        np.testing.assert_allclose(result_inject.se, result_explicit.se, atol=1e-12)
+        assert result_inject.survey_metadata.n_psu == 10
+        assert result_inject.survey_metadata.df_survey == 9
+
+    def test_cluster_injected_as_psu_twfe(self):
+        """TWFE: cluster IDs injected as PSU produce identical SEs to explicit PSU."""
+        data = self._make_cluster_data()
+
+        result_inject = TwoWayFixedEffects(cluster="cluster_id").fit(
+            data, "y", "treated", "period", unit="unit",
+            survey_design=SurveyDesign(weights="w"),
+        )
+
+        result_explicit = TwoWayFixedEffects(cluster="cluster_id").fit(
+            data, "y", "treated", "period", unit="unit",
+            survey_design=SurveyDesign(weights="w", psu="cluster_id"),
+        )
+
+        np.testing.assert_allclose(result_inject.se, result_explicit.se, atol=1e-12)
+        assert result_inject.survey_metadata.n_psu == 10
+        assert result_inject.survey_metadata.df_survey == 9
+
+    def test_cluster_injected_as_psu_linear_regression(self):
+        """Standalone LinearRegression: cluster injection matches explicit PSU."""
+        np.random.seed(701)
+        n = 50
+        cluster_ids = np.repeat(np.arange(10), 5)
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = 1.0 + X[:, 1] * 0.5 + np.random.randn(n) * 0.4
+        weights = np.random.uniform(0.5, 3.0, n)
+
+        # No PSU in resolved design
+        resolved_no_psu = ResolvedSurveyDesign(
+            weights=weights, weight_type="pweight",
+            strata=None, psu=None, fpc=None,
+            n_strata=0, n_psu=0, lonely_psu="remove",
+        )
+        reg_inject = LinearRegression(
+            include_intercept=False, cluster_ids=cluster_ids,
+            survey_design=resolved_no_psu,
+        )
+        reg_inject.fit(X, y)
+
+        # Explicit PSU
+        codes, uniques = pd.factorize(cluster_ids)
+        resolved_psu = ResolvedSurveyDesign(
+            weights=weights, weight_type="pweight",
+            strata=None, psu=codes, fpc=None,
+            n_strata=0, n_psu=len(uniques), lonely_psu="remove",
+        )
+        reg_explicit = LinearRegression(
+            include_intercept=False, cluster_ids=cluster_ids,
+            survey_design=resolved_psu,
+        )
+        reg_explicit.fit(X, y)
+
+        np.testing.assert_allclose(reg_inject.vcov_, reg_explicit.vcov_, atol=1e-12)
+
+    def test_cluster_injection_no_effect_when_psu_present(self):
+        """When PSU is already present, _inject_cluster_as_psu is a no-op."""
+        from diff_diff.survey import _inject_cluster_as_psu
+
+        existing_psu = np.array([0, 0, 1, 1, 2, 2])
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(6), weight_type="pweight",
+            strata=None, psu=existing_psu, fpc=None,
+            n_strata=0, n_psu=3, lonely_psu="remove",
+        )
+        result = _inject_cluster_as_psu(resolved, np.array([10, 10, 20, 20, 30, 30]))
+        assert result is resolved  # Same object — no replacement
+
+    def test_invalid_weight_type_raises(self):
+        """Invalid weight_type raises ValueError in solve_ols and LinearRegression."""
+        n = 20
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.randn(n)
+        w = np.ones(n)
+
+        with pytest.raises(ValueError, match="weight_type must be one of"):
+            solve_ols(X, y, weights=w, weight_type="pwieght")
+
+        with pytest.raises(ValueError, match="weight_type must be one of"):
+            LinearRegression(weights=w, weight_type="bad").fit(X, y)
+
+    def test_nan_weights_raises(self):
+        """NaN weights raise ValueError."""
+        n = 20
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.randn(n)
+        w = np.ones(n)
+        w[5] = np.nan
+
+        with pytest.raises(ValueError, match="NaN"):
+            solve_ols(X, y, weights=w)
+
+    def test_negative_weights_raises(self):
+        """Negative weights raise ValueError."""
+        n = 20
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.randn(n)
+        w = np.ones(n)
+        w[3] = -0.5
+
+        with pytest.raises(ValueError, match="non-negative"):
+            solve_ols(X, y, weights=w)
+
+    def test_inf_weights_raises(self):
+        """Inf weights raise ValueError."""
+        n = 20
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.randn(n)
+        w = np.ones(n)
+        w[0] = np.inf
+
+        with pytest.raises(ValueError, match="Inf"):
+            solve_ols(X, y, weights=w)
+
+    def test_zero_weights_accepted(self):
+        """Zero weights are accepted (intentional divergence from SurveyDesign)."""
+        n = 20
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.randn(n)
+        w = np.ones(n)
+        w[0] = 0.0
+
+        # Should NOT raise
+        coef, resid, vcov = solve_ols(X, y, weights=w)
+        assert coef is not None

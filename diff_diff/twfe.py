@@ -175,6 +175,14 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             resolved_survey, cluster_ids, self.cluster
         )
 
+        # Inject cluster as effective PSU for survey variance estimation
+        if resolved_survey is not None and effective_cluster_ids is not None:
+            from diff_diff.survey import _inject_cluster_as_psu, compute_survey_metadata
+            resolved_survey = _inject_cluster_as_psu(resolved_survey, effective_cluster_ids)
+            if resolved_survey.psu is not None and survey_metadata is not None:
+                raw_w = data[survey_design.weights].values.astype(np.float64) if survey_design.weights else np.ones(len(data), dtype=np.float64)
+                survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
+
         # Pass rank_deficient_action to LinearRegression
         # If "error", let LinearRegression raise immediately
         # If "warn" or "silent", suppress generic warning and use TWFE's context-specific
