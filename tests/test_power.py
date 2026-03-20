@@ -1049,6 +1049,37 @@ class TestEstimatorCoverage:
                 progress=False,
             )
 
+    def test_ddd_power_effective_n_nonaligned(self):
+        """simulate_power reports effective_n_units when n_units isn't grid-aligned."""
+        with pytest.warns(UserWarning, match="effective sample size is 64"):
+            result = simulate_power(
+                TripleDifference(),
+                n_units=65,
+                n_periods=2,
+                treatment_period=1,
+                n_simulations=2,
+                seed=42,
+                progress=False,
+            )
+        assert result.effective_n_units == 64
+        assert result.to_dict()["effective_n_units"] == 64
+        assert "Effective sample size" in result.summary()
+
+    def test_ddd_power_effective_n_aligned(self):
+        """simulate_power sets effective_n_units=None when n_units is grid-aligned."""
+        result = simulate_power(
+            TripleDifference(),
+            n_units=80,
+            n_periods=2,
+            treatment_period=1,
+            n_simulations=2,
+            seed=42,
+            progress=False,
+        )
+        assert result.effective_n_units is None
+        assert result.to_dict()["effective_n_units"] is None
+        assert "Effective sample size" not in result.summary()
+
     @pytest.mark.slow
     def test_ddd_mde(self):
         """simulate_mde works for TripleDifference."""
@@ -1064,6 +1095,24 @@ class TestEstimatorCoverage:
         )
         assert isinstance(result, SimulationMDEResults)
         assert result.mde > 0
+        assert result.effective_n_units is None
+
+    @pytest.mark.slow
+    def test_ddd_mde_effective_n(self):
+        """simulate_mde reports effective_n_units for non-aligned n_units."""
+        with pytest.warns(UserWarning, match="effective sample size is 64"):
+            result = simulate_mde(
+                TripleDifference(),
+                n_units=65,
+                n_periods=2,
+                treatment_period=1,
+                n_simulations=5,
+                effect_range=(0.5, 5.0),
+                seed=42,
+                progress=False,
+            )
+        assert result.effective_n_units == 64
+        assert result.to_dict()["effective_n_units"] == 64
 
     @pytest.mark.slow
     def test_ddd_sample_size(self):
@@ -1079,6 +1128,22 @@ class TestEstimatorCoverage:
         )
         assert isinstance(result, SimulationSampleSizeResults)
         assert result.required_n > 0
+
+    @pytest.mark.slow
+    def test_ddd_sample_size_grid_aligned(self):
+        """simulate_sample_size returns grid-aligned required_n for DDD."""
+        result = simulate_sample_size(
+            TripleDifference(),
+            n_periods=2,
+            treatment_period=1,
+            n_simulations=5,
+            n_range=(64, 200),
+            seed=42,
+            progress=False,
+        )
+        assert (
+            result.required_n % 8 == 0
+        ), f"DDD required_n={result.required_n} is not a multiple of 8"
 
     @pytest.mark.slow
     def test_trop(self):

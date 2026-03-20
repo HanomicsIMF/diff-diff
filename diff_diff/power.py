@@ -310,6 +310,18 @@ def _check_staggered_dgp_compat(
         warnings.warn(msg, UserWarning, stacklevel=2)
 
 
+def _ddd_effective_n(
+    n_units: int, data_generator_kwargs: Optional[Dict[str, Any]]
+) -> Optional[int]:
+    """Return effective DDD sample size, or None if no rounding occurred."""
+    overrides = data_generator_kwargs or {}
+    if "n_per_cell" in overrides:
+        eff = overrides["n_per_cell"] * 8
+    else:
+        eff = max(2, n_units // 8) * 8
+    return eff if eff != n_units else None
+
+
 def _check_ddd_dgp_compat(
     n_units: int,
     n_periods: int,
@@ -318,7 +330,6 @@ def _check_ddd_dgp_compat(
     data_generator_kwargs: Optional[Dict[str, Any]],
 ) -> None:
     """Warn when simulation inputs don't match DDD's fixed 2×2×2 design."""
-    overrides = data_generator_kwargs or {}
     issues: List[str] = []
 
     # DDD is a fixed 2-period factorial; n_periods and treatment_period are ignored
@@ -341,12 +352,12 @@ def _check_ddd_dgp_compat(
         )
 
     # n_units rounding: n_per_cell = max(2, n_units // 8)
-    effective_n_per_cell = overrides.get("n_per_cell", max(2, n_units // 8))
-    effective_n = effective_n_per_cell * 8
-    if effective_n != n_units:
+    eff_n = _ddd_effective_n(n_units, data_generator_kwargs)
+    if eff_n is not None:
+        eff_n_per_cell = eff_n // 8
         issues.append(
-            f"effective sample size is {effective_n} "
-            f"(n_per_cell={effective_n_per_cell} × 8 cells), "
+            f"effective sample size is {eff_n} "
+            f"(n_per_cell={eff_n_per_cell} × 8 cells), "
             f"not the requested n_units={n_units}"
         )
 
@@ -648,6 +659,9 @@ class SimulationPowerResults:
         Significance level.
     estimator_name : str
         Name of the estimator used.
+    effective_n_units : int or None
+        Effective sample size when it differs from the requested ``n_units``
+        (e.g., due to DDD grid rounding). ``None`` when no rounding occurred.
     """
 
     power: float
@@ -667,6 +681,7 @@ class SimulationPowerResults:
     bias: float = field(init=False)
     rmse: float = field(init=False)
     simulation_results: Optional[List[Dict[str, Any]]] = field(default=None, repr=False)
+    effective_n_units: Optional[int] = None
 
     def __post_init__(self):
         """Compute derived statistics."""
@@ -716,8 +731,12 @@ class SimulationPowerResults:
             f"{'RMSE:':<35} {self.rmse:.4f}",
             f"{'Mean standard error:':<35} {self.mean_se:.4f}",
             f"{'Coverage (CI contains true):':<35} {self.coverage:.1%}",
-            "=" * 65,
         ]
+        if self.effective_n_units is not None:
+            lines.append(
+                f"{'Effective sample size:':<35} {self.effective_n_units}" f" (DDD grid-rounded)"
+            )
+        lines.append("=" * 65)
         return "\n".join(lines)
 
     def print_summary(self) -> None:
@@ -733,7 +752,7 @@ class SimulationPowerResults:
         Dict[str, Any]
             Dictionary containing simulation power results.
         """
-        return {
+        d: Dict[str, Any] = {
             "power": self.power,
             "power_se": self.power_se,
             "power_ci_lower": self.power_ci[0],
@@ -749,7 +768,9 @@ class SimulationPowerResults:
             "true_effect": self.true_effect,
             "alpha": self.alpha,
             "estimator_name": self.estimator_name,
+            "effective_n_units": self.effective_n_units,
         }
+        return d
 
     def to_dataframe(self) -> pd.DataFrame:
         """
@@ -1491,6 +1512,9 @@ def simulate_power(
             treatment_period,
             data_generator_kwargs,
         )
+        effective_n_units = _ddd_effective_n(n_units, data_generator_kwargs)
+    else:
+        effective_n_units = None
 
     # Determine effect sizes to test
     if effect_sizes is None:
@@ -1671,6 +1695,7 @@ def simulate_power(
                 primary_rejections,
             )
         ],
+        effective_n_units=effective_n_units,
     )
 
 
@@ -1704,6 +1729,9 @@ class SimulationMDEResults:
         Diagnostic trace of ``{effect_size, power}`` at each step.
     estimator_name : str
         Name of the estimator used.
+    effective_n_units : int or None
+        Effective sample size when it differs from the requested ``n_units``
+        (e.g., due to DDD grid rounding). ``None`` when no rounding occurred.
     """
 
     mde: float
@@ -1715,6 +1743,7 @@ class SimulationMDEResults:
     n_steps: int
     search_path: List[Dict[str, float]]
     estimator_name: str
+    effective_n_units: Optional[int] = None
 
     def __repr__(self) -> str:
         return (
@@ -1734,6 +1763,12 @@ class SimulationMDEResults:
             f"{'Significance level (alpha):':<35} {self.alpha:.3f}",
             f"{'Target power:':<35} {self.target_power:.1%}",
             f"{'Sample size (n_units):':<35} {self.n_units}",
+        ]
+        if self.effective_n_units is not None:
+            lines.append(
+                f"{'Effective sample size:':<35} {self.effective_n_units}" f" (DDD grid-rounded)"
+            )
+        lines += [
             f"{'Simulations per step:':<35} {self.n_simulations_per_step}",
             "",
             "-" * 65,
@@ -1754,6 +1789,7 @@ class SimulationMDEResults:
             "target_power": self.target_power,
             "alpha": self.alpha,
             "n_units": self.n_units,
+            "effective_n_units": self.effective_n_units,
             "n_simulations_per_step": self.n_simulations_per_step,
             "n_steps": self.n_steps,
             "estimator_name": self.estimator_name,
@@ -1789,6 +1825,10 @@ class SimulationSampleSizeResults:
         Diagnostic trace of ``{n_units, power}`` at each step.
     estimator_name : str
         Name of the estimator used.
+    effective_n_units : int or None
+        Effective sample size when it differs from ``required_n``
+        (e.g., due to DDD grid rounding). ``None`` when no rounding occurred
+        or when the search already snapped to the estimator's grid.
     """
 
     required_n: int
@@ -1800,6 +1840,7 @@ class SimulationSampleSizeResults:
     n_steps: int
     search_path: List[Dict[str, float]]
     estimator_name: str
+    effective_n_units: Optional[int] = None
 
     def __repr__(self) -> str:
         return (
@@ -1827,8 +1868,12 @@ class SimulationSampleSizeResults:
             f"{'Required sample size:':<35} {self.required_n}",
             f"{'Power at required N:':<35} {self.power_at_n:.1%}",
             f"{'Bisection steps:':<35} {self.n_steps}",
-            "=" * 65,
         ]
+        if self.effective_n_units is not None:
+            lines.append(
+                f"{'Effective sample size:':<35} {self.effective_n_units}" f" (DDD grid-rounded)"
+            )
+        lines.append("=" * 65)
         return "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1842,6 +1887,7 @@ class SimulationSampleSizeResults:
             "n_simulations_per_step": self.n_simulations_per_step,
             "n_steps": self.n_steps,
             "estimator_name": self.estimator_name,
+            "effective_n_units": self.effective_n_units,
         }
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -1930,6 +1976,12 @@ def simulate_mde(
     estimator_name = type(estimator).__name__
     search_path: List[Dict[str, float]] = []
 
+    # Compute effective N for DDD (N is fixed throughout MDE search)
+    if estimator_name == "TripleDifference" and data_generator is None:
+        effective_n_units = _ddd_effective_n(n_units, data_generator_kwargs)
+    else:
+        effective_n_units = None
+
     common_kwargs: Dict[str, Any] = dict(
         estimator=estimator,
         n_units=n_units,
@@ -1976,6 +2028,7 @@ def simulate_mde(
                 n_steps=len(search_path),
                 search_path=search_path,
                 estimator_name=estimator_name,
+                effective_n_units=effective_n_units,
             )
         if power_hi < power:
             warnings.warn(
@@ -2003,6 +2056,7 @@ def simulate_mde(
                 n_steps=len(search_path),
                 search_path=search_path,
                 estimator_name=estimator_name,
+                effective_n_units=effective_n_units,
             )
 
         hi = sigma
@@ -2046,6 +2100,7 @@ def simulate_mde(
         n_steps=len(search_path),
         search_path=search_path,
         estimator_name=estimator_name,
+        effective_n_units=effective_n_units,
     )
 
 
@@ -2134,6 +2189,18 @@ def simulate_sample_size(
     profile = registry.get(estimator_name)
     min_n = profile.min_n if profile is not None else 20
 
+    # DDD grid snapping: bisection candidates must be multiples of 8
+    is_ddd_grid = estimator_name == "TripleDifference" and data_generator is None
+    grid_step = 8 if is_ddd_grid else 1
+    convergence_threshold = grid_step + 1  # 9 for DDD, 2 for others
+
+    def _snap_n(n: int, direction: str = "down") -> int:
+        if grid_step == 1:
+            return n
+        if direction == "up":
+            return max(min_n, ((n + grid_step - 1) // grid_step) * grid_step)
+        return max(min_n, (n // grid_step) * grid_step)
+
     common_kwargs: Dict[str, Any] = dict(
         estimator=estimator,
         n_periods=n_periods,
@@ -2161,7 +2228,9 @@ def simulate_sample_size(
 
     # --- Bracket ---
     if n_range is not None:
-        lo, hi = n_range
+        lo, hi = _snap_n(n_range[0], "up"), _snap_n(n_range[1], "down")
+        if lo > hi:
+            lo = hi  # collapsed bracket — evaluate single point
         power_lo = _power_at_n(lo)
         if power_lo >= power:
             warnings.warn(
@@ -2225,9 +2294,11 @@ def simulate_sample_size(
     best_power = search_path[-1]["power"] if search_path else 0.0
 
     for _ in range(max_steps):
-        if hi - lo <= 2:
+        if hi - lo <= convergence_threshold:
             break
-        mid = (lo + hi) // 2
+        mid = _snap_n((lo + hi) // 2)
+        if mid <= lo or mid >= hi:
+            break
         pwr = _power_at_n(mid)
 
         if pwr >= power:
