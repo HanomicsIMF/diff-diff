@@ -509,8 +509,8 @@ class ContinuousDiD:
                 overall_att_se = analytic["overall_att_se"]
                 overall_acrt_se = analytic["overall_acrt_se"]
 
-                # Survey df for t-distribution inference
-                _survey_df = survey_metadata.df_survey if survey_metadata is not None else None
+                # Survey df for t-distribution inference (unit-level, not panel-level)
+                _survey_df = analytic.get("df_survey")
 
                 overall_att_t, overall_att_p, overall_att_ci = safe_inference(
                     overall_att, overall_att_se, self.alpha, df=_survey_df
@@ -626,7 +626,9 @@ class ContinuousDiD:
                         # Compute SE: survey-aware TSL or standard sqrt(sum(IF^2))
                         if unit_resolved_es is not None:
                             X_ones_es = np.ones((n_units, 1))
-                            vcov_es = compute_survey_vcov(X_ones_es, if_es, unit_resolved_es)
+                            # Rescale IFs from 1/n convention to score scale for TSL
+                            if_es_tsl = if_es * n_units
+                            vcov_es = compute_survey_vcov(X_ones_es, if_es_tsl, unit_resolved_es)
                             es_se = float(np.sqrt(np.abs(vcov_es[0, 0])))
                         else:
                             es_se = float(np.sqrt(np.sum(if_es**2)))
@@ -1162,22 +1164,33 @@ class ContinuousDiD:
 
             X_ones = np.ones((n_units, 1))
 
+            # Rescale IFs from 1/n convention to score scale for TSL sandwich.
+            # The per-unit IFs contain internal 1/n_t, 1/n_c scaling (for the
+            # unweighted SE = sqrt(sum(IF^2)) convention). compute_survey_vcov
+            # applies its own (X'WX)^{-1} ≈ 1/n bread, which would double-count.
+            # Multiplying by n_units undoes the internal scaling so TSL gives
+            # the correct variance.
+            if_att_glob_tsl = if_att_glob * n_units
+            if_acrt_glob_tsl = if_acrt_glob * n_units
+            if_att_d_tsl = if_att_d * n_units
+            if_acrt_d_tsl = if_acrt_d * n_units
+
             # Overall ATT SE via compute_survey_vcov
-            vcov_att = compute_survey_vcov(X_ones, if_att_glob, unit_resolved)
+            vcov_att = compute_survey_vcov(X_ones, if_att_glob_tsl, unit_resolved)
             overall_att_se = float(np.sqrt(np.abs(vcov_att[0, 0])))
 
             # Overall ACRT SE via compute_survey_vcov
-            vcov_acrt = compute_survey_vcov(X_ones, if_acrt_glob, unit_resolved)
+            vcov_acrt = compute_survey_vcov(X_ones, if_acrt_glob_tsl, unit_resolved)
             overall_acrt_se = float(np.sqrt(np.abs(vcov_acrt[0, 0])))
 
             # Per-grid-point SEs for dose-response curves
             att_d_se = np.zeros(n_grid)
             acrt_d_se = np.zeros(n_grid)
             for d_idx in range(n_grid):
-                vcov_d = compute_survey_vcov(X_ones, if_att_d[:, d_idx], unit_resolved)
+                vcov_d = compute_survey_vcov(X_ones, if_att_d_tsl[:, d_idx], unit_resolved)
                 att_d_se[d_idx] = float(np.sqrt(np.abs(vcov_d[0, 0])))
 
-                vcov_d = compute_survey_vcov(X_ones, if_acrt_d[:, d_idx], unit_resolved)
+                vcov_d = compute_survey_vcov(X_ones, if_acrt_d_tsl[:, d_idx], unit_resolved)
                 acrt_d_se[d_idx] = float(np.sqrt(np.abs(vcov_d[0, 0])))
         else:
             # SE = sqrt(sum(IF_i^2)), matching CallawaySantAnna's convention
@@ -1188,11 +1201,15 @@ class ContinuousDiD:
             att_d_se = np.sqrt(np.sum(if_att_d**2, axis=0))
             acrt_d_se = np.sqrt(np.sum(if_acrt_d**2, axis=0))
 
+        # Return unit-level survey df when available (for t-distribution inference)
+        unit_df_survey = unit_resolved.df_survey if resolved_survey is not None else None
+
         return {
             "overall_att_se": overall_att_se,
             "overall_acrt_se": overall_acrt_se,
             "att_d_se": att_d_se,
             "acrt_d_se": acrt_d_se,
+            "df_survey": unit_df_survey,
         }
 
     def _run_bootstrap(

@@ -459,7 +459,14 @@ class StackedDiD:
                 idx = interaction_indices[h]
                 effect = float(coef[idx])
                 se = float(np.sqrt(max(vcov[idx, idx], 0.0)))
-                t_stat, p_value, conf_int = safe_inference(effect, se, alpha=self.alpha)
+                _survey_df = (
+                    max(survey_metadata.df_survey, 1)
+                    if survey_metadata is not None and survey_metadata.df_survey is not None
+                    else None
+                )
+                t_stat, p_value, conf_int = safe_inference(
+                    effect, se, alpha=self.alpha, df=_survey_df
+                )
                 n_obs_h = int(np.sum((et_vals == h) & (d_vals == 1)))
                 event_study_effects[h] = {
                     "effect": effect,
@@ -489,7 +496,14 @@ class StackedDiD:
             overall_att = np.nan
             overall_se = np.nan
 
-        overall_t, overall_p, overall_ci = safe_inference(overall_att, overall_se, alpha=self.alpha)
+        _survey_df_overall = (
+            max(survey_metadata.df_survey, 1)
+            if survey_metadata is not None and survey_metadata.df_survey is not None
+            else None
+        )
+        overall_t, overall_p, overall_ci = safe_inference(
+            overall_att, overall_se, alpha=self.alpha, df=_survey_df_overall
+        )
 
         # ---- Construct results ----
         self.results_ = StackedDiDResults(

@@ -133,7 +133,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         self.kernel_bandwidth = kernel_bandwidth
         self.is_fitted_ = False
         self.results_: Optional[EfficientDiDResults] = None
-        self._survey_se_ctx: Optional[tuple] = None
+        self._unit_resolved_survey = None
         self._validate_params()
 
     def _validate_params(self) -> None:
@@ -361,9 +361,45 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         all_units = sorted(df[unit].unique())
         n_units = len(all_units)
 
-        # Build unit-to-first-panel-row index (for unit-level survey collapse)
-        _first_rows = df.groupby(unit).cumcount() == 0
-        self._unit_first_panel_row = np.where(_first_rows)[0]
+        # Build unit-to-first-panel-row index aligned to all_units (sorted)
+        # order.  The previous approach (groupby cumcount == 0) yielded
+        # first-appearance order which can differ from sorted order when the
+        # input DataFrame is not pre-sorted by unit.
+        first_pos: Dict[Any, int] = {}
+        for i, u in enumerate(df[unit].values):
+            if u not in first_pos:
+                first_pos[u] = i
+        self._unit_first_panel_row = np.array([first_pos[u] for u in all_units])
+
+        # Build unit-level ResolvedSurveyDesign once (avoids repeated
+        # construction in _compute_survey_eif_se and ensures consistent
+        # unit-level df for safe_inference t-distribution).
+        if resolved_survey is not None:
+            from diff_diff.survey import ResolvedSurveyDesign
+
+            row_idx = self._unit_first_panel_row
+            unit_weights_s = resolved_survey.weights[row_idx]
+            unit_strata = (
+                resolved_survey.strata[row_idx] if resolved_survey.strata is not None else None
+            )
+            unit_psu = resolved_survey.psu[row_idx] if resolved_survey.psu is not None else None
+            unit_fpc = resolved_survey.fpc[row_idx] if resolved_survey.fpc is not None else None
+            n_strata_u = len(np.unique(unit_strata)) if unit_strata is not None else 0
+            n_psu_u = len(np.unique(unit_psu)) if unit_psu is not None else 0
+            self._unit_resolved_survey = ResolvedSurveyDesign(
+                weights=unit_weights_s,
+                weight_type=resolved_survey.weight_type,
+                strata=unit_strata,
+                psu=unit_psu,
+                fpc=unit_fpc,
+                n_strata=n_strata_u,
+                n_psu=n_psu_u,
+                lonely_psu=resolved_survey.lonely_psu,
+            )
+            # Use unit-level df (not panel-level) for t-distribution
+            self._survey_df = self._unit_resolved_survey.df_survey
+        else:
+            self._unit_resolved_survey = None
 
         period_to_col = {p: i for i, p in enumerate(time_periods)}
         period_1 = time_periods[0]
@@ -686,11 +722,8 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
 
                 # Analytical SE = sqrt(mean(EIF^2) / n)  [paper p.21]
                 # With survey: use TSL variance via compute_survey_vcov
-                if resolved_survey is not None:
-                    se_gt = self._compute_survey_eif_se(
-                        eif_vals,
-                        resolved_survey,
-                    )
+                if self._unit_resolved_survey is not None:
+                    se_gt = self._compute_survey_eif_se(eif_vals)
                 else:
                     se_gt = float(np.sqrt(np.mean(eif_vals**2) / n_units))
 
@@ -713,12 +746,6 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 "Could not estimate any group-time effects. "
                 "Check data has sufficient observations."
             )
-
-        # ----- Store survey context for aggregation SE helpers -----
-        # Temporarily store survey context for use in aggregation helpers.
-        # This avoids threading survey args through the deeply nested
-        # aggregation methods that are also used by the bootstrap mixin.
-        self._survey_se_ctx = resolved_survey if resolved_survey is not None else None
 
         # ----- Aggregation -----
         overall_att, overall_se = self._aggregate_overall(
@@ -751,9 +778,6 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 treatment_groups,
                 unit_cohorts=unit_cohorts,
             )
-
-        # Clean up temporary survey context
-        self._survey_se_ctx = None
 
         # ----- Bootstrap -----
         bootstrap_results = None
@@ -855,63 +879,27 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
 
     # -- Survey SE helpers ----------------------------------------------------
 
-    def _compute_survey_eif_se(
-        self,
-        eif_vals: np.ndarray,
-        resolved_survey: Any,
-    ) -> float:
+    def _compute_survey_eif_se(self, eif_vals: np.ndarray) -> float:
         """Compute SE from EIF scores using Taylor Series Linearization.
 
-        The EIF is at unit level (shape n_units).  We collapse the
-        panel-level resolved survey to unit level using the first-panel-row
-        index and pass unit-level arrays to ``compute_survey_vcov``.
-        This avoids the previous bug where expanding EIF to panel rows
-        created one implicit PSU per period-copy, deflating SEs for
-        weights-only and stratified-no-PSU survey designs.
+        Uses the pre-built unit-level ``_unit_resolved_survey`` constructed
+        once in ``fit()``, ensuring consistent unit-level arrays and
+        avoiding repeated subsetting of panel-level survey data.
         """
-        from diff_diff.survey import ResolvedSurveyDesign, compute_survey_vcov
+        from diff_diff.survey import compute_survey_vcov
 
-        row_idx = self._unit_first_panel_row
-        n_units = len(eif_vals)
-
-        # Subset survey arrays to unit level
-        unit_weights = resolved_survey.weights[row_idx]
-        unit_strata = (
-            resolved_survey.strata[row_idx] if resolved_survey.strata is not None else None
-        )
-        unit_psu = resolved_survey.psu[row_idx] if resolved_survey.psu is not None else None
-        unit_fpc = resolved_survey.fpc[row_idx] if resolved_survey.fpc is not None else None
-
-        # Count unique strata/PSU in the unit-level subset
-        n_strata_unit = len(np.unique(unit_strata)) if unit_strata is not None else 0
-        n_psu_unit = len(np.unique(unit_psu)) if unit_psu is not None else 0
-
-        unit_resolved = ResolvedSurveyDesign(
-            weights=unit_weights,
-            weight_type=resolved_survey.weight_type,
-            strata=unit_strata,
-            psu=unit_psu,
-            fpc=unit_fpc,
-            n_strata=n_strata_unit,
-            n_psu=n_psu_unit,
-            lonely_psu=resolved_survey.lonely_psu,
-        )
-
-        X_ones = np.ones((n_units, 1))
-        vcov = compute_survey_vcov(X_ones, eif_vals, unit_resolved)
+        X_ones = np.ones((len(eif_vals), 1))
+        vcov = compute_survey_vcov(X_ones, eif_vals, self._unit_resolved_survey)
         return float(np.sqrt(np.abs(vcov[0, 0])))
 
     def _eif_se(self, eif_vals: np.ndarray, n_units: int) -> float:
         """Compute SE from aggregated EIF scores.
 
-        Dispatches to survey TSL when ``_survey_se_ctx`` is set (during
-        fit), otherwise uses the standard analytical formula.
+        Dispatches to survey TSL when ``_unit_resolved_survey`` is set
+        (during fit), otherwise uses the standard analytical formula.
         """
-        if self._survey_se_ctx is not None:
-            return self._compute_survey_eif_se(
-                eif_vals,
-                self._survey_se_ctx,
-            )
+        if self._unit_resolved_survey is not None:
+            return self._compute_survey_eif_se(eif_vals)
         return float(np.sqrt(np.mean(eif_vals**2) / n_units))
 
     # -- Aggregation helpers --------------------------------------------------

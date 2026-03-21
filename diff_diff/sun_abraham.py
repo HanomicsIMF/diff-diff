@@ -625,6 +625,15 @@ class SunAbraham:
             resolved_survey=resolved_survey,
         )
 
+        # Resolve survey weight column name for cohort aggregation
+        survey_weight_col = (
+            survey_design.weights
+            if survey_design is not None
+            and hasattr(survey_design, "weights")
+            and survey_design.weights
+            else None
+        )
+
         # Compute interaction-weighted event study effects
         event_study_effects, cohort_weights = self._compute_iw_effects(
             df,
@@ -636,6 +645,7 @@ class SunAbraham:
             cohort_ses,
             vcov_cohort,
             coef_index_map,
+            survey_weight_col=survey_weight_col,
         )
 
         # Compute overall ATT (average of post-treatment effects)
@@ -647,6 +657,7 @@ class SunAbraham:
             cohort_weights,
             vcov_cohort,
             coef_index_map,
+            survey_weight_col=survey_weight_col,
         )
 
         overall_t, overall_p, overall_ci = safe_inference(overall_att, overall_se, alpha=self.alpha)
@@ -869,6 +880,7 @@ class SunAbraham:
         cohort_ses: Dict[Tuple[Any, int], float],
         vcov_cohort: np.ndarray,
         coef_index_map: Dict[Tuple[Any, int], int],
+        survey_weight_col: Optional[str] = None,
     ) -> Tuple[Dict[int, Dict[str, Any]], Dict[int, Dict[Any, float]]]:
         """
         Compute interaction-weighted event study effects.
@@ -877,6 +889,10 @@ class SunAbraham:
 
         where w_{g,e} = n_{g,e} / Σ_g n_{g,e} is the share of observations from cohort g
         at event-time e among all treated observations at that event-time.
+
+        When survey weights are provided, n_{g,e} is the survey-weighted mass
+        (sum of weights) rather than raw observation counts, so the estimand
+        reflects the survey-weighted cohort composition.
 
         Returns
         -------
@@ -888,8 +904,15 @@ class SunAbraham:
         event_study_effects: Dict[int, Dict[str, Any]] = {}
         cohort_weights: Dict[int, Dict[Any, float]] = {}
 
-        # Pre-compute per-event-time observation counts: n_{g,e}
-        event_time_counts = df[df[first_treat] > 0].groupby([first_treat, "_rel_time"]).size()
+        # Pre-compute per-event-time observation mass: n_{g,e}
+        # With survey weights, use weighted sum; otherwise raw counts.
+        treated_mask = df[first_treat] > 0
+        if survey_weight_col is not None and survey_weight_col in df.columns:
+            event_time_counts = (
+                df[treated_mask].groupby([first_treat, "_rel_time"])[survey_weight_col].sum()
+            )
+        else:
+            event_time_counts = df[treated_mask].groupby([first_treat, "_rel_time"]).size()
 
         for e in rel_periods:
             # Get cohorts that have observations at this relative time
@@ -951,9 +974,13 @@ class SunAbraham:
         cohort_weights: Dict[int, Dict[Any, float]],
         vcov_cohort: np.ndarray,
         coef_index_map: Dict[Tuple[Any, int], int],
+        survey_weight_col: Optional[str] = None,
     ) -> Tuple[float, float]:
         """
         Compute overall ATT as weighted average of post-treatment effects.
+
+        When survey weights are provided, the per-period weights use
+        survey-weighted mass rather than raw observation counts.
 
         Returns (att, se) tuple.
         """
@@ -962,12 +989,16 @@ class SunAbraham:
         if not post_effects:
             return np.nan, np.nan
 
-        # Weight by number of treated observations at each relative time
+        # Weight by (survey-weighted) mass of treated observations at each relative time
         post_weights = []
         post_estimates = []
 
         for e, eff in post_effects:
-            n_at_e = len(df[(df["_rel_time"] == e) & (df[first_treat] > 0)])
+            mask = (df["_rel_time"] == e) & (df[first_treat] > 0)
+            if survey_weight_col is not None and survey_weight_col in df.columns:
+                n_at_e = df.loc[mask, survey_weight_col].sum()
+            else:
+                n_at_e = len(df[mask])
             post_weights.append(max(n_at_e, 1))
             post_estimates.append(eff["effect"])
 
