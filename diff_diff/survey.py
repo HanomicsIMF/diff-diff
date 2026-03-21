@@ -197,12 +197,10 @@ class SurveyDesign:
                                 f"({n_psu_h}) in stratum {h}. FPC must be >= n_PSU."
                             )
                     else:
-                        n_h = np.sum(mask_h)
-                        if fpc_h < n_h:
-                            raise ValueError(
-                                f"FPC ({fpc_h}) is less than the number of observations "
-                                f"({n_h}) in stratum {h}. FPC must be >= n_obs."
-                            )
+                        # No PSU declared yet — clusters may be injected later
+                        # as effective PSUs, so skip per-obs FPC validation here.
+                        # FPC will be applied at the PSU level in compute_survey_vcov.
+                        pass
             elif psu_arr is not None:
                 # No strata: require FPC is a single constant value
                 if len(np.unique(fpc_arr)) > 1:
@@ -459,8 +457,15 @@ def _inject_cluster_as_psu(resolved, cluster_ids):
             "when used as effective PSUs for survey variance estimation."
         )
 
-    # Factorize cluster_ids for consistent integer encoding
-    codes, uniques = pd.factorize(cluster_ids)
+    # When strata are present, make cluster IDs unique within strata
+    # (same nesting logic as SurveyDesign.resolve() with nest=True)
+    if resolved.strata is not None:
+        combined = np.array(
+            [f"{s}_{c}" for s, c in zip(resolved.strata, cluster_ids)]
+        )
+        codes, uniques = pd.factorize(combined)
+    else:
+        codes, uniques = pd.factorize(cluster_ids)
     n_clusters = len(uniques)
 
     return replace(resolved, psu=codes, n_psu=n_clusters)

@@ -2872,3 +2872,47 @@ class TestRound15Fixes:
         cluster_ids = np.array([0, 1, np.nan, 0])
         with pytest.raises(ValueError, match="Cluster IDs contain missing"):
             _inject_cluster_as_psu(resolved, cluster_ids)
+
+
+class TestRound16Fixes:
+    """Tests for PR #218 review round 16: cluster-as-PSU nesting and FPC."""
+
+    def test_injected_cluster_nested_in_strata(self):
+        """Injected cluster IDs with repeated labels across strata get unique codes."""
+        from diff_diff.survey import _inject_cluster_as_psu
+
+        # 2 strata, cluster "1" appears in both → should produce 4 unique PSUs
+        strata = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(8),
+            weight_type="pweight",
+            strata=strata,
+            psu=None,
+            fpc=None,
+            n_strata=2,
+            n_psu=0,
+            lonely_psu="remove",
+        )
+        cluster_ids = np.array([1, 1, 2, 2, 1, 1, 2, 2])  # labels repeat across strata
+        result = _inject_cluster_as_psu(resolved, cluster_ids)
+        # Should produce 4 unique PSUs (2 per stratum), not 2
+        assert result.n_psu == 4
+        # df_survey = n_psu - n_strata = 4 - 2 = 2
+        assert result.df_survey == 2
+
+    def test_fpc_with_strata_no_psu_accepted(self):
+        """FPC + strata (no PSU) is accepted — clusters may be injected later."""
+        df = pd.DataFrame(
+            {
+                "y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                "w": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                "strat": [0, 0, 0, 1, 1, 1],
+                "pop": [10.0, 10.0, 10.0, 20.0, 20.0, 20.0],
+            }
+        )
+        sd = SurveyDesign(
+            weights="w", weight_type="pweight", strata="strat", fpc="pop"
+        )
+        # Should not raise — FPC validation defers when no PSU declared
+        resolved = sd.resolve(df)
+        assert resolved.fpc is not None
