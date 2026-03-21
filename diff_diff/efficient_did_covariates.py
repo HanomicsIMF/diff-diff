@@ -235,6 +235,19 @@ def estimate_propensity_ratio_sieve(
             best_ic = ic_val
             best_ratio = r_hat.copy()
 
+    # Overlap diagnostics: warn if ratios require significant clipping
+    n_extreme = int(np.sum((best_ratio < 1.0 / ratio_clip) | (best_ratio > ratio_clip)))
+    if n_extreme > 0:
+        pct = 100.0 * n_extreme / n_units
+        warnings.warn(
+            f"Sieve propensity ratios for {n_extreme} of {n_units} units "
+            f"({pct:.1f}%) were outside [{1.0/ratio_clip:.2f}, {ratio_clip:.1f}] "
+            f"and will be clipped. This may indicate overlap assumption "
+            f"violations (near-zero propensity scores for some covariate values).",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # Clip: population ratio p_g(X)/p_{g'}(X) is non-negative
     best_ratio = np.clip(best_ratio, 1.0 / ratio_clip, ratio_clip)
 
@@ -626,17 +639,19 @@ def compute_per_unit_weights(
 def compute_eif_cov(
     weights: np.ndarray,
     generated_outcomes: np.ndarray,
-    y_hat_mean: np.ndarray,
+    att_gt: float,
     n_units: int,
 ) -> np.ndarray:
     """Per-unit efficient influence function from DR generated outcomes.
 
     Supports both global weights ``(H,)`` and per-unit weights ``(n_units, H)``.
 
-    The plug-in EIF treats estimated per-unit weights w(X_i) as fixed.
-    This is valid under Neyman orthogonality (Remark 4.2): estimation
-    error in the conditional Omega*(X) weights is second-order and does
-    not affect the first-order asymptotics of the EIF.
+    For global weights: ``EIF_i = w @ (gen_out_i - y_bar) = w @ gen_out_i - ATT``
+    For per-unit weights: ``EIF_i = w(X_i) @ gen_out_i - ATT``
+
+    In both cases the EIF centers on the scalar ATT estimate, ensuring
+    ``mean(EIF) ≈ 0``. The plug-in EIF treats estimated per-unit weights
+    as fixed, valid under Neyman orthogonality (Remark 4.2).
 
     Parameters
     ----------
@@ -644,26 +659,26 @@ def compute_eif_cov(
         Efficient combination weights.
     generated_outcomes : ndarray, shape (n_units, H)
         Per-unit generated outcomes.
-    y_hat_mean : ndarray, shape (H,)
-        Sample average of generated outcomes per pair.
+    att_gt : float
+        Scalar ATT estimate for this (g, t) cell.
     n_units : int
         Total number of units.
 
     Returns
     -------
     eif : ndarray, shape (n_units,)
-        EIF value for every unit.
+        EIF value for every unit. Sample mean is approximately zero.
     """
     if weights.size == 0:
         return np.zeros(n_units)
 
-    centered = generated_outcomes - y_hat_mean  # (n_units, H)
-
     if weights.ndim == 1:
-        # Global weights: (n_units,) = (n_units, H) @ (H,)
-        eif = centered @ weights
+        # Global weights: w @ gen_out_i for each unit
+        weighted_scores = generated_outcomes @ weights  # (n_units,)
     else:
-        # Per-unit weights: element-wise multiply then sum
-        eif = np.sum(weights * centered, axis=1)
+        # Per-unit weights: w_i @ gen_out_i for each unit
+        weighted_scores = np.sum(weights * generated_outcomes, axis=1)
 
+    # Center on the scalar ATT estimate (ensures mean(EIF) ≈ 0)
+    eif = weighted_scores - att_gt
     return eif

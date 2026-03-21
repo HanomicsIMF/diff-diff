@@ -1348,14 +1348,9 @@ class TestCovariatesEdgeCases:
             f"vs shuffled={r_shuffled.overall_att:.6f}"
         )
 
-    def test_extreme_covariates_still_valid(self):
-        """Extreme covariates (near-separation) should still produce valid results.
-
-        The sieve ratio estimator clips extreme ratios; conditional Omega*
-        handles the resulting variation in weights gracefully.
-        """
+    def test_extreme_covariates_warns_overlap(self):
+        """Extreme covariates should trigger overlap warning and still produce valid results."""
         df = _make_covariate_panel(n_units=300, seed=77)
-        # Create a covariate that nearly separates treated from control
         rng = np.random.default_rng(77)
         units = df["unit"].unique()
         n_units = len(units)
@@ -1367,11 +1362,26 @@ class TestCovariatesEdgeCases:
         )
         sep_map = dict(zip(units, sep_vals))
         df["x_sep"] = df["unit"].map(sep_map)
-        result = EfficientDiD(pt_assumption="post").fit(
-            df, "y", "unit", "time", "first_treat", covariates=["x_sep"]
-        )
+        with pytest.warns(UserWarning, match="overlap|clipped|propensity"):
+            result = EfficientDiD(pt_assumption="post").fit(
+                df, "y", "unit", "time", "first_treat", covariates=["x_sep"]
+            )
         assert np.isfinite(result.overall_att)
         assert result.overall_se > 0
+
+    def test_eif_mean_approximately_zero(self):
+        """EIF with per-unit weights should have sample mean ≈ 0."""
+        from diff_diff.efficient_did_covariates import compute_eif_cov
+
+        rng = np.random.default_rng(42)
+        n, H = 200, 3
+        gen_out = rng.normal(0, 1, (n, H))
+        # Non-constant per-unit weights (each row sums to 1)
+        raw_w = rng.exponential(1, (n, H))
+        per_unit_w = raw_w / raw_w.sum(axis=1, keepdims=True)
+        att = float(np.mean(np.sum(per_unit_w * gen_out, axis=1)))
+        eif = compute_eif_cov(per_unit_w, gen_out, att, n)
+        assert abs(np.mean(eif)) < 1e-10, f"EIF mean should be ≈ 0, got {np.mean(eif):.2e}"
 
 
 class TestCovariatesBootstrap:

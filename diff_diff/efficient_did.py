@@ -54,7 +54,9 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
     sample means and covariances.  With covariates, uses the doubly robust
     path: sieve-based propensity score ratios (Eq 4.1-4.2) with AIC/BIC
     selection, OLS outcome regression, and kernel-smoothed conditional
-    Omega*(X) for per-unit efficient weights.
+    Omega*(X) for per-unit efficient weights.  The conditional Omega*
+    currently uses unconditional cohort fractions rather than per-unit
+    conditional propensities (see REGISTRY.md deviation note).
 
     Parameters
     ----------
@@ -534,7 +536,8 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                         att_gt = np.nan
 
                     # EIF with per-unit weights (Remark 4.2: plug-in valid)
-                    eif_vals = compute_eif_cov(per_unit_w, gen_out, y_hat, n_units)
+                    # Center on scalar ATT, not per-pair means (ensures mean(EIF) ≈ 0)
+                    eif_vals = compute_eif_cov(per_unit_w, gen_out, att_gt, n_units)
                     eif_by_gt[(g, t)] = eif_vals
                 else:
                     # No-covariates path (closed-form)

@@ -671,6 +671,7 @@ where `q_{g,e} = pi_g / sum_{g' in G_{trt,e}} pi_{g'}`.
 - [x] Overlap diagnostics for propensity score ratios
 - **Note:** Sieve ratio estimation uses polynomial basis functions (total degree up to K) with AIC/BIC model selection. The paper describes sieve estimators generally without specifying a particular basis family; polynomial sieves are a standard choice (Section 4, Eq 4.2). Negative sieve ratio predictions are clipped to a small positive value since the population ratio p_g(X)/p_{g'}(X) is non-negative.
 - **Note:** Kernel-smoothed conditional covariance Omega*(X) uses Gaussian kernel with Silverman's rule-of-thumb bandwidth by default. The paper specifies kernel smoothing (step 5, Section 4) without mandating a particular kernel or bandwidth selection method.
+- **Note (deviation from source):** The conditional covariance Omega*(X) scales each term by unconditional cohort fractions pi_g rather than conditional generalized propensities p_g(X) as in Eq 3.12. Implementing the full conditional propensity scaling requires per-unit group probability estimation (algorithm step 4: s_hat_{g'}(X) = 1/p_{g'}(X) via convex minimization), which is deferred. The unconditional-pi approximation is consistent under double robustness but does not achieve the full conditional efficiency bound of Eq 3.12.
 
 ---
 
