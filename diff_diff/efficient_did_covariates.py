@@ -365,6 +365,18 @@ def estimate_inverse_propensity_sieve(
             stacklevel=2,
         )
 
+    # Overlap diagnostics: warn if s_hat values require clipping
+    n_clipped = int(np.sum((best_s < 1.0) | (best_s > float(n_units))))
+    if n_clipped > 0:
+        pct = 100.0 * n_clipped / n_units
+        warnings.warn(
+            f"Inverse propensity estimates for {n_clipped} of {n_units} units "
+            f"({pct:.1f}%) were outside [1, {n_units}] and will be clipped. "
+            f"This may indicate overlap assumption violations.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # s = 1/p must be >= 1 (since p <= 1) and bounded above
     best_s = np.clip(best_s, 1.0, float(n_units))
     return best_s

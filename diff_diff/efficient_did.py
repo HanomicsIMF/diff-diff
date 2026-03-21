@@ -1,13 +1,13 @@
 """
 Efficient Difference-in-Differences estimator.
 
-Implements the semiparametrically efficient ATT estimator from
-Chen, Sant'Anna & Xie (2025).
+Implements the ATT estimator from Chen, Sant'Anna & Xie (2025).
+Without covariates, achieves the semiparametric efficiency bound via
+closed-form within-group covariances.  With covariates, uses a doubly
+robust path with OLS outcome regression, sieve propensity ratios, and
+kernel-smoothed conditional Omega*(X) (see class docstring for caveats).
 
-The estimator achieves the efficiency bound by optimally weighting
-across pre-treatment periods and comparison groups via the inverse of
-the within-group covariance matrix Omega*.  Under the stronger PT-All
-assumption the model is overidentified and EDiD exploits this for
+Under PT-All the model is overidentified and EDiD exploits this for
 tighter inference; under PT-Post it reduces to the standard
 single-baseline estimator (Callaway-Sant'Anna).
 """
