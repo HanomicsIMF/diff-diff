@@ -27,6 +27,7 @@ from diff_diff.efficient_did_covariates import (
     compute_generated_outcomes_cov,
     compute_omega_star_conditional,
     compute_per_unit_weights,
+    estimate_inverse_propensity_sieve,
     estimate_outcome_regression,
     estimate_propensity_ratio_sieve,
 )
@@ -53,10 +54,9 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
     Without covariates, uses a closed-form estimator based on within-group
     sample means and covariances.  With covariates, uses the doubly robust
     path: sieve-based propensity score ratios (Eq 4.1-4.2) with AIC/BIC
-    selection, OLS outcome regression, and kernel-smoothed conditional
-    Omega*(X) for per-unit efficient weights.  The conditional Omega*
-    currently uses unconditional cohort fractions rather than per-unit
-    conditional propensities (see REGISTRY.md deviation note).
+    selection, OLS outcome regression, sieve-estimated inverse propensities
+    (algorithm step 4), and kernel-smoothed conditional Omega*(X) with
+    per-unit efficient weights (Eq 3.12).
 
     Parameters
     ----------
@@ -356,6 +356,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         covariate_matrix: Optional[np.ndarray] = None
         m_hat_cache: Dict[Tuple, np.ndarray] = {}
         r_hat_cache: Dict[Tuple[float, float], np.ndarray] = {}
+        s_hat_cache: Dict[float, np.ndarray] = {}  # inverse propensities per group
 
         if use_covariates:
             assert covariates is not None  # for type narrowing
@@ -523,7 +524,21 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
 
                     y_hat = np.mean(gen_out, axis=0)  # shape (H,)
 
-                    # Conditional Omega*(X): (n_units, H, H)
+                    # Inverse propensity estimation (algorithm step 4)
+                    # s_hat_{g'}(X) = 1/p_{g'}(X) for Eq 3.12 scaling
+                    for group_id in {g, np.inf} | {gp for gp, _ in pairs}:
+                        if group_id not in s_hat_cache:
+                            group_mask_s = (
+                                never_treated_mask if np.isinf(group_id) else cohort_masks[group_id]
+                            )
+                            s_hat_cache[group_id] = estimate_inverse_propensity_sieve(
+                                covariate_matrix,
+                                group_mask_s,
+                                k_max=self.sieve_k_max,
+                                criterion=self.sieve_criterion,
+                            )
+
+                    # Conditional Omega*(X) with per-unit propensities (Eq 3.12)
                     omega_cond = compute_omega_star_conditional(
                         target_g=g,
                         target_t=t,
@@ -535,6 +550,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                         period_1_col=effective_p1_col,
                         cohort_fractions=cohort_fractions,
                         covariate_matrix=covariate_matrix,
+                        s_hat_cache=s_hat_cache,
                         bandwidth=self.kernel_bandwidth,
                     )
 

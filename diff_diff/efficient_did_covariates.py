@@ -255,6 +255,97 @@ def estimate_propensity_ratio_sieve(
 
 
 # ---------------------------------------------------------------------------
+# Sieve-based inverse propensity estimation (Algorithm step 4)
+# ---------------------------------------------------------------------------
+
+
+def estimate_inverse_propensity_sieve(
+    covariate_matrix: np.ndarray,
+    group_mask: np.ndarray,
+    k_max: Optional[int] = None,
+    criterion: str = "bic",
+) -> np.ndarray:
+    r"""Estimate s_{g'}(X) = 1/p_{g'}(X) via sieve convex minimization.
+
+    Solves for each sieve degree K:
+
+    .. math::
+        \hat\beta_K = \arg\min_\beta \frac{1}{n}
+            \sum_i \bigl[ G_{g',i} (\psi^K(X_i)'\beta)^2
+            - 2 (\psi^K(X_i)'\beta) \bigr]
+
+    FOC: ``(Psi_{g'}' Psi_{g'}) beta = Psi_all.sum(axis=0)``
+
+    This is the same structure as the ratio estimator but with all
+    units on the RHS (not just group g), following the paper's
+    algorithm step 4.
+
+    Parameters
+    ----------
+    covariate_matrix : ndarray, shape (n_units, n_covariates)
+    group_mask : ndarray of bool, shape (n_units,)
+        Mask for the group whose inverse propensity to estimate.
+    k_max : int or None
+        Maximum polynomial degree. None = auto.
+    criterion : str
+        ``"aic"`` or ``"bic"``.
+
+    Returns
+    -------
+    s_hat : ndarray, shape (n_units,)
+        Estimated ``1/p_{g'}(X_i)`` for every unit. Clipped to [1, n].
+    """
+    n_units = len(covariate_matrix)
+    n_group = int(np.sum(group_mask))
+    d = covariate_matrix.shape[1]
+
+    if n_group == 0:
+        return np.ones(n_units)
+
+    if k_max is None:
+        k_max = min(int(n_group**0.2), 5)
+    k_max = max(k_max, 1)
+
+    c_n = 2.0 if criterion == "aic" else np.log(max(n_units, 2))
+
+    best_ic = np.inf
+    best_s = np.full(n_units, n_units / n_group)  # fallback: unconditional
+
+    for K in range(1, k_max + 1):
+        n_basis = comb(K + d, d)
+        if n_basis >= n_group:
+            break
+
+        basis_all = _polynomial_sieve_basis(covariate_matrix, K)
+        Psi_gp = basis_all[group_mask]
+
+        A = Psi_gp.T @ Psi_gp
+        # RHS: sum of basis over ALL units (not just one group)
+        b = basis_all.sum(axis=0)
+
+        try:
+            beta = np.linalg.solve(A, b)
+        except np.linalg.LinAlgError:
+            continue
+        if not np.all(np.isfinite(beta)):
+            continue
+
+        s_hat = basis_all @ beta
+
+        # IC: loss = -(1/n) * b'beta (same derivation as ratio estimator)
+        loss = -float(b @ beta) / n_units
+        ic_val = 2.0 * loss + c_n * n_basis / n_units
+
+        if ic_val < best_ic:
+            best_ic = ic_val
+            best_s = s_hat.copy()
+
+    # s = 1/p must be >= 1 (since p <= 1) and bounded above
+    best_s = np.clip(best_s, 1.0, float(n_units))
+    return best_s
+
+
+# ---------------------------------------------------------------------------
 # Doubly robust generated outcomes (Eq 4.4)
 # ---------------------------------------------------------------------------
 
@@ -429,6 +520,7 @@ def compute_omega_star_conditional(
     period_1_col: int,
     cohort_fractions: Dict[float, float],
     covariate_matrix: np.ndarray,
+    s_hat_cache: Dict[float, np.ndarray],
     bandwidth: Optional[float] = None,
     never_treated_val: float = np.inf,
 ) -> np.ndarray:
@@ -436,7 +528,9 @@ def compute_omega_star_conditional(
 
     Estimates the five-term conditional covariance matrix using
     Nadaraya-Watson kernel regression with Gaussian kernel and
-    local (kernel-weighted) means.
+    local (kernel-weighted) means.  Scales each term by per-unit
+    conditional inverse propensities ``s_hat_g(X_i) = 1/p_g(X_i)``
+    (algorithm step 4), matching the paper's Eq 3.12.
 
     Parameters
     ----------
@@ -447,6 +541,9 @@ def compute_omega_star_conditional(
     cohort_masks, never_treated_mask, period_to_col, period_1_col,
     cohort_fractions : pre-computed data structures
     covariate_matrix : ndarray, shape (n_units, n_covariates)
+    s_hat_cache : dict
+        Inverse propensity estimates ``{group: s_hat(X_i)}`` where each
+        value is shape ``(n_units,)``. Keyed by group identifier.
     bandwidth : float or None
         Kernel bandwidth. None = Silverman's rule.
     never_treated_val : float
@@ -468,23 +565,27 @@ def compute_omega_star_conditional(
     y1_col = period_1_col
 
     g_mask = cohort_masks[target_g]
-    pi_g = cohort_fractions[target_g]
 
     Y_inf = outcome_wide[never_treated_mask]
     X_inf = covariate_matrix[never_treated_mask]
-    pi_inf = cohort_fractions.get(never_treated_val, 0.0)
+
+    # Per-unit inverse propensities from sieve estimation (Eq 3.12)
+    s_g = s_hat_cache.get(target_g, np.full(n_units, 1.0 / max(cohort_fractions[target_g], 1e-10)))
+    s_inf = s_hat_cache.get(
+        never_treated_val,
+        np.full(n_units, 1.0 / max(cohort_fractions.get(never_treated_val, 1e-10), 1e-10)),
+    )
 
     # Scalability warning
     if n_units > 5000:
         warnings.warn(
             f"Conditional Omega* estimation with n={n_units} is expensive "
-            f"(O(n^2 * H^2)). Consider using fewer units or unconditional Omega*.",
+            f"(O(n^2 * H^2)). Consider using fewer units.",
             UserWarning,
             stacklevel=2,
         )
 
-    # Pre-compute kernel weight matrices per group (reused across pairs)
-    # W_g[i, j] = normalized K_h(X_g[j], X_all[i])
+    # Pre-compute kernel weight matrices per group
     Y_g = outcome_wide[g_mask]
     X_g = covariate_matrix[g_mask]
     Yg_t_minus_1 = Y_g[:, t_col] - Y_g[:, y1_col]
@@ -492,24 +593,19 @@ def compute_omega_star_conditional(
     W_g = _kernel_weights_matrix(covariate_matrix, X_g, bandwidth)
     W_inf = _kernel_weights_matrix(covariate_matrix, X_inf, bandwidth)
 
-    # Pre-compute per-pair differenced arrays for never-treated
     inf_t_minus_tpre = {}
     for _, tpre in valid_pairs:
         tpre_col = period_to_col[tpre]
         if tpre_col not in inf_t_minus_tpre:
             inf_t_minus_tpre[tpre_col] = Y_inf[:, t_col] - Y_inf[:, tpre_col]
 
-    # Pre-compute kernel weights for comparison cohorts
     W_gp_cache: Dict[float, np.ndarray] = {}
     gp_outcomes_cache: Dict[float, np.ndarray] = {}
 
     omega = np.zeros((n_units, H, H))
 
-    # Term 1: (1/pi_g) * Cov(Y_t-Y_1, Y_t-Y_1 | G=g, X) — same for all (j,k)
-    if pi_g > 0:
-        term1 = (1.0 / pi_g) * _kernel_weighted_cov(Yg_t_minus_1, Yg_t_minus_1, W_g)
-    else:
-        term1 = np.zeros(n_units)
+    # Term 1: s_g(X) * Cov(Y_t-Y_1, Y_t-Y_1 | G=g, X) — same for all (j,k)
+    term1 = s_g * _kernel_weighted_cov(Yg_t_minus_1, Yg_t_minus_1, W_g)
 
     for j in range(H):
         gp_j, tpre_j = valid_pairs[j]
@@ -521,45 +617,42 @@ def compute_omega_star_conditional(
 
             val = term1.copy()
 
-            # Term 2: (1/pi_inf) * Cov(Y_t-Y_{tpre_j}, Y_t-Y_{tpre_k} | G=inf, X)
-            if pi_inf > 0:
-                val += (1.0 / pi_inf) * _kernel_weighted_cov(
-                    inf_t_minus_tpre[tpre_j_col],
-                    inf_t_minus_tpre[tpre_k_col],
-                    W_inf,
-                )
+            # Term 2: s_inf(X) * Cov(Y_t-Y_{tpre_j}, Y_t-Y_{tpre_k} | G=inf, X)
+            val += s_inf * _kernel_weighted_cov(
+                inf_t_minus_tpre[tpre_j_col],
+                inf_t_minus_tpre[tpre_k_col],
+                W_inf,
+            )
 
-            # Term 3: -1{g==g'_j}/pi_g * Cov(Y_t-Y_1, Y_{tpre_j}-Y_1 | G=g, X)
-            if gp_j == target_g and pi_g > 0:
+            # Term 3: -1{g==g'_j} * s_g(X) * Cov(Y_t-Y_1, Y_{tpre_j}-Y_1 | G=g, X)
+            if gp_j == target_g:
                 g_tpre_j = Y_g[:, tpre_j_col] - Y_g[:, y1_col]
-                val -= (1.0 / pi_g) * _kernel_weighted_cov(Yg_t_minus_1, g_tpre_j, W_g)
+                val -= s_g * _kernel_weighted_cov(Yg_t_minus_1, g_tpre_j, W_g)
 
-            # Term 4: -1{g==g'_k}/pi_g * Cov(Y_t-Y_1, Y_{tpre_k}-Y_1 | G=g, X)
-            if gp_k == target_g and pi_g > 0:
+            # Term 4: -1{g==g'_k} * s_g(X) * Cov(Y_t-Y_1, Y_{tpre_k}-Y_1 | G=g, X)
+            if gp_k == target_g:
                 g_tpre_k = Y_g[:, tpre_k_col] - Y_g[:, y1_col]
-                val -= (1.0 / pi_g) * _kernel_weighted_cov(Yg_t_minus_1, g_tpre_k, W_g)
+                val -= s_g * _kernel_weighted_cov(Yg_t_minus_1, g_tpre_k, W_g)
 
-            # Term 5: 1{g'_j==g'_k}/pi_{g'_j} * Cov(Y_{tpre_j}-Y_1, Y_{tpre_k}-Y_1 | G=g'_j, X)
+            # Term 5: 1{g'_j==g'_k} * s_{g'_j}(X) * Cov(...)
             if gp_j == gp_k:
                 if np.isinf(gp_j):
-                    if pi_inf > 0:
-                        inf_tpre_j = Y_inf[:, tpre_j_col] - Y_inf[:, y1_col]
-                        inf_tpre_k = Y_inf[:, tpre_k_col] - Y_inf[:, y1_col]
-                        val += (1.0 / pi_inf) * _kernel_weighted_cov(inf_tpre_j, inf_tpre_k, W_inf)
+                    inf_tpre_j = Y_inf[:, tpre_j_col] - Y_inf[:, y1_col]
+                    inf_tpre_k = Y_inf[:, tpre_k_col] - Y_inf[:, y1_col]
+                    val += s_inf * _kernel_weighted_cov(inf_tpre_j, inf_tpre_k, W_inf)
                 else:
-                    pi_gp_j = cohort_fractions.get(gp_j, 0.0)
-                    if pi_gp_j > 0:
-                        if gp_j not in W_gp_cache:
-                            X_gp = covariate_matrix[cohort_masks[gp_j]]
-                            W_gp_cache[gp_j] = _kernel_weights_matrix(
-                                covariate_matrix, X_gp, bandwidth
-                            )
-                            gp_outcomes_cache[gp_j] = outcome_wide[cohort_masks[gp_j]]
-                        W_gp = W_gp_cache[gp_j]
-                        Y_gp = gp_outcomes_cache[gp_j]
-                        gp_tpre_j = Y_gp[:, tpre_j_col] - Y_gp[:, y1_col]
-                        gp_tpre_k = Y_gp[:, tpre_k_col] - Y_gp[:, y1_col]
-                        val += (1.0 / pi_gp_j) * _kernel_weighted_cov(gp_tpre_j, gp_tpre_k, W_gp)
+                    s_gp_j = s_hat_cache.get(
+                        gp_j, np.full(n_units, 1.0 / max(cohort_fractions.get(gp_j, 1e-10), 1e-10))
+                    )
+                    if gp_j not in W_gp_cache:
+                        X_gp = covariate_matrix[cohort_masks[gp_j]]
+                        W_gp_cache[gp_j] = _kernel_weights_matrix(covariate_matrix, X_gp, bandwidth)
+                        gp_outcomes_cache[gp_j] = outcome_wide[cohort_masks[gp_j]]
+                    W_gp = W_gp_cache[gp_j]
+                    Y_gp = gp_outcomes_cache[gp_j]
+                    gp_tpre_j = Y_gp[:, tpre_j_col] - Y_gp[:, y1_col]
+                    gp_tpre_k = Y_gp[:, tpre_k_col] - Y_gp[:, y1_col]
+                    val += s_gp_j * _kernel_weighted_cov(gp_tpre_j, gp_tpre_k, W_gp)
 
             omega[:, j, k] = val
             if j != k:
