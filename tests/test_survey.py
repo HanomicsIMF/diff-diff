@@ -2793,3 +2793,34 @@ class TestRound13Fixes:
         vcov = compute_survey_vcov(X, residuals, resolved=resolved)
         # Zero residuals → zero scores → zero V_h per stratum → zero vcov
         np.testing.assert_array_equal(vcov, np.zeros((2, 2)))
+
+
+class TestRound14Fixes:
+    """Tests for PR #218 review round 14 fixes."""
+
+    def test_multiperiod_bootstrap_survey_fallback(self):
+        """MultiPeriodDiD with wild_bootstrap + survey_design falls back gracefully."""
+        np.random.seed(42)
+        n = 40
+        df = pd.DataFrame(
+            {
+                "outcome": np.random.randn(n),
+                "treated": np.array([1] * 20 + [0] * 20),
+                "time": np.tile([0, 1, 2, 3], 10),
+                "w": np.ones(n),
+            }
+        )
+        sd = SurveyDesign(weights="w", weight_type="pweight")
+        mpd = MultiPeriodDiD(inference="wild_bootstrap")
+        # Should warn about fallback and produce valid analytical results
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = mpd.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                time="time",
+                post_periods=[2, 3],
+                survey_design=sd,
+            )
+        assert np.isfinite(result.avg_att)

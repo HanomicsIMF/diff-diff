@@ -838,13 +838,16 @@ class MultiPeriodDiD(DifferenceInDifferences):
         ValueError
             If required parameters are missing or data validation fails.
         """
-        # Warn if wild bootstrap is requested but not supported
+        # Fall back to analytical inference if wild bootstrap requested
+        # (must happen before _resolve_survey_for_fit which rejects bootstrap+survey)
+        effective_inference = self.inference
         if self.inference == "wild_bootstrap":
             warnings.warn(
                 "Wild bootstrap inference is not yet supported for MultiPeriodDiD. "
                 "Using analytical inference instead.",
                 UserWarning,
             )
+            effective_inference = "analytical"
 
         # Validate basic inputs
         if outcome is None or treatment is None or time is None:
@@ -992,7 +995,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
         from diff_diff.survey import _resolve_effective_cluster, _resolve_survey_for_fit
 
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
-            _resolve_survey_for_fit(survey_design, data, self.inference)
+            _resolve_survey_for_fit(survey_design, data, effective_inference)
         )
 
         # Handle absorbed fixed effects (within-transformation)
