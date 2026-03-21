@@ -260,6 +260,14 @@ class DifferenceInDifferences:
                 "Use absorb with a single variable, or use fixed_effects= instead."
             )
 
+        if absorb and fixed_effects and survey_weights is not None:
+            raise ValueError(
+                "Cannot use both absorb and fixed_effects with survey weights. "
+                "The absorb within-transformation does not residualize "
+                "fixed_effects dummies. Use absorb alone (for high-dimensional FE) "
+                "or fixed_effects alone (for low-dimensional FE)."
+            )
+
         if absorb:
             # FWL theorem: demean ALL regressors alongside outcome.
             # Regressors collinear with absorbed FE (e.g., treatment after
@@ -1014,6 +1022,14 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 "weights is not supported. Single-pass sequential demeaning is not "
                 "the correct weighted FWL projection for multiple absorbed dimensions. "
                 "Use absorb with a single variable, or use fixed_effects= instead."
+            )
+
+        if absorb and fixed_effects and survey_weights is not None:
+            raise ValueError(
+                "Cannot use both absorb and fixed_effects with survey weights. "
+                "The absorb within-transformation does not residualize "
+                "fixed_effects dummies. Use absorb alone (for high-dimensional FE) "
+                "or fixed_effects alone (for low-dimensional FE)."
             )
 
         # Pre-compute non_ref_periods (needed for absorb demeaning)

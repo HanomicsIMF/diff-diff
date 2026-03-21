@@ -3110,3 +3110,69 @@ class TestRound19Fixes:
         sd = SurveyDesign(weights="w", strata="s", psu="psu", nest=False)
         resolved = sd.resolve(df)
         assert resolved.n_psu == 20
+
+
+class TestRound21Fixes:
+    """Reject absorb + fixed_effects + survey_design (FWL violation)."""
+
+    def _make_panel(self):
+        """Create a simple panel dataset for testing."""
+        np.random.seed(42)
+        n_units, n_periods = 20, 4
+        df = pd.DataFrame(
+            {
+                "unit": np.repeat(range(n_units), n_periods),
+                "time": np.tile(range(n_periods), n_units),
+                "treated": np.repeat(
+                    [1] * (n_units // 2) + [0] * (n_units // 2), n_periods
+                ),
+                "post": np.tile([0, 0, 1, 1], n_units),
+                "outcome": np.random.randn(n_units * n_periods),
+                "region": np.repeat(
+                    ["A", "B"] * (n_units // 2), n_periods
+                ),
+                "sw": np.random.uniform(0.5, 2.0, n_units * n_periods),
+            }
+        )
+        return df
+
+    def test_absorb_fe_survey_rejected_did(self):
+        """DiD rejects absorb + fixed_effects + survey_design."""
+        df = self._make_panel()
+        model = DifferenceInDifferences()
+        with pytest.raises(ValueError, match="Cannot use both absorb and fixed_effects with survey"):
+            model.fit(
+                df,
+                formula="outcome ~ treated * post",
+                absorb=["unit"],
+                fixed_effects=["region"],
+                survey_design=SurveyDesign(weights="sw"),
+            )
+
+    def test_absorb_fe_survey_rejected_multi_period(self):
+        """MultiPeriodDiD rejects absorb + fixed_effects + survey_design."""
+        df = self._make_panel()
+        model = MultiPeriodDiD()
+        with pytest.raises(ValueError, match="Cannot use both absorb and fixed_effects with survey"):
+            model.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                time="time",
+                absorb=["unit"],
+                fixed_effects=["region"],
+                survey_design=SurveyDesign(weights="sw"),
+            )
+
+    def test_absorb_fe_without_survey_still_works(self):
+        """absorb + fixed_effects without survey weights is not rejected."""
+        df = self._make_panel()
+        model = DifferenceInDifferences()
+        result = model.fit(
+            df,
+            formula="outcome ~ treated * post",
+            absorb=["unit"],
+            fixed_effects=["region"],
+        )
+        assert result is not None
+        assert hasattr(result, "att")
