@@ -822,6 +822,15 @@ class BaconDecomposition:
         never_pre_mask = never_mask & df[time].isin(pre_periods)
         never_post_mask = never_mask & df[time].isin(post_periods)
 
+        # Guard against empty cells (unbalanced/filtered panels)
+        if not (
+            np.any(treated_pre_mask)
+            and np.any(treated_post_mask)
+            and np.any(never_pre_mask)
+            and np.any(never_post_mask)
+        ):
+            return None
+
         treated_pre = np.average(y[treated_pre_mask], weights=w[treated_pre_mask])
         treated_post = np.average(y[treated_post_mask], weights=w[treated_post_mask])
         never_pre = np.average(y[never_pre_mask], weights=w[never_pre_mask])

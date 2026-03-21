@@ -639,8 +639,9 @@ class ContinuousDiD:
                         # Compute SE: survey-aware TSL or standard sqrt(sum(IF^2))
                         if unit_resolved_es is not None:
                             X_ones_es = np.ones((n_units, 1))
-                            # Rescale IFs from 1/n convention to score scale for TSL
-                            if_es_tsl = if_es * n_units
+                            # Rescale IFs by total survey mass (not n_units) for fweight support
+                            tsl_scale_es = float(unit_resolved_es.weights.sum())
+                            if_es_tsl = if_es * tsl_scale_es
                             vcov_es = compute_survey_vcov(X_ones_es, if_es_tsl, unit_resolved_es)
                             es_se = float(np.sqrt(np.abs(vcov_es[0, 0])))
                         else:
@@ -1198,13 +1199,14 @@ class ContinuousDiD:
             # Rescale IFs from 1/n convention to score scale for TSL sandwich.
             # The per-unit IFs contain internal 1/n_t, 1/n_c scaling (for the
             # unweighted SE = sqrt(sum(IF^2)) convention). compute_survey_vcov
-            # applies its own (X'WX)^{-1} ≈ 1/n bread, which would double-count.
-            # Multiplying by n_units undoes the internal scaling so TSL gives
-            # the correct variance.
-            if_att_glob_tsl = if_att_glob * n_units
-            if_acrt_glob_tsl = if_acrt_glob * n_units
-            if_att_d_tsl = if_att_d * n_units
-            if_acrt_d_tsl = if_acrt_d * n_units
+            # applies its own (X'WX)^{-1} bread, which would double-count.
+            # Rescale by the unit-level total survey mass (= n_units for
+            # pweight/aweight, but can differ for fweight).
+            tsl_scale = float(unit_resolved.weights.sum())
+            if_att_glob_tsl = if_att_glob * tsl_scale
+            if_acrt_glob_tsl = if_acrt_glob * tsl_scale
+            if_att_d_tsl = if_att_d * tsl_scale
+            if_acrt_d_tsl = if_acrt_d * tsl_scale
 
             # Overall ATT SE via compute_survey_vcov
             vcov_att = compute_survey_vcov(X_ones, if_att_glob_tsl, unit_resolved)
