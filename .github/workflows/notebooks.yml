@@ -1,0 +1,52 @@
+name: Tutorial Notebooks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/tutorials/**'
+      - 'diff_diff/**'
+      - 'pyproject.toml'
+      - '.github/workflows/notebooks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/tutorials/**'
+      - 'diff_diff/**'
+      - 'pyproject.toml'
+      - '.github/workflows/notebooks.yml'
+  schedule:
+    # Weekly Sunday 6am UTC — catches external breakage (dataset URLs, etc.)
+    - cron: '0 6 * * 0'
+
+jobs:
+  execute-notebooks:
+    name: Execute tutorial notebooks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install numpy pandas scipy matplotlib nbmake pytest
+
+      - name: Execute notebooks
+        run: |
+          DIFF_DIFF_BACKEND=python PYTHONPATH=. pytest --nbmake docs/tutorials/ \
+            --nbmake-timeout=300 \
+            -v \
+            --tb=short
+
+      - name: Upload failed notebook outputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-notebook-outputs
+          path: docs/tutorials/*.ipynb
+          retention-days: 7

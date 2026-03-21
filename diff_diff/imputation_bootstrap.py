@@ -6,7 +6,7 @@ bootstrap inference. Extracted from imputation.py for module size management.
 """
 
 import warnings
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -67,6 +67,42 @@ class ImputationDiDBootstrapMixin:
     seed: Optional[int]
     anticipation: int
     horizon_max: Optional[int]
+
+    if TYPE_CHECKING:
+
+        def _compute_cluster_psi_sums(
+            self,
+            df: pd.DataFrame,
+            outcome: str,
+            unit: str,
+            time: str,
+            first_treat: str,
+            covariates: Optional[List[str]],
+            omega_0_mask: pd.Series,
+            omega_1_mask: pd.Series,
+            unit_fe: Dict[Any, float],
+            time_fe: Dict[Any, float],
+            grand_mean: float,
+            delta_hat: Optional[np.ndarray],
+            weights: np.ndarray,
+            cluster_var: str,
+            kept_cov_mask: Optional[np.ndarray] = None,
+        ) -> Tuple[np.ndarray, np.ndarray]: ...
+
+        @staticmethod
+        def _build_cohort_rel_times(
+            df: pd.DataFrame,
+            first_treat: str,
+        ) -> Dict[Any, Set[int]]: ...
+
+        @staticmethod
+        def _compute_balanced_cohort_mask(
+            df_treated: pd.DataFrame,
+            first_treat: str,
+            all_horizons: List[int],
+            balance_e: int,
+            cohort_rel_times: Dict[Any, Set[int]],
+        ) -> np.ndarray: ...
 
     def _precompute_bootstrap_psi(
         self,

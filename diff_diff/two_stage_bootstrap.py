@@ -7,7 +7,7 @@ for module size management.
 """
 
 import warnings
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,27 @@ class TwoStageDiDBootstrapMixin:
     alpha: float
     seed: Optional[int]
     horizon_max: Optional[int]
+
+    if TYPE_CHECKING:
+        from scipy import sparse
+
+        def _build_fe_design(
+            self,
+            df: pd.DataFrame,
+            unit: str,
+            time: str,
+            covariates: Optional[List[str]],
+            omega_0_mask: pd.Series,
+        ) -> Tuple[
+            "sparse.csr_matrix", "sparse.csr_matrix", Dict[Any, int], Dict[Any, int]
+        ]: ...
+
+        @staticmethod
+        def _compute_gmm_scores(
+            c_by_cluster: np.ndarray,
+            gamma_hat: np.ndarray,
+            s2_by_cluster: np.ndarray,
+        ) -> np.ndarray: ...
 
     def _compute_cluster_S_scores(
         self,
