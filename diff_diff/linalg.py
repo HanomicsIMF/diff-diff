@@ -1613,16 +1613,19 @@ class LinearRegression:
                 self.weights, self.weight_type, X.shape[0]
             )
 
-        # Inject cluster as PSU for survey variance when no PSU specified
+        # Inject cluster as PSU for survey variance when no PSU specified.
+        # Use a local variable to avoid mutating self.survey_design, which
+        # would cause stale PSU on repeated fit() calls with different clusters.
+        _effective_survey_design = self.survey_design
         if (
             effective_cluster_ids is not None
-            and self.survey_design is not None
+            and _effective_survey_design is not None
             and _use_survey_vcov
         ):
             from diff_diff.survey import ResolvedSurveyDesign as _RSD, _inject_cluster_as_psu
-            if isinstance(self.survey_design, _RSD) and self.survey_design.psu is None:
-                self.survey_design = _inject_cluster_as_psu(
-                    self.survey_design, effective_cluster_ids
+            if isinstance(_effective_survey_design, _RSD) and _effective_survey_design.psu is None:
+                _effective_survey_design = _inject_cluster_as_psu(
+                    _effective_survey_design, effective_cluster_ids
                 )
 
         if self.robust or effective_cluster_ids is not None:
@@ -1713,13 +1716,13 @@ class LinearRegression:
                 kept_cols = np.where(~nan_mask)[0]
                 if len(kept_cols) > 0:
                     vcov_reduced = compute_survey_vcov(
-                        X[:, kept_cols], residuals, self.survey_design
+                        X[:, kept_cols], residuals, _effective_survey_design
                     )
                     vcov = _expand_vcov_with_nan(vcov_reduced, X.shape[1], kept_cols)
                 else:
                     vcov = np.full((X.shape[1], X.shape[1]), np.nan)
             else:
-                vcov = compute_survey_vcov(X, residuals, self.survey_design)
+                vcov = compute_survey_vcov(X, residuals, _effective_survey_design)
 
         # Store fitted attributes
         self.coefficients_ = coefficients
@@ -1743,11 +1746,11 @@ class LinearRegression:
 
         # Survey degrees of freedom: n_PSU - n_strata (overrides standard df)
         self.survey_df_ = None
-        if self.survey_design is not None:
+        if _effective_survey_design is not None:
             from diff_diff.survey import ResolvedSurveyDesign
 
-            if isinstance(self.survey_design, ResolvedSurveyDesign):
-                self.survey_df_ = self.survey_design.df_survey
+            if isinstance(_effective_survey_design, ResolvedSurveyDesign):
+                self.survey_df_ = _effective_survey_design.df_survey
 
         return self
 

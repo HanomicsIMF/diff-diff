@@ -250,6 +250,16 @@ class DifferenceInDifferences:
         n_treated_raw = int(np.sum(data[treatment].values.astype(float)))
         n_control_raw = len(data) - n_treated_raw
 
+        # Reject multi-absorb with survey weights (single-pass demeaning is
+        # not the correct weighted FWL projection for N > 1 dimensions)
+        if absorb and len(absorb) > 1 and survey_weights is not None:
+            raise ValueError(
+                f"Multiple absorbed fixed effects (absorb={absorb}) with survey "
+                "weights is not supported. Single-pass sequential demeaning is not "
+                "the correct weighted FWL projection for multiple absorbed dimensions. "
+                "Use absorb with a single variable, or use fixed_effects= instead."
+            )
+
         if absorb:
             # FWL theorem: demean ALL regressors alongside outcome.
             # Regressors collinear with absorbed FE (e.g., treatment after
@@ -993,6 +1003,16 @@ class MultiPeriodDiD(DifferenceInDifferences):
         n_treated_raw = int(np.sum(data[treatment].values.astype(float)))
         n_control_raw = len(data) - n_treated_raw
 
+        # Reject multi-absorb with survey weights (single-pass demeaning is
+        # not the correct weighted FWL projection for N > 1 dimensions)
+        if absorb and len(absorb) > 1 and survey_weights is not None:
+            raise ValueError(
+                f"Multiple absorbed fixed effects (absorb={absorb}) with survey "
+                "weights is not supported. Single-pass sequential demeaning is not "
+                "the correct weighted FWL projection for multiple absorbed dimensions. "
+                "Use absorb with a single variable, or use fixed_effects= instead."
+            )
+
         # Pre-compute non_ref_periods (needed for absorb demeaning)
         non_ref_periods = [p for p in all_periods if p != reference_period]
 
@@ -1145,6 +1165,16 @@ class MultiPeriodDiD(DifferenceInDifferences):
         df = n_eff_df - k_effective - n_absorbed_effects
         if resolved_survey is not None and resolved_survey.df_survey is not None:
             df = resolved_survey.df_survey
+
+        # Guard: fall back to normal distribution if df is non-positive
+        if df is not None and df <= 0:
+            warnings.warn(
+                f"Degrees of freedom is non-positive (df={df}). "
+                "Using normal distribution instead of t-distribution for inference.",
+                UserWarning,
+                stacklevel=2,
+            )
+            df = None
 
         # For non-robust, non-clustered case, we need homoskedastic vcov
         # solve_ols returns HC1 by default, so compute homoskedastic if needed

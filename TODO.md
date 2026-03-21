@@ -52,6 +52,7 @@ Deferred items from PR reviews that were not addressed before merge.
 | ImputationDiD dense `(A0'A0).toarray()` scales O((U+T+K)^2), OOM risk on large panels | `imputation.py` | #141 | Medium (deferred — only triggers when sparse solver fails; fixing requires sparse least-squares alternatives) |
 | EfficientDiD: warn when cohort share is very small (< 2 units or < 1% of sample) — inverted in Omega*/EIF | `efficient_did_weights.py` | #192 | Low |
 | EfficientDiD: API docs / tutorial page for new public estimator | `docs/` | #192 | Medium |
+| Multi-absorb weighted demeaning needs iterative alternating projections for N > 1 absorbed FE with survey weights; unweighted multi-absorb also uses single-pass (pre-existing, exact only for balanced panels) | `estimators.py` | #218 | Medium |
 
 #### Performance
 

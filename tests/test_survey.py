@@ -2579,3 +2579,164 @@ class TestRound10Fixes:
         raw_control = len(df) - raw_treated
         assert result.n_treated == raw_treated
         assert result.n_control == raw_control
+
+
+class TestRound11Fixes:
+    """Tests for PR #218 review round 11 fixes."""
+
+    def test_repeated_fit_fresh_psu(self):
+        """Repeated LinearRegression.fit() uses fresh PSU, not stale from prior fit."""
+        np.random.seed(42)
+        n = 20
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        y = np.random.randn(n)
+        weights = np.ones(n)
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
+        )
+
+        lr = LinearRegression(survey_design=resolved, robust=True)
+
+        # First fit: 2 clusters → survey_df = 2 - 1 = 1
+        cluster_1 = np.array([0] * 10 + [1] * 10)
+        lr.fit(X, y, cluster_ids=cluster_1)
+        assert lr.survey_df_ == 1
+
+        # Second fit: 4 clusters → survey_df = 4 - 1 = 3
+        cluster_2 = np.array([0] * 5 + [1] * 5 + [2] * 5 + [3] * 5)
+        lr.fit(X, y, cluster_ids=cluster_2)
+        assert lr.survey_df_ == 3
+
+        # Original survey_design must be immutable
+        assert lr.survey_design.psu is None
+
+    def test_multi_absorb_survey_rejected_did(self):
+        """DiD with multi-absorb + survey weights raises ValueError."""
+        np.random.seed(42)
+        n = 40
+        df = pd.DataFrame(
+            {
+                "outcome": np.random.randn(n),
+                "treated": np.array([1] * 20 + [0] * 20),
+                "post": np.tile([0, 1], 20),
+                "w": np.ones(n),
+                "a": np.repeat(np.arange(4), 10),
+                "b": np.tile(np.arange(5), 8),
+            }
+        )
+        sd = SurveyDesign(weights="w", weight_type="pweight")
+        did = DifferenceInDifferences()
+        with pytest.raises(ValueError, match="Multiple absorbed fixed effects"):
+            did.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                time="post",
+                absorb=["a", "b"],
+                survey_design=sd,
+            )
+
+    def test_multi_absorb_survey_rejected_multiperiod(self):
+        """MultiPeriodDiD with multi-absorb + survey weights raises ValueError."""
+        np.random.seed(42)
+        n = 60
+        df = pd.DataFrame(
+            {
+                "outcome": np.random.randn(n),
+                "treated": np.array([1] * 30 + [0] * 30),
+                "time": np.tile([0, 1, 2], 20),
+                "w": np.ones(n),
+                "a": np.repeat(np.arange(6), 10),
+                "b": np.tile(np.arange(5), 12),
+            }
+        )
+        sd = SurveyDesign(weights="w", weight_type="pweight")
+        mpd = MultiPeriodDiD()
+        with pytest.raises(ValueError, match="Multiple absorbed fixed effects"):
+            mpd.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                time="time",
+                post_periods=[2],
+                absorb=["a", "b"],
+                survey_design=sd,
+            )
+
+    def test_single_absorb_survey_allowed(self):
+        """Single-absorb with survey weights should still work (regression guard)."""
+        np.random.seed(42)
+        n = 40
+        df = pd.DataFrame(
+            {
+                "outcome": np.random.randn(n),
+                "treated": np.array([1] * 20 + [0] * 20),
+                "post": np.tile([0, 1], 20),
+                "w": np.ones(n),
+                "region": np.repeat(np.arange(4), 10),
+            }
+        )
+        sd = SurveyDesign(weights="w", weight_type="pweight")
+        did = DifferenceInDifferences()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = did.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                time="post",
+                absorb=["region"],
+                survey_design=sd,
+            )
+        # Should succeed without error
+        assert np.isfinite(result.att)
+
+    def test_multiperiod_nonpositive_df_fallback(self):
+        """MultiPeriodDiD with df=0 falls back to normal distribution."""
+        np.random.seed(42)
+        n = 40
+        # 4 strata, 1 PSU per stratum → n_PSU=4, n_strata=4, df_survey=0
+        strata = np.repeat([0, 1, 2, 3], 10)
+        psu = strata.copy()  # 1 PSU per stratum → singleton strata
+        df = pd.DataFrame(
+            {
+                "outcome": np.random.randn(n),
+                "treated": np.array([1] * 20 + [0] * 20),
+                "time": np.tile([0, 1, 2, 3], 10),
+                "w": np.ones(n),
+                "strat": strata,
+                "cluster": psu,
+            }
+        )
+        sd = SurveyDesign(
+            weights="w",
+            weight_type="pweight",
+            strata="strat",
+            psu="cluster",
+            lonely_psu="adjust",
+        )
+        mpd = MultiPeriodDiD()
+        with pytest.warns(UserWarning, match="non-positive"):
+            result = mpd.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                time="time",
+                post_periods=[2, 3],
+                survey_design=sd,
+            )
+        # Period effects with finite SE > 0 should have finite p-values
+        # (normal distribution fallback, not NaN from t(df=0))
+        for period, pe in result.period_effects.items():
+            if np.isfinite(pe.se) and pe.se > 0:
+                assert np.isfinite(pe.p_value), (
+                    f"Period {period}: finite SE={pe.se} but p_value={pe.p_value}"
+                )
