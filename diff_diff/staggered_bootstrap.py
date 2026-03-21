@@ -29,7 +29,9 @@ from diff_diff.bootstrap_utils import (
 )
 
 if TYPE_CHECKING:
-    pass
+    import pandas as pd
+
+    from diff_diff.staggered_aggregation import PrecomputedData
 
 
 # =============================================================================
@@ -116,6 +118,22 @@ class CallawaySantAnnaBootstrapMixin:
     alpha: float
     seed: Optional[int]
     anticipation: int
+
+    if TYPE_CHECKING:
+
+        def _compute_combined_influence_function(
+            self,
+            gt_pairs: List[Tuple[Any, Any]],
+            weights: np.ndarray,
+            effects: np.ndarray,
+            groups_for_gt: np.ndarray,
+            influence_func_info: Dict,
+            df: "pd.DataFrame",
+            unit: str,
+            precomputed: Optional["PrecomputedData"] = None,
+            global_unit_to_idx: Optional[Dict[Any, int]] = None,
+            n_global_units: Optional[int] = None,
+        ) -> Tuple[np.ndarray, Optional[List]]: ...
 
     def _run_multiplier_bootstrap(
         self,

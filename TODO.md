@@ -66,11 +66,9 @@ Deferred items from PR reviews that were not addressed before merge.
 
 | Issue | Location | PR | Priority |
 |-------|----------|----|----------|
-| Tutorial notebooks not executed in CI | `docs/tutorials/*.ipynb` | #159 | Low |
 | R comparison tests spawn separate `Rscript` per test (slow CI) | `tests/test_methodology_twfe.py:294` | #139 | Low |
 | CS R helpers hard-code `xformla = ~ 1`; no covariate-adjusted R benchmark for IRLS path | `tests/test_methodology_callaway.py` | #202 | Low |
-| ~~Context-dependent doc snippets pass via blanket NameError~~ | `tests/test_doc_snippets.py` | #206 | ~~Low~~ — resolved: allow-list replaces blanket catch |
-| ~1,460 `duplicate object description` Sphinx warnings — each class attribute is documented in both module API pages and autosummary stubs; fix by adding `:no-index:` to one location or restructuring API docs to avoid overlap | `docs/api/*.rst`, `docs/api/_autosummary/` | — | Low |
+| ~376 `duplicate object description` Sphinx warnings — caused by autodoc `:members:` on dataclass attributes within manual API pages (not from autosummary stubs); fix requires restructuring `docs/api/*.rst` pages to avoid documenting the same attribute via both `:members:` and inline `autosummary` tables | `docs/api/*.rst` | — | Low |
 
 ---
 
@@ -89,29 +87,15 @@ Different estimators compute SEs differently. Consider unified interface.
 
 ### Type Annotations
 
-Mypy reports 9 errors (down from 81 before spring cleanup). All remaining are
-mixin `attr-defined` errors — methods accessed via `self` that live on the
-concrete class, not the mixin. Fixing these requires Protocol classes, which is
-low priority.
-
-| Category | Count | Notes |
-|----------|-------|-------|
-| attr-defined (mixin methods) | 9 | Structural — requires Protocol refactor |
-
-**Resolved in spring cleanup:**
-- [x] `@overload` on `solve_ols` / `_solve_ols_numpy` — eliminated all unpacking mismatches
-- [x] `assert X is not None` guards — eliminated all Optional indexing errors
-- [x] Mixin scalar attribute stubs — eliminated 26 mixin attr-defined errors
-- [x] Matplotlib `tab10` lookup fix
+Mypy reports 0 errors. All mixin `attr-defined` errors resolved via
+`TYPE_CHECKING`-guarded method stubs in bootstrap mixin classes.
 
 ## Deprecated Code
 
 Deprecated parameters still present for backward compatibility:
 
-- [x] `bootstrap_weight_type` in `CallawaySantAnna` (`staggered.py`)
+- `bootstrap_weight_type` in `CallawaySantAnna` (`staggered.py`)
   - Deprecated in favor of `bootstrap_weights` parameter
-  - ✅ Deprecation warning updated to say "removed in v3.0"
-  - ✅ README.md and tutorial 02 updated to use `bootstrap_weights`
   - Remove in next major version (v3.0)
 
 ---
@@ -127,7 +111,10 @@ Deprecated parameters still present for backward compatibility:
 Enhancements for `honest_did.py`:
 
 - [ ] Improved C-LF implementation with direct optimization instead of grid search
-- [ ] Support for CallawaySantAnnaResults (currently only MultiPeriodDiDResults)
+  (current implementation uses simplified FLCI approach with estimation uncertainty
+  adjustment; see `honest_did.py:947`)
+- [x] Support for CallawaySantAnnaResults (implemented in `honest_did.py:612-653`;
+  requires `aggregate='event_study'` when calling `CallawaySantAnna.fit()`)
 - [ ] Event-study-specific bounds for each post-period
 - [ ] Hybrid inference methods
 - [ ] Simulation-based power analysis for honest bounds

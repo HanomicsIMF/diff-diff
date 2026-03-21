@@ -59,6 +59,7 @@ dev = [
     "mypy>=1.0",
     "maturin>=1.4,<2.0",
     "matplotlib>=3.5",
+    "nbmake>=1.5",
 ]
 docs = [
     "sphinx>=6.0",
