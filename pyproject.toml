@@ -89,6 +89,7 @@ python-packages = ["diff_diff"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 python_files = "test_*.py"
 # Exclude slow tests by default; use `pytest -m ''` to run all tests
 addopts = "-v --tb=short -m 'not slow'"

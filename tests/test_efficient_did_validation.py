@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from diff_diff import CallawaySantAnna, EfficientDiD
+from edid_dgp import make_compustat_dgp, true_es_avg, true_overall_att
 
 # =============================================================================
 # Data Loaders & Helpers
@@ -66,67 +67,21 @@ def _get_effect(effects_dict, g, t):
     raise KeyError(f"ATT({g},{t}) not found in results")
 
 
-def _assert_close(actual, expected, label, rtol=0.10, atol=200):
-    """Assert actual is close to expected with combined tolerance."""
-    tol = max(rtol * abs(expected), atol)
+def _assert_close(actual, expected, label, se=None, se_frac=0.1):
+    """Assert actual is close to expected, tolerance based on published SE.
+
+    Default tolerance is 0.1 * SE (10% of one standard error). Our actual
+    diffs are all < 0.03 SE, so this catches real drift while absorbing the
+    4-individual sample difference (656 vs paper's 652).
+    """
+    if se is not None:
+        tol = se_frac * se
+    else:
+        tol = max(0.05 * abs(expected), 50)
     diff = abs(actual - expected)
     assert diff < tol, (
         f"{label}: expected {expected}, got {actual:.1f} "
         f"(diff={diff:.1f}, tol={tol:.1f})"
-    )
-
-
-# =============================================================================
-# Compustat DGP (copied from test_efficient_did.py)
-# =============================================================================
-
-
-def _make_compustat_dgp(n_units=400, n_periods=11, rho=0.0, seed=42):
-    """Simplified Compustat-style DGP from Section 5.2.
-
-    Groups: G=5 (~1/3), G=8 (~1/3), G=inf (~1/3).
-    ATT(5,t) = 0.154*(t-4), ATT(8,t) = 0.093*(t-7).
-    """
-    rng = np.random.default_rng(seed)
-    n_t = n_periods
-
-    n_g5 = n_units // 3
-    n_g8 = n_units // 3
-    ft = np.full(n_units, np.inf)
-    ft[:n_g5] = 5
-    ft[n_g5 : n_g5 + n_g8] = 8
-
-    units = np.repeat(np.arange(n_units), n_t)
-    times = np.tile(np.arange(1, n_t + 1), n_units)
-    ft_col = np.repeat(ft, n_t)
-
-    alpha_t = rng.normal(0, 0.1, n_t)
-    eta_i = rng.normal(0, 0.5, n_units)
-    unit_fe = np.repeat(eta_i, n_t)
-    time_fe = np.tile(alpha_t, n_units)
-
-    eps = np.zeros((n_units, n_t))
-    eps[:, 0] = rng.normal(0, 0.3, n_units)
-    for t in range(1, n_t):
-        eps[:, t] = rho * eps[:, t - 1] + rng.normal(0, 0.3, n_units)
-    eps_flat = eps.flatten()
-
-    tau = np.zeros(len(units))
-    for i in range(n_units):
-        g = ft[i]
-        if np.isinf(g):
-            continue
-        for t_idx in range(n_t):
-            t = t_idx + 1
-            if g == 5 and t >= 5:
-                tau[i * n_t + t_idx] = 0.154 * (t - 4)
-            elif g == 8 and t >= 8:
-                tau[i * n_t + t_idx] = 0.093 * (t - 7)
-
-    y = unit_fe + time_fe + tau + eps_flat
-
-    return pd.DataFrame(
-        {"unit": units, "time": times, "first_treat": ft_col, "y": y}
     )
 
 
@@ -142,41 +97,7 @@ def _compute_es_avg(result):
     return np.mean(list(es.values()))
 
 
-# Ground truth derived from DGP parameters (not hard-coded)
-_ATT_COEFS = {5: 0.154, 8: 0.093}  # ATT(g,t) = coef * (t - g + 1) for t >= g
-_N_PERIODS = 11
-
-
-def _true_es_avg_from_dgp():
-    """Derive ES_avg from DGP treatment effect parameters."""
-    max_e = {g: _N_PERIODS - g for g in _ATT_COEFS}
-    all_e = range(0, max(max_e.values()) + 1)
-    es_values = []
-    for e in all_e:
-        contributing = [
-            coef * (e + 1)
-            for g, coef in _ATT_COEFS.items()
-            if e <= max_e[g]
-        ]
-        if contributing:
-            es_values.append(np.mean(contributing))
-    return np.mean(es_values)
-
-
-_TRUE_ES_AVG_COMPUSTAT = _true_es_avg_from_dgp()
-
-
-def _true_overall_att_compustat():
-    """Compute true overall_att using cohort-size weighting (our convention)."""
-    # Groups have equal size (1/3 each), so pi_5 = pi_8
-    # Post-treatment (g,t) cells:
-    # G=5: t=5..11 -> 7 cells with effects 0.154*(1..7)
-    # G=8: t=8..11 -> 4 cells with effects 0.093*(1..4)
-    effects_g5 = [0.154 * k for k in range(1, 8)]  # 7 cells
-    effects_g8 = [0.093 * k for k in range(1, 5)]  # 4 cells
-    # Cohort-size-weighted: both groups have same pi, so weight by count
-    all_effects = effects_g5 + effects_g8
-    return np.mean(all_effects)
+_TRUE_ES_AVG_COMPUSTAT = true_es_avg()
 
 
 def _run_mc_simulation(n_sims, rho, seed=1000, also_cs=False):
@@ -188,7 +109,7 @@ def _run_mc_simulation(n_sims, rho, seed=1000, also_cs=False):
     cs_estimates_list = []
 
     for i in range(n_sims):
-        data = _make_compustat_dgp(rho=rho, seed=seed + i)
+        data = make_compustat_dgp(rho=rho, seed=seed + i)
 
         edid = EfficientDiD(pt_assumption="all")
         res = edid.fit(
@@ -266,24 +187,23 @@ class TestHRSReplication:
         )
 
     def test_group_time_effects_match_table6(self, edid_hrs_result):
-        for (g, t), (expected_effect, _) in TABLE6_EDID.items():
+        for (g, t), (expected_effect, se) in TABLE6_EDID.items():
             info = _get_effect(edid_hrs_result.group_time_effects, g, t)
-            _assert_close(info["effect"], expected_effect, f"ATT({g},{t})")
+            _assert_close(info["effect"], expected_effect, f"ATT({g},{t})", se=se)
 
     def test_event_study_effects_match_table6(self, edid_hrs_result):
-        for e, (expected_effect, _) in TABLE6_ES.items():
-            # Find event study effect matching relative time e
+        for e, (expected_effect, se) in TABLE6_ES.items():
             found = False
             for rel_time, info in edid_hrs_result.event_study_effects.items():
                 if int(rel_time) == e:
-                    _assert_close(info["effect"], expected_effect, f"ES({e})")
+                    _assert_close(info["effect"], expected_effect, f"ES({e})", se=se)
                     found = True
                     break
             assert found, f"ES({e}) not found in event study effects"
 
     def test_es_avg_matches_table6(self, edid_hrs_result):
         es_avg = _compute_es_avg(edid_hrs_result)
-        _assert_close(es_avg, TABLE6_ES_AVG[0], "ES_avg")
+        _assert_close(es_avg, TABLE6_ES_AVG[0], "ES_avg", se=TABLE6_ES_AVG[1])
 
     def test_se_diagnostic_comparison(self, edid_hrs_result):
         """Log and sanity-check analytical vs cluster-robust SEs."""
@@ -307,11 +227,14 @@ class TestHRSReplication:
             hrs_data, outcome="outcome", unit="unit", time="time",
             first_treat="first_treat",
         )
+        # CS-SA paper SEs from Table 6
+        cs_ses = {(8,8): 1035, (8,9): 909, (8,10): 1008,
+                  (9,9): 702, (9,10): 651, (10,10): 995}
         for (g, t), expected_effect in TABLE6_CS_SA.items():
             info = _get_effect(cs_result.group_time_effects, g, t)
             _assert_close(
                 info["effect"], expected_effect,
-                f"CS ATT({g},{t})", rtol=0.15, atol=300,
+                f"CS ATT({g},{t})", se=cs_ses[(g, t)],
             )
 
     def test_pretreatment_effects_near_zero(self, edid_hrs_result):
@@ -411,7 +334,7 @@ class TestCompustatMCValidation:
         n_sims = ci_params.bootstrap(200, min_n=49)
         mc = _run_mc_simulation(n_sims, rho=0, seed=5000)
 
-        true_overall = _true_overall_att_compustat()
+        true_overall = true_overall_att()
         covered = sum(
             ci[0] <= true_overall <= ci[1]
             for ci in mc["edid_overall_ci"]
