@@ -577,10 +577,14 @@ class TripleDifference:
             att, se, r_squared, pscore_stats = self._doubly_robust(y, G, P, T, X)
 
         # Compute inference
-        df = n_obs - 8  # Approximate df (8 cell means)
-        if covariates:
-            df -= len(covariates)
-        df = max(df, 1)
+        # When survey design is active, use survey df (n_PSU - n_strata)
+        if survey_metadata is not None and survey_metadata.df_survey is not None:
+            df = max(survey_metadata.df_survey, 1)
+        else:
+            df = n_obs - 8  # Approximate df (8 cell means)
+            if covariates:
+                df -= len(covariates)
+            df = max(df, 1)
 
         t_stat, p_value, conf_int = safe_inference(att, se, alpha=self.alpha, df=df)
 

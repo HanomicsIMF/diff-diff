@@ -390,6 +390,46 @@ def compute_survey_metadata(
     )
 
 
+def _validate_unit_constant_survey(data, unit_col, survey_design):
+    """Validate that survey design columns are constant within units.
+
+    Panel estimators (ContinuousDiD, EfficientDiD) collapse panel-level
+    survey info to one row per unit. This requires that survey columns
+    do not vary across time periods within a unit.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Panel data.
+    unit_col : str
+        Unit identifier column name.
+    survey_design : SurveyDesign
+        Survey design specification (uses attribute names, not resolved arrays).
+
+    Raises
+    ------
+    ValueError
+        If any survey column varies within units.
+    """
+    cols_to_check = [
+        survey_design.weights,
+        survey_design.strata,
+        survey_design.psu,
+        survey_design.fpc,
+    ]
+    for col in cols_to_check:
+        if col is not None and col in data.columns:
+            n_unique = data.groupby(unit_col)[col].nunique()
+            varying_units = n_unique[n_unique > 1]
+            if len(varying_units) > 0:
+                raise ValueError(
+                    f"Survey column '{col}' varies within units "
+                    f"(found {len(varying_units)} units with multiple values). "
+                    f"Panel estimators require survey design columns to be "
+                    f"constant within units."
+                )
+
+
 def _resolve_survey_for_fit(survey_design, data, inference_mode="analytical"):
     """
     Shared helper: validate and resolve a SurveyDesign for an estimator fit() call.
@@ -468,9 +508,7 @@ def _inject_cluster_as_psu(resolved, cluster_ids):
     # When strata are present, make cluster IDs unique within strata
     # (same nesting logic as SurveyDesign.resolve() with nest=True)
     if resolved.strata is not None:
-        combined = np.array(
-            [f"{s}_{c}" for s, c in zip(resolved.strata, cluster_ids)]
-        )
+        combined = np.array([f"{s}_{c}" for s, c in zip(resolved.strata, cluster_ids)])
         codes, uniques = pd.factorize(combined)
     else:
         codes, uniques = pd.factorize(cluster_ids)

@@ -92,7 +92,7 @@ def continuous_survey_data():
     dose_per_unit = np.where(np.arange(n_u) < 40, np.random.uniform(0.5, 2.0, n_u), 0.0)
     dose = np.repeat(dose_per_unit, n_t)
     y = np.random.randn(len(units)) + 0.5 * dose * (times >= ft) * (ft > 0)
-    w = np.random.uniform(0.5, 2.0, len(units))
+    w = np.repeat(np.random.uniform(0.5, 2.0, n_u), n_t)  # constant within unit
     strata = np.repeat(np.where(np.arange(n_u) < 40, 1, 2), n_t)
 
     return pd.DataFrame(
@@ -697,3 +697,141 @@ class TestScaleInvariance:
 
         assert abs(r1.overall_att - r2.overall_att) < 1e-10
         assert abs(r1.overall_se - r2.overall_se) < 1e-8
+
+
+# =============================================================================
+# Regression Tests (PR #226 review feedback)
+# =============================================================================
+
+
+class TestReviewRegressions:
+    """Targeted tests for issues found in PR #226 review."""
+
+    def test_stacked_did_no_weight_survey(self, staggered_survey_data):
+        """StackedDiD should handle SurveyDesign without weights column."""
+        from diff_diff import StackedDiD
+
+        sd = SurveyDesign(strata="stratum")  # No weights
+        result = StackedDiD().fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "time",
+            "first_treat",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+        assert result.survey_metadata is not None
+
+    def test_triple_diff_survey_df(self, ddd_survey_data):
+        """TripleDifference should use survey df for p-values when survey active."""
+        from diff_diff import TripleDifference
+
+        sd = SurveyDesign(weights="weight", strata="stratum")
+        r_survey = TripleDifference(estimation_method="reg").fit(
+            ddd_survey_data,
+            "outcome",
+            "group",
+            "partition",
+            "time",
+            survey_design=sd,
+        )
+        r_nosurv = TripleDifference(estimation_method="reg").fit(
+            ddd_survey_data, "outcome", "group", "partition", "time"
+        )
+        # P-values should differ (different df)
+        if np.isfinite(r_survey.p_value) and np.isfinite(r_nosurv.p_value):
+            assert r_survey.p_value != r_nosurv.p_value
+
+    def test_efficient_did_weights_only_se(self, staggered_survey_data):
+        """EfficientDiD weights-only survey SE should be reasonable (not tiny)."""
+        from diff_diff import EfficientDiD
+
+        sd = SurveyDesign(weights="weight")
+        r = EfficientDiD(n_bootstrap=0).fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "time",
+            "first_treat",
+            survey_design=sd,
+        )
+        assert np.isfinite(r.overall_se)
+        assert r.overall_se > 0
+        assert r.overall_se > 0.01  # Not artificially tiny
+
+    def test_continuous_did_eventstudy_survey(self, continuous_survey_data):
+        """ContinuousDiD aggregate=eventstudy should work with survey design."""
+        from diff_diff import ContinuousDiD
+
+        sd = SurveyDesign(weights="weight", strata="stratum")
+        result = ContinuousDiD(n_bootstrap=0).fit(
+            continuous_survey_data,
+            "outcome",
+            "unit",
+            "time",
+            "first_treat",
+            "dose",
+            aggregate="eventstudy",
+            survey_design=sd,
+        )
+        assert result.event_study_effects is not None
+        assert result.survey_metadata is not None
+        for e, eff in result.event_study_effects.items():
+            if np.isfinite(eff["effect"]):
+                assert np.isfinite(eff["se"]), f"Non-finite SE for e={e}"
+
+    def test_within_unit_varying_weights_rejected(self):
+        """Time-varying survey weights within units should be rejected."""
+        from diff_diff import ContinuousDiD
+
+        np.random.seed(42)
+        n_u, n_t = 20, 4
+        data = pd.DataFrame(
+            {
+                "unit": np.repeat(range(n_u), n_t),
+                "time": np.tile(range(1, n_t + 1), n_u),
+                "first_treat": np.repeat(np.where(np.arange(n_u) < 10, 3, 0), n_t),
+                "dose": np.repeat(np.where(np.arange(n_u) < 10, 1.0, 0.0), n_t),
+                "outcome": np.random.randn(n_u * n_t),
+                "w": np.random.uniform(0.5, 2.0, n_u * n_t),
+            }
+        )
+        sd = SurveyDesign(weights="w")
+        with pytest.raises(ValueError, match="varies within units"):
+            ContinuousDiD(n_bootstrap=0).fit(
+                data,
+                "outcome",
+                "unit",
+                "time",
+                "first_treat",
+                "dose",
+                survey_design=sd,
+            )
+
+    def test_within_unit_varying_strata_rejected(self):
+        """Time-varying strata within units should be rejected."""
+        from diff_diff import EfficientDiD
+
+        np.random.seed(42)
+        n_u, n_t = 20, 4
+        data = pd.DataFrame(
+            {
+                "unit": np.repeat(range(n_u), n_t),
+                "time": np.tile(range(1, n_t + 1), n_u),
+                "first_treat": np.repeat(np.where(np.arange(n_u) < 10, 3, 0), n_t),
+                "outcome": np.random.randn(n_u * n_t),
+                "w": np.repeat(np.ones(n_u), n_t),
+                "strat": np.tile([1, 2, 1, 2], n_u),
+            }
+        )
+        sd = SurveyDesign(weights="w", strata="strat")
+        with pytest.raises(ValueError, match="varies within units"):
+            EfficientDiD(n_bootstrap=0).fit(
+                data,
+                "outcome",
+                "unit",
+                "time",
+                "first_treat",
+                survey_design=sd,
+            )

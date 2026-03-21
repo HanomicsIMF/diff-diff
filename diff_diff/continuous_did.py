@@ -33,6 +33,7 @@ from diff_diff.linalg import solve_ols
 from diff_diff.survey import (
     ResolvedSurveyDesign,
     _resolve_survey_for_fit,
+    _validate_unit_constant_survey,
     compute_survey_vcov,
 )
 from diff_diff.utils import safe_inference
@@ -206,6 +207,10 @@ class ContinuousDiD:
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
+
+        # Validate within-unit constancy for panel survey designs
+        if resolved_survey is not None:
+            _validate_unit_constant_survey(data, unit, survey_design)
 
         # Guard: bootstrap + survey not yet supported
         if self.n_bootstrap > 0 and resolved_survey is not None:
@@ -385,7 +390,12 @@ class ContinuousDiD:
         # Event study aggregation (binarized) — runs on ALL (g,t) cells
         event_study_effects = None
         if aggregate == "eventstudy":
-            event_study_effects = self._aggregate_event_study(gt_results)
+            event_study_effects = self._aggregate_event_study(
+                gt_results,
+                gt_bootstrap_info=gt_bootstrap_info,
+                unit_survey_weights=precomp.get("unit_survey_weights"),
+                unit_cohorts=precomp["unit_cohorts"],
+            )
 
         if len(post_gt) == 0:
             warnings.warn(
@@ -499,36 +509,89 @@ class ContinuousDiD:
                 overall_att_se = analytic["overall_att_se"]
                 overall_acrt_se = analytic["overall_acrt_se"]
 
+                # Survey df for t-distribution inference
+                _survey_df = survey_metadata.df_survey if survey_metadata is not None else None
+
                 overall_att_t, overall_att_p, overall_att_ci = safe_inference(
-                    overall_att, overall_att_se, self.alpha
+                    overall_att, overall_att_se, self.alpha, df=_survey_df
                 )
                 overall_acrt_t, overall_acrt_p, overall_acrt_ci = safe_inference(
-                    overall_acrt, overall_acrt_se, self.alpha
+                    overall_acrt, overall_acrt_se, self.alpha, df=_survey_df
                 )
 
                 # Per-grid-point inference for dose-response
                 for idx in range(n_grid):
-                    _, _, ci = safe_inference(agg_att_d[idx], att_d_se[idx], self.alpha)
+                    _, _, ci = safe_inference(
+                        agg_att_d[idx], att_d_se[idx], self.alpha, df=_survey_df
+                    )
                     att_d_ci_lower[idx] = ci[0]
                     att_d_ci_upper[idx] = ci[1]
 
-                    _, _, ci = safe_inference(agg_acrt_d[idx], acrt_d_se[idx], self.alpha)
+                    _, _, ci = safe_inference(
+                        agg_acrt_d[idx], acrt_d_se[idx], self.alpha, df=_survey_df
+                    )
                     acrt_d_ci_lower[idx] = ci[0]
                     acrt_d_ci_upper[idx] = ci[1]
 
                 # Event study analytical SEs
                 if event_study_effects is not None:
                     n_units = precomp["n_units"]
+                    unit_sw = precomp.get("unit_survey_weights")
+
+                    # Build unit-level ResolvedSurveyDesign once (reused per bin)
+                    unit_resolved_es = None
+                    if resolved_survey is not None:
+                        row_idx = precomp["unit_first_panel_row"]
+                        uw = (
+                            precomp.get("unit_survey_weights")
+                            if precomp.get("unit_survey_weights") is not None
+                            else np.ones(n_units)
+                        )
+                        us = (
+                            resolved_survey.strata[row_idx]
+                            if resolved_survey.strata is not None
+                            else None
+                        )
+                        up = (
+                            resolved_survey.psu[row_idx]
+                            if resolved_survey.psu is not None
+                            else None
+                        )
+                        uf = (
+                            resolved_survey.fpc[row_idx]
+                            if resolved_survey.fpc is not None
+                            else None
+                        )
+                        n_strata_u = len(np.unique(us)) if us is not None else 0
+                        n_psu_u = len(np.unique(up)) if up is not None else 0
+                        unit_resolved_es = ResolvedSurveyDesign(
+                            weights=uw,
+                            weight_type=resolved_survey.weight_type,
+                            strata=us,
+                            psu=up,
+                            fpc=uf,
+                            n_strata=n_strata_u,
+                            n_psu=n_psu_u,
+                            lonely_psu=resolved_survey.lonely_psu,
+                        )
+
                     for e_val, info_e in event_study_effects.items():
                         # Collect (g,t) cells for this event-time bin
                         e_gts = [gt for gt in gt_results if gt[1] - gt[0] == e_val]
                         if not e_gts:
                             continue
-                        # n_treated-proportional weights within this bin
-                        ns = np.array(
-                            [gt_results[gt]["n_treated"] for gt in e_gts],
-                            dtype=float,
-                        )
+                        # Weights within this bin: survey-weighted mass or n_treated
+                        if unit_sw is not None:
+                            unit_cohorts = precomp["unit_cohorts"]
+                            ns = np.array(
+                                [float(np.sum(unit_sw[unit_cohorts == gt[0]])) for gt in e_gts],
+                                dtype=float,
+                            )
+                        else:
+                            ns = np.array(
+                                [gt_results[gt]["n_treated"] for gt in e_gts],
+                                dtype=float,
+                            )
                         total_n = ns.sum()
                         if total_n == 0:
                             continue
@@ -560,8 +623,17 @@ class ContinuousDiD:
                             for k, uid in enumerate(control_idx):
                                 if_es[uid] -= w * ee_control[k] / p_0 / n_total_gt
 
-                        es_se = float(np.sqrt(np.sum(if_es**2)))
-                        t_stat, p_val, ci_es = safe_inference(info_e["effect"], es_se, self.alpha)
+                        # Compute SE: survey-aware TSL or standard sqrt(sum(IF^2))
+                        if unit_resolved_es is not None:
+                            X_ones_es = np.ones((n_units, 1))
+                            vcov_es = compute_survey_vcov(X_ones_es, if_es, unit_resolved_es)
+                            es_se = float(np.sqrt(np.abs(vcov_es[0, 0])))
+                        else:
+                            es_se = float(np.sqrt(np.sum(if_es**2)))
+
+                        t_stat, p_val, ci_es = safe_inference(
+                            info_e["effect"], es_se, self.alpha, df=_survey_df
+                        )
                         info_e["se"] = es_se
                         info_e["t_stat"] = t_stat
                         info_e["p_value"] = p_val
@@ -933,15 +1005,25 @@ class ContinuousDiD:
     def _aggregate_event_study(
         self,
         gt_results: Dict[Tuple, Dict],
+        gt_bootstrap_info: Dict[Tuple, Dict] = None,
+        unit_survey_weights: Optional[np.ndarray] = None,
+        unit_cohorts: Optional[np.ndarray] = None,
     ) -> Dict[int, Dict[str, Any]]:
         """Aggregate binarized ATT_glob by relative period."""
-        effects_by_e: Dict[int, List[Tuple[float, float]]] = {}
+        effects_by_e: Dict[int, List[Tuple[float, float, Tuple]]] = {}
 
         for (g, t), r in gt_results.items():
             e = t - g
             if e not in effects_by_e:
                 effects_by_e[e] = []
-            effects_by_e[e].append((r["att_glob"], float(r["n_treated"])))
+            # Compute weight for this (g,t) cell
+            if unit_survey_weights is not None and unit_cohorts is not None:
+                # Survey-weighted: sum of survey weights for treated units in group g
+                g_mask = unit_cohorts == g
+                cell_weight = float(np.sum(unit_survey_weights[g_mask]))
+            else:
+                cell_weight = float(r["n_treated"])
+            effects_by_e[e].append((r["att_glob"], cell_weight, (g, t)))
 
         result = {}
         for e, entries in sorted(effects_by_e.items()):

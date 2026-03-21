@@ -371,7 +371,11 @@ class StackedDiD:
             # Survey weights were resolved on the original data; the stacked
             # dataset carries the survey weight column through _build_sub_experiment.
             # Re-extract from the stacked data so lengths match.
-            survey_weights_stacked = stacked_df[survey_design.weights].values.astype(np.float64)
+            survey_weights_stacked = (
+                stacked_df[survey_design.weights].values.astype(np.float64)
+                if survey_design.weights is not None
+                else np.ones(n_stacked, dtype=np.float64)
+            )
             composed_weights = Q_weights * survey_weights_stacked
             # Normalize composed weights to sum = n_stacked
             composed_weights = composed_weights * (n_stacked / np.sum(composed_weights))
@@ -431,7 +435,11 @@ class StackedDiD:
             vcov = compute_survey_vcov(X, resid_orig, resolved_composed)
 
             # Recompute survey metadata on the stacked resolved design
-            raw_w_stacked = stacked_df[survey_design.weights].values.astype(np.float64)
+            raw_w_stacked = (
+                stacked_df[survey_design.weights].values.astype(np.float64)
+                if survey_design.weights is not None
+                else np.ones(n_stacked, dtype=np.float64)
+            )
             survey_metadata = compute_survey_metadata(resolved_composed, raw_w_stacked)
 
         # ---- Extract event study effects ----

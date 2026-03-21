@@ -258,6 +258,15 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
 
+        # Validate within-unit constancy for panel survey designs
+        if resolved_survey is not None:
+            from diff_diff.survey import _validate_unit_constant_survey
+
+            _validate_unit_constant_survey(data, unit, survey_design)
+
+        # Store survey df for safe_inference calls (t-distribution with survey df)
+        self._survey_df = survey_metadata.df_survey if survey_metadata is not None else None
+
         # Guard bootstrap + survey
         if self.n_bootstrap > 0 and resolved_survey is not None:
             raise NotImplementedError(
@@ -351,6 +360,10 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         # ----- Prepare data -----
         all_units = sorted(df[unit].unique())
         n_units = len(all_units)
+
+        # Build unit-to-first-panel-row index (for unit-level survey collapse)
+        _first_rows = df.groupby(unit).cumcount() == 0
+        self._unit_first_panel_row = np.where(_first_rows)[0]
 
         period_to_col = {p: i for i, p in enumerate(time_periods)}
         period_1 = time_periods[0]
@@ -677,15 +690,13 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                     se_gt = self._compute_survey_eif_se(
                         eif_vals,
                         resolved_survey,
-                        df,
-                        unit,
-                        all_units,
-                        time_periods,
                     )
                 else:
                     se_gt = float(np.sqrt(np.mean(eif_vals**2) / n_units))
 
-                t_stat, p_val, ci = safe_inference(att_gt, se_gt, alpha=self.alpha)
+                t_stat, p_val, ci = safe_inference(
+                    att_gt, se_gt, alpha=self.alpha, df=self._survey_df
+                )
 
                 group_time_effects[(g, t)] = {
                     "effect": att_gt,
@@ -707,17 +718,15 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         # Temporarily store survey context for use in aggregation helpers.
         # This avoids threading survey args through the deeply nested
         # aggregation methods that are also used by the bootstrap mixin.
-        self._survey_se_ctx = (
-            (resolved_survey, df, unit, all_units, time_periods)
-            if resolved_survey is not None
-            else None
-        )
+        self._survey_se_ctx = resolved_survey if resolved_survey is not None else None
 
         # ----- Aggregation -----
         overall_att, overall_se = self._aggregate_overall(
             group_time_effects, eif_by_gt, n_units, cohort_fractions, unit_cohorts
         )
-        overall_t, overall_p, overall_ci = safe_inference(overall_att, overall_se, alpha=self.alpha)
+        overall_t, overall_p, overall_ci = safe_inference(
+            overall_att, overall_se, alpha=self.alpha, df=self._survey_df
+        )
 
         event_study_effects = None
         group_effects = None
@@ -850,35 +859,47 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         self,
         eif_vals: np.ndarray,
         resolved_survey: Any,
-        df: pd.DataFrame,
-        unit_col: str,
-        all_units: list,
-        time_periods: list,
     ) -> float:
         """Compute SE from EIF scores using Taylor Series Linearization.
 
-        The EIF is at unit level (shape n_units).  To use
-        ``compute_survey_vcov``, we need to expand the EIF back to the
-        obs-level panel (unit x time) and build a resolved survey at
-        panel level.  ``compute_survey_vcov`` expects ``X`` and
-        ``residuals`` — we pass ``X = ones(n_obs, 1)`` and
-        ``residuals = eif_expanded`` so that the sandwich gives
-        ``Var(mean(EIF))`` under the survey design.
+        The EIF is at unit level (shape n_units).  We collapse the
+        panel-level resolved survey to unit level using the first-panel-row
+        index and pass unit-level arrays to ``compute_survey_vcov``.
+        This avoids the previous bug where expanding EIF to panel rows
+        created one implicit PSU per period-copy, deflating SEs for
+        weights-only and stratified-no-PSU survey designs.
         """
-        from diff_diff.survey import compute_survey_vcov
+        from diff_diff.survey import ResolvedSurveyDesign, compute_survey_vcov
 
-        n_periods = len(time_periods)
+        row_idx = self._unit_first_panel_row
+        n_units = len(eif_vals)
 
-        # Expand EIF from unit-level to panel-level (repeat each unit's
-        # EIF across its time periods)
-        eif_expanded = np.repeat(eif_vals, n_periods)
+        # Subset survey arrays to unit level
+        unit_weights = resolved_survey.weights[row_idx]
+        unit_strata = (
+            resolved_survey.strata[row_idx] if resolved_survey.strata is not None else None
+        )
+        unit_psu = resolved_survey.psu[row_idx] if resolved_survey.psu is not None else None
+        unit_fpc = resolved_survey.fpc[row_idx] if resolved_survey.fpc is not None else None
 
-        # X = column of ones (we want Var of the mean)
-        X_ones = np.ones((len(eif_expanded), 1))
+        # Count unique strata/PSU in the unit-level subset
+        n_strata_unit = len(np.unique(unit_strata)) if unit_strata is not None else 0
+        n_psu_unit = len(np.unique(unit_psu)) if unit_psu is not None else 0
 
-        vcov = compute_survey_vcov(X_ones, eif_expanded, resolved_survey)
-        se = float(np.sqrt(np.abs(vcov[0, 0])))
-        return se
+        unit_resolved = ResolvedSurveyDesign(
+            weights=unit_weights,
+            weight_type=resolved_survey.weight_type,
+            strata=unit_strata,
+            psu=unit_psu,
+            fpc=unit_fpc,
+            n_strata=n_strata_unit,
+            n_psu=n_psu_unit,
+            lonely_psu=resolved_survey.lonely_psu,
+        )
+
+        X_ones = np.ones((n_units, 1))
+        vcov = compute_survey_vcov(X_ones, eif_vals, unit_resolved)
+        return float(np.sqrt(np.abs(vcov[0, 0])))
 
     def _eif_se(self, eif_vals: np.ndarray, n_units: int) -> float:
         """Compute SE from aggregated EIF scores.
@@ -887,14 +908,9 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         fit), otherwise uses the standard analytical formula.
         """
         if self._survey_se_ctx is not None:
-            resolved_survey, df, unit_col, all_units, time_periods = self._survey_se_ctx
             return self._compute_survey_eif_se(
                 eif_vals,
-                resolved_survey,
-                df,
-                unit_col,
-                all_units,
-                time_periods,
+                self._survey_se_ctx,
             )
         return float(np.sqrt(np.mean(eif_vals**2) / n_units))
 
@@ -1097,7 +1113,9 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
 
             agg_se = self._eif_se(agg_eif, n_units)
 
-            t_stat, p_val, ci = safe_inference(agg_eff, agg_se, alpha=self.alpha)
+            t_stat, p_val, ci = safe_inference(
+                agg_eff, agg_se, alpha=self.alpha, df=self._survey_df
+            )
             result[e] = {
                 "effect": agg_eff,
                 "se": agg_se,
@@ -1157,7 +1175,9 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 agg_eif += w[k] * eif_by_gt[gt]
             agg_se = self._eif_se(agg_eif, n_units)
 
-            t_stat, p_val, ci = safe_inference(agg_eff, agg_se, alpha=self.alpha)
+            t_stat, p_val, ci = safe_inference(
+                agg_eff, agg_se, alpha=self.alpha, df=self._survey_df
+            )
             result[g] = {
                 "effect": agg_eff,
                 "se": agg_se,
