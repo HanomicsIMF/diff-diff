@@ -298,16 +298,29 @@ def _extract_staircase_data(results, data, unit, time, first_treat):
         groups = sorted(results.groups)
         cohort_counts = []
         for g in groups:
-            # Find a representative (g, t) entry to get n_treated for this cohort
-            n_treated = None
-            for (gg, tt), eff in results.group_time_effects.items():
+            # Collect n_treated across all (g, t) cells for this cohort.
+            # n_treated is a per-cell observation count that can vary with
+            # missingness, so we use the max as the best cohort size estimate.
+            cell_counts = []
+            for (gg, _tt), eff in results.group_time_effects.items():
                 if gg == g:
-                    n_treated = eff.get("n_treated", eff.get("n_obs", None))
-                    if n_treated is not None:
-                        break
-            if n_treated is None:
-                n_treated = 0
-            cohort_counts.append((g, int(n_treated)))
+                    n = eff.get("n_treated", eff.get("n_obs", None))
+                    if n is not None:
+                        cell_counts.append(int(n))
+            if not cell_counts:
+                cohort_counts.append((g, 0))
+                continue
+            max_count = max(cell_counts)
+            if min(cell_counts) != max_count:
+                import warnings
+
+                warnings.warn(
+                    f"Cohort {g}: n_treated varies across cells "
+                    f"({min(cell_counts)}-{max_count}). "
+                    f"Using max as cohort size; pass data= for exact counts.",
+                    stacklevel=3,
+                )
+            cohort_counts.append((g, max_count))
 
         return cohort_counts
 
@@ -391,7 +404,7 @@ def _render_staircase_mpl(*, cohort_counts, figsize, title, color, show_counts, 
 def _render_staircase_plotly(*, cohort_counts, title, color, show_counts, show):
     """Render staircase plot with plotly."""
     from diff_diff.visualization._common import (
-        _hex_to_rgba,
+        _color_to_rgba,
         _plotly_default_layout,
         _require_plotly,
     )
@@ -419,7 +432,7 @@ def _render_staircase_plotly(*, cohort_counts, title, color, show_counts, show):
             mode="lines",
             line=dict(color=color, width=2, shape="hv"),
             fill="tozeroy",
-            fillcolor=_hex_to_rgba(color, 0.15),
+            fillcolor=_color_to_rgba(color, 0.15),
             name="Cumulative treated",
         )
     )

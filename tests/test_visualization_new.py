@@ -545,3 +545,145 @@ class TestPlotlyBackend:
         se = {-2: 0.1, -1: 0.0, 0: 0.15, 1: 0.15}
         ax = plot_event_study(effects=effects, se=se, reference_period=-1, show=False)
         assert isinstance(ax, matplotlib.axes.Axes)
+
+
+# ── Regression Tests ──────────────────────────────────────────────────────────
+
+
+class TestPlotlyColorHandling:
+    """Regression: named colors must not crash plotly backend (PR #222 P1)."""
+
+    @pytest.fixture(autouse=True)
+    def _require_plotly(self):
+        pytest.importorskip("plotly")
+
+    def test_event_study_named_colors(self):
+        import plotly.graph_objects as go
+
+        from diff_diff import plot_event_study
+
+        effects = {-2: 0.1, -1: 0.0, 0: 0.5, 1: 0.6}
+        se = {-2: 0.1, -1: 0.0, 0: 0.15, 1: 0.15}
+        fig = plot_event_study(
+            effects=effects,
+            se=se,
+            reference_period=-1,
+            color="red",
+            shade_color="lightgray",
+            backend="plotly",
+            show=False,
+        )
+        assert isinstance(fig, go.Figure)
+
+    def test_dose_response_named_color(self, dose_response_curve):
+        import plotly.graph_objects as go
+
+        from diff_diff import plot_dose_response
+
+        fig = plot_dose_response(
+            curve=dose_response_curve, color="blue", backend="plotly", show=False
+        )
+        assert isinstance(fig, go.Figure)
+
+    def test_staircase_named_color(self, cs_results):
+        import plotly.graph_objects as go
+
+        from diff_diff import plot_staircase
+
+        fig = plot_staircase(cs_results, color="teal", backend="plotly", show=False)
+        assert isinstance(fig, go.Figure)
+
+    def test_three_digit_hex(self):
+        from diff_diff.visualization._common import _color_to_rgba
+
+        result = _color_to_rgba("#abc", 0.5)
+        assert result == "rgba(170, 187, 204, 0.5)"
+
+
+class TestStaircaseCohortCounts:
+    """Regression: varying n_treated across cells (PR #222 P1)."""
+
+    def test_varying_n_treated_uses_max(self):
+        from diff_diff import plot_staircase
+
+        results = MagicMock()
+        results.groups = [2004]
+        results.group_time_effects = {
+            (2004, 2003): {"effect": 0.0, "se": 0.1, "n_treated": 48},
+            (2004, 2004): {"effect": 0.5, "se": 0.1, "n_treated": 50},
+        }
+        with pytest.warns(UserWarning, match="n_treated varies"):
+            ax = plot_staircase(results, show=False)
+        assert ax is not None
+
+    def test_consistent_n_treated_no_warning(self, cs_results):
+        """No warning when n_treated is consistent within each cohort."""
+        # cs_results fixture has consistent n_treated per cohort
+        import warnings
+
+        from diff_diff import plot_staircase
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            ax = plot_staircase(cs_results, show=False)
+        assert ax is not None
+
+
+class TestDoseResponseTargetInference:
+    """Regression: curve.target should drive auto-title (PR #222 P2)."""
+
+    def test_acrt_curve_gets_acrt_title(self):
+        from diff_diff import plot_dose_response
+
+        curve = MagicMock()
+        curve.target = "acrt"
+        curve.dose_grid = np.array([1, 2, 3])
+        curve.effects = np.array([0.1, 0.2, 0.3])
+        curve.conf_int_lower = np.array([0.0, 0.1, 0.2])
+        curve.conf_int_upper = np.array([0.2, 0.3, 0.4])
+        ax = plot_dose_response(curve=curve, show=False)
+        assert "ACRT" in ax.get_title()
+
+    def test_att_curve_gets_att_title(self, dose_response_curve):
+        from diff_diff import plot_dose_response
+
+        ax = plot_dose_response(curve=dose_response_curve, show=False)
+        assert "ATT" in ax.get_title()
+
+
+class TestBaconPlotlyWeightedAvg:
+    """Regression: plotly scatter must show weighted avg lines (PR #222 P2)."""
+
+    @pytest.fixture(autouse=True)
+    def _require_plotly(self):
+        pytest.importorskip("plotly")
+
+    def test_show_weighted_avg_adds_shapes(self):
+        import plotly.graph_objects as go
+
+        from diff_diff.visualization import plot_bacon
+
+        results = MagicMock()
+        results.comparisons = [
+            MagicMock(comparison_type="treated_vs_never", estimate=1.0, weight=0.5),
+            MagicMock(comparison_type="earlier_vs_later", estimate=0.8, weight=0.3),
+            MagicMock(comparison_type="later_vs_earlier", estimate=0.6, weight=0.2),
+        ]
+        results.twfe_estimate = 0.85
+        results.effect_by_type.return_value = {
+            "treated_vs_never": 1.0,
+            "earlier_vs_later": 0.8,
+            "later_vs_earlier": 0.6,
+        }
+
+        fig = plot_bacon(
+            results,
+            show_weighted_avg=True,
+            show_twfe_line=True,
+            backend="plotly",
+            show=False,
+        )
+        assert isinstance(fig, go.Figure)
+        # Should have vertical line shapes (weighted avg + TWFE + zero line)
+        shapes = fig.layout.shapes
+        assert len(shapes) >= 4  # 3 weighted avg + 1 TWFE + zero line

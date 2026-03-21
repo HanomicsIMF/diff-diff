@@ -430,7 +430,7 @@ def _render_event_study_plotly(
 ):
     """Render event study plot with plotly."""
     from diff_diff.visualization._common import (
-        _hex_to_rgba,
+        _color_to_rgba,
         _plotly_default_layout,
         _require_plotly,
     )
@@ -452,7 +452,7 @@ def _render_event_study_plotly(
             fig.add_vrect(
                 x0=min(pre_in_plot) - 0.5,
                 x1=max(pre_in_plot) + 0.5,
-                fillcolor=_hex_to_rgba(shade_color, 0.5),
+                fillcolor=_color_to_rgba(shade_color, 0.5),
                 line_width=0,
                 layer="below",
             )
@@ -477,7 +477,7 @@ def _render_event_study_plotly(
                 x=ci_periods + ci_periods[::-1],
                 y=ci_hi + ci_lo[::-1],
                 fill="toself",
-                fillcolor=_hex_to_rgba(color, 0.15),
+                fillcolor=_color_to_rgba(color, 0.15),
                 line=dict(color="rgba(0,0,0,0)"),
                 showlegend=False,
                 hoverinfo="skip",
@@ -970,7 +970,7 @@ def _render_honest_event_study_plotly(
 ):
     """Render honest event study plot with plotly."""
     from diff_diff.visualization._common import (
-        _hex_to_rgba,
+        _color_to_rgba,
         _plotly_default_layout,
         _require_plotly,
     )
@@ -988,7 +988,7 @@ def _render_honest_event_study_plotly(
             x=list(periods) + list(periods)[::-1],
             y=list(original_ci_upper) + list(original_ci_lower)[::-1],
             fill="toself",
-            fillcolor=_hex_to_rgba(original_color, 0.15),
+            fillcolor=_color_to_rgba(original_color, 0.15),
             line=dict(color="rgba(0,0,0,0)"),
             name="Standard CI",
             hoverinfo="skip",
@@ -1001,7 +1001,7 @@ def _render_honest_event_study_plotly(
             x=list(periods) + list(periods)[::-1],
             y=list(honest_ci_upper) + list(honest_ci_lower)[::-1],
             fill="toself",
-            fillcolor=_hex_to_rgba(honest_color, 0.15),
+            fillcolor=_color_to_rgba(honest_color, 0.15),
             line=dict(color="rgba(0,0,0,0)"),
             name=f"Honest CI (M={honest_M:.2f})",
             hoverinfo="skip",

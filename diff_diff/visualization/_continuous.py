@@ -87,6 +87,9 @@ def plot_dose_response(
             raise ValueError(f"target must be 'att' or 'acrt', got '{target}'")
 
     if curve is not None:
+        # Infer target from curve when passed directly (not via results)
+        if results is None and hasattr(curve, "target") and curve.target:
+            target = curve.target
         dose_grid = curve.dose_grid
         effects = curve.effects
         ci_lower = curve.conf_int_lower
@@ -223,7 +226,7 @@ def _render_dose_response_plotly(
 ):
     """Render dose-response curve with plotly."""
     from diff_diff.visualization._common import (
-        _hex_to_rgba,
+        _color_to_rgba,
         _plotly_default_layout,
         _require_plotly,
     )
@@ -245,7 +248,7 @@ def _render_dose_response_plotly(
                 x=dose_list + dose_list[::-1],
                 y=list(ci_upper) + list(ci_lower)[::-1],
                 fill="toself",
-                fillcolor=_hex_to_rgba(band_color, 0.15),
+                fillcolor=_color_to_rgba(band_color, 0.15),
                 line=dict(color="rgba(0,0,0,0)"),
                 name="95% CI",
                 hoverinfo="skip",

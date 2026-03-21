@@ -248,7 +248,7 @@ def _render_sensitivity_plotly(
 ):
     """Render sensitivity plot with plotly."""
     from diff_diff.visualization._common import (
-        _hex_to_rgba,
+        _color_to_rgba,
         _plotly_default_layout,
         _require_plotly,
     )
@@ -278,7 +278,7 @@ def _render_sensitivity_plotly(
                 x=M_list + M_list[::-1],
                 y=list(bounds_arr[:, 1]) + list(bounds_arr[:, 0])[::-1],
                 fill="toself",
-                fillcolor=_hex_to_rgba(bounds_color, bounds_alpha),
+                fillcolor=_color_to_rgba(bounds_color, bounds_alpha),
                 line=dict(color="rgba(0,0,0,0)"),
                 name="Identified set",
             )
@@ -741,6 +741,19 @@ def _render_bacon_plotly(
                     name=labels[ctype],
                 )
             )
+
+        # Weighted average lines
+        if show_weighted_avg:
+            effect_by_type = results.effect_by_type()
+            for ctype, avg_effect in effect_by_type.items():
+                if avg_effect is not None and by_type[ctype]:
+                    fig.add_vline(
+                        x=avg_effect,
+                        line_dash="dash",
+                        line_color=colors[ctype],
+                        opacity=0.5,
+                        line_width=1.5,
+                    )
 
         # TWFE line
         if show_twfe_line:
