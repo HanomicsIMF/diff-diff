@@ -1232,8 +1232,8 @@ class TestP0P1Fixes:
         with pytest.raises(ValueError, match="constant within each stratum"):
             sd.resolve(df)
 
-    def test_fpc_only_without_psu_raises(self):
-        """FPC without psu or strata raises ValueError (P1)."""
+    def test_fpc_only_without_psu_resolves(self):
+        """FPC without psu or strata resolves — validated later against effective PSUs."""
         n = 10
         df = pd.DataFrame(
             {
@@ -1243,8 +1243,8 @@ class TestP0P1Fixes:
             }
         )
         sd = SurveyDesign(weights="w", fpc="fpc")
-        with pytest.raises(ValueError, match="FPC requires either psu or strata"):
-            sd.resolve(df)
+        resolved = sd.resolve(df)
+        assert resolved.fpc is not None
 
     def test_weighted_within_transform_matches_explicit_wls(self):
         """Weighted within_transform + OLS matches explicit WLS with dummies (P0-2).
@@ -2901,7 +2901,7 @@ class TestRound16Fixes:
         assert result.df_survey == 2
 
     def test_fpc_with_strata_no_psu_accepted(self):
-        """FPC + strata (no PSU) is accepted — clusters may be injected later."""
+        """FPC + strata (no PSU) resolves — FPC validated later against effective PSUs."""
         df = pd.DataFrame(
             {
                 "y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
@@ -2913,6 +2913,46 @@ class TestRound16Fixes:
         sd = SurveyDesign(
             weights="w", weight_type="pweight", strata="strat", fpc="pop"
         )
-        # Should not raise — FPC validation defers when no PSU declared
+        # Should not raise at resolve time — FPC >= n_PSU validated at vcov time
         resolved = sd.resolve(df)
         assert resolved.fpc is not None
+
+    def test_fpc_alone_no_strata_no_psu_accepted(self):
+        """FPC alone (no PSU/strata) resolves — clusters may be injected later."""
+        df = pd.DataFrame(
+            {
+                "y": [1.0, 2.0, 3.0, 4.0],
+                "w": [1.0, 1.0, 1.0, 1.0],
+                "pop": [100.0, 100.0, 100.0, 100.0],
+            }
+        )
+        sd = SurveyDesign(weights="w", weight_type="pweight", fpc="pop")
+        resolved = sd.resolve(df)
+        assert resolved.fpc is not None
+
+    def test_fpc_lt_effective_npsu_rejected_at_vcov(self):
+        """FPC < effective n_PSU is rejected at compute_survey_vcov time."""
+        np.random.seed(42)
+        n = 12
+        strata = np.repeat([0, 1], 6)
+        psu = np.tile(np.arange(3), 4)  # 3 PSUs per stratum
+
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        residuals = np.random.randn(n)
+        weights = np.ones(n)
+
+        # FPC = 2 per stratum, but we have 3 PSUs → invalid
+        fpc = np.array([2.0] * n)
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=strata,
+            psu=psu,
+            fpc=fpc,
+            n_strata=2,
+            n_psu=6,
+            lonely_psu="remove",
+        )
+        with pytest.raises(ValueError, match="FPC.*less than.*effective PSUs"):
+            compute_survey_vcov(X, residuals, resolved=resolved)

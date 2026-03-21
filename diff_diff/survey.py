@@ -169,14 +169,10 @@ class SurveyDesign:
             if np.any(np.isnan(fpc_arr)) or np.any(~np.isfinite(fpc_arr)):
                 raise ValueError("FPC values must be finite and non-NaN")
 
-            # FPC requires survey structure (psu or strata)
-            if self.psu is None and self.strata is None:
-                raise ValueError(
-                    "FPC requires either psu or strata to be specified. "
-                    "FPC alone without survey structure is not supported."
-                )
-
-            # Validate FPC >= n_h per stratum
+            # Validate FPC structure (constant within strata, positive).
+            # FPC >= n_PSU validation is deferred to compute_survey_vcov()
+            # where the final effective PSU structure is known (after
+            # cluster-as-PSU injection and implicit per-obs PSU fallback).
             if strata_arr is not None:
                 for h in np.unique(strata_arr):
                     mask_h = strata_arr == h
@@ -188,7 +184,7 @@ class SurveyDesign:
                             f"Stratum {h} has values: {np.unique(fpc_vals)}"
                         )
                     fpc_h = fpc_vals[0]
-                    # Validate FPC >= number of sampled PSUs (not obs count)
+                    # Validate FPC >= n_PSU when explicit PSU is declared
                     if psu_arr is not None:
                         n_psu_h = len(np.unique(psu_arr[mask_h]))
                         if fpc_h < n_psu_h:
@@ -196,19 +192,15 @@ class SurveyDesign:
                                 f"FPC ({fpc_h}) is less than the number of PSUs "
                                 f"({n_psu_h}) in stratum {h}. FPC must be >= n_PSU."
                             )
-                    else:
-                        # No PSU declared yet — clusters may be injected later
-                        # as effective PSUs, so skip per-obs FPC validation here.
-                        # FPC will be applied at the PSU level in compute_survey_vcov.
-                        pass
-            elif psu_arr is not None:
+            else:
                 # No strata: require FPC is a single constant value
                 if len(np.unique(fpc_arr)) > 1:
                     raise ValueError(
                         "FPC values must be constant when no strata are specified. "
                         f"Found {len(np.unique(fpc_arr))} distinct values."
                     )
-                if fpc_arr[0] < n_psu:
+                # Validate FPC >= n_PSU when explicit PSU is declared
+                if psu_arr is not None and fpc_arr[0] < n_psu:
                     raise ValueError(
                         f"FPC ({fpc_arr[0]}) is less than the number of PSUs "
                         f"({n_psu}). FPC must be >= number of PSUs."
@@ -544,6 +536,11 @@ def compute_survey_vcov(
             f_h = 0.0  # No FPC
             if resolved.fpc is not None:
                 N_h = resolved.fpc[0]
+                if N_h < n_psu:
+                    raise ValueError(
+                        f"FPC ({N_h}) is less than the number of effective PSUs "
+                        f"({n_psu}). FPC must be >= n_PSU."
+                    )
                 f_h = n_psu / N_h
                 if f_h >= 1.0:
                     legitimate_zero_count += 1
@@ -599,6 +596,11 @@ def compute_survey_vcov(
             f_h = 0.0
             if resolved.fpc is not None:
                 N_h = resolved.fpc[mask_h][0]
+                if N_h < n_psu_h:
+                    raise ValueError(
+                        f"FPC ({N_h}) is less than the number of effective PSUs "
+                        f"({n_psu_h}) in stratum. FPC must be >= n_PSU."
+                    )
                 f_h = n_psu_h / N_h
                 if f_h >= 1.0:
                     legitimate_zero_count += 1
