@@ -1,7 +1,13 @@
-"""Tests for .claude/scripts/openai_review.py — local AI review script."""
+"""Tests for .claude/scripts/openai_review.py — local AI review script.
+
+These tests are skipped in CI when the script is not available (e.g., when
+the package is installed via pip into a temp directory). They run locally
+where the repo checkout includes .claude/scripts/.
+"""
 
 import importlib.util
 import pathlib
+import subprocess
 
 import pytest
 
@@ -9,20 +15,51 @@ import pytest
 # Import the script as a module (it's not in a package)
 # ---------------------------------------------------------------------------
 
-_SCRIPT_PATH = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / ".claude"
-    / "scripts"
-    / "openai_review.py"
+
+def _find_script() -> "pathlib.Path | None":
+    """Find openai_review.py relative to the repo root."""
+    # Method 1: relative to this test file (works in local checkout)
+    candidate = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / ".claude"
+        / "scripts"
+        / "openai_review.py"
+    )
+    if candidate.exists():
+        return candidate
+
+    # Method 2: relative to git repo root (works in worktrees)
+    try:
+        root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        candidate = pathlib.Path(root) / ".claude" / "scripts" / "openai_review.py"
+        if candidate.exists():
+            return candidate
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    return None
+
+
+_SCRIPT_PATH = _find_script()
+
+# Skip entire module if the script isn't available (e.g., CI pip-install)
+pytestmark = pytest.mark.skipif(
+    _SCRIPT_PATH is None,
+    reason="openai_review.py not found (not in repo checkout)",
 )
 
 
 @pytest.fixture(scope="module")
 def review_mod():
     """Import openai_review.py as a module."""
+    assert _SCRIPT_PATH is not None
     spec = importlib.util.spec_from_file_location("openai_review", _SCRIPT_PATH)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
 
 
@@ -165,13 +202,9 @@ class TestAdaptReviewCriteria:
 
     def test_all_substitutions_apply_to_real_prompt(self, review_mod, capsys):
         """Verify all substitutions match the actual pr_review.md file."""
-        prompt_path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / ".github"
-            / "codex"
-            / "prompts"
-            / "pr_review.md"
-        )
+        assert _SCRIPT_PATH is not None
+        repo_root = _SCRIPT_PATH.parent.parent.parent
+        prompt_path = repo_root / ".github" / "codex" / "prompts" / "pr_review.md"
         if not prompt_path.exists():
             pytest.skip("pr_review.md not found")
         source = prompt_path.read_text()
