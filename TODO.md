@@ -54,6 +54,7 @@ Deferred items from PR reviews that were not addressed before merge.
 | EfficientDiD: API docs / tutorial page for new public estimator | `docs/` | #192 | Medium |
 | Multi-absorb weighted demeaning needs iterative alternating projections for N > 1 absorbed FE with survey weights; unweighted multi-absorb also uses single-pass (pre-existing, exact only for balanced panels) | `estimators.py` | #218 | Medium |
 | TripleDifference power: `generate_ddd_data` is a fixed 2×2×2 cross-sectional DGP — no multi-period or unbalanced-group support. Add a `generate_ddd_panel_data` for panel DDD power analysis. | `prep_dgp.py`, `power.py` | #208 | Low |
+| ContinuousDiD event-study aggregation does not filter by `anticipation` — uses all (g,t) cells instead of anticipation-filtered subset; pre-existing in both survey and non-survey paths | `continuous_did.py` | #226 | Medium |
 
 #### Performance
 
