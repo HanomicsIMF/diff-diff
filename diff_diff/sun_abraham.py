@@ -1007,10 +1007,12 @@ class SunAbraham:
         for e, eff in post_effects:
             mask = (df["_rel_time"] == e) & (df[first_treat] > 0)
             if survey_weight_col is not None and survey_weight_col in df.columns:
+                # No floor for survey weights — valid masses can be < 1
                 n_at_e = df.loc[mask, survey_weight_col].sum()
+                post_weights.append(n_at_e if n_at_e > 0 else 0.0)
             else:
                 n_at_e = len(df[mask])
-            post_weights.append(max(n_at_e, 1))
+                post_weights.append(max(n_at_e, 1))
             post_estimates.append(eff["effect"])
 
         post_weights_arr = np.array(post_weights, dtype=float)

@@ -891,6 +891,35 @@ class TestScaleInvariance:
         assert abs(r1.att - r2.att) < 1e-10
         assert abs(r1.se - r2.se) < 1e-8
 
+    def test_sun_abraham_sub_unit_weight_scale_invariance(self, staggered_survey_data):
+        """SunAbraham overall ATT should be invariant to sub-1 weight rescaling."""
+        from diff_diff import SunAbraham
+
+        sd1 = SurveyDesign(weights="weight")
+        r1 = SunAbraham().fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "time",
+            "first_treat",
+            survey_design=sd1,
+        )
+
+        # Scale weights to be < 1 (e.g., 0.01x)
+        staggered_survey_data["weight_tiny"] = staggered_survey_data["weight"] * 0.01
+        sd2 = SurveyDesign(weights="weight_tiny")
+        r2 = SunAbraham().fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "time",
+            "first_treat",
+            survey_design=sd2,
+        )
+
+        assert abs(r1.overall_att - r2.overall_att) < 1e-10
+        assert abs(r1.overall_se - r2.overall_se) < 1e-8
+
 
 # =============================================================================
 # Regression Tests (PR #226 review feedback)
