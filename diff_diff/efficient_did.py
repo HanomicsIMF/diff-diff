@@ -45,6 +45,37 @@ from diff_diff.utils import safe_inference
 __all__ = ["EfficientDiD", "EfficientDiDResults", "EDiDBootstrapResults"]
 
 
+def _validate_and_build_cluster_mapping(
+    df: pd.DataFrame,
+    unit: str,
+    cluster: str,
+    all_units: list,
+) -> Tuple[np.ndarray, int]:
+    """Validate cluster column and build unit-to-cluster-index mapping.
+
+    Checks: column exists, no NaN, per-unit constancy, >= 2 clusters.
+    Returns (cluster_indices, n_clusters).
+    """
+    if cluster not in df.columns:
+        raise ValueError(f"Cluster column '{cluster}' not found in data.")
+    if df[cluster].isna().any():
+        raise ValueError(f"Cluster column '{cluster}' contains missing values.")
+    cluster_by_unit = df.groupby(unit)[cluster]
+    if (cluster_by_unit.nunique() > 1).any():
+        raise ValueError(
+            f"Cluster column '{cluster}' varies within unit. "
+            "Cluster assignment must be constant per unit."
+        )
+    cluster_col = cluster_by_unit.first().reindex(all_units).values
+    unique_clusters = np.unique(cluster_col)
+    n_clusters = len(unique_clusters)
+    if n_clusters < 2:
+        raise ValueError(f"Need at least 2 clusters for cluster-robust SEs, got {n_clusters}.")
+    cluster_to_idx = {c: i for i, c in enumerate(unique_clusters)}
+    indices = np.array([cluster_to_idx[c] for c in cluster_col])
+    return indices, n_clusters
+
+
 def _cluster_aggregate(
     eif_mat: np.ndarray,
     cluster_indices: np.ndarray,
@@ -93,7 +124,7 @@ def _compute_se_from_eif(
     if cluster_indices is not None and n_clusters is not None:
         centered = _cluster_aggregate(eif, cluster_indices, n_clusters)
         correction = n_clusters / (n_clusters - 1) if n_clusters > 1 else 1.0
-        var = correction * np.mean(centered**2) / n_units
+        var = correction * np.sum(centered**2) / (n_units**2)
         return float(np.sqrt(max(var, 0.0)))
     return float(np.sqrt(np.mean(eif**2) / n_units))
 
@@ -424,38 +455,27 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         n_treated_units = int((unit_info[first_treat] > 0).sum())
         n_control_units = int(unit_info["_never_treated"].sum())
 
-        # Check for never-treated units — required for generated outcomes
-        # (the formula's second term mean(Y_t - Y_{t_pre} | G=inf) needs G=inf)
-        if n_control_units == 0:
-            if self.control_group == "never_treated":
-                raise ValueError(
-                    "No never-treated units found. Use control_group='last_cohort' "
-                    "to use the last treatment cohort as a pseudo-control."
-                )
-            # --- last_cohort fallback ---
+        # Control group logic
+        if self.control_group == "last_cohort":
+            # Always reclassify last cohort as pseudo-control when requested
             last_g = max(treatment_groups)
             treatment_groups = [g for g in treatment_groups if g != last_g]
             if not treatment_groups:
                 raise ValueError("Only one treatment cohort; cannot use last_cohort control.")
-            # Trim time periods to before last cohort's treatment
             effective_last = last_g - self.anticipation
             time_periods = [t for t in time_periods if t < effective_last]
             if len(time_periods) < 2:
                 raise ValueError(
                     "Fewer than 2 time periods remain after trimming for last_cohort control."
                 )
-            # Reclassify last cohort in unit_info so downstream code sees them
-            # as never-treated (first_treat=0, _never_treated=True)
             unit_info.loc[unit_info[first_treat] == last_g, first_treat] = 0
             unit_info.loc[unit_info[first_treat] == 0, "_never_treated"] = True
             n_treated_units = int((unit_info[first_treat] > 0).sum())
             n_control_units = int(unit_info["_never_treated"].sum())
-        elif self.control_group == "last_cohort":
-            warnings.warn(
-                "Using last_cohort control despite never-treated units being "
-                "available. Consider control_group='never_treated' instead.",
-                UserWarning,
-                stacklevel=2,
+        elif n_control_units == 0:
+            raise ValueError(
+                "No never-treated units found. Use control_group='last_cohort' "
+                "to use the last treatment cohort as a pseudo-control."
             )
 
         # ----- Prepare data -----
@@ -504,12 +524,9 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
 
         # Build cluster mapping if cluster-robust SEs requested
         if self.cluster is not None:
-            cluster_col = df.groupby(unit)[self.cluster].first()
-            cluster_ids = cluster_col.reindex(all_units).values
-            unique_clusters = np.unique(cluster_ids)
-            n_clusters = len(unique_clusters)
-            cluster_to_idx = {c: i for i, c in enumerate(unique_clusters)}
-            unit_cluster_indices = np.array([cluster_to_idx[c] for c in cluster_ids])
+            unit_cluster_indices, n_clusters = _validate_and_build_cluster_mapping(
+                df, unit, self.cluster, all_units
+            )
             if n_clusters < 50:
                 warnings.warn(
                     f"Only {n_clusters} clusters. Analytical clustered SEs may "
@@ -1450,12 +1467,12 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             return _nan_result()
 
         k = len(common_gts)
-        n_units = result_all.n_obs // len(result_all.time_periods)
 
         # Build EIF matrices for common (g,t) pairs: (n_units, k)
         eif_all = result_all.influence_functions
         eif_post = result_post.influence_functions
         assert eif_all is not None and eif_post is not None
+        n_units = len(next(iter(eif_all.values())))
 
         eif_all_mat = np.column_stack([eif_all[gt] for gt in common_gts])
         eif_post_mat = np.column_stack([eif_post[gt] for gt in common_gts])
@@ -1497,12 +1514,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         n_cl: Optional[int] = None
         if cluster is not None:
             all_units = sorted(data[unit].unique())
-            cluster_col = data.groupby(unit)[cluster].first()
-            cluster_ids = cluster_col.reindex(all_units).values
-            unique_clusters = np.unique(cluster_ids)
-            n_cl = len(unique_clusters)
-            cluster_to_idx = {c: i for i, c in enumerate(unique_clusters)}
-            cl_idx = np.array([cluster_to_idx[c] for c in cluster_ids])
+            cl_idx, n_cl = _validate_and_build_cluster_mapping(data, unit, cluster, all_units)
 
         if not np.all(row_finite):
             eif_all_mat = eif_all_mat[row_finite]
