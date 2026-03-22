@@ -551,17 +551,17 @@ def parse_review_findings(
             "status": "open",
         })
 
-    # Fail-safe: check if ANY severity marker exists but we parsed nothing.
-    # Use a broad pattern (not line-anchored) to catch markers anywhere in text.
+    # Fail-safe: check if ANY supported severity syntax exists but we parsed
+    # nothing. Scan line-by-line using the same _BLOCK_START pattern the parser
+    # uses, ensuring the uncertainty detector covers every accepted format.
     parse_uncertain = False
     if not findings:
-        broad_sev = re.compile(
-            r"\*\*(P[0-3])\*\*"
-            r"|(?:^|\s)Severity:\s*\*?\*?\s*P[0-3]",
-            re.MULTILINE,
-        )
-        if broad_sev.search(review_text):
-            parse_uncertain = True
+        for line in review_text.splitlines():
+            if _should_skip_line(line):
+                continue
+            if _BLOCK_START.search(line):
+                parse_uncertain = True
+                break
 
     return (findings, parse_uncertain)
 

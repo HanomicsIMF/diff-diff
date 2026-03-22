@@ -827,30 +827,41 @@ class TestParseReviewFindings:
         assert "NaN guard" in findings[0]["summary"]
         assert not uncertain
 
-    def test_plain_severity_triggers_uncertainty(self, review_mod):
-        """Plain Severity: markers should trigger uncertainty when no findings parsed."""
-        # This format has severity but in a context the block parser can't extract
+    def test_midline_severity_not_detected(self, review_mod):
+        """Severity markers embedded mid-line are not block starts — no uncertainty."""
         review_text = (
             "There is a Severity: P1 issue but the rest of the text\n"
             "doesn't follow any recognized block structure at all\n"
         )
         findings, uncertain = review_mod.parse_review_findings(review_text, 1)
-        # Whether or not it parses, if it fails, uncertain should be True
-        if not findings:
-            assert uncertain
+        # Mid-line markers are not valid block starts — correctly returns ([], False)
+        assert findings == []
+        assert not uncertain
 
-    def test_zero_findings_with_markers_sets_uncertain(self, review_mod):
-        """When severity markers exist but parsing yields nothing, flag uncertainty."""
-        # Markers in code blocks or unusual format the parser can't handle
+    def test_midline_bold_severity_not_detected(self, review_mod):
+        """Bold severity mid-line (not at line start) is not a block start."""
         review_text = (
             "The review found **P1** issues but in a format\n"
-            "that the block parser cannot delimit properly because\n"
-            "there are no standard block boundaries.\n"
+            "that the block parser cannot delimit properly.\n"
         )
         findings, uncertain = review_mod.parse_review_findings(review_text, 1)
-        # Parser may or may not extract this — but if it fails:
-        if not findings:
-            assert uncertain
+        # Mid-line bold is not a valid block start — correctly returns ([], False)
+        assert findings == []
+        assert not uncertain
+
+    def test_bold_label_severity_triggers_uncertainty(self, review_mod):
+        """**Severity:** P1 format with no parseable summary → uncertain=True."""
+        review_text = "- **Severity:** P1\n"
+        findings, uncertain = review_mod.parse_review_findings(review_text, 1)
+        assert findings == []
+        assert uncertain
+
+    def test_bold_inline_severity_triggers_uncertainty(self, review_mod):
+        """**Severity: P1** format with no parseable summary → uncertain=True."""
+        review_text = "- **Severity: P1**\n"
+        findings, uncertain = review_mod.parse_review_findings(review_text, 1)
+        assert findings == []
+        assert uncertain
 
     def test_ignores_multi_severity_prose(self, review_mod):
         """Lines like 'P2/P3 items may exist' should not be parsed as findings."""

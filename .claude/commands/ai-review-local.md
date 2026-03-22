@@ -244,18 +244,23 @@ if [ -f .claude/reviews/review-state.json ]; then
             rm -f /tmp/ai-review-diff.patch /tmp/ai-review-files.txt
             # Stop here
         fi
+        # State validated and delta generated — preserve previous review for re-review context
+        if [ -f .claude/reviews/local-review-latest.md ]; then
+            cp .claude/reviews/local-review-latest.md .claude/reviews/local-review-previous.md
+            echo "Previous review preserved for re-review context."
+        fi
     else
         echo "Warning: Previous review commit is not an ancestor of HEAD (likely rebase). Running fresh review."
         rm -f .claude/reviews/review-state.json
+        rm -f .claude/reviews/local-review-previous.md
     fi
 fi
-
-# Preserve previous review text (for re-review context)
-if [ -f .claude/reviews/local-review-latest.md ]; then
-    cp .claude/reviews/local-review-latest.md .claude/reviews/local-review-previous.md
-    echo "Previous review preserved for re-review context."
-fi
 ```
+
+**Important**: Previous review text is ONLY preserved when delta mode is active (state was
+validated). When state is invalidated (branch mismatch, non-ancestor, rebase), the previous
+review file is deleted to prevent stale findings from leaking into a fresh review via
+`--previous-review`.
 
 ### Step 5: Run the Review Script
 
