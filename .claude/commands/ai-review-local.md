@@ -178,10 +178,12 @@ if [ -n "$include_files" ]; then
     for f in $(echo "$include_files" | tr ',' ' '); do
         # Reject absolute paths (mirrors script's os.path.isabs check)
         case "$f" in /*) continue ;; esac
-        if [ -f "diff_diff/$f" ]; then candidate="diff_diff/$f"
-        elif [ -f "$f" ]; then candidate="$f"
-        else continue
-        fi
+        # Mirror script's branching: only bare filenames (no /) resolve under diff_diff/
+        # Slash-containing inputs resolve relative to repo root only
+        case "$f" in
+            */*) if [ -f "$f" ]; then candidate="$f"; else continue; fi ;;
+            *)   if [ -f "diff_diff/$f" ]; then candidate="diff_diff/$f"; else continue; fi ;;
+        esac
         # Verify within repo root (mirrors script's realpath containment)
         real_candidate=$(cd "$(dirname "$candidate")" && pwd -P)/$(basename "$candidate")
         case "$real_candidate" in "$repo_root_real"/*) upload_scan_files="$upload_scan_files $candidate" ;; esac

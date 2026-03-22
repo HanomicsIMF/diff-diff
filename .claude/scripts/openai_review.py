@@ -494,9 +494,11 @@ _LP = r"^(?:[-*+]|\d+\.?)?\s*"
 
 _BLOCK_START = re.compile(
     _LP + r"\*\*(P[0-3])\*\*"              # - **P1**, 1. **P1**, * **P1**
+    r"|" + _LP + r"\*\*(P[0-3]):\*\*"      # - **P1:** summary (bold severity with colon)
     r"|" + _LP + r"\*\*Severity:\*\*\s*(P[0-3])"  # - **Severity:** P1
     r"|" + _LP + r"\*\*Severity:\s*(P[0-3])\*\*"  # - **Severity: P1**
     r"|" + _LP + r"Severity:\s*`?(P[0-3])`?"      # 1. Severity: P1
+    r"|" + _LP + r"(P[0-3]):\s"            # - P1: summary (bare severity with colon)
 )
 
 _IMPACT_PATTERN = re.compile(r"(?:\*\*)?Impact:(?:\*\*)?\s*(.+)")
@@ -570,6 +572,7 @@ def parse_review_findings(
             severity = (
                 sev_match.group(1) or sev_match.group(2)
                 or sev_match.group(3) or sev_match.group(4)
+                or sev_match.group(5) or sev_match.group(6)
             )
             current_severity = severity
             current_block_section = current_section
@@ -640,17 +643,19 @@ def parse_review_findings(
             "status": "open",
         })
 
-    # Fail-safe: check if ANY supported severity syntax exists but we parsed
-    # nothing. Scan line-by-line using the same _BLOCK_START pattern the parser
-    # uses, ensuring the uncertainty detector covers every accepted format.
+    # Fail-safe: detect unparsed severity lines. Count severity-like lines in
+    # the text and compare with findings parsed. If any remain unparsed, set
+    # parse_uncertain=True. This handles both total failures (0 findings with
+    # severity markers) and partial failures (some findings but others missed).
     parse_uncertain = False
-    if not findings:
-        for line in review_text.splitlines():
-            if _should_skip_line(line):
-                continue
-            if _BLOCK_START.search(line):
-                parse_uncertain = True
-                break
+    severity_line_count = 0
+    for line in review_text.splitlines():
+        if _should_skip_line(line):
+            continue
+        if _BLOCK_START.search(line):
+            severity_line_count += 1
+    if severity_line_count > len(findings):
+        parse_uncertain = True
 
     return (findings, parse_uncertain)
 
