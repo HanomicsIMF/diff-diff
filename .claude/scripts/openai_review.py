@@ -409,11 +409,21 @@ def parse_review_findings(
     """Parse AI review output for structured findings.
 
     Extracts P0/P1/P2/P3 items with severity, section, summary, and location.
+    Only parses lines where the severity appears in bold (**P1**) or as a
+    labeled field (Severity: P1) to avoid ingesting instructional prose,
+    assessment criteria, or previous-findings tables.
     """
     findings: list[dict] = []
     counters: dict[str, int] = {}
 
-    severity_pattern = re.compile(r"\b(P[0-3])\b")
+    # Only match severity in explicit finding formats:
+    # - **P1** or **P0:** (bold, as used in review output)
+    # - Severity: P1 or Severity:** P1 (labeled field)
+    # - - **Severity:** P1 (bullet with labeled field)
+    finding_sev_pattern = re.compile(
+        r"(?:\*\*(?:Severity:\s*)?)(P[0-3])(?:\*\*)"
+        r"|(?:Severity:\s*\*?\*?)(P[0-3])"
+    )
     # Match file:line references like "diff_diff/foo.py:L123" or "foo.py:L45-L67"
     location_pattern = re.compile(
         r"(?:`?)([\w/]+\.py(?::L?\d+(?:-L?\d+)?)?)(?:`?)"
@@ -428,20 +438,44 @@ def parse_review_findings(
             if heading and "summary" not in heading.lower():
                 current_section = heading
 
-        sev_match = severity_pattern.search(line)
-        if not sev_match:
+        # Skip table rows (finding tables from previous reviews)
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
             continue
-
-        severity = sev_match.group(1)
-        # Skip lines that are just referencing severity in passing (e.g., "P2/P3 items")
-        if re.search(r"P\d/P\d", line):
+        # Skip lines referencing multiple severities in passing (e.g., "P2/P3 items")
+        if re.search(r"P\d[/+]P\d", line):
             continue
         # Skip assessment criteria lines
         if any(
             marker in line
-            for marker in ["⛔", "⚠️", "✅", "Blocker", "Needs changes", "Looks good"]
+            for marker in [
+                "\u26d4", "\u26a0\ufe0f", "\u2705",
+                "Blocker", "Needs changes", "Looks good",
+                "Path to Approval",
+            ]
         ):
             continue
+        # Skip instructional/guidance lines
+        if any(
+            phrase in line
+            for phrase in [
+                "findings are resolved",
+                "findings have been addressed",
+                "should be marked",
+                "assessment should be",
+                "does NOT need",
+                "do NOT need",
+                "P1+ findings",
+                "P0/P1 findings",
+            ]
+        ):
+            continue
+
+        sev_match = finding_sev_pattern.search(line)
+        if not sev_match:
+            continue
+
+        severity = sev_match.group(1) or sev_match.group(2)
 
         # Extract a summary — text after the severity marker
         text_after_sev = line[sev_match.end() :].strip().lstrip(":—- ").strip()
@@ -476,36 +510,51 @@ def parse_review_findings(
     return findings
 
 
+def _finding_key(f: dict) -> "tuple[str, str, str]":
+    """Compute a stable matching key for a finding.
+
+    Uses (severity, section, summary_fingerprint) where the fingerprint is
+    the first 50 chars of the summary, lowercased and stripped. This is more
+    stable than location-based matching since line numbers shift across revisions.
+    The file path from location is used as a secondary component when available.
+    """
+    summary = f.get("summary", "").lower().strip()[:50]
+    # Extract just the file path from location (strip line numbers)
+    location = f.get("location", "")
+    file_path = location.split(":")[0] if location else ""
+    return (f.get("severity", ""), file_path, summary)
+
+
 def merge_findings(
     previous: "list[dict]", current: "list[dict]"
 ) -> "list[dict]":
     """Merge findings across review rounds.
 
-    Match by location + severity. Previous findings absent from current
-    are marked 'addressed'. New current findings are added as 'open'.
+    Match by (severity, file_path, summary_fingerprint). Previous findings
+    absent from current are marked 'addressed'. Supports multiple findings
+    per key without overwriting.
     """
-    # Build lookup from previous findings by (location, severity)
-    prev_by_key: dict[tuple[str, str], dict] = {}
+    # Build lookup from previous findings — list per key to handle duplicates
+    prev_by_key: dict[tuple, list[dict]] = {}
     for f in previous:
-        key = (f.get("location", ""), f.get("severity", ""))
-        prev_by_key[key] = f
+        key = _finding_key(f)
+        prev_by_key.setdefault(key, []).append(f)
 
-    # Track which previous findings were matched
-    matched_keys: set[tuple[str, str]] = set()
     merged: list[dict] = []
 
     for f in current:
-        key = (f.get("location", ""), f.get("severity", ""))
-        if key in prev_by_key:
-            matched_keys.add(key)
+        key = _finding_key(f)
+        if key in prev_by_key and prev_by_key[key]:
+            # Consume one match from the previous list
+            prev_by_key[key].pop(0)
             # Keep the current finding (updated summary) with status open
             merged.append(f)
         else:
             merged.append(f)
 
-    # Mark unmatched previous findings as addressed
-    for key, f in prev_by_key.items():
-        if key not in matched_keys:
+    # Mark unconsumed previous findings as addressed
+    for remaining in prev_by_key.values():
+        for f in remaining:
             addressed = dict(f)
             addressed["status"] = "addressed"
             merged.append(addressed)
@@ -521,40 +570,32 @@ DEFAULT_TOKEN_BUDGET = 200_000
 
 
 def apply_token_budget(
-    sections: "dict[str, str]", budget: int
-) -> "tuple[dict[str, str], list[str]]":
-    """Apply token budget to prompt sections, dropping lowest-priority content first.
+    mandatory_tokens: int,
+    source_files_text: "str | None",
+    import_context_text: "str | None",
+    budget: int,
+) -> "tuple[str | None, str | None, list[str]]":
+    """Apply token budget, dropping lowest-priority context first.
 
-    Sections are keyed by name. The 'import_files' key (if present) is a
-    newline-separated list of <file>...</file> blocks that can be individually
-    dropped, smallest first.
+    Changed source files are always included (they are the highest-value
+    context for catching sins of omission). Only import-context files are
+    subject to the budget — they are included smallest-first until the
+    budget is exhausted.
 
-    Returns (included_sections, dropped_names).
+    Returns (source_files_text, import_context_text, dropped_file_names).
     """
-    # Calculate tokens for all non-droppable sections
-    mandatory_keys = [
-        k for k in sections if k not in ("import_files", "source_files")
-    ]
-    mandatory_tokens = sum(
-        estimate_tokens(sections[k]) for k in mandatory_keys
-    )
-
     remaining = budget - mandatory_tokens
-    included = {k: sections[k] for k in mandatory_keys}
     dropped: list[str] = []
 
-    # Include source files if present and budget allows
-    if "source_files" in sections:
-        src_tokens = estimate_tokens(sections["source_files"])
-        if remaining >= src_tokens or remaining >= 0:
-            # Always include source files (they're high value) but warn if over
-            included["source_files"] = sections["source_files"]
-            remaining -= src_tokens
+    # Source files are always included (sticky — not budget-governed)
+    if source_files_text:
+        remaining -= estimate_tokens(source_files_text)
 
     # Include import files individually, smallest first
-    if "import_files" in sections and sections["import_files"].strip():
+    final_import_text: "str | None" = None
+    if import_context_text and import_context_text.strip():
         # Split into individual file blocks
-        blocks = re.split(r"(?=<file )", sections["import_files"])
+        blocks = re.split(r"(?=<file )", import_context_text)
         blocks = [b for b in blocks if b.strip()]
 
         # Sort by size (smallest first)
@@ -573,7 +614,7 @@ def apply_token_budget(
                 dropped.append(name)
 
         if included_blocks:
-            included["import_files"] = "\n".join(included_blocks)
+            final_import_text = "\n".join(included_blocks)
 
     if mandatory_tokens > budget:
         print(
@@ -582,7 +623,7 @@ def apply_token_budget(
             file=sys.stderr,
         )
 
-    return (included, dropped)
+    return (source_files_text, final_import_text, dropped)
 
 
 # ---------------------------------------------------------------------------
@@ -1040,6 +1081,11 @@ def main() -> None:
         default=None,
         help="HEAD commit SHA (required when --review-state is set)",
     )
+    parser.add_argument(
+        "--base-ref",
+        default="main",
+        help="Base branch name for review-state.json (default: main)",
+    )
 
     args = parser.parse_args()
 
@@ -1180,40 +1226,32 @@ def main() -> None:
             pass
 
     # --- Token budget ---
-    budget_sections: dict[str, str] = {}
-    # Build a map of section name -> content for budget management
-    # (We'll pass individual texts to compile_prompt, but use the budget
-    # to decide whether to include import_context_text)
-    if import_context_text:
-        budget_sections["import_files"] = import_context_text
-    if source_files_text:
-        budget_sections["source_files"] = source_files_text
-    # Estimate mandatory content size
-    mandatory_est = estimate_tokens(criteria_text) + estimate_tokens(
-        registry_content
-    ) + estimate_tokens(diff_text) + estimate_tokens(changed_files_text)
+    # Estimate mandatory content size (always included, not budget-governed)
+    mandatory_est = (
+        estimate_tokens(criteria_text)
+        + estimate_tokens(registry_content)
+        + estimate_tokens(diff_text)
+        + estimate_tokens(changed_files_text)
+    )
     if previous_review:
         mandatory_est += estimate_tokens(previous_review)
     if delta_diff_text:
         mandatory_est += estimate_tokens(delta_diff_text)
-    budget_sections["_mandatory"] = "x" * (mandatory_est * 4)  # placeholder
 
-    if budget_sections:
-        included, dropped = apply_token_budget(
-            budget_sections, args.token_budget
+    # Apply budget: source files are always included (sticky);
+    # only import-context files are dropped when over budget.
+    source_files_text, import_context_text, dropped = apply_token_budget(
+        mandatory_tokens=mandatory_est,
+        source_files_text=source_files_text,
+        import_context_text=import_context_text,
+        budget=args.token_budget,
+    )
+    if dropped:
+        print(
+            f"Warning: Token budget exceeded. Dropped import context files: "
+            f"{', '.join(dropped)}",
+            file=sys.stderr,
         )
-        if "import_files" not in included:
-            import_context_text = None
-        elif "import_files" in included:
-            import_context_text = included["import_files"]
-        if "source_files" not in included:
-            source_files_text = None
-        if dropped:
-            print(
-                f"Warning: Token budget exceeded. Dropped import context files: "
-                f"{', '.join(dropped)}",
-                file=sys.stderr,
-            )
 
     # --- Compile prompt ---
     prompt = compile_prompt(
@@ -1285,7 +1323,7 @@ def main() -> None:
         write_review_state(
             path=args.review_state,
             commit_sha=args.commit_sha,
-            base_ref=args.branch_info.split("/")[0] if "/" in args.branch_info else "main",
+            base_ref=args.base_ref,
             branch=args.branch_info,
             review_round=current_round,
             findings=final_findings,

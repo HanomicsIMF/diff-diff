@@ -18,7 +18,8 @@ pre-PR use. Designed for iterative review/revision cycles before submitting a PR
   - `deep`: Standard + import-graph expansion (files imported by changed files)
 - `--include-files <file1,file2,...>`: Extra files to include as read-only context
   (filenames resolve under `diff_diff/`, or use paths relative to repo root)
-- `--token-budget <n>`: Max estimated input tokens before dropping context (default: 200000)
+- `--token-budget <n>`: Max estimated input tokens before dropping import-context
+  files (default: 200000). Changed source files are always included regardless of budget.
 - `--force-fresh`: Skip delta-diff mode, run a full fresh review even if previous state exists
 - `--full-registry`: Include the entire REGISTRY.md instead of selective sections
 - `--model <name>`: Override the OpenAI model (default: `gpt-5.4`)
@@ -215,6 +216,7 @@ python3 .claude/scripts/openai_review.py \
     --context "$context_level" \
     --review-state .claude/reviews/review-state.json \
     --commit-sha "$(git rev-parse HEAD)" \
+    --base-ref "$comparison_ref" \
     [--previous-review .claude/reviews/local-review-previous.md] \
     [--delta-diff /tmp/ai-review-delta-diff.patch] \
     [--delta-changed-files /tmp/ai-review-delta-files.txt] \

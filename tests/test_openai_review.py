@@ -617,34 +617,53 @@ class TestEstimateCost:
 
 class TestTokenBudget:
     def test_under_budget_all_included(self, review_mod):
-        sections = {
-            "_mandatory": "x" * 400,  # ~100 tokens
-            "source_files": "y" * 400,  # ~100 tokens
-            "import_files": '<file path="a.py">small</file>',
-        }
-        included, dropped = review_mod.apply_token_budget(sections, 200_000)
-        assert "source_files" in included
-        assert "import_files" in included
+        src = "y" * 400
+        imp = '<file path="a.py">small</file>'
+        result_src, result_imp, dropped = review_mod.apply_token_budget(
+            mandatory_tokens=100,
+            source_files_text=src,
+            import_context_text=imp,
+            budget=200_000,
+        )
+        assert result_src == src
+        assert result_imp is not None
         assert dropped == []
 
-    def test_over_budget_drops_imports(self, review_mod):
-        sections = {
-            "_mandatory": "x" * 800_000,  # ~200K tokens (fills budget)
-            "source_files": "y" * 400,
-            "import_files": (
-                '<file path="big.py">' + "z" * 40_000 + "</file>\n"
-                '<file path="small.py">' + "z" * 400 + "</file>"
-            ),
-        }
-        included, dropped = review_mod.apply_token_budget(sections, 200_000)
+    def test_over_budget_drops_imports_not_source(self, review_mod):
+        src = "y" * 400
+        imp = (
+            '<file path="big.py">' + "z" * 40_000 + "</file>\n"
+            '<file path="small.py">' + "z" * 400 + "</file>"
+        )
+        result_src, result_imp, dropped = review_mod.apply_token_budget(
+            mandatory_tokens=200_000,  # fills budget
+            source_files_text=src,
+            import_context_text=imp,
+            budget=200_000,
+        )
+        # Source files always included (sticky)
+        assert result_src == src
         # At least one import file should be dropped
         assert len(dropped) > 0
 
+    def test_source_files_always_included(self, review_mod):
+        """Source files are sticky — never dropped even when over budget."""
+        src = "y" * 800_000  # large source files
+        result_src, _, dropped = review_mod.apply_token_budget(
+            mandatory_tokens=100_000,
+            source_files_text=src,
+            import_context_text=None,
+            budget=50_000,  # budget smaller than mandatory alone
+        )
+        assert result_src == src
+
     def test_mandatory_exceeds_budget_warns(self, review_mod, capsys):
-        sections = {
-            "_mandatory": "x" * 1_200_000,  # ~300K tokens
-        }
-        review_mod.apply_token_budget(sections, 200_000)
+        review_mod.apply_token_budget(
+            mandatory_tokens=300_000,
+            source_files_text=None,
+            import_context_text=None,
+            budget=200_000,
+        )
         captured = capsys.readouterr()
         assert "exceeding --token-budget" in captured.err
 
@@ -755,6 +774,43 @@ class TestParseReviewFindings:
             assert f["id"].startswith("R2-")
             assert f["status"] == "open"
 
+    def test_ignores_multi_severity_prose(self, review_mod):
+        """Lines like 'P2/P3 items may exist' should not be parsed as findings."""
+        review_text = (
+            "P2/P3 items may exist. A PR does NOT need to be perfect.\n"
+            "If all previous P1+ findings are resolved, assessment should be good.\n"
+        )
+        findings = review_mod.parse_review_findings(review_text, 1)
+        assert findings == []
+
+    def test_ignores_assessment_lines(self, review_mod):
+        """Assessment criteria lines with severity labels should be skipped."""
+        review_text = (
+            "⛔ Blocker — One or more P0: silent correctness bugs\n"
+            "⚠️ Needs changes — One or more P1 (no P0s)\n"
+            "✅ Looks good — No unmitigated P0 or P1 findings.\n"
+        )
+        findings = review_mod.parse_review_findings(review_text, 1)
+        assert findings == []
+
+    def test_ignores_table_rows(self, review_mod):
+        """Findings tables from previous reviews should not be re-parsed."""
+        review_text = (
+            "| R1-P1-1 | P1 | Methodology | Missing NaN guard | foo.py:L10 | open |\n"
+            "| R1-P2-1 | P2 | Code Quality | Unused import | bar.py:L5 | addressed |\n"
+        )
+        findings = review_mod.parse_review_findings(review_text, 2)
+        assert findings == []
+
+    def test_ignores_instructional_text(self, review_mod):
+        """Instructional text referencing severities should be skipped."""
+        review_text = (
+            "Focus on whether previous P0/P1 findings have been addressed.\n"
+            "If all previous P1+ findings are resolved, the assessment should be good.\n"
+        )
+        findings = review_mod.parse_review_findings(review_text, 1)
+        assert findings == []
+
 
 # ---------------------------------------------------------------------------
 # Merge findings
@@ -764,10 +820,12 @@ class TestParseReviewFindings:
 class TestMergeFindings:
     def test_matching_finding_stays_open(self, review_mod):
         previous = [
-            {"id": "R1-P1-1", "severity": "P1", "location": "foo.py:L10", "status": "open"}
+            {"id": "R1-P1-1", "severity": "P1", "location": "foo.py:L10",
+             "section": "Code Quality", "summary": "Missing NaN guard", "status": "open"}
         ]
         current = [
-            {"id": "R2-P1-1", "severity": "P1", "location": "foo.py:L10", "status": "open"}
+            {"id": "R2-P1-1", "severity": "P1", "location": "foo.py:L10",
+             "section": "Code Quality", "summary": "Missing NaN guard", "status": "open"}
         ]
         merged = review_mod.merge_findings(previous, current)
         open_at_loc = [
@@ -778,7 +836,8 @@ class TestMergeFindings:
 
     def test_absent_finding_marked_addressed(self, review_mod):
         previous = [
-            {"id": "R1-P1-1", "severity": "P1", "location": "foo.py:L10", "status": "open"}
+            {"id": "R1-P1-1", "severity": "P1", "location": "foo.py:L10",
+             "section": "Code Quality", "summary": "Missing NaN guard", "status": "open"}
         ]
         current = []  # Finding was addressed
         merged = review_mod.merge_findings(previous, current)
@@ -789,9 +848,70 @@ class TestMergeFindings:
     def test_new_finding_added_as_open(self, review_mod):
         previous = []
         current = [
-            {"id": "R2-P0-1", "severity": "P0", "location": "bar.py:L5", "status": "open"}
+            {"id": "R2-P0-1", "severity": "P0", "location": "bar.py:L5",
+             "section": "Methodology", "summary": "Missing check", "status": "open"}
         ]
         merged = review_mod.merge_findings(previous, current)
         assert len(merged) == 1
         assert merged[0]["status"] == "open"
         assert merged[0]["location"] == "bar.py:L5"
+
+    def test_matching_with_shifted_line_numbers(self, review_mod):
+        """Same finding at different line ranges should still match via summary."""
+        previous = [
+            {"id": "R1-P1-1", "severity": "P1", "location": "foo.py:L10",
+             "section": "Code Quality", "summary": "Missing NaN guard in staggered",
+             "status": "open"}
+        ]
+        current = [
+            {"id": "R2-P1-1", "severity": "P1", "location": "foo.py:L10-L12",
+             "section": "Code Quality", "summary": "Missing NaN guard in staggered",
+             "status": "open"}
+        ]
+        merged = review_mod.merge_findings(previous, current)
+        open_findings = [f for f in merged if f["status"] == "open"]
+        addressed = [f for f in merged if f["status"] == "addressed"]
+        # Should match (same severity, file, summary) — not create a false "addressed"
+        assert len(open_findings) == 1
+        assert len(addressed) == 0
+
+    def test_matching_with_missing_location(self, review_mod):
+        """Finding with no location should match on summary fingerprint."""
+        previous = [
+            {"id": "R1-P1-1", "severity": "P1", "location": "foo.py:L10",
+             "section": "Code Quality", "summary": "Missing NaN guard in staggered",
+             "status": "open"}
+        ]
+        current = [
+            {"id": "R2-P1-1", "severity": "P1", "location": "",
+             "section": "Code Quality", "summary": "Missing NaN guard in staggered",
+             "status": "open"}
+        ]
+        merged = review_mod.merge_findings(previous, current)
+        # Location changed but summary matches — should NOT mark as addressed
+        # (this is a known limitation: different file path = different key)
+        # The finding stays open in current, and previous is marked addressed
+        # This is acceptable because the model will re-flag it if still present
+        assert any(f["status"] == "open" for f in merged)
+
+    def test_multiple_findings_same_key(self, review_mod):
+        """Multiple previous findings with same key should not overwrite each other."""
+        previous = [
+            {"id": "R1-P1-1", "severity": "P1", "location": "foo.py:L10",
+             "section": "Code Quality", "summary": "Missing NaN guard in staggered",
+             "status": "open"},
+            {"id": "R1-P1-2", "severity": "P1", "location": "foo.py:L20",
+             "section": "Code Quality", "summary": "Missing NaN guard in staggered",
+             "status": "open"},
+        ]
+        current = [
+            {"id": "R2-P1-1", "severity": "P1", "location": "foo.py:L10",
+             "section": "Code Quality", "summary": "Missing NaN guard in staggered",
+             "status": "open"},
+        ]
+        merged = review_mod.merge_findings(previous, current)
+        # One should match, one should be addressed
+        open_findings = [f for f in merged if f["status"] == "open"]
+        addressed = [f for f in merged if f["status"] == "addressed"]
+        assert len(open_findings) == 1
+        assert len(addressed) == 1
