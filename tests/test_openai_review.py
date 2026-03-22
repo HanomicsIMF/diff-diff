@@ -1187,6 +1187,20 @@ class TestParseThenMerge:
         assert len(open_findings) == 1
         assert len(addressed) == 0
 
+    def test_md_file_line_shift_does_not_cause_churn(self, review_mod):
+        """Same finding on a .md file at different line numbers should merge as 1 open."""
+        review_r1 = "**P1** Missing docs in `ai-review-local.md:L10`\n"
+        review_r2 = "**P1** Missing docs in `ai-review-local.md:L20`\n"
+        findings_r1, _ = review_mod.parse_review_findings(review_r1, 1)
+        findings_r2, _ = review_mod.parse_review_findings(review_r2, 2)
+        assert len(findings_r1) == 1
+        assert len(findings_r2) == 1
+        merged = review_mod.merge_findings(findings_r1, findings_r2)
+        open_findings = [f for f in merged if f["status"] == "open"]
+        addressed = [f for f in merged if f["status"] == "addressed"]
+        assert len(open_findings) == 1
+        assert len(addressed) == 0
+
     def test_parse_uncertain_does_not_advance_state(self, review_mod, tmp_path):
         """When parse_uncertain fires, review-state.json should not be modified."""
         state_path = str(tmp_path / "review-state.json")

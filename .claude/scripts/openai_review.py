@@ -413,7 +413,7 @@ _IMPACT_PATTERN = re.compile(r"(?:\*\*)?Impact:(?:\*\*)?\s*(.+)")
 _LOCATION_LABEL_PATTERN = re.compile(r"(?:\*\*)?Location:(?:\*\*)?\s*(.+)")
 
 _LOCATION_PATTERN = re.compile(
-    r"(?:`?)([\w/._-]+\.py(?::L?\d+(?:-L?\d+)?)?)(?:`?)"
+    r"(?:`?)([\w/._-]+\.\w+(?::L?\d+(?:-L?\d+)?)?)(?:`?)"
 )
 
 # Lines to skip when checking if a severity line is a real finding
@@ -577,7 +577,7 @@ def _finding_keys(f: dict) -> "tuple[tuple[str, str, str], tuple[str, str]]":
     # Strip inline file:line references that cause churn on line number shifts
     # e.g., "missing nan guard in `foo.py:l10`" → "missing nan guard in"
     # (summary is already lowercased at this point)
-    summary = re.sub(r"`?[\w/.]+\.py(?::l?\d+(?:-l?\d+)?)?`?", "", summary)
+    summary = re.sub(r"`?[\w/.]+\.\w+(?::l?\d+(?:-l?\d+)?)?`?", "", summary)
     summary = summary.strip()[:50]
     severity = f.get("severity", "")
     location = f.get("location", "")
@@ -1359,6 +1359,12 @@ def main() -> None:
         mandatory_est += estimate_tokens(previous_review)
     if delta_diff_text:
         mandatory_est += estimate_tokens(delta_diff_text)
+    if delta_changed_files_text:
+        mandatory_est += estimate_tokens(delta_changed_files_text)
+    if structured_findings:
+        # Rough estimate for the findings table rendered in compile_prompt
+        findings_text = "\n".join(str(f) for f in structured_findings)
+        mandatory_est += estimate_tokens(findings_text)
 
     # Apply budget: source files are always included (sticky);
     # only import-context files are dropped when over budget.
