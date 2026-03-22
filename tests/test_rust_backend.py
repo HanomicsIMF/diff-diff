@@ -1575,11 +1575,11 @@ class TestTROPGlobalRustVsNumpy:
         # (Module reload breaks isinstance() checks in other tests due to class identity)
         from unittest.mock import patch
         import sys
-        trop_module = sys.modules['diff_diff.trop']
+        trop_global_module = sys.modules['diff_diff.trop_global']
 
-        with patch.object(trop_module, 'HAS_RUST_BACKEND', False), \
-             patch.object(trop_module, '_rust_loocv_grid_search_global', None), \
-             patch.object(trop_module, '_rust_bootstrap_trop_variance_global', None):
+        with patch.object(trop_global_module, 'HAS_RUST_BACKEND', False), \
+             patch.object(trop_global_module, '_rust_loocv_grid_search_global', None), \
+             patch.object(trop_global_module, '_rust_bootstrap_trop_variance_global', None):
 
             trop_python = TROP(**trop_params)
             results_python = trop_python.fit(df.copy(), 'outcome', 'treated', 'unit', 'time')
@@ -1665,11 +1665,11 @@ class TestTROPGlobalRustVsNumpy:
         # (Module reload breaks isinstance() checks in other tests due to class identity)
         from unittest.mock import patch
         import sys
-        trop_module = sys.modules['diff_diff.trop']
+        trop_global_module = sys.modules['diff_diff.trop_global']
 
-        with patch.object(trop_module, 'HAS_RUST_BACKEND', False), \
-             patch.object(trop_module, '_rust_loocv_grid_search_global', None), \
-             patch.object(trop_module, '_rust_bootstrap_trop_variance_global', None):
+        with patch.object(trop_global_module, 'HAS_RUST_BACKEND', False), \
+             patch.object(trop_global_module, '_rust_loocv_grid_search_global', None), \
+             patch.object(trop_global_module, '_rust_bootstrap_trop_variance_global', None):
 
             trop_python = TROP(**trop_params)
             results_python = trop_python.fit(df.copy(), 'outcome', 'treated', 'unit', 'time')
@@ -1730,10 +1730,10 @@ class TestTROPGlobalRustVsNumpy:
         results_rust = trop_rust.fit(df.copy(), 'outcome', 'treated', 'unit', 'time')
 
         # Python-only backend
-        trop_module = sys.modules['diff_diff.trop']
-        with patch.object(trop_module, 'HAS_RUST_BACKEND', False), \
-             patch.object(trop_module, '_rust_loocv_grid_search_global', None), \
-             patch.object(trop_module, '_rust_bootstrap_trop_variance_global', None):
+        trop_global_module = sys.modules['diff_diff.trop_global']
+        with patch.object(trop_global_module, 'HAS_RUST_BACKEND', False), \
+             patch.object(trop_global_module, '_rust_loocv_grid_search_global', None), \
+             patch.object(trop_global_module, '_rust_bootstrap_trop_variance_global', None):
             trop_python = TROP(**trop_params)
             results_python = trop_python.fit(df.copy(), 'outcome', 'treated', 'unit', 'time')
 
@@ -1801,10 +1801,10 @@ class TestTROPGlobalRustVsNumpy:
         results_rust = trop_rust.fit(df.copy(), 'outcome', 'treated', 'unit', 'time')
 
         # Python-only backend
-        trop_module = sys.modules['diff_diff.trop']
-        with patch.object(trop_module, 'HAS_RUST_BACKEND', False), \
-             patch.object(trop_module, '_rust_loocv_grid_search_global', None), \
-             patch.object(trop_module, '_rust_bootstrap_trop_variance_global', None):
+        trop_global_module = sys.modules['diff_diff.trop_global']
+        with patch.object(trop_global_module, 'HAS_RUST_BACKEND', False), \
+             patch.object(trop_global_module, '_rust_loocv_grid_search_global', None), \
+             patch.object(trop_global_module, '_rust_bootstrap_trop_variance_global', None):
             trop_python = TROP(**trop_params)
             results_python = trop_python.fit(df.copy(), 'outcome', 'treated', 'unit', 'time')
 

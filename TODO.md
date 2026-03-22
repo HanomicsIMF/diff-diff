@@ -23,7 +23,7 @@ Target: < 1000 lines per module for maintainability.
 
 | File | Lines | Action |
 |------|-------|--------|
-| `trop.py` | 2738 | Consider splitting — 2.7× target |
+| `trop.py` | 862 | Split done — trop_global.py (990), trop_local.py (1000) |
 | `utils.py` | 1838 | Monitor |
 | `staggered.py` | 1785 | Monitor |
 | `imputation.py` | 1756 | Monitor |
@@ -57,6 +57,7 @@ Deferred items from PR reviews that were not addressed before merge.
 | ContinuousDiD event-study aggregation does not filter by `anticipation` — uses all (g,t) cells instead of anticipation-filtered subset; pre-existing in both survey and non-survey paths | `continuous_did.py` | #226 | Medium |
 | Survey design resolution/collapse patterns are inconsistent across panel estimators — ContinuousDiD rebuilds unit-level design in SE code, EfficientDiD builds once in fit(), StackedDiD re-resolves on stacked data; extract shared helpers for panel-to-unit collapse, post-filter re-resolution, and metadata recomputation | `continuous_did.py`, `efficient_did.py`, `stacked_did.py` | #226 | Low |
 | Duplicated survey metadata summary formatting across 6 results classes — extract shared `_format_survey_metadata(sm, width)` helper to reduce maintenance burden as more estimators gain survey support in Phases 4-5 | `results.py`, `stacked_did_results.py`, `sun_abraham.py`, `bacon.py`, `triple_diff.py`, `continuous_did_results.py`, `efficient_did_results.py` | #226 | Low |
+| TROP: `fit()` and `_fit_global()` share ~150 lines of near-identical data setup (panel pivoting, absorbing-state validation, first-treatment detection, effective rank, NaN warnings). Both bootstrap methods also duplicate the stratified resampling loop. Extract shared helpers to eliminate cross-file sync risk. | `trop.py`, `trop_global.py`, `trop_local.py` | — | Low |
 
 #### Performance
 

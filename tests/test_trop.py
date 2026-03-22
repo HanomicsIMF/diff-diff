@@ -3619,9 +3619,9 @@ class TestTROPBootstrapNaNSE:
 
         # Disable Rust backend so Python fallback path is tested,
         # then patch _fit_global_with_fixed_lambda to always raise
-        trop_module = sys.modules['diff_diff.trop']
-        with patch.object(trop_module, 'HAS_RUST_BACKEND', False), \
-             patch.object(trop_module, '_rust_bootstrap_trop_variance_global', None), \
+        trop_global_module = sys.modules['diff_diff.trop_global']
+        with patch.object(trop_global_module, 'HAS_RUST_BACKEND', False), \
+             patch.object(trop_global_module, '_rust_bootstrap_trop_variance_global', None), \
              patch.object(TROP, '_fit_global_with_fixed_lambda',
                           side_effect=ValueError("forced failure")):
             with warnings.catch_warnings():
@@ -3661,4 +3661,98 @@ class TestTROPBootstrapNaNSE:
 
         assert np.isnan(se), f"SE should be NaN when 0 draws succeed, got {se}"
         assert len(dist) == 0
+
+
+class TestTROPModuleSplit:
+    """Regression tests for the trop.py -> trop_global.py / trop_local.py split."""
+
+    @staticmethod
+    def _make_panel():
+        """Create a simple balanced panel for split regression tests."""
+        rng = np.random.default_rng(42)
+        n_units, n_periods = 8, 6
+        rows = []
+        for i in range(n_units):
+            treated = i < 3  # 3 treated, 5 control
+            for t in range(n_periods):
+                y = rng.normal(0, 1)
+                if treated and t >= 4:
+                    y += 2.0  # treatment effect
+                rows.append({
+                    "unit": i, "time": t, "outcome": y,
+                    "treated": 1 if treated and t >= 4 else 0,
+                })
+        return pd.DataFrame(rows)
+
+    def test_global_absorbing_state_error_has_remediation_guidance(self):
+        """Global path ValueError for non-absorbing D includes remediation text."""
+        df = self._make_panel()
+        # Break absorbing state: unit 0 goes 0->1->0
+        df.loc[(df["unit"] == 0) & (df["time"] == 5), "treated"] = 0
+
+        with pytest.raises(ValueError, match="once treated, always treated"):
+            TROP(method="global").fit(df, "outcome", "treated", "unit", "time")
+
+        with pytest.raises(ValueError, match="convert to absorbing state"):
+            TROP(method="global").fit(df, "outcome", "treated", "unit", "time")
+
+    def test_global_finite_lambda_nn_exercises_lowrank_path(self):
+        """method='global' with finite lambda_nn successfully fits the low-rank solver."""
+        df = self._make_panel()
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[0.0],
+            lambda_unit_grid=[0.0],
+            lambda_nn_grid=[0.1],  # finite -> exercises _solve_global_with_lowrank
+            n_bootstrap=5,
+            seed=42,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = trop_est.fit(df, "outcome", "treated", "unit", "time")
+        assert np.isfinite(result.att)
+
+    def test_local_finite_lambda_nn_exercises_nuclear_norm(self):
+        """method='local' with finite lambda_nn exercises weighted nuclear norm solver."""
+        df = self._make_panel()
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[0.0],
+            lambda_unit_grid=[0.0],
+            lambda_nn_grid=[0.1],  # finite -> exercises _weighted_nuclear_norm_solve
+            n_bootstrap=5,
+            seed=42,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = trop_est.fit(df, "outcome", "treated", "unit", "time")
+        assert np.isfinite(result.att)
+
+    def test_method_dispatch_global_uses_fit_global(self):
+        """method='global' dispatches to _fit_global from TROPGlobalMixin."""
+        from unittest.mock import patch
+
+        df = self._make_panel()
+        trop_est = TROP(method="global", n_bootstrap=2, seed=42)
+
+        with patch.object(TROP, '_fit_global', wraps=trop_est._fit_global) as mock_fg:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                trop_est.fit(df, "outcome", "treated", "unit", "time")
+            mock_fg.assert_called_once()
+
+    def test_method_dispatch_local_does_not_use_fit_global(self):
+        """method='local' does NOT call _fit_global."""
+        from unittest.mock import patch
+
+        df = self._make_panel()
+        trop_est = TROP(method="local", n_bootstrap=2, seed=42,
+                        lambda_time_grid=[0.0], lambda_unit_grid=[0.0],
+                        lambda_nn_grid=[np.inf])
+
+        with patch.object(TROP, '_fit_global') as mock_fg:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                trop_est.fit(df, "outcome", "treated", "unit", "time")
+            mock_fg.assert_not_called()
 
