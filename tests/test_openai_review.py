@@ -909,6 +909,13 @@ class TestParseReviewFindings:
         assert "P2" in severities
         assert not uncertain
 
+    def test_parses_severity_bold_value(self, review_mod):
+        """Severity: **P1** format (bold value after plain label) should be parsed."""
+        review_text = "- Severity: **P1** — Missing NaN guard in `foo.py:L10`\n"
+        findings, _ = review_mod.parse_review_findings(review_text, 1)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "P1"
+
     def test_parses_numbered_list_severity(self, review_mod):
         """1. Severity: P1 format should be parsed."""
         review_text = "1. Severity: P1 — Missing NaN guard in `foo.py:L10`\n"

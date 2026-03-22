@@ -497,7 +497,7 @@ _BLOCK_START = re.compile(
     r"|" + _LP + r"\*\*(P[0-3]):\*\*"      # - **P1:** summary (bold severity with colon)
     r"|" + _LP + r"\*\*Severity:\*\*\s*(P[0-3])"  # - **Severity:** P1
     r"|" + _LP + r"\*\*Severity:\s*(P[0-3])\*\*"  # - **Severity: P1**
-    r"|" + _LP + r"Severity:\s*`?(P[0-3])`?"      # 1. Severity: P1
+    r"|" + _LP + r"Severity:\s*\*{0,2}`?(P[0-3])`?\*{0,2}"  # Severity: P1, Severity: **P1**, Severity: `P1`
     r"|" + _LP + r"(P[0-3]):\s"            # - P1: summary (bare severity with colon)
 )
 
