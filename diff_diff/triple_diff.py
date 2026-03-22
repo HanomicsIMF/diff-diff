@@ -480,8 +480,8 @@ class TripleDifference:
         survey_design : SurveyDesign, optional
             Survey design specification for complex survey data. When
             provided, uses survey weights for estimation and Taylor Series
-            Linearization (TSL) for variance estimation. Only supported
-            with estimation_method="reg".
+            Linearization (TSL) for variance estimation. Supported with
+            all estimation methods ("reg", "ipw", "dr").
 
         Returns
         -------
@@ -943,6 +943,8 @@ class TripleDifference:
                     # Hessian only when PS was actually estimated
                     if ps_estimated:
                         W_ps = pscore_sub * (1 - pscore_sub)
+                        if w_sub is not None:
+                            W_ps = W_ps * w_sub
                         try:
                             XWX = covX_sub.T @ (W_ps[:, None] * covX_sub)
                             hessian = np.linalg.inv(XWX) * n_sub
@@ -1323,16 +1325,30 @@ class TripleDifference:
         # Propensity score correction for influence function
         if hessian is not None:
             score_ps = (PA4 - pscore)[:, None] * covX
+            if weights is not None:
+                score_ps = score_ps * weights[:, None]
             asy_lin_rep_ps = score_ps @ hessian
 
-            M2_pre = np.mean(
-                (riesz_control_pre * (y - att_control_pre))[:, None] * covX,
-                axis=0,
-            ) / np.mean(riesz_control_pre)
-            M2_post = np.mean(
-                (riesz_control_post * (y - att_control_post))[:, None] * covX,
-                axis=0,
-            ) / np.mean(riesz_control_post)
+            if weights is not None:
+                M2_pre = np.average(
+                    (riesz_control_pre * (y - att_control_pre))[:, None] * covX,
+                    axis=0,
+                    weights=weights,
+                ) / np.mean(riesz_control_pre)
+                M2_post = np.average(
+                    (riesz_control_post * (y - att_control_post))[:, None] * covX,
+                    axis=0,
+                    weights=weights,
+                ) / np.mean(riesz_control_post)
+            else:
+                M2_pre = np.mean(
+                    (riesz_control_pre * (y - att_control_pre))[:, None] * covX,
+                    axis=0,
+                ) / np.mean(riesz_control_pre)
+                M2_post = np.mean(
+                    (riesz_control_post * (y - att_control_post))[:, None] * covX,
+                    axis=0,
+                ) / np.mean(riesz_control_post)
             inf_control_ps = asy_lin_rep_ps @ (M2_post - M2_pre)
             inf_control = inf_control + inf_control_ps
 
@@ -1512,9 +1528,15 @@ class TripleDifference:
         # --- Influence function ---
         # OLS asymptotic linear representations (control subgroup)
         weights_ols_pre = PAa * (1 - post)
-        wols_x_pre = weights_ols_pre[:, None] * covX
-        wols_eX_pre = (weights_ols_pre * (y - or_ctrl_pre))[:, None] * covX
-        XpX_pre = wols_x_pre.T @ covX / n
+        if weights is not None:
+            w_sum = np.sum(weights)
+            wols_x_pre = (weights_ols_pre * weights)[:, None] * covX
+            wols_eX_pre = (weights_ols_pre * weights * (y - or_ctrl_pre))[:, None] * covX
+            XpX_pre = wols_x_pre.T @ covX / w_sum
+        else:
+            wols_x_pre = weights_ols_pre[:, None] * covX
+            wols_eX_pre = (weights_ols_pre * (y - or_ctrl_pre))[:, None] * covX
+            XpX_pre = wols_x_pre.T @ covX / n
         try:
             XpX_inv_pre = np.linalg.inv(XpX_pre)
         except np.linalg.LinAlgError:
@@ -1522,9 +1544,14 @@ class TripleDifference:
         asy_lin_rep_ols_pre = wols_eX_pre @ XpX_inv_pre
 
         weights_ols_post = PAa * post
-        wols_x_post = weights_ols_post[:, None] * covX
-        wols_eX_post = (weights_ols_post * (y - or_ctrl_post))[:, None] * covX
-        XpX_post = wols_x_post.T @ covX / n
+        if weights is not None:
+            wols_x_post = (weights_ols_post * weights)[:, None] * covX
+            wols_eX_post = (weights_ols_post * weights * (y - or_ctrl_post))[:, None] * covX
+            XpX_post = wols_x_post.T @ covX / w_sum
+        else:
+            wols_x_post = weights_ols_post[:, None] * covX
+            wols_eX_post = (weights_ols_post * (y - or_ctrl_post))[:, None] * covX
+            XpX_post = wols_x_post.T @ covX / n
         try:
             XpX_inv_post = np.linalg.inv(XpX_post)
         except np.linalg.LinAlgError:
@@ -1533,9 +1560,14 @@ class TripleDifference:
 
         # OLS representations (treated subgroup)
         weights_ols_pre_treat = PA4 * (1 - post)
-        wols_x_pre_treat = weights_ols_pre_treat[:, None] * covX
-        wols_eX_pre_treat = (weights_ols_pre_treat * (y - or_trt_pre))[:, None] * covX
-        XpX_pre_treat = wols_x_pre_treat.T @ covX / n
+        if weights is not None:
+            wols_x_pre_treat = (weights_ols_pre_treat * weights)[:, None] * covX
+            wols_eX_pre_treat = (weights_ols_pre_treat * weights * (y - or_trt_pre))[:, None] * covX
+            XpX_pre_treat = wols_x_pre_treat.T @ covX / w_sum
+        else:
+            wols_x_pre_treat = weights_ols_pre_treat[:, None] * covX
+            wols_eX_pre_treat = (weights_ols_pre_treat * (y - or_trt_pre))[:, None] * covX
+            XpX_pre_treat = wols_x_pre_treat.T @ covX / n
         try:
             XpX_inv_pre_treat = np.linalg.inv(XpX_pre_treat)
         except np.linalg.LinAlgError:
@@ -1543,9 +1575,16 @@ class TripleDifference:
         asy_lin_rep_ols_pre_treat = wols_eX_pre_treat @ XpX_inv_pre_treat
 
         weights_ols_post_treat = PA4 * post
-        wols_x_post_treat = weights_ols_post_treat[:, None] * covX
-        wols_eX_post_treat = (weights_ols_post_treat * (y - or_trt_post))[:, None] * covX
-        XpX_post_treat = wols_x_post_treat.T @ covX / n
+        if weights is not None:
+            wols_x_post_treat = (weights_ols_post_treat * weights)[:, None] * covX
+            wols_eX_post_treat = (weights_ols_post_treat * weights * (y - or_trt_post))[
+                :, None
+            ] * covX
+            XpX_post_treat = wols_x_post_treat.T @ covX / w_sum
+        else:
+            wols_x_post_treat = weights_ols_post_treat[:, None] * covX
+            wols_eX_post_treat = (weights_ols_post_treat * (y - or_trt_post))[:, None] * covX
+            XpX_post_treat = wols_x_post_treat.T @ covX / n
         try:
             XpX_inv_post_treat = np.linalg.inv(XpX_post_treat)
         except np.linalg.LinAlgError:
@@ -1554,6 +1593,8 @@ class TripleDifference:
 
         # Propensity score linear representation
         score_ps = (PA4 - pscore)[:, None] * covX
+        if weights is not None:
+            score_ps = score_ps * weights[:, None]
         if hessian is not None:
             asy_lin_rep_ps = score_ps @ hessian
         else:
@@ -1575,13 +1616,19 @@ class TripleDifference:
         )
 
         # OR correction for treated
+        def _wmean_ax0(arr):
+            """Weighted or unweighted column mean."""
+            if weights is not None:
+                return np.average(arr, axis=0, weights=weights)
+            return np.mean(arr, axis=0)
+
         M1_post = (
-            (-np.mean((riesz_treat_post * post)[:, None] * covX, axis=0) / m_riesz_treat_post)
+            (-_wmean_ax0((riesz_treat_post * post)[:, None] * covX) / m_riesz_treat_post)
             if m_riesz_treat_post > 0
             else np.zeros(covX.shape[1])
         )
         M1_pre = (
-            (-np.mean((riesz_treat_pre * (1 - post))[:, None] * covX, axis=0) / m_riesz_treat_pre)
+            (-_wmean_ax0((riesz_treat_pre * (1 - post))[:, None] * covX) / m_riesz_treat_pre)
             if m_riesz_treat_pre > 0
             else np.zeros(covX.shape[1])
         )
@@ -1606,9 +1653,7 @@ class TripleDifference:
         # PS correction for control
         M2_pre = (
             (
-                np.mean(
-                    (riesz_control_pre * (y - or_ctrl - att_control_pre))[:, None] * covX, axis=0
-                )
+                _wmean_ax0((riesz_control_pre * (y - or_ctrl - att_control_pre))[:, None] * covX)
                 / m_riesz_control_pre
             )
             if m_riesz_control_pre > 0
@@ -1616,9 +1661,7 @@ class TripleDifference:
         )
         M2_post = (
             (
-                np.mean(
-                    (riesz_control_post * (y - or_ctrl - att_control_post))[:, None] * covX, axis=0
-                )
+                _wmean_ax0((riesz_control_post * (y - or_ctrl - att_control_post))[:, None] * covX)
                 / m_riesz_control_post
             )
             if m_riesz_control_post > 0
@@ -1628,15 +1671,12 @@ class TripleDifference:
 
         # OR correction for control
         M3_post = (
-            (-np.mean((riesz_control_post * post)[:, None] * covX, axis=0) / m_riesz_control_post)
+            (-_wmean_ax0((riesz_control_post * post)[:, None] * covX) / m_riesz_control_post)
             if m_riesz_control_post > 0
             else np.zeros(covX.shape[1])
         )
         M3_pre = (
-            (
-                -np.mean((riesz_control_pre * (1 - post))[:, None] * covX, axis=0)
-                / m_riesz_control_pre
-            )
+            (-_wmean_ax0((riesz_control_pre * (1 - post))[:, None] * covX) / m_riesz_control_pre)
             if m_riesz_control_pre > 0
             else np.zeros(covX.shape[1])
         )
@@ -1664,18 +1704,12 @@ class TripleDifference:
 
         # OR combination
         mom_post = (
-            np.mean(
-                (riesz_d[:, None] / m_riesz_d - riesz_dt1[:, None] / m_riesz_dt1) * covX,
-                axis=0,
-            )
+            _wmean_ax0((riesz_d[:, None] / m_riesz_d - riesz_dt1[:, None] / m_riesz_dt1) * covX)
             if (m_riesz_d > 0 and m_riesz_dt1 > 0)
             else np.zeros(covX.shape[1])
         )
         mom_pre = (
-            np.mean(
-                (riesz_d[:, None] / m_riesz_d - riesz_dt0[:, None] / m_riesz_dt0) * covX,
-                axis=0,
-            )
+            _wmean_ax0((riesz_d[:, None] / m_riesz_d - riesz_dt0[:, None] / m_riesz_dt0) * covX)
             if (m_riesz_d > 0 and m_riesz_dt0 > 0)
             else np.zeros(covX.shape[1])
         )

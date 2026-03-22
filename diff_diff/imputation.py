@@ -471,6 +471,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 weights=overall_weights,
                 cluster_var=cluster_var,
                 kept_cov_mask=kept_cov_mask,
+                survey_weights=survey_weights,
             )
 
         # Survey degrees of freedom for t-distribution inference
@@ -1036,6 +1037,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         weights: np.ndarray,
         cluster_var: str,
         kept_cov_mask: Optional[np.ndarray] = None,
+        survey_weights_0: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Compute cluster-level influence function sums (Theorem 3).
@@ -1075,8 +1077,16 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
 
             w_total = float(np.sum(weights))
 
-            n0_by_unit = df_0.groupby(unit).size().to_dict()
-            n0_by_time = df_0.groupby(time).size().to_dict()
+            # Use survey-weighted sums for untreated denominators when present
+            if survey_weights_0 is not None:
+                sw0_series = pd.Series(survey_weights_0, index=df_0.index)
+                n0_by_unit = sw0_series.groupby(df_0[unit]).sum().to_dict()
+                n0_by_time = sw0_series.groupby(df_0[time]).sum().to_dict()
+                n0_denom = float(np.sum(survey_weights_0))
+            else:
+                n0_by_unit = df_0.groupby(unit).size().to_dict()
+                n0_by_time = df_0.groupby(time).size().to_dict()
+                n0_denom = n_0
 
             untreated_units = df_0[unit].values
             untreated_times = df_0[time].values
@@ -1089,7 +1099,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 w_t = w_by_time.get(t, 0.0)
                 n0_i = n0_by_unit.get(u, 1)
                 n0_t = n0_by_time.get(t, 1)
-                v_untreated[j] = -(w_i / n0_i + w_t / n0_t - w_total / n_0)
+                v_untreated[j] = -(w_i / n0_i + w_t / n0_t - w_total / n0_denom)
         else:
             v_untreated = self._compute_v_untreated_with_covariates(
                 df_0,
@@ -1100,6 +1110,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 weights,
                 delta_hat,
                 kept_cov_mask=kept_cov_mask,
+                survey_weights_0=survey_weights_0,
             )
 
         # ---- Compute auxiliary model residuals (Equation 8) ----
@@ -1158,6 +1169,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         weights: np.ndarray,
         cluster_var: str,
         kept_cov_mask: Optional[np.ndarray] = None,
+        survey_weights: Optional[np.ndarray] = None,
     ) -> float:
         """
         Compute conservative clustered variance (Theorem 3, Equation 7).
@@ -1167,12 +1179,16 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         weights : np.ndarray
             Aggregation weights w_it for treated observations.
             Shape: (n_treated,), must sum to 1.
+        survey_weights : np.ndarray, optional
+            Full-panel survey weights. When provided, untreated denominators
+            in v_it use survey-weighted sums instead of raw counts.
 
         Returns
         -------
         float
             Standard error.
         """
+        sw_0 = survey_weights[omega_0_mask.values] if survey_weights is not None else None
         cluster_psi_sums, _ = self._compute_cluster_psi_sums(
             df=df,
             outcome=outcome,
@@ -1189,6 +1205,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             weights=weights,
             cluster_var=cluster_var,
             kept_cov_mask=kept_cov_mask,
+            survey_weights_0=sw_0,
         )
         sigma_sq = float((cluster_psi_sums**2).sum())
         return np.sqrt(max(sigma_sq, 0.0))
@@ -1203,11 +1220,14 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         weights: np.ndarray,
         delta_hat: Optional[np.ndarray],
         kept_cov_mask: Optional[np.ndarray] = None,
+        survey_weights_0: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Compute v_it for untreated observations with covariates.
 
         Uses the projection: v_untreated = -A_0 (A_0'A_0)^{-1} A_1' w_treated
+        When survey_weights_0 is provided, uses weighted normal equations:
+        v_untreated = -A_0 (A_0' W A_0)^{-1} A_1' w_treated
 
         Uses scipy.sparse for FE dummy columns to reduce memory from O(N*(U+T))
         to O(N) for the FE portion.
@@ -1266,8 +1286,12 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         # Compute A_1' w (sparse.T @ dense -> dense)
         A1_w = A_1.T @ weights  # shape (p,)
 
-        # Solve (A_0'A_0) z = A_1' w using sparse direct solver
-        A0tA0_sparse = A_0.T @ A_0  # stays sparse
+        # Solve (A_0' [W] A_0) z = A_1' w using sparse direct solver
+        # When survey weights present, use weighted normal equations A_0' W A_0
+        if survey_weights_0 is not None:
+            A0tA0_sparse = A_0.T @ A_0.multiply(survey_weights_0[:, None])
+        else:
+            A0tA0_sparse = A_0.T @ A_0  # stays sparse
         try:
             z = spsolve(A0tA0_sparse.tocsc(), A1_w)
         except Exception:
@@ -1529,6 +1553,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 weights=weights_h,
                 cluster_var=cluster_var,
                 kept_cov_mask=kept_cov_mask,
+                survey_weights=survey_weights,
             )
 
             t_stat, p_value, conf_int = safe_inference(effect, se, alpha=self.alpha, df=survey_df)
@@ -1661,6 +1686,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 weights=weights_g,
                 cluster_var=cluster_var,
                 kept_cov_mask=kept_cov_mask,
+                survey_weights=survey_weights,
             )
 
             t_stat, p_value, conf_int = safe_inference(effect, se, alpha=self.alpha, df=survey_df)

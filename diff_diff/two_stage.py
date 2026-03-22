@@ -22,6 +22,7 @@ Butts, K. & Gardner, J. (2022). did2s: Two-Stage
 """
 
 import warnings
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -286,6 +287,32 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             )
             df = df[~df[unit].isin(always_treated_units)].copy()
 
+            # Subset survey arrays to match filtered df
+            if survey_weights is not None:
+                keep_mask = ~data[unit].isin(always_treated_units)
+                survey_weights = survey_weights[keep_mask.values]
+            if resolved_survey is not None:
+                keep_mask = ~data[unit].isin(always_treated_units)
+                resolved_survey = replace(
+                    resolved_survey,
+                    weights=resolved_survey.weights[keep_mask.values],
+                    strata=(
+                        resolved_survey.strata[keep_mask.values]
+                        if resolved_survey.strata is not None
+                        else None
+                    ),
+                    psu=(
+                        resolved_survey.psu[keep_mask.values]
+                        if resolved_survey.psu is not None
+                        else None
+                    ),
+                    fpc=(
+                        resolved_survey.fpc[keep_mask.values]
+                        if resolved_survey.fpc is not None
+                        else None
+                    ),
+                )
+
         # Treatment indicator with anticipation
         effective_treat = df[first_treat] - self.anticipation
         df["_treated"] = (~df["_never_treated"]) & (df[time] >= effective_treat)
@@ -341,9 +368,9 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                 from diff_diff.survey import compute_survey_metadata
 
                 raw_w = (
-                    data[survey_design.weights].values.astype(np.float64)
+                    df[survey_design.weights].values.astype(np.float64)
                     if survey_design.weights
-                    else np.ones(len(data), dtype=np.float64)
+                    else np.ones(len(df), dtype=np.float64)
                 )
                 survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
 

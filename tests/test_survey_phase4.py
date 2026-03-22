@@ -460,6 +460,28 @@ class TestTwoStageDiDSurvey:
         assert "Survey Design" in summary
         assert "pweight" in summary
 
+    def test_always_treated_with_survey(self, staggered_survey_data):
+        """TwoStageDiD with survey + always-treated units should not crash."""
+        data = staggered_survey_data.copy()
+        # Make some units always-treated (first_treat at or before min time)
+        min_time = data["period"].min()
+        units = data["unit"].unique()
+        always_treated_units = units[:3]
+        for u in always_treated_units:
+            data.loc[data["unit"] == u, "first_treat"] = min_time
+        sd = SurveyDesign(weights="weight")
+        result = TwoStageDiD().fit(
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+        assert result.survey_metadata is not None
+
 
 # =============================================================================
 # TestCallawaySantAnnaSurvey
@@ -802,6 +824,62 @@ class TestTripleDifferenceIPWSurvey:
             survey_design=sd,
         )
         assert np.isclose(r_no.att, r_sv.att, atol=1e-6)
+
+    def test_ipw_covariate_survey_nonuniform(self, ddd_survey_data):
+        """IPW + covariates + non-uniform survey weights should change ATT."""
+        data = ddd_survey_data.copy()
+        data["x1"] = np.random.default_rng(42).normal(0, 1, len(data))
+        sd = SurveyDesign(weights="weight")
+        r_no = TripleDifference(estimation_method="ipw").fit(
+            data,
+            "outcome",
+            "group",
+            "partition",
+            "time",
+            covariates=["x1"],
+        )
+        r_sv = TripleDifference(estimation_method="ipw").fit(
+            data,
+            "outcome",
+            "group",
+            "partition",
+            "time",
+            covariates=["x1"],
+            survey_design=sd,
+        )
+        assert np.isfinite(r_sv.att)
+        assert np.isfinite(r_sv.se)
+        assert not np.isclose(
+            r_no.att, r_sv.att, atol=1e-6
+        ), "Covariate IPW + non-uniform survey weights should change ATT"
+
+    def test_dr_covariate_survey_nonuniform(self, ddd_survey_data):
+        """DR + covariates + non-uniform survey weights should change ATT."""
+        data = ddd_survey_data.copy()
+        data["x1"] = np.random.default_rng(42).normal(0, 1, len(data))
+        sd = SurveyDesign(weights="weight")
+        r_no = TripleDifference(estimation_method="dr").fit(
+            data,
+            "outcome",
+            "group",
+            "partition",
+            "time",
+            covariates=["x1"],
+        )
+        r_sv = TripleDifference(estimation_method="dr").fit(
+            data,
+            "outcome",
+            "group",
+            "partition",
+            "time",
+            covariates=["x1"],
+            survey_design=sd,
+        )
+        assert np.isfinite(r_sv.att)
+        assert np.isfinite(r_sv.se)
+        assert not np.isclose(
+            r_no.att, r_sv.att, atol=1e-6
+        ), "Covariate DR + non-uniform survey weights should change ATT"
 
 
 # =============================================================================
