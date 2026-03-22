@@ -146,7 +146,7 @@ category (`Methodology/Correctness`, `Performance`, or `Testing/Docs`):
 - For non-trivial tasks, use `EnterPlanMode`. Consult `docs/methodology/REGISTRY.md` for methodology changes.
 - For bug fixes, grep for the pattern across all files before fixing.
 - Follow the relevant development checklists (run `/dev-checklists`).
-- Before submitting: run `/pre-merge-check`.
+- Before submitting: run `/pre-merge-check`, then `/ai-review-local` for pre-PR AI review.
 - Submit with `/submit-pr`.
 
 ## Plan Review Before Approval
