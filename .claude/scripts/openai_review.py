@@ -417,12 +417,15 @@ def parse_review_findings(
     counters: dict[str, int] = {}
 
     # Only match severity in explicit finding formats:
-    # - **P1** or **P0:** (bold, as used in review output)
-    # - Severity: P1 or Severity:** P1 (labeled field)
+    # - **P1** or **P0:** (bold severity, as used in review output)
+    # - **Severity:** P1 (bold label, severity after closing **)
+    # - Severity: P1 (plain labeled field)
     # - - **Severity:** P1 (bullet with labeled field)
     finding_sev_pattern = re.compile(
-        r"(?:\*\*(?:Severity:\s*)?)(P[0-3])(?:\*\*)"
-        r"|(?:Severity:\s*\*?\*?)(P[0-3])"
+        r"\*\*(P[0-3])\*\*"                        # **P1**
+        r"|\*\*Severity:\*\*\s*(P[0-3])"           # **Severity:** P1
+        r"|\*\*Severity:\s*(P[0-3])\*\*"           # **Severity: P1**
+        r"|(?<!\*)Severity:\s*(P[0-3])(?!\*)"       # Severity: P1 (not inside bold)
     )
     # Match file:line references like "diff_diff/foo.py:L123" or "foo.py:L45-L67"
     location_pattern = re.compile(
@@ -475,7 +478,13 @@ def parse_review_findings(
         if not sev_match:
             continue
 
-        severity = sev_match.group(1) or sev_match.group(2)
+        # Extract severity from whichever group matched
+        severity = (
+            sev_match.group(1)
+            or sev_match.group(2)
+            or sev_match.group(3)
+            or sev_match.group(4)
+        )
 
         # Extract a summary — text after the severity marker
         text_after_sev = line[sev_match.end() :].strip().lstrip(":—- ").strip()
@@ -510,19 +519,22 @@ def parse_review_findings(
     return findings
 
 
-def _finding_key(f: dict) -> "tuple[str, str, str]":
+def _finding_key(f: dict) -> "tuple[str, str]":
     """Compute a stable matching key for a finding.
 
-    Uses (severity, section, summary_fingerprint) where the fingerprint is
-    the first 50 chars of the summary, lowercased and stripped. This is more
-    stable than location-based matching since line numbers shift across revisions.
-    The file path from location is used as a secondary component when available.
+    Uses (severity, summary_fingerprint) where the fingerprint is the first
+    50 chars of the summary, lowercased and stripped. File path and section
+    are intentionally excluded from the primary key because:
+    - Line numbers shift across revisions
+    - The model may extract different locations or omit them entirely
+    - Section headings may vary between review rounds
+
+    This yields more false positives (matching unrelated findings with
+    similar descriptions) but avoids the worse problem of false negatives
+    (marking unresolved findings as addressed).
     """
     summary = f.get("summary", "").lower().strip()[:50]
-    # Extract just the file path from location (strip line numbers)
-    location = f.get("location", "")
-    file_path = location.split(":")[0] if location else ""
-    return (f.get("severity", ""), file_path, summary)
+    return (f.get("severity", ""), summary)
 
 
 def merge_findings(

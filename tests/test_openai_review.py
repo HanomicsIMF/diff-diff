@@ -774,6 +774,27 @@ class TestParseReviewFindings:
             assert f["id"].startswith("R2-")
             assert f["status"] == "open"
 
+    def test_parses_bold_severity_format(self, review_mod):
+        """**P1** format should be parsed."""
+        review_text = "**P1** Missing NaN guard in `foo.py:L10`\n"
+        findings = review_mod.parse_review_findings(review_text, 1)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "P1"
+
+    def test_parses_bold_label_format(self, review_mod):
+        """**Severity:** P1 format should be parsed."""
+        review_text = "- **Severity:** P1 — Missing NaN guard in `foo.py:L10`\n"
+        findings = review_mod.parse_review_findings(review_text, 1)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "P1"
+
+    def test_parses_plain_label_format(self, review_mod):
+        """Severity: P2 format should be parsed."""
+        review_text = "Severity: P2 — Unused import in `bar.py:L5`\n"
+        findings = review_mod.parse_review_findings(review_text, 1)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "P2"
+
     def test_ignores_multi_severity_prose(self, review_mod):
         """Lines like 'P2/P3 items may exist' should not be parsed as findings."""
         review_text = (
@@ -876,7 +897,7 @@ class TestMergeFindings:
         assert len(addressed) == 0
 
     def test_matching_with_missing_location(self, review_mod):
-        """Finding with no location should match on summary fingerprint."""
+        """Finding with no location should still match on summary fingerprint."""
         previous = [
             {"id": "R1-P1-1", "severity": "P1", "location": "foo.py:L10",
              "section": "Code Quality", "summary": "Missing NaN guard in staggered",
@@ -888,11 +909,11 @@ class TestMergeFindings:
              "status": "open"}
         ]
         merged = review_mod.merge_findings(previous, current)
-        # Location changed but summary matches — should NOT mark as addressed
-        # (this is a known limitation: different file path = different key)
-        # The finding stays open in current, and previous is marked addressed
-        # This is acceptable because the model will re-flag it if still present
-        assert any(f["status"] == "open" for f in merged)
+        open_findings = [f for f in merged if f["status"] == "open"]
+        addressed = [f for f in merged if f["status"] == "addressed"]
+        # Same severity + same summary = match. No false "addressed" record.
+        assert len(open_findings) == 1
+        assert len(addressed) == 0
 
     def test_multiple_findings_same_key(self, review_mod):
         """Multiple previous findings with same key should not overwrite each other."""
