@@ -328,6 +328,21 @@ class TestStackedDiDSurvey:
         )
         assert "Survey Design" in result.summary()
 
+    def test_fweight_rejected(self, staggered_survey_data):
+        """StackedDiD should reject fweight since Q-weight composition breaks it."""
+        from diff_diff import StackedDiD
+
+        sd = SurveyDesign(weights="weight", weight_type="fweight")
+        with pytest.raises(ValueError, match="fweight"):
+            StackedDiD().fit(
+                staggered_survey_data,
+                "outcome",
+                "unit",
+                "time",
+                "first_treat",
+                survey_design=sd,
+            )
+
 
 # =============================================================================
 # BaconDecomposition
