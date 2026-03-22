@@ -458,6 +458,11 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         # Control group logic
         if self.control_group == "last_cohort":
             # Always reclassify last cohort as pseudo-control when requested
+            if not treatment_groups:
+                raise ValueError(
+                    "No treated cohorts found. control_group='last_cohort' requires "
+                    "at least 2 treatment cohorts."
+                )
             last_g = max(treatment_groups)
             treatment_groups = [g for g in treatment_groups if g != last_g]
             if not treatment_groups:
@@ -1016,7 +1021,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             overall_conf_int=overall_ci,
             groups=treatment_groups,
             time_periods=time_periods,
-            n_obs=len(df),
+            n_obs=n_units * len(time_periods),
             n_treated_units=n_treated_units,
             n_control_units=n_control_units,
             alpha=self.alpha,

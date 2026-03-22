@@ -105,8 +105,10 @@ class EfficientDiDResults:
         ``{(g, t): ndarray}`` — diagnostic: weight vector per target.
     omega_condition_numbers : dict, optional
         ``{(g, t): float}`` — diagnostic: Omega* condition numbers.
-    influence_functions : ndarray, optional
-        Stored EIF matrix for bootstrap / manual SE computation.
+    influence_functions : dict, optional
+        ``{(g, t): ndarray(n_units,)}`` — per-unit EIF values for each
+        group-time cell.  Only populated when ``store_eif=True`` in
+        :meth:`~EfficientDiD.fit` (used internally by ``hausman_pretest``).
     bootstrap_results : EDiDBootstrapResults, optional
         Bootstrap inference results.
     estimation_path : str

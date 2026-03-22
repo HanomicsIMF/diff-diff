@@ -1026,6 +1026,62 @@ class TestLastCohortControl:
         with pytest.raises(ValueError, match="control_group"):
             EfficientDiD(control_group="invalid")
 
+    def test_last_cohort_no_treated_raises(self):
+        """All-never-treated data with last_cohort should raise."""
+        df = _make_staggered_panel(n_per_group=0, n_control=100, groups=())
+        with pytest.raises(ValueError, match="No treated cohorts"):
+            EfficientDiD(control_group="last_cohort").fit(df, "y", "unit", "time", "first_treat")
+
+    def test_last_cohort_aggregate_event_study(self):
+        """last_cohort with aggregate='event_study' should produce finite results."""
+        df = _make_staggered_panel(
+            n_per_group=60,
+            n_control=0,
+            groups=(3, 5, 7),
+            effects={3: 2.0, 5: 1.5, 7: 1.0},
+        )
+        result = EfficientDiD(control_group="last_cohort").fit(
+            df, "y", "unit", "time", "first_treat", aggregate="event_study"
+        )
+        assert result.event_study_effects is not None
+        assert 7 not in result.groups
+        for e, d in result.event_study_effects.items():
+            assert np.isfinite(d["effect"])
+
+    def test_last_cohort_aggregate_all(self):
+        """last_cohort with aggregate='all' should produce finite results."""
+        df = _make_staggered_panel(
+            n_per_group=60,
+            n_control=0,
+            groups=(3, 5, 7),
+            effects={3: 2.0, 5: 1.5, 7: 1.0},
+        )
+        result = EfficientDiD(control_group="last_cohort").fit(
+            df, "y", "unit", "time", "first_treat", aggregate="all"
+        )
+        assert result.event_study_effects is not None
+        assert result.group_effects is not None
+        assert 7 not in result.groups
+        for g, d in result.group_effects.items():
+            assert g != 7
+            assert np.isfinite(d["effect"])
+
+    def test_last_cohort_bootstrap(self, ci_params):
+        """last_cohort with bootstrap should produce finite inference."""
+        n_boot = ci_params.bootstrap(99)
+        df = _make_staggered_panel(
+            n_per_group=60,
+            n_control=0,
+            groups=(3, 5, 7),
+            effects={3: 2.0, 5: 1.5, 7: 1.0},
+        )
+        result = EfficientDiD(control_group="last_cohort", n_bootstrap=n_boot, seed=42).fit(
+            df, "y", "unit", "time", "first_treat"
+        )
+        assert np.isfinite(result.overall_se)
+        assert result.overall_se > 0
+        assert 7 not in result.groups
+
 
 class TestBalanceE:
     """Test balance_e event study balancing."""
