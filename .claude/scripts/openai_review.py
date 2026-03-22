@@ -542,9 +542,9 @@ def merge_findings(
 ) -> "list[dict]":
     """Merge findings across review rounds.
 
-    Match by (severity, file_path, summary_fingerprint). Previous findings
-    absent from current are marked 'addressed'. Supports multiple findings
-    per key without overwriting.
+    Match by (severity, summary_fingerprint). Previous findings absent from
+    current are marked 'addressed'. Supports multiple findings per key
+    without overwriting.
     """
     # Build lookup from previous findings — list per key to handle duplicates
     prev_by_key: dict[tuple, list[dict]] = {}
