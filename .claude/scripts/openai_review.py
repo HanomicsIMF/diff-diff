@@ -1199,7 +1199,16 @@ def call_openai(
             print(f"Detail: {detail}", file=sys.stderr)
         sys.exit(1)
 
-    content = result.get("output_text", "")
+    # Extract text from output items (output_text is null in raw HTTP responses;
+    # the convenience property only exists in the Python SDK).
+    content = result.get("output_text") or ""
+    if not content:
+        for item in result.get("output", []):
+            if item.get("type") == "message":
+                for block in item.get("content", []):
+                    if block.get("type") == "output_text":
+                        content += block.get("text", "")
+
     if not content.strip():
         print("Error: Empty review content from OpenAI API.", file=sys.stderr)
         sys.exit(1)

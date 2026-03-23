@@ -1605,15 +1605,21 @@ class TestCallOpenAIPayload:
             def __exit__(self, *args):
                 pass
 
+        _DEFAULT_RESPONSE = {
+            "status": "completed",
+            "output_text": None,
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Review content here."}],
+            }],
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        }
+
         def fake_urlopen(req, timeout=None):
             captured["request"] = req
             captured["timeout"] = timeout
             captured["payload"] = json.loads(req.data.decode("utf-8"))
-            return FakeResponse(captured.get("response_data", {
-                "status": "completed",
-                "output_text": "Review content here.",
-                "usage": {"input_tokens": 100, "output_tokens": 50},
-            }))
+            return FakeResponse(captured.get("response_data", _DEFAULT_RESPONSE))
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
         return captured
@@ -1650,17 +1656,19 @@ class TestCallOpenAIPayload:
         """Non-completed status should cause sys.exit."""
         mock_urlopen["response_data"] = {
             "status": "failed",
-            "output_text": "",
+            "output_text": None,
+            "output": [],
             "usage": {},
         }
         with pytest.raises(SystemExit):
             review_mod.call_openai("test", "gpt-5.4", "fake-key")
 
-    def test_empty_output_text_exits(self, review_mod, mock_urlopen):
-        """Empty output_text should cause sys.exit."""
+    def test_empty_output_exits(self, review_mod, mock_urlopen):
+        """Empty output items should cause sys.exit."""
         mock_urlopen["response_data"] = {
             "status": "completed",
-            "output_text": "   ",
+            "output_text": None,
+            "output": [],
             "usage": {},
         }
         with pytest.raises(SystemExit):
