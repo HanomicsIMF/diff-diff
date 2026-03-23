@@ -1774,8 +1774,42 @@ class CallawaySantAnna(
                 )
                 inf_func = np.concatenate([inf_treated, inf_control])
 
+                # Propensity score IF correction
+                # Accounts for estimation uncertainty in logistic regression coefficients
+                X_all_int = np.column_stack([np.ones(n_t + n_c), X_all])
+                pscore_all = np.concatenate([pscore_treated, pscore_control])
+
+                # Survey-weighted PS Hessian: sum(w_i * mu_i * (1-mu_i) * x_i * x_i')
+                W_ps = pscore_all * (1 - pscore_all)
+                if sw_all is not None:
+                    W_ps = W_ps * sw_all
+                H = X_all_int.T @ (W_ps[:, None] * X_all_int)
+                try:
+                    H_inv = np.linalg.solve(H, np.eye(H.shape[0]))
+                except np.linalg.LinAlgError:
+                    H_inv = np.linalg.lstsq(H, np.eye(H.shape[0]), rcond=None)[0]
+
+                # PS score: w_i * (D_i - pi_i) * X_i
+                D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
+                score_ps = (D_all - pscore_all)[:, None] * X_all_int
+                if sw_all is not None:
+                    score_ps = score_ps * sw_all[:, None]
+                asy_lin_rep_ps = score_ps @ H_inv  # shape (n_t + n_c, p)
+
+                # M2: gradient of ATT w.r.t. PS parameters
+                att_control_weighted = np.sum(weights_control_norm * control_change)
+                M2 = np.mean(
+                    (weights_control_norm * (control_change - att_control_weighted))[:, None]
+                    * X_all_int[n_t:],
+                    axis=0,
+                )
+
+                # PS correction to influence function
+                inf_ps_correction = asy_lin_rep_ps @ M2
+                inf_func = inf_func + inf_ps_correction
+
                 # SE from influence function variance
-                var_psi = np.sum(inf_treated**2) + np.sum(inf_control**2)
+                var_psi = np.sum(inf_func**2)
                 se = float(np.sqrt(var_psi)) if var_psi > 0 else 0.0
             else:
                 # IPW weights for control units: p(X) / (1 - p(X))

@@ -359,7 +359,7 @@ class CallawaySantAnnaAggregationMixin:
             # s_i * p_g_k  (symmetric weight application)
             weighted_pg_term = pg_keepers[np.newaxis, :] * unit_sw[:, np.newaxis]
             # s_i * (1{G_i == g_k} - p_g_k) / sum(s_j)
-            indicator_diff = (weighted_indicator - weighted_pg_term) / total_weight
+            indicator_diff = weighted_indicator - weighted_pg_term
             indicator_sum_w = np.sum(indicator_diff, axis=1)
 
             with np.errstate(divide="ignore", invalid="ignore", over="ignore"):

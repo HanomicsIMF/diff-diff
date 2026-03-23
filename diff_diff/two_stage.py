@@ -312,6 +312,25 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                         else None
                     ),
                 )
+                # Recompute n_psu/n_strata after subsetting
+                new_n_psu = (
+                    len(np.unique(resolved_survey.psu)) if resolved_survey.psu is not None else 0
+                )
+                new_n_strata = (
+                    len(np.unique(resolved_survey.strata))
+                    if resolved_survey.strata is not None
+                    else 0
+                )
+                resolved_survey = replace(resolved_survey, n_psu=new_n_psu, n_strata=new_n_strata)
+                # Recompute survey_metadata since it depends on these counts
+                from diff_diff.survey import compute_survey_metadata
+
+                raw_w = (
+                    df[survey_design.weights].values.astype(np.float64)
+                    if survey_design.weights
+                    else np.ones(len(df), dtype=np.float64)
+                )
+                survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
 
         # Treatment indicator with anticipation
         effective_treat = df[first_treat] - self.anticipation
