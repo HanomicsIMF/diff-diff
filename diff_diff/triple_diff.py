@@ -1396,10 +1396,9 @@ class TripleDifference:
         # for consistency with the weighted OLS fit
         weights_ols_pre = PAa * (1 - post)
         if weights is not None:
-            w_sum = np.sum(weights)
             wols_x_pre = (weights_ols_pre * weights)[:, None] * covX
             wols_eX_pre = (weights_ols_pre * weights * (y - or_ctrl_pre))[:, None] * covX
-            XpX_pre = wols_x_pre.T @ covX / w_sum
+            XpX_pre = wols_x_pre.T @ covX / n
         else:
             wols_x_pre = weights_ols_pre[:, None] * covX
             wols_eX_pre = (weights_ols_pre * (y - or_ctrl_pre))[:, None] * covX
@@ -1414,7 +1413,7 @@ class TripleDifference:
         if weights is not None:
             wols_x_post = (weights_ols_post * weights)[:, None] * covX
             wols_eX_post = (weights_ols_post * weights * (y - or_ctrl_post))[:, None] * covX
-            XpX_post = wols_x_post.T @ covX / w_sum
+            XpX_post = wols_x_post.T @ covX / n
         else:
             wols_x_post = weights_ols_post[:, None] * covX
             wols_eX_post = (weights_ols_post * (y - or_ctrl_post))[:, None] * covX
@@ -1526,10 +1525,9 @@ class TripleDifference:
         # OLS asymptotic linear representations (control subgroup)
         weights_ols_pre = PAa * (1 - post)
         if weights is not None:
-            w_sum = np.sum(weights)
             wols_x_pre = (weights_ols_pre * weights)[:, None] * covX
             wols_eX_pre = (weights_ols_pre * weights * (y - or_ctrl_pre))[:, None] * covX
-            XpX_pre = wols_x_pre.T @ covX / w_sum
+            XpX_pre = wols_x_pre.T @ covX / n
         else:
             wols_x_pre = weights_ols_pre[:, None] * covX
             wols_eX_pre = (weights_ols_pre * (y - or_ctrl_pre))[:, None] * covX
@@ -1544,7 +1542,7 @@ class TripleDifference:
         if weights is not None:
             wols_x_post = (weights_ols_post * weights)[:, None] * covX
             wols_eX_post = (weights_ols_post * weights * (y - or_ctrl_post))[:, None] * covX
-            XpX_post = wols_x_post.T @ covX / w_sum
+            XpX_post = wols_x_post.T @ covX / n
         else:
             wols_x_post = weights_ols_post[:, None] * covX
             wols_eX_post = (weights_ols_post * (y - or_ctrl_post))[:, None] * covX
@@ -1560,7 +1558,7 @@ class TripleDifference:
         if weights is not None:
             wols_x_pre_treat = (weights_ols_pre_treat * weights)[:, None] * covX
             wols_eX_pre_treat = (weights_ols_pre_treat * weights * (y - or_trt_pre))[:, None] * covX
-            XpX_pre_treat = wols_x_pre_treat.T @ covX / w_sum
+            XpX_pre_treat = wols_x_pre_treat.T @ covX / n
         else:
             wols_x_pre_treat = weights_ols_pre_treat[:, None] * covX
             wols_eX_pre_treat = (weights_ols_pre_treat * (y - or_trt_pre))[:, None] * covX
@@ -1577,7 +1575,7 @@ class TripleDifference:
             wols_eX_post_treat = (weights_ols_post_treat * weights * (y - or_trt_post))[
                 :, None
             ] * covX
-            XpX_post_treat = wols_x_post_treat.T @ covX / w_sum
+            XpX_post_treat = wols_x_post_treat.T @ covX / n
         else:
             wols_x_post_treat = weights_ols_post_treat[:, None] * covX
             wols_eX_post_treat = (weights_ols_post_treat * (y - or_trt_post))[:, None] * covX

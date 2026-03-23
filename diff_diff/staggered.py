@@ -1604,25 +1604,26 @@ class CallawaySantAnna(
 
             if sw_treated is not None:
                 sw_t_sum = float(np.sum(sw_treated))
+                sw_c_sum = float(np.sum(sw_control))
                 sw_t_norm = sw_treated / sw_t_sum
+                sw_c_norm = sw_control / sw_c_sum
                 att = float(np.sum(sw_t_norm * treated_residuals))
 
                 # Survey-weighted OR influence function.
-                # Mirrors the unweighted structure: treated uses (resid - ATT)/n_t,
-                # control uses -resid/n_c. For survey: scale by w_i/sum(w_treated).
-                # The WLS residuals are orthogonal to W*X by construction, so the
-                # regression nuisance IF correction is implicit in the residual
-                # structure (same as the unweighted case).
+                # Mirrors unweighted: inf_treated = (resid-ATT)/n_t,
+                # inf_control = -resid/n_c. Survey: w_i/sum(w_group).
+                # WLS residuals are orthogonal to W*X by construction.
                 X_c_int = np.column_stack([np.ones(n_c), X_control])
                 resid_c = control_change - np.dot(X_c_int, beta)
 
-                inf_treated = (sw_treated / sw_t_sum) * (treated_residuals - att)
-                inf_control = -(sw_control / sw_t_sum) * resid_c
+                inf_treated = sw_t_norm * (treated_residuals - att)
+                inf_control = -sw_c_norm * resid_c
                 inf_func = np.concatenate([inf_treated, inf_control])
 
-                # SE from influence function variance
-                se = float(np.sqrt(np.sum(inf_func**2)))
-                se = se if se > 0 else 0.0
+                # SE: survey-weighted variance matching unweighted var_t/n_t + var_c/n_c
+                var_t = float(np.sum(sw_t_norm * (treated_residuals - att) ** 2))
+                var_c = float(np.sum(sw_c_norm * resid_c**2))
+                se = float(np.sqrt(var_t + var_c)) if (n_t > 0 and n_c > 0) else 0.0
             else:
                 att = float(np.mean(treated_residuals))
 
