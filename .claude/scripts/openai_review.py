@@ -1111,6 +1111,25 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def _extract_response_text(result: dict) -> str:
+    """Extract review text from a Responses API JSON payload.
+
+    Tries the top-level ``output_text`` convenience field first (populated by
+    the Python SDK but typically null in raw HTTP responses), then walks
+    ``output[].content[]`` items.  Returns an empty string when no text is
+    found so the caller can decide how to handle it.
+    """
+    text = result.get("output_text") or ""
+    if text:
+        return text
+    for item in result.get("output", []):
+        if item.get("type") == "message":
+            for block in item.get("content", []):
+                if block.get("type") == "output_text":
+                    text += block.get("text", "")
+    return text
+
+
 def call_openai(
     prompt: str,
     model: str,
@@ -1188,29 +1207,21 @@ def call_openai(
         print(f"Error: Network error — {e.reason}", file=sys.stderr)
         sys.exit(1)
 
-    status = result.get("status")
-    if status != "completed":
-        detail = result.get("incomplete_details") or result.get("error") or ""
-        print(
-            f"Error: OpenAI response status is '{status}' (expected 'completed').",
-            file=sys.stderr,
-        )
-        if detail:
-            print(f"Detail: {detail}", file=sys.stderr)
-        sys.exit(1)
-
-    # Extract text from output items (output_text is null in raw HTTP responses;
-    # the convenience property only exists in the Python SDK).
-    content = result.get("output_text") or ""
-    if not content:
-        for item in result.get("output", []):
-            if item.get("type") == "message":
-                for block in item.get("content", []):
-                    if block.get("type") == "output_text":
-                        content += block.get("text", "")
+    content = _extract_response_text(result)
 
     if not content.strip():
-        print("Error: Empty review content from OpenAI API.", file=sys.stderr)
+        # No usable content — report the best diagnostic we have.
+        status = result.get("status", "<missing>")
+        detail = result.get("incomplete_details") or result.get("error") or ""
+        if status not in ("completed", "<missing>"):
+            print(
+                f"Error: OpenAI response status is '{status}' with no review content.",
+                file=sys.stderr,
+            )
+        else:
+            print("Error: Empty review content from OpenAI API.", file=sys.stderr)
+        if detail:
+            print(f"Detail: {detail}", file=sys.stderr)
         sys.exit(1)
 
     usage = result.get("usage", {})
@@ -1585,6 +1596,12 @@ def main() -> None:
         sys.exit(0)
 
     # Call OpenAI API
+    if _is_reasoning_model(args.model) and args.timeout == DEFAULT_TIMEOUT:
+        print(
+            f"Note: {args.model} is a reasoning model. Consider --timeout 900 "
+            "for large reviews.",
+            file=sys.stderr,
+        )
     print(f"Sending review to {args.model}...", file=sys.stderr)
     print(f"Estimated input tokens: ~{est_tokens:,}", file=sys.stderr)
     if cost_str:

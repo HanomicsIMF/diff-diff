@@ -1572,6 +1572,37 @@ class TestProModelPricing:
         assert snapshot == base
 
 
+class TestExtractResponseText:
+    def test_prefers_output_text_field(self, review_mod):
+        result = {"output_text": "Direct text.", "output": []}
+        assert review_mod._extract_response_text(result) == "Direct text."
+
+    def test_walks_output_items_when_output_text_null(self, review_mod):
+        result = {
+            "output_text": None,
+            "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": "Walked text."},
+            ]}],
+        }
+        assert review_mod._extract_response_text(result) == "Walked text."
+
+    def test_concatenates_multiple_blocks(self, review_mod):
+        result = {
+            "output_text": None,
+            "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": "A"},
+                {"type": "output_text", "text": "B"},
+            ]}],
+        }
+        assert review_mod._extract_response_text(result) == "AB"
+
+    def test_empty_when_no_output(self, review_mod):
+        assert review_mod._extract_response_text({"output_text": None, "output": []}) == ""
+
+    def test_empty_when_missing_keys(self, review_mod):
+        assert review_mod._extract_response_text({}) == ""
+
+
 class TestResponsesAPIConstants:
     def test_endpoint_is_responses(self, review_mod):
         assert "responses" in review_mod.ENDPOINT
@@ -1652,8 +1683,63 @@ class TestCallOpenAIPayload:
         review_mod.call_openai("test", "gpt-5.4", "fake-key", timeout=900)
         assert mock_urlopen["timeout"] == 900
 
-    def test_incomplete_status_exits(self, review_mod, mock_urlopen):
-        """Non-completed status should cause sys.exit."""
+    def test_missing_status_with_valid_output_succeeds(self, review_mod, mock_urlopen):
+        """Valid content should be accepted even when status field is absent."""
+        mock_urlopen["response_data"] = {
+            "output_text": None,
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Good review."}],
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        content, _ = review_mod.call_openai("test", "gpt-5.4", "fake-key")
+        assert content == "Good review."
+
+    def test_status_none_with_valid_output_succeeds(self, review_mod, mock_urlopen):
+        """status=None should not prevent content extraction."""
+        mock_urlopen["response_data"] = {
+            "status": None,
+            "output_text": None,
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Good review."}],
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        content, _ = review_mod.call_openai("test", "gpt-5.4", "fake-key")
+        assert content == "Good review."
+
+    def test_output_text_convenience_field_used(self, review_mod, mock_urlopen):
+        """When output_text is populated (SDK-style), use it directly."""
+        mock_urlopen["response_data"] = {
+            "status": "completed",
+            "output_text": "SDK-provided text.",
+            "output": [],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        content, _ = review_mod.call_openai("test", "gpt-5.4", "fake-key")
+        assert content == "SDK-provided text."
+
+    def test_multiple_output_text_blocks_concatenated(self, review_mod, mock_urlopen):
+        """Multiple output_text blocks should be concatenated in order."""
+        mock_urlopen["response_data"] = {
+            "status": "completed",
+            "output_text": None,
+            "output": [{
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": "Part 1. "},
+                    {"type": "output_text", "text": "Part 2."},
+                ],
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        content, _ = review_mod.call_openai("test", "gpt-5.4", "fake-key")
+        assert content == "Part 1. Part 2."
+
+    def test_failed_status_no_content_exits(self, review_mod, mock_urlopen):
+        """Failed status with no usable content should exit."""
         mock_urlopen["response_data"] = {
             "status": "failed",
             "output_text": None,
@@ -1664,7 +1750,7 @@ class TestCallOpenAIPayload:
             review_mod.call_openai("test", "gpt-5.4", "fake-key")
 
     def test_empty_output_exits(self, review_mod, mock_urlopen):
-        """Empty output items should cause sys.exit."""
+        """Empty output items with completed status should exit."""
         mock_urlopen["response_data"] = {
             "status": "completed",
             "output_text": None,
