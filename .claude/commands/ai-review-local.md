@@ -1,6 +1,6 @@
 ---
 description: Run AI code review locally using OpenAI API before opening a PR
-argument-hint: "[--full-registry] [--model <model>] [--dry-run]"
+argument-hint: "[--context minimal|standard|deep] [--include-files <files>] [--token-budget <n>] [--force-fresh] [--full-registry] [--model <model>] [--dry-run]"
 ---
 
 # Local AI Code Review
@@ -12,6 +12,15 @@ pre-PR use. Designed for iterative review/revision cycles before submitting a PR
 ## Arguments
 
 `$ARGUMENTS` may contain optional flags:
+- `--context {minimal,standard,deep}`: Context depth (default: `standard`)
+  - `minimal`: Diff only (original behavior)
+  - `standard`: Diff + full contents of changed `diff_diff/` source files
+  - `deep`: Standard + import-graph expansion (files imported by changed files)
+- `--include-files <file1,file2,...>`: Extra files to include as read-only context
+  (filenames resolve under `diff_diff/`, or use paths relative to repo root)
+- `--token-budget <n>`: Max estimated input tokens before dropping import-context
+  files (default: 200000). Changed source files are always included regardless of budget.
+- `--force-fresh`: Skip delta-diff mode, run a full fresh review even if previous state exists
 - `--full-registry`: Include the entire REGISTRY.md instead of selective sections
 - `--model <name>`: Override the OpenAI model (default: `gpt-5.4`)
 - `--dry-run`: Print the compiled prompt without calling the API
@@ -31,7 +40,8 @@ before any data is sent externally.
 ### Step 1: Parse Arguments
 
 Parse `$ARGUMENTS` for the optional flags listed above. All flags are optional —
-the default behavior (selective registry, gpt-5.4, live API call) requires no arguments.
+the default behavior (standard context, selective registry, gpt-5.4, live API call)
+requires no arguments.
 
 ### Step 2: Validate Prerequisites
 
@@ -146,20 +156,149 @@ Options:
 
 If user selects abort, clean up temp files and stop. If continue, proceed.
 
-### Step 4: Handle Re-Review State
+### Step 3c: Full-File Secret Scan (for standard/deep context)
 
-If `.claude/reviews/local-review-latest.md` exists, preserve it for re-review context:
+When `--context` is not `minimal`, full source files will be uploaded to OpenAI. The diff-based scan in Step 3b only covers changed lines, so scan the full content of every file that will be transmitted:
+
 ```bash
-if [ -f .claude/reviews/local-review-latest.md ]; then
-    cp .claude/reviews/local-review-latest.md .claude/reviews/local-review-previous.md
-    echo "Previous review preserved for re-review context."
+# Category 1: Changed diff_diff/ source files (standard/deep)
+upload_scan_files=""
+if [ "$context_level" != "minimal" ]; then
+    upload_scan_files=$(git diff --name-only "${comparison_ref}...HEAD" | grep "^diff_diff/.*\.py$" || true)
+fi
+
+# Category 2: All diff_diff/*.py for deep mode (conservative superset of import expansion)
+if [ "$context_level" = "deep" ]; then
+    upload_scan_files=$(find diff_diff -name "*.py" -not -path "*/__pycache__/*" 2>/dev/null | sort -u)
+fi
+
+# Category 3: --include-files (mirror script's path confinement)
+if [ -n "$include_files" ]; then
+    repo_root_real=$(pwd -P)
+    for f in $(echo "$include_files" | tr ',' ' '); do
+        # Reject absolute paths (mirrors script's os.path.isabs check)
+        case "$f" in /*) continue ;; esac
+        # Mirror script's branching: only bare filenames (no /) resolve under diff_diff/
+        # Slash-containing inputs resolve relative to repo root only
+        case "$f" in
+            */*) if [ -f "$f" ]; then candidate="$f"; else continue; fi ;;
+            *)   if [ -f "diff_diff/$f" ]; then candidate="diff_diff/$f"; else continue; fi ;;
+        esac
+        # Verify within repo root (mirrors script's realpath containment)
+        real_candidate=$(cd "$(dirname "$candidate")" && pwd -P)/$(basename "$candidate")
+        case "$real_candidate" in "$repo_root_real"/*) upload_scan_files="$upload_scan_files $candidate" ;; esac
+    done
+fi
+
+# Scan using same canonical content patterns from Step 3b (never echo secret values)
+if [ -n "$upload_scan_files" ]; then
+    secret_hits=$(grep -rlE "(AKIA[A-Z0-9]{16}|ghp_[a-zA-Z0-9]{36}|sk-[a-zA-Z0-9]{48}|gho_[a-zA-Z0-9]{36}|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy][[:space:]]*[=:]|[Ss][Ee][Cc][Rr][Ee][Tt][_-]?[Kk][Ee][Yy][[:space:]]*[=:]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd][[:space:]]*[=:]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][_-]?[Kk][Ee][Yy]|[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+[a-zA-Z0-9_-]+|[Tt][Oo][Kk][Ee][Nn][[:space:]]*[=:])" $upload_scan_files 2>/dev/null || true)
+    sensitive_hits=$(echo "$upload_scan_files" | tr ' ' '\n' | grep -iE "(\.env|credentials|secret|\.pem|\.key|\.p12|\.pfx|id_rsa|id_ed25519)$" || true)
 fi
 ```
 
+If either `secret_hits` or `sensitive_hits` is non-empty, use AskUserQuestion:
+```
+Warning: Potential secrets detected in source files that would be uploaded to OpenAI
+(full-file scan, not just diff hunks):
+- <list filenames>
+
+Options:
+1. Abort — review and remove secrets before retrying
+2. Continue — I confirm these are not real secrets
+```
+
+If user selects abort, clean up temp files and stop. If continue, proceed.
+
+### Step 4: Handle Re-Review State
+
+Check for existing review state and generate delta diff if applicable. **Validate that the
+stored state matches the current branch and base** before reusing — stale state from a
+different branch can contaminate re-review context.
+
+**If `--force-fresh` is set**, delete prior state but still seed a new baseline:
+```bash
+rm -f .claude/reviews/review-state.json
+rm -f .claude/reviews/local-review-latest.md
+rm -f .claude/reviews/local-review-previous.md
+echo "Force-fresh: deleted all prior review state. Fresh review will seed new baseline."
+# Do NOT pass --previous-review or --delta-diff/--delta-changed-files
+# DO still pass --review-state, --commit-sha, --base-ref so the fresh run seeds a new baseline
+```
+
+**Otherwise**, validate existing review state using the Python validator (single-point
+validation that checks schema version, branch/base match, and required finding fields):
+```bash
+if [ -f .claude/reviews/review-state.json ]; then
+    # Use the script's validate_review_state() for comprehensive validation
+    # Returns: last_reviewed_commit and is_valid flag
+    validation_result=$(python3 -c "
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('openai_review', '.claude/scripts/openai_review.py')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+_, _, commit, valid = mod.validate_review_state(
+    '.claude/reviews/review-state.json', '$branch_name', '$comparison_ref'
+)
+print(f'{commit}|{valid}')
+" 2>/dev/null || echo "|False")
+    last_reviewed_commit=$(echo "$validation_result" | cut -d'|' -f1)
+    state_valid=$(echo "$validation_result" | cut -d'|' -f2)
+
+    if [ "$state_valid" != "True" ]; then
+        echo "Warning: review-state.json validation failed. Running fresh review."
+        rm -f .claude/reviews/review-state.json
+        rm -f .claude/reviews/local-review-previous.md
+        last_reviewed_commit=""
+    fi
+
+    # Only generate delta when state is valid AND commit is an ancestor of HEAD
+    if [ -n "$last_reviewed_commit" ] && git merge-base --is-ancestor "$last_reviewed_commit" HEAD 2>/dev/null; then
+        # SHA is a valid ancestor — generate delta diff
+        git diff --unified=5 "${last_reviewed_commit}...HEAD" > /tmp/ai-review-delta-diff.patch
+        git diff --name-status "${last_reviewed_commit}...HEAD" > /tmp/ai-review-delta-files.txt
+
+        # Check if delta is empty
+        if [ ! -s /tmp/ai-review-delta-diff.patch ]; then
+            echo "No changes since last review (commit ${last_reviewed_commit:0:7}). Use --force-fresh to re-review."
+            rm -f /tmp/ai-review-delta-diff.patch /tmp/ai-review-delta-files.txt
+            rm -f /tmp/ai-review-diff.patch /tmp/ai-review-files.txt
+            # Stop here
+        fi
+        # State validated and delta generated — preserve previous review for re-review context
+        if [ -f .claude/reviews/local-review-latest.md ]; then
+            cp .claude/reviews/local-review-latest.md .claude/reviews/local-review-previous.md
+            echo "Previous review preserved for re-review context."
+        fi
+    else
+        echo "Warning: Previous review commit is not an ancestor of HEAD (likely rebase). Running fresh review."
+        rm -f .claude/reviews/review-state.json
+        rm -f .claude/reviews/local-review-previous.md
+    fi
+fi
+
+# Final cleanup: if delta mode was NOT activated (no delta files generated),
+# ensure no stale previous-review file can leak into the fresh review.
+# This covers the case where review-state.json is missing entirely but
+# local-review-previous.md lingers from a prior run.
+if [ ! -f /tmp/ai-review-delta-diff.patch ]; then
+    rm -f .claude/reviews/local-review-previous.md
+fi
+```
+
+**Important**: Previous review text is ONLY preserved when delta mode is active (delta files
+generated and state validated). When delta mode is NOT active — whether because
+`review-state.json` is missing, branch/base mismatch, non-ancestor, or `--force-fresh` —
+the previous review file is deleted to prevent stale findings from leaking into a fresh
+review via `--previous-review`.
+
 ### Step 5: Run the Review Script
 
-Build and run the command. Include `--previous-review` only if the previous review file
-exists from Step 4.
+Build and run the command. Include optional arguments only when their conditions are met:
+- `--previous-review`: only if `.claude/reviews/local-review-previous.md` exists AND `--force-fresh` was NOT set
+- `--delta-diff` and `--delta-changed-files`: only if delta files were generated in Step 4
+- `--review-state`, `--commit-sha`, `--base-ref`: always include (even with `--force-fresh`, to seed a new baseline)
+- `--context`, `--include-files`, `--token-budget`: pass through from parsed arguments
 
 ```bash
 python3 .claude/scripts/openai_review.py \
@@ -169,14 +308,26 @@ python3 .claude/scripts/openai_review.py \
     --changed-files /tmp/ai-review-files.txt \
     --output .claude/reviews/local-review-latest.md \
     --branch-info "$branch_name" \
+    --repo-root "$(pwd)" \
+    --context "$context_level" \
+    --review-state .claude/reviews/review-state.json \
+    --commit-sha "$(git rev-parse HEAD)" \
+    --base-ref "$comparison_ref" \
     [--previous-review .claude/reviews/local-review-previous.md] \
+    [--delta-diff /tmp/ai-review-delta-diff.patch] \
+    [--delta-changed-files /tmp/ai-review-delta-files.txt] \
+    [--include-files "$include_files"] \
+    [--token-budget "$token_budget"] \
     [--full-registry] \
     [--model <model>] \
     [--dry-run]
 ```
 
-If `--dry-run`: display the prompt output and stop. Report the estimated token count
-and model that would be used.
+Note: `--force-fresh` is a skill-only flag — it controls whether delta diffs are
+generated in Step 4 and is NOT passed to the script.
+
+If `--dry-run`: display the prompt output and stop. Report the estimated token count,
+cost estimate, and model that would be used.
 
 If the script exits non-zero, display the error output and stop.
 
@@ -190,6 +341,10 @@ Parse the review output to extract ALL findings. For each finding, capture:
 - Severity (P0/P1/P2/P3)
 - Section (Methodology, Code Quality, etc.)
 - One-line summary of the issue
+
+Note: The script handles writing `review-state.json` automatically (finding tracking
+across rounds). The skill does NOT need to write JSON — just pass `--review-state`
+and `--commit-sha` to the script.
 
 Present a **findings summary** showing every finding, grouped by severity:
 
@@ -243,12 +398,20 @@ directly — for P0/P1 issues use `EnterPlanMode` for a structured approach; for
 issues, fix them directly since they are minor.
 
 After fixes are committed, the user re-runs `/ai-review-local` for a follow-up review.
+On re-review, the script automatically activates delta-diff mode (comparing only
+changes since the last reviewed commit) and shows a structured findings table
+tracking which previous findings have been addressed.
 
 ### Step 8: Cleanup
 
 ```bash
-rm -f /tmp/ai-review-diff.patch /tmp/ai-review-files.txt
+rm -f /tmp/ai-review-diff.patch /tmp/ai-review-files.txt \
+      /tmp/ai-review-delta-diff.patch /tmp/ai-review-delta-files.txt
 ```
+
+Note: `.claude/reviews/review-state.json` is preserved across review rounds (it
+tracks the last reviewed commit and findings). It is cleaned up when the user
+runs `--force-fresh` or when a rebase invalidates the tracked commit.
 
 ## Error Handling
 
@@ -260,21 +423,36 @@ rm -f /tmp/ai-review-diff.patch /tmp/ai-review-files.txt
 | Script exits non-zero | Display stderr output from script |
 | Previous review file missing on re-run | Script warns and continues as fresh review |
 | User aborts due to uncommitted changes | Clean exit |
+| No changes since last review (empty delta) | Report and stop, suggest `--force-fresh` |
+| Rebase invalidates last reviewed commit | Warn, delete stale state, run fresh review |
+| `review-state.json` schema mismatch | Script warns and starts fresh |
 
 ## Examples
 
 ```bash
-# Standard review of current branch vs main
+# Standard review of current branch vs main (default: full source file context)
 /ai-review-local
 
-# Review with full methodology registry
-/ai-review-local --full-registry
+# Review with minimal context (diff only, original behavior)
+/ai-review-local --context minimal
+
+# Review with deep context (changed files + imported files)
+/ai-review-local --context deep
+
+# Include specific files as extra context
+/ai-review-local --include-files linalg.py,utils.py
 
 # Preview the compiled prompt without calling the API
 /ai-review-local --dry-run
 
-# Use a different model
-/ai-review-local --model gpt-4.1
+# Force a fresh review (ignore previous review state)
+/ai-review-local --force-fresh
+
+# Use a different model with full registry
+/ai-review-local --model gpt-4.1 --full-registry
+
+# Limit token budget for faster/cheaper reviews
+/ai-review-local --token-budget 100000
 ```
 
 ## Notes
@@ -282,6 +460,20 @@ rm -f /tmp/ai-review-diff.patch /tmp/ai-review-files.txt
 - This skill does NOT modify source files — it only generates temp files and
   review artifacts in `.claude/reviews/` (which is gitignored). It may also
   create a commit if there are uncommitted changes (Step 3).
+- **Context levels**: By default (`standard`), the full contents of changed
+  `diff_diff/` source files are sent alongside the diff. This catches "sins of
+  omission" — code that should have changed but wasn't (e.g., a wrapper missing
+  a new parameter). Use `--context deep` to also include files imported by
+  changed files as read-only reference.
+- **Delta-diff re-review**: When `review-state.json` exists from a previous run,
+  the script automatically generates a delta diff (changes since the last reviewed
+  commit) and focuses the reviewer on those changes. The full branch diff is
+  included as reference context. Use `--force-fresh` to bypass this.
+- **Finding tracking**: The script writes structured findings to `review-state.json`
+  after each review. On re-review, previous findings are shown in a table with
+  their status (open/addressed), enabling the reviewer to focus on what changed.
+- **Cost visibility**: The script shows estimated cost before the API call and
+  actual cost (from the API response) after completion.
 - Re-review mode activates automatically when a previous review exists in
   `.claude/reviews/local-review-latest.md`
 - The review criteria are adapted from `.github/codex/prompts/pr_review.md` (same
@@ -290,8 +482,9 @@ rm -f /tmp/ai-review-diff.patch /tmp/ai-review-files.txt
 - The CI review (Codex action with full repo access) remains the authoritative final
   check — local review is a fast first pass to catch most issues early
 - **Data transmission**: In non-dry-run mode, this skill transmits the unified diff,
-  changed-file metadata, selected methodology registry text, and prior review context
-  (if present) to OpenAI via the Chat Completions API. Use `--dry-run` to preview
-  exactly what would be sent.
+  changed-file metadata, full source file contents (in standard/deep mode),
+  import-context files (in deep mode), selected methodology registry text, and
+  prior review context (if present) to OpenAI via the Chat Completions API.
+  Use `--dry-run` to preview exactly what would be sent.
 - This skill pairs naturally with the iterative workflow:
   `/ai-review-local` -> address findings -> `/ai-review-local` -> `/submit-pr`
