@@ -416,7 +416,7 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
     a base period later than `t` (matching R's `did::att_gt()`)
   - Does not require never-treated units: when all units are eventually treated,
     not-yet-treated cohorts serve as controls for each other (requires ≥2 cohorts)
-- **Note:** CallawaySantAnna survey weights: all methods (reg/IPW/DR) supported without covariates. Covariates + survey raises NotImplementedError for all methods (DRDID panel nuisance IF not yet implemented). Survey weights compose with IPW weights multiplicatively. WIF in aggregation matches R's did::wif() formula. Bootstrap + survey deferred.
+- **Note:** CallawaySantAnna survey weights: regression method supports covariates; IPW/DR support no-covariate only (covariates+IPW/DR+survey raises NotImplementedError — DRDID nuisance IF not yet implemented). Survey weights compose with IPW weights multiplicatively. WIF in aggregation matches R's did::wif() formula. Bootstrap + survey deferred.
 - **Note (deviation from R):** Per-cell ATT(g,t) SEs under survey weights use influence-function-based variance (matching R's `did::att_gt` analytical SE path) rather than full Taylor-series linearization with strata/PSU/FPC structure. The survey design structure is reflected in aggregation-level SEs via the WIF and survey degrees of freedom, but individual (g,t) cell SEs do not incorporate the full design-based variance. This is consistent with R's approach where per-cell SEs are influence-function-based and design effects enter at the aggregation stage.
 
 **Reference implementation(s):**

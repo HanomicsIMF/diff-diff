@@ -46,7 +46,7 @@ message pointing to the planned phase or describing the limitation.
 |-----------|------|----------------|-------|
 | ImputationDiD | `imputation.py` | Analytical | Weighted iterative FE, weighted ATT aggregation, weighted conservative variance (Theorem 3); bootstrap+survey deferred |
 | TwoStageDiD | `two_stage.py` | Analytical | Weighted iterative FE, weighted Stage 2 OLS, weighted GMM sandwich variance; bootstrap+survey deferred |
-| CallawaySantAnna | `staggered.py` | Analytical | All methods (reg/IPW/DR) without covariates; covariates+survey deferred for all methods (DRDID nuisance IF); survey-weighted WIF in aggregation; bootstrap+survey deferred |
+| CallawaySantAnna | `staggered.py` | Analytical | Survey-weighted regression (all cases), IPW and DR (no-covariate only); survey-weighted WIF in aggregation; covariates+IPW/DR deferred (needs DRDID nuisance IF); bootstrap+survey deferred |
 
 **Infrastructure**: Weighted `solve_logit()` added to `linalg.py` — survey weights
 enter the IRLS working weights as `w_survey * mu * (1 - mu)`. This also unblocked

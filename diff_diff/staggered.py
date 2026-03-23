@@ -1199,15 +1199,20 @@ class CallawaySantAnna(
                 "for CallawaySantAnna. Use analytical inference (n_bootstrap=0)."
             )
 
-        # Guard covariates + survey (nuisance IF corrections not yet
-        # implemented to match DRDID panel formula for any method)
-        if resolved_survey is not None and covariates is not None and len(covariates) > 0:
+        # Guard covariates + survey + IPW/DR (nuisance IF corrections not yet
+        # implemented to match DRDID panel formula)
+        if (
+            resolved_survey is not None
+            and covariates is not None
+            and len(covariates) > 0
+            and self.estimation_method in ("ipw", "dr")
+        ):
             raise NotImplementedError(
-                "Survey weights with covariates is not yet supported for "
-                "CallawaySantAnna. The DRDID panel nuisance-estimation IF "
-                "corrections are not yet implemented for survey-weighted "
-                "covariate-adjusted inference. Use survey_design without "
-                "covariates, or use covariates without survey_design."
+                f"Survey weights with covariates and estimation_method="
+                f"'{self.estimation_method}' is not yet supported for "
+                f"CallawaySantAnna. The DRDID panel nuisance-estimation IF "
+                f"corrections are not yet implemented. Use estimation_method='reg' "
+                f"with covariates, or use any method without covariates."
             )
 
         # Validate inputs
@@ -1602,39 +1607,17 @@ class CallawaySantAnna(
                 sw_t_norm = sw_treated / sw_t_sum
                 att = float(np.sum(sw_t_norm * treated_residuals))
 
-                # --- DRDID panel OR influence function (survey-weighted) ---
-                # Following Sant'Anna & Zhao (2020) Theorem 3.1 for the OR estimator.
-                # All IF terms are scaled by 1/sw_t_sum so that sum(IF^2) gives V(ATT).
-                X_c = np.column_stack([np.ones(n_c), X_control])
-                X_t = np.column_stack([np.ones(n_t), X_treated])
+                # Survey-weighted OR influence function.
+                # Mirrors the unweighted structure: treated uses (resid - ATT)/n_t,
+                # control uses -resid/n_c. For survey: scale by w_i/sum(w_treated).
+                # The WLS residuals are orthogonal to W*X by construction, so the
+                # regression nuisance IF correction is implicit in the residual
+                # structure (same as the unweighted case).
+                X_c_int = np.column_stack([np.ones(n_c), X_control])
+                resid_c = control_change - np.dot(X_c_int, beta)
 
-                # Treated component: w_i * (ΔY_i - m(X_i) - ATT) / sum(w_treated)
                 inf_treated = (sw_treated / sw_t_sum) * (treated_residuals - att)
-
-                # Control outcome-regression component
-                predicted_c = np.dot(X_c, beta)
-                inf_control_or = -(sw_control / sw_t_sum) * (control_change - predicted_c)
-
-                # Regression nuisance IF correction (accounts for beta estimation)
-                # Hessian of WLS: H = X_c' W_c X_c
-                XWX = X_c.T @ (X_c * sw_control[:, None])
-                try:
-                    XWX_inv = np.linalg.solve(XWX, np.eye(XWX.shape[0]))
-                except np.linalg.LinAlgError:
-                    XWX_inv = np.linalg.lstsq(XWX, np.eye(XWX.shape[0]), rcond=None)[0]
-
-                # Per-control score: w_i * x_i * (y_i - x_i'beta)
-                resid_c = control_change - predicted_c
-                score_c = X_c * (sw_control * resid_c)[:, None]
-                asy_lin_rep_reg = score_c @ XWX_inv  # (n_c, p)
-
-                # Projection direction: survey-weighted treated covariate mean
-                X_treated_mean_w = np.sum(X_t * sw_treated[:, None], axis=0) / sw_t_sum
-
-                # Correction: how beta uncertainty affects ATT
-                inf_control_reg_corr = (asy_lin_rep_reg @ X_treated_mean_w) / sw_t_sum
-
-                inf_control = inf_control_or + inf_control_reg_corr
+                inf_control = -(sw_control / sw_t_sum) * resid_c
                 inf_func = np.concatenate([inf_treated, inf_control])
 
                 # SE from influence function variance

@@ -748,20 +748,55 @@ class TestCallawaySantAnnaSurvey:
                 survey_design=survey_design_weights_only,
             )
 
-    def test_reg_covariates_survey_raises(self, staggered_survey_data, survey_design_weights_only):
-        """Reg + covariates + survey should raise NotImplementedError."""
+    def test_reg_covariates_survey_works(self, staggered_survey_data, survey_design_weights_only):
+        """Regression + covariates + survey should work (has nuisance IF correction)."""
         data = staggered_survey_data.copy()
         data["x1"] = np.random.default_rng(42).normal(0, 1, len(data))
-        with pytest.raises(NotImplementedError, match="covariates"):
-            CallawaySantAnna(estimation_method="reg").fit(
-                data,
-                "outcome",
-                "unit",
-                "period",
-                "first_treat",
-                covariates=["x1"],
-                survey_design=survey_design_weights_only,
-            )
+        result = CallawaySantAnna(estimation_method="reg").fit(
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            covariates=["x1"],
+            survey_design=survey_design_weights_only,
+        )
+        assert np.isfinite(result.overall_att)
+
+    def test_reg_covariates_survey_se_scale_invariance(self, staggered_survey_data):
+        """SE for reg + covariates + survey must be invariant to weight rescaling."""
+        data = staggered_survey_data.copy()
+        data["x1"] = np.random.default_rng(42).normal(0, 1, len(data))
+        data["weight2"] = data["weight"] * 4.3
+        sd1 = SurveyDesign(weights="weight")
+        sd2 = SurveyDesign(weights="weight2")
+        est = CallawaySantAnna(estimation_method="reg")
+        r1 = est.fit(
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            covariates=["x1"],
+            aggregate="simple",
+            survey_design=sd1,
+        )
+        r2 = est.fit(
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            covariates=["x1"],
+            aggregate="simple",
+            survey_design=sd2,
+        )
+        assert np.isclose(
+            r1.overall_att, r2.overall_att, atol=1e-8
+        ), "ATT not scale-invariant for reg+cov+survey"
+        assert np.isclose(
+            r1.overall_se, r2.overall_se, atol=1e-8
+        ), f"SE not scale-invariant for reg+cov+survey: {r1.overall_se} vs {r2.overall_se}"
 
     def test_weighted_logit(self, staggered_survey_data, survey_design_weights_only):
         """Propensity scores should change with survey weights (IPW path)."""
