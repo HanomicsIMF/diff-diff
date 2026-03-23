@@ -379,6 +379,25 @@ class TestCompilePromptWithContext:
         assert "Changes Under Review" in result
 
 
+    def test_findings_table_escapes_pipe_chars(self, review_mod):
+        """Summary containing | should be escaped in the findings table."""
+        findings = [
+            {
+                "id": "R1-P1-1", "severity": "P1", "section": "Code Quality",
+                "summary": "Return type str | None is wrong",
+                "location": "foo.py:L10", "status": "open",
+            }
+        ]
+        result = review_mod.compile_prompt(
+            criteria_text="C.", registry_content="R.", diff_text="D.",
+            changed_files_text="M\tf.py", branch_info="b",
+            previous_review="Prev.", delta_diff_text="delta",
+            structured_findings=findings,
+        )
+        # The pipe in "str | None" should be escaped as "str \| None"
+        assert "str \\| None" in result
+
+
 # ---------------------------------------------------------------------------
 # PREFIX_TO_SECTIONS mapping coverage
 # ---------------------------------------------------------------------------
@@ -1231,6 +1250,32 @@ class TestMergeFindings:
         # Different full paths: previous should be addressed, current stays open
         assert len(open_findings) == 1
         assert len(addressed) == 1
+
+    def test_long_summaries_dont_collide(self, review_mod):
+        """Two findings with same first 50 chars but different suffixes should NOT collapse."""
+        prefix = "a" * 50
+        previous = [
+            {"id": "R1-P1-1", "severity": "P1", "location": "foo.py:L10",
+             "section": "Code Quality", "summary": prefix + " first issue details",
+             "status": "open"},
+            {"id": "R1-P1-2", "severity": "P1", "location": "foo.py:L20",
+             "section": "Code Quality", "summary": prefix + " second different issue",
+             "status": "open"},
+        ]
+        current = [
+            {"id": "R2-P1-1", "severity": "P1", "location": "foo.py:L10",
+             "section": "Code Quality", "summary": prefix + " first issue details",
+             "status": "open"},
+            {"id": "R2-P1-2", "severity": "P1", "location": "foo.py:L20",
+             "section": "Code Quality", "summary": prefix + " second different issue",
+             "status": "open"},
+        ]
+        merged = review_mod.merge_findings(previous, current)
+        open_findings = [f for f in merged if f["status"] == "open"]
+        addressed = [f for f in merged if f["status"] == "addressed"]
+        # Both should match — neither dropped
+        assert len(open_findings) == 2
+        assert len(addressed) == 0
 
     def test_same_summary_different_files_no_cross_match(self, review_mod):
         """Two findings with same summary but different files should NOT cross-match."""

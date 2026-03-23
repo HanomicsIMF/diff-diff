@@ -664,9 +664,9 @@ def parse_review_findings(
 def _finding_keys(f: dict) -> "tuple[tuple[str, str, str], tuple[str, str]]":
     """Return (primary_key, fallback_key) for finding matching.
 
-    Primary: (severity, file_path, summary[:50]) — uses normalized full relative
+    Primary: (severity, file_path, normalized_summary) — uses normalized full relative
     path (not basename) to avoid collisions like __init__.py in different dirs.
-    Fallback: (severity, summary[:50]) — used when either side lacks a file path,
+    Fallback: (severity, normalized_summary) — used when either side lacks a file path,
     with unique-candidate constraint to avoid ambiguous matching.
     """
     summary = f.get("summary", "").lower().strip()
@@ -674,7 +674,7 @@ def _finding_keys(f: dict) -> "tuple[tuple[str, str, str], tuple[str, str]]":
     # e.g., "missing nan guard in `foo.py:l10`" → "missing nan guard in"
     # (summary is already lowercased at this point)
     summary = re.sub(r"`?[\w/.]+\.\w+(?::l?\d+(?:-l?\d+)?)?`?", "", summary)
-    summary = summary.strip()[:50]
+    summary = summary.strip()
     severity = f.get("severity", "")
     location = f.get("location", "")
     # Use full relative path (strip line numbers only, keep directory structure)
@@ -689,9 +689,9 @@ def merge_findings(
 ) -> "list[dict]":
     """Merge findings across review rounds using tiered matching.
 
-    Pass 1: Match by primary key (severity + file_basename + summary[:50]).
+    Pass 1: Match by primary key (severity + file_basename + normalized_summary).
     Pass 2: For remaining unmatched findings, try fallback key (severity +
-    summary[:50]) but ONLY when there's exactly one candidate (unique match).
+    normalized_summary) but ONLY when there's exactly one candidate (unique match).
     After both passes: mark unconsumed previous findings as addressed.
     """
     # Build lookups — list per key to handle duplicates
@@ -999,10 +999,12 @@ def compile_prompt(
                 "|-----|----------|---------|---------|----------|--------|\n"
             )
             for f in structured_findings:
+                # Escape pipe and newline chars to prevent table corruption
+                esc = lambda s: str(s).replace("|", "\\|").replace("\n", " ")
                 sections.append(
-                    f"| {f.get('id', '')} | {f.get('severity', '')} "
-                    f"| {f.get('section', '')} | {f.get('summary', '')} "
-                    f"| {f.get('location', '')} | {f.get('status', '')} |\n"
+                    f"| {esc(f.get('id', ''))} | {esc(f.get('severity', ''))} "
+                    f"| {esc(f.get('section', ''))} | {esc(f.get('summary', ''))} "
+                    f"| {esc(f.get('location', ''))} | {esc(f.get('status', ''))} |\n"
                 )
             sections.append("")
         elif previous_review:
