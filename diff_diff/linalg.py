@@ -390,24 +390,18 @@ def _validate_weights(weights, weight_type, n):
     """Validate weights array and weight_type for solve_ols/LinearRegression."""
     if weight_type not in _VALID_WEIGHT_TYPES:
         raise ValueError(
-            f"weight_type must be one of {_VALID_WEIGHT_TYPES}, "
-            f"got '{weight_type}'"
+            f"weight_type must be one of {_VALID_WEIGHT_TYPES}, " f"got '{weight_type}'"
         )
     if weights is not None:
         weights = np.asarray(weights, dtype=np.float64)
         if weights.shape[0] != n:
-            raise ValueError(
-                f"weights length ({weights.shape[0]}) must match "
-                f"X rows ({n})"
-            )
+            raise ValueError(f"weights length ({weights.shape[0]}) must match " f"X rows ({n})")
         if np.any(np.isnan(weights)):
             raise ValueError("Weights contain NaN values")
         if np.any(np.isinf(weights)):
             raise ValueError("Weights contain Inf values")
         if np.any(weights < 0):
-            raise ValueError(
-                "Weights must be non-negative"
-            )
+            raise ValueError("Weights must be non-negative")
         if weight_type == "fweight":
             fractional = weights - np.round(weights)
             if np.any(np.abs(fractional) > 1e-10):
@@ -693,13 +687,9 @@ def solve_ols(
                         weights=weights,
                         weight_type=weight_type,
                     )
-                    vcov_out = _expand_vcov_with_nan(
-                        vcov_reduced, _original_X.shape[1], kept_cols
-                    )
+                    vcov_out = _expand_vcov_with_nan(vcov_reduced, _original_X.shape[1], kept_cols)
                 else:
-                    vcov_out = np.full(
-                        (_original_X.shape[1], _original_X.shape[1]), np.nan
-                    )
+                    vcov_out = np.full((_original_X.shape[1], _original_X.shape[1]), np.nan)
             else:
                 vcov_out = _compute_robust_vcov_numpy(
                     _original_X,
@@ -1122,6 +1112,7 @@ def solve_logit(
     tol: float = 1e-8,
     check_separation: bool = True,
     rank_deficient_action: str = "warn",
+    weights: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Fit logistic regression via IRLS (Fisher scoring).
@@ -1147,6 +1138,13 @@ def solve_logit(
         - "warn": Emit warning and drop columns (default)
         - "error": Raise ValueError
         - "silent": Drop columns silently
+    weights : np.ndarray, optional
+        Survey/observation weights of shape (n_samples,). When provided,
+        the IRLS working weights become ``weights * mu * (1 - mu)``
+        instead of ``mu * (1 - mu)``. This produces the survey-weighted
+        maximum likelihood estimator, matching R's ``svyglm(family=binomial)``.
+        When None (default), behavior is identical to unweighted logistic
+        regression.
 
     Returns
     -------
@@ -1158,6 +1156,18 @@ def solve_logit(
     n, p = X.shape
     X_with_intercept = np.column_stack([np.ones(n), X])
     k = p + 1  # number of parameters including intercept
+
+    # Validate weights
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float64)
+        if weights.shape != (n,):
+            raise ValueError(f"weights must have shape ({n},), got {weights.shape}")
+        if np.any(np.isnan(weights)):
+            raise ValueError("weights contain NaN values")
+        if np.any(~np.isfinite(weights)):
+            raise ValueError("weights contain Inf values")
+        if np.any(weights <= 0):
+            raise ValueError("weights must be strictly positive")
 
     # Validate rank_deficient_action
     valid_actions = {"warn", "error", "silent"}
@@ -1203,11 +1213,16 @@ def solve_logit(
         mu = np.clip(mu, 1e-10, 1 - 1e-10)
 
         # Working weights and working response
-        w = mu * (1.0 - mu)
-        z = eta + (y - mu) / w
+        w_irls = mu * (1.0 - mu)
+        z = eta + (y - mu) / w_irls
+
+        if weights is not None:
+            w_total = weights * w_irls
+        else:
+            w_total = w_irls
 
         # Weighted least squares: solve (X'WX) beta = X'Wz
-        sqrt_w = np.sqrt(w)
+        sqrt_w = np.sqrt(w_total)
         Xw = X_solve * sqrt_w[:, None]
         zw = z * sqrt_w
         beta_new, _, _, _ = np.linalg.lstsq(Xw, zw, rcond=None)
@@ -1593,10 +1608,7 @@ class LinearRegression:
                 _use_survey_vcov = self.survey_design.needs_survey_vcov
                 # Canonicalize weights from survey_design to ensure consistency
                 # between coefficient estimation and survey vcov computation
-                if (
-                    self.weights is not None
-                    and self.weights is not self.survey_design.weights
-                ):
+                if self.weights is not None and self.weights is not self.survey_design.weights:
                     warnings.warn(
                         "Explicit weights= differ from survey_design.weights. "
                         "Using survey_design weights for both coefficient "
@@ -1609,9 +1621,7 @@ class LinearRegression:
                 self.weight_type = self.survey_design.weight_type
 
         if self.weights is not None:
-            self.weights = _validate_weights(
-                self.weights, self.weight_type, X.shape[0]
-            )
+            self.weights = _validate_weights(self.weights, self.weight_type, X.shape[0])
 
         # Inject cluster as PSU for survey variance when no PSU specified.
         # Use a local variable to avoid mutating self.survey_design, which
@@ -1622,7 +1632,9 @@ class LinearRegression:
             and _effective_survey_design is not None
             and _use_survey_vcov
         ):
-            from diff_diff.survey import ResolvedSurveyDesign as _RSD, _inject_cluster_as_psu
+            from diff_diff.survey import ResolvedSurveyDesign as _RSD
+            from diff_diff.survey import _inject_cluster_as_psu
+
             if isinstance(_effective_survey_design, _RSD) and _effective_survey_design.psu is None:
                 _effective_survey_design = _inject_cluster_as_psu(
                     _effective_survey_design, effective_cluster_ids
@@ -1864,9 +1876,7 @@ class LinearRegression:
         # Use project-standard NaN-safe inference (returns all-NaN when SE <= 0)
         from diff_diff.utils import safe_inference
 
-        t_stat, p_value, conf_int = safe_inference(
-            coef, se, alpha=effective_alpha, df=effective_df
-        )
+        t_stat, p_value, conf_int = safe_inference(coef, se, alpha=effective_alpha, df=effective_df)
 
         return InferenceResult(
             coefficient=coef,

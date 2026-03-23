@@ -496,35 +496,37 @@ class TestTripleDifferenceSurvey:
         assert np.isfinite(result.se)
         assert result.survey_metadata is not None
 
-    def test_ipw_survey_raises(self, ddd_survey_data):
-        """IPW + survey should raise NotImplementedError."""
+    def test_ipw_survey_works(self, ddd_survey_data):
+        """IPW + survey now works (unblocked by weighted solve_logit in Phase 4)."""
         from diff_diff import TripleDifference
 
         sd = SurveyDesign(weights="weight")
-        with pytest.raises(NotImplementedError, match="IPW"):
-            TripleDifference(estimation_method="ipw").fit(
-                ddd_survey_data,
-                "outcome",
-                "group",
-                "partition",
-                "time",
-                survey_design=sd,
-            )
+        result = TripleDifference(estimation_method="ipw").fit(
+            ddd_survey_data,
+            "outcome",
+            "group",
+            "partition",
+            "time",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
 
-    def test_dr_survey_raises(self, ddd_survey_data):
-        """DR + survey should raise NotImplementedError."""
+    def test_dr_survey_works(self, ddd_survey_data):
+        """DR + survey now works (unblocked by weighted solve_logit in Phase 4)."""
         from diff_diff import TripleDifference
 
         sd = SurveyDesign(weights="weight")
-        with pytest.raises(NotImplementedError, match="doubly robust"):
-            TripleDifference(estimation_method="dr").fit(
-                ddd_survey_data,
-                "outcome",
-                "group",
-                "partition",
-                "time",
-                survey_design=sd,
-            )
+        result = TripleDifference(estimation_method="dr").fit(
+            ddd_survey_data,
+            "outcome",
+            "group",
+            "partition",
+            "time",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
 
     def test_weighted_changes_att(self, ddd_survey_data):
         """Survey weights should change ATT."""

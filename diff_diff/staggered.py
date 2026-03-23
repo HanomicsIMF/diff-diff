@@ -11,27 +11,28 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy import linalg as scipy_linalg
+
 from diff_diff.linalg import (
-    solve_ols,
-    solve_logit,
     _check_propensity_diagnostics,
     _detect_rank_deficiency,
     _format_dropped_columns,
-)
-from diff_diff.utils import safe_inference, safe_inference_batch
-
-# Import from split modules
-from diff_diff.staggered_results import (
-    GroupTimeEffect,
-    CallawaySantAnnaResults,
-)
-from diff_diff.staggered_bootstrap import (
-    CSBootstrapResults,
-    CallawaySantAnnaBootstrapMixin,
+    solve_logit,
+    solve_ols,
 )
 from diff_diff.staggered_aggregation import (
     CallawaySantAnnaAggregationMixin,
 )
+from diff_diff.staggered_bootstrap import (
+    CallawaySantAnnaBootstrapMixin,
+    CSBootstrapResults,
+)
+
+# Import from split modules
+from diff_diff.staggered_results import (
+    CallawaySantAnnaResults,
+    GroupTimeEffect,
+)
+from diff_diff.utils import safe_inference, safe_inference_batch
 
 # Re-export for backward compatibility
 __all__ = [
@@ -49,6 +50,7 @@ def _linear_regression(
     X: np.ndarray,
     y: np.ndarray,
     rank_deficient_action: str = "warn",
+    weights: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Fit OLS regression.
@@ -64,6 +66,8 @@ def _linear_regression(
         - "warn": Issue warning and drop linearly dependent columns (default)
         - "error": Raise ValueError
         - "silent": Drop columns silently without warning
+    weights : np.ndarray, optional
+        Observation weights for WLS. When None, OLS is used.
 
     Returns
     -------
@@ -82,6 +86,7 @@ def _linear_regression(
         y,
         return_vcov=False,
         rank_deficient_action=rank_deficient_action,
+        weights=weights,
     )
 
     return beta, residuals
@@ -333,6 +338,7 @@ class CallawaySantAnna(
         covariates: Optional[List[str]],
         time_periods: List[Any],
         treatment_groups: List[Any],
+        resolved_survey=None,
     ) -> PrecomputedData:
         """
         Pre-compute data structures for efficient ATT(g,t) computation.
@@ -352,7 +358,6 @@ class CallawaySantAnna(
         unit_info = df.groupby(unit)[first_treat].first()
         all_units = unit_info.index.values
         unit_cohorts = unit_info.values
-        n_units = len(all_units)
 
         # Create unit index mapping for fast lookups
         unit_to_idx = {u: i for i, u in enumerate(all_units)}
@@ -385,6 +390,15 @@ class CallawaySantAnna(
 
         is_balanced = not np.any(np.isnan(outcome_matrix))
 
+        # Extract per-unit survey weights (one weight per unit)
+        if resolved_survey is not None:
+            sw_by_unit = (
+                pd.Series(resolved_survey.weights, index=df.index).groupby(df[unit]).first()
+            )
+            survey_weights_arr = sw_by_unit.reindex(all_units).values
+        else:
+            survey_weights_arr = None
+
         return {
             "all_units": all_units,
             "unit_to_idx": unit_to_idx,
@@ -396,6 +410,8 @@ class CallawaySantAnna(
             "covariate_by_period": covariate_by_period,
             "time_periods": time_periods,
             "is_balanced": is_balanced,
+            "survey_weights": survey_weights_arr,
+            "df_survey": (len(all_units) - 1) if resolved_survey is not None else None,
         }
 
     def _compute_att_gt_fast(
@@ -406,12 +422,22 @@ class CallawaySantAnna(
         covariates: Optional[List[str]],
         pscore_cache: Optional[Dict] = None,
         cho_cache: Optional[Dict] = None,
-    ) -> Tuple[Optional[float], float, int, int, Optional[Dict[str, Any]]]:
+    ) -> Tuple[Optional[float], float, int, int, Optional[Dict[str, Any]], Optional[float]]:
         """
         Compute ATT(g,t) using pre-computed data structures (fast version).
 
         Uses vectorized numpy operations on pre-pivoted outcome matrix
         instead of repeated pandas filtering.
+
+        Returns
+        -------
+        att_gt : float or None
+        se_gt : float
+        n_treated : int
+        n_control : int
+        inf_func_info : dict or None
+        survey_weight_sum : float or None
+            Sum of survey weights for treated units (for aggregation weighting).
         """
         period_to_col = precomputed["period_to_col"]
         outcome_matrix = precomputed["outcome_matrix"]
@@ -434,11 +460,11 @@ class CallawaySantAnna(
 
         if base_period_val not in period_to_col:
             # Base period must exist; no fallback to maintain methodological consistency
-            return None, 0.0, 0, 0, None
+            return None, 0.0, 0, 0, None, None
 
         # Check if periods exist in the data
         if base_period_val not in period_to_col or t not in period_to_col:
-            return None, 0.0, 0, 0, None
+            return None, 0.0, 0, 0, None, None
 
         base_col = period_to_col[base_period_val]
         post_col = period_to_col[t]
@@ -476,11 +502,16 @@ class CallawaySantAnna(
         n_control = np.sum(control_valid)
 
         if n_treated == 0 or n_control == 0:
-            return None, 0.0, 0, 0, None
+            return None, 0.0, 0, 0, None, None
 
         # Extract outcome changes for treated and control
         treated_change = outcome_change[treated_valid]
         control_change = outcome_change[control_valid]
+
+        # Extract survey weights for treated and control
+        survey_w = precomputed.get("survey_weights")
+        sw_treated = survey_w[treated_valid] if survey_w is not None else None
+        sw_control = survey_w[control_valid] if survey_w is not None else None
 
         # Get covariates if specified (from the base period)
         X_treated = None
@@ -522,9 +553,15 @@ class CallawaySantAnna(
         # Estimation method
         if self.estimation_method == "reg":
             att_gt, se_gt, inf_func = self._outcome_regression(
-                treated_change, control_change, X_treated, X_control
+                treated_change,
+                control_change,
+                X_treated,
+                X_control,
+                sw_treated=sw_treated,
+                sw_control=sw_control,
             )
         elif self.estimation_method == "ipw":
+            sw_all = np.concatenate([sw_treated, sw_control]) if sw_treated is not None else None
             att_gt, se_gt, inf_func = self._ipw_estimation(
                 treated_change,
                 control_change,
@@ -534,8 +571,12 @@ class CallawaySantAnna(
                 X_control,
                 pscore_cache=pscore_cache,
                 pscore_key=pscore_key,
+                sw_treated=sw_treated,
+                sw_control=sw_control,
+                sw_all=sw_all,
             )
         else:  # doubly robust
+            sw_all = np.concatenate([sw_treated, sw_control]) if sw_treated is not None else None
             att_gt, se_gt, inf_func = self._doubly_robust(
                 treated_change,
                 control_change,
@@ -545,6 +586,9 @@ class CallawaySantAnna(
                 pscore_key=pscore_key,
                 cho_cache=cho_cache,
                 cho_key=cho_key,
+                sw_treated=sw_treated,
+                sw_control=sw_control,
+                sw_all=sw_all,
             )
 
         # Package influence function info with index arrays (positions into
@@ -563,7 +607,8 @@ class CallawaySantAnna(
             "control_inf": inf_func[n_t:],
         }
 
-        return att_gt, se_gt, int(n_treated), int(n_control), inf_func_info
+        sw_sum = float(np.sum(sw_treated)) if sw_treated is not None else None
+        return att_gt, se_gt, int(n_treated), int(n_control), inf_func_info, sw_sum
 
     def _compute_all_att_gt_vectorized(
         self,
@@ -590,6 +635,7 @@ class CallawaySantAnna(
         cohort_masks = precomputed["cohort_masks"]
         never_treated_mask = precomputed["never_treated_mask"]
         unit_cohorts = precomputed["unit_cohorts"]
+        survey_w = precomputed.get("survey_weights")
 
         group_time_effects = {}
         influence_func_info = {}
@@ -618,7 +664,9 @@ class CallawaySantAnna(
                 if base_period_val not in period_to_col or t not in period_to_col:
                     continue
 
-                tasks.append((g, t, period_to_col[base_period_val], period_to_col[t], base_period_val))
+                tasks.append(
+                    (g, t, period_to_col[base_period_val], period_to_col[t], base_period_val)
+                )
 
         # Process all tasks
         atts = []
@@ -658,17 +706,38 @@ class CallawaySantAnna(
             n_c = int(n_control)
 
             # Inline no-covariates regression (difference in means)
-            att = float(np.mean(treated_change) - np.mean(control_change))
+            if survey_w is not None:
+                sw_t = survey_w[treated_valid]
+                sw_c = survey_w[control_valid]
+                sw_t_norm = sw_t / np.sum(sw_t)
+                sw_c_norm = sw_c / np.sum(sw_c)
+                mu_t = float(np.sum(sw_t_norm * treated_change))
+                mu_c = float(np.sum(sw_c_norm * control_change))
+                att = mu_t - mu_c
 
-            var_t = float(np.var(treated_change, ddof=1)) if n_t > 1 else 0.0
-            var_c = float(np.var(control_change, ddof=1)) if n_c > 1 else 0.0
-            se = float(np.sqrt(var_t / n_t + var_c / n_c)) if (n_t > 0 and n_c > 0) else 0.0
+                # Influence function (survey-weighted)
+                inf_treated = sw_t_norm * (treated_change - mu_t)
+                inf_control = -sw_c_norm * (control_change - mu_c)
+                # SE derived from IF: sum(IF_i^2)
+                se = (
+                    float(np.sqrt(np.sum(inf_treated**2) + np.sum(inf_control**2)))
+                    if (n_t > 0 and n_c > 0)
+                    else 0.0
+                )
+                sw_sum = float(np.sum(sw_t))
+            else:
+                att = float(np.mean(treated_change) - np.mean(control_change))
 
-            # Influence function
-            inf_treated = (treated_change - np.mean(treated_change)) / n_t
-            inf_control = -(control_change - np.mean(control_change)) / n_c
+                var_t = float(np.var(treated_change, ddof=1)) if n_t > 1 else 0.0
+                var_c = float(np.var(control_change, ddof=1)) if n_c > 1 else 0.0
+                se = float(np.sqrt(var_t / n_t + var_c / n_c)) if (n_t > 0 and n_c > 0) else 0.0
 
-            group_time_effects[(g, t)] = {
+                # Influence function
+                inf_treated = (treated_change - np.mean(treated_change)) / n_t
+                inf_control = -(control_change - np.mean(control_change)) / n_c
+                sw_sum = None
+
+            gte_entry = {
                 "effect": att,
                 "se": se,
                 # t_stat, p_value, conf_int filled by batch inference below
@@ -678,6 +747,9 @@ class CallawaySantAnna(
                 "n_treated": n_t,
                 "n_control": n_c,
             }
+            if sw_sum is not None:
+                gte_entry["survey_weight_sum"] = sw_sum
+            group_time_effects[(g, t)] = gte_entry
 
             all_units = precomputed["all_units"]
             treated_positions = np.where(treated_valid)[0]
@@ -697,8 +769,12 @@ class CallawaySantAnna(
 
         # Batch inference for all (g,t) pairs at once
         if task_keys:
+            df_survey_val = precomputed.get("df_survey")
             t_stats, p_values, ci_lowers, ci_uppers = safe_inference_batch(
-                np.array(atts), np.array(ses), alpha=self.alpha
+                np.array(atts),
+                np.array(ses),
+                alpha=self.alpha,
+                df=df_survey_val,
             )
             for idx, key in enumerate(task_keys):
                 group_time_effects[key]["t_stat"] = float(t_stats[idx])
@@ -1048,6 +1124,7 @@ class CallawaySantAnna(
         covariates: Optional[List[str]] = None,
         aggregate: Optional[str] = None,
         balance_e: Optional[int] = None,
+        survey_design: object = None,
     ) -> CallawaySantAnnaResults:
         """
         Fit the Callaway-Sant'Anna estimator.
@@ -1077,6 +1154,11 @@ class CallawaySantAnna(
         balance_e : int, optional
             For event study, balance the panel at relative time e.
             Ensures all groups contribute to each relative period.
+        survey_design : SurveyDesign, optional
+            Survey design specification. Only weights-only designs are supported
+            (strata/PSU/FPC raise NotImplementedError). Supports pweight only.
+            Covariates + IPW/DR + survey also raises NotImplementedError.
+            Use analytical inference (n_bootstrap=0) with survey_design.
 
         Returns
         -------
@@ -1095,6 +1177,61 @@ class CallawaySantAnna(
         # Normalize empty covariates list to None
         if covariates is not None and len(covariates) == 0:
             covariates = None
+
+        # Resolve survey design if provided
+        from diff_diff.survey import (
+            _resolve_survey_for_fit,
+            _validate_unit_constant_survey,
+        )
+
+        resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
+            _resolve_survey_for_fit(survey_design, data, "analytical")
+        )
+
+        # Validate within-unit constancy for panel survey designs
+        if resolved_survey is not None:
+            _validate_unit_constant_survey(data, unit, survey_design)
+            if resolved_survey.weight_type != "pweight":
+                raise ValueError(
+                    f"CallawaySantAnna survey support requires weight_type='pweight', "
+                    f"got '{resolved_survey.weight_type}'. The survey variance math "
+                    f"assumes probability weights (pweight)."
+                )
+            if (
+                resolved_survey.strata is not None
+                or resolved_survey.psu is not None
+                or resolved_survey.fpc is not None
+            ):
+                raise NotImplementedError(
+                    "CallawaySantAnna does not yet support strata/PSU/FPC in "
+                    "SurveyDesign. Per-cell and aggregation SEs use IF-based "
+                    "variance which does not incorporate the full survey design "
+                    "structure. Use SurveyDesign(weights=...) only. Full "
+                    "design-based SEs via compute_survey_vcov() are planned."
+                )
+
+        # Guard bootstrap + survey
+        if self.n_bootstrap > 0 and resolved_survey is not None:
+            raise NotImplementedError(
+                "Bootstrap inference with survey weights is not yet supported "
+                "for CallawaySantAnna. Use analytical inference (n_bootstrap=0)."
+            )
+
+        # Guard covariates + survey + IPW/DR (nuisance IF corrections not yet
+        # implemented to match DRDID panel formula)
+        if (
+            resolved_survey is not None
+            and covariates is not None
+            and len(covariates) > 0
+            and self.estimation_method in ("ipw", "dr")
+        ):
+            raise NotImplementedError(
+                f"Survey weights with covariates and estimation_method="
+                f"'{self.estimation_method}' is not yet supported for "
+                f"CallawaySantAnna. The DRDID panel nuisance-estimation IF "
+                f"corrections are not yet implemented. Use estimation_method='reg' "
+                f"with covariates, or use any method without covariates."
+            )
 
         # Validate inputs
         required_cols = [outcome, unit, time, first_treat]
@@ -1147,13 +1284,56 @@ class CallawaySantAnna(
                     "cohorts when there are no never-treated units."
                 )
 
+        # Note: CallawaySantAnna uses weights-only survey (strata/PSU/FPC
+        # rejected above). We do NOT inject cluster-as-PSU here because CS
+        # per-cell SEs use IF-based variance, not TSL. The user's cluster=
+        # parameter is handled by the existing non-survey clustering path.
+        if resolved_survey is not None and survey_metadata is not None:
+            # Just recompute metadata with the resolved design (no PSU injection)
+            if survey_design.weights:
+                from diff_diff.survey import compute_survey_metadata
+
+                raw_w = data[survey_design.weights].values.astype(np.float64)
+                survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
+                # Override df_survey with unit-level df (CS is unit-level, not obs-level)
+                n_units_for_df = len(data[unit].unique())
+                survey_metadata = type(survey_metadata)(
+                    weight_type=survey_metadata.weight_type,
+                    effective_n=survey_metadata.effective_n,
+                    design_effect=survey_metadata.design_effect,
+                    sum_weights=survey_metadata.sum_weights,
+                    n_strata=survey_metadata.n_strata,
+                    n_psu=n_units_for_df,  # unit-level for CS
+                    weight_range=survey_metadata.weight_range,
+                    df_survey=n_units_for_df - 1,
+                )
+
         # Pre-compute data structures for efficient ATT(g,t) computation
         precomputed = self._precompute_structures(
-            df, outcome, unit, time, first_treat, covariates, time_periods, treatment_groups
+            df,
+            outcome,
+            unit,
+            time,
+            first_treat,
+            covariates,
+            time_periods,
+            treatment_groups,
+            resolved_survey=resolved_survey,
         )
+
+        # Survey df for safe_inference calls.
+        # CS operates at unit level, so use n_units - 1 (not n_obs - 1 from
+        # the long panel). For weights-only designs (no strata/PSU), this is
+        # the correct unit-level degrees of freedom.
+        if resolved_survey is not None:
+            n_all_units = len(precomputed["all_units"])
+            df_survey = n_all_units - 1
+        else:
+            df_survey = None
 
         # Compute ATT(g,t) for each group-time combination
         min_period = min(time_periods)
+        has_survey = resolved_survey is not None
 
         if covariates is None and self.estimation_method == "reg":
             # Fast vectorized path for the common no-covariates regression case
@@ -1164,6 +1344,7 @@ class CallawaySantAnna(
             covariates is not None
             and self.estimation_method == "reg"
             and self.rank_deficient_action != "error"
+            and not has_survey  # Cholesky cache uses X'X; survey needs X'WX
         ):
             # Optimized covariate regression path with Cholesky caching
             group_time_effects, influence_func_info = self._compute_all_att_gt_covariate_reg(
@@ -1177,12 +1358,14 @@ class CallawaySantAnna(
             # Propensity score cache for IPW/DR with covariates
             pscore_cache = {} if (covariates and self.estimation_method in ("ipw", "dr")) else None
             # Cholesky cache for DR outcome regression component
+            # Skip cache when survey weights present (X'WX differs from X'X)
             cho_cache = (
                 {}
                 if (
                     covariates
                     and self.estimation_method == "dr"
                     and self.rank_deficient_action != "error"
+                    and not has_survey
                 )
                 else None
             )
@@ -1197,7 +1380,7 @@ class CallawaySantAnna(
                     ]
 
                 for t in valid_periods:
-                    att_gt, se_gt, n_treat, n_ctrl, inf_info = self._compute_att_gt_fast(
+                    att_gt, se_gt, n_treat, n_ctrl, inf_info, sw_sum = self._compute_att_gt_fast(
                         precomputed,
                         g,
                         t,
@@ -1207,9 +1390,14 @@ class CallawaySantAnna(
                     )
 
                     if att_gt is not None:
-                        t_stat, p_val, ci = safe_inference(att_gt, se_gt, alpha=self.alpha)
+                        t_stat, p_val, ci = safe_inference(
+                            att_gt,
+                            se_gt,
+                            alpha=self.alpha,
+                            df=df_survey,
+                        )
 
-                        group_time_effects[(g, t)] = {
+                        gte_entry = {
                             "effect": att_gt,
                             "se": se_gt,
                             "t_stat": t_stat,
@@ -1218,6 +1406,9 @@ class CallawaySantAnna(
                             "n_treated": n_treat,
                             "n_control": n_ctrl,
                         }
+                        if sw_sum is not None:
+                            gte_entry["survey_weight_sum"] = sw_sum
+                        group_time_effects[(g, t)] = gte_entry
 
                         if inf_info is not None:
                             influence_func_info[(g, t)] = inf_info
@@ -1232,7 +1423,12 @@ class CallawaySantAnna(
         overall_att, overall_se = self._aggregate_simple(
             group_time_effects, influence_func_info, df, unit, precomputed
         )
-        overall_t, overall_p, overall_ci = safe_inference(overall_att, overall_se, alpha=self.alpha)
+        overall_t, overall_p, overall_ci = safe_inference(
+            overall_att,
+            overall_se,
+            alpha=self.alpha,
+            df=df_survey,
+        )
 
         # Compute additional aggregations if requested
         event_study_effects = None
@@ -1383,6 +1579,7 @@ class CallawaySantAnna(
             bootstrap_results=bootstrap_results,
             cband_crit_value=cband_crit_value,
             pscore_trim=self.pscore_trim,
+            survey_metadata=survey_metadata,
         )
 
         self.is_fitted_ = True
@@ -1394,6 +1591,8 @@ class CallawaySantAnna(
         control_change: np.ndarray,
         X_treated: Optional[np.ndarray] = None,
         X_control: Optional[np.ndarray] = None,
+        sw_treated: Optional[np.ndarray] = None,
+        sw_control: Optional[np.ndarray] = None,
     ) -> Tuple[float, float, np.ndarray]:
         """
         Estimate ATT using outcome regression.
@@ -1405,6 +1604,11 @@ class CallawaySantAnna(
 
         Without covariates:
         Simple difference in means.
+
+        Parameters
+        ----------
+        sw_treated, sw_control : np.ndarray, optional
+            Survey weights for treated and control units.
         """
         n_t = len(treated_change)
         n_c = len(control_change)
@@ -1416,43 +1620,85 @@ class CallawaySantAnna(
                 X_control,
                 control_change,
                 rank_deficient_action=self.rank_deficient_action,
+                weights=sw_control,
             )
+
+            # Zero NaN coefficients for prediction (dropped rank-deficient columns
+            # contribute 0 to the column space projection, matching DR path convention)
+            beta = np.where(np.isfinite(beta), beta, 0.0)
 
             # Predict counterfactual for treated units
             X_treated_with_intercept = np.column_stack([np.ones(n_t), X_treated])
             predicted_control = np.dot(X_treated_with_intercept, beta)
 
-            # ATT = mean(observed treated change - predicted counterfactual)
-            att = np.mean(treated_change - predicted_control)
-
-            # Standard error using sandwich estimator
-            # Variance from treated: Var(Y_1 - m(X))
+            # ATT: survey-weighted mean of treated residuals
             treated_residuals = treated_change - predicted_control
-            var_t = np.var(treated_residuals, ddof=1) if n_t > 1 else 0.0
 
-            # Variance from control regression (residual variance)
-            var_c = np.var(residuals, ddof=1) if n_c > 1 else 0.0
+            if sw_treated is not None:
+                sw_t_sum = float(np.sum(sw_treated))
+                sw_c_sum = float(np.sum(sw_control))
+                sw_t_norm = sw_treated / sw_t_sum
+                sw_c_norm = sw_control / sw_c_sum
+                att = float(np.sum(sw_t_norm * treated_residuals))
 
-            # Approximate SE (ignoring estimation error in beta for simplicity)
-            se = np.sqrt(var_t / n_t + var_c / n_c) if (n_t > 0 and n_c > 0) else 0.0
+                # Survey-weighted OR influence function.
+                # Mirrors unweighted: inf_treated = (resid-ATT)/n_t,
+                # inf_control = -resid/n_c. Survey: w_i/sum(w_group).
+                # WLS residuals are orthogonal to W*X by construction.
+                X_c_int = np.column_stack([np.ones(n_c), X_control])
+                resid_c = control_change - np.dot(X_c_int, beta)
 
-            # Influence function
-            inf_treated = (treated_residuals - np.mean(treated_residuals)) / n_t
-            inf_control = -residuals / n_c
-            inf_func = np.concatenate([inf_treated, inf_control])
+                inf_treated = sw_t_norm * (treated_residuals - att)
+                inf_control = -sw_c_norm * resid_c
+                inf_func = np.concatenate([inf_treated, inf_control])
+
+                # SE: survey-weighted variance matching unweighted var_t/n_t + var_c/n_c
+                var_t = float(np.sum(sw_t_norm * (treated_residuals - att) ** 2))
+                var_c = float(np.sum(sw_c_norm * resid_c**2))
+                se = float(np.sqrt(var_t + var_c)) if (n_t > 0 and n_c > 0) else 0.0
+            else:
+                att = float(np.mean(treated_residuals))
+
+                # Standard error using sandwich estimator
+                var_t = np.var(treated_residuals, ddof=1) if n_t > 1 else 0.0
+                var_c = np.var(residuals, ddof=1) if n_c > 1 else 0.0
+                se = float(np.sqrt(var_t / n_t + var_c / n_c)) if (n_t > 0 and n_c > 0) else 0.0
+
+                # Influence function
+                inf_treated = (treated_residuals - np.mean(treated_residuals)) / n_t
+                inf_control = -residuals / n_c
+                inf_func = np.concatenate([inf_treated, inf_control])
         else:
             # Simple difference in means (no covariates)
-            att = np.mean(treated_change) - np.mean(control_change)
+            if sw_treated is not None:
+                sw_t_norm = sw_treated / np.sum(sw_treated)
+                sw_c_norm = sw_control / np.sum(sw_control)
+                mu_t = float(np.sum(sw_t_norm * treated_change))
+                mu_c = float(np.sum(sw_c_norm * control_change))
+                att = mu_t - mu_c
 
-            var_t = np.var(treated_change, ddof=1) if n_t > 1 else 0.0
-            var_c = np.var(control_change, ddof=1) if n_c > 1 else 0.0
+                # Influence function (survey-weighted)
+                inf_treated = sw_t_norm * (treated_change - mu_t)
+                inf_control = -sw_c_norm * (control_change - mu_c)
+                inf_func = np.concatenate([inf_treated, inf_control])
 
-            se = np.sqrt(var_t / n_t + var_c / n_c) if (n_t > 0 and n_c > 0) else 0.0
+                # SE from influence function variance
+                se = (
+                    float(np.sqrt(np.sum(inf_treated**2) + np.sum(inf_control**2)))
+                    if (n_t > 0 and n_c > 0)
+                    else 0.0
+                )
+            else:
+                att = float(np.mean(treated_change) - np.mean(control_change))
 
-            # Influence function (for aggregation)
-            inf_treated = treated_change - np.mean(treated_change)
-            inf_control = control_change - np.mean(control_change)
-            inf_func = np.concatenate([inf_treated / n_t, -inf_control / n_c])
+                var_t = np.var(treated_change, ddof=1) if n_t > 1 else 0.0
+                var_c = np.var(control_change, ddof=1) if n_c > 1 else 0.0
+                se = float(np.sqrt(var_t / n_t + var_c / n_c)) if (n_t > 0 and n_c > 0) else 0.0
+
+                # Influence function (for aggregation)
+                inf_treated = treated_change - np.mean(treated_change)
+                inf_control = control_change - np.mean(control_change)
+                inf_func = np.concatenate([inf_treated / n_t, -inf_control / n_c])
 
         return att, se, inf_func
 
@@ -1466,6 +1712,9 @@ class CallawaySantAnna(
         X_control: Optional[np.ndarray] = None,
         pscore_cache: Optional[Dict] = None,
         pscore_key: Optional[Any] = None,
+        sw_treated: Optional[np.ndarray] = None,
+        sw_control: Optional[np.ndarray] = None,
+        sw_all: Optional[np.ndarray] = None,
     ) -> Tuple[float, float, np.ndarray]:
         """
         Estimate ATT using inverse probability weighting.
@@ -1477,6 +1726,11 @@ class CallawaySantAnna(
 
         Without covariates:
         Simple difference in means with unconditional propensity weighting.
+
+        Parameters
+        ----------
+        sw_treated, sw_control, sw_all : np.ndarray, optional
+            Survey weights for treated, control, and all units.
         """
         n_t = len(treated_change)
         n_c = len(control_change)
@@ -1508,6 +1762,7 @@ class CallawaySantAnna(
                         X_all,
                         D,
                         rank_deficient_action=self.rank_deficient_action,
+                        weights=sw_all,
                     )
                     _check_propensity_diagnostics(pscore, self.pscore_trim)
                     # Cache the fitted coefficients
@@ -1533,51 +1788,124 @@ class CallawaySantAnna(
             pscore_control = np.clip(pscore_control, self.pscore_trim, 1 - self.pscore_trim)
             pscore_treated = np.clip(pscore_treated, self.pscore_trim, 1 - self.pscore_trim)
 
-            # IPW weights for control units: p(X) / (1 - p(X))
-            # This reweights controls to have same covariate distribution as treated
-            weights_control = pscore_control / (1 - pscore_control)
-            weights_control = weights_control / np.sum(weights_control)  # normalize
+            if sw_treated is not None:
+                # IPW weights compose with survey weights:
+                # w_i = sw_i * p(X_i) / (1 - p(X_i))
+                weights_control = sw_control * pscore_control / (1 - pscore_control)
+                weights_control_norm = weights_control / np.sum(weights_control)
 
-            # ATT = mean(treated) - weighted_mean(control)
-            att = np.mean(treated_change) - np.sum(weights_control * control_change)
+                # ATT: survey-weighted treated mean minus composite-weighted control mean
+                sw_t_norm = sw_treated / np.sum(sw_treated)
+                mu_t = float(np.sum(sw_t_norm * treated_change))
+                att = mu_t - float(np.sum(weights_control_norm * control_change))
 
-            # Compute standard error
-            # Variance of treated mean
-            var_t = np.var(treated_change, ddof=1) if n_t > 1 else 0.0
+                # Influence function (survey-weighted)
+                inf_treated = sw_t_norm * (treated_change - mu_t)
+                inf_control = -weights_control_norm * (
+                    control_change - np.sum(weights_control_norm * control_change)
+                )
+                inf_func = np.concatenate([inf_treated, inf_control])
 
-            # Variance of weighted control mean
-            weighted_var_c = np.sum(
-                weights_control * (control_change - np.sum(weights_control * control_change)) ** 2
-            )
+                # Propensity score IF correction
+                # Accounts for estimation uncertainty in logistic regression coefficients
+                X_all_int = np.column_stack([np.ones(n_t + n_c), X_all])
+                pscore_all = np.concatenate([pscore_treated, pscore_control])
 
-            se = np.sqrt(var_t / n_t + weighted_var_c) if (n_t > 0 and n_c > 0) else 0.0
+                # Survey-weighted PS Hessian: sum(w_i * mu_i * (1-mu_i) * x_i * x_i')
+                W_ps = pscore_all * (1 - pscore_all)
+                if sw_all is not None:
+                    W_ps = W_ps * sw_all
+                H = X_all_int.T @ (W_ps[:, None] * X_all_int)
+                try:
+                    H_inv = np.linalg.solve(H, np.eye(H.shape[0]))
+                except np.linalg.LinAlgError:
+                    H_inv = np.linalg.lstsq(H, np.eye(H.shape[0]), rcond=None)[0]
 
-            # Influence function
-            inf_treated = (treated_change - np.mean(treated_change)) / n_t
-            inf_control = -weights_control * (
-                control_change - np.sum(weights_control * control_change)
-            )
-            inf_func = np.concatenate([inf_treated, inf_control])
+                # PS score: w_i * (D_i - pi_i) * X_i
+                D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
+                score_ps = (D_all - pscore_all)[:, None] * X_all_int
+                if sw_all is not None:
+                    score_ps = score_ps * sw_all[:, None]
+                asy_lin_rep_ps = score_ps @ H_inv  # shape (n_t + n_c, p)
+
+                # M2: gradient of ATT w.r.t. PS parameters
+                att_control_weighted = np.sum(weights_control_norm * control_change)
+                M2 = np.mean(
+                    (weights_control_norm * (control_change - att_control_weighted))[:, None]
+                    * X_all_int[n_t:],
+                    axis=0,
+                )
+
+                # PS correction to influence function
+                inf_ps_correction = asy_lin_rep_ps @ M2
+                inf_func = inf_func + inf_ps_correction
+
+                # SE from influence function variance
+                var_psi = np.sum(inf_func**2)
+                se = float(np.sqrt(var_psi)) if var_psi > 0 else 0.0
+            else:
+                # IPW weights for control units: p(X) / (1 - p(X))
+                # This reweights controls to have same covariate distribution as treated
+                weights_control = pscore_control / (1 - pscore_control)
+                weights_control = weights_control / np.sum(weights_control)  # normalize
+
+                # ATT = mean(treated) - weighted_mean(control)
+                att = float(np.mean(treated_change) - np.sum(weights_control * control_change))
+
+                # Compute standard error
+                var_t = np.var(treated_change, ddof=1) if n_t > 1 else 0.0
+
+                weighted_var_c = np.sum(
+                    weights_control
+                    * (control_change - np.sum(weights_control * control_change)) ** 2
+                )
+
+                se = float(np.sqrt(var_t / n_t + weighted_var_c)) if (n_t > 0 and n_c > 0) else 0.0
+
+                # Influence function
+                inf_treated = (treated_change - np.mean(treated_change)) / n_t
+                inf_control = -weights_control * (
+                    control_change - np.sum(weights_control * control_change)
+                )
+                inf_func = np.concatenate([inf_treated, inf_control])
         else:
             # Unconditional IPW (reduces to difference in means)
-            p_treat = n_treated / n_total  # unconditional propensity score
+            if sw_treated is not None:
+                # Survey-weighted difference in means
+                sw_t_norm = sw_treated / np.sum(sw_treated)
+                sw_c_norm = sw_control / np.sum(sw_control)
+                mu_t = float(np.sum(sw_t_norm * treated_change))
+                mu_c = float(np.sum(sw_c_norm * control_change))
+                att = mu_t - mu_c
 
-            att = np.mean(treated_change) - np.mean(control_change)
+                inf_treated = sw_t_norm * (treated_change - mu_t)
+                inf_control = -sw_c_norm * (control_change - mu_c)
+                inf_func = np.concatenate([inf_treated, inf_control])
 
-            var_t = np.var(treated_change, ddof=1) if n_t > 1 else 0.0
-            var_c = np.var(control_change, ddof=1) if n_c > 1 else 0.0
+                se = (
+                    float(np.sqrt(np.sum(inf_treated**2) + np.sum(inf_control**2)))
+                    if (n_t > 0 and n_c > 0)
+                    else 0.0
+                )
+            else:
+                p_treat = n_treated / n_total  # unconditional propensity score
 
-            # Adjusted variance for IPW
-            se = (
-                np.sqrt(var_t / n_t + var_c * (1 - p_treat) / (n_c * p_treat))
-                if (n_t > 0 and n_c > 0 and p_treat > 0)
-                else 0.0
-            )
+                att = float(np.mean(treated_change) - np.mean(control_change))
 
-            # Influence function (for aggregation)
-            inf_treated = (treated_change - np.mean(treated_change)) / n_t
-            inf_control = (control_change - np.mean(control_change)) / n_c
-            inf_func = np.concatenate([inf_treated, -inf_control])
+                var_t = np.var(treated_change, ddof=1) if n_t > 1 else 0.0
+                var_c = np.var(control_change, ddof=1) if n_c > 1 else 0.0
+
+                # Adjusted variance for IPW
+                se = float(
+                    np.sqrt(var_t / n_t + var_c * (1 - p_treat) / (n_c * p_treat))
+                    if (n_t > 0 and n_c > 0 and p_treat > 0)
+                    else 0.0
+                )
+
+                # Influence function (for aggregation)
+                inf_treated = (treated_change - np.mean(treated_change)) / n_t
+                inf_control = (control_change - np.mean(control_change)) / n_c
+                inf_func = np.concatenate([inf_treated, -inf_control])
 
         return att, se, inf_func
 
@@ -1591,6 +1919,9 @@ class CallawaySantAnna(
         pscore_key: Optional[Any] = None,
         cho_cache: Optional[Dict] = None,
         cho_key: Optional[Any] = None,
+        sw_treated: Optional[np.ndarray] = None,
+        sw_control: Optional[np.ndarray] = None,
+        sw_all: Optional[np.ndarray] = None,
     ) -> Tuple[float, float, np.ndarray]:
         """
         Estimate ATT using doubly robust estimation.
@@ -1607,6 +1938,11 @@ class CallawaySantAnna(
 
         Without covariates:
         Reduces to simple difference in means.
+
+        Parameters
+        ----------
+        sw_treated, sw_control, sw_all : np.ndarray, optional
+            Survey weights for treated, control, and all units.
         """
         n_t = len(treated_change)
         n_c = len(control_change)
@@ -1614,7 +1950,7 @@ class CallawaySantAnna(
         if X_treated is not None and X_control is not None and X_treated.shape[1] > 0:
             # Doubly robust estimation with covariates
             # Step 1: Outcome regression - fit E[Delta Y | X] on control
-            # Try Cholesky cache for outcome regression
+            # Try Cholesky cache for outcome regression (disabled when survey weights present)
             beta = None
             X_control_with_intercept = np.column_stack([np.ones(n_c), X_control])
             if cho_cache is not None and cho_key is not None:
@@ -1650,6 +1986,7 @@ class CallawaySantAnna(
                     X_control,
                     control_change,
                     rank_deficient_action=self.rank_deficient_action,
+                    weights=sw_control,
                 )
                 # Zero NaN coefficients for prediction only — dropped columns
                 # contribute 0 to the column space projection. Note: solve_ols
@@ -1684,6 +2021,7 @@ class CallawaySantAnna(
                         X_all,
                         D,
                         rank_deficient_action=self.rank_deficient_action,
+                        weights=sw_all,
                     )
                     _check_propensity_diagnostics(pscore, self.pscore_trim)
                     if pscore_cache is not None and pscore_key is not None:
@@ -1705,43 +2043,75 @@ class CallawaySantAnna(
             # Clip propensity scores
             pscore_control = np.clip(pscore_control, self.pscore_trim, 1 - self.pscore_trim)
 
-            # IPW weights for control: p(X) / (1 - p(X))
-            weights_control = pscore_control / (1 - pscore_control)
+            if sw_treated is not None:
+                # IPW weights compose with survey weights
+                weights_control = sw_control * pscore_control / (1 - pscore_control)
 
-            # Step 3: Doubly robust ATT
-            # ATT = mean(treated - m(X_treated))
-            #     + weighted_mean_control((m(X) - Y) * weight)
-            att_treated_part = np.mean(treated_change - m_treated)
+                # Step 3: DR ATT (survey-weighted)
+                sw_t_sum = np.sum(sw_treated)
+                att_treated_part = float(
+                    np.sum(sw_treated * (treated_change - m_treated)) / sw_t_sum
+                )
+                augmentation = float(
+                    np.sum(weights_control * (m_control - control_change)) / sw_t_sum
+                )
+                att = att_treated_part + augmentation
 
-            # Augmentation term from control
-            augmentation = np.sum(weights_control * (m_control - control_change)) / n_t
+                # Step 4: Influence function (survey-weighted DR)
+                psi_treated = (sw_treated / sw_t_sum) * (treated_change - m_treated - att)
+                psi_control = (weights_control / sw_t_sum) * (m_control - control_change)
 
-            att = att_treated_part + augmentation
+                var_psi = np.sum(psi_treated**2) + np.sum(psi_control**2)
+                se = float(np.sqrt(var_psi)) if var_psi > 0 else 0.0
 
-            # Step 4: Standard error using influence function
-            # Influence function for DR estimator
-            psi_treated = (treated_change - m_treated - att) / n_t
-            psi_control = (weights_control * (m_control - control_change)) / n_t
+                inf_func = np.concatenate([psi_treated, psi_control])
+            else:
+                # IPW weights for control: p(X) / (1 - p(X))
+                weights_control = pscore_control / (1 - pscore_control)
 
-            # Variance is sum of squared influence functions
-            var_psi = np.sum(psi_treated**2) + np.sum(psi_control**2)
-            se = np.sqrt(var_psi) if var_psi > 0 else 0.0
+                # Step 3: Doubly robust ATT
+                att_treated_part = float(np.mean(treated_change - m_treated))
+                augmentation = float(np.sum(weights_control * (m_control - control_change)) / n_t)
+                att = att_treated_part + augmentation
 
-            # Full influence function
-            inf_func = np.concatenate([psi_treated, psi_control])
+                # Step 4: Standard error using influence function
+                psi_treated = (treated_change - m_treated - att) / n_t
+                psi_control = (weights_control * (m_control - control_change)) / n_t
+
+                var_psi = np.sum(psi_treated**2) + np.sum(psi_control**2)
+                se = float(np.sqrt(var_psi)) if var_psi > 0 else 0.0
+
+                inf_func = np.concatenate([psi_treated, psi_control])
         else:
             # Without covariates, DR simplifies to difference in means
-            att = np.mean(treated_change) - np.mean(control_change)
+            if sw_treated is not None:
+                sw_t_norm = sw_treated / np.sum(sw_treated)
+                sw_c_norm = sw_control / np.sum(sw_control)
+                mu_t = float(np.sum(sw_t_norm * treated_change))
+                mu_c = float(np.sum(sw_c_norm * control_change))
+                att = mu_t - mu_c
 
-            var_t = np.var(treated_change, ddof=1) if n_t > 1 else 0.0
-            var_c = np.var(control_change, ddof=1) if n_c > 1 else 0.0
+                inf_treated = sw_t_norm * (treated_change - mu_t)
+                inf_control = -sw_c_norm * (control_change - mu_c)
+                inf_func = np.concatenate([inf_treated, inf_control])
 
-            se = np.sqrt(var_t / n_t + var_c / n_c) if (n_t > 0 and n_c > 0) else 0.0
+                se = (
+                    float(np.sqrt(np.sum(inf_treated**2) + np.sum(inf_control**2)))
+                    if (n_t > 0 and n_c > 0)
+                    else 0.0
+                )
+            else:
+                att = float(np.mean(treated_change) - np.mean(control_change))
 
-            # Influence function for DR estimator
-            inf_treated = (treated_change - np.mean(treated_change)) / n_t
-            inf_control = (control_change - np.mean(control_change)) / n_c
-            inf_func = np.concatenate([inf_treated, -inf_control])
+                var_t = np.var(treated_change, ddof=1) if n_t > 1 else 0.0
+                var_c = np.var(control_change, ddof=1) if n_c > 1 else 0.0
+
+                se = float(np.sqrt(var_t / n_t + var_c / n_c)) if (n_t > 0 and n_c > 0) else 0.0
+
+                # Influence function for DR estimator
+                inf_treated = (treated_change - np.mean(treated_change)) / n_t
+                inf_control = (control_change - np.mean(control_change)) / n_c
+                inf_func = np.concatenate([inf_treated, -inf_control])
 
         return att, se, inf_func
 

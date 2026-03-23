@@ -1,7 +1,7 @@
 # Survey Data Support Roadmap
 
 This document captures planned future work for survey data support in diff-diff.
-Phases 1-3 are implemented. Phases 4-5 are deferred for future PRs.
+Phases 1-4 are implemented. Phase 5 is deferred for future PRs.
 
 ## Implemented (Phases 1-2)
 
@@ -21,19 +21,18 @@ Phases 1-3 are implemented. Phases 4-5 are deferred for future PRs.
 | StackedDiD | `stacked_did.py` | pweight only | Q-weights compose multiplicatively with survey weights; TSL vcov on composed weights; fweight/aweight rejected (composition changes weight semantics) |
 | SunAbraham | `sun_abraham.py` | Full | Survey weights in LinearRegression + weighted within-transform; bootstrap+survey deferred |
 | BaconDecomposition | `bacon.py` | Diagnostic | Weighted cell means, weighted within-transform, weighted group shares; no inference (diagnostic only) |
-| TripleDifference | `triple_diff.py` | Reg only | Regression method with weighted OLS + TSL on influence functions; IPW/DR deferred (needs weighted `solve_logit()`) |
+| TripleDifference | `triple_diff.py` | Full | Regression, IPW, and DR methods with weighted OLS/logit + TSL on influence functions |
 | ContinuousDiD | `continuous_did.py` | Analytical | Weighted B-spline OLS + TSL on influence functions; bootstrap+survey deferred |
 | EfficientDiD | `efficient_did.py` | Analytical | Weighted means/covariances in Omega* + TSL on EIF scores; bootstrap+survey deferred |
 
 ### Phase 3 Deferred Work
 
 The following capabilities were deferred from Phase 3 because they depend on
-Phase 5 infrastructure (weighted `solve_logit()` or bootstrap+survey interaction):
+Phase 5 infrastructure (bootstrap+survey interaction):
 
 | Estimator | Deferred Capability | Blocker |
 |-----------|-------------------|---------|
 | SunAbraham | Pairs bootstrap + survey | Phase 5: bootstrap+survey interaction |
-| TripleDifference | IPW and DR methods + survey | Phase 5: weighted `solve_logit()` |
 | ContinuousDiD | Multiplier bootstrap + survey | Phase 5: bootstrap+survey interaction |
 | EfficientDiD | Multiplier bootstrap + survey | Phase 5: bootstrap+survey interaction |
 | EfficientDiD | Covariates (DR path) + survey | DR nuisance estimation needs survey weight threading |
@@ -41,19 +40,46 @@ Phase 5 infrastructure (weighted `solve_logit()` or bootstrap+survey interaction
 All blocked combinations raise `NotImplementedError` when attempted, with a
 message pointing to the planned phase or describing the limitation.
 
-## Phase 4: Complex Standalone Estimators
+## Implemented (Phase 4): Complex Standalone Estimators + Weighted Logit
 
-These require more substantial changes beyond threading weights.
+| Estimator | File | Survey Support | Notes |
+|-----------|------|----------------|-------|
+| ImputationDiD | `imputation.py` | Analytical | Weighted iterative FE, weighted ATT aggregation, weighted conservative variance (Theorem 3); bootstrap+survey deferred |
+| TwoStageDiD | `two_stage.py` | Analytical | Weighted iterative FE, weighted Stage 2 OLS, weighted GMM sandwich variance; bootstrap+survey deferred |
+| CallawaySantAnna | `staggered.py` | Weights-only | Weights-only SurveyDesign (strata/PSU/FPC rejected); reg supports covariates, IPW/DR no-covariate only; survey-weighted WIF in aggregation; full design SEs, covariates+IPW/DR, and bootstrap+survey deferred |
+
+**Infrastructure**: Weighted `solve_logit()` added to `linalg.py` — survey weights
+enter the IRLS working weights as `w_survey * mu * (1 - mu)`. This also unblocked
+TripleDifference IPW/DR from Phase 3 deferred work.
+
+### Phase 4 Deferred Work
+
+| Estimator | Deferred Capability | Blocker |
+|-----------|-------------------|---------|
+| ImputationDiD | Bootstrap + survey | Phase 5: bootstrap+survey interaction |
+| TwoStageDiD | Bootstrap + survey | Phase 5: bootstrap+survey interaction |
+| CallawaySantAnna | Bootstrap + survey | Phase 5: bootstrap+survey interaction |
+| CallawaySantAnna | Strata/PSU/FPC in SurveyDesign | Phase 5: route combined IF/WIF through `compute_survey_vcov()` for design-based aggregation SEs |
+| CallawaySantAnna | Covariates + IPW/DR + survey | Phase 5: DRDID panel nuisance IF corrections |
+| CallawaySantAnna | Efficient DRDID nuisance IF for reg+covariates | Phase 5: replace conservative plug-in IF with semiparametrically efficient IF |
+
+### Remaining for Phase 5
 
 | Estimator | File | Complexity | Notes |
 |-----------|------|------------|-------|
-| ImputationDiD | `imputation.py` | Medium | Weighted Stage 1 OLS, weighted ATT aggregation, weighted conservative variance |
-| TwoStageDiD | `two_stage.py` | Medium-High | Weighted within-transformation, weighted GMM sandwich |
-| CallawaySantAnna | `staggered.py` | High | Weights enter propensity score (weighted solve_logit), IPW/DR reweighting (w_survey x w_ipw), multiplier bootstrap |
-| SyntheticDiD | `synthetic_did.py` | Medium | Survey-weighted treated mean in optimization, weighted placebo variance |
-| TROP | `trop.py` | Medium | Survey weights in ATT aggregation and LOOCV (distinct from TROP's internal weights) |
+| SyntheticDiD | `synthetic_did.py` | Medium | Survey-weighted treated mean in optimization, weighted placebo variance (bootstrap-based SE only) |
+| TROP | `trop.py` | Medium | Survey weights in ATT aggregation and LOOCV (bootstrap-based SE only) |
 
-## Phase 5: Advanced Features
+## Phase 5: Advanced Features + Remaining Estimators
+
+### SyntheticDiD and TROP Survey Support
+Both estimators use bootstrap/placebo for SE with no analytical variance path.
+Phase 5 provides survey-weighted point estimates and survey-aware bootstrap SE.
+
+### Bootstrap + Survey Interaction
+Unblock bootstrap + survey for all estimators that currently defer it
+(ImputationDiD, TwoStageDiD, CallawaySantAnna, SunAbraham, ContinuousDiD,
+EfficientDiD). Requires survey-aware resampling schemes.
 
 ### Replicate Weight Variance
 Re-run WLS for each replicate weight column, compute variance from distribution
@@ -64,16 +90,7 @@ Add `replicate_weights`, `replicate_type`, `replicate_rho` fields to SurveyDesig
 Compare survey vcov to SRS vcov element-wise. Report design effect per
 coefficient. Effective n = n / DEFF.
 
-### Wild Bootstrap with Survey Weights
-Add `survey_weights` parameter to `wild_bootstrap_se()`. Requires careful
-interaction between bootstrap resampling and survey weight structure.
-
 ### Subpopulation Analysis
 `SurveyDesign.subpopulation(data, mask)` — zero-out weights for excluded
 observations while preserving the full design structure for correct variance
 estimation (unlike simple subsetting, which would drop design information).
-
-### Weighted `solve_logit()`
-Add weights to the IRLS iteration in `solve_logit()`. Required by
-CallawaySantAnna (propensity score estimation) and TripleDifference (IPW method).
-Working weights become `w_survey * mu * (1 - mu)`.

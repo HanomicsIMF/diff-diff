@@ -139,6 +139,8 @@ class ImputationDiDResults:
     bootstrap_results: Optional[ImputationBootstrapResults] = field(default=None, repr=False)
     # Internal: stores data needed for pretrend_test()
     _estimator_ref: Optional[Any] = field(default=None, repr=False)
+    # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
+    survey_metadata: Optional[Any] = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -181,6 +183,27 @@ class ImputationDiDResults:
             f"{'Time periods:':<30} {len(self.time_periods):>10}",
             "",
         ]
+
+        # Survey design info
+        if self.survey_metadata is not None:
+            sm = self.survey_metadata
+            lines.extend(
+                [
+                    "-" * 85,
+                    "Survey Design".center(85),
+                    "-" * 85,
+                    f"{'Weight type:':<30} {sm.weight_type:>10}",
+                ]
+            )
+            if sm.n_strata is not None:
+                lines.append(f"{'Strata:':<30} {sm.n_strata:>10}")
+            if sm.n_psu is not None:
+                lines.append(f"{'PSU/Cluster:':<30} {sm.n_psu:>10}")
+            lines.append(f"{'Effective sample size:':<30} {sm.effective_n:>10.1f}")
+            lines.append(f"{'Design effect (DEFF):':<30} {sm.design_effect:>10.2f}")
+            if sm.df_survey is not None:
+                lines.append(f"{'Survey d.f.:':<30} {sm.df_survey:>10}")
+            lines.extend(["-" * 85, ""])
 
         # Overall ATT
         lines.extend(

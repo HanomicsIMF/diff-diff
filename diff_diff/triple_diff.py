@@ -480,8 +480,8 @@ class TripleDifference:
         survey_design : SurveyDesign, optional
             Survey design specification for complex survey data. When
             provided, uses survey weights for estimation and Taylor Series
-            Linearization (TSL) for variance estimation. Only supported
-            with estimation_method="reg".
+            Linearization (TSL) for variance estimation. Supported with
+            all estimation methods ("reg", "ipw", "dr").
 
         Returns
         -------
@@ -493,7 +493,7 @@ class TripleDifference:
         ValueError
             If required columns are missing or data validation fails.
         NotImplementedError
-            If survey_design is used with estimation_method="ipw" or "dr".
+            If survey_design is used with wild_bootstrap inference.
         """
         # Resolve survey design if provided
         from diff_diff.survey import (
@@ -507,11 +507,11 @@ class TripleDifference:
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
 
-        # Guard IPW/DR with survey weights
-        if survey_design is not None and self.estimation_method in ("ipw", "dr"):
-            raise NotImplementedError(
-                "IPW and doubly robust methods with survey weights require "
-                "weighted solve_logit(), planned for Phase 5."
+        if resolved_survey is not None and resolved_survey.weight_type != "pweight":
+            raise ValueError(
+                f"TripleDifference survey support requires weight_type='pweight', "
+                f"got '{resolved_survey.weight_type}'. The survey variance math "
+                f"assumes probability weights (pweight)."
             )
 
         # Validate inputs
@@ -572,9 +572,25 @@ class TripleDifference:
                 resolved_survey=resolved_survey,
             )
         elif self.estimation_method == "ipw":
-            att, se, r_squared, pscore_stats = self._ipw_estimation(y, G, P, T, X)
+            att, se, r_squared, pscore_stats = self._ipw_estimation(
+                y,
+                G,
+                P,
+                T,
+                X,
+                survey_weights=survey_weights,
+                resolved_survey=resolved_survey,
+            )
         else:  # doubly robust
-            att, se, r_squared, pscore_stats = self._doubly_robust(y, G, P, T, X)
+            att, se, r_squared, pscore_stats = self._doubly_robust(
+                y,
+                G,
+                P,
+                T,
+                X,
+                survey_weights=survey_weights,
+                resolved_survey=resolved_survey,
+            )
 
         # Compute inference
         # When survey design is active, use survey df (n_PSU - n_strata)
@@ -765,6 +781,8 @@ class TripleDifference:
         P: np.ndarray,
         T: np.ndarray,
         X: Optional[np.ndarray],
+        survey_weights: Optional[np.ndarray] = None,
+        resolved_survey=None,
     ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]]]:
         """
         Estimate ATT using inverse probability weighting via three-DiD
@@ -774,7 +792,15 @@ class TripleDifference:
         subgroup membership P(subgroup=4|X) within {j, 4} subset.
         Matches R's triplediff::ddd() with est_method="ipw".
         """
-        return self._estimate_ddd_decomposition(y, G, P, T, X)
+        return self._estimate_ddd_decomposition(
+            y,
+            G,
+            P,
+            T,
+            X,
+            survey_weights=survey_weights,
+            resolved_survey=resolved_survey,
+        )
 
     def _doubly_robust(
         self,
@@ -783,6 +809,8 @@ class TripleDifference:
         P: np.ndarray,
         T: np.ndarray,
         X: Optional[np.ndarray],
+        survey_weights: Optional[np.ndarray] = None,
+        resolved_survey=None,
     ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]]]:
         """
         Estimate ATT using doubly robust estimation via three-DiD
@@ -793,7 +821,15 @@ class TripleDifference:
         correctly specified. Matches R's triplediff::ddd() with
         est_method="dr".
         """
-        return self._estimate_ddd_decomposition(y, G, P, T, X)
+        return self._estimate_ddd_decomposition(
+            y,
+            G,
+            P,
+            T,
+            X,
+            survey_weights=survey_weights,
+            resolved_survey=resolved_survey,
+        )
 
     def _estimate_ddd_decomposition(
         self,
@@ -865,6 +901,9 @@ class TripleDifference:
                 PA4 = (sg_sub == 4).astype(float)
                 PAa = (sg_sub == j).astype(float)
 
+                # Subset survey weights for this comparison (needed for logit)
+                w_sub = survey_weights[mask] if survey_weights is not None else None
+
                 # --- Propensity scores ---
                 if est_method == "reg":
                     # RA: no propensity scores needed
@@ -878,6 +917,7 @@ class TripleDifference:
                             covX_sub[:, 1:],
                             PA4,
                             rank_deficient_action=self.rank_deficient_action,
+                            weights=w_sub,
                         )
                     except Exception:
                         if self.rank_deficient_action == "error":
@@ -910,6 +950,8 @@ class TripleDifference:
                     # Hessian only when PS was actually estimated
                     if ps_estimated:
                         W_ps = pscore_sub * (1 - pscore_sub)
+                        if w_sub is not None:
+                            W_ps = W_ps * w_sub
                         try:
                             XWX = covX_sub.T @ (W_ps[:, None] * covX_sub)
                             hessian = np.linalg.inv(XWX) * n_sub
@@ -932,9 +974,6 @@ class TripleDifference:
                     if frac_trimmed > 0.05:
                         overlap_issues.append((j, frac_trimmed))
                     hessian = None
-
-                # Subset survey weights for this comparison
-                w_sub = survey_weights[mask] if survey_weights is not None else None
 
                 # --- Outcome regression ---
                 if est_method == "ipw":
@@ -1045,11 +1084,19 @@ class TripleDifference:
 
         if resolved_survey is not None:
             # Survey-weighted SE via TSL on the combined influence function.
-            # Treat the IF as a single-parameter score vector:
-            #   compute_survey_vcov(ones, IF, resolved) gives V(ATT).
+            # For IPW/DR: pairwise IFs include survey weights via weighted Riesz
+            # representers, so divide out to avoid double-weighting by TSL.
+            # For reg: pairwise IFs are already on the unweighted scale (WLS
+            # fits use weights but the IF is residual-based, not Riesz-weighted),
+            # so pass directly to TSL without de-weighting.
             from diff_diff.survey import compute_survey_vcov
 
-            vcov_survey = compute_survey_vcov(np.ones((n, 1)), inf_func, resolved_survey)
+            inf_for_tsl = inf_func.copy()
+            if est_method in ("ipw", "dr") and survey_weights is not None:
+                sw = survey_weights
+                nz = sw > 0
+                inf_for_tsl[nz] = inf_for_tsl[nz] / sw[nz]
+            vcov_survey = compute_survey_vcov(np.ones((n, 1)), inf_for_tsl, resolved_survey)
             se = float(np.sqrt(vcov_survey[0, 0]))
         elif self._cluster_ids is not None:
             # Cluster-robust SE: sum IF within clusters, then Liang-Zeger variance
@@ -1192,7 +1239,17 @@ class TripleDifference:
         Matches R's triplediff::compute_did_rc().
         """
         if est_method == "ipw":
-            return self._compute_did_rc_ipw(y, post, PA4, PAa, pscore, covX, hessian, n)
+            return self._compute_did_rc_ipw(
+                y,
+                post,
+                PA4,
+                PAa,
+                pscore,
+                covX,
+                hessian,
+                n,
+                weights=weights,
+            )
         elif est_method == "reg":
             return self._compute_did_rc_reg(
                 y,
@@ -1221,6 +1278,7 @@ class TripleDifference:
                 or_trt_post,
                 hessian,
                 n,
+                weights=weights,
             )
 
     def _compute_did_rc_ipw(
@@ -1233,6 +1291,7 @@ class TripleDifference:
         covX: np.ndarray,
         hessian: Optional[np.ndarray],
         n: int,
+        weights: Optional[np.ndarray] = None,
     ) -> Tuple[float, np.ndarray]:
         """IPW DiD for a single pairwise comparison (RC)."""
         # Riesz representers (IPW weights * indicators)
@@ -1240,6 +1299,13 @@ class TripleDifference:
         riesz_treat_post = PA4 * post
         riesz_control_pre = pscore * PAa * (1 - post) / (1 - pscore)
         riesz_control_post = pscore * PAa * post / (1 - pscore)
+
+        # Incorporate survey weights into Riesz representers
+        if weights is not None:
+            riesz_treat_pre = riesz_treat_pre * weights
+            riesz_treat_post = riesz_treat_post * weights
+            riesz_control_pre = riesz_control_pre * weights
+            riesz_control_post = riesz_control_post * weights
 
         # Hajek-normalized cell-time means
         def _hajek(riesz, y_vals):
@@ -1274,8 +1340,12 @@ class TripleDifference:
         # Propensity score correction for influence function
         if hessian is not None:
             score_ps = (PA4 - pscore)[:, None] * covX
+            if weights is not None:
+                score_ps = score_ps * weights[:, None]
             asy_lin_rep_ps = score_ps @ hessian
 
+            # Riesz representers already incorporate survey weights,
+            # so use np.mean (not np.average with weights) to avoid double-weighting.
             M2_pre = np.mean(
                 (riesz_control_pre * (y - att_control_pre))[:, None] * covX,
                 axis=0,
@@ -1334,10 +1404,9 @@ class TripleDifference:
         # for consistency with the weighted OLS fit
         weights_ols_pre = PAa * (1 - post)
         if weights is not None:
-            w_sum = np.sum(weights)
             wols_x_pre = (weights_ols_pre * weights)[:, None] * covX
             wols_eX_pre = (weights_ols_pre * weights * (y - or_ctrl_pre))[:, None] * covX
-            XpX_pre = wols_x_pre.T @ covX / w_sum
+            XpX_pre = wols_x_pre.T @ covX / n
         else:
             wols_x_pre = weights_ols_pre[:, None] * covX
             wols_eX_pre = (weights_ols_pre * (y - or_ctrl_pre))[:, None] * covX
@@ -1352,7 +1421,7 @@ class TripleDifference:
         if weights is not None:
             wols_x_post = (weights_ols_post * weights)[:, None] * covX
             wols_eX_post = (weights_ols_post * weights * (y - or_ctrl_post))[:, None] * covX
-            XpX_post = wols_x_post.T @ covX / w_sum
+            XpX_post = wols_x_post.T @ covX / n
         else:
             wols_x_post = weights_ols_post[:, None] * covX
             wols_eX_post = (weights_ols_post * (y - or_ctrl_post))[:, None] * covX
@@ -1399,6 +1468,7 @@ class TripleDifference:
         or_trt_post: np.ndarray,
         hessian: Optional[np.ndarray],
         n: int,
+        weights: Optional[np.ndarray] = None,
     ) -> Tuple[float, np.ndarray]:
         """Doubly robust DiD for a single pairwise comparison (RC)."""
         or_ctrl = post * or_ctrl_post + (1 - post) * or_ctrl_pre
@@ -1411,6 +1481,16 @@ class TripleDifference:
         riesz_d = PA4
         riesz_dt1 = PA4 * post
         riesz_dt0 = PA4 * (1 - post)
+
+        # Incorporate survey weights into Riesz representers
+        if weights is not None:
+            riesz_treat_pre = riesz_treat_pre * weights
+            riesz_treat_post = riesz_treat_post * weights
+            riesz_control_pre = riesz_control_pre * weights
+            riesz_control_post = riesz_control_post * weights
+            riesz_d = riesz_d * weights
+            riesz_dt1 = riesz_dt1 * weights
+            riesz_dt0 = riesz_dt0 * weights
 
         # DR cell-time components
         def _safe_ratio(num, denom):
@@ -1452,9 +1532,14 @@ class TripleDifference:
         # --- Influence function ---
         # OLS asymptotic linear representations (control subgroup)
         weights_ols_pre = PAa * (1 - post)
-        wols_x_pre = weights_ols_pre[:, None] * covX
-        wols_eX_pre = (weights_ols_pre * (y - or_ctrl_pre))[:, None] * covX
-        XpX_pre = wols_x_pre.T @ covX / n
+        if weights is not None:
+            wols_x_pre = (weights_ols_pre * weights)[:, None] * covX
+            wols_eX_pre = (weights_ols_pre * weights * (y - or_ctrl_pre))[:, None] * covX
+            XpX_pre = wols_x_pre.T @ covX / n
+        else:
+            wols_x_pre = weights_ols_pre[:, None] * covX
+            wols_eX_pre = (weights_ols_pre * (y - or_ctrl_pre))[:, None] * covX
+            XpX_pre = wols_x_pre.T @ covX / n
         try:
             XpX_inv_pre = np.linalg.inv(XpX_pre)
         except np.linalg.LinAlgError:
@@ -1462,9 +1547,14 @@ class TripleDifference:
         asy_lin_rep_ols_pre = wols_eX_pre @ XpX_inv_pre
 
         weights_ols_post = PAa * post
-        wols_x_post = weights_ols_post[:, None] * covX
-        wols_eX_post = (weights_ols_post * (y - or_ctrl_post))[:, None] * covX
-        XpX_post = wols_x_post.T @ covX / n
+        if weights is not None:
+            wols_x_post = (weights_ols_post * weights)[:, None] * covX
+            wols_eX_post = (weights_ols_post * weights * (y - or_ctrl_post))[:, None] * covX
+            XpX_post = wols_x_post.T @ covX / n
+        else:
+            wols_x_post = weights_ols_post[:, None] * covX
+            wols_eX_post = (weights_ols_post * (y - or_ctrl_post))[:, None] * covX
+            XpX_post = wols_x_post.T @ covX / n
         try:
             XpX_inv_post = np.linalg.inv(XpX_post)
         except np.linalg.LinAlgError:
@@ -1473,9 +1563,14 @@ class TripleDifference:
 
         # OLS representations (treated subgroup)
         weights_ols_pre_treat = PA4 * (1 - post)
-        wols_x_pre_treat = weights_ols_pre_treat[:, None] * covX
-        wols_eX_pre_treat = (weights_ols_pre_treat * (y - or_trt_pre))[:, None] * covX
-        XpX_pre_treat = wols_x_pre_treat.T @ covX / n
+        if weights is not None:
+            wols_x_pre_treat = (weights_ols_pre_treat * weights)[:, None] * covX
+            wols_eX_pre_treat = (weights_ols_pre_treat * weights * (y - or_trt_pre))[:, None] * covX
+            XpX_pre_treat = wols_x_pre_treat.T @ covX / n
+        else:
+            wols_x_pre_treat = weights_ols_pre_treat[:, None] * covX
+            wols_eX_pre_treat = (weights_ols_pre_treat * (y - or_trt_pre))[:, None] * covX
+            XpX_pre_treat = wols_x_pre_treat.T @ covX / n
         try:
             XpX_inv_pre_treat = np.linalg.inv(XpX_pre_treat)
         except np.linalg.LinAlgError:
@@ -1483,9 +1578,16 @@ class TripleDifference:
         asy_lin_rep_ols_pre_treat = wols_eX_pre_treat @ XpX_inv_pre_treat
 
         weights_ols_post_treat = PA4 * post
-        wols_x_post_treat = weights_ols_post_treat[:, None] * covX
-        wols_eX_post_treat = (weights_ols_post_treat * (y - or_trt_post))[:, None] * covX
-        XpX_post_treat = wols_x_post_treat.T @ covX / n
+        if weights is not None:
+            wols_x_post_treat = (weights_ols_post_treat * weights)[:, None] * covX
+            wols_eX_post_treat = (weights_ols_post_treat * weights * (y - or_trt_post))[
+                :, None
+            ] * covX
+            XpX_post_treat = wols_x_post_treat.T @ covX / n
+        else:
+            wols_x_post_treat = weights_ols_post_treat[:, None] * covX
+            wols_eX_post_treat = (weights_ols_post_treat * (y - or_trt_post))[:, None] * covX
+            XpX_post_treat = wols_x_post_treat.T @ covX / n
         try:
             XpX_inv_post_treat = np.linalg.inv(XpX_post_treat)
         except np.linalg.LinAlgError:
@@ -1494,6 +1596,8 @@ class TripleDifference:
 
         # Propensity score linear representation
         score_ps = (PA4 - pscore)[:, None] * covX
+        if weights is not None:
+            score_ps = score_ps * weights[:, None]
         if hessian is not None:
             asy_lin_rep_ps = score_ps @ hessian
         else:
@@ -1515,6 +1619,8 @@ class TripleDifference:
         )
 
         # OR correction for treated
+        # Riesz representers already incorporate survey weights,
+        # so use np.mean (not weighted average) to avoid double-weighting.
         M1_post = (
             (-np.mean((riesz_treat_post * post)[:, None] * covX, axis=0) / m_riesz_treat_post)
             if m_riesz_treat_post > 0
@@ -1605,16 +1711,14 @@ class TripleDifference:
         # OR combination
         mom_post = (
             np.mean(
-                (riesz_d[:, None] / m_riesz_d - riesz_dt1[:, None] / m_riesz_dt1) * covX,
-                axis=0,
+                (riesz_d[:, None] / m_riesz_d - riesz_dt1[:, None] / m_riesz_dt1) * covX, axis=0
             )
             if (m_riesz_d > 0 and m_riesz_dt1 > 0)
             else np.zeros(covX.shape[1])
         )
         mom_pre = (
             np.mean(
-                (riesz_d[:, None] / m_riesz_d - riesz_dt0[:, None] / m_riesz_dt0) * covX,
-                axis=0,
+                (riesz_d[:, None] / m_riesz_d - riesz_dt0[:, None] / m_riesz_dt0) * covX, axis=0
             )
             if (m_riesz_d > 0 and m_riesz_dt0 > 0)
             else np.zeros(covX.shape[1])

@@ -62,24 +62,40 @@ class CallawaySantAnnaAggregationMixin:
         gt_pairs = []
         groups_for_gt = []
 
+        # For survey: compute fixed per-cohort weight sums from the full
+        # unit-level sample (matching R's did::aggte pg = n_g / N).
+        survey_cohort_weights = None
+        if precomputed is not None and precomputed.get("survey_weights") is not None:
+            sw = precomputed["survey_weights"]
+            unit_cohorts = precomputed["unit_cohorts"]
+            survey_cohort_weights = {}
+            for g in np.unique(unit_cohorts):
+                if g > 0:  # exclude never-treated (0)
+                    survey_cohort_weights[g] = float(np.sum(sw[unit_cohorts == g]))
+
         for (g, t), data in group_time_effects.items():
             # Only include post-treatment effects (t >= g - anticipation)
             # Pre-treatment effects are for parallel trends, not overall ATT
             if t < g - self.anticipation:
                 continue
-            effects.append(data['effect'])
-            weights_list.append(data['n_treated'])
+            effects.append(data["effect"])
+            # Use fixed cohort-level survey weight sum for aggregation
+            if survey_cohort_weights is not None and g in survey_cohort_weights:
+                weights_list.append(survey_cohort_weights[g])
+            else:
+                weights_list.append(data["n_treated"])
             gt_pairs.append((g, t))
             groups_for_gt.append(g)
 
         # Guard against empty post-treatment set
         if len(effects) == 0:
             import warnings
+
             warnings.warn(
                 "No post-treatment effects available for overall ATT aggregation. "
                 "This can occur when cohorts lack post-treatment periods in the data.",
                 UserWarning,
-                stacklevel=2
+                stacklevel=2,
             )
             return np.nan, np.nan
 
@@ -92,6 +108,7 @@ class CallawaySantAnnaAggregationMixin:
         n_nan = int(np.sum(~finite_mask))
         if n_nan > 0:
             import warnings
+
             warnings.warn(
                 f"{n_nan} group-time effect(s) are NaN and excluded from overall ATT "
                 "aggregation. Inspect group_time_effects for details.",
@@ -105,6 +122,7 @@ class CallawaySantAnnaAggregationMixin:
 
         if len(effects) == 0:
             import warnings
+
             warnings.warn(
                 "All post-treatment effects are NaN. Cannot compute overall ATT.",
                 UserWarning,
@@ -121,8 +139,14 @@ class CallawaySantAnnaAggregationMixin:
 
         # Compute SE using influence function aggregation with wif adjustment
         overall_se = self._compute_aggregated_se_with_wif(
-            gt_pairs, weights_norm, effects, groups_for_gt,
-            influence_func_info, df, unit, precomputed
+            gt_pairs,
+            weights_norm,
+            effects,
+            groups_for_gt,
+            influence_func_info,
+            df,
+            unit,
+            precomputed,
         )
 
         return overall_att, overall_se
@@ -158,13 +182,13 @@ class CallawaySantAnnaAggregationMixin:
         if n_units is None:
             # Fallback: infer size from influence function info
             max_idx = 0
-            for (g, t) in gt_pairs:
+            for g, t in gt_pairs:
                 if (g, t) in influence_func_info:
                     info = influence_func_info[(g, t)]
-                    if len(info['treated_idx']) > 0:
-                        max_idx = max(max_idx, info['treated_idx'].max())
-                    if len(info['control_idx']) > 0:
-                        max_idx = max(max_idx, info['control_idx'].max())
+                    if len(info["treated_idx"]) > 0:
+                        max_idx = max(max_idx, info["treated_idx"].max())
+                    if len(info["control_idx"]) > 0:
+                        max_idx = max(max_idx, info["control_idx"].max())
             n_units = max_idx + 1
 
         if n_units == 0:
@@ -181,16 +205,16 @@ class CallawaySantAnnaAggregationMixin:
             w = weights[j]
 
             # Vectorized influence function aggregation using index arrays
-            treated_idx = info['treated_idx']
+            treated_idx = info["treated_idx"]
             if len(treated_idx) > 0:
-                np.add.at(psi_overall, treated_idx, w * info['treated_inf'])
+                np.add.at(psi_overall, treated_idx, w * info["treated_inf"])
 
-            control_idx = info['control_idx']
+            control_idx = info["control_idx"]
             if len(control_idx) > 0:
-                np.add.at(psi_overall, control_idx, w * info['control_inf'])
+                np.add.at(psi_overall, control_idx, w * info["control_inf"])
 
         # Compute variance: Var(θ̄) = (1/n) Σᵢ ψᵢ²
-        variance = np.sum(psi_overall ** 2)
+        variance = np.sum(psi_overall**2)
         return np.sqrt(variance)
 
     def _compute_combined_influence_function(
@@ -228,39 +252,49 @@ class CallawaySantAnnaAggregationMixin:
 
         # Build unit index mapping (local or global)
         if global_unit_to_idx is not None and n_global_units is not None:
-            unit_to_idx = global_unit_to_idx
             n_units = n_global_units
             all_units = None  # caller already has the unit list
         else:
             all_units_set: Set[Any] = set()
-            for (g, t) in gt_pairs:
+            for g, t in gt_pairs:
                 if (g, t) in influence_func_info:
                     info = influence_func_info[(g, t)]
-                    all_units_set.update(info['treated_units'])
-                    all_units_set.update(info['control_units'])
+                    all_units_set.update(info["treated_units"])
+                    all_units_set.update(info["control_units"])
 
             if not all_units_set:
                 return np.zeros(0), []
 
             all_units = sorted(all_units_set)
             n_units = len(all_units)
-            unit_to_idx = {u: i for i, u in enumerate(all_units)}
-
 
         # Get unique groups and their information
         unique_groups = sorted(set(groups_for_gt))
         unique_groups_set = set(unique_groups)
         group_to_idx = {g: i for i, g in enumerate(unique_groups)}
 
+        # Check for survey weights in precomputed data
+        survey_w = precomputed.get("survey_weights") if precomputed is not None else None
+
         # Compute group-level probabilities matching R's formula:
         # pg[g] = n_g / n_all (fraction of ALL units in group g)
+        # With survey weights: pg[g] = sum(sw_g) / sum(sw_all)
         group_sizes = {}
-        for g in unique_groups:
-            treated_in_g = df[df['first_treat'] == g][unit].nunique()
-            group_sizes[g] = treated_in_g
+        if survey_w is not None:
+            # Survey-weighted group sizes
+            precomputed_cohorts = precomputed["unit_cohorts"]
+            for g in unique_groups:
+                mask_g = precomputed_cohorts == g
+                group_sizes[g] = float(np.sum(survey_w[mask_g]))
+            total_weight = float(np.sum(survey_w))
+        else:
+            for g in unique_groups:
+                treated_in_g = df[df["first_treat"] == g][unit].nunique()
+                group_sizes[g] = treated_in_g
+            total_weight = float(n_units)
 
         # pg indexed by group
-        pg_by_group = np.array([group_sizes[g] / n_units for g in unique_groups])
+        pg_by_group = np.array([group_sizes[g] / total_weight for g in unique_groups])
 
         # pg indexed by keeper (each (g,t) pair gets its group's pg)
         pg_keepers = np.array([pg_by_group[group_to_idx[g]] for g in groups_for_gt])
@@ -281,13 +315,13 @@ class CallawaySantAnnaAggregationMixin:
             w = weights[j]
 
             # Vectorized influence function aggregation using precomputed index arrays
-            treated_idx = info['treated_idx']
+            treated_idx = info["treated_idx"]
             if len(treated_idx) > 0:
-                np.add.at(psi_standard, treated_idx, w * info['treated_inf'])
+                np.add.at(psi_standard, treated_idx, w * info["treated_inf"])
 
-            control_idx = info['control_idx']
+            control_idx = info["control_idx"]
             if len(control_idx) > 0:
-                np.add.at(psi_standard, control_idx, w * info['control_inf'])
+                np.add.at(psi_standard, control_idx, w * info["control_inf"])
 
         # Build unit-group array: normalize iterator to (idx, uid) pairs
         unit_groups_array = np.full(n_units, -1, dtype=np.float64)
@@ -298,8 +332,8 @@ class CallawaySantAnnaAggregationMixin:
         )
 
         if precomputed is not None:
-            precomputed_cohorts = precomputed['unit_cohorts']
-            precomputed_unit_to_idx = precomputed['unit_to_idx']
+            precomputed_cohorts = precomputed["unit_cohorts"]
+            precomputed_unit_to_idx = precomputed["unit_to_idx"]
             for idx, uid in idx_uid_pairs:
                 if uid in precomputed_unit_to_idx:
                     cohort = precomputed_cohorts[precomputed_unit_to_idx[uid]]
@@ -307,37 +341,69 @@ class CallawaySantAnnaAggregationMixin:
                         unit_groups_array[idx] = cohort
         else:
             for idx, uid in idx_uid_pairs:
-                unit_first_treat = df[df[unit] == uid]['first_treat'].iloc[0]
+                unit_first_treat = df[df[unit] == uid]["first_treat"].iloc[0]
                 if unit_first_treat in unique_groups_set:
                     unit_groups_array[idx] = unit_first_treat
 
         # Vectorized WIF computation
         groups_for_gt_array = np.array(groups_for_gt)
-        indicator_matrix = (unit_groups_array[:, np.newaxis] == groups_for_gt_array[np.newaxis, :]).astype(np.float64)
-        indicator_sum = np.sum(indicator_matrix - pg_keepers, axis=1)
+        indicator_matrix = (
+            unit_groups_array[:, np.newaxis] == groups_for_gt_array[np.newaxis, :]
+        ).astype(np.float64)
 
-        with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
-            if1_matrix = (indicator_matrix - pg_keepers) / sum_pg_keepers
-            if2_matrix = np.outer(indicator_sum, pg_keepers) / (sum_pg_keepers ** 2)
-            wif_matrix = if1_matrix - if2_matrix
-            wif_contrib = wif_matrix @ effects
+        if survey_w is not None:
+            # Survey-weighted WIF matching R's did::wif() / compute.aggte.R.
+            # pg_k = E[w_i * 1{G_i=g}] is the weighted group share.
+            # IF_i(p_g) = (w_i * 1{G_i=g} - pg_k), NOT s_i * (1{G_i=g} - pg_k).
+            # The pg subtraction is NOT weighted by s_i because pg is already
+            # the population-level expected value of w_i * 1{G_i=g}.
+            if global_unit_to_idx is not None and precomputed is not None:
+                unit_sw = np.zeros(n_units)
+                precomputed_unit_to_idx_local = precomputed["unit_to_idx"]
+                for idx, uid in idx_uid_pairs:
+                    if uid in precomputed_unit_to_idx_local:
+                        pc_idx = precomputed_unit_to_idx_local[uid]
+                        unit_sw[idx] = survey_w[pc_idx]
+            else:
+                unit_sw = np.ones(n_units)
+
+            # w_i * 1{G_i == g_k} - pg_k  (matches R's did::wif)
+            weighted_indicator = indicator_matrix * unit_sw[:, np.newaxis]
+            indicator_diff = weighted_indicator - pg_keepers
+            indicator_sum_w = np.sum(indicator_diff, axis=1)
+
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                if1_matrix = indicator_diff / sum_pg_keepers
+                if2_matrix = np.outer(indicator_sum_w, pg_keepers) / (sum_pg_keepers**2)
+                wif_matrix = if1_matrix - if2_matrix
+                wif_contrib = wif_matrix @ effects
+        else:
+            indicator_sum = np.sum(indicator_matrix - pg_keepers, axis=1)
+
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                if1_matrix = (indicator_matrix - pg_keepers) / sum_pg_keepers
+                if2_matrix = np.outer(indicator_sum, pg_keepers) / (sum_pg_keepers**2)
+                wif_matrix = if1_matrix - if2_matrix
+                wif_contrib = wif_matrix @ effects
 
         # Check for non-finite values from edge cases
         if not np.all(np.isfinite(wif_contrib)):
             import warnings
+
             n_nonfinite = np.sum(~np.isfinite(wif_contrib))
             warnings.warn(
                 f"Non-finite values ({n_nonfinite}/{len(wif_contrib)}) in weight influence "
                 "function computation. This may occur with very small samples or extreme "
                 "weights. Returning NaN for SE to signal invalid inference.",
                 RuntimeWarning,
-                stacklevel=2
+                stacklevel=2,
             )
             nan_result = np.full(n_units, np.nan)
             return nan_result, all_units
 
-        # Scale by 1/n_units to match R's getSE formula
-        psi_wif = wif_contrib / n_units
+        # Scale by 1/total_weight to match R's getSE formula
+        # (for non-survey, total_weight == n_units; for survey, total_weight == sum(sw))
+        psi_wif = wif_contrib / total_weight
 
         # Combine standard and wif terms
         psi_total = psi_standard + psi_wif
@@ -372,14 +438,20 @@ class CallawaySantAnnaAggregationMixin:
         global_unit_to_idx = None
         n_global_units = None
         if precomputed is not None:
-            global_unit_to_idx = precomputed['unit_to_idx']
-            n_global_units = len(precomputed['all_units'])
+            global_unit_to_idx = precomputed["unit_to_idx"]
+            n_global_units = len(precomputed["all_units"])
         elif df is not None and unit is not None:
             n_global_units = df[unit].nunique()
 
         psi_total, _ = self._compute_combined_influence_function(
-            gt_pairs, weights, effects, groups_for_gt,
-            influence_func_info, df, unit, precomputed,
+            gt_pairs,
+            weights,
+            effects,
+            groups_for_gt,
+            influence_func_info,
+            df,
+            unit,
+            precomputed,
             global_unit_to_idx=global_unit_to_idx,
             n_global_units=n_global_units,
         )
@@ -391,7 +463,7 @@ class CallawaySantAnnaAggregationMixin:
         if not np.all(np.isfinite(psi_total)):
             return np.nan
 
-        variance = np.sum(psi_total ** 2)
+        variance = np.sum(psi_total**2)
         return np.sqrt(variance)
 
     def _aggregate_event_study(
@@ -414,41 +486,63 @@ class CallawaySantAnnaAggregationMixin:
         adjustment that accounts for uncertainty in group-size weights,
         matching R's did::aggte(..., type="dynamic").
         """
-        n_units = len(precomputed['all_units']) if precomputed is not None else None
-
         # Organize effects by relative time, keeping track of (g,t) pairs
-        effects_by_e: Dict[int, List[Tuple[Tuple[Any, Any], float, int]]] = {}
+        effects_by_e: Dict[int, List[Tuple[Tuple[Any, Any], float, float]]] = {}
+
+        # Fixed per-cohort survey weights for aggregation
+        survey_cohort_weights = None
+        if precomputed is not None and precomputed.get("survey_weights") is not None:
+            sw = precomputed["survey_weights"]
+            unit_cohorts = precomputed["unit_cohorts"]
+            survey_cohort_weights = {}
+            for g in np.unique(unit_cohorts):
+                if g > 0:
+                    survey_cohort_weights[g] = float(np.sum(sw[unit_cohorts == g]))
 
         for (g, t), data in group_time_effects.items():
             e = t - g  # Relative time
             if e not in effects_by_e:
                 effects_by_e[e] = []
-            effects_by_e[e].append((
-                (g, t),  # Keep track of the (g,t) pair
-                data['effect'],
-                data['n_treated']
-            ))
+            w = (
+                survey_cohort_weights[g]
+                if survey_cohort_weights is not None and g in survey_cohort_weights
+                else data["n_treated"]
+            )
+            effects_by_e[e].append(
+                (
+                    (g, t),  # Keep track of the (g,t) pair
+                    data["effect"],
+                    w,
+                )
+            )
 
         # Balance the panel if requested
         if balance_e is not None:
             # Keep only groups that have effects at relative time balance_e
             groups_at_e = set()
             for (g, t), data in group_time_effects.items():
-                if t - g == balance_e and np.isfinite(data['effect']):
+                if t - g == balance_e and np.isfinite(data["effect"]):
                     groups_at_e.add(g)
 
             # Filter effects to only include balanced groups
-            balanced_effects: Dict[int, List[Tuple[Tuple[Any, Any], float, int]]] = {}
+            balanced_effects: Dict[int, List[Tuple[Tuple[Any, Any], float, float]]] = {}
             for (g, t), data in group_time_effects.items():
                 if g in groups_at_e:
                     e = t - g
                     if e not in balanced_effects:
                         balanced_effects[e] = []
-                    balanced_effects[e].append((
-                        (g, t),
-                        data['effect'],
-                        data['n_treated']
-                    ))
+                    w = (
+                        survey_cohort_weights[g]
+                        if survey_cohort_weights is not None and g in survey_cohort_weights
+                        else data["n_treated"]
+                    )
+                    balanced_effects[e].append(
+                        (
+                            (g, t),
+                            data["effect"],
+                            w,
+                        )
+                    )
             effects_by_e = balanced_effects
 
         # Compute aggregated effects and SEs for all relative periods
@@ -479,8 +573,7 @@ class CallawaySantAnnaAggregationMixin:
             # Compute SE with WIF adjustment (matching R's did::aggte)
             groups_for_gt = np.array([g for (g, t) in gt_pairs])
             agg_se = self._compute_aggregated_se_with_wif(
-                gt_pairs, weights, effs, groups_for_gt,
-                influence_func_info, df, unit, precomputed
+                gt_pairs, weights, effs, groups_for_gt, influence_func_info, df, unit, precomputed
             )
 
             agg_effects_list.append(agg_effect)
@@ -490,32 +583,36 @@ class CallawaySantAnnaAggregationMixin:
         # Batch inference for all relative periods
         if not agg_effects_list:
             return {}
+        df_survey_val = precomputed.get("df_survey") if precomputed is not None else None
         t_stats, p_values, ci_lowers, ci_uppers = safe_inference_batch(
-            np.array(agg_effects_list), np.array(agg_ses_list), alpha=self.alpha
+            np.array(agg_effects_list),
+            np.array(agg_ses_list),
+            alpha=self.alpha,
+            df=df_survey_val,
         )
 
         event_study_effects = {}
         for idx, (e, _) in enumerate(sorted_periods):
             event_study_effects[e] = {
-                'effect': agg_effects_list[idx],
-                'se': agg_ses_list[idx],
-                't_stat': float(t_stats[idx]),
-                'p_value': float(p_values[idx]),
-                'conf_int': (float(ci_lowers[idx]), float(ci_uppers[idx])),
-                'n_groups': agg_n_groups[idx],
+                "effect": agg_effects_list[idx],
+                "se": agg_ses_list[idx],
+                "t_stat": float(t_stats[idx]),
+                "p_value": float(p_values[idx]),
+                "conf_int": (float(ci_lowers[idx]), float(ci_uppers[idx])),
+                "n_groups": agg_n_groups[idx],
             }
 
         # Add reference period for universal base period mode (matches R did package)
-        if getattr(self, 'base_period', 'varying') == "universal":
+        if getattr(self, "base_period", "varying") == "universal":
             ref_period = -1 - self.anticipation
             if event_study_effects and ref_period not in event_study_effects:
                 event_study_effects[ref_period] = {
-                    'effect': 0.0,
-                    'se': np.nan,
-                    't_stat': np.nan,
-                    'p_value': np.nan,
-                    'conf_int': (np.nan, np.nan),
-                    'n_groups': 0,
+                    "effect": 0.0,
+                    "se": np.nan,
+                    "t_stat": np.nan,
+                    "p_value": np.nan,
+                    "conf_int": (np.nan, np.nan),
+                    "n_groups": 0,
                 }
 
         return event_study_effects
@@ -535,13 +632,13 @@ class CallawaySantAnnaAggregationMixin:
         Standard errors use influence function aggregation to account for
         covariances across time periods within a cohort.
         """
-        n_units = len(precomputed['all_units']) if precomputed is not None else None
+        n_units = len(precomputed["all_units"]) if precomputed is not None else None
 
         # Collect all group aggregation data first
         group_data_list = []
         for g in groups:
             g_effects = [
-                ((g, t), data['effect'])
+                ((g, t), data["effect"])
                 for (gg, t), data in group_time_effects.items()
                 if gg == g and t >= g - self.anticipation
             ]
@@ -574,19 +671,23 @@ class CallawaySantAnnaAggregationMixin:
         # Batch inference
         agg_effects = np.array([x[1] for x in group_data_list])
         agg_ses = np.array([x[2] for x in group_data_list])
+        df_survey_val = precomputed.get("df_survey") if precomputed is not None else None
         t_stats, p_values, ci_lowers, ci_uppers = safe_inference_batch(
-            agg_effects, agg_ses, alpha=self.alpha
+            agg_effects,
+            agg_ses,
+            alpha=self.alpha,
+            df=df_survey_val,
         )
 
         group_effects = {}
         for idx, (g, agg_effect, agg_se, n_periods) in enumerate(group_data_list):
             group_effects[g] = {
-                'effect': agg_effect,
-                'se': agg_se,
-                't_stat': float(t_stats[idx]),
-                'p_value': float(p_values[idx]),
-                'conf_int': (float(ci_lowers[idx]), float(ci_uppers[idx])),
-                'n_periods': n_periods,
+                "effect": agg_effect,
+                "se": agg_se,
+                "t_stat": float(t_stats[idx]),
+                "p_value": float(p_values[idx]),
+                "conf_int": (float(ci_lowers[idx]), float(ci_uppers[idx])),
+                "n_periods": n_periods,
             }
 
         return group_effects
