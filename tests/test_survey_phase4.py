@@ -717,54 +717,34 @@ class TestCallawaySantAnnaSurvey:
             )
             assert abs(r_unw.overall_att - r_w.overall_att) < 1e-8, f"method={method}: ATT mismatch"
 
-    def test_survey_metadata_fields(self, staggered_survey_data, survey_design_full):
-        """survey_metadata has correct fields with full design."""
+    def test_survey_metadata_fields(self, staggered_survey_data, survey_design_weights_only):
+        """survey_metadata has correct fields with weights-only design."""
         result = CallawaySantAnna(estimation_method="reg").fit(
             staggered_survey_data,
             "outcome",
             "unit",
             "period",
             "first_treat",
-            survey_design=survey_design_full,
+            survey_design=survey_design_weights_only,
         )
         sm = result.survey_metadata
         assert sm is not None
         assert sm.weight_type == "pweight"
         assert sm.effective_n > 0
         assert sm.design_effect > 0
-        assert sm.n_strata is not None
-        assert sm.n_psu is not None
 
-    def test_se_differs_with_design(self, staggered_survey_data):
-        """Weights-only vs full design: same ATT, different inference via survey df."""
-        sd_w = SurveyDesign(weights="weight")
+    def test_strata_psu_fpc_raises(self, staggered_survey_data):
+        """Strata/PSU/FPC should raise NotImplementedError."""
         sd_full = SurveyDesign(weights="weight", strata="stratum", psu="psu")
-
-        r_w = CallawaySantAnna(estimation_method="reg").fit(
-            staggered_survey_data,
-            "outcome",
-            "unit",
-            "period",
-            "first_treat",
-            survey_design=sd_w,
-        )
-        r_full = CallawaySantAnna(estimation_method="reg").fit(
-            staggered_survey_data,
-            "outcome",
-            "unit",
-            "period",
-            "first_treat",
-            survey_design=sd_full,
-        )
-        # ATTs should be the same (same weights)
-        assert abs(r_w.overall_att - r_full.overall_att) < 1e-10
-        # Full design should carry survey df (strata/PSU structure)
-        assert r_full.survey_metadata is not None
-        assert r_full.survey_metadata.n_strata is not None
-        assert r_full.survey_metadata.n_psu is not None
-        # P-values should differ due to t-distribution with survey df
-        if np.isfinite(r_w.overall_p_value) and np.isfinite(r_full.overall_p_value):
-            assert r_w.overall_p_value != r_full.overall_p_value
+        with pytest.raises(NotImplementedError, match="strata/PSU/FPC"):
+            CallawaySantAnna(estimation_method="reg").fit(
+                staggered_survey_data,
+                "outcome",
+                "unit",
+                "period",
+                "first_treat",
+                survey_design=sd_full,
+            )
 
     def test_bootstrap_survey_raises(self, staggered_survey_data, survey_design_weights_only):
         """Bootstrap + survey should raise NotImplementedError."""
@@ -1197,34 +1177,19 @@ class TestCallawaySantAnnaSurveyInference:
                 effects_no, effects_sv, atol=1e-6
             ), f"{method}: survey weights should change per-cell ATT"
 
-    def test_survey_df_affects_pvalues(self, staggered_survey_data):
-        """Survey df (from strata/PSU) should affect p-values via t-distribution."""
-        data = staggered_survey_data
-        sd_weights = SurveyDesign(weights="weight")
+    def test_strata_psu_fpc_raises_inference(self, staggered_survey_data):
+        """Strata/PSU/FPC raises NotImplementedError in inference context."""
         sd_full = SurveyDesign(weights="weight", strata="stratum", psu="psu")
-        est = CallawaySantAnna(estimation_method="reg")
-        r_w = est.fit(
-            data,
-            outcome="outcome",
-            unit="unit",
-            time="period",
-            first_treat="first_treat",
-            aggregate="simple",
-            survey_design=sd_weights,
-        )
-        r_f = est.fit(
-            data,
-            outcome="outcome",
-            unit="unit",
-            time="period",
-            first_treat="first_treat",
-            aggregate="simple",
-            survey_design=sd_full,
-        )
-        # ATT should be same (same weights), but p-values differ (different df)
-        assert np.isclose(r_w.overall_att, r_f.overall_att, atol=1e-8)
-        # Survey df from strata/PSU should change inference
-        assert r_f.survey_metadata.df_survey is not None
+        with pytest.raises(NotImplementedError, match="strata/PSU/FPC"):
+            CallawaySantAnna(estimation_method="reg").fit(
+                staggered_survey_data,
+                "outcome",
+                "unit",
+                "period",
+                "first_treat",
+                aggregate="simple",
+                survey_design=sd_full,
+            )
 
 
 # =============================================================================

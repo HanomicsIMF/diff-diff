@@ -1197,6 +1197,18 @@ class CallawaySantAnna(
                     f"got '{resolved_survey.weight_type}'. The survey variance math "
                     f"assumes probability weights (pweight)."
                 )
+            if (
+                resolved_survey.strata is not None
+                or resolved_survey.psu is not None
+                or resolved_survey.fpc is not None
+            ):
+                raise NotImplementedError(
+                    "CallawaySantAnna does not yet support strata/PSU/FPC in "
+                    "SurveyDesign. Per-cell and aggregation SEs use IF-based "
+                    "variance which does not incorporate the full survey design "
+                    "structure. Use SurveyDesign(weights=...) only. Full "
+                    "design-based SEs via compute_survey_vcov() are planned."
+                )
 
         # Guard bootstrap + survey
         if self.n_bootstrap > 0 and resolved_survey is not None:

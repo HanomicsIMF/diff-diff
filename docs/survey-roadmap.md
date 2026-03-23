@@ -46,7 +46,7 @@ message pointing to the planned phase or describing the limitation.
 |-----------|------|----------------|-------|
 | ImputationDiD | `imputation.py` | Analytical | Weighted iterative FE, weighted ATT aggregation, weighted conservative variance (Theorem 3); bootstrap+survey deferred |
 | TwoStageDiD | `two_stage.py` | Analytical | Weighted iterative FE, weighted Stage 2 OLS, weighted GMM sandwich variance; bootstrap+survey deferred |
-| CallawaySantAnna | `staggered.py` | Analytical | Survey-weighted regression (all cases), IPW and DR (no-covariate only); survey-weighted WIF in aggregation; covariates+IPW/DR deferred (needs DRDID nuisance IF); bootstrap+survey deferred |
+| CallawaySantAnna | `staggered.py` | Weights-only | Weights-only SurveyDesign (strata/PSU/FPC rejected); reg supports covariates, IPW/DR no-covariate only; survey-weighted WIF in aggregation; full design SEs, covariates+IPW/DR, and bootstrap+survey deferred |
 
 **Infrastructure**: Weighted `solve_logit()` added to `linalg.py` — survey weights
 enter the IRLS working weights as `w_survey * mu * (1 - mu)`. This also unblocked
@@ -59,6 +59,9 @@ TripleDifference IPW/DR from Phase 3 deferred work.
 | ImputationDiD | Bootstrap + survey | Phase 5: bootstrap+survey interaction |
 | TwoStageDiD | Bootstrap + survey | Phase 5: bootstrap+survey interaction |
 | CallawaySantAnna | Bootstrap + survey | Phase 5: bootstrap+survey interaction |
+| CallawaySantAnna | Strata/PSU/FPC in SurveyDesign | Phase 5: route combined IF/WIF through `compute_survey_vcov()` for design-based aggregation SEs |
+| CallawaySantAnna | Covariates + IPW/DR + survey | Phase 5: DRDID panel nuisance IF corrections |
+| CallawaySantAnna | Efficient DRDID nuisance IF for reg+covariates | Phase 5: replace conservative plug-in IF with semiparametrically efficient IF |
 
 ### Remaining for Phase 5
 
