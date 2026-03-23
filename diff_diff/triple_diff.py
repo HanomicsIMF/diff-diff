@@ -1084,15 +1084,16 @@ class TripleDifference:
 
         if resolved_survey is not None:
             # Survey-weighted SE via TSL on the combined influence function.
-            # The pairwise IFs already incorporate survey weights (via weighted
-            # Riesz representers), but compute_survey_vcov multiplies by weights
-            # again internally. Divide out the survey weights to get the
-            # unweighted IF that TSL will correctly re-weight.
+            # For IPW/DR: pairwise IFs include survey weights via weighted Riesz
+            # representers, so divide out to avoid double-weighting by TSL.
+            # For reg: pairwise IFs are already on the unweighted scale (WLS
+            # fits use weights but the IF is residual-based, not Riesz-weighted),
+            # so pass directly to TSL without de-weighting.
             from diff_diff.survey import compute_survey_vcov
 
             inf_for_tsl = inf_func.copy()
-            sw = survey_weights
-            if sw is not None:
+            if est_method in ("ipw", "dr") and survey_weights is not None:
+                sw = survey_weights
                 nz = sw > 0
                 inf_for_tsl[nz] = inf_for_tsl[nz] / sw[nz]
             vcov_survey = compute_survey_vcov(np.ones((n, 1)), inf_for_tsl, resolved_survey)

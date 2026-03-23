@@ -1247,7 +1247,7 @@ has no additional effect.
 - [x] Cluster-robust SE via Liang-Zeger variance on influence function
 - [x] ATT and SE match R within <0.001% for all methods and DGP types
 - [x] Survey design support: all methods (reg, IPW, DR) with weighted OLS/logit + TSL on combined influence functions. Weighted solve_logit() for propensity scores in IPW/DR paths.
-- **Note:** TripleDifference survey SE: pairwise IFs incorporate survey weights via weighted Riesz representers (`riesz *= weights`). Before passing the combined IF to `compute_survey_vcov()` for TSL variance, the IF is divided by per-observation survey weights (`inf / sw`) to produce an unweighted linearized variable. This prevents double-weighting since TSL internally multiplies scores by survey weights (line 558 of `survey.py`). The OLS nuisance IF corrections in DR mode use weighted cross-products (`wols_x = (indicator * weights) * covX`) normalized by the subgroup row count `n` (not `sum(weights)`), consistent with the weighted normal equations where weights are already inside the cross-product.
+- **Note:** TripleDifference survey SE: for IPW/DR, pairwise IFs incorporate survey weights via weighted Riesz representers (`riesz *= weights`), so the combined IF is divided by per-observation survey weights (`inf / sw`) before passing to `compute_survey_vcov()` to prevent double-weighting. For regression (RA), pairwise IFs are already on the unweighted residual scale (WLS fits use weights internally but the IF is not Riesz-multiplied), so the combined IF passes directly to TSL without de-weighting. The OLS nuisance IF corrections in DR mode use weighted cross-products normalized by subgroup row count `n` (not `sum(weights)`).
 
 ---
 
