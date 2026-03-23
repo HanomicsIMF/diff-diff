@@ -247,6 +247,12 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                     f"got '{resolved_survey.weight_type}'. The survey variance math "
                     f"assumes probability weights (pweight)."
                 )
+            if resolved_survey.fpc is not None:
+                raise NotImplementedError(
+                    "ImputationDiD does not yet support FPC (finite population "
+                    "correction) in SurveyDesign. Weights, strata (for survey df), "
+                    "and PSU (for cluster-robust variance) are supported."
+                )
 
         # Guard bootstrap + survey
         if self.n_bootstrap > 0 and resolved_survey is not None:
