@@ -388,6 +388,11 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                 cluster_var if self.cluster is not None else None,
             )
             resolved_survey = _inject_cluster_as_psu(resolved_survey, effective_cluster_ids)
+            # When survey PSU is present, use it as the effective cluster for
+            # GMM variance (PSU overrides unit-level clustering)
+            if resolved_survey.psu is not None:
+                df["_survey_cluster"] = resolved_survey.psu
+                cluster_var = "_survey_cluster"
             # Recompute metadata after PSU injection
             if resolved_survey.psu is not None and survey_metadata is not None:
                 from diff_diff.survey import compute_survey_metadata
