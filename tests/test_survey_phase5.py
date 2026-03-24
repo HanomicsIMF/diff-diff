@@ -350,6 +350,39 @@ class TestSyntheticDiDSurvey:
         assert np.isfinite(result.att)
         assert result.survey_metadata is not None
 
+    def test_effective_weights_returned(self, sdid_survey_data, survey_design_weights):
+        """unit_weights returns composed ω_eff (not raw ω) under survey weighting."""
+        est = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        result = est.fit(
+            sdid_survey_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=survey_design_weights,
+        )
+        weights = result.unit_weights
+        # Effective weights should sum to 1 (renormalized)
+        assert sum(weights.values()) == pytest.approx(1.0, abs=1e-10)
+        # With non-uniform survey weights, effective weights should differ
+        # from what uniform survey weights would produce
+        sdid_survey_data_u = sdid_survey_data.copy()
+        sdid_survey_data_u["uniform_w"] = 1.0
+        result_u = est.fit(
+            sdid_survey_data_u,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=SurveyDesign(weights="uniform_w"),
+        )
+        # Non-uniform weights should change the returned weight distribution
+        eff_vals = sorted(weights.values(), reverse=True)
+        uni_vals = sorted(result_u.unit_weights.values(), reverse=True)
+        assert eff_vals != pytest.approx(uni_vals, abs=1e-6)
+
 
 # =============================================================================
 # TROP Survey Tests
@@ -577,3 +610,41 @@ class TestTROPSurvey:
         d = result.to_dict()
         assert "weight_type" in d
         assert d["weight_type"] == "pweight"
+
+    def test_local_bootstrap_nan_treated_outcomes(self, trop_survey_data):
+        """Bootstrap handles NaN treated outcomes without poisoning SE."""
+        trop_survey_data = trop_survey_data.copy()
+        # Set some treated post-treatment outcomes to NaN
+        mask = (trop_survey_data["D"] == 1) & (trop_survey_data["time"] == 7)
+        trop_survey_data.loc[mask, "outcome"] = np.nan
+
+        est = TROP(method="local", n_bootstrap=10, seed=42, max_iter=5)
+        result = est.fit(
+            trop_survey_data,
+            outcome="outcome",
+            treatment="D",
+            unit="unit",
+            time="time",
+        )
+        # Point estimate should use finite cells only
+        assert np.isfinite(result.att)
+        # SE should remain finite (not poisoned by NaN)
+        assert np.isfinite(result.se)
+
+    def test_local_bootstrap_nan_with_survey(self, trop_survey_data, survey_design_weights):
+        """Bootstrap + survey handles NaN treated outcomes correctly."""
+        trop_survey_data = trop_survey_data.copy()
+        mask = (trop_survey_data["D"] == 1) & (trop_survey_data["time"] == 8)
+        trop_survey_data.loc[mask, "outcome"] = np.nan
+
+        est = TROP(method="local", n_bootstrap=10, seed=42, max_iter=5)
+        result = est.fit(
+            trop_survey_data,
+            outcome="outcome",
+            treatment="D",
+            unit="unit",
+            time="time",
+            survey_design=survey_design_weights,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)

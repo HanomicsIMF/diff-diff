@@ -508,8 +508,10 @@ class SyntheticDiD(DifferenceInDifferences):
         else:
             p_value = p_value_analytical
 
-        # Create weight dictionaries (store original ω, not composed)
-        unit_weights_dict = {unit_id: w for unit_id, w in zip(control_units, unit_weights)}
+        # Create weight dictionaries.  When survey weights are active, store
+        # the effective (composed) weights that were actually used for the ATT
+        # so that results.unit_weights matches the estimator.
+        unit_weights_dict = {unit_id: w for unit_id, w in zip(control_units, omega_eff)}
         time_weights_dict = {period: w for period, w in zip(pre_periods, time_weights)}
 
         # Store results

@@ -949,7 +949,8 @@ class TROPLocalMixin:
                     optimal_lambda,
                     survey_design=survey_design,
                 )
-                bootstrap_estimates_list.append(att)
+                if np.isfinite(att):
+                    bootstrap_estimates_list.append(att)
             except (ValueError, np.linalg.LinAlgError, KeyError):
                 continue
 
@@ -1032,6 +1033,10 @@ class TROPLocalMixin:
         tau_values = []
         tau_weights = []
         for t, i in treated_observations:
+            # Skip non-finite outcomes (match main fit NaN contract)
+            if not np.isfinite(Y[t, i]):
+                continue
+
             # Compute observation-specific weights for this (i, t)
             weight_matrix = self._compute_observation_weights(
                 Y, D, i, t, lambda_time, lambda_unit, control_unit_idx, n_units, n_periods
@@ -1048,6 +1053,8 @@ class TROPLocalMixin:
             if local_weight_arr is not None:
                 tau_weights.append(local_weight_arr[i])
 
-        if local_weight_arr is not None and tau_values:
+        if not tau_values:
+            return float("nan")
+        if local_weight_arr is not None:
             return float(np.average(tau_values, weights=tau_weights))
         return float(np.mean(tau_values))

@@ -1035,6 +1035,11 @@ pub fn bootstrap_trop_variance<'py>(
             let mut tau_count = 0usize;
 
             for (t, i) in boot_treated {
+                // Skip non-finite outcomes (match main fit NaN contract)
+                if !y_boot[[t, i]].is_finite() {
+                    continue;
+                }
+
                 let weight_matrix = compute_weight_matrix(
                     &y_boot.view(),
                     &d_boot.view(),
