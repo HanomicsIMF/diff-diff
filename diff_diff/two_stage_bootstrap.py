@@ -230,10 +230,12 @@ class TwoStageDiDBootstrapMixin:
         n = len(df)
         cluster_ids = df[cluster_var].values
 
-        # Extract survey weights for S-score computation
+        # Extract survey weights for S-score computation and Stage-2 WLS
         survey_weights: Optional[np.ndarray] = None
+        survey_weight_type: str = "pweight"
         if resolved_survey is not None:
             survey_weights = resolved_survey.weights
+            survey_weight_type = resolved_survey.weight_type
 
         # Handle NaN y_tilde (from unidentified FEs) — matches _stage2_static logic
         nan_mask = ~np.isfinite(y_tilde)
@@ -249,7 +251,10 @@ class TwoStageDiDBootstrapMixin:
             return None
 
         X_2_static = D.reshape(-1, 1)
-        coef_static = solve_ols(X_2_static, y_tilde, return_vcov=False)[0]
+        coef_static = solve_ols(
+            X_2_static, y_tilde, return_vcov=False,
+            weights=survey_weights, weight_type=survey_weight_type,
+        )[0]
         eps_2_static = y_tilde - np.dot(X_2_static, coef_static)
 
         S_static, bread_static, unique_clusters = self._compute_cluster_S_scores(
@@ -362,7 +367,10 @@ class TwoStageDiDBootstrapMixin:
                         if h_int in horizon_to_col:
                             X_2_es[i, horizon_to_col[h_int]] = 1.0
 
-                coef_es = solve_ols(X_2_es, y_tilde, return_vcov=False)[0]
+                coef_es = solve_ols(
+                    X_2_es, y_tilde, return_vcov=False,
+                    weights=survey_weights, weight_type=survey_weight_type,
+                )[0]
                 eps_2_es = y_tilde - np.dot(X_2_es, coef_es)
 
                 S_es, bread_es, _ = self._compute_cluster_S_scores(
@@ -427,7 +435,10 @@ class TwoStageDiDBootstrapMixin:
                     if g in group_to_col:
                         X_2_grp[i, group_to_col[g]] = 1.0
 
-            coef_grp = solve_ols(X_2_grp, y_tilde, return_vcov=False)[0]
+            coef_grp = solve_ols(
+                X_2_grp, y_tilde, return_vcov=False,
+                weights=survey_weights, weight_type=survey_weight_type,
+            )[0]
             eps_2_grp = y_tilde - np.dot(X_2_grp, coef_grp)
 
             S_grp, bread_grp, _ = self._compute_cluster_S_scores(

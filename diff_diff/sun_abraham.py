@@ -1181,7 +1181,7 @@ class SunAbraham:
                     cluster_var,
                     survey_weights=boot_survey_weights,
                     survey_weight_type=survey_weight_type,
-                    resolved_survey=resolved_survey,
+                    resolved_survey=None,  # Use explicit weights, not stale design
                 )
 
                 # Compute IW effects for this bootstrap sample

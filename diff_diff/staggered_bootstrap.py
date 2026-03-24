@@ -221,19 +221,22 @@ class CallawaySantAnnaBootstrapMixin:
         post_treatment_indices = np.where(post_treatment_mask)[0]
 
         # Compute aggregation weights for overall ATT (post-treatment only)
-        # When survey weights are present, use survey-weighted cohort masses
-        # (survey_weight_sum) instead of raw n_treated counts, matching the
+        # When survey weights are present, use fixed cohort survey masses
+        # (from precomputed survey_weights × unit_cohorts), matching the
         # analytical _aggregate_simple() path in staggered_aggregation.py.
+        # Do NOT use per-cell survey_weight_sum (which varies by cell on
+        # unbalanced panels).
         survey_w = precomputed.get("survey_weights") if precomputed is not None else None
         if survey_w is not None:
+            unit_cohorts = precomputed["unit_cohorts"]
+            # Precompute fixed cohort masses (same formula as _aggregate_simple)
+            _cohort_mass_cache: dict = {}
+            for gt in gt_pairs:
+                g = gt[0]
+                if g not in _cohort_mass_cache:
+                    _cohort_mass_cache[g] = float(np.sum(survey_w[unit_cohorts == g]))
             all_n_treated = np.array(
-                [
-                    group_time_effects[gt].get(
-                        "survey_weight_sum", group_time_effects[gt]["n_treated"]
-                    )
-                    for gt in gt_pairs
-                ],
-                dtype=float,
+                [_cohort_mass_cache[gt[0]] for gt in gt_pairs], dtype=float
             )
         else:
             all_n_treated = np.array(
@@ -548,15 +551,21 @@ class CallawaySantAnnaBootstrapMixin:
         n_global_units: Optional[int] = None,
     ) -> Dict[int, Dict[str, Any]]:
         """Prepare aggregation info for event study bootstrap."""
-        # Use survey-weighted cohort masses when survey weights are present,
-        # matching the analytical _aggregate_event_study() path.
-        _has_survey = precomputed is not None and precomputed.get("survey_weights") is not None
+        # Use fixed cohort survey masses (not per-cell survey_weight_sum) when
+        # survey weights are present, matching the analytical
+        # _aggregate_event_study() path.
+        survey_w = precomputed.get("survey_weights") if precomputed is not None else None
+        _cohort_mass: Optional[dict] = None
+        if survey_w is not None:
+            unit_cohorts = precomputed["unit_cohorts"]
+            _cohort_mass = {}
 
         def _agg_weight(g: Any, t: Any) -> float:
-            data = group_time_effects[(g, t)]
-            if _has_survey:
-                return data.get("survey_weight_sum", data["n_treated"])
-            return data["n_treated"]
+            if _cohort_mass is not None:
+                if g not in _cohort_mass:
+                    _cohort_mass[g] = float(np.sum(survey_w[unit_cohorts == g]))
+                return _cohort_mass[g]
+            return group_time_effects[(g, t)]["n_treated"]
 
         # Organize by relative time
         effects_by_e: Dict[int, List[Tuple[int, float, float]]] = {}

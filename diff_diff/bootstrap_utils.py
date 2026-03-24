@@ -461,6 +461,10 @@ def generate_survey_multiplier_weights_batch(
 
     if strata is None:
         # No stratification — generate a single block of weights
+        if n_psu < 2:
+            # Single PSU — variance unidentified (matches compute_survey_vcov)
+            weights = np.zeros((n_bootstrap, n_psu), dtype=np.float64)
+            return weights, psu_ids
         weights = generate_bootstrap_weights_batch(n_bootstrap, n_psu, weight_type, rng)
         # FPC scaling (unstratified)
         if resolved_survey.fpc is not None:
