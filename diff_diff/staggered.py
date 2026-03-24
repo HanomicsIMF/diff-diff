@@ -1345,26 +1345,6 @@ class CallawaySantAnna(
         # rejected above). We do NOT inject cluster-as-PSU here because CS
         # per-cell SEs use IF-based variance, not TSL. The user's cluster=
         # parameter is handled by the existing non-survey clustering path.
-        if resolved_survey is not None and survey_metadata is not None:
-            # Just recompute metadata with the resolved design (no PSU injection)
-            if survey_design.weights:
-                from diff_diff.survey import compute_survey_metadata
-
-                raw_w = data[survey_design.weights].values.astype(np.float64)
-                survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
-                # Override df_survey with unit-level df (CS is unit-level, not obs-level)
-                n_units_for_df = len(data[unit].unique())
-                survey_metadata = type(survey_metadata)(
-                    weight_type=survey_metadata.weight_type,
-                    effective_n=survey_metadata.effective_n,
-                    design_effect=survey_metadata.design_effect,
-                    sum_weights=survey_metadata.sum_weights,
-                    n_strata=survey_metadata.n_strata,
-                    n_psu=n_units_for_df,  # unit-level for CS
-                    weight_range=survey_metadata.weight_range,
-                    df_survey=n_units_for_df - 1,
-                )
-
         # Pre-compute data structures for efficient ATT(g,t) computation
         precomputed = self._precompute_structures(
             df,
@@ -1377,6 +1357,17 @@ class CallawaySantAnna(
             treatment_groups,
             resolved_survey=resolved_survey,
         )
+
+        # Recompute survey metadata from the unit-level resolved survey so
+        # that n_psu and df_survey reflect the actual survey design (explicit
+        # PSU/strata) rather than hard-coding n_units.
+        if resolved_survey is not None and survey_metadata is not None:
+            resolved_survey_unit = precomputed.get("resolved_survey_unit")
+            if resolved_survey_unit is not None:
+                from diff_diff.survey import compute_survey_metadata
+
+                unit_w = resolved_survey_unit.weights
+                survey_metadata = compute_survey_metadata(resolved_survey_unit, unit_w)
 
         # Survey df for safe_inference calls — use the unit-level resolved
         # survey df computed in _precompute_structures for consistency.

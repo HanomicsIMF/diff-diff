@@ -1284,19 +1284,87 @@ class SunAbraham:
         The rescaled weights feed into the existing WLS regression path.
         """
         from diff_diff.bootstrap_utils import generate_rao_wu_weights
+        from diff_diff.survey import ResolvedSurveyDesign
 
         # Column name for rescaled weights in the bootstrap DataFrame
         _rw_col = "__rw_boot_weight"
 
+        # Collapse survey design to unit level so Rao-Wu respects panel
+        # structure: each unit gets one set of weights regardless of how
+        # many time periods it has.  Without this, when there is no
+        # explicit PSU, generate_rao_wu_weights treats each observation as
+        # its own PSU and different obs of the same unit can get different
+        # weights, breaking panel semantics.
+        all_units = df[unit].unique()
+
+        weights_unit = (
+            pd.Series(resolved_survey.weights, index=df.index)
+            .groupby(df[unit])
+            .first()
+            .reindex(all_units)
+            .values
+            .astype(np.float64)
+        )
+
+        strata_unit = None
+        if resolved_survey.strata is not None:
+            strata_unit = (
+                pd.Series(resolved_survey.strata, index=df.index)
+                .groupby(df[unit])
+                .first()
+                .reindex(all_units)
+                .values
+            )
+
+        psu_unit = None
+        if resolved_survey.psu is not None:
+            psu_unit = (
+                pd.Series(resolved_survey.psu, index=df.index)
+                .groupby(df[unit])
+                .first()
+                .reindex(all_units)
+                .values
+            )
+
+        fpc_unit = None
+        if resolved_survey.fpc is not None:
+            fpc_unit = (
+                pd.Series(resolved_survey.fpc, index=df.index)
+                .groupby(df[unit])
+                .first()
+                .reindex(all_units)
+                .values
+            )
+
+        unit_resolved = ResolvedSurveyDesign(
+            weights=weights_unit,
+            weight_type=resolved_survey.weight_type,
+            strata=strata_unit,
+            psu=psu_unit,
+            fpc=fpc_unit,
+            n_strata=resolved_survey.n_strata,
+            n_psu=resolved_survey.n_psu,
+            lonely_psu=resolved_survey.lonely_psu,
+        )
+
+        # Build unit -> row indices mapping for expanding unit-level weights
+        unit_to_rows = {u: df.index[df[unit] == u].values for u in all_units}
+        unit_order = {u: i for i, u in enumerate(all_units)}
+
         # Store bootstrap samples
         rel_periods = sorted(original_event_study.keys())
-        bootstrap_effects = {e: np.zeros(self.n_bootstrap) for e in rel_periods}
-        bootstrap_overall = np.zeros(self.n_bootstrap)
+        bootstrap_effects = {e: np.full(self.n_bootstrap, np.nan) for e in rel_periods}
+        bootstrap_overall = np.full(self.n_bootstrap, np.nan)
 
         for b in range(self.n_bootstrap):
             try:
-                # Generate Rao-Wu rescaled weights for this iteration
-                boot_weights = generate_rao_wu_weights(resolved_survey, rng)
+                # Generate Rao-Wu rescaled weights at unit level
+                unit_boot_weights = generate_rao_wu_weights(unit_resolved, rng)
+
+                # Expand unit-level weights to observation level
+                boot_weights = np.empty(len(df), dtype=np.float64)
+                for u, idx in unit_to_rows.items():
+                    boot_weights[idx] = unit_boot_weights[unit_order[u]]
 
                 # Drop observations with zero weight (PSUs not drawn in this
                 # iteration) to avoid NaN/Inf in within-transformation.
@@ -1373,15 +1441,17 @@ class SunAbraham:
                 bootstrap_overall[b] = overall_b
 
             except (ValueError, np.linalg.LinAlgError) as exc:
-                # If bootstrap iteration fails, use original
+                # Failed draws stored as NaN (not original estimate) to avoid
+                # shrinking bootstrap dispersion.  compute_effect_bootstrap_stats
+                # handles NaN draws via nanstd.
                 warnings.warn(
-                    f"Bootstrap iteration {b} failed: {exc}. Using original estimate.",
+                    f"Bootstrap iteration {b} failed: {exc}. Storing NaN.",
                     UserWarning,
                     stacklevel=2,
                 )
                 for e in rel_periods:
-                    bootstrap_effects[e][b] = original_event_study[e]["effect"]
-                bootstrap_overall[b] = original_overall_att
+                    bootstrap_effects[e][b] = np.nan
+                bootstrap_overall[b] = np.nan
 
         # Compute bootstrap statistics
         event_study_ses = {}

@@ -195,9 +195,28 @@ class ImputationDiDBootstrapMixin:
                 h_mask = rel_times == h
                 if balanced_mask is not None:
                     h_mask = h_mask & balanced_mask
-                weights_h, n_valid_h = _compute_target_weights(tau_hat, h_mask)
-                if n_valid_h == 0:
-                    continue
+
+                # When survey weights are provided, build weights proportional
+                # to treated-observation survey weights (matching the analytical
+                # path in _aggregate_event_study).  Otherwise use equal weights.
+                if survey_weights_0 is not None:
+                    finite_target = np.isfinite(tau_hat) & h_mask
+                    n_valid_h = int(finite_target.sum())
+                    if n_valid_h == 0:
+                        continue
+                    treated_sw = survey_weights_0[omega_1_mask.values]
+                    sw_h = treated_sw[h_mask]
+                    finite_in_h = np.isfinite(tau_hat[h_mask])
+                    sw_finite = sw_h[finite_in_h]
+                    weights_h = np.zeros(len(tau_hat))
+                    if sw_finite.sum() > 0:
+                        h_indices = np.where(h_mask)[0]
+                        finite_indices = h_indices[finite_in_h]
+                        weights_h[finite_indices] = sw_finite / sw_finite.sum()
+                else:
+                    weights_h, n_valid_h = _compute_target_weights(tau_hat, h_mask)
+                    if n_valid_h == 0:
+                        continue
 
                 psi_h, _ = self._compute_cluster_psi_sums(**common, weights=weights_h)
                 result["event_study"][h] = psi_h
@@ -214,9 +233,28 @@ class ImputationDiDBootstrapMixin:
                 if not np.isfinite(group_effects[g].get("effect", np.nan)):
                     continue
                 g_mask = cohorts == g
-                weights_g, n_valid_g = _compute_target_weights(tau_hat, g_mask)
-                if n_valid_g == 0:
-                    continue
+
+                # When survey weights are provided, build weights proportional
+                # to treated-observation survey weights (matching the analytical
+                # path in _aggregate_group).  Otherwise use equal weights.
+                if survey_weights_0 is not None:
+                    finite_target = np.isfinite(tau_hat) & g_mask
+                    n_valid_g = int(finite_target.sum())
+                    if n_valid_g == 0:
+                        continue
+                    treated_sw = survey_weights_0[omega_1_mask.values]
+                    sw_g = treated_sw[g_mask]
+                    finite_in_g = np.isfinite(tau_hat[g_mask])
+                    sw_finite = sw_g[finite_in_g]
+                    weights_g = np.zeros(len(tau_hat))
+                    if sw_finite.sum() > 0:
+                        g_indices = np.where(g_mask)[0]
+                        finite_indices = g_indices[finite_in_g]
+                        weights_g[finite_indices] = sw_finite / sw_finite.sum()
+                else:
+                    weights_g, n_valid_g = _compute_target_weights(tau_hat, g_mask)
+                    if n_valid_g == 0:
+                        continue
 
                 psi_g, _ = self._compute_cluster_psi_sums(**common, weights=weights_g)
                 result["group"][g] = psi_g
