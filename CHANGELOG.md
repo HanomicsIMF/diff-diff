@@ -30,7 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix CallawaySantAnna reg+cov control IF normalization and survey df calculation
 - Fix TripleDifference TSL double-weighting and RA nuisance linearization with survey weights
 - Fix ContinuousDiD bread normalization, fweight TSL scaling, and weighted-mass IF linearization
-- Fix EfficientDiD clustered SE formula in Hausman pretest
 - Fix BaconDecomposition exact-weight survey unit_share and empty-cell guard
 - Fix SunAbraham survey weight floor in overall ATT aggregation
 - Fix plotly event study for non-numeric periods, heatmap masking, color parser
