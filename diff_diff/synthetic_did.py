@@ -174,8 +174,7 @@ class SyntheticDiD(DifferenceInDifferences):
         valid_methods = ("bootstrap", "placebo")
         if variance_method not in valid_methods:
             raise ValueError(
-                f"variance_method must be one of {valid_methods}, "
-                f"got '{variance_method}'"
+                f"variance_method must be one of {valid_methods}, " f"got '{variance_method}'"
             )
 
         self._unit_weights = None
@@ -189,7 +188,8 @@ class SyntheticDiD(DifferenceInDifferences):
         unit: str,
         time: str,
         post_periods: Optional[List[Any]] = None,
-        covariates: Optional[List[str]] = None
+        covariates: Optional[List[str]] = None,
+        survey_design=None,
     ) -> SyntheticDiDResults:
         """
         Fit the Synthetic Difference-in-Differences model.
@@ -215,6 +215,9 @@ class SyntheticDiD(DifferenceInDifferences):
         covariates : list, optional
             List of covariate column names. Covariates are residualized
             out before computing the SDID estimator.
+        survey_design : SurveyDesign, optional
+            Survey design specification. Only pweight designs are supported
+            (strata/PSU/FPC raise NotImplementedError).
 
         Returns
         -------
@@ -225,13 +228,14 @@ class SyntheticDiD(DifferenceInDifferences):
         Raises
         ------
         ValueError
-            If required parameters are missing or data validation fails.
+            If required parameters are missing, data validation fails,
+            or a non-pweight survey design is provided.
+        NotImplementedError
+            If survey_design includes strata, PSU, or FPC.
         """
         # Validate inputs
         if outcome is None or treatment is None or unit is None or time is None:
-            raise ValueError(
-                "Must provide 'outcome', 'treatment', 'unit', and 'time'"
-            )
+            raise ValueError("Must provide 'outcome', 'treatment', 'unit', and 'time'")
 
         # Check columns exist
         required_cols = [outcome, treatment, unit, time]
@@ -241,6 +245,19 @@ class SyntheticDiD(DifferenceInDifferences):
         missing = [c for c in required_cols if c not in data.columns]
         if missing:
             raise ValueError(f"Missing columns: {missing}")
+
+        # Resolve survey design
+        from diff_diff.survey import (
+            _extract_unit_survey_weights,
+            _resolve_pweight_only,
+            _resolve_survey_for_fit,
+            _validate_unit_constant_survey,
+        )
+
+        resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
+            _resolve_survey_for_fit(survey_design, data, "analytical")
+        )
+        _resolve_pweight_only(resolved_survey, "SyntheticDiD")
 
         # Validate treatment is binary
         validate_binary(data[treatment].values, "treatment")
@@ -279,9 +296,7 @@ class SyntheticDiD(DifferenceInDifferences):
         varying_units = treatment_nunique[treatment_nunique > 1]
         if len(varying_units) > 0:
             example_unit = varying_units.index[0]
-            example_vals = sorted(
-                data.loc[data[unit] == example_unit, treatment].unique()
-            )
+            example_vals = sorted(data.loc[data[unit] == example_unit, treatment].unique())
             raise ValueError(
                 f"Treatment indicator varies within {len(varying_units)} unit(s) "
                 f"(e.g., unit '{example_unit}' has values {example_vals}). "
@@ -314,20 +329,42 @@ class SyntheticDiD(DifferenceInDifferences):
                 f"diff_diff.prep.balance_panel() to balance the panel first."
             )
 
+        # Validate and extract survey weights
+        if resolved_survey is not None:
+            _validate_unit_constant_survey(data, unit, survey_design)
+            w_treated = _extract_unit_survey_weights(data, unit, survey_design, treated_units)
+            w_control = _extract_unit_survey_weights(data, unit, survey_design, control_units)
+        else:
+            w_treated = None
+            w_control = None
+
         # Residualize covariates if provided
         working_data = data.copy()
         if covariates:
             working_data = self._residualize_covariates(
-                working_data, outcome, covariates, unit, time
+                working_data,
+                outcome,
+                covariates,
+                unit,
+                time,
+                survey_weights=survey_weights,
+                survey_weight_type=survey_weight_type,
             )
 
         # Create outcome matrices
         # Shape: (n_periods, n_units)
-        Y_pre_control, Y_post_control, Y_pre_treated, Y_post_treated = \
+        Y_pre_control, Y_post_control, Y_pre_treated, Y_post_treated = (
             self._create_outcome_matrices(
-                working_data, outcome, unit, time,
-                pre_periods, post_periods, treated_units, control_units
+                working_data,
+                outcome,
+                unit,
+                time,
+                pre_periods,
+                post_periods,
+                treated_units,
+                control_units,
             )
+        )
 
         # Compute auto-regularization (or use user overrides)
         auto_zeta_omega, auto_zeta_lambda = _compute_regularization(
@@ -338,6 +375,7 @@ class SyntheticDiD(DifferenceInDifferences):
 
         # Store noise level for diagnostics
         from diff_diff.utils import _compute_noise_level
+
         noise_level = _compute_noise_level(Y_pre_control)
 
         # Data-dependent convergence threshold (matches R's 1e-5 * noise.level).
@@ -347,7 +385,11 @@ class SyntheticDiD(DifferenceInDifferences):
         min_decrease = 1e-5 * noise_level if noise_level > 0 else 1e-5
 
         # Compute unit weights (Frank-Wolfe with sparsification)
-        Y_pre_treated_mean = np.mean(Y_pre_treated, axis=1)
+        # Survey weights enter via the treated mean target
+        if w_treated is not None:
+            Y_pre_treated_mean = np.average(Y_pre_treated, axis=1, weights=w_treated)
+        else:
+            Y_pre_treated_mean = np.mean(Y_pre_treated, axis=1)
 
         unit_weights = compute_sdid_unit_weights(
             Y_pre_control,
@@ -364,27 +406,41 @@ class SyntheticDiD(DifferenceInDifferences):
             min_decrease=min_decrease,
         )
 
+        # Compose ω with control survey weights (WLS regression interpretation).
+        # Frank-Wolfe finds best trajectory match; survey weights reweight by
+        # population importance post-optimization.
+        if w_control is not None:
+            omega_eff = unit_weights * w_control
+            omega_eff = omega_eff / omega_eff.sum()
+        else:
+            omega_eff = unit_weights
+
         # Compute SDID estimate
-        Y_post_treated_mean = np.mean(Y_post_treated, axis=1)
+        if w_treated is not None:
+            Y_post_treated_mean = np.average(Y_post_treated, axis=1, weights=w_treated)
+        else:
+            Y_post_treated_mean = np.mean(Y_post_treated, axis=1)
 
         att = compute_sdid_estimator(
             Y_pre_control,
             Y_post_control,
             Y_pre_treated_mean,
             Y_post_treated_mean,
-            unit_weights,
-            time_weights
+            omega_eff,
+            time_weights,
         )
 
-        # Compute pre-treatment fit (RMSE)
-        synthetic_pre = Y_pre_control @ unit_weights
+        # Compute pre-treatment fit (RMSE) using composed weights
+        synthetic_pre = Y_pre_control @ omega_eff
         pre_fit_rmse = np.sqrt(np.mean((Y_pre_treated_mean - synthetic_pre) ** 2))
 
         # Warn if pre-treatment fit is poor (Registry requirement).
         # Threshold: 1× SD of treated pre-treatment outcomes — a natural baseline
         # since RMSE exceeding natural variation indicates the synthetic control
         # fails to reproduce the treated series' level or trend.
-        pre_treatment_sd = np.std(Y_pre_treated_mean, ddof=1) if len(Y_pre_treated_mean) > 1 else 0.0
+        pre_treatment_sd = (
+            np.std(Y_pre_treated_mean, ddof=1) if len(Y_pre_treated_mean) > 1 else 0.0
+        )
         if pre_treatment_sd > 0 and pre_fit_rmse > pre_treatment_sd:
             warnings.warn(
                 f"Pre-treatment fit is poor: RMSE ({pre_fit_rmse:.4f}) exceeds "
@@ -399,9 +455,14 @@ class SyntheticDiD(DifferenceInDifferences):
         # Compute standard errors based on variance_method
         if self.variance_method == "bootstrap":
             se, bootstrap_estimates = self._bootstrap_se(
-                Y_pre_control, Y_post_control,
-                Y_pre_treated, Y_post_treated,
-                unit_weights, time_weights,
+                Y_pre_control,
+                Y_post_control,
+                Y_pre_treated,
+                Y_post_treated,
+                unit_weights,
+                time_weights,
+                w_treated=w_treated,
+                w_control=w_control,
             )
             placebo_effects = bootstrap_estimates
             inference_method = "bootstrap"
@@ -416,7 +477,8 @@ class SyntheticDiD(DifferenceInDifferences):
                 zeta_omega=zeta_omega,
                 zeta_lambda=zeta_lambda,
                 min_decrease=min_decrease,
-                replications=self.n_bootstrap  # Reuse n_bootstrap for replications
+                replications=self.n_bootstrap,
+                w_control=w_control,
             )
             inference_method = "placebo"
 
@@ -430,13 +492,11 @@ class SyntheticDiD(DifferenceInDifferences):
         else:
             p_value = p_value_analytical
 
-        # Create weight dictionaries
-        unit_weights_dict = {
-            unit_id: w for unit_id, w in zip(control_units, unit_weights)
-        }
-        time_weights_dict = {
-            period: w for period, w in zip(pre_periods, time_weights)
-        }
+        # Create weight dictionaries.  When survey weights are active, store
+        # the effective (composed) weights that were actually used for the ATT
+        # so that results.unit_weights matches the estimator.
+        unit_weights_dict = {unit_id: w for unit_id, w in zip(control_units, omega_eff)}
+        time_weights_dict = {period: w for period, w in zip(pre_periods, time_weights)}
 
         # Store results
         self.results_ = SyntheticDiDResults(
@@ -459,7 +519,8 @@ class SyntheticDiD(DifferenceInDifferences):
             zeta_lambda=zeta_lambda,
             pre_treatment_fit=pre_fit_rmse,
             placebo_effects=placebo_effects if len(placebo_effects) > 0 else None,
-            n_bootstrap=self.n_bootstrap if inference_method == "bootstrap" else None
+            n_bootstrap=self.n_bootstrap if inference_method == "bootstrap" else None,
+            survey_metadata=survey_metadata,
         )
 
         self._unit_weights = unit_weights
@@ -477,7 +538,7 @@ class SyntheticDiD(DifferenceInDifferences):
         pre_periods: List[Any],
         post_periods: List[Any],
         treated_units: List[Any],
-        control_units: List[Any]
+        control_units: List[Any],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Create outcome matrices for SDID estimation.
@@ -501,7 +562,7 @@ class SyntheticDiD(DifferenceInDifferences):
             Y_pre_control.astype(float),
             Y_post_control.astype(float),
             Y_pre_treated.astype(float),
-            Y_post_treated.astype(float)
+            Y_post_treated.astype(float),
         )
 
     def _residualize_covariates(
@@ -510,12 +571,16 @@ class SyntheticDiD(DifferenceInDifferences):
         outcome: str,
         covariates: List[str],
         unit: str,
-        time: str
+        time: str,
+        survey_weights=None,
+        survey_weight_type=None,
     ) -> pd.DataFrame:
         """
         Residualize outcome by regressing out covariates.
 
-        Uses two-way fixed effects to partial out covariates.
+        Uses two-way fixed effects to partial out covariates. When survey
+        weights are provided, uses WLS for population-representative
+        covariate removal.
         """
         data = data.copy()
 
@@ -523,23 +588,28 @@ class SyntheticDiD(DifferenceInDifferences):
         X = data[covariates].values.astype(float)
 
         # Add unit and time dummies
-        unit_dummies = pd.get_dummies(data[unit], prefix='u', drop_first=True)
-        time_dummies = pd.get_dummies(data[time], prefix='t', drop_first=True)
+        unit_dummies = pd.get_dummies(data[unit], prefix="u", drop_first=True)
+        time_dummies = pd.get_dummies(data[time], prefix="t", drop_first=True)
 
-        X_full = np.column_stack([
-            np.ones(len(data)),
-            X,
-            unit_dummies.values,
-            time_dummies.values
-        ])
+        X_full = np.column_stack([np.ones(len(data)), X, unit_dummies.values, time_dummies.values])
 
         y = data[outcome].values.astype(float)
 
         # Fit and get residuals using unified backend
-        coeffs, residuals, _ = solve_ols(X_full, y, return_vcov=False)
+        coeffs, residuals, _ = solve_ols(
+            X_full,
+            y,
+            return_vcov=False,
+            weights=survey_weights,
+            weight_type=survey_weight_type,
+        )
 
         # Add back the mean for interpretability
-        data[outcome] = residuals + np.mean(y)
+        if survey_weights is not None:
+            y_center = np.average(y, weights=survey_weights)
+        else:
+            y_center = np.mean(y)
+        data[outcome] = residuals + y_center
 
         return data
 
@@ -551,6 +621,8 @@ class SyntheticDiD(DifferenceInDifferences):
         Y_post_treated: np.ndarray,
         unit_weights: np.ndarray,
         time_weights: np.ndarray,
+        w_treated=None,
+        w_control=None,
     ) -> Tuple[float, np.ndarray]:
         """Compute bootstrap standard error matching R's synthdid bootstrap_sample.
 
@@ -566,10 +638,7 @@ class SyntheticDiD(DifferenceInDifferences):
         n_total = n_control + n_treated
 
         # Build full panel matrix: (n_pre+n_post, n_control+n_treated)
-        Y_full = np.block([
-            [Y_pre_control, Y_pre_treated],
-            [Y_post_control, Y_post_treated]
-        ])
+        Y_full = np.block([[Y_pre_control, Y_pre_treated], [Y_post_control, Y_post_treated]])
         n_pre = Y_pre_control.shape[0]
 
         bootstrap_estimates = []
@@ -591,6 +660,14 @@ class SyntheticDiD(DifferenceInDifferences):
                 # Renormalize original unit weights for the resampled controls
                 boot_omega = _sum_normalize(unit_weights[boot_control_idx])
 
+                # Compose with control survey weights if present
+                if w_control is not None:
+                    boot_w_c = w_control[boot_idx[boot_is_control]]
+                    boot_omega_eff = boot_omega * boot_w_c
+                    boot_omega_eff = boot_omega_eff / boot_omega_eff.sum()
+                else:
+                    boot_omega_eff = boot_omega
+
                 # Extract resampled outcome matrices
                 Y_boot = Y_full[:, boot_idx]
                 Y_boot_pre_c = Y_boot[:n_pre, boot_is_control]
@@ -598,14 +675,25 @@ class SyntheticDiD(DifferenceInDifferences):
                 Y_boot_pre_t = Y_boot[:n_pre, ~boot_is_control]
                 Y_boot_post_t = Y_boot[n_pre:, ~boot_is_control]
 
-                # Compute ATT with FIXED weights (do NOT re-estimate)
-                Y_boot_pre_t_mean = np.mean(Y_boot_pre_t, axis=1)
-                Y_boot_post_t_mean = np.mean(Y_boot_post_t, axis=1)
+                # Compute ATT with FIXED weights (do NOT re-estimate).
+                # boot_idx[~boot_is_control] maps to original index space;
+                # subtract n_control to index into w_treated. Duplicate draws
+                # carry identical weights → alignment is safe.
+                if w_treated is not None:
+                    boot_w_t = w_treated[boot_idx[~boot_is_control] - n_control]
+                    Y_boot_pre_t_mean = np.average(Y_boot_pre_t, axis=1, weights=boot_w_t)
+                    Y_boot_post_t_mean = np.average(Y_boot_post_t, axis=1, weights=boot_w_t)
+                else:
+                    Y_boot_pre_t_mean = np.mean(Y_boot_pre_t, axis=1)
+                    Y_boot_post_t_mean = np.mean(Y_boot_post_t, axis=1)
 
                 tau = compute_sdid_estimator(
-                    Y_boot_pre_c, Y_boot_post_c,
-                    Y_boot_pre_t_mean, Y_boot_post_t_mean,
-                    boot_omega, time_weights  # time_weights = original lambda
+                    Y_boot_pre_c,
+                    Y_boot_post_c,
+                    Y_boot_pre_t_mean,
+                    Y_boot_post_t_mean,
+                    boot_omega_eff,
+                    time_weights,
                 )
                 if np.isfinite(tau):
                     bootstrap_estimates.append(tau)
@@ -664,7 +752,8 @@ class SyntheticDiD(DifferenceInDifferences):
         zeta_omega: float = 0.0,
         zeta_lambda: float = 0.0,
         min_decrease: float = 1e-5,
-        replications: int = 200
+        replications: int = 200,
+        w_control=None,
     ) -> Tuple[float, np.ndarray]:
         """
         Compute placebo-based variance matching R's synthdid methodology.
@@ -743,12 +832,27 @@ class SyntheticDiD(DifferenceInDifferences):
                 # Get pseudo-control and pseudo-treated outcomes
                 Y_pre_pseudo_control = Y_pre_control[:, pseudo_control_idx]
                 Y_post_pseudo_control = Y_post_control[:, pseudo_control_idx]
-                Y_pre_pseudo_treated_mean = np.mean(
-                    Y_pre_control[:, pseudo_treated_idx], axis=1
-                )
-                Y_post_pseudo_treated_mean = np.mean(
-                    Y_post_control[:, pseudo_treated_idx], axis=1
-                )
+
+                # Pseudo-treated means: survey-weighted when available
+                if w_control is not None:
+                    pseudo_w_tr = w_control[pseudo_treated_idx]
+                    Y_pre_pseudo_treated_mean = np.average(
+                        Y_pre_control[:, pseudo_treated_idx],
+                        axis=1,
+                        weights=pseudo_w_tr,
+                    )
+                    Y_post_pseudo_treated_mean = np.average(
+                        Y_post_control[:, pseudo_treated_idx],
+                        axis=1,
+                        weights=pseudo_w_tr,
+                    )
+                else:
+                    Y_pre_pseudo_treated_mean = np.mean(
+                        Y_pre_control[:, pseudo_treated_idx], axis=1
+                    )
+                    Y_post_pseudo_treated_mean = np.mean(
+                        Y_post_control[:, pseudo_treated_idx], axis=1
+                    )
 
                 # Re-estimate weights on permuted data (matching R's behavior)
                 # R passes update.omega=TRUE, update.lambda=TRUE via opts,
@@ -760,6 +864,14 @@ class SyntheticDiD(DifferenceInDifferences):
                     zeta_omega=zeta_omega,
                     min_decrease=min_decrease,
                 )
+
+                # Compose pseudo_omega with control survey weights
+                if w_control is not None:
+                    pseudo_w_co = w_control[pseudo_control_idx]
+                    pseudo_omega_eff = pseudo_omega * pseudo_w_co
+                    pseudo_omega_eff = pseudo_omega_eff / pseudo_omega_eff.sum()
+                else:
+                    pseudo_omega_eff = pseudo_omega
 
                 # Time weights: re-estimate on pseudo-control data
                 pseudo_lambda = compute_time_weights(
@@ -775,8 +887,8 @@ class SyntheticDiD(DifferenceInDifferences):
                     Y_post_pseudo_control,
                     Y_pre_pseudo_treated_mean,
                     Y_post_pseudo_treated_mean,
-                    pseudo_omega,
-                    pseudo_lambda
+                    pseudo_omega_eff,
+                    pseudo_lambda,
                 )
                 if np.isfinite(tau):
                     placebo_estimates.append(tau)
@@ -811,9 +923,7 @@ class SyntheticDiD(DifferenceInDifferences):
 
         # Compute SE using R's formula: sqrt((r-1)/r) * sd(estimates)
         # This matches synthdid::vcov.R exactly
-        se = np.sqrt((n_successful - 1) / n_successful) * np.std(
-            placebo_estimates, ddof=1
-        )
+        se = np.sqrt((n_successful - 1) / n_successful) * np.std(placebo_estimates, ddof=1)
 
         return se, placebo_estimates
 
@@ -835,8 +945,7 @@ class SyntheticDiD(DifferenceInDifferences):
         for key, value in params.items():
             if key in _deprecated:
                 warnings.warn(
-                    f"{key} is deprecated and ignored. Use zeta_omega/zeta_lambda "
-                    f"instead.",
+                    f"{key} is deprecated and ignored. Use zeta_omega/zeta_lambda " f"instead.",
                     DeprecationWarning,
                     stacklevel=2,
                 )

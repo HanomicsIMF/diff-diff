@@ -1143,6 +1143,7 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 - **Varying treatment within unit**: Raises `ValueError`. SDID requires block treatment (constant within each unit). Suggests CallawaySantAnna or ImputationDiD for staggered adoption.
 - **Unbalanced panel**: Raises `ValueError`. SDID requires all units observed in all periods. Suggests `balance_panel()`.
 - **Poor pre-treatment fit**: Warns (`UserWarning`) when `pre_fit_rmse > std(treated_pre_outcomes, ddof=1)`. Diagnostic only; estimation proceeds.
+- **Note:** Survey support: pweight only (strata/PSU/FPC raise NotImplementedError). Both sides weighted per WLS regression interpretation: treated-side means are survey-weighted (Frank-Wolfe target and ATT formula); control-side synthetic weights are composed with survey weights post-optimization (ω_eff = ω * w_co, renormalized). Frank-Wolfe optimization itself is unweighted — survey importance enters after trajectory-matching. Covariate residualization uses WLS with survey weights. Placebo and bootstrap SE preserve survey weights on both sides.
 
 **Reference implementation(s):**
 - R: `synthdid::synthdid_estimate()` (Arkhangelsky et al.'s official package)
@@ -1396,6 +1397,7 @@ Q(λ) = Σ_{j,s: D_js=0} [τ̂_js^loocv(λ)]²
 - [x] No post_periods parameter (D matrix determines treatment timing)
 - [x] D matrix semantics documented (absorbing state, not event indicator)
 - [x] Unbalanced panels supported (missing observations don't trigger false violations)
+- **Note:** Survey support: pweight only (strata/PSU/FPC raise NotImplementedError). Survey weights enter ATT aggregation only — population-weighted average of per-observation treatment effects. Model fitting (kernel weights, LOOCV, nuclear norm regularization) stays unchanged. Rust and Python bootstrap paths both support survey-weighted ATT in each iteration.
 
 ### TROP Global Estimation Method
 

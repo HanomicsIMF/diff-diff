@@ -87,7 +87,7 @@ def _soft_threshold_svd(
 
     # Compute result, suppressing expected numerical warnings from
     # ill-conditioned matrices during alternating minimization
-    with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
         result = (U_trunc * s_trunc) @ Vt_trunc
 
     # Replace any NaN/Inf in result with zeros
@@ -178,8 +178,12 @@ class TROPLocalMixin:
         treated_observations = list(zip(*np.where(treated_mask)))
 
         # Control observations for LOOCV
-        control_obs = [(t, i) for t in range(n_periods) for i in range(n_units)
-                       if control_mask[t, i] and not np.isnan(Y[t, i])]
+        control_obs = [
+            (t, i)
+            for t in range(n_periods)
+            for i in range(n_units)
+            if control_mask[t, i] and not np.isnan(Y[t, i])
+        ]
 
         return {
             "unit_dist_matrix": unit_dist_matrix,
@@ -245,7 +249,7 @@ class TROPLocalMixin:
         # Y_T[np.newaxis, :, :] has shape (1, n_units, n_periods)
         # diff has shape (n_units, n_units, n_periods)
         diff = Y_T[:, np.newaxis, :] - Y_T[np.newaxis, :, :]
-        sq_diff = diff ** 2
+        sq_diff = diff**2
 
         # Count valid (non-NaN) observations per pair
         # A difference is valid only if both units have valid observations
@@ -257,7 +261,7 @@ class TROPLocalMixin:
 
         # Compute RMSE distance: sqrt(sum / n_valid)
         # Avoid division by zero
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(divide="ignore", invalid="ignore"):
             dist_matrix = np.sqrt(sq_diff_sum / n_valid)
 
         # Set pairs with no valid observations to inf
@@ -733,8 +737,12 @@ class TROPLocalMixin:
             control_obs = self._precomputed["control_obs"]
         else:
             # Get all control observations
-            control_obs = [(t, i) for t in range(n_periods) for i in range(n_units)
-                           if control_mask[t, i] and not np.isnan(Y[t, i])]
+            control_obs = [
+                (t, i)
+                for t in range(n_periods)
+                for i in range(n_units)
+                if control_mask[t, i] and not np.isnan(Y[t, i])
+            ]
 
         # Empty control set check: if no control observations, return infinity
         # A score of 0.0 would incorrectly "win" over legitimate parameters
@@ -743,7 +751,7 @@ class TROPLocalMixin:
                 f"LOOCV: No valid control observations for "
                 f"\u03bb=({lambda_time}, {lambda_unit}, {lambda_nn}). "
                 "Returning infinite score.",
-                UserWarning
+                UserWarning,
             )
             return np.inf
 
@@ -755,19 +763,23 @@ class TROPLocalMixin:
                 # Compute observation-specific weights for pseudo-treated (i, t)
                 # Uses pre-computed distance matrices when available
                 weight_matrix = self._compute_observation_weights(
-                    Y, D, i, t, lambda_time, lambda_unit, control_unit_idx,
-                    n_units, n_periods
+                    Y, D, i, t, lambda_time, lambda_unit, control_unit_idx, n_units, n_periods
                 )
 
                 # Estimate model excluding observation (t, i)
                 alpha, beta, L = self._estimate_model(
-                    Y, control_mask, weight_matrix, lambda_nn,
-                    n_units, n_periods, exclude_obs=(t, i)
+                    Y,
+                    control_mask,
+                    weight_matrix,
+                    lambda_nn,
+                    n_units,
+                    n_periods,
+                    exclude_obs=(t, i),
                 )
 
                 # Pseudo treatment effect
                 tau_ti = Y[t, i] - alpha[i] - beta[t] - L[t, i]
-                tau_squared_sum += tau_ti ** 2
+                tau_squared_sum += tau_ti**2
                 n_valid += 1
 
             except (np.linalg.LinAlgError, ValueError):
@@ -777,7 +789,7 @@ class TROPLocalMixin:
                     f"LOOCV: Fit failed for observation ({t}, {i}) with "
                     f"\u03bb=({lambda_time}, {lambda_unit}, {lambda_nn}). "
                     "Returning infinite score per Equation 5.",
-                    UserWarning
+                    UserWarning,
                 )
                 return np.inf
 
@@ -796,6 +808,8 @@ class TROPLocalMixin:
         Y: Optional[np.ndarray] = None,
         D: Optional[np.ndarray] = None,
         control_unit_idx: Optional[np.ndarray] = None,
+        survey_design=None,
+        unit_weight_arr: Optional[np.ndarray] = None,
     ) -> Tuple[float, np.ndarray]:
         """
         Compute bootstrap standard error using unit-level block bootstrap.
@@ -848,20 +862,30 @@ class TROPLocalMixin:
         lambda_time, lambda_unit, lambda_nn = optimal_lambda
 
         # Try Rust backend for parallel bootstrap (5-15x speedup)
-        if (HAS_RUST_BACKEND and _rust_bootstrap_trop_variance is not None
-                and self._precomputed is not None and Y is not None
-                and D is not None):
+        if (
+            HAS_RUST_BACKEND
+            and _rust_bootstrap_trop_variance is not None
+            and self._precomputed is not None
+            and Y is not None
+            and D is not None
+        ):
             try:
                 control_mask = self._precomputed["control_mask"]
                 time_dist_matrix = self._precomputed["time_dist_matrix"].astype(np.int64)
 
                 bootstrap_estimates, se = _rust_bootstrap_trop_variance(
-                    Y, D.astype(np.float64),
+                    Y,
+                    D.astype(np.float64),
                     control_mask.astype(np.uint8),
                     time_dist_matrix,
-                    lambda_time, lambda_unit, lambda_nn,
-                    self.n_bootstrap, self.max_iter, self.tol,
-                    self.seed if self.seed is not None else 0
+                    lambda_time,
+                    lambda_unit,
+                    lambda_nn,
+                    self.n_bootstrap,
+                    self.max_iter,
+                    self.tol,
+                    self.seed if self.seed is not None else 0,
+                    unit_weight_arr,
                 )
 
                 if len(bootstrap_estimates) >= 10:
@@ -869,12 +893,10 @@ class TROPLocalMixin:
                 # Fall through to Python if too few bootstrap samples
                 logger.debug(
                     "Rust bootstrap returned only %d samples, falling back to Python",
-                    len(bootstrap_estimates)
+                    len(bootstrap_estimates),
                 )
             except Exception as e:
-                logger.debug(
-                    "Rust bootstrap variance failed, falling back to Python: %s", e
-                )
+                logger.debug("Rust bootstrap variance failed, falling back to Python: %s", e)
 
         # Python implementation (fallback)
         rng = np.random.default_rng(self.seed)
@@ -895,16 +917,12 @@ class TROPLocalMixin:
             # Stratified sampling: sample control and treated units separately
             # This preserves the treatment ratio in each bootstrap sample
             if n_control_units > 0:
-                sampled_control = rng.choice(
-                    control_units, size=n_control_units, replace=True
-                )
+                sampled_control = rng.choice(control_units, size=n_control_units, replace=True)
             else:
                 sampled_control = np.array([], dtype=control_units.dtype)
 
             if n_treated_units > 0:
-                sampled_treated = rng.choice(
-                    treated_units, size=n_treated_units, replace=True
-                )
+                sampled_treated = rng.choice(treated_units, size=n_treated_units, replace=True)
             else:
                 sampled_treated = np.array([], dtype=treated_units.dtype)
 
@@ -912,18 +930,27 @@ class TROPLocalMixin:
             sampled_units = np.concatenate([sampled_control, sampled_treated])
 
             # Create bootstrap sample with unique unit IDs
-            boot_data = pd.concat([
-                data[data[unit] == u].assign(**{unit: f"{u}_{idx}"})
-                for idx, u in enumerate(sampled_units)
-            ], ignore_index=True)
+            boot_data = pd.concat(
+                [
+                    data[data[unit] == u].assign(**{unit: f"{u}_{idx}"})
+                    for idx, u in enumerate(sampled_units)
+                ],
+                ignore_index=True,
+            )
 
             try:
                 # Fit with fixed lambda (skip LOOCV for speed)
                 att = self._fit_with_fixed_lambda(
-                    boot_data, outcome, treatment, unit, time,
-                    optimal_lambda
+                    boot_data,
+                    outcome,
+                    treatment,
+                    unit,
+                    time,
+                    optimal_lambda,
+                    survey_design=survey_design,
                 )
-                bootstrap_estimates_list.append(att)
+                if np.isfinite(att):
+                    bootstrap_estimates_list.append(att)
             except (ValueError, np.linalg.LinAlgError, KeyError):
                 continue
 
@@ -933,7 +960,7 @@ class TROPLocalMixin:
             warnings.warn(
                 f"Only {len(bootstrap_estimates)} bootstrap iterations succeeded. "
                 "Standard errors may be unreliable.",
-                UserWarning
+                UserWarning,
             )
             if len(bootstrap_estimates) == 0:
                 return np.nan, np.array([])
@@ -949,6 +976,7 @@ class TROPLocalMixin:
         unit: str,
         time: str,
         fixed_lambda: Tuple[float, float, float],
+        survey_design=None,
     ) -> float:
         """
         Fit model with fixed tuning parameters (for bootstrap).
@@ -957,6 +985,17 @@ class TROPLocalMixin:
         Returns only the ATT estimate.
         """
         lambda_time, lambda_unit, lambda_nn = fixed_lambda
+
+        # Extract survey weights from bootstrap data (units are renamed)
+        if survey_design is not None and survey_design.weights is not None:
+            from diff_diff.survey import _extract_unit_survey_weights
+
+            local_all_units = sorted(data[unit].unique())
+            local_weight_arr = _extract_unit_survey_weights(
+                data, unit, survey_design, local_all_units
+            )
+        else:
+            local_weight_arr = None
 
         # Setup matrices
         all_units = sorted(data[unit].unique())
@@ -986,29 +1025,39 @@ class TROPLocalMixin:
         control_unit_idx = np.where(~unit_ever_treated)[0]
 
         # Get list of treated observations
-        treated_observations = [(t, i) for t in range(n_periods) for i in range(n_units)
-                                if D[t, i] == 1]
+        treated_observations = [
+            (t, i) for t in range(n_periods) for i in range(n_units) if D[t, i] == 1
+        ]
 
         if not treated_observations:
             raise ValueError("No treated observations")
 
         # Compute ATT using observation-specific weights (Algorithm 2)
         tau_values = []
+        tau_weights = []
         for t, i in treated_observations:
+            # Skip non-finite outcomes (match main fit NaN contract)
+            if not np.isfinite(Y[t, i]):
+                continue
+
             # Compute observation-specific weights for this (i, t)
             weight_matrix = self._compute_observation_weights(
-                Y, D, i, t, lambda_time, lambda_unit, control_unit_idx,
-                n_units, n_periods
+                Y, D, i, t, lambda_time, lambda_unit, control_unit_idx, n_units, n_periods
             )
 
             # Fit model with these weights
             alpha, beta, L = self._estimate_model(
-                Y, control_mask, weight_matrix, lambda_nn,
-                n_units, n_periods
+                Y, control_mask, weight_matrix, lambda_nn, n_units, n_periods
             )
 
             # Compute treatment effect: tau_{it} = Y_{it} - alpha_i - beta_t - L_{it}
             tau = Y[t, i] - alpha[i] - beta[t] - L[t, i]
             tau_values.append(tau)
+            if local_weight_arr is not None:
+                tau_weights.append(local_weight_arr[i])
 
-        return np.mean(tau_values)
+        if not tau_values:
+            return float("nan")
+        if local_weight_arr is not None:
+            return float(np.average(tau_values, weights=tau_weights))
+        return float(np.mean(tau_values))

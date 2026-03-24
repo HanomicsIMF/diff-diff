@@ -2137,9 +2137,9 @@ class TestLOOCVFallback:
         original_fit_with_fixed = TROP._fit_with_fixed_lambda
         captured_lambda = []
 
-        def tracking_fit(self, data, outcome, treatment, unit, time, fixed_lambda):
+        def tracking_fit(self, data, outcome, treatment, unit, time, fixed_lambda, **kwargs):
             captured_lambda.append(fixed_lambda)
-            return original_fit_with_fixed(self, data, outcome, treatment, unit, time, fixed_lambda)
+            return original_fit_with_fixed(self, data, outcome, treatment, unit, time, fixed_lambda, **kwargs)
 
         with patch.object(TROP, '_fit_with_fixed_lambda', tracking_fit):
             results = trop_est.fit(

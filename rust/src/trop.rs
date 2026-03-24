@@ -914,11 +914,15 @@ fn max_abs_diff_2d(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 /// * `max_iter` - Maximum iterations for model estimation
 /// * `tol` - Convergence tolerance
 /// * `seed` - Random seed
+/// * `survey_weights` - Optional unit-level survey weights (length n_units).
+///   When provided, ATT is computed as a weighted mean of per-observation
+///   treatment effects using unit weights. Model fitting, LOOCV, and distance
+///   computation are unchanged.
 ///
 /// # Returns
 /// (bootstrap_estimates, standard_error)
 #[pyfunction]
-#[pyo3(signature = (y, d, control_mask, time_dist_matrix, lambda_time, lambda_unit, lambda_nn, n_bootstrap, max_iter, tol, seed))]
+#[pyo3(signature = (y, d, control_mask, time_dist_matrix, lambda_time, lambda_unit, lambda_nn, n_bootstrap, max_iter, tol, seed, survey_weights=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn bootstrap_trop_variance<'py>(
     py: Python<'py>,
@@ -933,11 +937,13 @@ pub fn bootstrap_trop_variance<'py>(
     max_iter: usize,
     tol: f64,
     seed: u64,
+    survey_weights: Option<PyReadonlyArray1<'py, f64>>,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, f64)> {
     let y_arr = y.as_array().to_owned();
     let d_arr = d.as_array().to_owned();
     let control_mask_arr = control_mask.as_array().to_owned();
     let time_dist_arr = time_dist_matrix.as_array().to_owned();
+    let sw_arr: Option<Array1<f64>> = survey_weights.map(|sw| sw.as_array().to_owned());
 
     let n_units = y_arr.ncols();
     let n_periods = y_arr.nrows();
@@ -1022,9 +1028,18 @@ pub fn bootstrap_trop_variance<'py>(
             }
 
             // Compute ATT for bootstrap sample
-            let mut tau_values = Vec::with_capacity(boot_treated.len());
+            // When survey weights are provided, ATT is a weighted mean of
+            // per-observation treatment effects using unit-level weights.
+            let mut tau_sum = 0.0;
+            let mut weight_sum = 0.0;
+            let mut tau_count = 0usize;
 
             for (t, i) in boot_treated {
+                // Skip non-finite outcomes (match main fit NaN contract)
+                if !y_boot[[t, i]].is_finite() {
+                    continue;
+                }
+
                 let weight_matrix = compute_weight_matrix(
                     &y_boot.view(),
                     &d_boot.view(),
@@ -1049,14 +1064,20 @@ pub fn bootstrap_trop_variance<'py>(
                     None,
                 ) {
                     let tau = y_boot[[t, i]] - alpha[i] - beta[t] - l[[t, i]];
-                    tau_values.push(tau);
+                    let w = match &sw_arr {
+                        Some(sw) => sw[sampled_units[i]],
+                        None => 1.0,
+                    };
+                    tau_sum += w * tau;
+                    weight_sum += w;
+                    tau_count += 1;
                 }
             }
 
-            if tau_values.is_empty() {
+            if tau_count == 0 {
                 None
             } else {
-                Some(tau_values.iter().sum::<f64>() / tau_values.len() as f64)
+                Some(tau_sum / weight_sum)
             }
         })
         .collect();
@@ -1649,11 +1670,15 @@ pub fn loocv_grid_search_global<'py>(
 /// * `max_iter` - Maximum iterations for model estimation
 /// * `tol` - Convergence tolerance
 /// * `seed` - Random seed
+/// * `survey_weights` - Optional unit-level survey weights (length n_units).
+///   When provided, ATT is computed as a weighted mean of per-observation
+///   treatment effects using unit weights. Model fitting, LOOCV, and distance
+///   computation are unchanged.
 ///
 /// # Returns
 /// (bootstrap_estimates, standard_error)
 #[pyfunction]
-#[pyo3(signature = (y, d, lambda_time, lambda_unit, lambda_nn, n_bootstrap, max_iter, tol, seed))]
+#[pyo3(signature = (y, d, lambda_time, lambda_unit, lambda_nn, n_bootstrap, max_iter, tol, seed, survey_weights=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn bootstrap_trop_variance_global<'py>(
     py: Python<'py>,
@@ -1666,9 +1691,11 @@ pub fn bootstrap_trop_variance_global<'py>(
     max_iter: usize,
     tol: f64,
     seed: u64,
+    survey_weights: Option<PyReadonlyArray1<'py, f64>>,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, f64)> {
     let y_arr = y.as_array().to_owned();
     let d_arr = d.as_array().to_owned();
+    let sw_arr: Option<Array1<f64>> = survey_weights.map(|sw| sw.as_array().to_owned());
 
     let n_units = y_arr.ncols();
     let n_periods = y_arr.nrows();
@@ -1767,19 +1794,27 @@ pub fn bootstrap_trop_variance_global<'py>(
             };
 
             // Post-hoc tau extraction: ATT = mean(Y - mu - alpha - beta - L) over treated
+            // When survey weights are provided, ATT is a weighted mean using unit-level weights.
             result.and_then(|(mu, alpha, beta, l)| {
                 let mut tau_sum = 0.0;
+                let mut weight_sum = 0.0;
                 let mut tau_count = 0;
                 for t in 0..n_periods {
                     for i in 0..n_units {
                         if d_boot[[t, i]] == 1.0 && y_boot[[t, i]].is_finite() {
-                            tau_sum += y_boot[[t, i]] - mu - alpha[i] - beta[t] - l[[t, i]];
+                            let tau = y_boot[[t, i]] - mu - alpha[i] - beta[t] - l[[t, i]];
+                            let w = match &sw_arr {
+                                Some(sw) => sw[sampled_units[i]],
+                                None => 1.0,
+                            };
+                            tau_sum += w * tau;
+                            weight_sum += w;
                             tau_count += 1;
                         }
                     }
                 }
                 if tau_count > 0 {
-                    Some(tau_sum / tau_count as f64)
+                    Some(tau_sum / weight_sum)
                 } else {
                     None
                 }

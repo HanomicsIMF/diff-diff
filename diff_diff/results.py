@@ -680,6 +680,8 @@ class SyntheticDiDResults:
     pre_treatment_fit: Optional[float] = field(default=None)
     placebo_effects: Optional[np.ndarray] = field(default=None)
     n_bootstrap: Optional[int] = field(default=None)
+    # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
+    survey_metadata: Optional[Any] = field(default=None)
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -734,6 +736,28 @@ class SyntheticDiDResults:
         lines.append(f"{'Variance method:':<25} {self.variance_method:>10}")
         if self.variance_method == "bootstrap" and self.n_bootstrap is not None:
             lines.append(f"{'Bootstrap replications:':<25} {self.n_bootstrap:>10}")
+
+        # Add survey design info
+        if self.survey_metadata is not None:
+            sm = self.survey_metadata
+            lines.extend(
+                [
+                    "",
+                    "-" * 75,
+                    "Survey Design".center(75),
+                    "-" * 75,
+                    f"{'Weight type:':<25} {sm.weight_type:>10}",
+                ]
+            )
+            if sm.n_strata is not None:
+                lines.append(f"{'Strata:':<25} {sm.n_strata:>10}")
+            if sm.n_psu is not None:
+                lines.append(f"{'PSU/Cluster:':<25} {sm.n_psu:>10}")
+            lines.append(f"{'Effective sample size:':<25} {sm.effective_n:>10.1f}")
+            lines.append(f"{'Design effect (DEFF):':<25} {sm.design_effect:>10.2f}")
+            if sm.df_survey is not None:
+                lines.append(f"{'Survey d.f.:':<25} {sm.df_survey:>10}")
+            lines.append("-" * 75)
 
         lines.extend(
             [
@@ -812,6 +836,15 @@ class SyntheticDiDResults:
         }
         if self.n_bootstrap is not None:
             result["n_bootstrap"] = self.n_bootstrap
+        if self.survey_metadata is not None:
+            sm = self.survey_metadata
+            result["weight_type"] = sm.weight_type
+            result["effective_n"] = sm.effective_n
+            result["design_effect"] = sm.design_effect
+            result["sum_weights"] = sm.sum_weights
+            result["n_strata"] = sm.n_strata
+            result["n_psu"] = sm.n_psu
+            result["df_survey"] = sm.df_survey
         return result
 
     def to_dataframe(self) -> pd.DataFrame:

@@ -430,6 +430,66 @@ def _validate_unit_constant_survey(data, unit_col, survey_design):
                 )
 
 
+def _resolve_pweight_only(resolved_survey, estimator_name):
+    """Guard: reject non-pweight and strata/PSU/FPC for pweight-only estimators.
+
+    Parameters
+    ----------
+    resolved_survey : ResolvedSurveyDesign or None
+        Resolved survey design. If None, returns immediately.
+    estimator_name : str
+        Estimator name for error messages.
+
+    Raises
+    ------
+    ValueError
+        If weight_type is not 'pweight'.
+    NotImplementedError
+        If strata, PSU, or FPC are present.
+    """
+    if resolved_survey is None:
+        return
+    if resolved_survey.weight_type != "pweight":
+        raise ValueError(
+            f"{estimator_name} survey support requires weight_type='pweight'. "
+            f"Got '{resolved_survey.weight_type}'."
+        )
+    if (
+        resolved_survey.strata is not None
+        or resolved_survey.psu is not None
+        or resolved_survey.fpc is not None
+    ):
+        raise NotImplementedError(
+            f"{estimator_name} does not yet support strata/PSU/FPC in "
+            "SurveyDesign. Use SurveyDesign(weights=...) only. Full "
+            "design-based bootstrap is planned for the Bootstrap + "
+            "Survey Interaction phase."
+        )
+
+
+def _extract_unit_survey_weights(data, unit_col, survey_design, unit_order):
+    """Extract unit-level survey weights aligned to a given unit ordering.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Panel data with survey weight column.
+    unit_col : str
+        Unit identifier column name.
+    survey_design : SurveyDesign
+        Survey design (uses ``weights`` column name).
+    unit_order : array-like
+        Ordered sequence of unit identifiers to align weights to.
+
+    Returns
+    -------
+    np.ndarray
+        Float64 array of unit-level weights, one per unit in ``unit_order``.
+    """
+    unit_w = data.groupby(unit_col)[survey_design.weights].first()
+    return np.array([unit_w[u] for u in unit_order], dtype=np.float64)
+
+
 def _resolve_survey_for_fit(survey_design, data, inference_mode="analytical"):
     """
     Shared helper: validate and resolve a SurveyDesign for an estimator fit() call.

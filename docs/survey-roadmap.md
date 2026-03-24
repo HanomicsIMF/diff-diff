@@ -63,18 +63,21 @@ TripleDifference IPW/DR from Phase 3 deferred work.
 | CallawaySantAnna | Covariates + IPW/DR + survey | Phase 5: DRDID panel nuisance IF corrections |
 | CallawaySantAnna | Efficient DRDID nuisance IF for reg+covariates | Phase 5: replace conservative plug-in IF with semiparametrically efficient IF |
 
-### Remaining for Phase 5
+## Implemented (Phase 5): SyntheticDiD + TROP Survey Support
 
-| Estimator | File | Complexity | Notes |
-|-----------|------|------------|-------|
-| SyntheticDiD | `synthetic_did.py` | Medium | Survey-weighted treated mean in optimization, weighted placebo variance (bootstrap-based SE only) |
-| TROP | `trop.py` | Medium | Survey weights in ATT aggregation and LOOCV (bootstrap-based SE only) |
+| Estimator | File | Survey Support | Notes |
+|-----------|------|----------------|-------|
+| SyntheticDiD | `synthetic_did.py` | pweight | Both sides weighted (WLS interpretation): treated means survey-weighted, ω composed with control survey weights post-optimization. Placebo and bootstrap SE preserve survey weights. Covariates residualized with WLS. |
+| TROP | `trop.py` | pweight | ATT aggregation only: population-weighted average of per-observation treatment effects. Model fitting (kernel weights, LOOCV, nuclear norm) unchanged. Rust and Python bootstrap paths both support weighted ATT. |
 
-## Phase 5: Advanced Features + Remaining Estimators
+### Phase 5 Deferred Work
 
-### SyntheticDiD and TROP Survey Support
-Both estimators use bootstrap/placebo for SE with no analytical variance path.
-Phase 5 provides survey-weighted point estimates and survey-aware bootstrap SE.
+| Estimator | Deferred Capability | Blocker |
+|-----------|-------------------|---------|
+| SyntheticDiD | strata/PSU/FPC + survey-aware bootstrap | Bootstrap + Survey Interaction |
+| TROP | strata/PSU/FPC + survey-aware bootstrap | Bootstrap + Survey Interaction |
+
+## Phase 6: Advanced Features
 
 ### Bootstrap + Survey Interaction
 Unblock bootstrap + survey for all estimators that currently defer it

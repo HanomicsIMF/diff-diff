@@ -29,7 +29,7 @@ __all__ = [
 # Per paper's footnote 2: λ_nn=∞ disables the factor model (L=0).
 # For λ_time and λ_unit, 0.0 means disabled (uniform weights) per Eq. 3:
 #   exp(-0 × dist) = 1 for all distances.
-_LAMBDA_INF: float = float('inf')
+_LAMBDA_INF: float = float("inf")
 
 
 class _PrecomputedStructures(TypedDict):
@@ -147,6 +147,8 @@ class TROPResults:
     n_post_periods: int = 0
     n_bootstrap: Optional[int] = field(default=None)
     bootstrap_distribution: Optional[np.ndarray] = field(default=None, repr=False)
+    # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
+    survey_metadata: Optional[Any] = field(default=None)
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -203,25 +205,51 @@ class TROPResults:
         if self.n_bootstrap is not None:
             lines.append(f"{'Bootstrap replications:':<25} {self.n_bootstrap:>10}")
 
-        lines.extend([
-            "",
-            "-" * 75,
-            f"{'Parameter':<15} {'Estimate':>12} {'Std. Err.':>12} "
-            f"{'t-stat':>10} {'P>|t|':>10} {'':>5}",
-            "-" * 75,
-            f"{'ATT':<15} {self.att:>12.4f} {self.se:>12.4f} "
-            f"{self.t_stat:>10.3f} {self.p_value:>10.4f} {self.significance_stars:>5}",
-            "-" * 75,
-            "",
-            f"{conf_level}% Confidence Interval: [{self.conf_int[0]:.4f}, {self.conf_int[1]:.4f}]",
-        ])
+        # Add survey design info
+        if self.survey_metadata is not None:
+            sm = self.survey_metadata
+            lines.extend(
+                [
+                    "",
+                    "-" * 75,
+                    "Survey Design".center(75),
+                    "-" * 75,
+                    f"{'Weight type:':<25} {sm.weight_type:>10}",
+                ]
+            )
+            if sm.n_strata is not None:
+                lines.append(f"{'Strata:':<25} {sm.n_strata:>10}")
+            if sm.n_psu is not None:
+                lines.append(f"{'PSU/Cluster:':<25} {sm.n_psu:>10}")
+            lines.append(f"{'Effective sample size:':<25} {sm.effective_n:>10.1f}")
+            lines.append(f"{'Design effect (DEFF):':<25} {sm.design_effect:>10.2f}")
+            if sm.df_survey is not None:
+                lines.append(f"{'Survey d.f.:':<25} {sm.df_survey:>10}")
+            lines.append("-" * 75)
+
+        lines.extend(
+            [
+                "",
+                "-" * 75,
+                f"{'Parameter':<15} {'Estimate':>12} {'Std. Err.':>12} "
+                f"{'t-stat':>10} {'P>|t|':>10} {'':>5}",
+                "-" * 75,
+                f"{'ATT':<15} {self.att:>12.4f} {self.se:>12.4f} "
+                f"{self.t_stat:>10.3f} {self.p_value:>10.4f} {self.significance_stars:>5}",
+                "-" * 75,
+                "",
+                f"{conf_level}% Confidence Interval: [{self.conf_int[0]:.4f}, {self.conf_int[1]:.4f}]",
+            ]
+        )
 
         # Add significance codes
-        lines.extend([
-            "",
-            "Signif. codes: '***' 0.001, '**' 0.01, '*' 0.05, '.' 0.1",
-            "=" * 75,
-        ])
+        lines.extend(
+            [
+                "",
+                "Signif. codes: '***' 0.001, '**' 0.01, '*' 0.05, '.' 0.1",
+                "=" * 75,
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -238,7 +266,7 @@ class TROPResults:
         Dict[str, Any]
             Dictionary containing all estimation results.
         """
-        return {
+        result = {
             "att": self.att,
             "se": self.se,
             "t_stat": self.t_stat,
@@ -257,6 +285,16 @@ class TROPResults:
             "effective_rank": self.effective_rank,
             "loocv_score": self.loocv_score,
         }
+        if self.survey_metadata is not None:
+            sm = self.survey_metadata
+            result["weight_type"] = sm.weight_type
+            result["effective_n"] = sm.effective_n
+            result["design_effect"] = sm.design_effect
+            result["sum_weights"] = sm.sum_weights
+            result["n_strata"] = sm.n_strata
+            result["n_psu"] = sm.n_psu
+            result["df_survey"] = sm.df_survey
+        return result
 
     def to_dataframe(self) -> pd.DataFrame:
         """
@@ -278,10 +316,12 @@ class TROPResults:
         pd.DataFrame
             DataFrame with unit, time, and treatment effect columns.
         """
-        return pd.DataFrame([
-            {"unit": unit, "time": time, "effect": effect}
-            for (unit, time), effect in self.treatment_effects.items()
-        ])
+        return pd.DataFrame(
+            [
+                {"unit": unit, "time": time, "effect": effect}
+                for (unit, time), effect in self.treatment_effects.items()
+            ]
+        )
 
     def get_unit_effects_df(self) -> pd.DataFrame:
         """
@@ -292,10 +332,9 @@ class TROPResults:
         pd.DataFrame
             DataFrame with unit and effect columns.
         """
-        return pd.DataFrame([
-            {"unit": unit, "effect": effect}
-            for unit, effect in self.unit_effects.items()
-        ])
+        return pd.DataFrame(
+            [{"unit": unit, "effect": effect} for unit, effect in self.unit_effects.items()]
+        )
 
     def get_time_effects_df(self) -> pd.DataFrame:
         """
@@ -306,10 +345,9 @@ class TROPResults:
         pd.DataFrame
             DataFrame with time and effect columns.
         """
-        return pd.DataFrame([
-            {"time": time, "effect": effect}
-            for time, effect in self.time_effects.items()
-        ])
+        return pd.DataFrame(
+            [{"time": time, "effect": effect} for time, effect in self.time_effects.items()]
+        )
 
     @property
     def is_significant(self) -> bool:

@@ -143,9 +143,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         # 'local'/'global' are preferred; 'twostep'/'joint' are deprecated aliases
         valid_methods = ("local", "twostep", "joint", "global")
         if method not in valid_methods:
-            raise ValueError(
-                f"method must be one of {valid_methods}, got '{method}'"
-            )
+            raise ValueError(f"method must be one of {valid_methods}, got '{method}'")
         if method == "twostep":
             warnings.warn(
                 "method='twostep' is deprecated and will be removed in v3.0. "
@@ -263,9 +261,9 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         for value in grid:
             params = {**fixed_params, param_name: value}
 
-            lambda_time = params.get('lambda_time', 0.0)
-            lambda_unit = params.get('lambda_unit', 0.0)
-            lambda_nn = params.get('lambda_nn', 0.0)
+            lambda_time = params.get("lambda_time", 0.0)
+            lambda_unit = params.get("lambda_unit", 0.0)
+            lambda_nn = params.get("lambda_nn", 0.0)
 
             # Convert λ_nn=∞ → large finite value (factor model disabled, L≈0)
             # λ_time and λ_unit use 0.0 for uniform weights per Eq. 3 (no inf conversion needed)
@@ -274,9 +272,15 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
 
             try:
                 score = self._loocv_score_obs_specific(
-                    Y, D, control_mask, control_unit_idx,
-                    lambda_time, lambda_unit, lambda_nn,
-                    n_units, n_periods
+                    Y,
+                    D,
+                    control_mask,
+                    control_unit_idx,
+                    lambda_time,
+                    lambda_unit,
+                    lambda_nn,
+                    n_units,
+                    n_periods,
                 )
                 if score < best_score:
                     best_score = score
@@ -333,30 +337,47 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         for cycle in range(max_cycles):
             # Optimize λ_unit (fix λ_time, λ_nn)
             lambda_unit, _ = self._univariate_loocv_search(
-                Y, D, control_mask, control_unit_idx, n_units, n_periods,
-                'lambda_unit', self.lambda_unit_grid,
-                {'lambda_time': lambda_time, 'lambda_nn': lambda_nn}
+                Y,
+                D,
+                control_mask,
+                control_unit_idx,
+                n_units,
+                n_periods,
+                "lambda_unit",
+                self.lambda_unit_grid,
+                {"lambda_time": lambda_time, "lambda_nn": lambda_nn},
             )
 
             # Optimize λ_time (fix λ_unit, λ_nn)
             lambda_time, _ = self._univariate_loocv_search(
-                Y, D, control_mask, control_unit_idx, n_units, n_periods,
-                'lambda_time', self.lambda_time_grid,
-                {'lambda_unit': lambda_unit, 'lambda_nn': lambda_nn}
+                Y,
+                D,
+                control_mask,
+                control_unit_idx,
+                n_units,
+                n_periods,
+                "lambda_time",
+                self.lambda_time_grid,
+                {"lambda_unit": lambda_unit, "lambda_nn": lambda_nn},
             )
 
             # Optimize λ_nn (fix λ_unit, λ_time)
             lambda_nn, score = self._univariate_loocv_search(
-                Y, D, control_mask, control_unit_idx, n_units, n_periods,
-                'lambda_nn', self.lambda_nn_grid,
-                {'lambda_unit': lambda_unit, 'lambda_time': lambda_time}
+                Y,
+                D,
+                control_mask,
+                control_unit_idx,
+                n_units,
+                n_periods,
+                "lambda_nn",
+                self.lambda_nn_grid,
+                {"lambda_unit": lambda_unit, "lambda_time": lambda_time},
             )
 
             # Check convergence
             if abs(score - prev_score) < 1e-6:
                 logger.debug(
-                    "Cycling search converged after %d cycles with score %.6f",
-                    cycle + 1, score
+                    "Cycling search converged after %d cycles with score %.6f", cycle + 1, score
                 )
                 break
             prev_score = score
@@ -374,6 +395,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         treatment: str,
         unit: str,
         time: str,
+        survey_design=None,
     ) -> TROPResults:
         """
         Fit the TROP model.
@@ -403,6 +425,10 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
             Name of the unit identifier column.
         time : str
             Name of the time period column.
+        survey_design : SurveyDesign, optional
+            Survey design specification. Only pweight designs are supported
+            (strata/PSU/FPC raise NotImplementedError). Survey weights enter
+            ATT aggregation only.
 
         Returns
         -------
@@ -412,6 +438,13 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
             attributes show the selected grid values. For lambda_time and
             lambda_unit, 0.0 means uniform weights; inf is not accepted.
             For lambda_nn, inf is converted to 1e10 (factor model disabled).
+
+        Raises
+        ------
+        ValueError
+            If required columns are missing or non-pweight survey design.
+        NotImplementedError
+            If survey_design includes strata, PSU, or FPC.
         """
         # Validate inputs
         required_cols = [outcome, treatment, unit, time]
@@ -419,13 +452,43 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         if missing:
             raise ValueError(f"Missing columns: {missing}")
 
+        # Resolve survey design
+        from diff_diff.survey import (
+            _extract_unit_survey_weights,
+            _resolve_pweight_only,
+            _resolve_survey_for_fit,
+            _validate_unit_constant_survey,
+        )
+
+        resolved_survey, _survey_weights, _survey_wt, survey_metadata = _resolve_survey_for_fit(
+            survey_design, data, "analytical"
+        )
+        _resolve_pweight_only(resolved_survey, "TROP")
+        if resolved_survey is not None:
+            _validate_unit_constant_survey(data, unit, survey_design)
+
         # Dispatch based on estimation method
         if self.method == "global":
-            return self._fit_global(data, outcome, treatment, unit, time)
+            return self._fit_global(
+                data,
+                outcome,
+                treatment,
+                unit,
+                time,
+                resolved_survey=resolved_survey,
+                survey_metadata=survey_metadata,
+                survey_design=survey_design,
+            )
 
         # Below is the local method (default)
         # Get unique units and periods
         all_units = sorted(data[unit].unique())
+
+        # Extract unit-level survey weights
+        if resolved_survey is not None:
+            unit_weight_arr = _extract_unit_survey_weights(data, unit, survey_design, all_units)
+        else:
+            unit_weight_arr = None
         all_periods = sorted(data[time].unique())
 
         n_units = len(all_units)
@@ -447,9 +510,8 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
 
         # For D matrix, track missing values BEFORE fillna to support unbalanced panels
         # Issue 3 fix: Missing observations should not trigger spurious violations
-        D_raw = (
-            data.pivot(index=time, columns=unit, values=treatment)
-            .reindex(index=all_periods, columns=all_units)
+        D_raw = data.pivot(index=time, columns=unit, values=treatment).reindex(
+            index=all_periods, columns=all_units
         )
         missing_mask = pd.isna(D_raw).values  # True where originally missing
         D = D_raw.fillna(0).astype(int).values
@@ -519,9 +581,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         control_mask = D == 0
 
         # Pre-compute structures that are reused across LOOCV iterations
-        self._precomputed = self._precompute_structures(
-            Y, D, control_unit_idx, n_units, n_periods
-        )
+        self._precomputed = self._precompute_structures(Y, D, control_unit_idx, n_units, n_periods)
 
         # Use Rust backend for parallel LOOCV grid search (10-50x speedup)
         if HAS_RUST_BACKEND and _rust_loocv_grid_search is not None:
@@ -535,13 +595,20 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
                 lambda_nn_arr = np.array(self.lambda_nn_grid, dtype=np.float64)
 
                 result = _rust_loocv_grid_search(
-                    Y, D.astype(np.float64), control_mask_u8,
+                    Y,
+                    D.astype(np.float64),
+                    control_mask_u8,
                     time_dist_matrix,
-                    lambda_time_arr, lambda_unit_arr, lambda_nn_arr,
-                    self.max_iter, self.tol,
+                    lambda_time_arr,
+                    lambda_unit_arr,
+                    lambda_nn_arr,
+                    self.max_iter,
+                    self.tol,
                 )
                 # Unpack result - 7 values including optional first_failed_obs
-                best_lt, best_lu, best_ln, best_score, n_valid, n_attempted, first_failed_obs = result
+                best_lt, best_lu, best_ln, best_score, n_valid, n_attempted, first_failed_obs = (
+                    result
+                )
                 # Only accept finite scores - infinite means all fits failed
                 if np.isfinite(best_score):
                     best_lambda = (best_lt, best_lu, best_ln)
@@ -557,7 +624,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
                         f"LOOCV: All {n_attempted} fits failed for "
                         f"\u03bb=({best_lt}, {best_lu}, {best_ln}). "
                         f"Returning infinite score.{obs_info}",
-                        UserWarning
+                        UserWarning,
                     )
                 elif n_attempted > 0 and (n_attempted - n_valid) > 0.1 * n_attempted:
                     n_failed = n_attempted - n_valid
@@ -570,13 +637,11 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
                         f"LOOCV: {n_failed}/{n_attempted} fits failed for "
                         f"\u03bb=({best_lt}, {best_lu}, {best_ln}). "
                         f"This may indicate numerical instability.{obs_info}",
-                        UserWarning
+                        UserWarning,
                     )
             except Exception as e:
                 # Fall back to Python implementation on error
-                logger.debug(
-                    "Rust LOOCV grid search failed, falling back to Python: %s", e
-                )
+                logger.debug("Rust LOOCV grid search failed, falling back to Python: %s", e)
                 best_lambda = None
                 best_score = np.inf
 
@@ -590,37 +655,66 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
 
             # λ_time search: fix λ_unit=0, λ_nn=∞ (disabled - no factor adjustment)
             lambda_time_init, _ = self._univariate_loocv_search(
-                Y, D, control_mask, control_unit_idx, n_units, n_periods,
-                'lambda_time', self.lambda_time_grid,
-                {'lambda_unit': 0.0, 'lambda_nn': _LAMBDA_INF}
+                Y,
+                D,
+                control_mask,
+                control_unit_idx,
+                n_units,
+                n_periods,
+                "lambda_time",
+                self.lambda_time_grid,
+                {"lambda_unit": 0.0, "lambda_nn": _LAMBDA_INF},
             )
 
             # λ_nn search: fix λ_time=0 (uniform time weights), λ_unit=0
             lambda_nn_init, _ = self._univariate_loocv_search(
-                Y, D, control_mask, control_unit_idx, n_units, n_periods,
-                'lambda_nn', self.lambda_nn_grid,
-                {'lambda_time': 0.0, 'lambda_unit': 0.0}
+                Y,
+                D,
+                control_mask,
+                control_unit_idx,
+                n_units,
+                n_periods,
+                "lambda_nn",
+                self.lambda_nn_grid,
+                {"lambda_time": 0.0, "lambda_unit": 0.0},
             )
 
             # λ_unit search: fix λ_nn=∞, λ_time=0
             lambda_unit_init, _ = self._univariate_loocv_search(
-                Y, D, control_mask, control_unit_idx, n_units, n_periods,
-                'lambda_unit', self.lambda_unit_grid,
-                {'lambda_nn': _LAMBDA_INF, 'lambda_time': 0.0}
+                Y,
+                D,
+                control_mask,
+                control_unit_idx,
+                n_units,
+                n_periods,
+                "lambda_unit",
+                self.lambda_unit_grid,
+                {"lambda_nn": _LAMBDA_INF, "lambda_time": 0.0},
             )
 
             # Stage 2: Cycling refinement (coordinate descent)
             lambda_time, lambda_unit, lambda_nn = self._cycling_parameter_search(
-                Y, D, control_mask, control_unit_idx, n_units, n_periods,
-                (lambda_time_init, lambda_unit_init, lambda_nn_init)
+                Y,
+                D,
+                control_mask,
+                control_unit_idx,
+                n_units,
+                n_periods,
+                (lambda_time_init, lambda_unit_init, lambda_nn_init),
             )
 
             # Compute final score for the optimized parameters
             try:
                 best_score = self._loocv_score_obs_specific(
-                    Y, D, control_mask, control_unit_idx,
-                    lambda_time, lambda_unit, lambda_nn,
-                    n_units, n_periods
+                    Y,
+                    D,
+                    control_mask,
+                    control_unit_idx,
+                    lambda_time,
+                    lambda_unit,
+                    lambda_nn,
+                    n_units,
+                    n_periods,
                 )
                 # Only accept finite scores - infinite means all fits failed
                 if np.isfinite(best_score):
@@ -631,10 +725,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
                 pass
 
         if best_lambda is None:
-            warnings.warn(
-                "All tuning parameter combinations failed. Using defaults.",
-                UserWarning
-            )
+            warnings.warn("All tuning parameter combinations failed. Using defaults.", UserWarning)
             best_lambda = (1.0, 1.0, 0.1)
             best_score = np.nan
 
@@ -657,6 +748,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         # For each treated (i,t): compute observation-specific weights, fit model, compute tau_{it}
         treatment_effects = {}
         tau_values = []
+        tau_weights = []  # parallel to tau_values for survey-weighted ATT
         alpha_estimates = []
         beta_estimates = []
         L_estimates = []
@@ -676,14 +768,12 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
 
             # Compute observation-specific weights for this (i, t)
             weight_matrix = self._compute_observation_weights(
-                Y, D, i, t, lambda_time, lambda_unit, control_unit_idx,
-                n_units, n_periods
+                Y, D, i, t, lambda_time, lambda_unit, control_unit_idx, n_units, n_periods
             )
 
             # Fit model with these weights
             alpha_hat, beta_hat, L_hat = self._estimate_model(
-                Y, control_mask, weight_matrix, lambda_nn,
-                n_units, n_periods
+                Y, control_mask, weight_matrix, lambda_nn, n_units, n_periods
             )
 
             # Compute treatment effect: tau_{it} = Y_{it} - alpha_i - beta_t - L_{it}
@@ -691,6 +781,8 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
 
             treatment_effects[(unit_id, time_id)] = tau_it
             tau_values.append(tau_it)
+            if unit_weight_arr is not None:
+                tau_weights.append(unit_weight_arr[i])
 
             # Store for averaging
             alpha_estimates.append(alpha_hat)
@@ -711,8 +803,11 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
                 UserWarning,
             )
 
-        # Average ATT
-        att = np.mean(tau_values) if tau_values else np.nan
+        # Average ATT (survey-weighted when applicable)
+        if unit_weight_arr is not None and tau_values:
+            att = float(np.average(tau_values, weights=tau_weights))
+        else:
+            att = np.mean(tau_values) if tau_values else np.nan
 
         # Average parameter estimates for output (representative)
         alpha_hat = np.mean(alpha_estimates, axis=0) if alpha_estimates else np.zeros(n_units)
@@ -730,8 +825,17 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         # Use effective_lambda (converted values) to ensure SE is computed with same
         # parameters as point estimation. This fixes the variance inconsistency issue.
         se, bootstrap_dist = self._bootstrap_variance(
-            data, outcome, treatment, unit, time,
-            effective_lambda, Y=Y, D=D, control_unit_idx=control_unit_idx
+            data,
+            outcome,
+            treatment,
+            unit,
+            time,
+            effective_lambda,
+            Y=Y,
+            D=D,
+            control_unit_idx=control_unit_idx,
+            survey_design=survey_design,
+            unit_weight_arr=unit_weight_arr,
         )
 
         # Compute test statistics
@@ -767,6 +871,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
             n_post_periods=n_post_periods,
             n_bootstrap=self.n_bootstrap,
             bootstrap_distribution=bootstrap_dist if len(bootstrap_dist) > 0 else None,
+            survey_metadata=survey_metadata,
         )
 
         self.is_fitted_ = True
@@ -822,6 +927,7 @@ def trop(
     treatment: str,
     unit: str,
     time: str,
+    survey_design=None,
     **kwargs,
 ) -> TROPResults:
     """
@@ -844,6 +950,8 @@ def trop(
         Unit identifier column name.
     time : str
         Time period column name.
+    survey_design : SurveyDesign, optional
+        Survey design specification. Only pweight designs are supported.
     **kwargs
         Additional arguments passed to TROP constructor.
 
@@ -859,4 +967,4 @@ def trop(
     >>> print(f"ATT: {results.att:.3f}")
     """
     estimator = TROP(**kwargs)
-    return estimator.fit(data, outcome, treatment, unit, time)
+    return estimator.fit(data, outcome, treatment, unit, time, survey_design=survey_design)

@@ -118,14 +118,12 @@ class TROPGlobalMixin:
         # dist_unit[i] = sqrt(sum_pre(avg_tr - Y_i)^2 / n_pre)
         # Use NaN-safe operations: treat NaN differences as 0 (excluded)
         diff = average_treated[:, np.newaxis] - Y
-        diff_sq = np.where(np.isfinite(diff), diff ** 2, 0.0) * pre_mask[:, np.newaxis]
+        diff_sq = np.where(np.isfinite(diff), diff**2, 0.0) * pre_mask[:, np.newaxis]
 
         # Count valid observations per unit in pre-period
         # Must check diff is finite (both Y and average_treated finite)
         # to match the periods contributing to diff_sq
-        valid_count = np.sum(
-            np.isfinite(diff) * pre_mask[:, np.newaxis], axis=0
-        )
+        valid_count = np.sum(np.isfinite(diff) * pre_mask[:, np.newaxis], axis=0)
         sum_sq = np.sum(diff_sq, axis=0)
         n_pre = np.sum(pre_mask)
 
@@ -184,6 +182,7 @@ class TROPGlobalMixin:
         L: np.ndarray,
         idx_to_unit: Optional[Dict] = None,
         idx_to_period: Optional[Dict] = None,
+        unit_weights: Optional[np.ndarray] = None,
     ) -> Tuple[float, Dict, List[float]]:
         """
         Extract post-hoc treatment effects: tau_it = Y - mu - alpha - beta - L.
@@ -199,7 +198,11 @@ class TROPGlobalMixin:
         valid_treated = treated_mask & finite_mask
 
         tau_values = tau_matrix[valid_treated].tolist()
-        att = float(np.mean(tau_values)) if tau_values else np.nan
+        if unit_weights is not None and tau_values:
+            obs_weights = unit_weights[np.where(valid_treated)[1]]
+            att = float(np.average(tau_values, weights=obs_weights))
+        else:
+            att = float(np.mean(tau_values)) if tau_values else np.nan
 
         # Build treatment effects dict
         treatment_effects: Dict = {}
@@ -282,7 +285,7 @@ class TROPGlobalMixin:
                 # Pseudo treatment effect: tau = Y - mu - alpha - beta - L
                 if np.isfinite(Y[t_ex, i_ex]):
                     tau_loocv = Y[t_ex, i_ex] - mu - alpha[i_ex] - beta[t_ex] - L[t_ex, i_ex]
-                    tau_sq_sum += tau_loocv ** 2
+                    tau_sq_sum += tau_loocv**2
                     n_valid += 1
 
             except (np.linalg.LinAlgError, ValueError):
@@ -374,7 +377,7 @@ class TROPGlobalMixin:
         alpha = np.zeros(n_units)
         alpha[1:] = coeffs[1:n_units]
         beta = np.zeros(n_periods)
-        beta[1:] = coeffs[n_units:(n_units + n_periods - 1)]
+        beta[1:] = coeffs[n_units : (n_units + n_periods - 1)]
 
         return float(mu), alpha, beta
 
@@ -490,6 +493,9 @@ class TROPGlobalMixin:
         treatment: str,
         unit: str,
         time: str,
+        resolved_survey=None,
+        survey_metadata=None,
+        survey_design=None,
     ) -> TROPResults:
         """
         Fit TROP using global weighted least squares method.
@@ -529,6 +535,14 @@ class TROPGlobalMixin:
         all_units = sorted(data[unit].unique())
         all_periods = sorted(data[time].unique())
 
+        # Extract per-unit survey weights for weighted ATT aggregation
+        if resolved_survey is not None:
+            from diff_diff.survey import _extract_unit_survey_weights
+
+            unit_weight_arr = _extract_unit_survey_weights(data, unit, survey_design, all_units)
+        else:
+            unit_weight_arr = None
+
         n_units = len(all_units)
         n_periods = len(all_periods)
 
@@ -542,9 +556,8 @@ class TROPGlobalMixin:
             .values
         )
 
-        D_raw = (
-            data.pivot(index=time, columns=unit, values=treatment)
-            .reindex(index=all_periods, columns=all_units)
+        D_raw = data.pivot(index=time, columns=unit, values=treatment).reindex(
+            index=all_periods, columns=all_units
         )
         missing_mask = pd.isna(D_raw).values
         D = D_raw.fillna(0).astype(int).values
@@ -634,12 +647,19 @@ class TROPGlobalMixin:
                 lambda_nn_arr = np.array(self.lambda_nn_grid, dtype=np.float64)
 
                 result = _rust_loocv_grid_search_global(
-                    Y, D.astype(np.float64), control_mask_u8,
-                    lambda_time_arr, lambda_unit_arr, lambda_nn_arr,
-                    self.max_iter, self.tol,
+                    Y,
+                    D.astype(np.float64),
+                    control_mask_u8,
+                    lambda_time_arr,
+                    lambda_unit_arr,
+                    lambda_nn_arr,
+                    self.max_iter,
+                    self.tol,
                 )
                 # Unpack result - 7 values including optional first_failed_obs
-                best_lt, best_lu, best_ln, best_score, n_valid, n_attempted, first_failed_obs = result
+                best_lt, best_lu, best_ln, best_score, n_valid, n_attempted, first_failed_obs = (
+                    result
+                )
                 # Only accept finite scores - infinite means all fits failed
                 if np.isfinite(best_score):
                     best_lambda = (best_lt, best_lu, best_ln)
@@ -653,7 +673,7 @@ class TROPGlobalMixin:
                         f"LOOCV: All {n_attempted} fits failed for "
                         f"\u03bb=({best_lt}, {best_lu}, {best_ln}). "
                         f"Returning infinite score.{obs_info}",
-                        UserWarning
+                        UserWarning,
                     )
                 elif n_attempted > 0 and (n_attempted - n_valid) > 0.1 * n_attempted:
                     n_failed = n_attempted - n_valid
@@ -665,7 +685,7 @@ class TROPGlobalMixin:
                         f"LOOCV: {n_failed}/{n_attempted} fits failed for "
                         f"\u03bb=({best_lt}, {best_lu}, {best_ln}). "
                         f"This may indicate numerical instability.{obs_info}",
-                        UserWarning
+                        UserWarning,
                     )
             except Exception as e:
                 # Fall back to Python implementation on error
@@ -679,7 +699,9 @@ class TROPGlobalMixin:
         if best_lambda is None:
             # Get control observations for LOOCV
             control_obs = [
-                (t, i) for t in range(n_periods) for i in range(n_units)
+                (t, i)
+                for t in range(n_periods)
+                for i in range(n_units)
                 if control_mask[t, i] and not np.isnan(Y[t, i])
             ]
 
@@ -694,8 +716,7 @@ class TROPGlobalMixin:
 
                         try:
                             score = self._loocv_score_global(
-                                Y, D, control_obs, lt, lu, ln,
-                                treated_periods, n_units, n_periods
+                                Y, D, control_obs, lt, lu, ln, treated_periods, n_units, n_periods
                             )
 
                             if score < best_score:
@@ -706,10 +727,7 @@ class TROPGlobalMixin:
                             continue
 
         if best_lambda is None:
-            warnings.warn(
-                "All tuning parameter combinations failed. Using defaults.",
-                UserWarning
-            )
+            warnings.warn("All tuning parameter combinations failed. Using defaults.", UserWarning)
             best_lambda = (1.0, 1.0, 0.1)
             best_score = np.nan
 
@@ -731,7 +749,15 @@ class TROPGlobalMixin:
 
         # Post-hoc tau extraction (per paper Eq. 2)
         att, treatment_effects, tau_values = self._extract_posthoc_tau(
-            Y, D, mu, alpha, beta, L, idx_to_unit, idx_to_period
+            Y,
+            D,
+            mu,
+            alpha,
+            beta,
+            L,
+            idx_to_unit,
+            idx_to_period,
+            unit_weights=unit_weight_arr,
         )
 
         # Use count of valid (finite) treated outcomes for df and metadata
@@ -759,8 +785,15 @@ class TROPGlobalMixin:
         effective_lambda = (lambda_time, lambda_unit, lambda_nn)
 
         se, bootstrap_dist = self._bootstrap_variance_global(
-            data, outcome, treatment, unit, time,
-            effective_lambda, treated_periods
+            data,
+            outcome,
+            treatment,
+            unit,
+            time,
+            effective_lambda,
+            treated_periods,
+            survey_design=survey_design,
+            unit_weight_arr=unit_weight_arr,
         )
 
         # Compute test statistics
@@ -795,6 +828,7 @@ class TROPGlobalMixin:
             n_post_periods=n_post_periods,
             n_bootstrap=self.n_bootstrap,
             bootstrap_distribution=bootstrap_dist if len(bootstrap_dist) > 0 else None,
+            survey_metadata=survey_metadata,
         )
 
         self.is_fitted_ = True
@@ -809,6 +843,8 @@ class TROPGlobalMixin:
         time: str,
         optimal_lambda: Tuple[float, float, float],
         treated_periods: int,
+        survey_design=None,
+        unit_weight_arr: Optional[np.ndarray] = None,
     ) -> Tuple[float, np.ndarray]:
         """
         Compute bootstrap standard error for global method.
@@ -860,16 +896,22 @@ class TROPGlobalMixin:
                 )
 
                 bootstrap_estimates, se = _rust_bootstrap_trop_variance_global(
-                    Y, D,
-                    lambda_time, lambda_unit, lambda_nn,
-                    self.n_bootstrap, self.max_iter, self.tol,
-                    self.seed if self.seed is not None else 0
+                    Y,
+                    D,
+                    lambda_time,
+                    lambda_unit,
+                    lambda_nn,
+                    self.n_bootstrap,
+                    self.max_iter,
+                    self.tol,
+                    self.seed if self.seed is not None else 0,
+                    unit_weight_arr,
                 )
 
                 if len(bootstrap_estimates) < 10:
                     warnings.warn(
                         f"Only {len(bootstrap_estimates)} bootstrap iterations succeeded.",
-                        UserWarning
+                        UserWarning,
                     )
                     if len(bootstrap_estimates) == 0:
                         return np.nan, np.array([])
@@ -877,9 +919,7 @@ class TROPGlobalMixin:
                 return float(se), np.array(bootstrap_estimates)
 
             except Exception as e:
-                logger.debug(
-                    "Rust bootstrap (global) failed, falling back to Python: %s", e
-                )
+                logger.debug("Rust bootstrap (global) failed, falling back to Python: %s", e)
 
         # Python fallback implementation
         rng = np.random.default_rng(self.seed)
@@ -897,31 +937,36 @@ class TROPGlobalMixin:
         for _ in range(self.n_bootstrap):
             # Stratified sampling
             if n_control_units > 0:
-                sampled_control = rng.choice(
-                    control_units, size=n_control_units, replace=True
-                )
+                sampled_control = rng.choice(control_units, size=n_control_units, replace=True)
             else:
                 sampled_control = np.array([], dtype=object)
 
             if n_treated_units > 0:
-                sampled_treated = rng.choice(
-                    treated_units, size=n_treated_units, replace=True
-                )
+                sampled_treated = rng.choice(treated_units, size=n_treated_units, replace=True)
             else:
                 sampled_treated = np.array([], dtype=object)
 
             sampled_units = np.concatenate([sampled_control, sampled_treated])
 
             # Create bootstrap sample
-            boot_data = pd.concat([
-                data[data[unit] == u].assign(**{unit: f"{u}_{idx}"})
-                for idx, u in enumerate(sampled_units)
-            ], ignore_index=True)
+            boot_data = pd.concat(
+                [
+                    data[data[unit] == u].assign(**{unit: f"{u}_{idx}"})
+                    for idx, u in enumerate(sampled_units)
+                ],
+                ignore_index=True,
+            )
 
             try:
                 tau = self._fit_global_with_fixed_lambda(
-                    boot_data, outcome, treatment, unit, time,
-                    optimal_lambda, treated_periods
+                    boot_data,
+                    outcome,
+                    treatment,
+                    unit,
+                    time,
+                    optimal_lambda,
+                    treated_periods,
+                    survey_design=survey_design,
                 )
                 if np.isfinite(tau):
                     bootstrap_estimates_list.append(tau)
@@ -932,8 +977,7 @@ class TROPGlobalMixin:
 
         if len(bootstrap_estimates) < 10:
             warnings.warn(
-                f"Only {len(bootstrap_estimates)} bootstrap iterations succeeded.",
-                UserWarning
+                f"Only {len(bootstrap_estimates)} bootstrap iterations succeeded.", UserWarning
             )
             if len(bootstrap_estimates) == 0:
                 return np.nan, np.array([])
@@ -950,6 +994,7 @@ class TROPGlobalMixin:
         time: str,
         fixed_lambda: Tuple[float, float, float],
         treated_periods: int,
+        survey_design=None,
     ) -> float:
         """
         Fit global model with fixed tuning parameters.
@@ -960,6 +1005,14 @@ class TROPGlobalMixin:
 
         all_units = sorted(data[unit].unique())
         all_periods = sorted(data[time].unique())
+
+        # Extract per-unit survey weights for weighted ATT in bootstrap
+        if survey_design is not None and survey_design.weights is not None:
+            from diff_diff.survey import _extract_unit_survey_weights
+
+            local_weight_arr = _extract_unit_survey_weights(data, unit, survey_design, all_units)
+        else:
+            local_weight_arr = None
 
         n_units = len(all_units)
         n_periods = len(all_periods)
@@ -984,5 +1037,7 @@ class TROPGlobalMixin:
 
         # Fit model on control data and extract post-hoc tau
         mu, alpha, beta, L = self._solve_global_model(Y, delta, lambda_nn)
-        att, _, _ = self._extract_posthoc_tau(Y, D, mu, alpha, beta, L)
+        att, _, _ = self._extract_posthoc_tau(
+            Y, D, mu, alpha, beta, L, unit_weights=local_weight_arr
+        )
         return att
