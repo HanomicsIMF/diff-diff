@@ -1438,7 +1438,11 @@ class ContinuousDiD:
                 mean_dy_treated_pert = (w_treated @ att_glob_score) / n_t
                 att_glob_b = att_glob_gt + mean_dy_treated_pert - mu_0_pert
 
-                dpsi_mean = np.mean(dPsi_treated, axis=0)
+                if sw_treated is not None:
+                    sw_norm = sw_treated / sw_treated.sum()
+                    dpsi_mean = sw_norm @ dPsi_treated
+                else:
+                    dpsi_mean = np.mean(dPsi_treated, axis=0)
                 acrt_glob_b = delta_beta @ dpsi_mean
 
             return att_d_b, acrt_d_b, att_glob_b, acrt_glob_b, info.get("acrt_glob", 0.0)

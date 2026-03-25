@@ -605,14 +605,13 @@ def generate_rao_wu_weights(
                     f"({n_h}). FPC must be >= number of PSUs."
                 )
             f_h = n_h / N_h
+            if f_h >= 1.0:
+                # Census stratum — keep original weights (zero variance)
+                rescaled[mask_h] = base_weights[mask_h]
+                continue
             m_h = max(1, round((1.0 - f_h) * (n_h - 1)))
         else:
             m_h = n_h - 1
-
-        if m_h == 0:
-            # Full census — keep original weights
-            rescaled[mask_h] = base_weights[mask_h]
-            continue
 
         # Draw m_h PSUs with replacement
         drawn_indices = rng.choice(n_h, size=m_h, replace=True)

@@ -1961,6 +1961,10 @@ ContinuousDiD, EfficientDiD):
   Without FPC: `m_h = n_h - 1`. With FPC: `m_h = max(1, round((1 - f_h) * (n_h - 1)))`.
   Rescaled weight: `w*_i = w_i * (n_h / m_h) * r_hi` where `r_hi` = count of PSU *i* drawn.
 - **Note:** FPC enters through the resample size `m_h`, not as a post-hoc scaling factor.
+  When `f_h >= 1` (census stratum), observations keep original weights (zero variance).
+- **Note:** Bootstrap paths support `lonely_psu="remove"` and `"certainty"` only.
+  `lonely_psu="adjust"` raises `NotImplementedError` for survey-aware bootstrap;
+  use analytical inference for designs requiring `adjust` semantics.
 - **Deviation from R:** R `survey::as.svrepdesign(type="subbootstrap")` uses the same
   formula. Our implementation matches.
 
@@ -1978,6 +1982,10 @@ ContinuousDiD, EfficientDiD):
   creates pseudo-strata as `(survey_stratum x treatment_group)` for Rao-Wu resampling.
   This preserves both survey variance structure and treatment ratio. Survey df computed
   from pseudo-strata structure.
+- **Note:** When `survey_design.strata` is None but PSU/FPC trigger full-design bootstrap,
+  TROP uses treatment group (treated vs control) as pseudo-strata for Rao-Wu resampling
+  to preserve treatment ratio. FPC is applied within these pseudo-strata. This matches
+  TROP's existing treatment-stratified resampling pattern.
 
 ---
 
