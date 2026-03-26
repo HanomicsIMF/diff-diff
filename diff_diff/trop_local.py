@@ -1042,14 +1042,11 @@ class TROPLocalMixin:
         from diff_diff.linalg import _factorize_cluster_ids
         from diff_diff.survey import ResolvedSurveyDesign
 
-        lambda_time, lambda_unit, lambda_nn = optimal_lambda
         rng = np.random.default_rng(self.seed)
 
         # Build unit-level resolved survey with cross-classified strata
         all_units = sorted(data[unit].unique())
-        all_periods = sorted(data[time].unique())
         n_units = len(all_units)
-        n_periods = len(all_periods)
 
         # Determine treatment status per unit
         unit_ever_treated = data.groupby(unit)[treatment].max()
@@ -1106,70 +1103,39 @@ class TROPLocalMixin:
             lonely_psu=resolved_survey.lonely_psu,
         )
 
-        # Setup matrices (same as _fit_with_fixed_lambda)
-        Y = (
-            data.pivot(index=time, columns=unit, values=outcome)
-            .reindex(index=all_periods, columns=all_units)
-            .values
-        )
-        D = (
-            data.pivot(index=time, columns=unit, values=treatment)
-            .reindex(index=all_periods, columns=all_units)
-            .fillna(0)
-            .astype(int)
-            .values
-        )
-
-        control_mask = D == 0
-        unit_ever_treated_arr = np.any(D == 1, axis=0)
-        control_unit_idx = np.where(~unit_ever_treated_arr)[0]
-
-        # Get list of treated observations
-        treated_observations = [
-            (t, i) for t in range(n_periods) for i in range(n_units) if D[t, i] == 1
-        ]
-
-        if not treated_observations:
+        # Check for unidentified variance (single unstratified PSU)
+        if (
+            survey_design.psu is not None
+            and unit_resolved.n_psu < 2
+            and survey_design.strata is None
+        ):
             return np.nan, np.array([])
 
-        # Pre-compute per-observation tau values (fixed across bootstrap)
-        # The model fit is deterministic; only the ATT aggregation weights vary.
-        tau_per_obs = []  # (tau_value, unit_idx) pairs
-        for t, i in treated_observations:
-            if not np.isfinite(Y[t, i]):
-                continue
-
-            weight_matrix = self._compute_observation_weights(
-                Y, D, i, t, lambda_time, lambda_unit, control_unit_idx, n_units, n_periods
-            )
-            alpha, beta, L = self._estimate_model(
-                Y, control_mask, weight_matrix, lambda_nn, n_units, n_periods
-            )
-            tau = Y[t, i] - alpha[i] - beta[t] - L[t, i]
-            tau_per_obs.append((tau, i))
-
-        if not tau_per_obs:
-            return np.nan, np.array([])
-
-        tau_values = np.array([tp[0] for tp in tau_per_obs])
-        tau_unit_indices = np.array([tp[1] for tp in tau_per_obs])
-
-        # Bootstrap loop with Rao-Wu rescaled weights
+        # Bootstrap loop: refit the full model per draw with Rao-Wu rescaled
+        # weights, mirroring the physical-resampling bootstrap but using weight
+        # perturbation instead of unit resampling.
         bootstrap_estimates_list = []
 
         for _ in range(self.n_bootstrap):
             try:
-                # Generate Rao-Wu rescaled weights (unit-level)
+                # Generate Rao-Wu rescaled unit weights
                 boot_weights = generate_rao_wu_weights(unit_resolved, rng)
 
-                # Map unit-level weights to per-observation weights
-                obs_weights = boot_weights[tau_unit_indices]
-
                 # Skip if all weights are zero
-                if obs_weights.sum() == 0:
+                if boot_weights.sum() == 0:
                     continue
 
-                att = float(np.average(tau_values, weights=obs_weights))
+                # Refit the full local model with rescaled weights
+                att = self._fit_with_fixed_lambda(
+                    data,
+                    outcome,
+                    treatment,
+                    unit,
+                    time,
+                    optimal_lambda,
+                    survey_design=survey_design,
+                    unit_weight_arr=boot_weights,
+                )
 
                 if np.isfinite(att):
                     bootstrap_estimates_list.append(att)
@@ -1199,17 +1165,27 @@ class TROPLocalMixin:
         time: str,
         fixed_lambda: Tuple[float, float, float],
         survey_design=None,
+        unit_weight_arr: Optional[np.ndarray] = None,
     ) -> float:
         """
         Fit model with fixed tuning parameters (for bootstrap).
 
         Uses observation-specific weights following Algorithm 2.
         Returns only the ATT estimate.
+
+        Parameters
+        ----------
+        unit_weight_arr : np.ndarray, optional
+            Pre-computed unit-level weights (e.g. Rao-Wu rescaled weights).
+            When provided, overrides weights extracted from survey_design.
         """
         lambda_time, lambda_unit, lambda_nn = fixed_lambda
 
-        # Extract survey weights from bootstrap data (units are renamed)
-        if survey_design is not None and survey_design.weights is not None:
+        # Use pre-computed weights if provided (e.g. Rao-Wu bootstrap),
+        # otherwise extract from survey_design.
+        if unit_weight_arr is not None:
+            local_weight_arr = unit_weight_arr
+        elif survey_design is not None and survey_design.weights is not None:
             from diff_diff.survey import _extract_unit_survey_weights
 
             local_all_units = sorted(data[unit].unique())

@@ -1124,6 +1124,14 @@ class TROPGlobalMixin:
             lonely_psu=resolved_survey.lonely_psu,
         )
 
+        # Check for unidentified variance (single unstratified PSU)
+        if (
+            survey_design.psu is not None
+            and unit_resolved.n_psu < 2
+            and survey_design.strata is None
+        ):
+            return np.nan, np.array([])
+
         # Bootstrap loop with Rao-Wu rescaled weights
         all_periods = sorted(data[time].unique())
         n_periods = len(all_periods)

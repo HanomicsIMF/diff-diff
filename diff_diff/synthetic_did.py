@@ -748,6 +748,15 @@ class SyntheticDiD(DifferenceInDifferences):
         # Determine whether to use Rao-Wu (full design) or pairs bootstrap
         _use_rao_wu = resolved_survey is not None
 
+        # Check for unidentified variance (single unstratified PSU)
+        if (
+            _use_rao_wu
+            and resolved_survey.psu is not None
+            and resolved_survey.n_psu < 2
+            and resolved_survey.strata is None
+        ):
+            return np.nan, np.array([])
+
         bootstrap_estimates = []
 
         for _ in range(self.n_bootstrap):
