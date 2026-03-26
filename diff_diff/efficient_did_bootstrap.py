@@ -207,7 +207,6 @@ class EfficientDiDBootstrapMixin:
                 bootstrap_atts[:, j],
                 alpha=self.alpha,
                 context=f"ATT(g={gt[0]}, t={gt[1]})",
-                allow_zero_se=_use_survey_bootstrap,
             )
             gt_ses[gt] = se
             gt_cis[gt] = ci
@@ -221,7 +220,6 @@ class EfficientDiDBootstrapMixin:
                 bootstrap_overall,
                 alpha=self.alpha,
                 context="overall ATT",
-                allow_zero_se=_use_survey_bootstrap,
             )
 
         es_ses = es_cis = es_pvs = None
@@ -233,8 +231,7 @@ class EfficientDiDBootstrapMixin:
                     bootstrap_event_study[e],
                     alpha=self.alpha,
                     context=f"event study (e={e})",
-                    allow_zero_se=_use_survey_bootstrap,
-                )
+                    )
                 es_ses[e] = se
                 es_cis[e] = ci
                 es_pvs[e] = pv
@@ -248,8 +245,7 @@ class EfficientDiDBootstrapMixin:
                     bootstrap_group[g],
                     alpha=self.alpha,
                     context=f"group effect (g={g})",
-                    allow_zero_se=_use_survey_bootstrap,
-                )
+                    )
                 g_ses[g] = se
                 g_cis[g] = ci
                 g_pvs[g] = pv

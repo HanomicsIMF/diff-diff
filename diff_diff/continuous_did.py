@@ -1498,7 +1498,6 @@ class ContinuousDiD:
                 boot_att_d[:, idx],
                 alpha=self.alpha,
                 context=f"ATT(d) at grid point {idx}",
-                allow_zero_se=_use_survey_bootstrap,
             )
             att_d_se[idx] = se
             att_d_ci_lower[idx] = ci[0]
@@ -1510,7 +1509,6 @@ class ContinuousDiD:
                 boot_acrt_d[:, idx],
                 alpha=self.alpha,
                 context=f"ACRT(d) at grid point {idx}",
-                allow_zero_se=_use_survey_bootstrap,
             )
             acrt_d_se[idx] = se
             acrt_d_ci_lower[idx] = ci[0]
@@ -1532,7 +1530,6 @@ class ContinuousDiD:
             boot_att_glob,
             alpha=self.alpha,
             context="overall ATT_glob",
-            allow_zero_se=_use_survey_bootstrap,
         )
         result["overall_att_se"] = se
         result["overall_att_ci"] = ci
@@ -1543,7 +1540,6 @@ class ContinuousDiD:
             boot_acrt_glob,
             alpha=self.alpha,
             context="overall ACRT_glob",
-            allow_zero_se=_use_survey_bootstrap,
         )
         result["overall_acrt_se"] = se
         result["overall_acrt_ci"] = ci
@@ -1560,8 +1556,7 @@ class ContinuousDiD:
                     boot_es[e],
                     alpha=self.alpha,
                     context=f"event study e={e}",
-                    allow_zero_se=_use_survey_bootstrap,
-                )
+                    )
                 es_se[e] = se_e
                 es_ci[e] = ci_e
                 es_p[e] = p_e

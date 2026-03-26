@@ -221,7 +221,6 @@ def compute_effect_bootstrap_stats(
     boot_dist: np.ndarray,
     alpha: float = 0.05,
     context: str = "bootstrap distribution",
-    allow_zero_se: bool = False,
 ) -> Tuple[float, Tuple[float, float], float]:
     """
     Compute bootstrap statistics for a single effect.
@@ -239,11 +238,6 @@ def compute_effect_bootstrap_stats(
         Significance level.
     context : str, optional
         Description for warning messages.
-    allow_zero_se : bool, default=False
-        If True, treat SE=0.0 as legitimate zero sampling variance
-        (e.g., census FPC where all bootstrap estimates are identical)
-        instead of returning NaN. When SE=0, returns
-        ``(0.0, (original_effect, original_effect), 0.0)``.
 
     Returns
     -------
@@ -284,9 +278,6 @@ def compute_effect_bootstrap_stats(
 
     # Guard: if SE is not finite or zero, all inference fields must be NaN.
     if not np.isfinite(se) or se <= 0:
-        # Census FPC: all bootstrap estimates identical → SE=0 is legitimate
-        if allow_zero_se and se == 0.0:
-            return 0.0, (original_effect, original_effect), np.nan
         warnings.warn(
             f"Bootstrap SE is non-finite or zero (n_valid={n_valid}) in {context}. "
             "Returning NaN for SE/CI/p-value.",
@@ -304,7 +295,6 @@ def compute_effect_bootstrap_stats_batch(
     original_effects: np.ndarray,
     bootstrap_matrix: np.ndarray,
     alpha: float = 0.05,
-    allow_zero_se: bool = False,
 ) -> tuple:
     """
     Batch-compute bootstrap statistics for multiple effects at once.
@@ -317,10 +307,6 @@ def compute_effect_bootstrap_stats_batch(
         Bootstrap distributions, shape (n_bootstrap, n_effects).
     alpha : float, default=0.05
         Significance level.
-    allow_zero_se : bool, default=False
-        If True, treat SE=0.0 as legitimate zero sampling variance
-        (e.g., census FPC where all bootstrap estimates are identical)
-        instead of returning NaN.
 
     Returns
     -------
@@ -399,15 +385,7 @@ def compute_effect_bootstrap_stats_batch(
 
         # Guard: SE must be positive and finite
         se_valid = np.isfinite(batch_ses) & (batch_ses > 0)
-        # Census FPC: SE=0 is legitimate zero sampling variance
-        se_zero = np.isfinite(batch_ses) & (batch_ses == 0.0)
-        if allow_zero_se and np.any(se_zero):
-            zero_idx = idx[se_zero]
-            ses[zero_idx] = 0.0
-            ci_lowers[zero_idx] = original_effects[zero_idx]
-            ci_uppers[zero_idx] = original_effects[zero_idx]
-            p_values[zero_idx] = np.nan  # p undefined when SE=0
-        n_bad_se = int(np.sum(~se_valid & ~se_zero)) if allow_zero_se else int(np.sum(~se_valid))
+        n_bad_se = int(np.sum(~se_valid))
         if n_bad_se > 0:
             warnings.warn(
                 f"{n_bad_se} effect(s) had non-finite or zero bootstrap SE. "
@@ -429,7 +407,6 @@ def compute_effect_bootstrap_stats_batch(
                 bootstrap_matrix[:, j],
                 alpha=alpha,
                 context=f"effect {j}",
-                allow_zero_se=allow_zero_se,
             )
             ses[j] = se
             ci_lowers[j] = ci[0]
