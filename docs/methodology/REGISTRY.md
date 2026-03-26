@@ -1965,8 +1965,9 @@ ContinuousDiD, EfficientDiD):
 - **Note:** Bootstrap paths support `lonely_psu="remove"` and `"certainty"` only.
   `lonely_psu="adjust"` raises `NotImplementedError` for survey-aware bootstrap;
   use analytical inference for designs requiring `adjust` semantics.
-- **Deviation from R:** R `survey::as.svrepdesign(type="subbootstrap")` uses the same
-  formula. Our implementation matches.
+- **Deviation from R:** For the no-FPC case (`m_h = n_h - 1`), this matches R
+  `survey::as.svrepdesign(type="subbootstrap")`. The FPC-adjusted resample size
+  `m_h = round((1-f_h)*(n_h-1))` follows Rao, Wu & Yue (1992) Section 3.
 
 **CallawaySantAnna Design-Based Aggregated SEs**:
 

@@ -645,17 +645,19 @@ class CallawaySantAnnaAggregationMixin:
         influence_func_info: Dict,
         groups: List[Any],
         precomputed: Optional["PrecomputedData"] = None,
+        df: Optional[pd.DataFrame] = None,
+        unit: Optional[str] = None,
     ) -> Dict[Any, Dict[str, Any]]:
         """
         Aggregate effects by treatment cohort.
 
         Computes average effect for each cohort across all post-treatment periods.
 
-        Standard errors use influence function aggregation to account for
-        covariances across time periods within a cohort.
+        Standard errors use influence function aggregation with WIF adjustment
+        to account for covariances across time periods within a cohort.
+        When a full survey design is present in precomputed, uses design-based
+        variance via compute_survey_if_variance().
         """
-        n_units = len(precomputed["all_units"]) if precomputed is not None else None
-
         # Collect all group aggregation data first
         group_data_list = []
         for g in groups:
@@ -682,8 +684,11 @@ class CallawaySantAnnaAggregationMixin:
             weights = np.ones(len(effs)) / len(effs)
             agg_effect = np.sum(weights * effs)
 
-            agg_se = self._compute_aggregated_se(
-                gt_pairs, weights, influence_func_info, n_units=n_units
+            # Use WIF-adjusted SE (with survey design support)
+            groups_for_gt = np.array([gg for (gg, t) in gt_pairs])
+            agg_se = self._compute_aggregated_se_with_wif(
+                gt_pairs, weights, effs, groups_for_gt,
+                influence_func_info, df, unit, precomputed
             )
             group_data_list.append((g, agg_effect, agg_se, len(g_effects)))
 

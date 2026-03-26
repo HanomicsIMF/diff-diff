@@ -1494,6 +1494,8 @@ class CallawaySantAnna(
                 influence_func_info,
                 treatment_groups,
                 precomputed=precomputed,
+                df=df,
+                unit=unit,
             )
 
         # Run bootstrap inference if requested
