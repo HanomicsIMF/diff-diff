@@ -349,6 +349,7 @@ class ImputationDiDBootstrapMixin:
             boot_overall_shifted,
             alpha=self.alpha,
             context="ImputationDiD overall ATT",
+            allow_zero_se=_use_survey_bootstrap,
         )
 
         event_study_ses = None
@@ -366,6 +367,7 @@ class ImputationDiDBootstrapMixin:
                     shifted_h,
                     alpha=self.alpha,
                     context=f"ImputationDiD event study (h={h})",
+                    allow_zero_se=_use_survey_bootstrap,
                 )
                 event_study_ses[h] = se_h
                 event_study_cis[h] = ci_h
@@ -386,6 +388,7 @@ class ImputationDiDBootstrapMixin:
                     shifted_g,
                     alpha=self.alpha,
                     context=f"ImputationDiD group effect (g={g})",
+                    allow_zero_se=_use_survey_bootstrap,
                 )
                 group_ses[g] = se_g
                 group_cis[g] = ci_g

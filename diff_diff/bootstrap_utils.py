@@ -286,7 +286,7 @@ def compute_effect_bootstrap_stats(
     if not np.isfinite(se) or se <= 0:
         # Census FPC: all bootstrap estimates identical → SE=0 is legitimate
         if allow_zero_se and se == 0.0:
-            return 0.0, (original_effect, original_effect), 0.0
+            return 0.0, (original_effect, original_effect), np.nan
         warnings.warn(
             f"Bootstrap SE is non-finite or zero (n_valid={n_valid}) in {context}. "
             "Returning NaN for SE/CI/p-value.",
@@ -406,7 +406,7 @@ def compute_effect_bootstrap_stats_batch(
             ses[zero_idx] = 0.0
             ci_lowers[zero_idx] = original_effects[zero_idx]
             ci_uppers[zero_idx] = original_effects[zero_idx]
-            p_values[zero_idx] = 0.0
+            p_values[zero_idx] = np.nan  # p undefined when SE=0
         n_bad_se = int(np.sum(~se_valid & ~se_zero)) if allow_zero_se else int(np.sum(~se_valid))
         if n_bad_se > 0:
             warnings.warn(

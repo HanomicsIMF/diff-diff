@@ -426,7 +426,8 @@ class CallawaySantAnnaBootstrapMixin:
 
         # Batch compute bootstrap statistics for ATT(g,t)
         batch_ses, batch_ci_lo, batch_ci_hi, batch_pv = _compute_effect_bootstrap_stats_batch_func(
-            original_atts, bootstrap_atts_gt, alpha=self.alpha
+            original_atts, bootstrap_atts_gt, alpha=self.alpha,
+            allow_zero_se=_use_survey_bootstrap,
         )
         gt_ses = {}
         gt_cis = {}
@@ -442,8 +443,9 @@ class CallawaySantAnnaBootstrapMixin:
             overall_ci = (np.nan, np.nan)
             overall_p_value = np.nan
         else:
-            overall_se, overall_ci, overall_p_value = self._compute_effect_bootstrap_stats(
-                original_overall, bootstrap_overall, context="overall ATT"
+            overall_se, overall_ci, overall_p_value = _compute_effect_bootstrap_stats_func(
+                original_overall, bootstrap_overall, alpha=self.alpha, context="overall ATT",
+                allow_zero_se=_use_survey_bootstrap,
             )
 
         # Batch compute bootstrap statistics for event study effects
@@ -455,7 +457,8 @@ class CallawaySantAnnaBootstrapMixin:
             es_effects = np.array([event_study_info[e]["effect"] for e in rel_periods])
             es_boot_matrix = np.column_stack([bootstrap_event_study[e] for e in rel_periods])
             es_ses, es_ci_lo, es_ci_hi, es_pv = _compute_effect_bootstrap_stats_batch_func(
-                es_effects, es_boot_matrix, alpha=self.alpha
+                es_effects, es_boot_matrix, alpha=self.alpha,
+                allow_zero_se=_use_survey_bootstrap,
             )
             event_study_ses = {e: float(es_ses[i]) for i, e in enumerate(rel_periods)}
             event_study_cis = {
@@ -472,7 +475,8 @@ class CallawaySantAnnaBootstrapMixin:
             grp_effects = np.array([group_agg_info[g]["effect"] for g in group_list])
             grp_boot_matrix = np.column_stack([bootstrap_group[g] for g in group_list])
             grp_ses, grp_ci_lo, grp_ci_hi, grp_pv = _compute_effect_bootstrap_stats_batch_func(
-                grp_effects, grp_boot_matrix, alpha=self.alpha
+                grp_effects, grp_boot_matrix, alpha=self.alpha,
+                allow_zero_se=_use_survey_bootstrap,
             )
             group_effect_ses = {g: float(grp_ses[i]) for i, g in enumerate(group_list)}
             group_effect_cis = {

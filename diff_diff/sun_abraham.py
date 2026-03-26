@@ -1476,6 +1476,7 @@ class SunAbraham:
                 boot_dist,
                 alpha=self.alpha,
                 context=f"event study e={e}",
+                allow_zero_se=True,
             )
             event_study_ses[e] = se
             event_study_cis[e] = ci
@@ -1487,6 +1488,7 @@ class SunAbraham:
             bootstrap_overall,
             alpha=self.alpha,
             context="overall ATT",
+            allow_zero_se=True,
         )
 
         return SABootstrapResults(

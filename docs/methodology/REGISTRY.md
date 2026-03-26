@@ -1986,6 +1986,11 @@ ContinuousDiD, EfficientDiD):
   TROP uses treatment group (treated vs control) as pseudo-strata for Rao-Wu resampling
   to preserve treatment ratio. FPC is applied within these pseudo-strata. This matches
   TROP's existing treatment-stratified resampling pattern.
+- **Note (deviation from block bootstrap):** In Rao-Wu survey bootstrap, per-observation
+  treatment effects tau_{it} are deterministic given (Y, D, lambda) because survey weights
+  do not enter the kernel-weighted matrix completion. The Rao-Wu path therefore precomputes
+  tau values once and only varies the ATT aggregation weights across draws. This is
+  mathematically equivalent to refitting per draw and avoids redundant computation.
 
 ---
 

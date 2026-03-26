@@ -311,6 +311,7 @@ class TwoStageDiDBootstrapMixin:
             boot_overall_shifted,
             alpha=self.alpha,
             context="TwoStageDiD overall ATT",
+            allow_zero_se=_use_survey_bootstrap,
         )
 
         # --- Event study bootstrap ---
@@ -411,6 +412,7 @@ class TwoStageDiDBootstrapMixin:
                         shifted_h,
                         alpha=self.alpha,
                         context=f"TwoStageDiD event study (h={h})",
+                        allow_zero_se=_use_survey_bootstrap,
                     )
                     event_study_ses[h] = se_h
                     event_study_cis[h] = ci_h
@@ -474,6 +476,7 @@ class TwoStageDiDBootstrapMixin:
                     shifted_g,
                     alpha=self.alpha,
                     context=f"TwoStageDiD group effect (g={g})",
+                    allow_zero_se=_use_survey_bootstrap,
                 )
                 group_ses[g] = se_g
                 group_cis[g] = ci_g
