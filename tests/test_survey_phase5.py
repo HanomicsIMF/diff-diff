@@ -176,10 +176,29 @@ class TestSyntheticDiDSurvey:
         assert sm.effective_n > 0
         assert sm.design_effect > 0
 
-    def test_strata_psu_fpc_raises(self, sdid_survey_data, survey_design_full):
-        """Full design raises NotImplementedError."""
-        est = SyntheticDiD(n_bootstrap=50, seed=42)
-        with pytest.raises(NotImplementedError, match="strata/PSU/FPC"):
+    def test_full_design_bootstrap_smoke(self, sdid_survey_data, survey_design_full):
+        """Full survey design (strata/PSU) works with bootstrap variance."""
+        est = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=42)
+        result = est.fit(
+            sdid_survey_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=survey_design_full,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.se > 0
+        assert result.survey_metadata is not None
+        assert result.survey_metadata.n_strata is not None
+        assert result.survey_metadata.n_psu is not None
+
+    def test_full_design_placebo_raises(self, sdid_survey_data, survey_design_full):
+        """Placebo variance with full design raises NotImplementedError."""
+        est = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        with pytest.raises(NotImplementedError, match="placebo.*does not support strata/PSU/FPC"):
             est.fit(
                 sdid_survey_data,
                 outcome="outcome",
@@ -189,6 +208,35 @@ class TestSyntheticDiDSurvey:
                 post_periods=[6, 7, 8, 9],
                 survey_design=survey_design_full,
             )
+
+    def test_full_design_se_differs_from_weights_only(self, sdid_survey_data):
+        """Rao-Wu bootstrap SE differs from pweight-only bootstrap SE."""
+        sd_w = SurveyDesign(weights="weight")
+        sd_full = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = SyntheticDiD(variance_method="bootstrap", n_bootstrap=100, seed=42)
+
+        result_w = est.fit(
+            sdid_survey_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_w,
+        )
+        result_full = est.fit(
+            sdid_survey_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_full,
+        )
+        # ATT point estimates should be the same (same weights)
+        assert result_full.att == pytest.approx(result_w.att, abs=1e-10)
+        # SEs should differ (different bootstrap scheme)
+        assert result_full.se != pytest.approx(result_w.se, abs=1e-6)
 
     def test_fweight_aweight_raises(self, sdid_survey_data):
         """Non-pweight raises ValueError."""
@@ -481,18 +529,35 @@ class TestTROPSurvey:
         assert sm.weight_type == "pweight"
         assert sm.effective_n > 0
 
-    def test_strata_psu_fpc_raises(self, trop_survey_data, survey_design_full):
-        """Full design raises NotImplementedError."""
-        est = TROP(method="local", n_bootstrap=10, seed=42)
-        with pytest.raises(NotImplementedError, match="strata/PSU/FPC"):
-            est.fit(
-                trop_survey_data,
-                outcome="outcome",
-                treatment="D",
-                unit="unit",
-                time="time",
-                survey_design=survey_design_full,
-            )
+    def test_full_design_local_rao_wu(self, trop_survey_data, survey_design_full):
+        """Full design (strata/PSU/FPC) uses Rao-Wu bootstrap and succeeds."""
+        est = TROP(method="local", n_bootstrap=20, seed=42, max_iter=5)
+        result = est.fit(
+            trop_survey_data,
+            outcome="outcome",
+            treatment="D",
+            unit="unit",
+            time="time",
+            survey_design=survey_design_full,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.survey_metadata is not None
+
+    def test_full_design_global_rao_wu(self, trop_survey_data, survey_design_full):
+        """Full design (strata/PSU/FPC) with global method uses Rao-Wu bootstrap."""
+        est = TROP(method="global", n_bootstrap=20, seed=42, max_iter=5)
+        result = est.fit(
+            trop_survey_data,
+            outcome="outcome",
+            treatment="D",
+            unit="unit",
+            time="time",
+            survey_design=survey_design_full,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.survey_metadata is not None
 
     def test_fweight_aweight_raises(self, trop_survey_data):
         """Non-pweight raises ValueError."""

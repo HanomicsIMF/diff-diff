@@ -17,6 +17,9 @@ from diff_diff.bootstrap_utils import (
 from diff_diff.bootstrap_utils import (
     generate_bootstrap_weights_batch as _generate_bootstrap_weights_batch,
 )
+from diff_diff.bootstrap_utils import (
+    generate_survey_multiplier_weights_batch as _generate_survey_multiplier_weights_batch,
+)
 from diff_diff.imputation_results import ImputationBootstrapResults
 
 __all__ = [
@@ -87,6 +90,7 @@ class ImputationDiDBootstrapMixin:
             weights: np.ndarray,
             cluster_var: str,
             kept_cov_mask: Optional[np.ndarray] = None,
+            survey_weights_0: Optional[np.ndarray] = None,
         ) -> Tuple[np.ndarray, np.ndarray]: ...
 
         @staticmethod
@@ -126,6 +130,8 @@ class ImputationDiDBootstrapMixin:
         treatment_groups: List[Any],
         tau_hat: np.ndarray,
         balance_e: Optional[int],
+        survey_weights_0: Optional[np.ndarray] = None,
+        survey_weights_1: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         """
         Pre-compute cluster-level influence function sums for each bootstrap target.
@@ -155,6 +161,7 @@ class ImputationDiDBootstrapMixin:
             delta_hat=delta_hat,
             cluster_var=cluster_var,
             kept_cov_mask=kept_cov_mask,
+            survey_weights_0=survey_weights_0,
         )
 
         # Overall ATT
@@ -189,9 +196,28 @@ class ImputationDiDBootstrapMixin:
                 h_mask = rel_times == h
                 if balanced_mask is not None:
                     h_mask = h_mask & balanced_mask
-                weights_h, n_valid_h = _compute_target_weights(tau_hat, h_mask)
-                if n_valid_h == 0:
-                    continue
+
+                # When survey weights are provided, build weights proportional
+                # to treated-observation survey weights (matching the analytical
+                # path in _aggregate_event_study).  Otherwise use equal weights.
+                if survey_weights_1 is not None:
+                    finite_target = np.isfinite(tau_hat) & h_mask
+                    n_valid_h = int(finite_target.sum())
+                    if n_valid_h == 0:
+                        continue
+                    treated_sw = survey_weights_1
+                    sw_h = treated_sw[h_mask]
+                    finite_in_h = np.isfinite(tau_hat[h_mask])
+                    sw_finite = sw_h[finite_in_h]
+                    weights_h = np.zeros(len(tau_hat))
+                    if sw_finite.sum() > 0:
+                        h_indices = np.where(h_mask)[0]
+                        finite_indices = h_indices[finite_in_h]
+                        weights_h[finite_indices] = sw_finite / sw_finite.sum()
+                else:
+                    weights_h, n_valid_h = _compute_target_weights(tau_hat, h_mask)
+                    if n_valid_h == 0:
+                        continue
 
                 psi_h, _ = self._compute_cluster_psi_sums(**common, weights=weights_h)
                 result["event_study"][h] = psi_h
@@ -208,9 +234,28 @@ class ImputationDiDBootstrapMixin:
                 if not np.isfinite(group_effects[g].get("effect", np.nan)):
                     continue
                 g_mask = cohorts == g
-                weights_g, n_valid_g = _compute_target_weights(tau_hat, g_mask)
-                if n_valid_g == 0:
-                    continue
+
+                # When survey weights are provided, build weights proportional
+                # to treated-observation survey weights (matching the analytical
+                # path in _aggregate_group).  Otherwise use equal weights.
+                if survey_weights_1 is not None:
+                    finite_target = np.isfinite(tau_hat) & g_mask
+                    n_valid_g = int(finite_target.sum())
+                    if n_valid_g == 0:
+                        continue
+                    treated_sw = survey_weights_1
+                    sw_g = treated_sw[g_mask]
+                    finite_in_g = np.isfinite(tau_hat[g_mask])
+                    sw_finite = sw_g[finite_in_g]
+                    weights_g = np.zeros(len(tau_hat))
+                    if sw_finite.sum() > 0:
+                        g_indices = np.where(g_mask)[0]
+                        finite_indices = g_indices[finite_in_g]
+                        weights_g[finite_indices] = sw_finite / sw_finite.sum()
+                else:
+                    weights_g, n_valid_g = _compute_target_weights(tau_hat, g_mask)
+                    if n_valid_g == 0:
+                        continue
 
                 psi_g, _ = self._compute_cluster_psi_sums(**common, weights=weights_g)
                 result["group"][g] = psi_g
@@ -223,6 +268,7 @@ class ImputationDiDBootstrapMixin:
         original_event_study: Optional[Dict[int, Dict[str, Any]]],
         original_group: Optional[Dict[Any, Dict[str, Any]]],
         psi_data: Dict[str, Any],
+        resolved_survey: Optional[Any] = None,
     ) -> ImputationBootstrapResults:
         """
         Run multiplier bootstrap on pre-computed influence function sums.
@@ -231,6 +277,11 @@ class ImputationDiDBootstrapMixin:
         (rademacher/mammen/webb; configurable via ``bootstrap_weights``)
         and psi_i are cluster-level influence function sums from Theorem 3.
         SE = std(T_b, ddof=1).
+
+        When ``resolved_survey`` carries PSU/strata/FPC structure, weights are
+        generated via ``generate_survey_multiplier_weights_batch`` so the
+        bootstrap variance respects the survey design (stratification and FPC
+        scaling).
         """
         if self.n_bootstrap < 50:
             warnings.warn(
@@ -245,10 +296,29 @@ class ImputationDiDBootstrapMixin:
         overall_psi, cluster_ids = psi_data["overall"]
         n_clusters = len(cluster_ids)
 
-        # Generate ALL weights upfront: shape (n_bootstrap, n_clusters)
-        all_weights = _generate_bootstrap_weights_batch(
-            self.n_bootstrap, n_clusters, self.bootstrap_weights, rng
+        # Determine whether to use survey-aware bootstrap weights
+        _use_survey_bootstrap = resolved_survey is not None and (
+            resolved_survey.strata is not None
+            or resolved_survey.psu is not None
+            or resolved_survey.fpc is not None
         )
+
+        # Generate ALL weights upfront: shape (n_bootstrap, n_clusters)
+        if _use_survey_bootstrap:
+            psu_weights, psu_ids = _generate_survey_multiplier_weights_batch(
+                self.n_bootstrap, resolved_survey, self.bootstrap_weights, rng
+            )
+            # Reindex PSU weights to match cluster_ids ordering.
+            # cluster_ids are unique PSU values from _compute_cluster_psi_sums;
+            # psu_ids are unique PSU values from the survey weight generator.
+            # Build a map from psu_id -> column index in psu_weights.
+            psu_id_to_col = {int(p): c for c, p in enumerate(psu_ids)}
+            cluster_to_psu_col = np.array([psu_id_to_col[int(cid)] for cid in cluster_ids])
+            all_weights = psu_weights[:, cluster_to_psu_col]
+        else:
+            all_weights = _generate_bootstrap_weights_batch(
+                self.n_bootstrap, n_clusters, self.bootstrap_weights, rng
+            )
 
         # Overall ATT bootstrap draws
         boot_overall = np.dot(all_weights, overall_psi)  # (n_bootstrap,)

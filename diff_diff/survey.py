@@ -577,6 +577,153 @@ def _inject_cluster_as_psu(resolved, cluster_ids):
     return replace(resolved, psu=codes, n_psu=n_clusters)
 
 
+def _compute_stratified_psu_meat(
+    scores: np.ndarray,
+    resolved: "ResolvedSurveyDesign",
+) -> tuple:
+    """Compute the stratified PSU-level meat matrix for TSL variance.
+
+    This is the core computation shared by :func:`compute_survey_vcov`
+    (which wraps it in a sandwich with the bread matrix) and
+    :func:`compute_survey_if_variance` (which uses it directly for
+    influence-function-based estimators).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Score matrix of shape (n, k). For OLS-based estimators these are
+        the weighted score contributions X_i * w_i * u_i.  For IF-based
+        estimators these are the per-unit influence function values
+        (reshaped to (n, 1) for scalar estimators).
+    resolved : ResolvedSurveyDesign
+        Resolved survey design with weights, strata, PSU arrays.
+
+    Returns
+    -------
+    meat : np.ndarray
+        Meat matrix of shape (k, k).
+    variance_computed : bool
+        Whether any actual variance computation happened.
+    legitimate_zero_count : int
+        Number of strata/sources that legitimately contribute zero variance.
+    """
+    n = scores.shape[0]
+    k = scores.shape[1] if scores.ndim > 1 else 1
+    if scores.ndim == 1:
+        scores = scores[:, np.newaxis]
+
+    strata = resolved.strata
+    psu = resolved.psu
+
+    legitimate_zero_count = 0
+    _variance_computed = False
+
+    if strata is None and psu is None:
+        # No survey structure beyond weights — implicit per-observation PSUs
+        psu_mean = scores.mean(axis=0, keepdims=True)
+        centered = scores - psu_mean
+        f_h = 0.0
+        if resolved.fpc is not None:
+            N_h = resolved.fpc[0]
+            if N_h < n:
+                raise ValueError(
+                    f"FPC ({N_h}) is less than the number of observations "
+                    f"({n}). FPC must be >= n_obs for implicit per-observation PSUs."
+                )
+            f_h = n / N_h
+            if f_h >= 1.0:
+                legitimate_zero_count += 1
+        adjustment = (1.0 - f_h) * (n / (n - 1))
+        meat = adjustment * (centered.T @ centered)
+        _variance_computed = True
+    elif strata is None and psu is not None:
+        # No strata, but PSU present — single-stratum cluster-robust
+        psu_scores = pd.DataFrame(scores).groupby(psu).sum().values
+        n_psu = psu_scores.shape[0]
+
+        if n_psu < 2:
+            meat = np.zeros((k, k))
+        else:
+            psu_mean = psu_scores.mean(axis=0, keepdims=True)
+            centered = psu_scores - psu_mean
+            f_h = 0.0
+            if resolved.fpc is not None:
+                N_h = resolved.fpc[0]
+                if N_h < n_psu:
+                    raise ValueError(
+                        f"FPC ({N_h}) is less than the number of effective PSUs "
+                        f"({n_psu}). FPC must be >= n_PSU."
+                    )
+                f_h = n_psu / N_h
+                if f_h >= 1.0:
+                    legitimate_zero_count += 1
+            adjustment = (1.0 - f_h) * (n_psu / (n_psu - 1))
+            meat = adjustment * (centered.T @ centered)
+            _variance_computed = True
+    else:
+        # Stratified with or without PSU
+        unique_strata = np.unique(strata)
+        meat = np.zeros((k, k))
+
+        _global_psu_mean = None
+        if resolved.lonely_psu == "adjust":
+            if psu is not None:
+                _global_psu_mean = (
+                    pd.DataFrame(scores).groupby(psu).sum().values.mean(axis=0, keepdims=True)
+                )
+            else:
+                _global_psu_mean = scores.mean(axis=0, keepdims=True)
+
+        for h in unique_strata:
+            mask_h = strata == h
+
+            if psu is not None:
+                psu_h = psu[mask_h]
+                scores_h = scores[mask_h]
+                psu_scores_h = pd.DataFrame(scores_h).groupby(psu_h).sum().values
+                n_psu_h = psu_scores_h.shape[0]
+            else:
+                psu_scores_h = scores[mask_h]
+                n_psu_h = psu_scores_h.shape[0]
+
+            # Handle singleton strata
+            if n_psu_h < 2:
+                if resolved.lonely_psu == "remove":
+                    continue
+                elif resolved.lonely_psu == "certainty":
+                    legitimate_zero_count += 1
+                    continue
+                elif resolved.lonely_psu == "adjust":
+                    centered = psu_scores_h - _global_psu_mean
+                    V_h = centered.T @ centered
+                    meat += V_h
+                    _variance_computed = True
+                    continue
+
+            # FPC
+            f_h = 0.0
+            if resolved.fpc is not None:
+                N_h = resolved.fpc[mask_h][0]
+                if N_h < n_psu_h:
+                    raise ValueError(
+                        f"FPC ({N_h}) is less than the number of effective PSUs "
+                        f"({n_psu_h}) in stratum. FPC must be >= n_PSU."
+                    )
+                f_h = n_psu_h / N_h
+                if f_h >= 1.0:
+                    legitimate_zero_count += 1
+
+            psu_mean_h = psu_scores_h.mean(axis=0, keepdims=True)
+            centered = psu_scores_h - psu_mean_h
+
+            adjustment = (1.0 - f_h) * (n_psu_h / (n_psu_h - 1))
+            V_h = adjustment * (centered.T @ centered)
+            meat += V_h
+            _variance_computed = True
+
+    return meat, _variance_computed, legitimate_zero_count
+
+
 def compute_survey_vcov(
     X: np.ndarray,
     residuals: np.ndarray,
@@ -612,143 +759,16 @@ def compute_survey_vcov(
 
     # Compute weighted scores per observation: w_i * X_i * u_i
     if resolved.weight_type == "aweight":
-        # aweights: no weight in meat (errors already homoskedastic after WLS)
         scores = X * residuals[:, np.newaxis]
     else:
         scores = X * (weights * residuals)[:, np.newaxis]
 
-    # Determine strata and PSU structure
-    strata = resolved.strata
-    psu = resolved.psu
-
-    legitimate_zero_count = 0
-    _variance_computed = False  # Did any actual variance computation happen?
-
-    if strata is None and psu is None:
-        # No survey structure beyond weights — use implicit per-observation PSUs
-        # so the TSL construction is consistent across all branches.
-        # Each observation is its own PSU; scores are already per-obs.
-        psu_mean = scores.mean(axis=0, keepdims=True)
-        centered = scores - psu_mean
-        f_h = 0.0  # No FPC by default
-        if resolved.fpc is not None:
-            N_h = resolved.fpc[0]
-            if N_h < n:
-                raise ValueError(
-                    f"FPC ({N_h}) is less than the number of observations "
-                    f"({n}). FPC must be >= n_obs for implicit per-observation PSUs."
-                )
-            f_h = n / N_h
-            if f_h >= 1.0:
-                legitimate_zero_count += 1
-        adjustment = (1.0 - f_h) * (n / (n - 1))
-        meat = adjustment * (centered.T @ centered)
-        _variance_computed = True
-    elif strata is None and psu is not None:
-        # No strata, but PSU present — single-stratum cluster-robust
-        psu_scores = pd.DataFrame(scores).groupby(psu).sum().values
-        n_psu = psu_scores.shape[0]
-
-        if n_psu < 2:
-            # With only 1 PSU and no strata, variance estimation is impossible
-            # regardless of lonely_psu mode. The "adjust" mode cannot help
-            # because there is no global-vs-stratum distinction to exploit.
-            meat = np.zeros((k, k))
-        else:
-            # Center around grand mean
-            psu_mean = psu_scores.mean(axis=0, keepdims=True)
-            centered = psu_scores - psu_mean
-            f_h = 0.0  # No FPC
-            if resolved.fpc is not None:
-                N_h = resolved.fpc[0]
-                if N_h < n_psu:
-                    raise ValueError(
-                        f"FPC ({N_h}) is less than the number of effective PSUs "
-                        f"({n_psu}). FPC must be >= n_PSU."
-                    )
-                f_h = n_psu / N_h
-                if f_h >= 1.0:
-                    legitimate_zero_count += 1
-            adjustment = (1.0 - f_h) * (n_psu / (n_psu - 1))
-            meat = adjustment * (centered.T @ centered)
-            _variance_computed = True
-    else:
-        # Stratified with or without PSU
-        unique_strata = np.unique(strata)
-        meat = np.zeros((k, k))
-
-        # Pre-compute global PSU scores for lonely_psu="adjust" (avoids
-        # recomputing O(n) groupby inside the per-stratum loop)
-        _global_psu_mean = None
-        if resolved.lonely_psu == "adjust":
-            if psu is not None:
-                _global_psu_mean = (
-                    pd.DataFrame(scores).groupby(psu).sum().values.mean(axis=0, keepdims=True)
-                )
-            else:
-                _global_psu_mean = scores.mean(axis=0, keepdims=True)
-
-        for h in unique_strata:
-            mask_h = strata == h
-
-            if psu is not None:
-                # Get PSU-level score totals within stratum h
-                psu_h = psu[mask_h]
-                scores_h = scores[mask_h]
-                psu_scores_h = pd.DataFrame(scores_h).groupby(psu_h).sum().values
-                n_psu_h = psu_scores_h.shape[0]
-            else:
-                # Each observation is its own PSU
-                psu_scores_h = scores[mask_h]
-                n_psu_h = psu_scores_h.shape[0]
-
-            # Handle singleton strata
-            if n_psu_h < 2:
-                if resolved.lonely_psu == "remove":
-                    continue  # Skip this stratum
-                elif resolved.lonely_psu == "certainty":
-                    legitimate_zero_count += 1
-                    continue  # f_h = 1, so (1-f_h) = 0, zero contribution
-                elif resolved.lonely_psu == "adjust":
-                    # Center around overall mean instead of stratum mean
-                    centered = psu_scores_h - _global_psu_mean
-                    V_h = centered.T @ centered
-                    meat += V_h
-                    _variance_computed = True
-                    continue
-
-            # FPC
-            f_h = 0.0
-            if resolved.fpc is not None:
-                N_h = resolved.fpc[mask_h][0]
-                if N_h < n_psu_h:
-                    raise ValueError(
-                        f"FPC ({N_h}) is less than the number of effective PSUs "
-                        f"({n_psu_h}) in stratum. FPC must be >= n_PSU."
-                    )
-                f_h = n_psu_h / N_h
-                if f_h >= 1.0:
-                    legitimate_zero_count += 1
-
-            # Stratum mean of PSU scores
-            psu_mean_h = psu_scores_h.mean(axis=0, keepdims=True)
-            centered = psu_scores_h - psu_mean_h
-
-            # V_h = (1 - f_h) * (n_h / (n_h - 1)) * sum (e_hi - e_bar_h)(...)^T
-            adjustment = (1.0 - f_h) * (n_psu_h / (n_psu_h - 1))
-            V_h = adjustment * (centered.T @ centered)
-            meat += V_h
-            _variance_computed = True
+    meat, _variance_computed, legitimate_zero_count = _compute_stratified_psu_meat(scores, resolved)
 
     # Guard: if meat is zero, distinguish legitimate zero from unidentified variance
     if not np.any(meat != 0):
         if _variance_computed or legitimate_zero_count > 0:
-            # Zero meat from actual computation (e.g., identical PSU scores,
-            # perfect fit) or from legitimate zero-variance sources (certainty
-            # PSUs, full-census FPC). Zero vcov is the correct result.
             return np.zeros((k, k))
-        # No variance computation happened (e.g., all strata removed, single
-        # unstratified PSU). Variance is genuinely unidentified.
         return np.full((k, k), np.nan)
 
     # Sandwich: (X'WX)^{-1} meat (X'WX)^{-1}
@@ -764,3 +784,83 @@ def compute_survey_vcov(
         raise
 
     return vcov
+
+
+def compute_survey_if_variance(
+    psi: np.ndarray,
+    resolved: "ResolvedSurveyDesign",
+) -> float:
+    """Compute design-based variance of a scalar estimator from IF values.
+
+    For influence-function-based estimators (e.g., CallawaySantAnna),
+    the per-unit influence function values ``psi_i`` capture each unit's
+    contribution to the estimating equation.  Under simple random sampling
+    the variance is ``sum(psi_i^2)``.  This function computes the
+    design-based analogue accounting for PSU clustering, stratification,
+    and finite population correction.
+
+    V_design = sum_h (1-f_h) * (n_h/(n_h-1)) * sum_j (psi_hj - psi_h_bar)^2
+
+    where psi_hj = sum_{i in PSU j, stratum h} psi_i.
+
+    Parameters
+    ----------
+    psi : np.ndarray
+        Per-unit influence function values, shape (n,).
+    resolved : ResolvedSurveyDesign
+        Resolved survey design.
+
+    Returns
+    -------
+    float
+        Design-based variance.  Returns ``np.nan`` when variance is
+        unidentified (e.g., all strata removed by lonely_psu='remove').
+    """
+    psi = np.asarray(psi, dtype=np.float64).ravel()
+
+    meat, _variance_computed, legitimate_zero_count = _compute_stratified_psu_meat(
+        psi[:, np.newaxis], resolved
+    )
+
+    # meat is (1, 1) — extract scalar
+    meat_scalar = float(meat[0, 0])
+
+    if meat_scalar == 0.0:
+        if _variance_computed or legitimate_zero_count > 0:
+            return 0.0
+        return np.nan
+
+    return meat_scalar
+
+
+def aggregate_to_psu(
+    values: np.ndarray,
+    resolved: "ResolvedSurveyDesign",
+) -> tuple:
+    """Sum values within PSUs for PSU-level bootstrap perturbation.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Per-observation values, shape (n,) or (n, k).
+    resolved : ResolvedSurveyDesign
+        Resolved survey design.
+
+    Returns
+    -------
+    psu_sums : np.ndarray
+        Aggregated values, shape (n_psu,) or (n_psu, k).
+    psu_ids : np.ndarray
+        Unique PSU identifiers in the same order as ``psu_sums``.
+    """
+    if resolved.psu is None:
+        # Each observation is its own PSU — return as-is
+        return values.copy(), np.arange(len(values))
+
+    psu = resolved.psu
+    unique_psu = np.unique(psu)
+    if values.ndim == 1:
+        psu_sums = np.array([values[psu == p].sum() for p in unique_psu])
+    else:
+        psu_sums = np.array([values[psu == p].sum(axis=0) for p in unique_psu])
+    return psu_sums, unique_psu

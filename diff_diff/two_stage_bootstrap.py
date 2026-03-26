@@ -19,6 +19,9 @@ from diff_diff.bootstrap_utils import (
 from diff_diff.bootstrap_utils import (
     generate_bootstrap_weights_batch as _generate_bootstrap_weights_batch,
 )
+from diff_diff.bootstrap_utils import (
+    generate_survey_multiplier_weights_batch as _generate_survey_multiplier_weights_batch,
+)
 from diff_diff.linalg import solve_ols
 from diff_diff.two_stage_results import TwoStageBootstrapResults
 
@@ -51,9 +54,7 @@ class TwoStageDiDBootstrapMixin:
             time: str,
             covariates: Optional[List[str]],
             omega_0_mask: pd.Series,
-        ) -> Tuple[
-            "sparse.csr_matrix", "sparse.csr_matrix", Dict[Any, int], Dict[Any, int]
-        ]: ...
+        ) -> Tuple["sparse.csr_matrix", "sparse.csr_matrix", Dict[Any, int], Dict[Any, int]]: ...
 
         @staticmethod
         def _compute_gmm_scores(
@@ -76,6 +77,7 @@ class TwoStageDiDBootstrapMixin:
         X_2: np.ndarray,
         eps_2: np.ndarray,
         cluster_ids: np.ndarray,
+        survey_weights: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Compute per-cluster S_g scores for bootstrap.
@@ -121,9 +123,13 @@ class TwoStageDiDBootstrapMixin:
         eps_10[omega_0] = y_vals[omega_0] - fitted_1[omega_0]
         eps_10[~omega_0] = y_vals[~omega_0]
 
-        # gamma_hat
-        XtX_10 = X_10_sparse.T @ X_10_sparse
-        Xt1_X2 = X_1_sparse.T @ X_2
+        # gamma_hat — with survey weights, both cross-products need W
+        if survey_weights is not None:
+            XtX_10 = X_10_sparse.T @ X_10_sparse.multiply(survey_weights[:, None])
+            Xt1_X2 = X_1_sparse.T @ (X_2 * survey_weights[:, None])
+        else:
+            XtX_10 = X_10_sparse.T @ X_10_sparse
+            Xt1_X2 = X_1_sparse.T @ X_2
 
         try:
             solve_XtX = sparse_factorized(XtX_10.tocsc())
@@ -138,8 +144,12 @@ class TwoStageDiDBootstrapMixin:
             if gamma_hat.ndim == 1:
                 gamma_hat = gamma_hat.reshape(-1, 1)
 
-        # Per-cluster aggregation
-        weighted_X10 = X_10_sparse.multiply(eps_10[:, None])
+        # Per-cluster aggregation — survey weights multiply eps_10 before sparse multiply
+        if survey_weights is not None:
+            weighted_eps_10 = survey_weights * eps_10
+        else:
+            weighted_eps_10 = eps_10
+        weighted_X10 = X_10_sparse.multiply(weighted_eps_10[:, None])
         unique_clusters, cluster_indices = np.unique(cluster_ids, return_inverse=True)
         G = len(unique_clusters)
 
@@ -157,15 +167,23 @@ class TwoStageDiDBootstrapMixin:
             for j_col in range(p):
                 np.add.at(c_by_cluster[:, j_col], cluster_indices, weighted_X10_dense[:, j_col])
 
-        weighted_X2 = X_2 * eps_2[:, None]
+        if survey_weights is not None:
+            weighted_eps_2 = survey_weights * eps_2
+        else:
+            weighted_eps_2 = eps_2
+        weighted_X2 = X_2 * weighted_eps_2[:, None]
         s2_by_cluster = np.zeros((G, k))
         for j_col in range(k):
             np.add.at(s2_by_cluster[:, j_col], cluster_indices, weighted_X2[:, j_col])
 
         S = self._compute_gmm_scores(c_by_cluster, gamma_hat, s2_by_cluster)
 
-        # Bread
-        XtX_2 = np.dot(X_2.T, X_2)
+        # Bread — (X'_2 W X_2)^{-1} with survey weights
+        with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+            if survey_weights is not None:
+                XtX_2 = X_2.T @ (X_2 * survey_weights[:, None])
+            else:
+                XtX_2 = np.dot(X_2.T, X_2)
         try:
             bread = np.linalg.solve(XtX_2, np.eye(k))
         except np.linalg.LinAlgError:
@@ -195,6 +213,7 @@ class TwoStageDiDBootstrapMixin:
         original_event_study: Optional[Dict[int, Dict[str, Any]]],
         original_group: Optional[Dict[Any, Dict[str, Any]]],
         aggregate: Optional[str],
+        resolved_survey: Optional[Any] = None,
     ) -> Optional[TwoStageBootstrapResults]:
         """Run multiplier bootstrap on GMM influence function."""
         if self.n_bootstrap < 50:
@@ -211,6 +230,13 @@ class TwoStageDiDBootstrapMixin:
         n = len(df)
         cluster_ids = df[cluster_var].values
 
+        # Extract survey weights for S-score computation and Stage-2 WLS
+        survey_weights: Optional[np.ndarray] = None
+        survey_weight_type: str = "pweight"
+        if resolved_survey is not None:
+            survey_weights = resolved_survey.weights
+            survey_weight_type = resolved_survey.weight_type
+
         # Handle NaN y_tilde (from unidentified FEs) — matches _stage2_static logic
         nan_mask = ~np.isfinite(y_tilde)
         if nan_mask.any():
@@ -225,7 +251,10 @@ class TwoStageDiDBootstrapMixin:
             return None
 
         X_2_static = D.reshape(-1, 1)
-        coef_static = solve_ols(X_2_static, y_tilde, return_vcov=False)[0]
+        coef_static = solve_ols(
+            X_2_static, y_tilde, return_vcov=False,
+            weights=survey_weights, weight_type=survey_weight_type,
+        )[0]
         eps_2_static = y_tilde - np.dot(X_2_static, coef_static)
 
         S_static, bread_static, unique_clusters = self._compute_cluster_S_scores(
@@ -241,12 +270,32 @@ class TwoStageDiDBootstrapMixin:
             X_2=X_2_static,
             eps_2=eps_2_static,
             cluster_ids=cluster_ids,
+            survey_weights=survey_weights,
         )
 
         n_clusters = len(unique_clusters)
-        all_weights = _generate_bootstrap_weights_batch(
-            self.n_bootstrap, n_clusters, self.bootstrap_weights, rng
+
+        # Generate bootstrap weights — PSU-level when survey design is present
+        _use_survey_bootstrap = resolved_survey is not None and (
+            resolved_survey.strata is not None
+            or resolved_survey.psu is not None
+            or resolved_survey.fpc is not None
         )
+
+        if _use_survey_bootstrap:
+            psu_weights, psu_ids = _generate_survey_multiplier_weights_batch(
+                self.n_bootstrap, resolved_survey, self.bootstrap_weights, rng
+            )
+            # Map unique_clusters (PSU values) to PSU weight columns.
+            # When survey+PSU is active, cluster_var == "_survey_cluster" so
+            # unique_clusters are the PSU ids used in S-score aggregation.
+            psu_id_to_col = {int(p): c for c, p in enumerate(psu_ids)}
+            cluster_to_psu_col = np.array([psu_id_to_col[int(cl)] for cl in unique_clusters])
+            all_weights = psu_weights[:, cluster_to_psu_col]
+        else:
+            all_weights = _generate_bootstrap_weights_batch(
+                self.n_bootstrap, n_clusters, self.bootstrap_weights, rng
+            )
 
         # T_b = bread @ (sum_g w_bg * S_g) = bread @ (W @ S)'  per boot
         # IF_b = bread @ S_g for each cluster, then perturb
@@ -318,7 +367,10 @@ class TwoStageDiDBootstrapMixin:
                         if h_int in horizon_to_col:
                             X_2_es[i, horizon_to_col[h_int]] = 1.0
 
-                coef_es = solve_ols(X_2_es, y_tilde, return_vcov=False)[0]
+                coef_es = solve_ols(
+                    X_2_es, y_tilde, return_vcov=False,
+                    weights=survey_weights, weight_type=survey_weight_type,
+                )[0]
                 eps_2_es = y_tilde - np.dot(X_2_es, coef_es)
 
                 S_es, bread_es, _ = self._compute_cluster_S_scores(
@@ -334,6 +386,7 @@ class TwoStageDiDBootstrapMixin:
                     X_2=X_2_es,
                     eps_2=eps_2_es,
                     cluster_ids=cluster_ids,
+                    survey_weights=survey_weights,
                 )
 
                 # boot_coef_es: (B, k_es)
@@ -382,7 +435,10 @@ class TwoStageDiDBootstrapMixin:
                     if g in group_to_col:
                         X_2_grp[i, group_to_col[g]] = 1.0
 
-            coef_grp = solve_ols(X_2_grp, y_tilde, return_vcov=False)[0]
+            coef_grp = solve_ols(
+                X_2_grp, y_tilde, return_vcov=False,
+                weights=survey_weights, weight_type=survey_weight_type,
+            )[0]
             eps_2_grp = y_tilde - np.dot(X_2_grp, coef_grp)
 
             S_grp, bread_grp, _ = self._compute_cluster_S_scores(
@@ -398,6 +454,7 @@ class TwoStageDiDBootstrapMixin:
                 X_2=X_2_grp,
                 eps_2=eps_2_grp,
                 cluster_ids=cluster_ids,
+                survey_weights=survey_weights,
             )
 
             boot_coef_grp = np.dot(np.dot(all_weights, S_grp), bread_grp.T)

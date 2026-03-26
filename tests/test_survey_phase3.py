@@ -200,20 +200,46 @@ class TestSunAbrahamSurvey:
         # SEs should differ due to different variance estimators
         assert r_w.overall_se != r_full.overall_se
 
-    def test_bootstrap_survey_raises(self, staggered_survey_data):
-        """Bootstrap + survey should raise NotImplementedError."""
+    def test_bootstrap_weights_only_uses_pairs(self, staggered_survey_data):
+        """Bootstrap + weights-only survey uses pairs bootstrap (no Rao-Wu)."""
         from diff_diff import SunAbraham
 
         sd = SurveyDesign(weights="weight")
-        with pytest.raises(NotImplementedError, match="Bootstrap"):
-            SunAbraham(n_bootstrap=99).fit(
-                staggered_survey_data,
-                "outcome",
-                "unit",
-                "time",
-                "first_treat",
-                survey_design=sd,
-            )
+        result = SunAbraham(n_bootstrap=99, seed=42).fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "time",
+            "first_treat",
+            survey_design=sd,
+        )
+        assert result.bootstrap_results is not None
+        assert result.bootstrap_results.weight_type == "pairs"
+        assert result.bootstrap_results.n_bootstrap == 99
+        assert np.isfinite(result.overall_se)
+        assert np.isfinite(result.overall_att)
+
+    def test_bootstrap_survey_strata_uses_rao_wu(self, staggered_survey_data):
+        """Bootstrap + survey with strata/PSU uses Rao-Wu rescaled bootstrap."""
+        from diff_diff import SunAbraham
+
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu", nest=True)
+        result = SunAbraham(n_bootstrap=99, seed=42).fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "time",
+            "first_treat",
+            survey_design=sd,
+        )
+        assert result.bootstrap_results is not None
+        assert result.bootstrap_results.weight_type == "rao_wu"
+        assert result.bootstrap_results.n_bootstrap == 99
+        assert np.isfinite(result.overall_se)
+        assert np.isfinite(result.overall_att)
+        # Event study effects should also have finite bootstrap SEs
+        for e, eff in result.event_study_effects.items():
+            assert np.isfinite(eff["se"]), f"Event study e={e} has non-finite SE"
 
     def test_summary_includes_survey(self, staggered_survey_data):
         """Summary output should include survey design section."""
@@ -644,21 +670,22 @@ class TestContinuousDiDSurvey:
         assert np.isfinite(result.overall_att)
         assert result.survey_metadata is not None
 
-    def test_bootstrap_survey_raises(self, continuous_survey_data):
-        """Bootstrap + survey should raise NotImplementedError."""
+    def test_bootstrap_survey_supported(self, continuous_survey_data):
+        """Bootstrap + survey now works via PSU-level multiplier bootstrap."""
         from diff_diff import ContinuousDiD
 
         sd = SurveyDesign(weights="weight")
-        with pytest.raises(NotImplementedError, match="bootstrap"):
-            ContinuousDiD(n_bootstrap=99).fit(
-                continuous_survey_data,
-                "outcome",
-                "unit",
-                "time",
-                "first_treat",
-                "dose",
-                survey_design=sd,
-            )
+        result = ContinuousDiD(n_bootstrap=30, seed=42).fit(
+            continuous_survey_data,
+            "outcome",
+            "unit",
+            "time",
+            "first_treat",
+            "dose",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_att_se)
 
     def test_summary_includes_survey(self, continuous_survey_data):
         """Summary includes survey design section."""
@@ -702,20 +729,21 @@ class TestEfficientDiDSurvey:
         assert np.isfinite(result.overall_se)
         assert result.survey_metadata is not None
 
-    def test_bootstrap_survey_raises(self, staggered_survey_data):
-        """Bootstrap + survey should raise NotImplementedError."""
+    def test_bootstrap_survey_supported(self, staggered_survey_data):
+        """Bootstrap + survey now works via PSU-level multiplier bootstrap."""
         from diff_diff import EfficientDiD
 
         sd = SurveyDesign(weights="weight")
-        with pytest.raises(NotImplementedError, match="bootstrap"):
-            EfficientDiD(n_bootstrap=99).fit(
-                staggered_survey_data,
-                "outcome",
-                "unit",
-                "time",
-                "first_treat",
-                survey_design=sd,
-            )
+        result = EfficientDiD(n_bootstrap=30, seed=42).fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "time",
+            "first_treat",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
 
     def test_covariates_survey_raises(self, staggered_survey_data):
         """Covariates + survey should raise NotImplementedError."""

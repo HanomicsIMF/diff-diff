@@ -273,13 +273,10 @@ class DifferenceInDifferences:
             # FWL theorem: demean ALL regressors alongside outcome.
             # Regressors collinear with absorbed FE (e.g., treatment after
             # absorbing unit FE) will zero out and be handled by rank-deficiency.
-            working_data["_treat_time"] = (
-                working_data[treatment].values.astype(float)
-                * working_data[time].values.astype(float)
-            )
-            vars_to_demean = (
-                [outcome, treatment, time, "_treat_time"] + (covariates or [])
-            )
+            working_data["_treat_time"] = working_data[treatment].values.astype(
+                float
+            ) * working_data[time].values.astype(float)
+            vars_to_demean = [outcome, treatment, time, "_treat_time"] + (covariates or [])
             for ab_var in absorb:
                 working_data, n_fe = demean_by_group(
                     working_data,
@@ -342,9 +339,14 @@ class DifferenceInDifferences:
         # Inject cluster as effective PSU for survey variance estimation
         if resolved_survey is not None and effective_cluster_ids is not None:
             from diff_diff.survey import _inject_cluster_as_psu, compute_survey_metadata
+
             resolved_survey = _inject_cluster_as_psu(resolved_survey, effective_cluster_ids)
             if resolved_survey.psu is not None and survey_metadata is not None:
-                raw_w = data[survey_design.weights].values.astype(np.float64) if survey_design.weights else np.ones(len(data), dtype=np.float64)
+                raw_w = (
+                    data[survey_design.weights].values.astype(np.float64)
+                    if survey_design.weights
+                    else np.ones(len(data), dtype=np.float64)
+                )
                 survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
 
         reg = LinearRegression(
@@ -1045,12 +1047,8 @@ class MultiPeriodDiD(DifferenceInDifferences):
             t_raw = working_data[time].values
             working_data["_did_treatment"] = d_raw
             for period in non_ref_periods:
-                working_data[f"_did_period_{period}"] = (
-                    t_raw == period
-                ).astype(float)
-                working_data[f"_did_interact_{period}"] = (
-                    d_raw * (t_raw == period).astype(float)
-                )
+                working_data[f"_did_period_{period}"] = (t_raw == period).astype(float)
+                working_data[f"_did_interact_{period}"] = d_raw * (t_raw == period).astype(float)
             vars_to_demean = (
                 [outcome, "_did_treatment"]
                 + [f"_did_period_{p}" for p in non_ref_periods]
@@ -1085,9 +1083,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
 
         for period in non_ref_periods:
             if absorb:
-                period_dummy = working_data[
-                    f"_did_period_{period}"
-                ].values.astype(float)
+                period_dummy = working_data[f"_did_period_{period}"].values.astype(float)
             else:
                 period_dummy = (t == period).astype(float)
             X = np.column_stack([X, period_dummy])
@@ -1101,9 +1097,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
 
         for period in non_ref_periods:
             if absorb:
-                interaction = working_data[
-                    f"_did_interact_{period}"
-                ].values.astype(float)
+                interaction = working_data[f"_did_interact_{period}"].values.astype(float)
             else:
                 interaction = d * (t == period).astype(float)
             X = np.column_stack([X, interaction])
@@ -1137,9 +1131,14 @@ class MultiPeriodDiD(DifferenceInDifferences):
         # Inject cluster as effective PSU for survey variance estimation
         if resolved_survey is not None and effective_cluster_ids is not None:
             from diff_diff.survey import _inject_cluster_as_psu, compute_survey_metadata
+
             resolved_survey = _inject_cluster_as_psu(resolved_survey, effective_cluster_ids)
             if resolved_survey.psu is not None and survey_metadata is not None:
-                raw_w = data[survey_design.weights].values.astype(np.float64) if survey_design.weights else np.ones(len(data), dtype=np.float64)
+                raw_w = (
+                    data[survey_design.weights].values.astype(np.float64)
+                    if survey_design.weights
+                    else np.ones(len(data), dtype=np.float64)
+                )
                 survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
 
         # Determine if survey vcov should be used
@@ -1167,9 +1166,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
             if np.any(nan_mask):
                 kept_cols = np.where(~nan_mask)[0]
                 if len(kept_cols) > 0:
-                    vcov_reduced = compute_survey_vcov(
-                        X[:, kept_cols], residuals, resolved_survey
-                    )
+                    vcov_reduced = compute_survey_vcov(X[:, kept_cols], residuals, resolved_survey)
                     vcov = _expand_vcov_with_nan(vcov_reduced, X.shape[1], kept_cols)
                 else:
                     vcov = np.full((X.shape[1], X.shape[1]), np.nan)

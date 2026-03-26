@@ -348,7 +348,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             Missing columns, unbalanced panel, non-absorbing treatment,
             or PT-Post without a never-treated group.
         NotImplementedError
-            If ``n_bootstrap > 0`` with ``survey_design``.
+            If ``covariates`` and ``survey_design`` are both set.
         """
         self._validate_params()
 
@@ -374,13 +374,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         # Store survey df for safe_inference calls (t-distribution with survey df)
         self._survey_df = survey_metadata.df_survey if survey_metadata is not None else None
 
-        # Guard bootstrap + survey
-        if self.n_bootstrap > 0 and resolved_survey is not None:
-            raise NotImplementedError(
-                "Multiplier bootstrap with survey weights is not yet supported "
-                "for EfficientDiD. Use analytical inference (n_bootstrap=0) with "
-                "survey_design for design-based standard errors."
-            )
+        # Bootstrap + survey supported via PSU-level multiplier bootstrap.
 
         # Guard covariates + survey (DR path does not yet thread survey weights)
         if covariates is not None and len(covariates) > 0 and resolved_survey is not None:
@@ -969,6 +963,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 cohort_fractions=cohort_fractions,
                 cluster_indices=unit_cluster_indices,
                 n_clusters=n_clusters,
+                resolved_survey=self._unit_resolved_survey,
             )
             # Update estimates with bootstrap inference
             overall_se = bootstrap_results.overall_att_se

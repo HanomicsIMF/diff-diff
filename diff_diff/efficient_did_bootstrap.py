@@ -62,6 +62,7 @@ class EfficientDiDBootstrapMixin:
         cohort_fractions: Dict[float, float],
         cluster_indices: Optional[np.ndarray] = None,
         n_clusters: Optional[int] = None,
+        resolved_survey: object = None,
     ) -> EDiDBootstrapResults:
         """Run multiplier bootstrap on stored EIF values.
 
@@ -95,8 +96,32 @@ class EfficientDiDBootstrapMixin:
         gt_pairs = list(group_time_effects.keys())
         n_gt = len(gt_pairs)
 
-        # Generate bootstrap weights — at cluster level if clustered
-        if cluster_indices is not None and n_clusters is not None:
+        # Generate bootstrap weights — PSU-level when survey design is present,
+        # cluster-level if clustered, unit-level otherwise.
+        _use_survey_bootstrap = resolved_survey is not None and (
+            resolved_survey.strata is not None
+            or resolved_survey.psu is not None
+            or resolved_survey.fpc is not None
+        )
+
+        if _use_survey_bootstrap:
+            from diff_diff.bootstrap_utils import (
+                generate_survey_multiplier_weights_batch as _gen_survey_weights,
+            )
+
+            psu_weights, psu_ids = _gen_survey_weights(
+                self.n_bootstrap, resolved_survey, self.bootstrap_weights, rng
+            )
+            # Build unit -> PSU column map
+            if resolved_survey.psu is not None:
+                psu_id_to_col = {int(p): c for c, p in enumerate(psu_ids)}
+                unit_to_psu_col = np.array(
+                    [psu_id_to_col[int(resolved_survey.psu[i])] for i in range(n_units)]
+                )
+            else:
+                unit_to_psu_col = np.arange(n_units)
+            all_weights = psu_weights[:, unit_to_psu_col]
+        elif cluster_indices is not None and n_clusters is not None:
             cluster_weights = _generate_bootstrap_weights_batch(
                 self.n_bootstrap, n_clusters, self.bootstrap_weights, rng
             )
@@ -206,7 +231,7 @@ class EfficientDiDBootstrapMixin:
                     bootstrap_event_study[e],
                     alpha=self.alpha,
                     context=f"event study (e={e})",
-                )
+                    )
                 es_ses[e] = se
                 es_cis[e] = ci
                 es_pvs[e] = pv
@@ -220,7 +245,7 @@ class EfficientDiDBootstrapMixin:
                     bootstrap_group[g],
                     alpha=self.alpha,
                     context=f"group effect (g={g})",
-                )
+                    )
                 g_ses[g] = se
                 g_cis[g] = ci
                 g_pvs[g] = pv

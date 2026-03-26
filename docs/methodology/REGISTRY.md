@@ -416,9 +416,9 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
     a base period later than `t` (matching R's `did::att_gt()`)
   - Does not require never-treated units: when all units are eventually treated,
     not-yet-treated cohorts serve as controls for each other (requires ≥2 cohorts)
-- **Note:** CallawaySantAnna survey support: weights-only (strata/PSU/FPC raise NotImplementedError — full design-based SEs via compute_survey_vcov not yet implemented). Regression method supports covariates; IPW/DR support no-covariate only (covariates+IPW/DR raises NotImplementedError — DRDID nuisance IF not yet implemented). Survey weights compose with IPW weights multiplicatively. WIF in aggregation matches R's did::wif() formula. Per-unit survey weights are extracted via `groupby(unit).first()` from the panel-normalized pweight array; on unbalanced panels the pweight normalization (`w * n_obs / sum(w)`) preserves relative unit weights since all IF/WIF formulas use weight ratios (`sw_i / sum(sw)`) where the normalization constant cancels. Scale-invariance tests pass on both balanced and unbalanced panels. Bootstrap + survey deferred.
+- **Note:** CallawaySantAnna survey support: weights, strata, PSU, and FPC are all supported. Analytical (`n_bootstrap=0`): aggregated SEs use design-based variance via `compute_survey_if_variance()`. Bootstrap (`n_bootstrap>0`): PSU-level multiplier weights replace analytical SEs for aggregated quantities. Regression method supports covariates; IPW/DR support no-covariate only (covariates+IPW/DR raises NotImplementedError — DRDID nuisance IF not yet implemented). Survey weights compose with IPW weights multiplicatively. WIF in aggregation matches R's did::wif() formula. Per-unit survey weights are extracted via `groupby(unit).first()` from the panel-normalized pweight array; on unbalanced panels the pweight normalization (`w * n_obs / sum(w)`) preserves relative unit weights since all IF/WIF formulas use weight ratios (`sw_i / sum(sw)`) where the normalization constant cancels. Scale-invariance tests pass on both balanced and unbalanced panels.
 - **Note (deviation from R):** CallawaySantAnna survey reg+covariates per-cell SE uses a conservative plug-in IF based on WLS residuals. The treated IF is `inf_treated_i = (sw_i/sum(sw_treated)) * (resid_i - ATT)` (normalized by treated weight sum, matching unweighted `(resid-ATT)/n_t`). The control IF is `inf_control_i = -(sw_i/sum(sw_control)) * wls_resid_i` (normalized by control weight sum, matching unweighted `-resid/n_c`). SE is computed as `sqrt(sum(sw_t_norm * (resid_t - ATT)^2) + sum(sw_c_norm * resid_c^2))`, the weighted analogue of the unweighted `sqrt(var_t/n_t + var_c/n_c)`. This omits the semiparametrically efficient nuisance correction from DRDID's `reg_did_panel` — WLS residuals are orthogonal to the weighted design matrix by construction, so the first-order IF term is asymptotically valid but may be conservative. SEs pass weight-scale-invariance tests. The efficient DRDID correction is deferred to future work.
-- **Note (deviation from R):** Per-cell ATT(g,t) SEs under survey weights use influence-function-based variance (matching R's `did::att_gt` analytical SE path) rather than full Taylor-series linearization. Strata/PSU/FPC are rejected at runtime until full design-based SEs via `compute_survey_vcov()` on the combined IF/WIF are implemented.
+- **Note (deviation from R):** Per-cell ATT(g,t) SEs under survey weights use influence-function-based variance (matching R's `did::att_gt` analytical SE path) rather than full Taylor-series linearization. When strata/PSU/FPC are present, analytical aggregated SEs (`n_bootstrap=0`) use `compute_survey_if_variance()` on the combined IF/WIF; bootstrap aggregated SEs (`n_bootstrap>0`) use PSU-level multiplier weights.
 
 **Reference implementation(s):**
 - R: `did::att_gt()` (Callaway & Sant'Anna's official package)
@@ -497,8 +497,8 @@ See `docs/methodology/continuous-did.md` Section 4 for full details.
 - [ ] Covariate support (deferred, matching R v0.1.0)
 - [ ] Discrete treatment saturated regression
 - [ ] Lowest-dose-as-control (Remark 3.1)
-- [x] Survey design support (Phase 3): weighted B-spline OLS, TSL on influence functions; bootstrap+survey deferred
-- **Note:** ContinuousDiD bootstrap with survey weights deferred to Phase 5
+- [x] Survey design support (Phase 3): weighted B-spline OLS, TSL on influence functions; bootstrap+survey supported (Phase 6)
+- **Note:** ContinuousDiD bootstrap with survey weights supported (Phase 6) via PSU-level multiplier weights
 
 ---
 
@@ -675,12 +675,12 @@ where `q_{g,e} = pi_g / sum_{g' in G_{trt,e}} pi_{g'}`.
 - [x] Each ATT(g,t) can be estimated independently (parallelizable)
 - [x] Absorbing treatment validation
 - [x] Overlap diagnostics for propensity score ratios
-- [x] Survey design support (Phase 3): survey-weighted means/covariances in Omega*, TSL on EIF scores; bootstrap+survey deferred
+- [x] Survey design support (Phase 3): survey-weighted means/covariances in Omega*, TSL on EIF scores; bootstrap+survey supported (Phase 6)
 - **Note:** Sieve ratio estimation uses polynomial basis functions (total degree up to K) with AIC/BIC model selection. The paper describes sieve estimators generally without specifying a particular basis family; polynomial sieves are a standard choice (Section 4, Eq 4.2). Negative sieve ratio predictions are clipped to a small positive value since the population ratio p_g(X)/p_{g'}(X) is non-negative.
 - **Note:** Kernel-smoothed conditional covariance Omega*(X) uses Gaussian kernel with Silverman's rule-of-thumb bandwidth by default. The paper specifies kernel smoothing (step 5, Section 4) without mandating a particular kernel or bandwidth selection method.
 - **Note:** Conditional covariance Omega*(X) scales each term by per-unit sieve-estimated inverse propensities s_hat_{g'}(X) = 1/p_{g'}(X) (algorithm step 4), matching Eq 3.12. The inverse propensity estimation uses the same polynomial sieve convex minimization as the ratio estimator. Estimated s_hat values are clipped to [1, n] with a UserWarning when clipping binds, mirroring the ratio path's overlap diagnostics.
 - **Note:** Outcome regressions m_hat_{g',t,tpre}(X) use linear OLS working models. The paper's Section 4 describes flexible nonparametric nuisance estimation (sieve regression, kernel smoothing, or ML methods). The DR property ensures consistency if either the OLS outcome model or the sieve propensity ratio is correctly specified, but the linear OLS specification does not generically guarantee attainment of the semiparametric efficiency bound unless the conditional mean is linear in the covariates.
-- **Note:** EfficientDiD bootstrap with survey weights deferred to Phase 5
+- **Note:** EfficientDiD bootstrap with survey weights supported (Phase 6) via PSU-level multiplier weights
 - **Note:** EfficientDiD covariates (DR path) with survey weights deferred — the doubly robust nuisance estimation does not yet thread survey weights through sieve/kernel steps
 - **Note:** Cluster-robust SEs use the standard Liang-Zeger clustered sandwich estimator applied to EIF values: aggregate EIF within clusters, center, and compute variance with G/(G-1) small-sample correction. Cluster bootstrap generates multiplier weights at the cluster level (all units in a cluster share the same weight). Analytical clustered SEs are the default when `cluster` is set; cluster bootstrap is opt-in via `n_bootstrap > 0`.
 - **Note:** Hausman pretest operates on the post-treatment event-study vector ES(e) per Theorem A.1. Both PT-All and PT-Post fits are aggregated to ES(e) using cohort-size weights before computing the test statistic H = delta' V^{-1} delta where delta = ES_post - ES_all and V = Cov(ES_post) - Cov(ES_all). Covariance is computed from aggregated ES(e)-level EIF values. The variance-difference matrix V is inverted via Moore-Penrose pseudoinverse to handle finite-sample non-positive-definiteness. Effective rank of V (number of positive eigenvalues) is used as degrees of freedom.
@@ -755,7 +755,7 @@ where weights ŵ_{g,e} = n_{g,e} / Σ_g n_{g,e} (sample share of cohort g at eve
 - [x] R comparison: ATT matches within machine precision (<1e-11)
 - [x] R comparison: SE matches within 0.3% (well within 1% threshold)
 - [x] R comparison: Event study effects match perfectly (correlation 1.0)
-- [x] Survey design support (Phase 3): weighted within-transform, survey weights in LinearRegression with TSL vcov; bootstrap+survey deferred
+- [x] Survey design support (Phase 3): weighted within-transform, survey weights in LinearRegression with TSL vcov; bootstrap+survey supported (Phase 6) via Rao-Wu rescaled bootstrap
 
 ---
 
@@ -843,7 +843,7 @@ Y_it = alpha_i + beta_t [+ X'_it * delta] + W'_it * gamma + epsilon_it
 - **treatment_effects DataFrame weights:** `weight` column uses `1/n_valid` for finite tau_hat and 0 for NaN tau_hat, consistent with the ATT estimand (unweighted), or normalized survey weights `sw_i/sum(sw)` when `survey_design` is active.
 - **Rank-deficient covariates in variance:** Covariates with NaN coefficients (dropped for rank deficiency in Step 1) are excluded from the variance design matrices `A_0`/`A_1`. Only covariates with finite coefficients participate in the `v_it` projection.
 - **Sparse variance solver:** `_compute_v_untreated_with_covariates` uses `scipy.sparse.linalg.spsolve` to solve `(A_0'A_0) z = A_1'w` without densifying the normal equations matrix. Falls back to dense `lstsq` if the sparse solver fails.
-- **Note:** Survey weights enter ImputationDiD via weighted iterative FE (Step 1), survey-weighted ATT aggregation (Step 3), and survey-weighted conservative variance (Theorem 3). PSU is used as the cluster variable for Theorem 3 variance. Strata enters survey df (n_PSU - n_strata) for t-distribution inference. FPC is not supported (raises NotImplementedError). Strata does NOT enter the variance formula itself (no stratified sandwich) — this is conservative relative to stratified variance. Bootstrap + survey deferred.
+- **Note:** Survey weights enter ImputationDiD via weighted iterative FE (Step 1), survey-weighted ATT aggregation (Step 3), and survey-weighted conservative variance (Theorem 3). PSU is used as the cluster variable for Theorem 3 variance. Strata enters survey df (n_PSU - n_strata) for t-distribution inference. FPC is not supported (raises NotImplementedError). Strata does NOT enter the variance formula itself (no stratified sandwich) — this is conservative relative to stratified variance. Bootstrap + survey supported (Phase 6) via PSU-level multiplier weights.
 - **Bootstrap inference:** Uses multiplier bootstrap on the Theorem 3 influence function: `psi_i = sum_t v_it * epsilon_tilde_it`. Cluster-level psi sums are pre-computed for each aggregation target (overall, per-horizon, per-group), then perturbed with multiplier weights (Rademacher by default; configurable via `bootstrap_weights` parameter to use Mammen or Webb weights, matching CallawaySantAnna). This is a library extension (not in the paper) consistent with CallawaySantAnna/SunAbraham bootstrap patterns.
 - **Auxiliary residuals (Equation 8):** Uses v_it-weighted tau_tilde_g formula: `tau_tilde_g = sum(v_it * tau_hat_it) / sum(v_it)` within each partition group. Zero-weight groups (common in event-study SE computation) fall back to unweighted mean.
 
@@ -921,7 +921,7 @@ Our implementation uses multiplier bootstrap on the GMM influence function: clus
 - **No never-treated units (Proposition 5):** When there are no never-treated units and multiple treatment cohorts, horizons h >= h_bar (where h_bar = max(groups) - min(groups)) are unidentified per Proposition 5 of Borusyak et al. (2024). These produce NaN inference with n_obs > 0 (treated observations exist but counterfactual is unidentified) and a warning listing affected horizons. Matches ImputationDiD behavior. Proposition 5 applies to event study horizons only, not cohort aggregation — a cohort whose treated obs all fall at Prop 5 horizons naturally gets n_obs=0 in group effects because all its y_tilde values are NaN.
 - **Zero-observation horizons after filtering:** When `balance_e` or NaN `y_tilde` filtering results in zero observations for some non-Prop-5 event study horizons, those horizons produce NaN for all inference fields (effect, SE, t-stat, p-value, CI) with n_obs=0.
 - **Zero-observation cohorts in group effects:** If all treated observations for a cohort have NaN `y_tilde` (excluded from estimation), that cohort's group effect is NaN with n_obs=0.
-- **Note:** Survey weights in TwoStageDiD GMM sandwich via weighted cross-products: bread uses (X'_2 W X_2)^{-1}, gamma_hat uses (X'_{10} W X_{10})^{-1}(X'_1 W X_2), per-cluster scores multiply by survey weights. PSU is used as the cluster variable for GMM variance. Strata enters survey df (n_PSU - n_strata) for t-distribution inference. FPC is not supported (raises NotImplementedError). Strata does NOT enter the variance formula itself (no stratified sandwich) — this is conservative. Bootstrap + survey deferred.
+- **Note:** Survey weights in TwoStageDiD GMM sandwich via weighted cross-products: bread uses (X'_2 W X_2)^{-1}, gamma_hat uses (X'_{10} W X_{10})^{-1}(X'_1 W X_2), per-cluster scores multiply by survey weights. PSU is used as the cluster variable for GMM variance. Strata enters survey df (n_PSU - n_strata) for t-distribution inference. FPC is not supported (raises NotImplementedError). Strata does NOT enter the variance formula itself (no stratified sandwich) — this is conservative. Bootstrap + survey supported (Phase 6) via PSU-level multiplier weights.
 
 **Reference implementation(s):**
 - R: `did2s::did2s()` (Kyle Butts & John Gardner)
@@ -1143,7 +1143,7 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 - **Varying treatment within unit**: Raises `ValueError`. SDID requires block treatment (constant within each unit). Suggests CallawaySantAnna or ImputationDiD for staggered adoption.
 - **Unbalanced panel**: Raises `ValueError`. SDID requires all units observed in all periods. Suggests `balance_panel()`.
 - **Poor pre-treatment fit**: Warns (`UserWarning`) when `pre_fit_rmse > std(treated_pre_outcomes, ddof=1)`. Diagnostic only; estimation proceeds.
-- **Note:** Survey support: pweight only (strata/PSU/FPC raise NotImplementedError). Both sides weighted per WLS regression interpretation: treated-side means are survey-weighted (Frank-Wolfe target and ATT formula); control-side synthetic weights are composed with survey weights post-optimization (ω_eff = ω * w_co, renormalized). Frank-Wolfe optimization itself is unweighted — survey importance enters after trajectory-matching. Covariate residualization uses WLS with survey weights. Placebo and bootstrap SE preserve survey weights on both sides.
+- **Note:** Survey support: weights, strata, PSU, and FPC are all supported. Full-design surveys use Rao-Wu rescaled bootstrap (Phase 6); `variance_method="placebo"` requires weights-only (strata/PSU/FPC require bootstrap). Both sides weighted per WLS regression interpretation: treated-side means are survey-weighted (Frank-Wolfe target and ATT formula); control-side synthetic weights are composed with survey weights post-optimization (ω_eff = ω * w_co, renormalized). Frank-Wolfe optimization itself is unweighted — survey importance enters after trajectory-matching. Covariate residualization uses WLS with survey weights. Placebo and bootstrap SE preserve survey weights on both sides.
 
 **Reference implementation(s):**
 - R: `synthdid::synthdid_estimate()` (Arkhangelsky et al.'s official package)
@@ -1397,7 +1397,7 @@ Q(λ) = Σ_{j,s: D_js=0} [τ̂_js^loocv(λ)]²
 - [x] No post_periods parameter (D matrix determines treatment timing)
 - [x] D matrix semantics documented (absorbing state, not event indicator)
 - [x] Unbalanced panels supported (missing observations don't trigger false violations)
-- **Note:** Survey support: pweight only (strata/PSU/FPC raise NotImplementedError). Survey weights enter ATT aggregation only — population-weighted average of per-observation treatment effects. Model fitting (kernel weights, LOOCV, nuclear norm regularization) stays unchanged. Rust and Python bootstrap paths both support survey-weighted ATT in each iteration.
+- **Note:** Survey support: weights, strata, PSU, and FPC are all supported via Rao-Wu rescaled bootstrap with cross-classified pseudo-strata (Phase 6). Rust backend remains pweight-only; full-design surveys fall back to the Python bootstrap path. Survey weights enter ATT aggregation only — population-weighted average of per-observation treatment effects. Model fitting (kernel weights, LOOCV, nuclear norm regularization) stays unchanged. Rust and Python bootstrap paths both support survey-weighted ATT in each iteration.
 
 ### TROP Global Estimation Method
 
@@ -1938,9 +1938,65 @@ unequal selection probabilities).
   Linearization variance estimation, matching the R `survey` package
   convention that clusters are the primary sampling units.
 
+### Survey-Aware Bootstrap (Phase 6)
+
+Two strategies for bootstrap variance under complex survey designs:
+
+**Multiplier Bootstrap at PSU Level** (CallawaySantAnna, ImputationDiD, TwoStageDiD,
+ContinuousDiD, EfficientDiD):
+
+- **Reference**: Standard Taylor linearization bootstrap (Shao 2003, "Impact of the
+  Bootstrap on Sample Surveys", Statistical Science 18(2))
+- **Formula**: Generate multiplier weights independently within strata at the PSU level.
+  Scale by `sqrt(1 - f_h)` for FPC. Perturbation:
+  `ATT_boot[b] = ATT + w_b^T @ psi_psu` where `psi_psu` are PSU-aggregated IF sums.
+- **Note:** When no strata/PSU/FPC, degenerates to standard unit-level multiplier bootstrap.
+
+**Rao-Wu Rescaled Bootstrap** (SunAbraham, SyntheticDiD, TROP):
+
+- **Reference**: Rao & Wu (1988) "Resampling Inference with Complex Survey Data",
+  JASA 83(401); Rao, Wu & Yue (1992) "Some Recent Work on Resampling Methods for
+  Complex Surveys", Survey Methodology 18(2), Section 3.
+- **Formula**: Within each stratum *h* with *n_h* PSUs, draw `m_h` PSUs with replacement.
+  Without FPC: `m_h = n_h - 1`. With FPC: `m_h = max(1, round((1 - f_h) * (n_h - 1)))`.
+  Rescaled weight: `w*_i = w_i * (n_h / m_h) * r_hi` where `r_hi` = count of PSU *i* drawn.
+- **Note:** FPC enters through the resample size `m_h`, not as a post-hoc scaling factor.
+  When `f_h >= 1` (census stratum), observations keep original weights (zero variance).
+- **Note:** Bootstrap paths support `lonely_psu="remove"` and `"certainty"` only.
+  `lonely_psu="adjust"` raises `NotImplementedError` for survey-aware bootstrap;
+  use analytical inference for designs requiring `adjust` semantics.
+- **Deviation from R:** For the no-FPC case (`m_h = n_h - 1`), this matches R
+  `survey::as.svrepdesign(type="subbootstrap")`. The FPC-adjusted resample size
+  `m_h = round((1-f_h)*(n_h-1))` follows Rao, Wu & Yue (1992) Section 3.
+
+**CallawaySantAnna Design-Based Aggregated SEs**:
+
+- **Formula**: `V_design = sum_h (1-f_h) * (n_h/(n_h-1)) * sum_j (psi_hj - psi_h_bar)^2`
+  where `psi_hj = sum_{i in PSU j} psi_i` and `psi_i` is the combined IF (standard + WIF).
+- **Note:** Per-(g,t) cell SEs use the simpler IF-based formula `sqrt(sum(psi^2))` which
+  already incorporates survey weights. Only aggregated SEs (overall, event study, group)
+  use the full design-based variance.
+
+**TROP Cross-Classified Strata**:
+
+- **Note (deviation from R):** When survey strata and treatment groups both exist, TROP
+  creates pseudo-strata as `(survey_stratum x treatment_group)` for Rao-Wu resampling.
+  This preserves both survey variance structure and treatment ratio. Survey df computed
+  from pseudo-strata structure.
+- **Note:** When `survey_design.strata` is None but PSU/FPC trigger full-design bootstrap,
+  TROP uses treatment group (treated vs control) as pseudo-strata for Rao-Wu resampling
+  to preserve treatment ratio. FPC is applied within these pseudo-strata. This matches
+  TROP's existing treatment-stratified resampling pattern.
+- **Note (deviation from block bootstrap):** In Rao-Wu survey bootstrap, per-observation
+  treatment effects tau_{it} are deterministic given (Y, D, lambda) because survey weights
+  do not enter the kernel-weighted matrix completion. The Rao-Wu path therefore precomputes
+  tau values once and only varies the ATT aggregation weights across draws. This is
+  mathematically equivalent to refitting per draw and avoids redundant computation.
+
 ---
 
 # Version History
 
+- **v1.2** (2026-03-24): Added Survey-Aware Bootstrap section (Phase 6)
 - **v1.1** (2026-03-20): Added Survey Data Support section
 - **v1.0** (2025-01-19): Initial registry with 12 estimators

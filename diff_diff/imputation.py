@@ -208,7 +208,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             pweight only (aweight/fweight raise ValueError). FPC raises
             NotImplementedError. PSU is used as cluster variable for Theorem 3
             variance. Strata enters survey df for t-distribution inference.
-            Requires analytical inference (n_bootstrap=0).
+            Both analytical (n_bootstrap=0) and bootstrap inference are supported.
 
         Returns
         -------
@@ -260,12 +260,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                     "and PSU (for cluster-robust variance) are supported."
                 )
 
-        # Guard bootstrap + survey
-        if self.n_bootstrap > 0 and resolved_survey is not None:
-            raise NotImplementedError(
-                "Bootstrap inference with survey weights is not yet supported "
-                "for ImputationDiD. Use analytical inference (n_bootstrap=0)."
-            )
+        # Bootstrap + survey supported via PSU-level multiplier bootstrap.
 
         # Ensure numeric types
         df[time] = pd.to_numeric(df[time])
@@ -593,6 +588,10 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         psi_data = None
         if self.n_bootstrap > 0 and n_valid > 0:
             try:
+                # Extract survey weights for untreated obs (same as analytical path)
+                _sw_0 = survey_weights[omega_0_mask.values] if survey_weights is not None else None
+                # Extract survey weights for treated obs (event-study/group bootstrap paths)
+                _sw_1 = survey_weights[omega_1_mask.values] if survey_weights is not None else None
                 psi_data = self._precompute_bootstrap_psi(
                     df=df,
                     outcome=outcome,
@@ -614,6 +613,8 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                     treatment_groups=treatment_groups,
                     tau_hat=tau_hat,
                     balance_e=balance_e,
+                    survey_weights_0=_sw_0,
+                    survey_weights_1=_sw_1,
                 )
             except Exception as e:
                 warnings.warn(
@@ -631,6 +632,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 original_event_study=event_study_effects,
                 original_group=group_effects,
                 psi_data=psi_data,
+                resolved_survey=resolved_survey,
             )
 
             # Update inference with bootstrap results
@@ -1971,7 +1973,7 @@ def imputation_did(
         pweight only (aweight/fweight raise ValueError). FPC raises
         NotImplementedError. PSU is used as cluster variable for Theorem 3
         variance. Strata enters survey df for t-distribution inference.
-        Requires analytical inference (n_bootstrap=0).
+        Both analytical (n_bootstrap=0) and bootstrap inference are supported.
     **kwargs
         Additional keyword arguments passed to ImputationDiD constructor.
 

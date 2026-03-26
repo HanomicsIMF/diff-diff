@@ -79,10 +79,16 @@ TripleDifference IPW/DR from Phase 3 deferred work.
 
 ## Phase 6: Advanced Features
 
-### Bootstrap + Survey Interaction
-Unblock bootstrap + survey for all estimators that currently defer it
-(ImputationDiD, TwoStageDiD, CallawaySantAnna, SunAbraham, ContinuousDiD,
-EfficientDiD). Requires survey-aware resampling schemes.
+### Bootstrap + Survey Interaction ✅ (2026-03-24)
+Survey-aware bootstrap for all 8 bootstrap-using estimators. Two strategies:
+- **Multiplier at PSU level** (CS, ImputationDiD, TwoStageDiD, ContinuousDiD,
+  EfficientDiD): generate multiplier weights at PSU level within strata, FPC-scaled.
+- **Rao-Wu rescaled** (SunAbraham, SyntheticDiD, TROP): draw PSUs within strata,
+  rescale observation weights per Rao, Wu & Yue (1992).
+- **CS analytical expansion**: strata/PSU/FPC now supported for aggregated SEs via
+  `compute_survey_if_variance()`.
+- **TROP**: cross-classified pseudo-strata (survey_stratum × treatment_group).
+- **Rust TROP**: pweight-only in Rust; full design falls to Python path.
 
 ### Replicate Weight Variance
 Re-run WLS for each replicate weight column, compute variance from distribution

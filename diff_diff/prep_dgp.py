@@ -21,7 +21,7 @@ def generate_did_data(
     unit_fe_sd: float = 2.0,
     time_trend: float = 0.5,
     noise_sd: float = 1.0,
-    seed: Optional[int] = None
+    seed: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Generate synthetic data for DiD analysis with known treatment effect.
@@ -110,14 +110,16 @@ def generate_did_data(
             # Add noise
             y += rng.normal(0, noise_sd)
 
-            records.append({
-                "unit": unit,
-                "period": period,
-                "treated": int(is_treated),
-                "post": int(is_post),
-                "outcome": y,
-                "true_effect": effect
-            })
+            records.append(
+                {
+                    "unit": unit,
+                    "period": period,
+                    "treated": int(is_treated),
+                    "post": int(is_post),
+                    "outcome": y,
+                    "true_effect": effect,
+                }
+            )
 
     return pd.DataFrame(records)
 
@@ -211,9 +213,7 @@ def generate_staggered_data(
     # Validate cohort periods
     for cp in cohort_periods:
         if cp < 1 or cp >= n_periods:
-            raise ValueError(
-                f"Cohort period {cp} must be between 1 and {n_periods - 1}"
-            )
+            raise ValueError(f"Cohort period {cp} must be between 1 and {n_periods - 1}")
 
     # Determine number of never-treated and treated units
     n_never = int(n_units * never_treated_frac)
@@ -254,15 +254,17 @@ def generate_staggered_data(
             # Add noise
             y += rng.normal(0, noise_sd)
 
-            records.append({
-                "unit": unit,
-                "period": period,
-                "outcome": y,
-                "first_treat": unit_first_treat,
-                "treated": int(is_treated),
-                "treat": int(is_ever_treated),
-                "true_effect": effect,
-            })
+            records.append(
+                {
+                    "unit": unit,
+                    "period": period,
+                    "outcome": y,
+                    "first_treat": unit_first_treat,
+                    "treated": int(is_treated),
+                    "treat": int(is_ever_treated),
+                    "true_effect": effect,
+                }
+            )
 
     return pd.DataFrame(records)
 
@@ -395,14 +397,16 @@ def generate_factor_data(
             # Add noise
             y += rng.normal(0, noise_sd)
 
-            records.append({
-                "unit": i,
-                "period": t,
-                "outcome": y,
-                "treated": int(is_ever_treated and post),
-                "treat": int(is_ever_treated),
-                "true_effect": effect,
-            })
+            records.append(
+                {
+                    "unit": i,
+                    "period": t,
+                    "outcome": y,
+                    "treated": int(is_ever_treated and post),
+                    "treat": int(is_ever_treated),
+                    "true_effect": effect,
+                }
+            )
 
     return pd.DataFrame(records)
 
@@ -500,9 +504,9 @@ def generate_ddd_data(
                     y = 50 + group_effect * g + partition_effect * p + time_effect * t
 
                     # Second-order interactions (non-treatment)
-                    y += 1.5 * g * p   # group-partition interaction
-                    y += 1.0 * g * t   # group-time interaction (diff trends)
-                    y += 0.5 * p * t   # partition-time interaction
+                    y += 1.5 * g * p  # group-partition interaction
+                    y += 1.0 * g * t  # group-time interaction (diff trends)
+                    y += 0.5 * p * t  # partition-time interaction
 
                     # Treatment effect: ONLY for G=1, P=1, T=1
                     effect = 0.0
@@ -653,14 +657,16 @@ def generate_panel_data(
             # Add noise
             y += rng.normal(0, noise_sd)
 
-            records.append({
-                "unit": unit,
-                "period": period,
-                "treated": int(is_treated),
-                "post": int(post),
-                "outcome": y,
-                "true_effect": effect,
-            })
+            records.append(
+                {
+                    "unit": unit,
+                    "period": period,
+                    "treated": int(is_treated),
+                    "post": int(post),
+                    "outcome": y,
+                    "true_effect": effect,
+                }
+            )
 
     return pd.DataFrame(records)
 
@@ -764,15 +770,17 @@ def generate_event_study_data(
             # Add noise
             y += rng.normal(0, noise_sd)
 
-            records.append({
-                "unit": unit,
-                "period": period,
-                "treated": int(is_treated),
-                "post": int(post),
-                "outcome": y,
-                "event_time": event_time,
-                "true_effect": effect,
-            })
+            records.append(
+                {
+                    "unit": unit,
+                    "period": period,
+                    "treated": int(is_treated),
+                    "post": int(post),
+                    "outcome": y,
+                    "event_time": event_time,
+                    "true_effect": effect,
+                }
+            )
 
     return pd.DataFrame(records)
 
@@ -850,7 +858,7 @@ def generate_continuous_did_data(
     idx = 0
     for i, g in enumerate(cohort_periods):
         n_this = n_per_cohort if i < len(cohort_periods) - 1 else n_treated_total - idx
-        cohort_assignments[n_never + idx: n_never + idx + n_this] = g
+        cohort_assignments[n_never + idx : n_never + idx + n_this] = g
         idx += n_this
 
     # Generate doses
@@ -898,8 +906,7 @@ def generate_continuous_did_data(
             return att_intercept + att_slope * np.log1p(d)
         else:
             raise ValueError(
-                f"att_function must be 'linear', 'quadratic', or 'log', "
-                f"got '{att_function}'"
+                f"att_function must be 'linear', 'quadratic', or 'log', " f"got '{att_function}'"
             )
 
     # Unit fixed effects
@@ -920,13 +927,15 @@ def generate_continuous_did_data(
             else:
                 att_d = 0.0
 
-            records.append({
-                "unit": i,
-                "period": int(t),
-                "outcome": y0 + att_d,
-                "first_treat": int(g_i) if g_i > 0 else 0,
-                "dose": d_i,
-                "true_att": att_d,
-            })
+            records.append(
+                {
+                    "unit": i,
+                    "period": int(t),
+                    "outcome": y0 + att_d,
+                    "first_treat": int(g_i) if g_i > 0 else 0,
+                    "dose": d_i,
+                    "true_att": att_d,
+                }
+            )
 
     return pd.DataFrame(records)

@@ -337,17 +337,34 @@ class TestImputationDiDSurvey:
             assert np.isfinite(eff["effect"])
             assert np.isfinite(eff["se"])
 
-    def test_bootstrap_survey_raises(self, staggered_survey_data, survey_design_weights_only):
-        """Bootstrap + survey should raise NotImplementedError."""
-        with pytest.raises(NotImplementedError, match="[Bb]ootstrap"):
-            ImputationDiD(n_bootstrap=99).fit(
-                staggered_survey_data,
-                "outcome",
-                "unit",
-                "period",
-                "first_treat",
-                survey_design=survey_design_weights_only,
-            )
+    def test_bootstrap_survey_supported(self, staggered_survey_data, survey_design_weights_only):
+        """Bootstrap + survey should produce finite SE via PSU-level multiplier bootstrap."""
+        result = ImputationDiD(n_bootstrap=99, seed=42).fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            survey_design=survey_design_weights_only,
+        )
+        assert result.bootstrap_results is not None
+        assert result.bootstrap_results.n_bootstrap == 99
+        assert np.isfinite(result.overall_se)
+        assert np.isfinite(result.overall_att)
+
+    def test_bootstrap_survey_full_design(self, staggered_survey_data, survey_design_full):
+        """Bootstrap + full survey (strata+PSU) uses survey-aware multiplier weights."""
+        result = ImputationDiD(n_bootstrap=99, seed=42).fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            survey_design=survey_design_full,
+        )
+        assert result.bootstrap_results is not None
+        assert np.isfinite(result.overall_se)
+        assert np.isfinite(result.overall_att)
 
     def test_summary_includes_survey(self, staggered_survey_data, survey_design_weights_only):
         """Summary output should include survey design section."""
@@ -603,17 +620,20 @@ class TestTwoStageDiDSurvey:
         # SE magnitude should differ (not just sign)
         assert abs(r_unw.overall_se - r_w.overall_se) > 1e-6
 
-    def test_bootstrap_survey_raises(self, staggered_survey_data, survey_design_weights_only):
-        """Bootstrap + survey should raise NotImplementedError."""
-        with pytest.raises(NotImplementedError, match="[Bb]ootstrap"):
-            TwoStageDiD(n_bootstrap=99).fit(
-                staggered_survey_data,
-                "outcome",
-                "unit",
-                "period",
-                "first_treat",
-                survey_design=survey_design_weights_only,
-            )
+    def test_bootstrap_survey_works(self, staggered_survey_data, survey_design_weights_only):
+        """Bootstrap + survey should succeed via PSU-level multiplier bootstrap."""
+        result = TwoStageDiD(n_bootstrap=99, seed=42).fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            survey_design=survey_design_weights_only,
+        )
+        assert result is not None
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+        assert result.overall_se > 0
 
     def test_summary_includes_survey(self, staggered_survey_data, survey_design_weights_only):
         """Summary output should include survey design section."""
@@ -831,18 +851,20 @@ class TestCallawaySantAnnaSurvey:
         assert sm.effective_n > 0
         assert sm.design_effect > 0
 
-    def test_strata_psu_fpc_raises(self, staggered_survey_data):
-        """Strata/PSU/FPC should raise NotImplementedError."""
+    def test_strata_psu_fpc_supported(self, staggered_survey_data):
+        """Strata/PSU/FPC now works with design-based aggregated SEs."""
         sd_full = SurveyDesign(weights="weight", strata="stratum", psu="psu")
-        with pytest.raises(NotImplementedError, match="strata/PSU/FPC"):
-            CallawaySantAnna(estimation_method="reg").fit(
-                staggered_survey_data,
-                "outcome",
-                "unit",
-                "period",
-                "first_treat",
-                survey_design=sd_full,
-            )
+        result = CallawaySantAnna(estimation_method="reg").fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            survey_design=sd_full,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+        assert result.survey_metadata is not None
 
     def test_aggregate_group_with_survey(self, staggered_survey_data, survey_design_weights_only):
         """aggregate='group' works with weights-only survey design."""
@@ -857,6 +879,24 @@ class TestCallawaySantAnnaSurvey:
         )
         assert result.group_effects is not None
         assert len(result.group_effects) > 0
+
+    def test_aggregate_group_full_design(self, staggered_survey_data):
+        """aggregate='group' with full design uses design-based SEs."""
+        sd_full = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        result = CallawaySantAnna(estimation_method="reg").fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            aggregate="group",
+            survey_design=sd_full,
+        )
+        assert result.group_effects is not None
+        assert len(result.group_effects) > 0
+        for g, info in result.group_effects.items():
+            assert np.isfinite(info["effect"])
+            assert np.isfinite(info["se"])
 
     def test_aggregate_all_with_survey(self, staggered_survey_data, survey_design_weights_only):
         """aggregate='all' works with weights-only survey design."""
@@ -873,17 +913,18 @@ class TestCallawaySantAnnaSurvey:
         assert result.event_study_effects is not None
         assert result.group_effects is not None
 
-    def test_bootstrap_survey_raises(self, staggered_survey_data, survey_design_weights_only):
-        """Bootstrap + survey should raise NotImplementedError."""
-        with pytest.raises(NotImplementedError, match="[Bb]ootstrap"):
-            CallawaySantAnna(estimation_method="reg", n_bootstrap=99).fit(
-                staggered_survey_data,
-                "outcome",
-                "unit",
-                "period",
-                "first_treat",
-                survey_design=survey_design_weights_only,
-            )
+    def test_bootstrap_survey_supported(self, staggered_survey_data, survey_design_weights_only):
+        """Bootstrap + survey now works via PSU-level multiplier bootstrap."""
+        result = CallawaySantAnna(estimation_method="reg", n_bootstrap=30, seed=42).fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            survey_design=survey_design_weights_only,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
 
     def test_ipw_covariates_survey_raises(self, staggered_survey_data, survey_design_weights_only):
         """IPW + covariates + survey should raise NotImplementedError."""
@@ -1367,19 +1408,20 @@ class TestCallawaySantAnnaSurveyInference:
                 effects_no, effects_sv, atol=1e-6
             ), f"{method}: survey weights should change per-cell ATT"
 
-    def test_strata_psu_fpc_raises_inference(self, staggered_survey_data):
-        """Strata/PSU/FPC raises NotImplementedError in inference context."""
+    def test_strata_psu_fpc_works_inference(self, staggered_survey_data):
+        """Strata/PSU/FPC now works with design-based aggregated SEs."""
         sd_full = SurveyDesign(weights="weight", strata="stratum", psu="psu")
-        with pytest.raises(NotImplementedError, match="strata/PSU/FPC"):
-            CallawaySantAnna(estimation_method="reg").fit(
-                staggered_survey_data,
-                "outcome",
-                "unit",
-                "period",
-                "first_treat",
-                aggregate="simple",
-                survey_design=sd_full,
-            )
+        result = CallawaySantAnna(estimation_method="reg").fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            aggregate="simple",
+            survey_design=sd_full,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
 
 
 # =============================================================================

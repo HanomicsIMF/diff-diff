@@ -52,9 +52,9 @@ Deferred items from PR reviews that were not addressed before merge.
 | ImputationDiD dense `(A0'A0).toarray()` scales O((U+T+K)^2), OOM risk on large panels | `imputation.py` | #141 | Medium (deferred — only triggers when sparse solver fails; fixing requires sparse least-squares alternatives) |
 | EfficientDiD: API docs / tutorial page for new public estimator | `docs/` | #192 | Medium |
 | Multi-absorb weighted demeaning needs iterative alternating projections for N > 1 absorbed FE with survey weights; unweighted multi-absorb also uses single-pass (pre-existing, exact only for balanced panels) | `estimators.py` | #218 | Medium |
-| CallawaySantAnna survey: strata/PSU/FPC rejected at runtime. Full design-based SEs require routing the combined IF/WIF through `compute_survey_vcov()`. Currently weights-only. | `staggered.py` | #233 | Medium |
+| CallawaySantAnna survey: strata/PSU/FPC — **Resolved**. Aggregated SEs (overall, event study, group) use `compute_survey_if_variance()`. Bootstrap uses PSU-level multiplier weights. | `staggered.py` | #237 | Resolved |
 | CallawaySantAnna survey + covariates + IPW/DR: DRDID panel nuisance-estimation IF corrections not implemented. Currently gated with NotImplementedError. Regression method with covariates works (has WLS nuisance IF correction). | `staggered.py` | #233 | Medium |
-| SyntheticDiD/TROP survey: strata/PSU/FPC deferred. Full design-based bootstrap (Rao-Wu rescaled weights) needed for survey-aware resampling. Currently pweight-only. | `synthetic_did.py`, `trop.py` | — | Medium |
+| SyntheticDiD/TROP survey: strata/PSU/FPC — **Resolved**. Rao-Wu rescaled bootstrap implemented for both. TROP uses cross-classified pseudo-strata. Rust TROP remains pweight-only (Python fallback for full design). | `synthetic_did.py`, `trop.py` | — | Resolved |
 | EfficientDiD hausman_pretest() clustered covariance uses stale `n_cl` after filtering non-finite EIF rows — should recompute effective cluster count and remap indices after `row_finite` filtering | `efficient_did.py` | #230 | Medium |
 | EfficientDiD `control_group="last_cohort"` trims at `last_g - anticipation` but REGISTRY says `t >= last_g`. With `anticipation=0` (default) these are identical. With `anticipation>0`, code is arguably more conservative (excludes anticipation-contaminated periods). Either align REGISTRY with code or change code to `t < last_g` — needs design decision. | `efficient_did.py` | #230 | Low |
 | TripleDifference power: `generate_ddd_data` is a fixed 2×2×2 cross-sectional DGP — no multi-period or unbalanced-group support. Add a `generate_ddd_panel_data` for panel DDD power analysis. | `prep_dgp.py`, `power.py` | #208 | Low |
@@ -78,6 +78,7 @@ Deferred items from PR reviews that were not addressed before merge.
 | CS R helpers hard-code `xformla = ~ 1`; no covariate-adjusted R benchmark for IRLS path | `tests/test_methodology_callaway.py` | #202 | Low |
 | ~376 `duplicate object description` Sphinx warnings — caused by autodoc `:members:` on dataclass attributes within manual API pages (not from autosummary stubs); fix requires restructuring `docs/api/*.rst` pages to avoid documenting the same attribute via both `:members:` and inline `autosummary` tables | `docs/api/*.rst` | — | Low |
 | Plotly renderers silently ignore styling kwargs (marker, markersize, linewidth, capsize, ci_linewidth) that the matplotlib backend honors; thread them through or reject when `backend="plotly"` | `visualization/_event_study.py`, `_diagnostic.py`, `_power.py` | #222 | Medium |
+| Survey bootstrap test coverage: add FPC census zero-variance, single-PSU NaN, full-design bootstrap for CS/ContinuousDiD/EfficientDiD, and TROP Rao-Wu vs block bootstrap equivalence tests | `tests/test_survey_phase*.py` | #237 | Medium |
 
 ---
 

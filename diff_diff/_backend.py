@@ -13,7 +13,7 @@ import os
 
 # Check for backend override via environment variable
 # DIFF_DIFF_BACKEND can be: 'auto' (default), 'python', or 'rust'
-_backend_env = os.environ.get('DIFF_DIFF_BACKEND', 'auto').lower()
+_backend_env = os.environ.get("DIFF_DIFF_BACKEND", "auto").lower()
 
 # Try to import Rust backend for accelerated operations
 try:
@@ -38,6 +38,7 @@ try:
         # Diagnostics
         rust_backend_info as _rust_backend_info,
     )
+
     _rust_available = True
 except ImportError:
     _rust_available = False
@@ -61,7 +62,7 @@ except ImportError:
     _rust_backend_info = None
 
 # Determine final backend based on environment variable and availability
-if _backend_env == 'python':
+if _backend_env == "python":
     # Force pure Python mode - disable Rust even if available
     HAS_RUST_BACKEND = False
     _rust_bootstrap_weights = None
@@ -82,7 +83,7 @@ if _backend_env == 'python':
     _rust_compute_noise_level = None
     _rust_sc_weight_fw = None
     _rust_backend_info = None
-elif _backend_env == 'rust':
+elif _backend_env == "rust":
     # Force Rust mode - fail if not available
     if not _rust_available:
         raise ImportError(
@@ -111,23 +112,23 @@ def rust_backend_info():
 
 
 __all__ = [
-    'HAS_RUST_BACKEND',
-    'rust_backend_info',
-    '_rust_bootstrap_weights',
-    '_rust_synthetic_weights',
-    '_rust_project_simplex',
-    '_rust_solve_ols',
-    '_rust_compute_robust_vcov',
+    "HAS_RUST_BACKEND",
+    "rust_backend_info",
+    "_rust_bootstrap_weights",
+    "_rust_synthetic_weights",
+    "_rust_project_simplex",
+    "_rust_solve_ols",
+    "_rust_compute_robust_vcov",
     # TROP estimator acceleration (local method)
-    '_rust_unit_distance_matrix',
-    '_rust_loocv_grid_search',
-    '_rust_bootstrap_trop_variance',
+    "_rust_unit_distance_matrix",
+    "_rust_loocv_grid_search",
+    "_rust_bootstrap_trop_variance",
     # TROP estimator acceleration (global method)
-    '_rust_loocv_grid_search_global',
-    '_rust_bootstrap_trop_variance_global',
+    "_rust_loocv_grid_search_global",
+    "_rust_bootstrap_trop_variance_global",
     # SDID weights (Frank-Wolfe matching R's synthdid)
-    '_rust_sdid_unit_weights',
-    '_rust_compute_time_weights',
-    '_rust_compute_noise_level',
-    '_rust_sc_weight_fw',
+    "_rust_sdid_unit_weights",
+    "_rust_compute_time_weights",
+    "_rust_compute_noise_level",
+    "_rust_sc_weight_fw",
 ]

@@ -212,12 +212,7 @@ class ContinuousDiD:
         if resolved_survey is not None:
             _validate_unit_constant_survey(data, unit, survey_design)
 
-        # Guard: bootstrap + survey not yet supported
-        if self.n_bootstrap > 0 and resolved_survey is not None:
-            raise NotImplementedError(
-                "Multiplier bootstrap with survey weights is planned for Phase 5. "
-                "Use n_bootstrap=0 with survey_design for design-based standard errors."
-            )
+        # Bootstrap + survey supported via PSU-level multiplier bootstrap.
 
         df = data.copy()
         for col in [outcome, unit, time, first_treat, dose]:
@@ -465,6 +460,7 @@ class ContinuousDiD:
                     agg_att_d,
                     agg_acrt_d,
                     event_study_effects,
+                    resolved_survey=resolved_survey,
                 )
                 att_d_se = boot_result["att_d_se"]
                 att_d_ci_lower = boot_result["att_d_ci_lower"]
@@ -630,11 +626,13 @@ class ContinuousDiD:
                             mu_0 = b_info["mu_0"]
                             delta_y_treated = b_info["delta_y_treated"]
                             ee_control = b_info["ee_control"]
+                            sw_treated = b_info.get("w_treated_arr")
 
                             for k, uid in enumerate(treated_idx):
-                                if_es[uid] += (
-                                    w * (delta_y_treated[k] - att_glob_gt - mu_0) / p_1 / n_total_gt
-                                )
+                                score_k = delta_y_treated[k] - att_glob_gt - mu_0
+                                if sw_treated is not None:
+                                    score_k = sw_treated[k] * score_k
+                                if_es[uid] += w * score_k / p_1 / n_total_gt
                             for k, uid in enumerate(control_idx):
                                 if_es[uid] -= w * ee_control[k] / p_0 / n_total_gt
 
@@ -978,10 +976,19 @@ class ContinuousDiD:
                 bread = np.linalg.pinv(PtP / n_treated)
 
         # ee_treated: per-unit estimating equation vectors (K-vector per unit)
-        ee_treated = Psi * residuals[:, np.newaxis]  # (n_treated, K)
+        # For WLS (survey weights), the score is w_i * X_i * u_i to match the
+        # weighted bread inv(X'WX / sum(w)).  Without this factor the sandwich
+        # is inconsistent.  For OLS (no survey weights), the score is X_i * u_i.
+        if w_treated is not None:
+            ee_treated = Psi * (w_treated * residuals)[:, np.newaxis]  # (n_treated, K)
+        else:
+            ee_treated = Psi * residuals[:, np.newaxis]  # (n_treated, K)
 
-        # ee_control: per-unit deviation from control mean
-        ee_control = delta_y_control - mu_0  # (n_control,)
+        # ee_control: per-unit deviation from control mean (weighted for WLS)
+        if w_control is not None:
+            ee_control = w_control * (delta_y_control - mu_0)  # (n_control,)
+        else:
+            ee_control = delta_y_control - mu_0  # (n_control,)
 
         # psi_bar: mean basis vector for treated (weighted when survey)
         if w_treated is not None:
@@ -1021,10 +1028,12 @@ class ContinuousDiD:
             "acrt_glob": acrt_glob,
         }
 
-        # Store survey-weighted masses for IF linearization
+        # Store survey-weighted masses and per-unit arrays for IF linearization
         if w_treated is not None:
             bootstrap_info["w_treated"] = float(np.sum(w_treated))
             bootstrap_info["w_control"] = float(np.sum(w_control))
+            bootstrap_info["w_treated_arr"] = w_treated
+            bootstrap_info["w_control_arr"] = w_control
 
         return {
             "att_d": att_d,
@@ -1127,14 +1136,23 @@ class ContinuousDiD:
             att_glob_gt = info["att_glob"]
             mu_0 = info["mu_0"]
             delta_y_treated = info["delta_y_treated"]
+            # Per-unit survey weight array (None when no survey)
+            sw_treated = info.get("w_treated_arr")
 
             n_total = n_t + n_c
             p_1 = n_t / n_total
             p_0 = n_c / n_total
 
             # IF for ATT_glob (binarized DiD)
+            # When survey weights are present, each unit's score includes its
+            # survey weight w_k so the sandwich is consistent with the weighted
+            # estimand.  ee_control already contains the w_k factor (set in
+            # _compute_dose_response_gt); delta_y_treated needs it here.
             for k, idx in enumerate(treated_idx):
-                if_att_glob[idx] += w * (delta_y_treated[k] - att_glob_gt - mu_0) / p_1 / n_total
+                score_k = delta_y_treated[k] - att_glob_gt - mu_0
+                if sw_treated is not None:
+                    score_k = sw_treated[k] * score_k
+                if_att_glob[idx] += w * score_k / p_1 / n_total
             for k, idx in enumerate(control_idx):
                 if_att_glob[idx] -= w * ee_control[k] / p_0 / n_total
 
@@ -1265,6 +1283,7 @@ class ContinuousDiD:
         original_att_d: np.ndarray,
         original_acrt_d: np.ndarray,
         event_study_effects: Optional[Dict[int, Dict]],
+        resolved_survey: object = None,
     ) -> Dict[str, Any]:
         """Run multiplier bootstrap inference."""
         if self.n_bootstrap < 50:
@@ -1279,10 +1298,61 @@ class ContinuousDiD:
         n_units = precomp["n_units"]
         n_grid = len(dvals)
 
-        # Generate all weights upfront
-        all_weights = generate_bootstrap_weights_batch(
-            self.n_bootstrap, n_units, self.bootstrap_weights, rng
+        # Build unit-level ResolvedSurveyDesign for survey-aware bootstrap
+        unit_resolved = None
+        if resolved_survey is not None:
+            from diff_diff.survey import ResolvedSurveyDesign
+
+            row_idx = precomp["unit_first_panel_row"]
+            unit_weights = precomp.get("unit_survey_weights")
+            if unit_weights is None:
+                unit_weights = np.ones(n_units)
+            unit_strata = (
+                resolved_survey.strata[row_idx] if resolved_survey.strata is not None else None
+            )
+            unit_psu = resolved_survey.psu[row_idx] if resolved_survey.psu is not None else None
+            unit_fpc = resolved_survey.fpc[row_idx] if resolved_survey.fpc is not None else None
+            n_strata_u = len(np.unique(unit_strata)) if unit_strata is not None else 0
+            n_psu_u = len(np.unique(unit_psu)) if unit_psu is not None else 0
+            unit_resolved = ResolvedSurveyDesign(
+                weights=unit_weights,
+                weight_type=resolved_survey.weight_type,
+                strata=unit_strata,
+                psu=unit_psu,
+                fpc=unit_fpc,
+                n_strata=n_strata_u,
+                n_psu=n_psu_u,
+                lonely_psu=resolved_survey.lonely_psu,
+            )
+
+        # Generate bootstrap weights — PSU-level when survey design is present
+        _use_survey_bootstrap = unit_resolved is not None and (
+            unit_resolved.strata is not None
+            or unit_resolved.psu is not None
+            or unit_resolved.fpc is not None
         )
+
+        if _use_survey_bootstrap:
+            from diff_diff.bootstrap_utils import (
+                generate_survey_multiplier_weights_batch,
+            )
+
+            psu_weights, psu_ids = generate_survey_multiplier_weights_batch(
+                self.n_bootstrap, unit_resolved, self.bootstrap_weights, rng
+            )
+            # Build unit -> PSU column map
+            if unit_resolved.psu is not None:
+                psu_id_to_col = {int(p): c for c, p in enumerate(psu_ids)}
+                unit_to_psu_col = np.array(
+                    [psu_id_to_col[int(unit_resolved.psu[i])] for i in range(n_units)]
+                )
+            else:
+                unit_to_psu_col = np.arange(n_units)
+            all_weights = psu_weights[:, unit_to_psu_col]
+        else:
+            all_weights = generate_bootstrap_weights_batch(
+                self.n_bootstrap, n_units, self.bootstrap_weights, rng
+            )
 
         boot_att_glob = np.zeros(self.n_bootstrap)
         boot_acrt_glob = np.zeros(self.n_bootstrap)
@@ -1292,22 +1362,34 @@ class ContinuousDiD:
         # Event study bootstrap — compute weights per event-time bin
         es_keys = sorted(event_study_effects.keys()) if event_study_effects else []
         boot_es = {e: np.zeros(self.n_bootstrap) for e in es_keys}
-        # Per-(g,t) weight within event-time bin
+        # Per-(g,t) weight within event-time bin — use survey-weighted cohort
+        # masses when available, matching _aggregate_event_study.
+        unit_sw = precomp.get("unit_survey_weights")
+        unit_cohorts = precomp["unit_cohorts"]
         es_cell_weights: Dict[Tuple, float] = {}
         if event_study_effects is not None:
-            # Build event-time bin weights from n_treated
             from collections import defaultdict
 
             es_bin_total: Dict[int, float] = defaultdict(float)
             for gt, r in gt_results.items():
                 g_val, t_val = gt
                 e = t_val - g_val
-                es_bin_total[e] += float(r["n_treated"])
+                if unit_sw is not None:
+                    g_mask = unit_cohorts == g_val
+                    cell_mass = float(np.sum(unit_sw[g_mask]))
+                else:
+                    cell_mass = float(r["n_treated"])
+                es_bin_total[e] += cell_mass
             for gt, r in gt_results.items():
                 g_val, t_val = gt
                 e = t_val - g_val
+                if unit_sw is not None:
+                    g_mask = unit_cohorts == g_val
+                    cell_mass = float(np.sum(unit_sw[g_mask]))
+                else:
+                    cell_mass = float(r["n_treated"])
                 if es_bin_total[e] > 0:
-                    es_cell_weights[gt] = float(r["n_treated"]) / es_bin_total[e]
+                    es_cell_weights[gt] = cell_mass / es_bin_total[e]
 
         # Helper to bootstrap a single (g,t) cell
         def _bootstrap_gt_cell(gt, info):
@@ -1316,6 +1398,10 @@ class ContinuousDiD:
             control_idx = info["control_indices"]
             n_t = info["n_treated"]
             n_c = info["n_control"]
+            # Use survey-weighted masses when available (matching analytical SE)
+            if "w_treated" in info:
+                n_t = info["w_treated"]
+                n_c = info["w_control"]
             bread = info["bread"]
             ee_treated = info["ee_treated"]
             ee_control = info["ee_control"]
@@ -1327,6 +1413,7 @@ class ContinuousDiD:
             delta_y_treated = info["delta_y_treated"]
             mu_0 = info["mu_0"]
             att_glob_gt = info["att_glob"]
+            sw_treated = info.get("w_treated_arr")
 
             w_treated = all_weights[:, treated_idx]
             w_control = all_weights[:, control_idx]
@@ -1343,10 +1430,19 @@ class ContinuousDiD:
                 acrt_d_b = beta_b @ dPsi_eval.T
 
                 mu_0_pert = (w_control @ ee_control) / n_c
-                mean_dy_treated_pert = (w_treated @ (delta_y_treated - att_glob_gt - mu_0)) / n_t
+                # ATT_glob perturbation: weight scores by survey weight w_k
+                # when present, matching the analytical IF path.
+                att_glob_score = delta_y_treated - att_glob_gt - mu_0
+                if sw_treated is not None:
+                    att_glob_score = sw_treated * att_glob_score
+                mean_dy_treated_pert = (w_treated @ att_glob_score) / n_t
                 att_glob_b = att_glob_gt + mean_dy_treated_pert - mu_0_pert
 
-                dpsi_mean = np.mean(dPsi_treated, axis=0)
+                if sw_treated is not None:
+                    sw_norm = sw_treated / sw_treated.sum()
+                    dpsi_mean = sw_norm @ dPsi_treated
+                else:
+                    dpsi_mean = np.mean(dPsi_treated, axis=0)
                 acrt_glob_b = delta_beta @ dpsi_mean
 
             return att_d_b, acrt_d_b, att_glob_b, acrt_glob_b, info.get("acrt_glob", 0.0)
@@ -1460,7 +1556,7 @@ class ContinuousDiD:
                     boot_es[e],
                     alpha=self.alpha,
                     context=f"event study e={e}",
-                )
+                    )
                 es_se[e] = se_e
                 es_ci[e] = ci_e
                 es_p[e] = p_e

@@ -1358,9 +1358,7 @@ class TestFweightInference:
         se_exp = np.sqrt(np.diag(vcov_exp))
 
         # Fweight path: compressed data with integer weights
-        coef_fw, _, vcov_fw = solve_ols(
-            X, y, weights=fw.astype(float), weight_type="fweight"
-        )
+        coef_fw, _, vcov_fw = solve_ols(X, y, weights=fw.astype(float), weight_type="fweight")
         se_fw = np.sqrt(np.diag(vcov_fw))
 
         np.testing.assert_allclose(coef_fw, coef_exp, atol=1e-10)
@@ -1471,9 +1469,7 @@ class TestWeightedRankDeficiency:
         freq = np.random.choice([1, 2, 3], n).astype(float)
 
         # WLS with fweights via survey
-        coef_fw, resid_fw, _ = solve_ols(
-            X_base, y_base, weights=freq, weight_type="fweight"
-        )
+        coef_fw, resid_fw, _ = solve_ols(X_base, y_base, weights=freq, weight_type="fweight")
         resolved = ResolvedSurveyDesign(
             weights=freq,
             weight_type="fweight",
@@ -1810,9 +1806,7 @@ class TestRound5Fixes:
         )
 
         # Vcov should match
-        np.testing.assert_allclose(
-            model_auto.vcov_, model_explicit.vcov_, rtol=1e-10
-        )
+        np.testing.assert_allclose(model_auto.vcov_, model_explicit.vcov_, rtol=1e-10)
 
     def test_resolve_warns_single_psu_unstratified(self):
         """P1-B: SurveyDesign.resolve() warns for single PSU unstratified."""
@@ -1898,9 +1892,7 @@ class TestRound6Fixes:
         )
 
         # Fit with conflicting explicit weights — should warn
-        reg_conflict = LinearRegression(
-            weights=different_weights, survey_design=resolved
-        )
+        reg_conflict = LinearRegression(weights=different_weights, survey_design=resolved)
         with pytest.warns(UserWarning, match="differ from survey_design"):
             reg_conflict.fit(X, y)
 
@@ -1908,12 +1900,8 @@ class TestRound6Fixes:
         reg_survey = LinearRegression(survey_design=resolved)
         reg_survey.fit(X, y)
 
-        np.testing.assert_allclose(
-            reg_conflict.coefficients_, reg_survey.coefficients_, atol=1e-14
-        )
-        np.testing.assert_allclose(
-            reg_conflict.vcov_, reg_survey.vcov_, atol=1e-14
-        )
+        np.testing.assert_allclose(reg_conflict.coefficients_, reg_survey.coefficients_, atol=1e-14)
+        np.testing.assert_allclose(reg_conflict.vcov_, reg_survey.vcov_, atol=1e-14)
 
     def test_matching_weights_no_warning(self):
         """Same array object passed as weights and in survey_design: no warning."""
@@ -1958,14 +1946,16 @@ class TestRound7Fixes:
                     y = 10.0 + c * 0.3 + np.random.randn() * 0.5
                     if period == 1 and is_treated:
                         y += 3.0
-                    rows.append({
-                        "unit": c * obs_per_cluster + i,
-                        "period": period,
-                        "treated": int(is_treated),
-                        "y": y,
-                        "cluster_id": c,
-                        "w": 1.0 + 0.2 * c,
-                    })
+                    rows.append(
+                        {
+                            "unit": c * obs_per_cluster + i,
+                            "period": period,
+                            "treated": int(is_treated),
+                            "y": y,
+                            "cluster_id": c,
+                            "w": 1.0 + 0.2 * c,
+                        }
+                    )
         return pd.DataFrame(rows)
 
     def test_cluster_injected_as_psu_did(self):
@@ -1974,13 +1964,19 @@ class TestRound7Fixes:
 
         # Fit with cluster= and weights-only survey (no PSU)
         result_inject = DifferenceInDifferences(cluster="cluster_id").fit(
-            data, "y", "treated", "period",
+            data,
+            "y",
+            "treated",
+            "period",
             survey_design=SurveyDesign(weights="w"),
         )
 
         # Fit with explicit PSU in survey design
         result_explicit = DifferenceInDifferences(cluster="cluster_id").fit(
-            data, "y", "treated", "period",
+            data,
+            "y",
+            "treated",
+            "period",
             survey_design=SurveyDesign(weights="w", psu="cluster_id"),
         )
 
@@ -1993,12 +1989,20 @@ class TestRound7Fixes:
         data = self._make_cluster_data()
 
         result_inject = TwoWayFixedEffects(cluster="cluster_id").fit(
-            data, "y", "treated", "period", unit="unit",
+            data,
+            "y",
+            "treated",
+            "period",
+            unit="unit",
             survey_design=SurveyDesign(weights="w"),
         )
 
         result_explicit = TwoWayFixedEffects(cluster="cluster_id").fit(
-            data, "y", "treated", "period", unit="unit",
+            data,
+            "y",
+            "treated",
+            "period",
+            unit="unit",
             survey_design=SurveyDesign(weights="w", psu="cluster_id"),
         )
 
@@ -2017,12 +2021,18 @@ class TestRound7Fixes:
 
         # No PSU in resolved design
         resolved_no_psu = ResolvedSurveyDesign(
-            weights=weights, weight_type="pweight",
-            strata=None, psu=None, fpc=None,
-            n_strata=0, n_psu=0, lonely_psu="remove",
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
         )
         reg_inject = LinearRegression(
-            include_intercept=False, cluster_ids=cluster_ids,
+            include_intercept=False,
+            cluster_ids=cluster_ids,
             survey_design=resolved_no_psu,
         )
         reg_inject.fit(X, y)
@@ -2030,12 +2040,18 @@ class TestRound7Fixes:
         # Explicit PSU
         codes, uniques = pd.factorize(cluster_ids)
         resolved_psu = ResolvedSurveyDesign(
-            weights=weights, weight_type="pweight",
-            strata=None, psu=codes, fpc=None,
-            n_strata=0, n_psu=len(uniques), lonely_psu="remove",
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=codes,
+            fpc=None,
+            n_strata=0,
+            n_psu=len(uniques),
+            lonely_psu="remove",
         )
         reg_explicit = LinearRegression(
-            include_intercept=False, cluster_ids=cluster_ids,
+            include_intercept=False,
+            cluster_ids=cluster_ids,
             survey_design=resolved_psu,
         )
         reg_explicit.fit(X, y)
@@ -2048,9 +2064,14 @@ class TestRound7Fixes:
 
         existing_psu = np.array([0, 0, 1, 1, 2, 2])
         resolved = ResolvedSurveyDesign(
-            weights=np.ones(6), weight_type="pweight",
-            strata=None, psu=existing_psu, fpc=None,
-            n_strata=0, n_psu=3, lonely_psu="remove",
+            weights=np.ones(6),
+            weight_type="pweight",
+            strata=None,
+            psu=existing_psu,
+            fpc=None,
+            n_strata=0,
+            n_psu=3,
+            lonely_psu="remove",
         )
         result = _inject_cluster_as_psu(resolved, np.array([10, 10, 20, 20, 30, 30]))
         assert result is resolved  # Same object — no replacement
@@ -2196,9 +2217,7 @@ class TestRound8Fixes:
         # Near-integer weights that would truncate incorrectly
         w = np.full(n, 2.0 - 1e-14)
 
-        reg = LinearRegression(
-            weights=w, weight_type="fweight", include_intercept=False
-        )
+        reg = LinearRegression(weights=w, weight_type="fweight", include_intercept=False)
         reg.fit(X, y)
         # sum(w) ≈ 20 - 1e-13; round → 20, truncate → 19
         assert reg.df_ == 20 - reg.n_params_effective_
@@ -2331,9 +2350,7 @@ class TestRound9Fixes:
                 survey_design=sd,
             )
 
-        np.testing.assert_allclose(
-            result_absorb.avg_att, result_explicit.avg_att, atol=1e-6
-        )
+        np.testing.assert_allclose(result_absorb.avg_att, result_explicit.avg_att, atol=1e-6)
 
     def test_fractional_fweight_rejected_solve_ols(self):
         """Fractional fweights raise ValueError via solve_ols."""
@@ -2735,9 +2752,9 @@ class TestRound11Fixes:
         # (normal distribution fallback, not NaN from t(df=0))
         for period, pe in result.period_effects.items():
             if np.isfinite(pe.se) and pe.se > 0:
-                assert np.isfinite(pe.p_value), (
-                    f"Period {period}: finite SE={pe.se} but p_value={pe.p_value}"
-                )
+                assert np.isfinite(
+                    pe.p_value
+                ), f"Period {period}: finite SE={pe.se} but p_value={pe.p_value}"
 
 
 class TestRound13Fixes:
@@ -2908,9 +2925,7 @@ class TestRound16Fixes:
                 "pop": [10.0, 10.0, 10.0, 20.0, 20.0, 20.0],
             }
         )
-        sd = SurveyDesign(
-            weights="w", weight_type="pweight", strata="strat", fpc="pop"
-        )
+        sd = SurveyDesign(weights="w", weight_type="pweight", strata="strat", fpc="pop")
         # Should not raise at resolve time — FPC >= n_PSU validated at vcov time
         resolved = sd.resolve(df)
         assert resolved.fpc is not None
@@ -2969,26 +2984,34 @@ class TestRound18Fixes:
 
         # Without FPC
         resolved_no_fpc = ResolvedSurveyDesign(
-            weights=weights, weight_type="pweight",
-            strata=None, psu=None, fpc=None,
-            n_strata=0, n_psu=0, lonely_psu="remove",
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
         )
         vcov_no_fpc = compute_survey_vcov(X, residuals, resolved=resolved_no_fpc)
 
         # With FPC = 100 (sampling 20 from 100)
         fpc = np.full(n, 100.0)
         resolved_fpc = ResolvedSurveyDesign(
-            weights=weights, weight_type="pweight",
-            strata=None, psu=None, fpc=fpc,
-            n_strata=0, n_psu=0, lonely_psu="remove",
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=fpc,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
         )
         vcov_fpc = compute_survey_vcov(X, residuals, resolved=resolved_fpc)
 
         # FPC should reduce variance: (1 - 20/100) = 0.8 multiplier
         assert np.all(np.diag(vcov_fpc) < np.diag(vcov_no_fpc))
-        np.testing.assert_allclose(
-            np.diag(vcov_fpc), np.diag(vcov_no_fpc) * 0.8, rtol=1e-10
-        )
+        np.testing.assert_allclose(np.diag(vcov_fpc), np.diag(vcov_no_fpc) * 0.8, rtol=1e-10)
 
     def test_weights_only_fpc_full_census_zero_vcov(self):
         """Weights-only FPC == n_obs (full census) produces zero vcov."""
@@ -3000,9 +3023,14 @@ class TestRound18Fixes:
         fpc = np.full(n, float(n))  # Full census: FPC == n_obs
 
         resolved = ResolvedSurveyDesign(
-            weights=weights, weight_type="pweight",
-            strata=None, psu=None, fpc=fpc,
-            n_strata=0, n_psu=0, lonely_psu="remove",
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=fpc,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
         )
         vcov = compute_survey_vcov(X, residuals, resolved=resolved)
         np.testing.assert_array_equal(vcov, np.zeros((2, 2)))
@@ -3017,9 +3045,14 @@ class TestRound18Fixes:
         fpc = np.full(n, 10.0)  # FPC < n_obs → invalid
 
         resolved = ResolvedSurveyDesign(
-            weights=weights, weight_type="pweight",
-            strata=None, psu=None, fpc=fpc,
-            n_strata=0, n_psu=0, lonely_psu="remove",
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=fpc,
+            n_strata=0,
+            n_psu=0,
+            lonely_psu="remove",
         )
         with pytest.raises(ValueError, match="FPC.*less than.*observations"):
             compute_survey_vcov(X, residuals, resolved=resolved)
@@ -3123,14 +3156,10 @@ class TestRound21Fixes:
             {
                 "unit": np.repeat(range(n_units), n_periods),
                 "time": np.tile(range(n_periods), n_units),
-                "treated": np.repeat(
-                    [1] * (n_units // 2) + [0] * (n_units // 2), n_periods
-                ),
+                "treated": np.repeat([1] * (n_units // 2) + [0] * (n_units // 2), n_periods),
                 "post": np.tile([0, 0, 1, 1], n_units),
                 "outcome": np.random.randn(n_units * n_periods),
-                "region": np.repeat(
-                    ["A", "B"] * (n_units // 2), n_periods
-                ),
+                "region": np.repeat(["A", "B"] * (n_units // 2), n_periods),
                 "sw": np.random.uniform(0.5, 2.0, n_units * n_periods),
             }
         )

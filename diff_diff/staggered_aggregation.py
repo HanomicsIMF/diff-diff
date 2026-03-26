@@ -427,6 +427,11 @@ class CallawaySantAnnaAggregationMixin:
         This matches R's `did` package approach for aggregation,
         which accounts for uncertainty in estimating group-size weights.
 
+        When a full survey design (strata/PSU/FPC) is available in
+        ``precomputed['resolved_survey']``, the design-based variance
+        :func:`compute_survey_if_variance` is used instead of the simple
+        ``sum(psi^2)`` formula.
+
         Formula (matching R's did::aggte):
             agg_inf_i = Σ_k w_k × inf_i_k + wif_i × ATT_k
             se = sqrt(mean(agg_inf^2) / n)
@@ -462,6 +467,23 @@ class CallawaySantAnnaAggregationMixin:
         # Check for NaN propagation from non-finite WIF
         if not np.all(np.isfinite(psi_total)):
             return np.nan
+
+        # Use design-based variance when full survey design is available
+        # Use unit-level resolved survey (panel IF is indexed by unit, not obs)
+        resolved_survey = (
+            precomputed.get("resolved_survey_unit") if precomputed is not None else None
+        )
+        if resolved_survey is not None and (
+            resolved_survey.strata is not None
+            or resolved_survey.psu is not None
+            or resolved_survey.fpc is not None
+        ):
+            from diff_diff.survey import compute_survey_if_variance
+
+            variance = compute_survey_if_variance(psi_total, resolved_survey)
+            if np.isnan(variance):
+                return np.nan
+            return np.sqrt(max(variance, 0.0))
 
         variance = np.sum(psi_total**2)
         return np.sqrt(variance)
@@ -623,17 +645,19 @@ class CallawaySantAnnaAggregationMixin:
         influence_func_info: Dict,
         groups: List[Any],
         precomputed: Optional["PrecomputedData"] = None,
+        df: Optional[pd.DataFrame] = None,
+        unit: Optional[str] = None,
     ) -> Dict[Any, Dict[str, Any]]:
         """
         Aggregate effects by treatment cohort.
 
         Computes average effect for each cohort across all post-treatment periods.
 
-        Standard errors use influence function aggregation to account for
-        covariances across time periods within a cohort.
+        Standard errors use influence function aggregation with WIF adjustment
+        to account for covariances across time periods within a cohort.
+        When a full survey design is present in precomputed, uses design-based
+        variance via compute_survey_if_variance().
         """
-        n_units = len(precomputed["all_units"]) if precomputed is not None else None
-
         # Collect all group aggregation data first
         group_data_list = []
         for g in groups:
@@ -660,8 +684,11 @@ class CallawaySantAnnaAggregationMixin:
             weights = np.ones(len(effs)) / len(effs)
             agg_effect = np.sum(weights * effs)
 
-            agg_se = self._compute_aggregated_se(
-                gt_pairs, weights, influence_func_info, n_units=n_units
+            # Use WIF-adjusted SE (with survey design support)
+            groups_for_gt = np.array([gg for (gg, t) in gt_pairs])
+            agg_se = self._compute_aggregated_se_with_wif(
+                gt_pairs, weights, effs, groups_for_gt,
+                influence_func_info, df, unit, precomputed
             )
             group_data_list.append((g, agg_effect, agg_se, len(g_effects)))
 

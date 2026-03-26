@@ -502,19 +502,31 @@ class SunAbraham:
             raise ValueError(f"Missing columns: {missing}")
 
         # Resolve survey design if provided
-        from diff_diff.survey import _resolve_effective_cluster, _resolve_survey_for_fit
+        from diff_diff.survey import (
+            _resolve_effective_cluster,
+            _resolve_survey_for_fit,
+            _validate_unit_constant_survey,
+        )
 
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
 
-        # Reject bootstrap + survey (pairs bootstrap with survey weights needs Phase 5)
-        if self.n_bootstrap > 0 and resolved_survey is not None:
-            raise NotImplementedError(
-                "Bootstrap inference with survey weights is not yet supported "
-                "for SunAbraham. Use analytical inference (n_bootstrap=0) with "
-                "survey_design for design-based standard errors."
-            )
+        # Validate survey columns are constant within units (required for
+        # unit-level collapse in Rao-Wu bootstrap)
+        if resolved_survey is not None:
+            _validate_unit_constant_survey(data, unit, survey_design)
+
+        # Bootstrap + survey supported via Rao-Wu rescaled bootstrap.
+        # Determine Rao-Wu eligibility from the *original* survey_design
+        # (before cluster-as-PSU injection which adds PSU to weights-only designs).
+        _use_rao_wu = False
+        if survey_design is not None and resolved_survey is not None:
+            _has_explicit_strata = getattr(survey_design, "strata", None) is not None
+            _has_explicit_psu = getattr(survey_design, "psu", None) is not None
+            _has_explicit_fpc = getattr(survey_design, "fpc", None) is not None
+            if _has_explicit_strata or _has_explicit_psu or _has_explicit_fpc:
+                _use_rao_wu = True
 
         # Create working copy
         df = data.copy()
@@ -687,6 +699,11 @@ class SunAbraham:
                 cluster_var=cluster_var,
                 original_event_study=event_study_effects,
                 original_overall_att=overall_att,
+                resolved_survey=resolved_survey,
+                survey_weights=survey_weights,
+                survey_weight_type=survey_weight_type,
+                survey_weight_col=survey_weight_col,
+                use_rao_wu=_use_rao_wu,
             )
 
             # Update results with bootstrap inference
@@ -1073,11 +1090,18 @@ class SunAbraham:
         cluster_var: str,
         original_event_study: Dict[int, Dict[str, Any]],
         original_overall_att: float,
+        resolved_survey: object = None,
+        survey_weights: Optional[np.ndarray] = None,
+        survey_weight_type: str = "pweight",
+        survey_weight_col: Optional[str] = None,
+        use_rao_wu: bool = False,
     ) -> SABootstrapResults:
         """
-        Run pairs bootstrap for inference.
+        Run bootstrap for inference.
 
-        Resamples units with replacement and re-estimates the full model.
+        When use_rao_wu is True (survey design with explicit strata/PSU/FPC),
+        uses Rao-Wu rescaled bootstrap (weight perturbation). Otherwise, uses
+        pairs bootstrap (resampling units with replacement).
         """
         if self.n_bootstrap < 50:
             warnings.warn(
@@ -1088,6 +1112,27 @@ class SunAbraham:
             )
 
         rng = np.random.default_rng(self.seed)
+
+        if use_rao_wu:
+            return self._run_rao_wu_bootstrap(
+                df=df,
+                outcome=outcome,
+                unit=unit,
+                time=time,
+                first_treat=first_treat,
+                treatment_groups=treatment_groups,
+                rel_periods_to_estimate=rel_periods_to_estimate,
+                covariates=covariates,
+                cluster_var=cluster_var,
+                original_event_study=original_event_study,
+                original_overall_att=original_overall_att,
+                resolved_survey=resolved_survey,
+                survey_weight_type=survey_weight_type,
+                survey_weight_col=survey_weight_col,
+                rng=rng,
+            )
+
+        # --- Pairs bootstrap (non-survey or weights-only survey) ---
 
         # Get unique units
         all_units = df[unit].unique()
@@ -1122,6 +1167,11 @@ class SunAbraham:
             df_b["_never_treated"] = (df_b[first_treat] == 0) | (df_b[first_treat] == np.inf)
 
             try:
+                # Extract survey weights from resampled data if present
+                boot_survey_weights = None
+                if survey_weight_col is not None and survey_weight_col in df_b.columns:
+                    boot_survey_weights = df_b[survey_weight_col].values
+
                 # Re-estimate saturated regression
                 (
                     cohort_effects_b,
@@ -1138,6 +1188,9 @@ class SunAbraham:
                     rel_periods_to_estimate,
                     covariates,
                     cluster_var,
+                    survey_weights=boot_survey_weights,
+                    survey_weight_type=survey_weight_type,
+                    resolved_survey=None,  # Use explicit weights, not stale design
                 )
 
                 # Compute IW effects for this bootstrap sample
@@ -1151,6 +1204,7 @@ class SunAbraham:
                     cohort_ses_b,
                     vcov_b,
                     coef_map_b,
+                    survey_weight_col=survey_weight_col,
                 )
 
                 # Store bootstrap estimates
@@ -1169,6 +1223,7 @@ class SunAbraham:
                     cohort_weights_b,
                     vcov_b,
                     coef_map_b,
+                    survey_weight_col=survey_weight_col,
                 )
                 bootstrap_overall[b] = overall_b
 
@@ -1212,6 +1267,240 @@ class SunAbraham:
         return SABootstrapResults(
             n_bootstrap=self.n_bootstrap,
             weight_type="pairs",
+            alpha=self.alpha,
+            overall_att_se=overall_se,
+            overall_att_ci=overall_ci,
+            overall_att_p_value=overall_p,
+            event_study_ses=event_study_ses,
+            event_study_cis=event_study_cis,
+            event_study_p_values=event_study_p_values,
+            bootstrap_distribution=bootstrap_overall,
+        )
+
+    def _run_rao_wu_bootstrap(
+        self,
+        df: pd.DataFrame,
+        outcome: str,
+        unit: str,
+        time: str,
+        first_treat: str,
+        treatment_groups: List[Any],
+        rel_periods_to_estimate: List[int],
+        covariates: Optional[List[str]],
+        cluster_var: str,
+        original_event_study: Dict[int, Dict[str, Any]],
+        original_overall_att: float,
+        resolved_survey: object,
+        survey_weight_type: str,
+        survey_weight_col: Optional[str],
+        rng: np.random.Generator,
+    ) -> SABootstrapResults:
+        """
+        Run Rao-Wu rescaled bootstrap for survey-aware inference.
+
+        Instead of physically resampling units, each iteration generates
+        rescaled observation weights via Rao-Wu (1988) weight perturbation.
+        The rescaled weights feed into the existing WLS regression path.
+        """
+        from diff_diff.bootstrap_utils import generate_rao_wu_weights
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        # Column name for rescaled weights in the bootstrap DataFrame
+        _rw_col = "__rw_boot_weight"
+
+        # Collapse survey design to unit level so Rao-Wu respects panel
+        # structure: each unit gets one set of weights regardless of how
+        # many time periods it has.  Without this, when there is no
+        # explicit PSU, generate_rao_wu_weights treats each observation as
+        # its own PSU and different obs of the same unit can get different
+        # weights, breaking panel semantics.
+        all_units = df[unit].unique()
+
+        weights_unit = (
+            pd.Series(resolved_survey.weights, index=df.index)
+            .groupby(df[unit])
+            .first()
+            .reindex(all_units)
+            .values
+            .astype(np.float64)
+        )
+
+        strata_unit = None
+        if resolved_survey.strata is not None:
+            strata_unit = (
+                pd.Series(resolved_survey.strata, index=df.index)
+                .groupby(df[unit])
+                .first()
+                .reindex(all_units)
+                .values
+            )
+
+        psu_unit = None
+        if resolved_survey.psu is not None:
+            psu_unit = (
+                pd.Series(resolved_survey.psu, index=df.index)
+                .groupby(df[unit])
+                .first()
+                .reindex(all_units)
+                .values
+            )
+
+        fpc_unit = None
+        if resolved_survey.fpc is not None:
+            fpc_unit = (
+                pd.Series(resolved_survey.fpc, index=df.index)
+                .groupby(df[unit])
+                .first()
+                .reindex(all_units)
+                .values
+            )
+
+        unit_resolved = ResolvedSurveyDesign(
+            weights=weights_unit,
+            weight_type=resolved_survey.weight_type,
+            strata=strata_unit,
+            psu=psu_unit,
+            fpc=fpc_unit,
+            n_strata=resolved_survey.n_strata,
+            n_psu=resolved_survey.n_psu,
+            lonely_psu=resolved_survey.lonely_psu,
+        )
+
+        # Build unit -> row indices mapping for expanding unit-level weights
+        unit_to_rows = {u: df.index[df[unit] == u].values for u in all_units}
+        unit_order = {u: i for i, u in enumerate(all_units)}
+
+        # Store bootstrap samples
+        rel_periods = sorted(original_event_study.keys())
+        bootstrap_effects = {e: np.full(self.n_bootstrap, np.nan) for e in rel_periods}
+        bootstrap_overall = np.full(self.n_bootstrap, np.nan)
+
+        for b in range(self.n_bootstrap):
+            try:
+                # Generate Rao-Wu rescaled weights at unit level
+                unit_boot_weights = generate_rao_wu_weights(unit_resolved, rng)
+
+                # Expand unit-level weights to observation level
+                boot_weights = np.empty(len(df), dtype=np.float64)
+                for u, idx in unit_to_rows.items():
+                    boot_weights[idx] = unit_boot_weights[unit_order[u]]
+
+                # Drop observations with zero weight (PSUs not drawn in this
+                # iteration) to avoid NaN/Inf in within-transformation.
+                positive_mask = boot_weights > 0
+                if positive_mask.sum() < 2:
+                    # Too few observations with positive weight
+                    raise ValueError("Rao-Wu iteration produced < 2 positive weights")
+
+                df_b = df[positive_mask].reset_index(drop=True)
+                boot_weights_b = boot_weights[positive_mask]
+                df_b[_rw_col] = boot_weights_b
+
+                # Verify we still have both treated and control observations
+                has_treated = (df_b[first_treat] > 0).any()
+                has_control = ((df_b[first_treat] == 0) | (df_b[first_treat] == np.inf)).any()
+                if not has_treated or not has_control:
+                    raise ValueError("Rao-Wu iteration dropped all treated or control units")
+
+                # Re-estimate saturated regression with rescaled weights.
+                # Pass resolved_survey=None since inference comes from the
+                # bootstrap distribution, not from within-iteration vcov.
+                (
+                    cohort_effects_b,
+                    cohort_ses_b,
+                    vcov_b,
+                    coef_map_b,
+                ) = self._fit_saturated_regression(
+                    df_b,
+                    outcome,
+                    unit,
+                    time,
+                    first_treat,
+                    treatment_groups,
+                    rel_periods_to_estimate,
+                    covariates,
+                    cluster_var,
+                    survey_weights=boot_weights_b,
+                    survey_weight_type=survey_weight_type,
+                    resolved_survey=None,
+                )
+
+                # Compute IW effects using rescaled weights for cohort shares
+                event_study_b, cohort_weights_b = self._compute_iw_effects(
+                    df_b,
+                    unit,
+                    first_treat,
+                    treatment_groups,
+                    rel_periods_to_estimate,
+                    cohort_effects_b,
+                    cohort_ses_b,
+                    vcov_b,
+                    coef_map_b,
+                    survey_weight_col=_rw_col,
+                )
+
+                # Store bootstrap estimates
+                for e in rel_periods:
+                    if e in event_study_b:
+                        bootstrap_effects[e][b] = event_study_b[e]["effect"]
+                    else:
+                        bootstrap_effects[e][b] = original_event_study[e]["effect"]
+
+                # Compute overall ATT using rescaled weights
+                overall_b, _ = self._compute_overall_att(
+                    df_b,
+                    first_treat,
+                    event_study_b,
+                    cohort_effects_b,
+                    cohort_weights_b,
+                    vcov_b,
+                    coef_map_b,
+                    survey_weight_col=_rw_col,
+                )
+                bootstrap_overall[b] = overall_b
+
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                # Failed draws stored as NaN (not original estimate) to avoid
+                # shrinking bootstrap dispersion.  compute_effect_bootstrap_stats
+                # handles NaN draws via nanstd.
+                warnings.warn(
+                    f"Bootstrap iteration {b} failed: {exc}. Storing NaN.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                for e in rel_periods:
+                    bootstrap_effects[e][b] = np.nan
+                bootstrap_overall[b] = np.nan
+
+        # Compute bootstrap statistics
+        event_study_ses = {}
+        event_study_cis = {}
+        event_study_p_values = {}
+
+        for e in rel_periods:
+            boot_dist = bootstrap_effects[e]
+            original_effect = original_event_study[e]["effect"]
+            se, ci, p_value = compute_effect_bootstrap_stats(
+                original_effect,
+                boot_dist,
+                alpha=self.alpha,
+                context=f"event study e={e}",
+            )
+            event_study_ses[e] = se
+            event_study_cis[e] = ci
+            event_study_p_values[e] = p_value
+
+        # Overall ATT statistics
+        overall_se, overall_ci, overall_p = compute_effect_bootstrap_stats(
+            original_overall_att,
+            bootstrap_overall,
+            alpha=self.alpha,
+            context="overall ATT",
+        )
+
+        return SABootstrapResults(
+            n_bootstrap=self.n_bootstrap,
+            weight_type="rao_wu",
             alpha=self.alpha,
             overall_att_se=overall_se,
             overall_att_ci=overall_ci,
