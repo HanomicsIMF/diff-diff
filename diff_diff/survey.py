@@ -444,6 +444,15 @@ class SurveyDesign:
                 "Subpopulation mask contains string values. "
                 "Provide a boolean or numeric (0/1) mask."
             )
+        # Validate numeric masks: only {0, 1} allowed (not {1, 2}, etc.)
+        if hasattr(raw_mask, 'dtype') and raw_mask.dtype.kind in ('i', 'u', 'f'):
+            unique_vals = set(np.unique(raw_mask[np.isfinite(raw_mask)]).tolist())
+            if not unique_vals.issubset({0, 1, 0.0, 1.0, True, False}):
+                raise ValueError(
+                    f"Subpopulation mask contains non-binary numeric values "
+                    f"{unique_vals - {0, 1, 0.0, 1.0}}. "
+                    f"Provide a boolean or numeric (0/1) mask."
+                )
         mask_arr = raw_mask.astype(bool)
 
         if len(mask_arr) != len(data):

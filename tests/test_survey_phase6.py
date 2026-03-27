@@ -759,6 +759,15 @@ class TestReplicateWeightVariance:
         with pytest.raises(ValueError, match="string"):
             sd.subpopulation(basic_did_data, mask)
 
+    def test_nonbinary_numeric_mask_rejected(self, basic_did_data):
+        """Subpopulation mask with non-binary numeric codes should be rejected."""
+        sd = SurveyDesign(weights="weight")
+        # Coded domain column {1, 2} — not boolean, should fail
+        mask = np.ones(len(basic_did_data), dtype=int)
+        mask[:10] = 2
+        with pytest.raises(ValueError, match="non-binary"):
+            sd.subpopulation(basic_did_data, mask)
+
     def test_replicate_if_no_divide_by_zero_warning(self):
         """compute_replicate_if_variance should not warn on zero weights."""
         from diff_diff.survey import compute_replicate_if_variance, ResolvedSurveyDesign

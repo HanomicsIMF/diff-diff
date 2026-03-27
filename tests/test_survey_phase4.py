@@ -202,7 +202,7 @@ class TestWeightedSolveLogit:
         y = (X @ [0.5, -0.5] + rng.randn(n) > 0).astype(float)
         weights = np.ones(n)
         weights[0] = -1.0
-        with pytest.raises(ValueError, match="strictly positive"):
+        with pytest.raises(ValueError, match="non-negative"):
             solve_logit(X, y, weights=weights)
 
     def test_wrong_shape_weights_raises(self):
