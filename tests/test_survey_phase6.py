@@ -620,6 +620,71 @@ class TestReplicateWeightVariance:
             f"{v_analytical:.6f}"
         )
 
+    def test_replicate_if_matches_survey_if_variance(self):
+        """Replicate IF variance should approximate compute_survey_if_variance
+        when JK1 replicates match the PSU structure."""
+        from diff_diff.survey import (
+            compute_replicate_if_variance,
+            compute_survey_if_variance,
+            ResolvedSurveyDesign,
+        )
+
+        np.random.seed(123)
+        n = 60
+        n_psu = 15
+        psu = np.repeat(np.arange(n_psu), n // n_psu)
+        psi = np.random.randn(n) * 0.1
+        weights = np.ones(n)
+
+        # TSL variance with PSU clustering
+        resolved_tsl = ResolvedSurveyDesign(
+            weights=weights, weight_type="pweight",
+            strata=None, psu=psu, fpc=None,
+            n_strata=0, n_psu=n_psu, lonely_psu="remove",
+        )
+        v_tsl = compute_survey_if_variance(psi, resolved_tsl)
+
+        # JK1 replicates: delete one PSU at a time, rescale remaining
+        rep_arr = np.zeros((n, n_psu))
+        for r in range(n_psu):
+            w_r = weights.copy()
+            w_r[psu == r] = 0.0
+            w_r[psu != r] *= n_psu / (n_psu - 1)
+            rep_arr[:, r] = w_r
+        # Normalize each column to sum=n (matching resolve() normalization)
+        for c in range(n_psu):
+            cs = rep_arr[:, c].sum()
+            if cs > 0:
+                rep_arr[:, c] *= n / cs
+
+        resolved_rep = ResolvedSurveyDesign(
+            weights=weights, weight_type="pweight",
+            strata=None, psu=None, fpc=None,
+            n_strata=0, n_psu=0, lonely_psu="remove",
+            replicate_weights=rep_arr,
+            replicate_method="JK1",
+            n_replicates=n_psu,
+        )
+        v_rep = compute_replicate_if_variance(psi, resolved_rep)
+
+        # Should be in the same ballpark (within 50% — different estimators
+        # of the same quantity)
+        assert v_rep > 0 and v_tsl > 0
+        ratio = v_rep / v_tsl
+        assert 0.5 < ratio < 2.0, (
+            f"Replicate IF var ({v_rep:.6f}) vs TSL IF var ({v_tsl:.6f}) "
+            f"ratio={ratio:.2f}, expected within [0.5, 2.0]"
+        )
+
+    def test_all_zero_weights_rejected_by_solve_ols(self):
+        """solve_ols should reject all-zero weight vectors."""
+        from diff_diff.linalg import solve_ols
+
+        X = np.column_stack([np.ones(10), np.random.randn(10)])
+        y = np.random.randn(10)
+        with pytest.raises(ValueError, match="sum to zero"):
+            solve_ols(X, y, weights=np.zeros(10))
+
 
 # =============================================================================
 # Estimator-Level Replicate Weight Tests

@@ -1258,8 +1258,8 @@ def compute_replicate_vcov(
                 check_finite=False,
             )
             coef_reps[r] = coef_r
-        except Exception:
-            pass  # NaN row for singular replicate solve
+        except (np.linalg.LinAlgError, ValueError):
+            pass  # NaN row for singular/degenerate replicate solve
 
     # Remove replicates with NaN coefficients
     valid = np.all(np.isfinite(coef_reps), axis=1)
@@ -1328,18 +1328,21 @@ def compute_replicate_if_variance(
     method = resolved.replicate_method
     R = resolved.n_replicates
 
-    # Use weighted sums (not means) — psi is on contribution scale where
-    # V_analytical = sum(psi^2).  Dividing by sum(w_r) would introduce an
-    # extra 1/n factor that understates variance.
+    # Match the contract of compute_survey_if_variance(): psi is accepted
+    # as-is (the combined IF/WIF object), with NO extra weight multiplication.
+    # Replicate contrasts are formed by rescaling each unit's contribution
+    # by the ratio w_r/w_full (Rao-Wu reweighting).
     full_weights = resolved.weights
-    theta_full = float(np.sum(full_weights * psi))
+    theta_full = float(np.sum(psi))
 
-    # Compute replicate estimates (weighted sums)
+    # Compute replicate estimates via weight-ratio rescaling
     theta_reps = np.full(R, np.nan)
     for r in range(R):
         w_r = rep_weights[:, r]
         if np.any(w_r > 0):
-            theta_reps[r] = np.sum(w_r * psi)
+            # Rescale: psi_i * (w_r_i / w_full_i) for each unit
+            ratio = np.where(full_weights > 0, w_r / full_weights, 0.0)
+            theta_reps[r] = np.sum(ratio * psi)
 
     valid = np.isfinite(theta_reps)
     if not np.any(valid):

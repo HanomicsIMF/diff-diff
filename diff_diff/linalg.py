@@ -402,6 +402,11 @@ def _validate_weights(weights, weight_type, n):
             raise ValueError("Weights contain Inf values")
         if np.any(weights < 0):
             raise ValueError("Weights must be non-negative")
+        if np.sum(weights) <= 0:
+            raise ValueError(
+                "Weights sum to zero — no observations have positive weight. "
+                "Cannot fit a model on an empty effective sample."
+            )
         if weight_type == "fweight":
             fractional = weights - np.round(weights)
             if np.any(np.abs(fractional) > 1e-10):
@@ -1168,6 +1173,10 @@ def solve_logit(
             raise ValueError("weights contain Inf values")
         if np.any(weights < 0):
             raise ValueError("weights must be non-negative")
+        if np.sum(weights) <= 0:
+            raise ValueError(
+                "weights sum to zero — no observations have positive weight"
+            )
 
     # Validate rank_deficient_action
     valid_actions = {"warn", "error", "silent"}
