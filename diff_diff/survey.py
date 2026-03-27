@@ -520,6 +520,10 @@ class SurveyDesign:
             replicate_method=self.replicate_method,
             fay_rho=self.fay_rho,
             replicate_strata=self.replicate_strata,
+            combined_weights=self.combined_weights,
+            replicate_scale=self.replicate_scale,
+            replicate_rscales=self.replicate_rscales,
+            mse=self.mse,
         )
 
         return new_design, data_out
@@ -611,6 +615,10 @@ class ResolvedSurveyDesign:
             fay_rho=self.fay_rho,
             n_replicates=self.n_replicates,
             replicate_strata=self.replicate_strata,
+            combined_weights=self.combined_weights,
+            replicate_scale=self.replicate_scale,
+            replicate_rscales=self.replicate_rscales,
+            mse=self.mse,
         )
 
     @property

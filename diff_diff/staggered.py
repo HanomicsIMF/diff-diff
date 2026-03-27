@@ -407,6 +407,10 @@ class CallawaySantAnna(
             fay_rho=resolved_survey.fay_rho,
             n_replicates=resolved_survey.n_replicates,
             replicate_strata=resolved_survey.replicate_strata,
+            combined_weights=resolved_survey.combined_weights,
+            replicate_scale=resolved_survey.replicate_scale,
+            replicate_rscales=resolved_survey.replicate_rscales,
+            mse=resolved_survey.mse,
         )
 
     def _precompute_structures(
