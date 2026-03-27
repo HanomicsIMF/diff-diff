@@ -1206,6 +1206,15 @@ def solve_logit(
                 f"Only {n_pos} positive-weight observation(s) for "
                 f"{X_eff.shape[1]} parameters. Cannot identify logistic model."
             )
+        # Check rank deficiency on positive-weight rows — full design may
+        # be full rank due to zero-weight padding
+        eff_rank_info = _detect_rank_deficiency(X_eff)
+        if len(eff_rank_info[1]) > 0:
+            raise ValueError(
+                f"Effective (positive-weight) sample is rank-deficient: "
+                f"{len(eff_rank_info[1])} linearly dependent column(s). "
+                f"Cannot identify logistic model on this subpopulation."
+            )
 
     # Check rank deficiency once before iterating
     rank_info = _detect_rank_deficiency(X_with_intercept)

@@ -712,6 +712,26 @@ class TestReplicateWeightVariance:
         with pytest.raises(ValueError, match="Cannot identify"):
             solve_logit(X, y, weights=w)
 
+    def test_solve_logit_rejects_rank_deficient_positive_weight_subset(self):
+        """solve_logit should reject when positive-weight subset is rank-deficient
+        even if full design is full rank."""
+        from diff_diff.linalg import solve_logit
+
+        n = 20
+        # Full design: intercept + x1 + x2, full rank
+        x1 = np.random.randn(n)
+        x2 = np.random.randn(n)
+        X = np.column_stack([x1, x2])
+        y = np.array([1] * 10 + [0] * 10, dtype=float)
+        w = np.zeros(n)
+        # Give weight to 6 obs, but make x2 constant among them
+        # (collinear with intercept after subsetting)
+        for i in [0, 1, 2, 10, 11, 12]:
+            w[i] = 1.0
+            X[i, 1] = 5.0  # x2 constant → rank deficient in subset
+        with pytest.raises(ValueError, match="rank-deficient"):
+            solve_logit(X, y, weights=w)
+
     def test_replicate_if_no_divide_by_zero_warning(self):
         """compute_replicate_if_variance should not warn on zero weights."""
         from diff_diff.survey import compute_replicate_if_variance, ResolvedSurveyDesign
