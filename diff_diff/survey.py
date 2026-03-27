@@ -411,13 +411,31 @@ class SurveyDesign:
         """
         # Resolve mask to boolean array
         if callable(mask):
-            mask_arr = np.asarray(mask(data), dtype=bool)
+            raw_mask = np.asarray(mask(data))
         elif isinstance(mask, str):
             if mask not in data.columns:
                 raise ValueError(f"Mask column '{mask}' not found in data")
-            mask_arr = np.asarray(data[mask].values, dtype=bool)
+            raw_mask = np.asarray(data[mask].values)
         else:
-            mask_arr = np.asarray(mask, dtype=bool)
+            raw_mask = np.asarray(mask)
+
+        # Validate: reject NaN/missing values before bool coercion
+        if raw_mask.dtype.kind == 'f' and np.any(np.isnan(raw_mask)):
+            raise ValueError(
+                "Subpopulation mask contains NaN values. "
+                "Provide a boolean mask with no missing values."
+            )
+        if hasattr(raw_mask, 'dtype') and raw_mask.dtype == object:
+            try:
+                # Check for pd.NA or None
+                if any(v is None or (hasattr(v, '__bool__') is False) for v in raw_mask):
+                    raise ValueError(
+                        "Subpopulation mask contains None/NA values. "
+                        "Provide a boolean mask with no missing values."
+                    )
+            except (TypeError, ValueError):
+                pass
+        mask_arr = raw_mask.astype(bool)
 
         if len(mask_arr) != len(data):
             raise ValueError(

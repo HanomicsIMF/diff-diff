@@ -919,3 +919,30 @@ class TestEstimatorReplicateWeights:
         assert np.isfinite(result.att)
         assert np.isfinite(result.se)
         assert result.survey_metadata is not None
+
+    def test_sun_abraham_replicate_rejected(self):
+        """SunAbraham should reject replicate-weight survey designs."""
+        from diff_diff import SunAbraham
+
+        data, rep_cols = self._make_staggered_replicate_data()
+        sd = SurveyDesign(
+            weights="weight", replicate_weights=rep_cols,
+            replicate_method="JK1",
+        )
+        with pytest.raises(NotImplementedError, match="SunAbraham"):
+            SunAbraham(n_bootstrap=0).fit(
+                data, "outcome", "unit", "time", "first_treat",
+                survey_design=sd,
+            )
+
+
+class TestSubpopulationMaskValidation:
+    """Tests for subpopulation mask edge cases."""
+
+    def test_nan_mask_rejected(self, basic_did_data):
+        """Subpopulation mask with NaN should be rejected."""
+        sd = SurveyDesign(weights="weight")
+        nan_mask = np.ones(len(basic_did_data))
+        nan_mask[0] = np.nan
+        with pytest.raises(ValueError, match="NaN"):
+            sd.subpopulation(basic_did_data, nan_mask)

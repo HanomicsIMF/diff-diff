@@ -501,6 +501,18 @@ class SunAbraham:
         if resolved_survey is not None:
             _validate_unit_constant_survey(data, unit, survey_design)
 
+        # Reject replicate-weight designs — SunAbraham's weighted
+        # within-transformation bakes survey weights into X and y, so
+        # replicate refits on the already-transformed design are incorrect.
+        # Full estimator-level replicate refits are not yet implemented.
+        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
+            raise NotImplementedError(
+                "SunAbraham does not yet support replicate-weight survey designs. "
+                "The weighted within-transformation must be recomputed for each "
+                "replicate, which requires estimator-level replicate refits. "
+                "Use a TSL-based survey design (strata/psu/fpc) instead."
+            )
+
         # Bootstrap + survey supported via Rao-Wu rescaled bootstrap.
         # Determine Rao-Wu eligibility from the *original* survey_design
         # (before cluster-as-PSU injection which adds PSU to weights-only designs).
