@@ -1096,7 +1096,7 @@ class TripleDifference:
                     psi_rep = inf_func / w_sum
                 else:
                     psi_rep = resolved_survey.weights * inf_func / w_sum
-                variance = compute_replicate_if_variance(psi_rep, resolved_survey)
+                variance, _nv = compute_replicate_if_variance(psi_rep, resolved_survey)
                 se = float(np.sqrt(max(variance, 0.0))) if np.isfinite(variance) else np.nan
             else:
                 from diff_diff.survey import compute_survey_vcov

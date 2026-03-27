@@ -453,7 +453,7 @@ class TestReplicateWeightVariance:
             X, y, weights=resolved.weights, weight_type="pweight",
         )
 
-        vcov = compute_replicate_vcov(X, y, coef, resolved)
+        vcov, _nv = compute_replicate_vcov(X, y, coef, resolved)
         assert np.all(np.isfinite(np.diag(vcov)))
 
     def test_fay_inflates_over_brr(self, replicate_data):
@@ -471,14 +471,14 @@ class TestReplicateWeightVariance:
         )
         resolved_brr = sd_brr.resolve(data)
         coef, _, _ = solve_ols(X, y, weights=resolved_brr.weights)
-        vcov_brr = compute_replicate_vcov(X, y, coef, resolved_brr)
+        vcov_brr, _nv = compute_replicate_vcov(X, y, coef, resolved_brr)
 
         sd_fay = SurveyDesign(
             weights="weight", replicate_weights=rep_cols,
             replicate_method="Fay", fay_rho=0.5,
         )
         resolved_fay = sd_fay.resolve(data)
-        vcov_fay = compute_replicate_vcov(X, y, coef, resolved_fay)
+        vcov_fay, _nv = compute_replicate_vcov(X, y, coef, resolved_fay)
 
         # Fay variance = BRR variance / (1-rho)^2 > BRR variance
         assert np.all(np.diag(vcov_fay) > np.diag(vcov_brr))
@@ -534,7 +534,7 @@ class TestReplicateWeightVariance:
 
         # Synthetic influence function
         psi = np.random.randn(len(data)) * 0.1
-        var = compute_replicate_if_variance(psi, resolved)
+        var, _nv = compute_replicate_if_variance(psi, resolved)
         assert np.isfinite(var)
         assert var >= 0
 
@@ -583,7 +583,7 @@ class TestReplicateWeightVariance:
         X = np.column_stack([np.ones(len(data)), data["x"].values])
 
         coef, _, _ = solve_ols(X, y, weights=resolved.weights)
-        vcov = compute_replicate_vcov(X, y, coef, resolved)
+        vcov, _nv = compute_replicate_vcov(X, y, coef, resolved)
         assert np.all(np.isfinite(np.diag(vcov)))
         assert np.all(np.diag(vcov) > 0)
 
@@ -611,7 +611,7 @@ class TestReplicateWeightVariance:
         )
         resolved = sd.resolve(data)
 
-        v_rep = compute_replicate_if_variance(psi, resolved)
+        v_rep, _nv = compute_replicate_if_variance(psi, resolved)
         v_analytical = float(np.sum(psi**2))
 
         # JK1 gives (n-1)/n * sum(...) which should approximate sum(psi^2)
@@ -665,7 +665,7 @@ class TestReplicateWeightVariance:
             replicate_method="JK1",
             n_replicates=n_psu,
         )
-        v_rep = compute_replicate_if_variance(psi, resolved_rep)
+        v_rep, _nv = compute_replicate_if_variance(psi, resolved_rep)
 
         # Should be in the same ballpark (within 50% — different estimators
         # of the same quantity)
@@ -795,7 +795,7 @@ class TestReplicateWeightVariance:
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             # Should NOT raise RuntimeWarning for divide by zero
-            v = compute_replicate_if_variance(psi, resolved)
+            v, _nv = compute_replicate_if_variance(psi, resolved)
             assert np.isfinite(v)
 
 

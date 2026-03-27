@@ -643,7 +643,7 @@ class ContinuousDiD:
 
                                 # Score-scale: psi = w * if_es (matches TSL bread)
                                 psi_es = unit_resolved_es.weights * if_es
-                                variance = compute_replicate_if_variance(psi_es, unit_resolved_es)
+                                variance, _nv = compute_replicate_if_variance(psi_es, unit_resolved_es)
                                 es_se = float(np.sqrt(max(variance, 0.0))) if np.isfinite(variance) else np.nan
                             else:
                                 X_ones_es = np.ones((n_units, 1))
@@ -1240,7 +1240,7 @@ class ContinuousDiD:
 
                 def _rep_se(if_vals):
                     psi_scaled = _w_rep * if_vals
-                    v = compute_replicate_if_variance(psi_scaled, unit_resolved)
+                    v, _nv = compute_replicate_if_variance(psi_scaled, unit_resolved)
                     return float(np.sqrt(max(v, 0.0))) if np.isfinite(v) else np.nan
 
                 overall_att_se = _rep_se(if_att_glob)

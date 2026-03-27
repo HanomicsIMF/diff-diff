@@ -1802,7 +1802,7 @@ class LinearRegression:
                 if np.any(nan_mask):
                     kept_cols = np.where(~nan_mask)[0]
                     if len(kept_cols) > 0:
-                        vcov_reduced = compute_replicate_vcov(
+                        vcov_reduced, _n_valid_rep = compute_replicate_vcov(
                             X[:, kept_cols], y, coefficients[kept_cols],
                             _effective_survey_design,
                             weight_type=self.weight_type,
@@ -1810,11 +1810,14 @@ class LinearRegression:
                         vcov = _expand_vcov_with_nan(vcov_reduced, X.shape[1], kept_cols)
                     else:
                         vcov = np.full((X.shape[1], X.shape[1]), np.nan)
+                        _n_valid_rep = 0
                 else:
-                    vcov = compute_replicate_vcov(
+                    vcov, _n_valid_rep = compute_replicate_vcov(
                         X, y, coefficients, _effective_survey_design,
                         weight_type=self.weight_type,
                     )
+                # Store effective replicate df (n_valid - 1) for later use
+                self._replicate_df = _n_valid_rep - 1 if _n_valid_rep > 1 else None
             else:
                 from diff_diff.survey import compute_survey_vcov
 
@@ -1858,6 +1861,9 @@ class LinearRegression:
 
             if isinstance(_effective_survey_design, ResolvedSurveyDesign):
                 self.survey_df_ = _effective_survey_design.df_survey
+                # Override with effective replicate df if available
+                if hasattr(self, '_replicate_df') and self._replicate_df is not None:
+                    self.survey_df_ = self._replicate_df
 
         return self
 

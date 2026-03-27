@@ -1308,9 +1308,6 @@ def compute_replicate_vcov(
             stacklevel=2,
         )
     n_valid = int(np.sum(valid))
-    # Update effective replicate count so df_survey reflects valid replicates
-    if n_valid < R:
-        resolved.n_replicates = n_valid
     if n_valid < 2:
         if n_valid == 0:
             warnings.warn(
@@ -1323,7 +1320,7 @@ def compute_replicate_vcov(
                 f"with fewer than 2. Returning NaN.",
                 UserWarning, stacklevel=2,
             )
-        return np.full((k, k), np.nan)
+        return np.full((k, k), np.nan), n_valid
     coef_valid = coef_reps[valid]
     c = full_sample_coef
 
@@ -1333,7 +1330,7 @@ def compute_replicate_vcov(
 
     if method in ("BRR", "Fay", "JK1"):
         factor = _replicate_variance_factor(method, int(np.sum(valid)), resolved.fay_rho)
-        return factor * outer_sum
+        return factor * outer_sum, n_valid
     elif method == "JKn":
         # JKn: V = sum_h ((n_h-1)/n_h) * sum_{r in h} (c_r - c)(c_r - c)^T
         rep_strata = resolved.replicate_strata
@@ -1348,7 +1345,7 @@ def compute_replicate_vcov(
                 continue
             diffs_h = diffs[mask_h]
             V += ((n_h - 1.0) / n_h) * (diffs_h.T @ diffs_h)
-        return V
+        return V, n_valid
     else:
         raise ValueError(f"Unknown replicate method: {method}")
 
@@ -1356,7 +1353,7 @@ def compute_replicate_vcov(
 def compute_replicate_if_variance(
     psi: np.ndarray,
     resolved: "ResolvedSurveyDesign",
-) -> float:
+) -> Tuple[float, int]:
     """Compute replicate-based variance for influence-function estimators.
 
     Instead of re-running the full estimator, reweights the influence
@@ -1401,22 +1398,18 @@ def compute_replicate_if_variance(
 
     valid = np.isfinite(theta_reps)
     n_valid = int(np.sum(valid))
-    # Update effective replicate count so df_survey reflects valid replicates
-    if n_valid < R:
-        resolved.n_replicates = n_valid
     if n_valid < 2:
-        return np.nan
+        return np.nan, n_valid
     diffs = theta_reps[valid] - theta_full
     ss = float(np.sum(diffs**2))
 
     if method in ("BRR", "Fay", "JK1"):
-        factor = _replicate_variance_factor(method, int(np.sum(valid)), resolved.fay_rho)
-        return factor * ss
+        factor = _replicate_variance_factor(method, n_valid, resolved.fay_rho)
+        return factor * ss, n_valid
     elif method == "JKn":
         rep_strata = resolved.replicate_strata
         if rep_strata is None:
             raise ValueError("JKn requires replicate_strata")
-        # Filter to valid replicates
         valid_strata = rep_strata[valid]
         valid_diffs = diffs
         result = 0.0
@@ -1426,7 +1419,7 @@ def compute_replicate_if_variance(
             if n_h < 1:
                 continue
             result += ((n_h - 1.0) / n_h) * float(np.sum(valid_diffs[mask_h] ** 2))
-        return result
+        return result, n_valid
     else:
         raise ValueError(f"Unknown replicate method: {method}")
 

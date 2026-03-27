@@ -476,7 +476,7 @@ class CallawaySantAnnaAggregationMixin:
         if resolved_survey is not None and hasattr(resolved_survey, "uses_replicate_variance") and resolved_survey.uses_replicate_variance:
             from diff_diff.survey import compute_replicate_if_variance
 
-            variance = compute_replicate_if_variance(psi_total, resolved_survey)
+            variance, _n_valid = compute_replicate_if_variance(psi_total, resolved_survey)
             if np.isnan(variance):
                 return np.nan
             return np.sqrt(max(variance, 0.0))
