@@ -355,6 +355,12 @@ class ContinuousDiD:
                     gt_results[(g, t)] = result
                     gt_bootstrap_info[(g, t)] = result.get("_bootstrap_info", {})
 
+        # Filter out NaN cells (e.g., from zero effective survey mass)
+        gt_results = {
+            gt: r for gt, r in gt_results.items()
+            if np.isfinite(r.get("att_glob", np.nan))
+        }
+
         if len(gt_results) == 0:
             raise ValueError("No valid (g,t) cells computed.")
 

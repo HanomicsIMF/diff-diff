@@ -1207,24 +1207,30 @@ def solve_logit(
                 f"{X_eff.shape[1]} parameters. Cannot identify logistic model."
             )
         # Check rank deficiency on positive-weight rows — full design may
-        # be full rank due to zero-weight padding. Respect rank_deficient_action.
+        # be full rank due to zero-weight padding. Use effective-sample rank
+        # result to drive column dropping (same flow as full-sample check).
         eff_rank_info = _detect_rank_deficiency(X_eff)
         if len(eff_rank_info[1]) > 0:
-            n_dropped = len(eff_rank_info[1])
+            n_dropped_eff = len(eff_rank_info[1])
             if rank_deficient_action == "error":
                 raise ValueError(
                     f"Effective (positive-weight) sample is rank-deficient: "
-                    f"{n_dropped} linearly dependent column(s). "
+                    f"{n_dropped_eff} linearly dependent column(s). "
                     f"Cannot identify logistic model on this subpopulation."
                 )
             elif rank_deficient_action == "warn":
                 warnings.warn(
                     f"Effective (positive-weight) sample is rank-deficient: "
-                    f"dropping {n_dropped} column(s). Propensity estimates "
+                    f"dropping {n_dropped_eff} column(s). Propensity estimates "
                     f"may be unreliable on this subpopulation.",
                     UserWarning,
                     stacklevel=2,
                 )
+            # Use the effective-sample rank info for column dropping
+            # (overrides the full-sample check below which may show no deficiency)
+            _eff_rank, _eff_dropped, _eff_pivot = eff_rank_info
+            X_with_intercept = np.delete(X_with_intercept, _eff_dropped, axis=1)
+            k = X_with_intercept.shape[1]
 
     # Check rank deficiency once before iterating
     rank_info = _detect_rank_deficiency(X_with_intercept)

@@ -1286,7 +1286,19 @@ def compute_replicate_vcov(
             UserWarning,
             stacklevel=2,
         )
-    if not np.any(valid):
+    n_valid = int(np.sum(valid))
+    if n_valid < 2:
+        if n_valid == 0:
+            warnings.warn(
+                "All replicate solves failed. Returning NaN variance.",
+                UserWarning, stacklevel=2,
+            )
+        else:
+            warnings.warn(
+                f"Only {n_valid} valid replicate(s) — variance is not estimable "
+                f"with fewer than 2. Returning NaN.",
+                UserWarning, stacklevel=2,
+            )
         return np.full((k, k), np.nan)
     coef_valid = coef_reps[valid]
     c = full_sample_coef
@@ -1364,7 +1376,8 @@ def compute_replicate_if_variance(
             theta_reps[r] = np.sum(ratio * psi)
 
     valid = np.isfinite(theta_reps)
-    if not np.any(valid):
+    n_valid = int(np.sum(valid))
+    if n_valid < 2:
         return np.nan
     diffs = theta_reps[valid] - theta_full
     ss = float(np.sum(diffs**2))
