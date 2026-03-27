@@ -1088,7 +1088,10 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             # Score-scale IFs to match TSL bread: psi = w * eif / sum(w)
             w = self._unit_resolved_survey.weights
             psi_scaled = w * eif_vals / w.sum()
-            variance, _n_valid = compute_replicate_if_variance(psi_scaled, self._unit_resolved_survey)
+            variance, n_valid = compute_replicate_if_variance(psi_scaled, self._unit_resolved_survey)
+            # Update survey df to reflect effective replicate count
+            if n_valid < self._unit_resolved_survey.n_replicates:
+                self._survey_df = n_valid - 1 if n_valid > 1 else None
             return float(np.sqrt(max(variance, 0.0))) if np.isfinite(variance) else np.nan
 
         from diff_diff.survey import compute_survey_vcov

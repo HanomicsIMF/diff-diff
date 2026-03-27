@@ -579,6 +579,10 @@ class TripleDifference:
         # When survey design is active, use survey df (n_PSU - n_strata)
         if survey_metadata is not None and survey_metadata.df_survey is not None:
             df = max(survey_metadata.df_survey, 1)
+            # Override with effective replicate df if available
+            if hasattr(self, '_replicate_n_valid') and self._replicate_n_valid is not None:
+                df = max(self._replicate_n_valid - 1, 1)
+                survey_metadata.df_survey = self._replicate_n_valid - 1
         else:
             df = n_obs - 8  # Approximate df (8 cell means)
             if covariates:
@@ -1096,8 +1100,10 @@ class TripleDifference:
                     psi_rep = inf_func / w_sum
                 else:
                     psi_rep = resolved_survey.weights * inf_func / w_sum
-                variance, _nv = compute_replicate_if_variance(psi_rep, resolved_survey)
+                variance, n_valid_rep = compute_replicate_if_variance(psi_rep, resolved_survey)
                 se = float(np.sqrt(max(variance, 0.0))) if np.isfinite(variance) else np.nan
+                # Store effective replicate count for df update in fit()
+                self._replicate_n_valid = n_valid_rep
             else:
                 from diff_diff.survey import compute_survey_vcov
 
