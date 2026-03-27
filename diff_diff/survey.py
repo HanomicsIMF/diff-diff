@@ -199,6 +199,13 @@ class SurveyDesign:
                 raise ValueError("Replicate weights contain Inf values")
             if np.any(rep_arr < 0):
                 raise ValueError("Replicate weights must be non-negative")
+            # Normalize replicate columns the same way as full-sample weights
+            # so IF-based replicate variance is scale-invariant
+            if self.weight_type in ("pweight", "aweight"):
+                for r_col in range(rep_arr.shape[1]):
+                    col_sum = np.sum(rep_arr[:, r_col])
+                    if col_sum > 0:
+                        rep_arr[:, r_col] = rep_arr[:, r_col] * (n / col_sum)
             n_rep = rep_arr.shape[1]
             if n_rep < 2:
                 raise ValueError(
@@ -506,6 +513,48 @@ class ResolvedSurveyDesign:
             return n_obs - self.n_strata
         return n_obs - 1
 
+    def subset_to_units(
+        self,
+        row_idx: np.ndarray,
+        weights: np.ndarray,
+        strata: Optional[np.ndarray],
+        psu: Optional[np.ndarray],
+        fpc: Optional[np.ndarray],
+        n_strata: int,
+        n_psu: int,
+    ) -> "ResolvedSurveyDesign":
+        """Create a unit-level copy preserving replicate metadata.
+
+        Used by panel estimators (ContinuousDiD, EfficientDiD) that collapse
+        panel-level survey info to one row per unit.
+
+        Parameters
+        ----------
+        row_idx : np.ndarray
+            Indices into the panel-level arrays to select one row per unit.
+        weights, strata, psu, fpc, n_strata, n_psu
+            Already-subsetted TSL fields (computed by the caller).
+        """
+        rep_weights_sub = None
+        if self.replicate_weights is not None:
+            rep_weights_sub = self.replicate_weights[row_idx, :]
+
+        return ResolvedSurveyDesign(
+            weights=weights,
+            weight_type=self.weight_type,
+            strata=strata,
+            psu=psu,
+            fpc=fpc,
+            n_strata=n_strata,
+            n_psu=n_psu,
+            lonely_psu=self.lonely_psu,
+            replicate_weights=rep_weights_sub,
+            replicate_method=self.replicate_method,
+            fay_rho=self.fay_rho,
+            n_replicates=self.n_replicates,
+            replicate_strata=self.replicate_strata,
+        )
+
     @property
     def needs_survey_vcov(self) -> bool:
         """Whether survey vcov (not generic sandwich) should be used."""
@@ -576,7 +625,11 @@ def compute_survey_metadata(
     design_effect = n * sum_w2 / (sum_w**2) if sum_w > 0 else 1.0
 
     n_strata = resolved.n_strata if resolved.strata is not None else None
-    if resolved.psu is not None:
+    if resolved.uses_replicate_variance:
+        # Replicate designs don't have meaningful PSU/strata counts
+        n_psu = None
+        n_strata = None
+    elif resolved.psu is not None:
         n_psu = resolved.n_psu
     else:
         # Implicit PSU: each observation is its own PSU
@@ -718,6 +771,9 @@ def _validate_unit_constant_survey(data, unit_col, survey_design):
         survey_design.psu,
         survey_design.fpc,
     ]
+    # Also validate replicate weight columns for within-unit constancy
+    if survey_design.replicate_weights is not None:
+        cols_to_check.extend(survey_design.replicate_weights)
     for col in cols_to_check:
         if col is not None and col in data.columns:
             n_unique = data.groupby(unit_col)[col].nunique()
@@ -1207,6 +1263,14 @@ def compute_replicate_vcov(
 
     # Remove replicates with NaN coefficients
     valid = np.all(np.isfinite(coef_reps), axis=1)
+    n_invalid = int(R - np.sum(valid))
+    if n_invalid > 0:
+        warnings.warn(
+            f"{n_invalid} of {R} replicate solves failed (singular or degenerate). "
+            f"Variance computed from {int(np.sum(valid))} valid replicates.",
+            UserWarning,
+            stacklevel=2,
+        )
     if not np.any(valid):
         return np.full((k, k), np.nan)
     coef_valid = coef_reps[valid]

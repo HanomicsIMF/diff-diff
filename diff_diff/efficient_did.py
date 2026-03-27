@@ -516,15 +516,9 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             unit_fpc = resolved_survey.fpc[row_idx] if resolved_survey.fpc is not None else None
             n_strata_u = len(np.unique(unit_strata)) if unit_strata is not None else 0
             n_psu_u = len(np.unique(unit_psu)) if unit_psu is not None else 0
-            self._unit_resolved_survey = ResolvedSurveyDesign(
-                weights=unit_weights_s,
-                weight_type=resolved_survey.weight_type,
-                strata=unit_strata,
-                psu=unit_psu,
-                fpc=unit_fpc,
-                n_strata=n_strata_u,
-                n_psu=n_psu_u,
-                lonely_psu=resolved_survey.lonely_psu,
+            self._unit_resolved_survey = resolved_survey.subset_to_units(
+                row_idx, unit_weights_s, unit_strata, unit_psu, unit_fpc,
+                n_strata_u, n_psu_u,
             )
             # Use unit-level df (not panel-level) for t-distribution
             self._survey_df = self._unit_resolved_survey.df_survey

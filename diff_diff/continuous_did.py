@@ -572,15 +572,8 @@ class ContinuousDiD:
                         )
                         n_strata_u = len(np.unique(us)) if us is not None else 0
                         n_psu_u = len(np.unique(up)) if up is not None else 0
-                        unit_resolved_es = ResolvedSurveyDesign(
-                            weights=uw,
-                            weight_type=resolved_survey.weight_type,
-                            strata=us,
-                            psu=up,
-                            fpc=uf,
-                            n_strata=n_strata_u,
-                            n_psu=n_psu_u,
-                            lonely_psu=resolved_survey.lonely_psu,
+                        unit_resolved_es = resolved_survey.subset_to_units(
+                            row_idx, uw, us, up, uf, n_strata_u, n_psu_u,
                         )
 
                     for e_val, info_e in event_study_effects.items():
@@ -1214,15 +1207,9 @@ class ContinuousDiD:
             n_strata_unit = len(np.unique(unit_strata)) if unit_strata is not None else 0
             n_psu_unit = len(np.unique(unit_psu)) if unit_psu is not None else 0
 
-            unit_resolved = ResolvedSurveyDesign(
-                weights=unit_weights,
-                weight_type=resolved_survey.weight_type,
-                strata=unit_strata,
-                psu=unit_psu,
-                fpc=unit_fpc,
-                n_strata=n_strata_unit,
-                n_psu=n_psu_unit,
-                lonely_psu=resolved_survey.lonely_psu,
+            unit_resolved = resolved_survey.subset_to_units(
+                row_idx, unit_weights, unit_strata, unit_psu, unit_fpc,
+                n_strata_unit, n_psu_unit,
             )
 
             X_ones = np.ones((n_units, 1))
@@ -1331,15 +1318,9 @@ class ContinuousDiD:
             unit_fpc = resolved_survey.fpc[row_idx] if resolved_survey.fpc is not None else None
             n_strata_u = len(np.unique(unit_strata)) if unit_strata is not None else 0
             n_psu_u = len(np.unique(unit_psu)) if unit_psu is not None else 0
-            unit_resolved = ResolvedSurveyDesign(
-                weights=unit_weights,
-                weight_type=resolved_survey.weight_type,
-                strata=unit_strata,
-                psu=unit_psu,
-                fpc=unit_fpc,
-                n_strata=n_strata_u,
-                n_psu=n_psu_u,
-                lonely_psu=resolved_survey.lonely_psu,
+            unit_resolved = resolved_survey.subset_to_units(
+                row_idx, unit_weights, unit_strata, unit_psu, unit_fpc,
+                n_strata_u, n_psu_u,
             )
 
         # Generate bootstrap weights — PSU-level when survey design is present
