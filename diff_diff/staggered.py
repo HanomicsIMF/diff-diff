@@ -1493,6 +1493,8 @@ class CallawaySantAnna(
         overall_att, overall_se = self._aggregate_simple(
             group_time_effects, influence_func_info, df, unit, precomputed
         )
+        # Re-read df_survey in case replicate aggregation updated it
+        df_survey = precomputed.get("df_survey")
         overall_t, overall_p, overall_ci = safe_inference(
             overall_att,
             overall_se,

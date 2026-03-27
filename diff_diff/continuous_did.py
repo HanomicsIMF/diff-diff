@@ -1237,10 +1237,13 @@ class ContinuousDiD:
                 from diff_diff.survey import compute_replicate_if_variance
 
                 _w_rep = unit_resolved.weights
+                _rep_n_valid = unit_resolved.n_replicates  # track effective count
 
                 def _rep_se(if_vals):
+                    nonlocal _rep_n_valid
                     psi_scaled = _w_rep * if_vals
-                    v, _nv = compute_replicate_if_variance(psi_scaled, unit_resolved)
+                    v, nv = compute_replicate_if_variance(psi_scaled, unit_resolved)
+                    _rep_n_valid = min(_rep_n_valid, nv)  # worst-case valid count
                     return float(np.sqrt(max(v, 0.0))) if np.isfinite(v) else np.nan
 
                 overall_att_se = _rep_se(if_att_glob)
@@ -1282,7 +1285,11 @@ class ContinuousDiD:
             acrt_d_se = np.sqrt(np.sum(if_acrt_d**2, axis=0))
 
         # Return unit-level survey df and resolved design for metadata recomputation
-        unit_df_survey = unit_resolved.df_survey if resolved_survey is not None else None
+        # Use effective replicate df if available (from _rep_se calls)
+        if resolved_survey is not None and hasattr(resolved_survey, 'uses_replicate_variance') and resolved_survey.uses_replicate_variance:
+            unit_df_survey = _rep_n_valid - 1 if _rep_n_valid > 1 else None
+        else:
+            unit_df_survey = unit_resolved.df_survey if resolved_survey is not None else None
 
         return {
             "overall_att_se": overall_att_se,
