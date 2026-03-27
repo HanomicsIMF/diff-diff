@@ -190,7 +190,11 @@ class SurveyDesign:
                         )
 
             # Normalize: pweights/aweights to sum=n (mean=1); fweights unchanged
-            if self.weight_type in ("pweight", "aweight"):
+            # Skip normalization for replicate designs — the IF path uses
+            # w_r / w_full ratios that must be on the same raw scale
+            if self.replicate_weights is not None:
+                weights = raw_weights.copy()
+            elif self.weight_type in ("pweight", "aweight"):
                 weights = raw_weights * (n / np.sum(raw_weights))
             else:
                 weights = raw_weights.copy()
@@ -1391,13 +1395,15 @@ def compute_replicate_vcov(
             raise ValueError("JKn requires replicate_strata")
         valid_strata = rep_strata[valid]
         V = np.zeros((k, k))
-        for h in np.unique(valid_strata):
+        for h in np.unique(rep_strata):
+            # Use original per-stratum count for scaling
+            n_h_original = int(np.sum(rep_strata == h))
+            # Sum only valid diffs in this stratum
             mask_h = valid_strata == h
-            n_h = int(np.sum(mask_h))
-            if n_h < 1:
+            if not np.any(mask_h):
                 continue
             diffs_h = diffs[mask_h]
-            V += ((n_h - 1.0) / n_h) * (diffs_h.T @ diffs_h)
+            V += ((n_h_original - 1.0) / n_h_original) * (diffs_h.T @ diffs_h)
         return V, n_valid
     else:
         raise ValueError(f"Unknown replicate method: {method}")
@@ -1487,12 +1493,13 @@ def compute_replicate_if_variance(
         valid_strata = rep_strata[valid]
         valid_diffs = diffs
         result = 0.0
-        for h in np.unique(valid_strata):
+        for h in np.unique(rep_strata):
+            # Use original per-stratum count for scaling
+            n_h_original = int(np.sum(rep_strata == h))
             mask_h = valid_strata == h
-            n_h = int(np.sum(mask_h))
-            if n_h < 1:
+            if not np.any(mask_h):
                 continue
-            result += ((n_h - 1.0) / n_h) * float(np.sum(valid_diffs[mask_h] ** 2))
+            result += ((n_h_original - 1.0) / n_h_original) * float(np.sum(valid_diffs[mask_h] ** 2))
         return result, n_valid
     else:
         raise ValueError(f"Unknown replicate method: {method}")
