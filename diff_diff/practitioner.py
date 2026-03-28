@@ -520,16 +520,17 @@ def _handle_synthetic(results: Any):
         ),
         _step(
             baker_step=8,
-            label="Compare with TROP or staggered estimators",
+            label="Compare with staggered estimators (CS, SA)",
             why=(
-                "SyntheticDiD and TROP address similar settings (few treated "
-                "units). Agreement across both strengthens confidence."
+                "SyntheticDiD is for few treated units; compare with "
+                "staggered estimators if applicable. Use TROP only if "
+                "factor confounding is suspected (different use case)."
             ),
             code=(
-                "from diff_diff import TROP\n"
-                "trop = TROP()\n"
-                "trop_result = trop.fit(data, ...)\n"
-                "print(f'SDiD ATT: {results.att:.4f}, TROP ATT: {trop_result.att:.4f}')"
+                "from diff_diff import CallawaySantAnna\n"
+                "cs = CallawaySantAnna()\n"
+                "cs_result = cs.fit(data, ...)\n"
+                "print(f'SDiD ATT: {results.att:.4f}, CS ATT: {cs_result.overall_att:.4f}')"
             ),
             step_name="robustness",
         ),
