@@ -31,6 +31,19 @@ print(f"ATT: {results.att:.3f} (SE: {results.se:.3f})")
 - **Results objects**: Rich dataclass containers with `summary()`, `to_dict()`, `to_dataframe()`.
 - **Estimator aliases**: Short names available (e.g., `DiD`, `CS`, `SA`, `BJS`, `Gardner`, `SDiD`, `TWFE`, `DDD`, `CDiD`, `EDiD`, `Stacked`, `Bacon`).
 
+## Practitioner Workflow (Baker et al. 2025)
+
+For rigorous DiD analysis, follow the 8-step framework in docs/llms-practitioner.txt.
+After estimation, call:
+
+```python
+from diff_diff import practitioner_next_steps
+guidance = practitioner_next_steps(results)
+```
+
+Returns context-aware guidance on remaining diagnostic steps (parallel trends
+testing, sensitivity analysis, heterogeneity checks, robustness comparisons).
+
 ## Estimators
 
 ### DifferenceInDifferences

@@ -168,6 +168,7 @@ from diff_diff.visualization import (
     plot_staircase,
     plot_synth_weights,
 )
+from diff_diff.practitioner import practitioner_next_steps
 from diff_diff.datasets import (
     clear_cache,
     list_datasets,
@@ -344,4 +345,6 @@ __all__ = [
     "load_dataset",
     "list_datasets",
     "clear_cache",
+    # Practitioner guidance
+    "practitioner_next_steps",
 ]

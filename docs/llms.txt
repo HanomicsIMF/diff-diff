@@ -10,10 +10,30 @@ diff-diff offers 14 estimators covering basic 2x2 DiD, modern staggered adoption
 - Source: https://github.com/igerber/diff-diff
 - Docs: https://diff-diff.readthedocs.io/en/stable/
 
+## Practitioner Workflow (Baker et al. 2025)
+
+IMPORTANT: For rigorous DiD analysis, follow these 8 steps. Skipping
+diagnostic steps produces unreliable results.
+
+1. **Define target parameter** — ATT, group-time ATT(g,t), or event-study ATT_es(e). State whether weighted or unweighted.
+2. **State identification assumptions** — which parallel trends variant (unconditional, conditional, PT-GT-Nev, PT-GT-NYT), no-anticipation, overlap.
+3. **Test parallel trends** — `check_parallel_trends()`, `equivalence_test_trends()`. Insignificant pre-trends do NOT prove parallel trends holds.
+4. **Choose estimator** — staggered adoption → CS/SA/BJS (NOT plain TWFE); few treated units → SDiD/TROP; simple 2x2 → DiD. Run `BaconDecomposition` to diagnose TWFE bias.
+5. **Estimate** — `estimator.fit(data, ...)`. Always print the cluster count first and choose inference method based on the result (cluster-robust if >= 50 clusters, wild bootstrap if fewer).
+6. **Sensitivity analysis** — `compute_honest_did(results)` for bounds under PT violations, `run_all_placebo_tests()` for falsification, Bacon decomposition for TWFE.
+7. **Heterogeneity** — `aggregate='group'` for cohort effects, `aggregate='event_study'` for dynamic effects, subgroup re-estimation.
+8. **Robustness** — compare 2-3 estimators (CS vs SA vs BJS), MUST report with and without covariates (shows whether conditioning drives identification), present pre-trends and sensitivity bounds.
+
+After estimation, call `practitioner_next_steps(results)` for context-aware
+guidance on remaining steps.
+
+Full practitioner guide: docs/llms-practitioner.txt
+
 ## Documentation
 
 ### Getting Started
 
+- [Practitioner Guide](docs/llms-practitioner.txt): 8-step workflow for rigorous DiD analysis (Baker et al. 2025) — **start here**
 - [Quickstart](https://diff-diff.readthedocs.io/en/stable/quickstart.html): Installation, basic 2x2 DiD — column-name and formula interfaces, covariates, fixed effects, cluster-robust SEs
 - [Choosing an Estimator](https://diff-diff.readthedocs.io/en/stable/choosing_estimator.html): Decision flowchart for selecting the right estimator for your research design
 - [Troubleshooting](https://diff-diff.readthedocs.io/en/stable/troubleshooting.html): Common issues and solutions
