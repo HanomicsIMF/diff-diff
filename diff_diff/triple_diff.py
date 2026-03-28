@@ -590,7 +590,12 @@ class TripleDifference:
                 survey_metadata.df_survey = self._replicate_n_valid - 1
             # df <= 0 means insufficient rank for t-based inference
             if df is not None and df <= 0:
-                df = None
+                df = 0  # Forces NaN from t-distribution
+        elif (resolved_survey is not None
+              and hasattr(resolved_survey, 'uses_replicate_variance')
+              and resolved_survey.uses_replicate_variance):
+            # Replicate design with undefined df (rank <= 1) — NaN inference
+            df = 0  # Forces NaN from t-distribution
         else:
             df = n_obs - 8  # Approximate df (8 cell means)
             if covariates:

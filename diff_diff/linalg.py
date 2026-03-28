@@ -2029,6 +2029,16 @@ class LinearRegression:
             effective_df = df
         elif self.survey_df_ is not None:
             effective_df = self.survey_df_
+        elif (hasattr(self, '_survey_design') and self._survey_design is not None
+              and hasattr(self._survey_design, 'uses_replicate_variance')
+              and self._survey_design.uses_replicate_variance):
+            # Replicate design with undefined df (rank <= 1) — NaN inference
+            warnings.warn(
+                "Replicate design has undefined survey d.f. (rank <= 1). "
+                "Inference fields will be NaN.",
+                UserWarning, stacklevel=2,
+            )
+            effective_df = 0  # Forces NaN from t-distribution
         else:
             effective_df = self.df_
 

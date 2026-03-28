@@ -590,10 +590,13 @@ class ResolvedSurveyDesign:
                 analysis_weights = self.replicate_weights
             else:
                 analysis_weights = self.replicate_weights * self.weights[:, np.newaxis]
-            # Use QR decomposition with R-compatible tolerance (1e-5)
-            Q, R_mat = np.linalg.qr(analysis_weights, mode='reduced')
+            # Pivoted QR with R-compatible tolerance, matching R's
+            # qr(..., tol=1e-5) which uses column pivoting (LAPACK dgeqp3)
+            from scipy.linalg import qr as scipy_qr
+            _, R_mat, _ = scipy_qr(analysis_weights, pivoting=True, mode='economic')
+            diag_abs = np.abs(np.diag(R_mat))
             tol = 1e-5
-            rank = int(np.sum(np.abs(np.diag(R_mat)) > tol * np.abs(np.diag(R_mat)).max()))
+            rank = int(np.sum(diag_abs > tol * diag_abs.max())) if diag_abs.max() > 0 else 0
             df = rank - 1
             return df if df > 0 else None
         if self.psu is not None and self.n_psu > 0:
