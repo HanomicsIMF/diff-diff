@@ -684,7 +684,7 @@ class ContinuousDiD:
             target="att",
             p_value=att_d_p,
             n_bootstrap=self.n_bootstrap,
-            df_survey=_survey_df if _survey_df != 0 else None,
+            df_survey=_survey_df,
         )
         dose_response_acrt = DoseResponseCurve(
             dose_grid=dvals,
@@ -695,7 +695,7 @@ class ContinuousDiD:
             target="acrt",
             p_value=acrt_d_p,
             n_bootstrap=self.n_bootstrap,
-            df_survey=_survey_df if _survey_df != 0 else None,
+            df_survey=_survey_df,
         )
 
         # Strip bootstrap internals from gt_results
