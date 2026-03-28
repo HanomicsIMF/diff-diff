@@ -17,7 +17,7 @@ diagnostic steps produces unreliable results.
 
 1. **Define target parameter** — ATT, group-time ATT(g,t), or event-study ATT_es(e). State whether weighted or unweighted.
 2. **State identification assumptions** — which parallel trends variant (unconditional, conditional, PT-GT-Nev, PT-GT-NYT), no-anticipation, overlap.
-3. **Test parallel trends** — `check_parallel_trends()`, `equivalence_test_trends()`. Insignificant pre-trends do NOT prove parallel trends holds.
+3. **Test parallel trends** — simple 2x2: `check_parallel_trends()`, `equivalence_test_trends()`; staggered: inspect CS event-study pre-period coefficients (generic PT tests are invalid for staggered designs). Insignificant pre-trends do NOT prove PT holds.
 4. **Choose estimator** — staggered adoption → CS/SA/BJS (NOT plain TWFE); few treated units → SDiD/TROP; simple 2x2 → DiD. Run `BaconDecomposition` to diagnose TWFE bias.
 5. **Estimate** — `estimator.fit(data, ...)`. Always print the cluster count first and choose inference method based on the result (cluster-robust if >= 50 clusters, wild bootstrap if fewer).
 6. **Sensitivity analysis** — `compute_honest_did(results)` for bounds under PT violations, `run_all_placebo_tests()` for falsification, Bacon decomposition for TWFE.

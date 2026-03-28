@@ -140,16 +140,17 @@ def _parallel_trends_step(staggered: bool = False) -> Dict[str, Any]:
             baker_step=3,
             label="Test parallel trends (event-study pre-periods)",
             why=(
-                "For staggered designs, inspect CS event-study pre-period "
+                "For staggered designs, inspect event-study pre-period "
                 "coefficients rather than the generic check_parallel_trends() "
                 "which assumes a single binary treatment with universal "
-                "pre-periods. Pre-treatment ATTs should be near zero."
+                "pre-periods. Pre-treatment ATTs should be near zero. "
+                "Use CS with aggregate='event_study' or check the estimator's "
+                "event-study output directly."
             ),
             code=(
-                "# Fit with aggregate='event_study' or 'all', then inspect:\n"
-                "for rel_t, eff in sorted(results.event_study_effects.items()):\n"
-                "    if rel_t < 0:\n"
-                "        print(f'Pre {rel_t}: ATT={eff[\"effect\"]:.4f}')"
+                "# Inspect pre-treatment event-study coefficients:\n"
+                "# (available after fitting with event-study aggregation)\n"
+                "# Pre-period effects should be near zero and insignificant."
             ),
             step_name="parallel_trends",
         )

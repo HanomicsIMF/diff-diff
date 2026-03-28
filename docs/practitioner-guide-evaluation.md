@@ -27,7 +27,7 @@ of 9.6), so the model mix does not inflate the reported improvement.
 |------|-------------|---|---|---|
 | S1 | Define target parameter | Not mentioned | Mentions ATT types | Explicitly defines weighted/unweighted, policy question |
 | S2 | State assumptions | Not mentioned | Mentions parallel trends | Formally names PT variant (PT-GT-NYT etc.) |
-| S3 | Test parallel trends | Not done | Informal check (event study eyeball) | Runs check_parallel_trends / equivalence_test_trends |
+| S3 | Test parallel trends | Not done | Informal check (event study eyeball) | Formal PT test (2x2) or CS event-study pre-period inspection (staggered) |
 | S4 | Choose estimator | Uses naive TWFE | Uses CS but no diagnostic | CS + Bacon diagnostic, explains choice |
 | S5 | Estimate (with cluster check) | No code | Partial code | Complete code with cluster count check |
 | S6 | Sensitivity analysis | Not done | Mentions but doesn't run | Runs HonestDiD and/or placebo tests |
@@ -93,7 +93,7 @@ of 9.6), so the model mix does not inflate the reported improvement.
 
 **After agents** consistently:
 - Structured their code around all 8 Baker steps explicitly
-- Ran check_parallel_trends() AND equivalence_test_trends()
+- Ran formal pre-trends diagnostics (check_parallel_trends or CS event-study pre-periods)
 - Ran compute_honest_did() with specific M values
 - Ran run_all_placebo_tests()
 - Compared CS vs SA vs BJS
@@ -153,5 +153,8 @@ and practically massive. Key results:
   behavior so completely that all agents produce the same high-quality workflow
 - **Two iterations sufficed**: v1 closed 79% of the gap; targeted v2 fixes
   to Step 5 (cluster count) and Step 8 (covariates) closed the remaining 21%
-- **Documentation alone** drove these results — no runtime enforcement was
-  needed beyond the `practitioner_next_steps()` function
+- **Documentation changes were the primary intervention** — no runtime
+  enforcement was needed beyond the `practitioner_next_steps()` function.
+  Note: the before arm used a mixed model allocation (1 Opus + 9 Sonnet)
+  vs 10 Sonnet after, so the improvement is not purely isolated to
+  documentation; however, the Opus run scored below the Sonnet mean.
