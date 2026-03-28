@@ -1046,10 +1046,16 @@ def _compute_robust_vcov_numpy(
     else:
         bread_matrix = X.T @ X
 
-    # Effective n for df computation (fweights use sum(w))
+    # Effective n for df computation
+    # fweights: sum(w) (frequency expansion)
+    # pweight/aweight with zeros: positive-weight count (zero-weight rows
+    # contribute nothing to the sandwich and should not inflate df)
     n_eff = n
-    if weights is not None and weight_type == "fweight":
-        n_eff = int(round(np.sum(weights)))
+    if weights is not None:
+        if weight_type == "fweight":
+            n_eff = int(round(np.sum(weights)))
+        elif np.any(weights == 0):
+            n_eff = int(np.count_nonzero(weights > 0))
 
     # Compute weighted scores for cluster-robust meat (outer product of sums).
     # pweight/fweight multiply by w; aweight and unweighted use raw residuals.
@@ -1074,6 +1080,11 @@ def _compute_robust_vcov_numpy(
         cluster_ids = np.asarray(cluster_ids)
         unique_clusters = np.unique(cluster_ids)
         n_clusters = len(unique_clusters)
+
+        # Exclude clusters with zero total weight (subpopulation-zeroed)
+        if weights is not None and weight_type != "fweight" and np.any(weights == 0):
+            cluster_weights = pd.Series(weights).groupby(cluster_ids).sum()
+            n_clusters = int((cluster_weights > 0).sum())
 
         if n_clusters < 2:
             raise ValueError(f"Need at least 2 clusters for cluster-robust SEs, got {n_clusters}")
@@ -1741,10 +1752,14 @@ class LinearRegression:
             nan_mask = np.isnan(coefficients)
             k_effective = k - np.sum(nan_mask)  # Number of identified coefficients
 
-            # For fweights, df uses sum(w) - k (effective sample size)
+            # Effective n for df: fweights use sum(w), pweight/aweight with
+            # zeros use positive-weight count (zero-weight rows don't contribute)
             n_eff_df = n
-            if self.weights is not None and self.weight_type == "fweight":
-                n_eff_df = int(round(np.sum(self.weights)))
+            if self.weights is not None:
+                if self.weight_type == "fweight":
+                    n_eff_df = int(round(np.sum(self.weights)))
+                elif np.any(self.weights == 0):
+                    n_eff_df = int(np.count_nonzero(self.weights > 0))
 
             if k_effective == 0:
                 # All coefficients dropped - no valid inference

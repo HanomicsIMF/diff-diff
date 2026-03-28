@@ -2093,11 +2093,12 @@ Domain estimation preserving full design structure.
 - **Note:** Weight validation relaxed from "strictly positive" to
   "non-negative" to support zero-weight observations. Negative weights
   still rejected. All-zero weight vectors rejected at solver level.
-- **Note:** Survey df and variance adjustment factors use total n
-  (including zero-weight rows), matching R's `survey::degf()` convention
-  after `subset()`. This preserves the design structure for correct
-  variance estimation. Zero-weight rows contribute zero-valued scores
-  to the sandwich meat but are counted in df = n_PSU - n_strata.
+- **Note:** Survey design df (`n_PSU - n_strata`) uses total design
+  structure (including zero-weight rows), matching R's `survey::degf()`
+  convention after `subset()`. The generic HC1/classical inference paths
+  use positive-weight count for df adjustments, ensuring zero-weight
+  padding is inference-invariant outside the survey vcov path. DEFF
+  effective-n also uses positive-weight count.
 - **Note:** For replicate-weight designs, `subpopulation()` zeros out both
   full-sample and replicate weight columns for excluded observations,
   preserving all replicate metadata.

@@ -849,6 +849,9 @@ def compute_deff_diagnostics(
     from diff_diff.linalg import compute_robust_vcov
 
     n = X.shape[0]
+    # Use positive-weight count for effective n (zero-weight rows from
+    # subpopulation don't contribute to the effective sample)
+    n_eff = int(np.count_nonzero(weights > 0)) if np.any(weights == 0) else n
 
     # SRS baseline: HC1 weighted sandwich ignoring design structure
     srs_vcov = compute_robust_vcov(
@@ -861,7 +864,7 @@ def compute_deff_diagnostics(
     # DEFF = survey_var / srs_var
     with np.errstate(divide="ignore", invalid="ignore"):
         deff = np.where(srs_var > 0, survey_var / srs_var, np.nan)
-        eff_n = np.where(deff > 0, n / deff, np.nan)
+        eff_n = np.where(deff > 0, n_eff / deff, np.nan)
 
     survey_se = np.sqrt(np.maximum(survey_var, 0.0))
     srs_se = np.sqrt(np.maximum(srs_var, 0.0))
