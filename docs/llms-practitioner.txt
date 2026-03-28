@@ -259,9 +259,15 @@ honest_sd = compute_honest_did(results, method='smoothness', M=0.5)
 
 ### Placebo tests (simple 2x2 designs only)
 `run_all_placebo_tests()` refits a basic 2x2 DiD — it is valid for simple
-designs but NOT for staggered adoption. For staggered designs, use
-specification-based falsification: compare results across control group
-choices, anticipation settings, and cohort subsets.
+designs but NOT for staggered, synthetic control, or other advanced estimators.
+
+**For non-2x2 estimators**, use specification-based falsification appropriate
+to your estimator's API. Examples:
+- **CS/SA**: compare `control_group='never_treated'` vs `'not_yet_treated'`
+- **StackedDiD**: vary `clean_control` definition
+- **EfficientDiD**: compare `control_group='never_treated'` vs `'last_cohort'`
+- **ImputationDiD/TwoStageDiD**: leave-one-cohort-out, cross-estimator comparison
+- **SyntheticDiD/TROP**: in-time or in-space placebo (fake treatment date, leave-one-unit-out)
 
 ```python
 from diff_diff import run_all_placebo_tests

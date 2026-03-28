@@ -188,27 +188,8 @@ def _honest_did_step() -> Dict[str, Any]:
     )
 
 
-def _placebo_step(staggered: bool = False) -> Dict[str, Any]:
-    if staggered:
-        return _step(
-            baker_step=6,
-            label="Run sensitivity/falsification checks",
-            why=(
-                "For staggered designs, run_all_placebo_tests() is not "
-                "directly applicable (it refits a basic 2x2 DiD). Instead, "
-                "compare results across control group choices "
-                "(never_treated vs not_yet_treated), anticipation settings, "
-                "and subsample restrictions as falsification checks."
-            ),
-            code=(
-                "# Staggered falsification: compare across specifications\n"
-                "# - Re-estimate with control_group='never_treated' vs 'not_yet_treated'\n"
-                "# - Re-estimate with anticipation=1 to check no-anticipation\n"
-                "# - Drop one cohort at a time for leave-one-out sensitivity"
-            ),
-            priority="medium",
-            step_name="sensitivity",
-        )
+def _placebo_step() -> Dict[str, Any]:
+    """Placebo tests for simple 2x2 DiD designs only."""
     return _step(
         baker_step=6,
         label="Run placebo tests",
