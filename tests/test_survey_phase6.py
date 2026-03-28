@@ -830,14 +830,95 @@ class TestReplicateWeightVariance:
         )
         assert sd.replicate_scale == 0.5
 
-    def test_scale_rscales_exclusive(self):
-        """replicate_scale and replicate_rscales are mutually exclusive."""
-        with pytest.raises(ValueError, match="mutually exclusive"):
-            SurveyDesign(
-                weights="w", replicate_weights=["r1", "r2"],
-                replicate_method="BRR",
-                replicate_scale=0.5, replicate_rscales=[0.3, 0.7],
-            )
+    def test_scale_rscales_multiplicative(self):
+        """scale and rscales are applied multiplicatively for JK1."""
+        from diff_diff.survey import compute_replicate_vcov, ResolvedSurveyDesign
+        from diff_diff.linalg import solve_ols
+
+        np.random.seed(42)
+        n, R = 100, 5
+        x = np.random.randn(n)
+        y = 1.0 + 2.0 * x + np.random.randn(n) * 0.5
+        X = np.column_stack([np.ones(n), x])
+        w = np.ones(n)
+
+        cluster_size = n // R
+        rep_arr = np.ones((n, R))
+        for r in range(R):
+            start = r * cluster_size
+            end = min((r + 1) * cluster_size, n)
+            rep_arr[start:end, r] = 0.0
+            rep_arr[~((np.arange(n) >= start) & (np.arange(n) < end)), r] *= R / (R - 1)
+
+        coef, _, _ = solve_ols(X, y, weights=w)
+
+        # rscales only
+        rscales = np.array([0.5, 1.0, 1.5, 1.0, 0.5])
+        resolved_rscales = ResolvedSurveyDesign(
+            weights=w, weight_type="pweight",
+            strata=None, psu=None, fpc=None,
+            n_strata=0, n_psu=0, lonely_psu="remove",
+            replicate_weights=rep_arr,
+            replicate_method="JK1", n_replicates=R,
+            replicate_rscales=rscales,
+        )
+        vcov_rscales, _ = compute_replicate_vcov(X, y, coef, resolved_rscales)
+
+        # scale * rscales should multiply
+        scale_val = 2.0
+        resolved_both = ResolvedSurveyDesign(
+            weights=w, weight_type="pweight",
+            strata=None, psu=None, fpc=None,
+            n_strata=0, n_psu=0, lonely_psu="remove",
+            replicate_weights=rep_arr,
+            replicate_method="JK1", n_replicates=R,
+            replicate_scale=scale_val, replicate_rscales=rscales,
+        )
+        vcov_both, _ = compute_replicate_vcov(X, y, coef, resolved_both)
+
+        # V(scale+rscales) == scale * V(rscales)
+        assert np.allclose(np.diag(vcov_both), scale_val * np.diag(vcov_rscales), rtol=1e-10)
+
+    def test_brr_ignores_custom_scaling(self):
+        """BRR ignores custom scale/rscales with a warning."""
+        import warnings
+        from diff_diff.survey import compute_replicate_vcov, ResolvedSurveyDesign
+        from diff_diff.linalg import solve_ols
+
+        np.random.seed(42)
+        n, R = 100, 5
+        x = np.random.randn(n)
+        y = 1.0 + 2.0 * x + np.random.randn(n) * 0.5
+        X = np.column_stack([np.ones(n), x])
+        w = np.ones(n)
+        rep_arr = np.random.uniform(0.8, 1.2, (n, R))
+
+        coef, _, _ = solve_ols(X, y, weights=w)
+
+        # Default BRR
+        resolved_default = ResolvedSurveyDesign(
+            weights=w, weight_type="pweight",
+            strata=None, psu=None, fpc=None,
+            n_strata=0, n_psu=0, lonely_psu="remove",
+            replicate_weights=rep_arr,
+            replicate_method="BRR", n_replicates=R,
+        )
+        vcov_default, _ = compute_replicate_vcov(X, y, coef, resolved_default)
+
+        # BRR with custom scale (should be ignored with warning)
+        resolved_custom = ResolvedSurveyDesign(
+            weights=w, weight_type="pweight",
+            strata=None, psu=None, fpc=None,
+            n_strata=0, n_psu=0, lonely_psu="remove",
+            replicate_weights=rep_arr,
+            replicate_method="BRR", n_replicates=R,
+            replicate_scale=99.0,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            vcov_custom, _ = compute_replicate_vcov(X, y, coef, resolved_custom)
+        assert any("ignored" in str(w.message) for w in caught)
+        assert np.allclose(np.diag(vcov_default), np.diag(vcov_custom), rtol=1e-10)
 
     def test_replicate_if_no_divide_by_zero_warning(self):
         """compute_replicate_if_variance should not warn on zero weights."""
@@ -954,7 +1035,7 @@ class TestReplicateEdgeCases:
             strata=None, psu=None, fpc=None,
             n_strata=0, n_psu=0, lonely_psu="remove",
             replicate_weights=rep_arr,
-            replicate_method="BRR", n_replicates=R,
+            replicate_method="JK1", n_replicates=R,
             replicate_rscales=rscales, mse=False,
         )
         vcov, _nv = compute_replicate_vcov(X, y, coef, resolved)
@@ -1002,7 +1083,7 @@ class TestReplicateEdgeCases:
             strata=None, psu=None, fpc=None,
             n_strata=0, n_psu=0, lonely_psu="remove",
             replicate_weights=rep_arr,
-            replicate_method="BRR", n_replicates=R,
+            replicate_method="JK1", n_replicates=R,
             replicate_rscales=rscales, mse=False,
         )
         var, _nv = compute_replicate_if_variance(psi, resolved)
@@ -1202,7 +1283,7 @@ class TestSubpopulationMaskValidation:
         sd = SurveyDesign(weights="weight")
         nan_mask = np.ones(len(basic_did_data))
         nan_mask[0] = np.nan
-        with pytest.raises(ValueError, match="NaN"):
+        with pytest.raises(ValueError, match="NA|NaN|missing"):
             sd.subpopulation(basic_did_data, nan_mask)
 
     def test_none_mask_rejected(self, basic_did_data):
@@ -1210,7 +1291,15 @@ class TestSubpopulationMaskValidation:
         sd = SurveyDesign(weights="weight")
         mask = [True] * len(basic_did_data)
         mask[0] = None
-        with pytest.raises(ValueError, match="None"):
+        with pytest.raises(ValueError, match="None|NA|missing"):
+            sd.subpopulation(basic_did_data, mask)
+
+    def test_pd_na_mask_rejected(self, basic_did_data):
+        """Subpopulation mask with pd.NA should be rejected."""
+        sd = SurveyDesign(weights="weight")
+        mask = pd.array([True] * len(basic_did_data), dtype=pd.BooleanDtype())
+        mask[0] = pd.NA
+        with pytest.raises(ValueError, match="NA|missing"):
             sd.subpopulation(basic_did_data, mask)
 
     def test_efficient_did_replicate_bootstrap_rejected(self):

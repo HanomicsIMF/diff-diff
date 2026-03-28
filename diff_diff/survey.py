@@ -131,11 +131,7 @@ class SurveyDesign:
                     f"replicate_strata length ({len(self.replicate_strata)}) must "
                     f"match replicate_weights length ({len(self.replicate_weights)})"
                 )
-        # Validate scale/rscales
-        if self.replicate_scale is not None and self.replicate_rscales is not None:
-            raise ValueError(
-                "replicate_scale and replicate_rscales are mutually exclusive"
-            )
+        # Validate rscales length
         if self.replicate_rscales is not None and self.replicate_weights is not None:
             if len(self.replicate_rscales) != len(self.replicate_weights):
                 raise ValueError(
@@ -441,7 +437,17 @@ class SurveyDesign:
         else:
             raw_mask = np.asarray(mask)
 
-        # Validate: reject NaN/missing values before bool coercion
+        # Validate: reject pd.NA/pd.NaT/None before bool coercion
+        try:
+            if pd.isna(raw_mask).any():
+                raise ValueError(
+                    "Subpopulation mask contains NA/missing values. "
+                    "Provide a boolean mask with no missing values."
+                )
+        except (TypeError, ValueError) as e:
+            if "NA/missing" in str(e):
+                raise
+            # pd.isna can't handle some dtypes — fall through to specific checks
         if raw_mask.dtype.kind == 'f' and np.any(np.isnan(raw_mask)):
             raise ValueError(
                 "Subpopulation mask contains NaN values. "
@@ -1396,42 +1402,47 @@ def compute_replicate_vcov(
             center = np.mean(coef_valid, axis=0)
     diffs = coef_valid - center[np.newaxis, :]
 
-    # Use custom scale/rscales if provided, else default method factor
+    outer_sum = diffs.T @ diffs  # (k, k)
+
+    # BRR/Fay: use fixed scaling, ignore user-supplied scale/rscales (R convention)
+    if method in ("BRR", "Fay"):
+        if resolved.replicate_scale is not None or resolved.replicate_rscales is not None:
+            warnings.warn(
+                f"Custom replicate_scale/replicate_rscales ignored for {method} "
+                f"(BRR/Fay use fixed scaling).",
+                UserWarning, stacklevel=2,
+            )
+        factor = _replicate_variance_factor(method, R, resolved.fay_rho)
+        return factor * outer_sum, n_valid
+
+    # JK1/JKn: apply scale * rscales multiplicatively (R's svrVar contract)
+    scale = resolved.replicate_scale if resolved.replicate_scale is not None else 1.0
+
     if resolved.replicate_rscales is not None:
-        # Per-replicate scaling: sum_r rscales[r] * (c_r - c)(c_r - c)^T
         valid_rscales = resolved.replicate_rscales[valid]
         V = np.zeros((k, k))
         for i in range(len(diffs)):
             V += valid_rscales[i] * np.outer(diffs[i], diffs[i])
-        return V, n_valid
-    elif resolved.replicate_scale is not None:
-        return resolved.replicate_scale * (diffs.T @ diffs), n_valid
+        return scale * V, n_valid
 
-    outer_sum = diffs.T @ diffs  # (k, k)
-
-    if method in ("BRR", "Fay", "JK1"):
-        # Use original R for scaling, not n_valid — dropped replicates
-        # contribute zero to the sum but don't change the design structure
+    if method == "JK1":
         factor = _replicate_variance_factor(method, R, resolved.fay_rho)
-        return factor * outer_sum, n_valid
+        return scale * factor * outer_sum, n_valid
     elif method == "JKn":
         # JKn: V = sum_h ((n_h-1)/n_h) * sum_{r in h} (c_r - c)(c_r - c)^T
-        # Use original per-stratum counts for scaling
         rep_strata = resolved.replicate_strata
         if rep_strata is None:
             raise ValueError("JKn requires replicate_strata")
         valid_strata = rep_strata[valid]
         V = np.zeros((k, k))
         for h in np.unique(rep_strata):
-            # Use original per-stratum count for scaling
             n_h_original = int(np.sum(rep_strata == h))
-            # Sum only valid diffs in this stratum
             mask_h = valid_strata == h
             if not np.any(mask_h):
                 continue
             diffs_h = diffs[mask_h]
             V += ((n_h_original - 1.0) / n_h_original) * (diffs_h.T @ diffs_h)
-        return V, n_valid
+        return scale * V, n_valid
     else:
         raise ValueError(f"Unknown replicate method: {method}")
 
@@ -1519,36 +1530,42 @@ def compute_replicate_if_variance(
             center = float(np.mean(theta_reps[valid]))
     diffs = theta_reps[valid] - center
 
-    # Custom scale/rscales
-    if resolved.replicate_rscales is not None:
-        valid_rscales = resolved.replicate_rscales[valid]
-        return float(np.sum(valid_rscales * diffs**2)), n_valid
-    elif resolved.replicate_scale is not None:
-        return resolved.replicate_scale * float(np.sum(diffs**2)), n_valid
-
     ss = float(np.sum(diffs**2))
 
-    if method in ("BRR", "Fay", "JK1"):
-        # Use original R for scaling — dropped replicates contribute zero
-        # to the sum but don't change the design structure
+    # BRR/Fay: use fixed scaling, ignore user-supplied scale/rscales (R convention)
+    if method in ("BRR", "Fay"):
+        if resolved.replicate_scale is not None or resolved.replicate_rscales is not None:
+            warnings.warn(
+                f"Custom replicate_scale/replicate_rscales ignored for {method} "
+                f"(BRR/Fay use fixed scaling).",
+                UserWarning, stacklevel=2,
+            )
         factor = _replicate_variance_factor(method, R, resolved.fay_rho)
         return factor * ss, n_valid
+
+    # JK1/JKn: apply scale * rscales multiplicatively (R's svrVar contract)
+    scale = resolved.replicate_scale if resolved.replicate_scale is not None else 1.0
+
+    if resolved.replicate_rscales is not None:
+        valid_rscales = resolved.replicate_rscales[valid]
+        return scale * float(np.sum(valid_rscales * diffs**2)), n_valid
+
+    if method == "JK1":
+        factor = _replicate_variance_factor(method, R, resolved.fay_rho)
+        return scale * factor * ss, n_valid
     elif method == "JKn":
-        # Use original per-stratum counts for scaling
         rep_strata = resolved.replicate_strata
         if rep_strata is None:
             raise ValueError("JKn requires replicate_strata")
         valid_strata = rep_strata[valid]
-        valid_diffs = diffs
         result = 0.0
         for h in np.unique(rep_strata):
-            # Use original per-stratum count for scaling
             n_h_original = int(np.sum(rep_strata == h))
             mask_h = valid_strata == h
             if not np.any(mask_h):
                 continue
-            result += ((n_h_original - 1.0) / n_h_original) * float(np.sum(valid_diffs[mask_h] ** 2))
-        return result, n_valid
+            result += ((n_h_original - 1.0) / n_h_original) * float(np.sum(diffs[mask_h] ** 2))
+        return scale * result, n_valid
     else:
         raise ValueError(f"Unknown replicate method: {method}")
 

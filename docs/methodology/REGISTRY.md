@@ -2022,8 +2022,11 @@ variance from the distribution of replicate estimates.
   - `combined_weights` (default True): replicate columns include full-sample
     weight. If False, replicate columns are perturbation factors multiplied
     by full-sample weight before WLS.
-  - `replicate_scale`: override default variance scaling factor
-  - `replicate_rscales`: per-replicate scaling factors (vector of length R)
+  - `replicate_scale`: overall variance multiplier, applied multiplicatively
+    with `replicate_rscales` when both are provided (`scale * rscales`)
+  - `replicate_rscales`: per-replicate scaling factors (vector of length R).
+    BRR and Fay ignore custom `replicate_scale`/`replicate_rscales` with a
+    warning (fixed scaling by design); JK1/JKn allow overrides.
   - `mse` (default False, matching R's `survey::svrepdesign()`): if True,
     center variance on full-sample estimate; if False, center on mean of
     replicate estimates. When `replicate_rscales` contains zero entries
