@@ -461,6 +461,12 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         resolved_survey, _survey_weights, _survey_wt, survey_metadata = _resolve_survey_for_fit(
             survey_design, data, "analytical"
         )
+        # Reject replicate-weight designs — TROP uses Rao-Wu bootstrap
+        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
+            raise NotImplementedError(
+                "TROP does not yet support replicate-weight survey designs. "
+                "Use a TSL-based survey design (strata/psu/fpc)."
+            )
         # Validate weight_type is pweight (keep restriction), but allow
         # strata/PSU/FPC — those are handled via Rao-Wu rescaled bootstrap.
         if resolved_survey is not None and resolved_survey.weight_type != "pweight":

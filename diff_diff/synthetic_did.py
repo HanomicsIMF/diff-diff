@@ -256,6 +256,12 @@ class SyntheticDiD(DifferenceInDifferences):
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
+        # Reject replicate-weight designs — SyntheticDiD uses bootstrap variance
+        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
+            raise NotImplementedError(
+                "SyntheticDiD does not yet support replicate-weight survey "
+                "designs. Use a TSL-based survey design (strata/psu/fpc)."
+            )
         # Validate pweight only (strata/PSU/FPC are allowed for Rao-Wu bootstrap)
         if resolved_survey is not None and resolved_survey.weight_type != "pweight":
             raise ValueError(

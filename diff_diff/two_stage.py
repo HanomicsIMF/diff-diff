@@ -242,6 +242,11 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
 
         # Validate within-unit constancy for panel survey designs
         if resolved_survey is not None:
+            if resolved_survey.uses_replicate_variance:
+                raise NotImplementedError(
+                    "TwoStageDiD does not yet support replicate-weight survey "
+                    "designs. Use a TSL-based survey design (strata/psu/fpc)."
+                )
             _validate_unit_constant_survey(data, unit, survey_design)
             if resolved_survey.weight_type != "pweight":
                 raise ValueError(

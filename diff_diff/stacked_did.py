@@ -242,6 +242,15 @@ class StackedDiD:
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
+        # Reject replicate-weight designs — StackedDiD uses
+        # compute_survey_vcov (TSL) directly without replicate dispatch.
+        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
+            raise NotImplementedError(
+                "StackedDiD does not yet support replicate-weight survey "
+                "designs. Use CallawaySantAnna for staggered adoption with "
+                "replicate weights, or use a TSL-based survey design "
+                "(strata/psu/fpc)."
+            )
 
         # Reject fweight and aweight — Q-weight composition is ratio-valued
         # and breaks both frequency-weight (integer) and analytic-weight

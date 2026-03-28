@@ -2045,12 +2045,17 @@ variance from the distribution of replicate estimates.
   design structure is fixed and dropped replicates contribute zero to the
   sum without changing the scale. Survey df uses `n_valid - 1` for
   t-based inference.
-- **Note:** SunAbraham rejects replicate-weight designs with
-  `NotImplementedError` because the weighted within-transformation must be
-  recomputed per replicate (not yet implemented).
-- **Note:** CallawaySantAnna, ContinuousDiD, and EfficientDiD reject
-  replicate weights with `n_bootstrap > 0`. Replicate weights provide
-  analytical variance; bootstrap is a separate inference mechanism.
+- **Note:** Replicate-weight support matrix:
+  - **Supported**: CallawaySantAnna (reg, no bootstrap), ContinuousDiD
+    (no bootstrap), EfficientDiD (no bootstrap), TripleDifference (all
+    methods), LinearRegression (OLS path)
+  - **Rejected with NotImplementedError**: SunAbraham (within-transformation
+    must be recomputed per replicate), DifferenceInDifferences,
+    MultiPeriodDiD, StackedDiD (use compute_survey_vcov directly),
+    ImputationDiD, TwoStageDiD (custom variance), SyntheticDiD, TROP
+    (bootstrap-based variance)
+  - CS/ContinuousDiD/EfficientDiD reject replicate + `n_bootstrap > 0`
+    (replicate weights provide analytical variance)
 - **Note:** When invalid replicates are dropped in `compute_replicate_vcov`
   (OLS path), `n_valid` is returned and used for `df_survey = n_valid - 1`
   in `LinearRegression.fit()`. For IF-based replicate paths, replicates

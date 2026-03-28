@@ -498,10 +498,9 @@ class TestReplicateWeightVariance:
         assert sm.n_replicates == len(rep_cols)
         assert sm.df_survey == len(rep_cols) - 1
 
-    def test_replicate_with_did(self, replicate_data):
-        """Replicate weights work end-to-end with DifferenceInDifferences."""
+    def test_replicate_rejected_by_base_did(self, replicate_data):
+        """DifferenceInDifferences rejects replicate-weight designs."""
         data, rep_cols = replicate_data
-        # Add DiD structure
         n = len(data)
         data["treated"] = (np.arange(n) < n // 2).astype(int)
         data["post"] = (np.arange(n) % 4 >= 2).astype(int)
@@ -511,15 +510,11 @@ class TestReplicateWeightVariance:
             weights="weight", replicate_weights=rep_cols,
             replicate_method="JK1",
         )
-        est = DifferenceInDifferences()
-        result = est.fit(
-            data, outcome="outcome", treatment="treated", time="post",
-            survey_design=sd,
-        )
-        assert np.isfinite(result.att)
-        assert np.isfinite(result.se)
-        assert result.survey_metadata is not None
-        assert result.survey_metadata.replicate_method == "JK1"
+        with pytest.raises(NotImplementedError, match="DifferenceInDifferences"):
+            DifferenceInDifferences().fit(
+                data, outcome="outcome", treatment="treated", time="post",
+                survey_design=sd,
+            )
 
     def test_replicate_if_variance(self, replicate_data):
         """IF-based replicate variance produces finite results."""

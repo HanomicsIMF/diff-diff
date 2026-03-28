@@ -240,6 +240,15 @@ class DifferenceInDifferences:
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, self.inference)
         )
+        # Reject replicate-weight designs — base DiD uses compute_survey_vcov
+        # (TSL) directly, not LinearRegression's replicate dispatch.
+        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
+            raise NotImplementedError(
+                "DifferenceInDifferences does not yet support replicate-weight "
+                "survey designs. Use CallawaySantAnna, EfficientDiD, "
+                "ContinuousDiD, or TripleDifference for replicate-weight "
+                "inference, or use a TSL-based survey design (strata/psu/fpc)."
+            )
 
         # Handle absorbed fixed effects (within-transformation)
         working_data = data.copy()
@@ -1008,6 +1017,15 @@ class MultiPeriodDiD(DifferenceInDifferences):
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, effective_inference)
         )
+        # Reject replicate-weight designs — MultiPeriodDiD uses
+        # compute_survey_vcov (TSL) directly without replicate dispatch.
+        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
+            raise NotImplementedError(
+                "MultiPeriodDiD does not yet support replicate-weight survey "
+                "designs. Use CallawaySantAnna for staggered adoption with "
+                "replicate weights, or use a TSL-based survey design "
+                "(strata/psu/fpc)."
+            )
 
         # Handle absorbed fixed effects (within-transformation)
         working_data = data.copy()
