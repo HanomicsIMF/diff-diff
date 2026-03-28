@@ -131,13 +131,24 @@ class SurveyDesign:
                     f"replicate_strata length ({len(self.replicate_strata)}) must "
                     f"match replicate_weights length ({len(self.replicate_weights)})"
                 )
-        # Validate rscales length
+        # Validate scale/rscales values and length
+        if self.replicate_scale is not None:
+            if not (np.isfinite(self.replicate_scale) and self.replicate_scale > 0):
+                raise ValueError(
+                    f"replicate_scale must be a positive finite number, "
+                    f"got {self.replicate_scale}"
+                )
         if self.replicate_rscales is not None and self.replicate_weights is not None:
             if len(self.replicate_rscales) != len(self.replicate_weights):
                 raise ValueError(
                     f"replicate_rscales length ({len(self.replicate_rscales)}) must "
                     f"match replicate_weights length ({len(self.replicate_weights)})"
                 )
+            rscales_arr = np.asarray(self.replicate_rscales, dtype=float)
+            if not np.all(np.isfinite(rscales_arr)):
+                raise ValueError("replicate_rscales must be finite")
+            if np.any(rscales_arr < 0):
+                raise ValueError("replicate_rscales must be non-negative")
 
     def resolve(self, data: pd.DataFrame) -> "ResolvedSurveyDesign":
         """
@@ -214,6 +225,26 @@ class SurveyDesign:
                 raise ValueError("Replicate weights contain Inf values")
             if np.any(rep_arr < 0):
                 raise ValueError("Replicate weights must be non-negative")
+            # Validate combined_weights contract: when True, replicate columns
+            # include the full-sample weight, so w_r > 0 with w_full == 0 is
+            # malformed (observation excluded from full sample but included in
+            # a replicate).
+            combined = (
+                self.combined_weights
+                if self.combined_weights is not None
+                else True
+            )
+            if combined:
+                zero_full = weights == 0
+                if np.any(zero_full):
+                    rep_positive_on_zero = np.any(rep_arr[zero_full] > 0, axis=1)
+                    if np.any(rep_positive_on_zero):
+                        raise ValueError(
+                            "Malformed combined_weights=True design: some "
+                            "replicate columns have positive weight where "
+                            "full-sample weight is zero. Either fix the "
+                            "replicate columns or use combined_weights=False."
+                        )
             # Do NOT normalize replicate columns — the IF path uses w_r/w_full
             # ratios that must reflect the true replicate design, not rescaled sums
             n_rep = rep_arr.shape[1]

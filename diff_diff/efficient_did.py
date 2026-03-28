@@ -1081,7 +1081,9 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 self._unit_resolved_survey.weights,
             )
             # Propagate effective replicate df if available
-            if self._survey_df is not None and meta.df_survey != self._survey_df:
+            # (but not the df=0 sentinel — keep metadata as None for undefined df)
+            if (self._survey_df is not None and self._survey_df != 0
+                    and meta.df_survey != self._survey_df):
                 meta.df_survey = self._survey_df
             return meta
         return panel_metadata

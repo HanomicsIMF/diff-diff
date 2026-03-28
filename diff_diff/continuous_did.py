@@ -531,8 +531,10 @@ class ContinuousDiD:
                     raw_w_unit = _unit_resolved.weights
                     survey_metadata = compute_survey_metadata(_unit_resolved, raw_w_unit)
 
-                # Propagate replicate df override to survey_metadata for display consistency
-                if _survey_df is not None and survey_metadata is not None:
+                # Propagate replicate df override to survey_metadata for display
+                # (but not the df=0 sentinel — keep metadata as None for undefined df)
+                if (_survey_df is not None and _survey_df != 0
+                        and survey_metadata is not None):
                     if survey_metadata.df_survey != _survey_df:
                         survey_metadata.df_survey = _survey_df
 

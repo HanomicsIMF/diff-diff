@@ -1214,8 +1214,16 @@ class CallawaySantAnna(
 
         # Batch inference
         if task_keys:
+            # Use survey df for replicate designs (propagated from precomputed)
+            _ipw_dr_df = precomputed.get("df_survey") if precomputed is not None else None
+            # Guard: replicate design with undefined df → NaN inference
+            if (_ipw_dr_df is None and precomputed is not None
+                    and precomputed.get("resolved_survey_unit") is not None
+                    and hasattr(precomputed["resolved_survey_unit"], 'uses_replicate_variance')
+                    and precomputed["resolved_survey_unit"].uses_replicate_variance):
+                _ipw_dr_df = 0
             t_stats, p_values, ci_lowers, ci_uppers = safe_inference_batch(
-                np.array(atts), np.array(ses), alpha=self.alpha
+                np.array(atts), np.array(ses), alpha=self.alpha, df=_ipw_dr_df
             )
             for idx, key in enumerate(task_keys):
                 group_time_effects[key]["t_stat"] = float(t_stats[idx])

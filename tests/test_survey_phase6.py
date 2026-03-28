@@ -1357,6 +1357,57 @@ class TestSubpopulationMaskValidation:
                 survey_design=sd,
             )
 
+    def test_twfe_replicate_rejected(self):
+        """TwoWayFixedEffects should reject replicate-weight designs."""
+        from diff_diff.twfe import TwoWayFixedEffects
+
+        data, rep_cols = TestEstimatorReplicateWeights._make_staggered_replicate_data()
+        sd = SurveyDesign(
+            weights="weight", replicate_weights=rep_cols,
+            replicate_method="JK1",
+        )
+        with pytest.raises(NotImplementedError, match="TwoWayFixedEffects"):
+            TwoWayFixedEffects().fit(
+                data, outcome="outcome", treatment="first_treat",
+                unit="unit", time="time", survey_design=sd,
+            )
+
+    def test_stacked_did_replicate_rejected(self):
+        """StackedDiD should reject replicate-weight designs."""
+        from diff_diff import StackedDiD
+
+        data, rep_cols = TestEstimatorReplicateWeights._make_staggered_replicate_data()
+        sd = SurveyDesign(
+            weights="weight", replicate_weights=rep_cols,
+            replicate_method="JK1",
+        )
+        with pytest.raises(NotImplementedError, match="StackedDiD"):
+            StackedDiD().fit(
+                data, outcome="outcome", unit="unit", time="time",
+                first_treat="first_treat", survey_design=sd,
+            )
+
+    def test_invalid_replicate_scale_rejected(self):
+        """Negative or zero replicate_scale should be rejected."""
+        with pytest.raises(ValueError, match="positive finite"):
+            SurveyDesign(
+                weights="w", replicate_weights=["r1", "r2"],
+                replicate_method="JK1", replicate_scale=-1.0,
+            )
+        with pytest.raises(ValueError, match="positive finite"):
+            SurveyDesign(
+                weights="w", replicate_weights=["r1", "r2"],
+                replicate_method="JK1", replicate_scale=0.0,
+            )
+
+    def test_invalid_replicate_rscales_rejected(self):
+        """Negative replicate_rscales should be rejected."""
+        with pytest.raises(ValueError, match="non-negative"):
+            SurveyDesign(
+                weights="w", replicate_weights=["r1", "r2"],
+                replicate_method="JK1", replicate_rscales=[-1.0, 1.0],
+            )
+
 
 # =============================================================================
 # Effective-sample and d.f. consistency tests

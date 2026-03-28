@@ -46,7 +46,7 @@ message pointing to the planned phase or describing the limitation.
 |-----------|------|----------------|-------|
 | ImputationDiD | `imputation.py` | Analytical | Weighted iterative FE, weighted ATT aggregation, weighted conservative variance (Theorem 3); bootstrap+survey deferred |
 | TwoStageDiD | `two_stage.py` | Analytical | Weighted iterative FE, weighted Stage 2 OLS, weighted GMM sandwich variance; bootstrap+survey deferred |
-| CallawaySantAnna | `staggered.py` | Weights-only | Weights-only SurveyDesign (strata/PSU/FPC rejected); reg supports covariates, IPW/DR no-covariate only; survey-weighted WIF in aggregation; full design SEs, covariates+IPW/DR, and bootstrap+survey deferred |
+| CallawaySantAnna | `staggered.py` | Full | Full SurveyDesign (strata/PSU/FPC/replicate weights); reg supports covariates, IPW/DR no-covariate only; survey-weighted WIF in aggregation; replicate IF variance for analytical SEs |
 
 **Infrastructure**: Weighted `solve_logit()` added to `linalg.py` — survey weights
 enter the IRLS working weights as `w_survey * mu * (1 - mu)`. This also unblocked
@@ -100,10 +100,11 @@ JKn requires explicit `replicate_strata` (per-replicate stratum assignment).
 - Dispatch in `LinearRegression.fit()` and `staggered_aggregation.py`
 - Replicate weights mutually exclusive with strata/PSU/FPC
 - Survey df = rank(replicate_weights) - 1, matching R's `survey::degf()`
-- **Limitations**: SunAbraham rejects replicate-weight designs (weighted
-  within-transformation must be recomputed per replicate — not yet implemented).
-  ContinuousDiD and EfficientDiD reject replicate weights + `n_bootstrap > 0`
-  (replicate variance is analytical, not bootstrap-compatible).
+- **Limitations**: Supported in CallawaySantAnna, ContinuousDiD, EfficientDiD,
+  TripleDifference (analytical only, no bootstrap). Rejected with
+  `NotImplementedError` in DifferenceInDifferences, TwoWayFixedEffects,
+  MultiPeriodDiD, StackedDiD, SunAbraham, ImputationDiD, TwoStageDiD,
+  SyntheticDiD, TROP.
 
 ### DEFF Diagnostics ✅ (2026-03-26)
 Per-coefficient design effects comparing survey vcov to SRS (HC1) vcov.
