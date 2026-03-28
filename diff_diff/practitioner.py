@@ -282,7 +282,20 @@ def _covariates_step() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 def _handle_did(results: Any):
     steps = [
-        _parallel_trends_step(),
+        _step(
+            baker_step=3,
+            label="Test parallel trends assumption",
+            why=(
+                "Parallel trends is the core identifying assumption. "
+                "Insignificant pre-trends do NOT prove it holds."
+            ),
+            code=(
+                "from diff_diff import check_parallel_trends\n"
+                "pt = check_parallel_trends(data, outcome='y', time='period',\n"
+                "                           treatment_group='treated')"
+            ),
+            step_name="parallel_trends",
+        ),
         _placebo_step(),  # valid: basic 2x2 DiD with binary time
         _step(
             baker_step=4,
