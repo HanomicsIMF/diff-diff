@@ -69,7 +69,7 @@ class SurveyDesign:
     combined_weights: bool = True
     replicate_scale: Optional[float] = None
     replicate_rscales: Optional[List[float]] = None
-    mse: bool = True
+    mse: bool = False
 
     def __post_init__(self):
         valid_weight_types = {"pweight", "fweight", "aweight"}
@@ -557,7 +557,7 @@ class ResolvedSurveyDesign:
     combined_weights: bool = True
     replicate_scale: Optional[float] = None
     replicate_rscales: Optional[np.ndarray] = None  # (R,) per-replicate scales
-    mse: bool = True
+    mse: bool = False
 
     @property
     def uses_replicate_variance(self) -> bool:
@@ -566,9 +566,18 @@ class ResolvedSurveyDesign:
 
     @property
     def df_survey(self) -> Optional[int]:
-        """Survey degrees of freedom: n_PSU - n_strata, or R-1 for replicates."""
+        """Survey degrees of freedom.
+
+        For replicate designs: numerical rank of centered replicate weight
+        matrix, matching R's ``survey::degf()``. For TSL: n_PSU - n_strata.
+        """
         if self.uses_replicate_variance:
-            return self.n_replicates - 1 if self.n_replicates > 1 else None
+            if self.replicate_weights is None or self.n_replicates < 2:
+                return None
+            # Rank-based df from replicate weight matrix, matching
+            # R's survey::degf() for svrepdesign objects
+            rank = int(np.linalg.matrix_rank(self.replicate_weights))
+            return max(rank - 1, 1) if rank > 1 else None
         if self.psu is not None and self.n_psu > 0:
             if self.strata is not None and self.n_strata > 0:
                 return self.n_psu - self.n_strata
