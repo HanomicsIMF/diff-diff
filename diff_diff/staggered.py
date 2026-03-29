@@ -2827,6 +2827,14 @@ class CallawaySantAnna(
         Predictions made for ALL treated (both periods).
         OR correction pools ALL treated observations across both periods.
 
+        IF convention
+        -------------
+        Intermediate terms use R's unnormalized psi_i convention throughout.
+        R computes SE as ``sd(psi) / sqrt(n)``; with mean(psi) approx 0 this
+        equals ``sqrt(sum(psi^2)) / n``.  At the end we convert to the
+        library's pre-scaled phi_i = psi_i / n convention where
+        ``se = sqrt(sum(phi^2))``, used by the aggregation/bootstrap layer.
+
         Returns (att, se, inf_func_concat, idx_concat).
         """
         n_gt = len(y_gt)
@@ -2880,12 +2888,17 @@ class CallawaySantAnna(
         sum_w_treat_pre = np.sum(w_treat_pre)
         sum_w_D = np.sum(w_D_gt) + np.sum(w_D_gs)  # pool ALL treated
 
+        # R: mean(w.treat.post), mean(w.treat.pre), mean(w.cont)
+        mean_w_treat_post = sum_w_treat_post / n_all
+        mean_w_treat_pre = sum_w_treat_pre / n_all
+        mean_w_D = sum_w_D / n_all
+
         # --- Treated means (period-specific Hajek means) ---
         eta_treat_post = np.sum(w_treat_post * y_gt) / sum_w_treat_post
         eta_treat_pre = np.sum(w_treat_pre * y_gs) / sum_w_treat_pre
 
         # --- OR correction: pools ALL treated ---
-        # out.y.post - out.y.pre for each treated obs
+        # R: out.y.post - out.y.pre for each treated obs
         or_diff_gt = mu_post_gt - mu_pre_gt  # treated at t
         or_diff_gs = mu_post_gs - mu_pre_gs  # treated at s
         eta_cont = (np.sum(w_D_gt * or_diff_gt) + np.sum(w_D_gs * or_diff_gs)) / sum_w_D
@@ -2893,57 +2906,62 @@ class CallawaySantAnna(
         # --- Point estimate ---
         att = float(eta_treat_post - eta_treat_pre - eta_cont)
 
-        # --- Influence function (matches R reg_did_rc.R) ---
-        # All IF components are n_all-length, nonzero only for their group.
+        # =================================================================
+        # Influence function in R's unnormalized psi convention
+        # (R: reg_did_rc.R, psi = n * phi)
+        # =================================================================
 
-        # Treated IF components (period-specific)
-        inf_treat_post = w_treat_post * (y_gt - eta_treat_post) / sum_w_treat_post
-        inf_treat_pre = w_treat_pre * (y_gs - eta_treat_pre) / sum_w_treat_pre
+        # --- Treated psi (R: eta.treat.post, eta.treat.pre) ---
+        # R: w.treat.post * (y - eta.treat.post) / mean(w.treat.post)
+        psi_treat_post = w_treat_post * (y_gt - eta_treat_post) / mean_w_treat_post
+        # R: w.treat.pre * (y - eta.treat.pre) / mean(w.treat.pre)
+        psi_treat_pre = w_treat_pre * (y_gs - eta_treat_pre) / mean_w_treat_pre
 
-        # inf_treat = inf_treat_post - inf_treat_pre (across groups)
-        # inf_treat_post lives at gt positions, inf_treat_pre at gs positions
+        # --- Control psi: leading term (R: inf.cont.1) ---
+        # R: w.cont * (or_diff - eta.cont)   [before /mean(w.cont)]
+        psi_cont_1_gt = w_D_gt * (or_diff_gt - eta_cont)
+        psi_cont_1_gs = w_D_gs * (or_diff_gs - eta_cont)
 
-        # Control IF: leading term (nonzero only for treated obs)
-        inf_cont_1_gt = w_D_gt * (or_diff_gt - eta_cont) / sum_w_D
-        inf_cont_1_gs = w_D_gs * (or_diff_gs - eta_cont) / sum_w_D
-
-        # Control IF: estimation effect from OLS
-        # bread_t = (X_ctrl_t' @ diag(W_ctrl_t) @ X_ctrl_t)^{-1}
+        # --- Control psi: estimation effect (R: inf.cont.2) ---
+        # R: bread = solve(crossprod(X_ctrl, W * X_ctrl) / n)
+        # Here bread is (X'WX)^{-1} (without /n), so asy_lin_rep already
+        # absorbs the 1/n that R puts in its bread.  We compensate by using
+        # R's colMeans (= sum/n_all) for M1, matching the product exactly.
         W_ct = sw_ct if sw_ct is not None else np.ones(n_ct)
         W_cs = sw_cs if sw_cs is not None else np.ones(n_cs)
         bread_t = _safe_inv(X_ct_int.T @ (W_ct[:, None] * X_ct_int))
         bread_s = _safe_inv(X_cs_int.T @ (W_cs[:, None] * X_cs_int))
 
         # R: M1 = colMeans(w.cont * out.x) = sum(w_D * X) / n_all
-        # The final control IF divides by mean_w_D = sum_w_D / n_all (once).
-        # In our split convention phi = psi / n_all, the estimation effect is
-        # asy_lin_rep @ M1 / sum_w_D (where M1 uses n_all denominator).
         M1 = (
             np.sum(w_D_gt[:, None] * X_gt_int, axis=0) + np.sum(w_D_gs[:, None] * X_gs_int, axis=0)
         ) / n_all
 
-        # asy_lin_rep_ols_t: nonzero only for control-t obs
-        # = W_i * (1-D_i) * 1{T=t} * (y_i - X_i'*beta_t) * X_i @ bread_t
+        # R: asy.lin.rep.ols  (per-obs OLS score * bread)
         asy_lin_rep_ols_t = (W_ct * resid_ct)[:, None] * X_ct_int @ bread_t
-        # asy_lin_rep_ols_s: nonzero only for control-s obs
         asy_lin_rep_ols_s = (W_cs * resid_cs)[:, None] * X_cs_int @ bread_s
 
-        inf_cont_2_ct = asy_lin_rep_ols_t @ M1  # (n_ct,)
-        inf_cont_2_cs = asy_lin_rep_ols_s @ M1  # (n_cs,)
+        # R: inf.cont.2.post = asy.lin.rep.ols_t %*% M1
+        psi_cont_2_ct = asy_lin_rep_ols_t @ M1  # (n_ct,)
+        # R: inf.cont.2.pre  = asy.lin.rep.ols_s %*% M1
+        psi_cont_2_cs = asy_lin_rep_ols_s @ M1  # (n_cs,)
 
-        # --- Assemble per-group IF ---
-        # R: inf_cont = (inf_cont_1 + inf_cont_2_post - inf_cont_2_pre) / mean(w_D)
-        # Our convention divides by sum (not mean), so estimation effects need / sum_w_D
-        inf_gt = inf_treat_post - inf_cont_1_gt
-        inf_gs = -inf_treat_pre - inf_cont_1_gs
-        inf_ct = -(inf_cont_2_ct / sum_w_D)
-        inf_cs = inf_cont_2_cs / sum_w_D
+        # --- Assemble per-group psi ---
+        # R: inf.treat = inf.treat.post - inf.treat.pre  (across groups)
+        # R: inf.cont = (inf.cont.1 + inf.cont.2.post - inf.cont.2.pre) / mean(w.cont)
+        # R: att.inf.func = inf.treat - inf.cont
+        psi_gt = psi_treat_post - psi_cont_1_gt / mean_w_D
+        psi_gs = -psi_treat_pre - psi_cont_1_gs / mean_w_D
+        psi_ct = -psi_cont_2_ct / mean_w_D
+        psi_cs = psi_cont_2_cs / mean_w_D
 
-        # Concatenate: treated (t then s), control (t then s)
-        inf_treated = np.concatenate([inf_gt, inf_gs])
-        inf_control = np.concatenate([inf_ct, inf_cs])
-        inf_all = np.concatenate([inf_treated, inf_control])
+        psi_all = np.concatenate([psi_gt, psi_gs, psi_ct, psi_cs])
 
+        # =================================================================
+        # Convert to library convention: phi = psi / n_all
+        # se = sqrt(sum(phi^2))  ==  sqrt(sum(psi^2)) / n_all
+        # =================================================================
+        inf_all = psi_all / n_all
         se = float(np.sqrt(np.sum(inf_all**2)))
 
         idx_all = None  # caller builds idx from masks
@@ -2969,6 +2987,14 @@ class CallawaySantAnna(
 
         Propensity score P(G=g | X) estimated on pooled treated+control
         observations from both periods. Reweight controls in each period.
+
+        IF convention
+        -------------
+        Intermediate terms use R's unnormalized psi_i convention throughout
+        (R: ``ipw_did_rc``).  R computes SE as ``sd(psi) / sqrt(n)``.
+        At the end we convert to the library's pre-scaled phi_i = psi_i / n
+        convention where ``se = sqrt(sum(phi^2))``, used by the
+        aggregation/bootstrap layer.
 
         Returns (att, se, inf_func_concat, idx_concat).
         """
@@ -3009,11 +3035,11 @@ class CallawaySantAnna(
         # Clip propensity scores
         pscore = np.clip(pscore, self.pscore_trim, 1 - self.pscore_trim)
 
-        # Split propensity scores (treated ps not used — only control IPW weights)
+        # Split propensity scores (treated ps not used -- only control IPW weights)
         ps_ct = pscore[n_gt + n_gs : n_gt + n_gs + n_ct]
         ps_cs = pscore[n_gt + n_gs + n_ct :]
 
-        # IPW weights for controls
+        # IPW weights for controls (R: w1.x = ps / (1 - ps))
         w_ct = ps_ct / (1 - ps_ct)
         w_cs = ps_cs / (1 - ps_cs)
 
@@ -3021,12 +3047,29 @@ class CallawaySantAnna(
             w_ct = sw_ct * w_ct
             w_cs = sw_cs * w_cs
 
-        w_ct_norm = w_ct / np.sum(w_ct) if np.sum(w_ct) > 0 else w_ct
-        w_cs_norm = w_cs / np.sum(w_cs) if np.sum(w_cs) > 0 else w_cs
+        # R: mean(w.treat.post), mean(w.treat.pre), mean(w.ipw.ct), mean(w.ipw.cs)
+        if sw_gt is not None:
+            sum_w_treat_post = np.sum(sw_gt)
+            sum_w_treat_pre = np.sum(sw_gs)
+        else:
+            sum_w_treat_post = float(n_gt)
+            sum_w_treat_pre = float(n_gs)
+
+        mean_w_treat_post = sum_w_treat_post / n_all
+        mean_w_treat_pre = sum_w_treat_pre / n_all
+
+        sum_w_ct = np.sum(w_ct)
+        sum_w_cs = np.sum(w_cs)
+        mean_w_ct = sum_w_ct / n_all
+        mean_w_cs = sum_w_cs / n_all
+
+        # Hajek-normalized weights (R normalizes by sum for point estimate)
+        w_ct_norm = w_ct / sum_w_ct if sum_w_ct > 0 else w_ct
+        w_cs_norm = w_cs / sum_w_cs if sum_w_cs > 0 else w_cs
 
         if sw_gt is not None:
-            sw_gt_norm = sw_gt / np.sum(sw_gt)
-            sw_gs_norm = sw_gs / np.sum(sw_gs)
+            sw_gt_norm = sw_gt / sum_w_treat_post
+            sw_gs_norm = sw_gs / sum_w_treat_pre
             mu_gt = float(np.sum(sw_gt_norm * y_gt))
             mu_gs = float(np.sum(sw_gs_norm * y_gs))
         else:
@@ -3038,64 +3081,69 @@ class CallawaySantAnna(
 
         att = (mu_gt - mu_ct_ipw) - (mu_gs - mu_cs_ipw)
 
-        # Influence function
+        # =================================================================
+        # Influence function in R's unnormalized psi convention
+        # (R: ipw_did_rc.R, psi = n * phi)
+        # =================================================================
+
+        # --- Treated psi (R: eta.treat.post, eta.treat.pre) ---
+        # R: w.treat.post * (y - eta.treat.post) / mean(w.treat.post)
         if sw_gt is not None:
-            inf_gt = sw_gt_norm * (y_gt - mu_gt)
-            inf_gs = -sw_gs_norm * (y_gs - mu_gs)
+            psi_gt = sw_gt * (y_gt - mu_gt) / mean_w_treat_post
+            psi_gs = -sw_gs * (y_gs - mu_gs) / mean_w_treat_pre
         else:
-            inf_gt = (y_gt - mu_gt) / n_gt
-            inf_gs = -(y_gs - mu_gs) / n_gs
+            psi_gt = (y_gt - mu_gt) / mean_w_treat_post
+            psi_gs = -(y_gs - mu_gs) / mean_w_treat_pre
 
-        inf_ct = -w_ct_norm * (y_ct - mu_ct_ipw)
-        inf_cs = w_cs_norm * (y_cs - mu_cs_ipw)
+        # --- Control psi (R: eta.cont.post, eta.cont.pre) ---
+        # R: w.ipw * (y - eta.cont) / mean(w.ipw)
+        psi_ct = -w_ct * (y_ct - mu_ct_ipw) / mean_w_ct if mean_w_ct > 0 else np.zeros(n_ct)
+        psi_cs = w_cs * (y_cs - mu_cs_ipw) / mean_w_cs if mean_w_cs > 0 else np.zeros(n_cs)
 
-        inf_treated = np.concatenate([inf_gt, inf_gs])
-        inf_control = np.concatenate([inf_ct, inf_cs])
-        inf_all = np.concatenate([inf_treated, inf_control])
+        psi_all = np.concatenate([psi_gt, psi_gs, psi_ct, psi_cs])
 
-        # PS IF correction for cross-sectional IPW
-        X_all_int = np.column_stack([np.ones(len(D_all)), X_all])
-        pscore_all = pscore  # already computed and clipped
+        # --- PS IF correction (R: asy.lin.rep.ps %*% M2) ---
+        X_all_int = np.column_stack([np.ones(n_all), X_all])
 
-        W_ps = pscore_all * (1 - pscore_all)
+        W_ps = pscore * (1 - pscore)
         if sw_all is not None:
             W_ps = W_ps * sw_all
         H_ps = X_all_int.T @ (W_ps[:, None] * X_all_int)
         H_ps_inv = _safe_inv(H_ps)
 
-        score_ps = (D_all - pscore_all)[:, None] * X_all_int
+        score_ps = (D_all - pscore)[:, None] * X_all_int
         if sw_all is not None:
             score_ps = score_ps * sw_all[:, None]
         asy_lin_rep_ps = score_ps @ H_ps_inv  # (n_all, p+1)
 
-        # M2: gradient of IPW ATT w.r.t. PS parameters
-        # R: M2 = colMeans(w_ipw * (y-mu)/mean_w * X) over ALL n obs (zeros for treated).
-        # In our split convention phi = psi/n_all, so M2_rc = R's M2 / n_all.
-        # R's M2 = sum(w_ct_norm * (y-mu) * X_ct)  [the mean_w normalization cancels].
-        # So M2_rc = sum(...) / n_all.  Old code used np.mean → sum/n_ct (wrong).
+        # =================================================================
+        # Convert leading psi to library phi convention: phi = psi / n_all
+        # =================================================================
+        inf_all = psi_all / n_all
+
+        # --- PS nuisance correction (added in phi convention) ---
+        # R: M2 = colMeans(w_ipw * (y-mu) * X) across ALL n obs.
+        # colMeans = sum/n_all; treated rows contribute zero.
+        # asy_lin_rep_ps @ M2 matches R's psi_ps but with our bread
+        # convention (no 1/n), so the product is already in phi scale.
         ipw_resid_ct = w_ct_norm * (y_ct - mu_ct_ipw)
         ipw_resid_cs = w_cs_norm * (y_cs - mu_cs_ipw)
-        # Zero for treated observations
-        M2_rc = np.zeros(X_all_int.shape[1])
-        # Control-t contribution: sum / n_all (NOT np.mean which divides by n_ct)
-        M2_rc += (
-            np.sum(
-                ipw_resid_ct[:, None] * X_all_int[n_gt + n_gs : n_gt + n_gs + n_ct],
-                axis=0,
-            )
-            / n_all
-        )
-        # Control-s contribution (opposite sign -- base period)
-        M2_rc -= (
-            np.sum(
-                ipw_resid_cs[:, None] * X_all_int[n_gt + n_gs + n_ct :],
-                axis=0,
-            )
-            / n_all
-        )
 
-        inf_all = inf_all + asy_lin_rep_ps @ M2_rc
+        ct_slice = slice(n_gt + n_gs, n_gt + n_gs + n_ct)
+        cs_slice = slice(n_gt + n_gs + n_ct, None)
 
+        # R: M2 = colMeans(...) = sum(...) / n
+        M2 = np.zeros(X_all_int.shape[1])
+        M2 += np.sum(ipw_resid_ct[:, None] * X_all_int[ct_slice], axis=0) / n_all
+        M2 -= np.sum(ipw_resid_cs[:, None] * X_all_int[cs_slice], axis=0) / n_all
+
+        # R: att.inf.func += asy.lin.rep.ps %*% M2  (phi-scale correction)
+        inf_all = inf_all + asy_lin_rep_ps @ M2
+
+        # =================================================================
+        # SE from phi: se = sqrt(sum(phi^2))
+        # Equivalent to R's sqrt(sum(psi^2)) / n when mean(psi) approx 0.
+        # =================================================================
         se = float(np.sqrt(np.sum(inf_all**2)))
 
         idx_all = None
@@ -3122,6 +3170,14 @@ class CallawaySantAnna(
         Matches R DRDID::drdid_rc (Sant'Anna & Zhao 2020, Eq 3.1).
         Locally efficient DR estimator with 4 OLS fits (control pre/post,
         treated pre/post) plus propensity score.
+
+        IF convention
+        -------------
+        Intermediate terms use R's unnormalized psi_i convention throughout
+        (R: ``drdid_rc``).  R computes SE as ``sd(psi) / sqrt(n)``.
+        At the end we convert to the library's pre-scaled phi_i = psi_i / n
+        convention where ``se = sqrt(sum(phi^2))``, used by the
+        aggregation/bootstrap layer.
 
         Returns (att, se, inf_func_concat, idx_concat).
         """
@@ -3191,11 +3247,10 @@ class CallawaySantAnna(
         mu1_pre_gs = X_gs_int @ beta_gs  # mu_{1,0}(X) for treated-pre
 
         # mu_{0,Y}(T_i, X_i): control OR evaluated at own period
-        # For post-period obs: mu_{0,1}(X), for pre-period obs: mu_{0,0}(X)
-        mu0Y_gt = mu0_post_gt  # treated-post → use post control model
-        mu0Y_gs = mu0_pre_gs  # treated-pre → use pre control model
-        mu0Y_ct = mu0_post_ct  # control-post → use post control model
-        mu0Y_cs = mu0_pre_cs  # control-pre → use pre control model
+        mu0Y_gt = mu0_post_gt  # treated-post: use post control model
+        mu0Y_gs = mu0_pre_gs  # treated-pre: use pre control model
+        mu0Y_ct = mu0_post_ct  # control-post: use post control model
+        mu0Y_cs = mu0_pre_cs  # control-pre: use pre control model
 
         # =====================================================================
         # 2. Propensity score
@@ -3235,7 +3290,7 @@ class CallawaySantAnna(
         ps_cs = pscore[n_gt + n_gs + n_ct :]
 
         # =====================================================================
-        # 3. Group weights
+        # 3. Group weights and R-convention means
         # =====================================================================
         if sw_gt is not None:
             w_treat_post = sw_gt
@@ -3252,12 +3307,22 @@ class CallawaySantAnna(
         sum_w_treat_pre = np.sum(w_treat_pre)
         sum_w_D = np.sum(w_D_gt) + np.sum(w_D_gs)
 
+        # R: mean(w) = sum(w) / n  -- used in psi normalizers
+        mean_w_treat_post = sum_w_treat_post / n_all
+        mean_w_treat_pre = sum_w_treat_pre / n_all
+        mean_w_D = sum_w_D / n_all
+
         # IPW control weights: sw * ps/(1-ps) for controls
         w_ipw_ct = ps_ct / (1 - ps_ct)
         w_ipw_cs = ps_cs / (1 - ps_cs)
         if sw_ct is not None:
             w_ipw_ct = sw_ct * w_ipw_ct
             w_ipw_cs = sw_cs * w_ipw_cs
+
+        sum_w_ipw_ct = np.sum(w_ipw_ct)
+        sum_w_ipw_cs = np.sum(w_ipw_cs)
+        mean_w_ipw_ct = sum_w_ipw_ct / n_all
+        mean_w_ipw_cs = sum_w_ipw_cs / n_all
 
         # =====================================================================
         # 4. Point estimate: tau_1 (AIPW using control ORs)
@@ -3266,8 +3331,6 @@ class CallawaySantAnna(
         eta_treat_post = np.sum(w_treat_post * (y_gt - mu0Y_gt)) / sum_w_treat_post
         eta_treat_pre = np.sum(w_treat_pre * (y_gs - mu0Y_gs)) / sum_w_treat_pre
 
-        sum_w_ipw_ct = np.sum(w_ipw_ct)
-        sum_w_ipw_cs = np.sum(w_ipw_cs)
         eta_cont_post = (
             np.sum(w_ipw_ct * (y_ct - mu0Y_ct)) / sum_w_ipw_ct if sum_w_ipw_ct > 0 else 0.0
         )
@@ -3286,13 +3349,13 @@ class CallawaySantAnna(
         or_diff_pre_gt = mu1_pre_gt - mu0_pre_gt  # at treated-post
         or_diff_pre_gs = mu1_pre_gs - mu0_pre_gs  # at treated-pre
 
-        # att_d_post = mean(w_D * (mu1_post - mu0_post)) / mean(w_D) — all treated
+        # att_d_post = mean(w_D * (mu1_post - mu0_post)) / mean(w_D) -- all treated
         att_d_post = (np.sum(w_D_gt * or_diff_post_gt) + np.sum(w_D_gs * or_diff_post_gs)) / sum_w_D
-        # att_dt1_post — treated-post only
+        # att_dt1_post -- treated-post only
         att_dt1_post = np.sum(w_treat_post * or_diff_post_gt) / sum_w_treat_post
-        # att_d_pre — all treated
+        # att_d_pre -- all treated
         att_d_pre = (np.sum(w_D_gt * or_diff_pre_gt) + np.sum(w_D_gs * or_diff_pre_gs)) / sum_w_D
-        # att_dt0_pre — treated-pre only
+        # att_dt0_pre -- treated-pre only
         att_dt0_pre = np.sum(w_treat_pre * or_diff_pre_gs) / sum_w_treat_pre
 
         tau_2 = (att_d_post - att_dt1_post) - (att_d_pre - att_dt0_pre)
@@ -3300,63 +3363,71 @@ class CallawaySantAnna(
         att = float(tau_1 + tau_2)
 
         # =====================================================================
-        # 6. Influence function: tau_1 components
+        # 6. Influence function in R's unnormalized psi convention
+        #    (R: drdid_rc.R, psi = n * phi)
         # =====================================================================
-        # Treated IF (period-specific Hajek)
-        inf_treat_post = w_treat_post * (y_gt - mu0Y_gt - eta_treat_post) / sum_w_treat_post
-        inf_treat_pre = w_treat_pre * (y_gs - mu0Y_gs - eta_treat_pre) / sum_w_treat_pre
 
-        # Control IF (IPW Hajek)
-        inf_cont_post_ct = (
-            w_ipw_ct * (y_ct - mu0Y_ct - eta_cont_post) / sum_w_ipw_ct
-            if sum_w_ipw_ct > 0
+        # --- tau_1: treated psi (R: eta.treat.post / mean(w.treat.post)) ---
+        # R: w.treat.post * (y - mu0Y - eta.treat.post) / mean(w.treat.post)
+        psi_treat_post = w_treat_post * (y_gt - mu0Y_gt - eta_treat_post) / mean_w_treat_post
+        psi_treat_pre = w_treat_pre * (y_gs - mu0Y_gs - eta_treat_pre) / mean_w_treat_pre
+
+        # --- tau_1: control psi (R: eta.cont.post / mean(w.ipw)) ---
+        # R: w.ipw * (y - mu0Y - eta.cont) / mean(w.ipw)
+        psi_cont_post_ct = (
+            w_ipw_ct * (y_ct - mu0Y_ct - eta_cont_post) / mean_w_ipw_ct
+            if mean_w_ipw_ct > 0
             else np.zeros(n_ct)
         )
-        inf_cont_pre_cs = (
-            w_ipw_cs * (y_cs - mu0Y_cs - eta_cont_pre) / sum_w_ipw_cs
-            if sum_w_ipw_cs > 0
+        psi_cont_pre_cs = (
+            w_ipw_cs * (y_cs - mu0Y_cs - eta_cont_pre) / mean_w_ipw_cs
+            if mean_w_ipw_cs > 0
             else np.zeros(n_cs)
         )
 
-        # tau_1 IF per group (plug-in, before nuisance corrections)
-        inf_gt_tau1 = inf_treat_post
-        inf_gs_tau1 = -inf_treat_pre
-        inf_ct_tau1 = -inf_cont_post_ct
-        inf_cs_tau1 = inf_cont_pre_cs
+        # tau_1 psi per group
+        psi_gt_tau1 = psi_treat_post
+        psi_gs_tau1 = -psi_treat_pre
+        psi_ct_tau1 = -psi_cont_post_ct
+        psi_cs_tau1 = psi_cont_pre_cs
 
         # =====================================================================
-        # 7. Influence function: tau_2 leading terms
+        # 7. tau_2 leading terms (R: att.d.post, att.dt1.post, etc.)
         # =====================================================================
-        # att_d_post IF: w_D*(or_diff_post - att_d_post) / sum_w_D
-        inf_d_post_gt = w_D_gt * (or_diff_post_gt - att_d_post) / sum_w_D
-        inf_d_post_gs = w_D_gs * (or_diff_post_gs - att_d_post) / sum_w_D
-        # att_dt1_post IF: w_treat_post*(or_diff_post - att_dt1_post) / sum_w_treat_post
-        inf_dt1_post = w_treat_post * (or_diff_post_gt - att_dt1_post) / sum_w_treat_post
-        # att_d_pre IF
-        inf_d_pre_gt = w_D_gt * (or_diff_pre_gt - att_d_pre) / sum_w_D
-        inf_d_pre_gs = w_D_gs * (or_diff_pre_gs - att_d_pre) / sum_w_D
-        # att_dt0_pre IF
-        inf_dt0_pre = w_treat_pre * (or_diff_pre_gs - att_dt0_pre) / sum_w_treat_pre
+        # R: w.D * (or_diff - att.d.post) / mean(w.D)
+        psi_d_post_gt = w_D_gt * (or_diff_post_gt - att_d_post) / mean_w_D
+        psi_d_post_gs = w_D_gs * (or_diff_post_gs - att_d_post) / mean_w_D
+        # R: w.treat.post * (or_diff - att.dt1.post) / mean(w.treat.post)
+        psi_dt1_post = w_treat_post * (or_diff_post_gt - att_dt1_post) / mean_w_treat_post
+        # R: w.D * (or_diff_pre - att.d.pre) / mean(w.D)
+        psi_d_pre_gt = w_D_gt * (or_diff_pre_gt - att_d_pre) / mean_w_D
+        psi_d_pre_gs = w_D_gs * (or_diff_pre_gs - att_d_pre) / mean_w_D
+        # R: w.treat.pre * (or_diff_pre - att.dt0.pre) / mean(w.treat.pre)
+        psi_dt0_pre = w_treat_pre * (or_diff_pre_gs - att_dt0_pre) / mean_w_treat_pre
 
-        # tau_2 IF per group
-        inf_gt_tau2 = (inf_d_post_gt - inf_dt1_post) - inf_d_pre_gt
-        inf_gs_tau2 = inf_d_post_gs - (-inf_dt0_pre + inf_d_pre_gs)
-        # Control obs don't contribute to tau_2 leading terms (w_D = 0 for controls)
-
-        # =====================================================================
-        # 8. Combined plug-in IF (before nuisance corrections)
-        # =====================================================================
-        inf_gt = inf_gt_tau1 + inf_gt_tau2
-        inf_gs = inf_gs_tau1 + inf_gs_tau2
-        inf_ct = inf_ct_tau1
-        inf_cs = inf_cs_tau1
-
-        inf_treated = np.concatenate([inf_gt, inf_gs])
-        inf_control = np.concatenate([inf_ct, inf_cs])
-        inf_all = np.concatenate([inf_treated, inf_control])
+        # tau_2 psi per group (controls contribute zero)
+        psi_gt_tau2 = (psi_d_post_gt - psi_dt1_post) - psi_d_pre_gt
+        psi_gs_tau2 = psi_d_post_gs - (-psi_dt0_pre + psi_d_pre_gs)
 
         # =====================================================================
-        # 9. PS IF correction
+        # 8. Combined plug-in psi (before nuisance corrections)
+        # =====================================================================
+        psi_gt = psi_gt_tau1 + psi_gt_tau2
+        psi_gs = psi_gs_tau1 + psi_gs_tau2
+        psi_ct = psi_ct_tau1
+        psi_cs = psi_cs_tau1
+
+        psi_all = np.concatenate([psi_gt, psi_gs, psi_ct, psi_cs])
+
+        # =================================================================
+        # Convert leading psi to library phi convention: phi = psi / n_all
+        # =================================================================
+        inf_all = psi_all / n_all
+
+        # =====================================================================
+        # 9. PS nuisance correction (phi-scale)
+        #    asy_lin_rep_ps @ M2 with M2 = colMeans(...) is already in phi
+        #    scale because our bread omits R's 1/n factor while M2 absorbs it.
         # =====================================================================
         X_all_int = np.column_stack([np.ones(n_all), X_all])
 
@@ -3371,8 +3442,8 @@ class CallawaySantAnna(
             score_ps = score_ps * sw_all[:, None]
         asy_lin_rep_ps = score_ps @ H_ps_inv  # (n_all, p+1)
 
-        # M2: gradient of tau_1 control IPW w.r.t. PS parameters
-        # Only control obs contribute to M2 (through their IPW weights)
+        # R: M2 = colMeans(w_ipw * dr_resid / mean(w_ipw) * X)
+        # colMeans = sum / n_all; treated rows contribute zero.
         ct_slice = slice(n_gt + n_gs, n_gt + n_gs + n_ct)
         cs_slice = slice(n_gt + n_gs + n_ct, None)
 
@@ -3400,55 +3471,46 @@ class CallawaySantAnna(
         inf_all = inf_all + asy_lin_rep_ps @ M2
 
         # =====================================================================
-        # 10. Control OR IF corrections (tau_1 estimation effect)
+        # 10. Control OR nuisance corrections (phi-scale)
         # =====================================================================
-        # bread = (X'WX)^{-1} for each control OLS
         W_ct_vals = sw_ct if sw_ct is not None else np.ones(n_ct)
         W_cs_vals = sw_cs if sw_cs is not None else np.ones(n_cs)
         bread_ct = _safe_inv(X_ct_int.T @ (W_ct_vals[:, None] * X_ct_int))
         bread_cs = _safe_inv(X_cs_int.T @ (W_cs_vals[:, None] * X_cs_int))
 
-        # ALR for control OLS
+        # R: asy.lin.rep.ols  (per-obs OLS score * bread)
         asy_lin_rep_ct = (W_ct_vals * resid_ct)[:, None] * X_ct_int @ bread_ct
         asy_lin_rep_cs = (W_cs_vals * resid_cs)[:, None] * X_cs_int @ bread_cs
 
-        # M1 for control-post model (beta_ct): gradient from tau_1
-        # Treated-post contributes -w_treat_post*X/sum_w_treat_post (via mu0Y_gt = X@beta_ct)
-        # Control-post contributes -w_ipw_ct*X/sum_w_ipw_ct (via mu0Y_ct = X@beta_ct)
-        # Also contributes from tau_2: att_d_post uses mu0_post, att_dt1_post uses mu0_post
-        # For tau_2: w_D*(-X)/sum_w_D from att_d_post + w_treat_post*X/sum_w_treat_post from att_dt1_post
-        M1_ct = np.zeros(X_all_int.shape[1] - 1 + 1)  # p+1 (with intercept)
-        # From eta_treat_post (mu0Y_gt = X@beta_ct):
+        # M1 for control-post model (beta_ct): gradient from tau_1 + tau_2
+        # tau_1: -w_treat_post*X/sum_w_treat_post (eta_treat_post via mu0Y_gt)
+        #        +w_ipw_ct*X/sum_w_ipw_ct (eta_cont_post via mu0Y_ct)
+        # tau_2: -w_D*X/sum_w_D (att_d_post via mu0_post at all treated)
+        #        +w_treat_post*X/sum_w_treat_post (att_dt1_post via mu0_post)
+        M1_ct = np.zeros(X_all_int.shape[1])
         M1_ct -= np.sum(w_treat_post[:, None] * X_gt_int, axis=0) / sum_w_treat_post
-        # From eta_cont_post (mu0Y_ct = X@beta_ct):
         if sum_w_ipw_ct > 0:
             M1_ct += np.sum(w_ipw_ct[:, None] * X_ct_int, axis=0) / sum_w_ipw_ct
-        # From tau_2 att_d_post: -w_D * X / sum_w_D (mu0_post at all treated)
         M1_ct -= (
             np.sum(w_D_gt[:, None] * X_gt_int, axis=0) + np.sum(w_D_gs[:, None] * X_gs_int, axis=0)
         ) / sum_w_D
-        # From tau_2 att_dt1_post: +w_treat_post * X / sum_w_treat_post (mu0_post at treated-post)
         M1_ct += np.sum(w_treat_post[:, None] * X_gt_int, axis=0) / sum_w_treat_post
 
-        # M1 for control-pre model (beta_cs):
+        # M1 for control-pre model (beta_cs)
         M1_cs = np.zeros(X_all_int.shape[1])
-        # From eta_treat_pre (mu0Y_gs = X@beta_cs):
         M1_cs += np.sum(w_treat_pre[:, None] * X_gs_int, axis=0) / sum_w_treat_pre
-        # From eta_cont_pre (mu0Y_cs = X@beta_cs):
         if sum_w_ipw_cs > 0:
             M1_cs -= np.sum(w_ipw_cs[:, None] * X_cs_int, axis=0) / sum_w_ipw_cs
-        # From tau_2 att_d_pre: +w_D * X / sum_w_D (mu0_pre at all treated)
         M1_cs += (
             np.sum(w_D_gt[:, None] * X_gt_int, axis=0) + np.sum(w_D_gs[:, None] * X_gs_int, axis=0)
         ) / sum_w_D
-        # From tau_2 att_dt0_pre: -w_treat_pre * X / sum_w_treat_pre (mu0_pre at treated-pre)
         M1_cs -= np.sum(w_treat_pre[:, None] * X_gs_int, axis=0) / sum_w_treat_pre
 
         inf_all[n_gt + n_gs : n_gt + n_gs + n_ct] += asy_lin_rep_ct @ M1_ct
         inf_all[n_gt + n_gs + n_ct :] += asy_lin_rep_cs @ M1_cs
 
         # =====================================================================
-        # 11. Treated OR IF corrections (tau_2 estimation effect)
+        # 11. Treated OR nuisance corrections (phi-scale)
         # =====================================================================
         W_gt_vals = sw_gt if sw_gt is not None else np.ones(n_gt)
         W_gs_vals = sw_gs if sw_gs is not None else np.ones(n_gs)
@@ -3459,8 +3521,8 @@ class CallawaySantAnna(
         asy_lin_rep_gs = (W_gs_vals * resid_gs)[:, None] * X_gs_int @ bread_gs
 
         # M1 for treated-post model (beta_gt): mu_{1,1}(X)
-        # From att_d_post: +w_D*X/sum_w_D (mu1_post at all treated)
-        # From att_dt1_post: -w_treat_post*X/sum_w_treat_post (mu1_post at treated-post)
+        # From att_d_post: +w_D*X/sum_w_D (all treated)
+        # From att_dt1_post: -w_treat_post*X/sum_w_treat_post (treated-post)
         M1_gt = np.zeros(X_all_int.shape[1])
         M1_gt += (
             np.sum(w_D_gt[:, None] * X_gt_int, axis=0) + np.sum(w_D_gs[:, None] * X_gs_int, axis=0)
@@ -3479,6 +3541,10 @@ class CallawaySantAnna(
         inf_all[:n_gt] += asy_lin_rep_gt @ M1_gt
         inf_all[n_gt : n_gt + n_gs] += asy_lin_rep_gs @ M1_gs
 
+        # =================================================================
+        # SE from phi: se = sqrt(sum(phi^2))
+        # Equivalent to R's sqrt(sum(psi^2)) / n when mean(psi) approx 0.
+        # =================================================================
         se = float(np.sqrt(np.sum(inf_all**2)))
 
         idx_all = None

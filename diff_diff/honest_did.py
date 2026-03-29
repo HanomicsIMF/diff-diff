@@ -664,8 +664,16 @@ def _extract_event_study_params(
                 # Use full event-study VCV if available (Phase 7d),
                 # otherwise fall back to diagonal from SEs
                 if hasattr(results, "event_study_vcov") and results.event_study_vcov is not None:
-                    # event_study_vcov is indexed by sorted rel_times
-                    sigma = results.event_study_vcov
+                    vcov = results.event_study_vcov
+                    # VCV is indexed by ALL event times from aggregation;
+                    # rel_times may be a filtered subset (NaN-SE times dropped).
+                    # Subset VCV to match the surviving rel_times.
+                    all_event_times = sorted(results.event_study_effects.keys())
+                    if vcov.shape[0] == len(all_event_times) and len(rel_times) < len(all_event_times):
+                        idx = [all_event_times.index(t) for t in rel_times]
+                        sigma = vcov[np.ix_(idx, idx)]
+                    else:
+                        sigma = vcov
                 else:
                     sigma = np.diag(np.array(ses) ** 2)
 
