@@ -1771,8 +1771,12 @@ class CallawaySantAnna(
                     )
 
         # Store results
-        # Retrieve event-study VCV from aggregation mixin (Phase 7d)
+        # Retrieve event-study VCV from aggregation mixin (Phase 7d).
+        # Clear it when bootstrap overwrites event-study SEs to prevent
+        # HonestDiD from mixing analytical VCV with bootstrap SEs.
         event_study_vcov = getattr(self, "_event_study_vcov", None)
+        if bootstrap_results is not None and event_study_vcov is not None:
+            event_study_vcov = None
 
         self.results_ = CallawaySantAnnaResults(
             group_time_effects=group_time_effects,

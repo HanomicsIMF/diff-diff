@@ -1280,6 +1280,30 @@ class TestSurveyVariance:
         # event_study_vcov should be None (diagonal fallback for replicate designs)
         assert cs_result.event_study_vcov is None
 
+    def test_bootstrap_fit_clears_analytical_vcov(self):
+        """Bootstrap CS results should NOT carry analytical event_study_vcov."""
+        from diff_diff import CallawaySantAnna, generate_staggered_data
+
+        data = generate_staggered_data(n_units=100, n_periods=5, seed=42)
+        cs_result = CallawaySantAnna(n_bootstrap=49, seed=42).fit(
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            aggregate="event_study",
+        )
+
+        # event_study_vcov should be None when bootstrap is used
+        # (prevents HonestDiD from mixing analytical VCV with bootstrap SEs)
+        assert cs_result.event_study_vcov is None
+
+        # HonestDiD should still work (falls back to diagonal from bootstrap SEs)
+        honest = HonestDiD(method="relative_magnitude", M=1.0)
+        h_result = honest.fit(cs_result)
+        assert np.isfinite(h_result.original_se)
+        assert h_result.original_se > 0
+
 
 # =============================================================================
 # Tests for Visualization (without matplotlib)
