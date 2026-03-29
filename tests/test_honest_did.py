@@ -1137,7 +1137,7 @@ class TestSurveyVariance:
         data["psu"] = (np.arange(n_units) // 5)[idx]
 
         sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
-        cs_result = CallawaySantAnna().fit(
+        cs_result = CallawaySantAnna(base_period="universal").fit(
             data,
             "outcome",
             "unit",
@@ -1160,7 +1160,7 @@ class TestSurveyVariance:
         from diff_diff import CallawaySantAnna, generate_staggered_data
 
         data = generate_staggered_data(n_units=100, n_periods=6, seed=42)
-        cs_result = CallawaySantAnna().fit(
+        cs_result = CallawaySantAnna(base_period="universal").fit(
             data,
             "outcome",
             "unit",
@@ -1180,12 +1180,9 @@ class TestSurveyVariance:
         )
         assert cs_result.event_study_vcov.shape == (n_effects, n_effects)
 
-        # Diagonal should match squared SEs
-        for i, e in enumerate(sorted(cs_result.event_study_effects.keys())):
-            info = cs_result.event_study_effects[e]
-            if info.get("n_groups", 1) > 0 and np.isfinite(info.get("se", np.nan)):
-                # VCV diagonal should be close to SE^2 (not exact due to IF aggregation)
-                assert cs_result.event_study_vcov[i, i] > 0
+        # Diagonal should be positive
+        for i in range(n_effects):
+            assert cs_result.event_study_vcov[i, i] > 0
 
     def test_survey_df_widens_bounds(self):
         """Survey df (t-distribution) should give wider CIs than normal."""
@@ -1203,7 +1200,7 @@ class TestSurveyVariance:
         data["psu"] = (np.arange(n_units) // 25)[idx]
 
         sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
-        cs_result = CallawaySantAnna().fit(
+        cs_result = CallawaySantAnna(base_period="universal").fit(
             data,
             "outcome",
             "unit",
@@ -1228,7 +1225,7 @@ class TestSurveyVariance:
         from diff_diff import CallawaySantAnna, generate_staggered_data
 
         data = generate_staggered_data(n_units=100, n_periods=5, seed=42)
-        cs_result = CallawaySantAnna().fit(
+        cs_result = CallawaySantAnna(base_period="universal").fit(
             data,
             "outcome",
             "unit",
@@ -1285,7 +1282,7 @@ class TestSurveyVariance:
         from diff_diff import CallawaySantAnna, generate_staggered_data
 
         data = generate_staggered_data(n_units=100, n_periods=5, seed=42)
-        cs_result = CallawaySantAnna(n_bootstrap=49, seed=42).fit(
+        cs_result = CallawaySantAnna(n_bootstrap=49, seed=42, base_period="universal").fit(
             data,
             "outcome",
             "unit",

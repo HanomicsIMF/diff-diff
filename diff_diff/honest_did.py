@@ -640,6 +640,22 @@ def _extract_event_study_params(
                         "event study effects."
                     )
 
+                # Warn if not using universal base period (R's HonestDiD requires it)
+                if getattr(results, "base_period", "universal") != "universal":
+                    import warnings
+
+                    warnings.warn(
+                        "HonestDiD sensitivity analysis on CallawaySantAnna results "
+                        "requires base_period='universal' for valid interpretation. "
+                        "With base_period='varying', pre-treatment coefficients use "
+                        "consecutive comparisons (not a common reference period), "
+                        "which changes the meaning of the parallel trends restriction. "
+                        "Re-run with CallawaySantAnna(base_period='universal') for "
+                        "methodologically valid HonestDiD bounds.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+
                 # Extract event study effects by relative time
                 # Filter out normalization constraints (n_groups=0) and non-finite SEs
                 event_effects = {

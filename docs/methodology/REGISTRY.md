@@ -1637,6 +1637,7 @@ Confidence intervals:
 - M=0: reduces to standard parallel trends
 - Negative M: not valid (constraints become infeasible)
 - **Note:** Phase 7d: survey variance support. When input results carry `survey_metadata` with `df_survey`, HonestDiD uses t-distribution critical values (via `_get_critical_value(alpha, df)`) instead of normal. CallawaySantAnnaResults now stores `event_study_vcov` (full cross-event-time VCV from IF vectors), which HonestDiD uses instead of the diagonal fallback. For replicate-weight designs, the event-study VCV falls back to diagonal (multivariate replicate VCV deferred).
+- **Note (deviation from R):** When CallawaySantAnna results are passed to HonestDiD, `base_period != "universal"` emits a warning but does not error. R's `honest_did::honest_did.AGGTEobj` requires universal base period. Our implementation warns because the varying-base pre-treatment coefficients use consecutive comparisons (not a common reference), which changes the parallel-trends restriction interpretation.
 
 **Reference implementation(s):**
 - R: `HonestDiD` package (Rambachan & Roth's official package)
