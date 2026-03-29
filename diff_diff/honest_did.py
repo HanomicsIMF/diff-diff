@@ -710,16 +710,13 @@ def _extract_event_study_params(
                                 has_gap = True
                                 break
                 if has_gap:
-                    import warnings
-
-                    warnings.warn(
-                        "HonestDiD: retained event-study horizons have interior "
-                        f"gaps within pre or post blocks (pre={pre_times}, "
-                        f"post={post_times}). Interior gaps change the geometry "
-                        "of smoothness and relative-magnitude restrictions. "
-                        "R's HonestDiD requires a consecutive event-time grid.",
-                        UserWarning,
-                        stacklevel=3,
+                    raise ValueError(
+                        "HonestDiD requires a consecutive event-time grid. "
+                        f"Retained pre-periods {pre_times} and/or post-periods "
+                        f"{post_times} have interior gaps. This can happen when "
+                        "some event-study horizons have non-finite SEs. Ensure "
+                        "all event-study periods have valid estimates, or use "
+                        "balance_e to restrict to a balanced subset."
                     )
 
                 # Extract survey df
