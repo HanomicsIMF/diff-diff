@@ -699,6 +699,21 @@ def _extract_event_study_params(
                 else:
                     sigma = np.diag(np.array(ses) ** 2)
 
+                # Warn if event times have interior gaps (R requires consecutive)
+                if len(rel_times) >= 2:
+                    diffs = [rel_times[i + 1] - rel_times[i] for i in range(len(rel_times) - 1)]
+                    if any(d != 1 for d in diffs):
+                        import warnings
+
+                        warnings.warn(
+                            "HonestDiD: retained event-study horizons are not consecutive "
+                            f"({rel_times}). Interior gaps change the geometry of smoothness "
+                            "and relative-magnitude restrictions. R's HonestDiD requires "
+                            "a consecutive event-time grid.",
+                            UserWarning,
+                            stacklevel=3,
+                        )
+
                 # Extract survey df
                 df_survey = None
                 if hasattr(results, "survey_metadata") and results.survey_metadata is not None:

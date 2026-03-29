@@ -2064,10 +2064,14 @@ class CallawaySantAnna(
                 asy_lin_rep_ps = score_ps @ H_inv / n_all_panel
 
                 att_control_weighted = np.sum(weights_control_norm * control_change)
-                M2 = np.mean(
-                    (weights_control_norm * (control_change - att_control_weighted))[:, None]
-                    * X_all_int[n_t:],
-                    axis=0,
+                # R colMeans: sum over control rows / n_all (not / n_c)
+                M2 = (
+                    np.sum(
+                        (weights_control_norm * (control_change - att_control_weighted))[:, None]
+                        * X_all_int[n_t:],
+                        axis=0,
+                    )
+                    / n_all_panel
                 )
 
                 inf_func = inf_func + asy_lin_rep_ps @ M2
@@ -2320,10 +2324,13 @@ class CallawaySantAnna(
                     asy_lin_rep_ps = score_ps @ H_ps_inv / n_all_panel
 
                     dr_resid_control = m_control - control_change
-                    M2_dr = np.mean(
-                        ((weights_control / sw_t_sum) * dr_resid_control)[:, None]
-                        * X_all_int[n_t:],
-                        axis=0,
+                    M2_dr = (
+                        np.sum(
+                            ((weights_control / sw_t_sum) * dr_resid_control)[:, None]
+                            * X_all_int[n_t:],
+                            axis=0,
+                        )
+                        / n_all_panel
                     )
                     inf_func = inf_func + asy_lin_rep_ps @ M2_dr
 
@@ -2382,9 +2389,12 @@ class CallawaySantAnna(
                     asy_lin_rep_ps = score_ps @ H_ps_inv / n_all_panel
 
                     dr_resid_control = m_control - control_change
-                    M2_dr = np.mean(
-                        ((weights_control / n_t) * dr_resid_control)[:, None] * X_all_int[n_t:],
-                        axis=0,
+                    M2_dr = (
+                        np.sum(
+                            ((weights_control / n_t) * dr_resid_control)[:, None] * X_all_int[n_t:],
+                            axis=0,
+                        )
+                        / n_all_panel
                     )
                     inf_func = inf_func + asy_lin_rep_ps @ M2_dr
 
