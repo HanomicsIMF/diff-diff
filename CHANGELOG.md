@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.6] - 2026-03-28
+
+### Added
+- **AI practitioner guardrails** based on Baker et al. (2025) "Difference-in-Differences Designs: A Practitioner's Guide"
+  - `practitioner.py` module with 8-step workflow enforcement for AI agents
+  - Estimator-specific handlers ensuring correct diagnostic ordering (pre-trends before estimation, Bacon decomposition before estimator selection)
+  - `docs/llms.txt`, `docs/llms-practitioner.txt`, `docs/llms-full.txt` for AI agent discoverability
+  - Evaluation rubric (`docs/practitioner-guide-evaluation.md`) with correctness-aware scoring
+- **Survey Phase 6: Advanced features**
+  - Survey-aware bootstrap for all 8 bootstrap-using estimators (PSU-level multiplier for CS/Imputation/TwoStage/Continuous/Efficient; Rao-Wu rescaled for SA/SyntheticDiD/TROP)
+  - Replicate weight variance estimation (BRR, Fay's BRR, JK1, JKn) for OLS-based and IF-based estimators
+  - Per-coefficient DEFF diagnostics comparing survey vs SRS variance
+  - Subpopulation analysis via `SurveyDesign.subpopulation()` preserving full design structure
+  - CS analytical expansion: strata/PSU/FPC for aggregated SEs via `compute_survey_if_variance()`
+  - TROP cross-classified pseudo-strata for survey-aware bootstrap
+
+### Changed
+- Estimator-specific guidance for parallel trends tests and placebo checks (no shared templates)
+- SDiD and TROP split into separate decision tree branches in practitioner workflow
+
+### Fixed
+- Fix replicate weight df calculation using pivoted QR rank with R-compatible tolerance
+- Fix replicate IF variance score scaling for EfficientDiD, TripleDiff, ContinuousDiD
+- Fix panel-to-unit replicate weight propagation and normalization
+- Fix CS zero-mass return type and vectorized guard for survey paths
+- Fix `solve_logit` effective-sample validation for zero-weight designs
+- Fix subpopulation mask validation and EfficientDiD bootstrap guard
+
 ## [2.7.5] - 2026-03-23
 
 ### Added
@@ -978,6 +1006,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.7.6]: https://github.com/igerber/diff-diff/compare/v2.7.5...v2.7.6
 [2.7.5]: https://github.com/igerber/diff-diff/compare/v2.7.4...v2.7.5
 [2.7.4]: https://github.com/igerber/diff-diff/compare/v2.7.3...v2.7.4
 [2.7.3]: https://github.com/igerber/diff-diff/compare/v2.7.2...v2.7.3
