@@ -1775,8 +1775,10 @@ class CallawaySantAnna(
         # Clear it when bootstrap overwrites event-study SEs to prevent
         # HonestDiD from mixing analytical VCV with bootstrap SEs.
         event_study_vcov = getattr(self, "_event_study_vcov", None)
+        event_study_vcov_index = getattr(self, "_event_study_vcov_index", None)
         if bootstrap_results is not None and event_study_vcov is not None:
             event_study_vcov = None
+            event_study_vcov_index = None
 
         self.results_ = CallawaySantAnnaResults(
             group_time_effects=group_time_effects,
@@ -1800,6 +1802,7 @@ class CallawaySantAnna(
             pscore_trim=self.pscore_trim,
             survey_metadata=survey_metadata,
             event_study_vcov=event_study_vcov,
+            event_study_vcov_index=event_study_vcov_index,
             panel=self.panel,
         )
 
@@ -2032,35 +2035,29 @@ class CallawaySantAnna(
                 X_all_int = np.column_stack([np.ones(n_t + n_c), X_all])
                 pscore_all = np.concatenate([pscore_treated, pscore_control])
 
-                # Survey-weighted PS Hessian: sum(w_i * mu_i * (1-mu_i) * x_i * x_i')
+                # PS IF correction — matches R's std_ipw_did_panel convention:
+                # H = X'WX / n, asy_lin_rep = score @ solve(H) / n, M2 = colMeans
+                n_all_panel = n_t + n_c
                 W_ps = pscore_all * (1 - pscore_all)
                 if sw_all is not None:
                     W_ps = W_ps * sw_all
-                H = X_all_int.T @ (W_ps[:, None] * X_all_int)
-                try:
-                    H_inv = np.linalg.solve(H, np.eye(H.shape[0]))
-                except np.linalg.LinAlgError:
-                    H_inv = np.linalg.lstsq(H, np.eye(H.shape[0]), rcond=None)[0]
+                H = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
+                H_inv = _safe_inv(H)
 
-                # PS score: w_i * (D_i - pi_i) * X_i
                 D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
                 score_ps = (D_all - pscore_all)[:, None] * X_all_int
                 if sw_all is not None:
                     score_ps = score_ps * sw_all[:, None]
-                asy_lin_rep_ps = score_ps @ H_inv  # shape (n_t + n_c, p)
+                asy_lin_rep_ps = score_ps @ H_inv / n_all_panel
 
-                # M2: gradient of ATT w.r.t. PS parameters
-                # R convention: colMeans over ALL n obs (zero for treated rows)
                 att_control_weighted = np.sum(weights_control_norm * control_change)
-                M2 = np.sum(
+                M2 = np.mean(
                     (weights_control_norm * (control_change - att_control_weighted))[:, None]
                     * X_all_int[n_t:],
                     axis=0,
-                ) / (n_t + n_c)
+                )
 
-                # PS correction to influence function
-                inf_ps_correction = asy_lin_rep_ps @ M2
-                inf_func = inf_func + inf_ps_correction
+                inf_func = inf_func + asy_lin_rep_ps @ M2
 
                 # SE from influence function variance
                 var_psi = np.sum(inf_func**2)
@@ -2295,29 +2292,26 @@ class CallawaySantAnna(
                     )
                     pscore_all = np.concatenate([pscore_treated_clipped, pscore_control])
 
-                    # Survey-weighted PS Hessian
+                    # PS IF correction — R convention: H/n, asy_rep/n, colMeans
+                    n_all_panel = n_t + n_c
                     W_ps = pscore_all * (1 - pscore_all)
                     if sw_all is not None:
                         W_ps = W_ps * sw_all
-                    H_ps = X_all_int.T @ (W_ps[:, None] * X_all_int)
+                    H_ps = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
                     H_ps_inv = _safe_inv(H_ps)
 
-                    # PS score
                     D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
                     score_ps = (D_all - pscore_all)[:, None] * X_all_int
                     if sw_all is not None:
                         score_ps = score_ps * sw_all[:, None]
-                    asy_lin_rep_ps = score_ps @ H_ps_inv  # (n_t+n_c, p+1)
+                    asy_lin_rep_ps = score_ps @ H_ps_inv / n_all_panel
 
-                    # M2_dr: dATT/dgamma — gradient of DR ATT w.r.t. PS parameters
-                    # Only the control augmentation term depends on PS via w_ipw
-                    # R convention: colMeans over ALL n obs (zero for treated rows)
                     dr_resid_control = m_control - control_change
-                    M2_dr = np.sum(
+                    M2_dr = np.mean(
                         ((weights_control / sw_t_sum) * dr_resid_control)[:, None]
                         * X_all_int[n_t:],
                         axis=0,
-                    ) / (n_t + n_c)
+                    )
                     inf_func = inf_func + asy_lin_rep_ps @ M2_dr
 
                     # --- OR IF correction ---
@@ -2358,27 +2352,27 @@ class CallawaySantAnna(
                 inf_func = np.concatenate([psi_treated, psi_control])
 
                 if X_treated is not None and X_control is not None and X_treated.shape[1] > 0:
-                    # --- PS IF correction ---
-                    X_all_int = np.column_stack([np.ones(n_t + n_c), X_all])
+                    # --- PS IF correction — R convention: H/n, asy_rep/n, colMeans ---
+                    n_all_panel = n_t + n_c
+                    X_all_int = np.column_stack([np.ones(n_all_panel), X_all])
                     pscore_treated_clipped = np.clip(
                         pscore[:n_t], self.pscore_trim, 1 - self.pscore_trim
                     )
                     pscore_all = np.concatenate([pscore_treated_clipped, pscore_control])
 
                     W_ps = pscore_all * (1 - pscore_all)
-                    H_ps = X_all_int.T @ (W_ps[:, None] * X_all_int)
+                    H_ps = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
                     H_ps_inv = _safe_inv(H_ps)
 
                     D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
                     score_ps = (D_all - pscore_all)[:, None] * X_all_int
-                    asy_lin_rep_ps = score_ps @ H_ps_inv
+                    asy_lin_rep_ps = score_ps @ H_ps_inv / n_all_panel
 
-                    # R convention: colMeans over ALL n obs (zero for treated rows)
                     dr_resid_control = m_control - control_change
-                    M2_dr = np.sum(
+                    M2_dr = np.mean(
                         ((weights_control / n_t) * dr_resid_control)[:, None] * X_all_int[n_t:],
                         axis=0,
-                    ) / (n_t + n_c)
+                    )
                     inf_func = inf_func + asy_lin_rep_ps @ M2_dr
 
                     # --- OR IF correction ---

@@ -665,15 +665,21 @@ def _extract_event_study_params(
                 # otherwise fall back to diagonal from SEs
                 if hasattr(results, "event_study_vcov") and results.event_study_vcov is not None:
                     vcov = results.event_study_vcov
-                    # VCV is indexed by ALL event times from aggregation;
-                    # rel_times may be a filtered subset (NaN-SE times dropped).
-                    # Subset VCV to match the surviving rel_times.
-                    all_event_times = sorted(results.event_study_effects.keys())
-                    if vcov.shape[0] == len(all_event_times) and len(rel_times) < len(all_event_times):
-                        idx = [all_event_times.index(t) for t in rel_times]
-                        sigma = vcov[np.ix_(idx, idx)]
-                    else:
+                    # VCV is indexed by the aggregated event times (stored in
+                    # event_study_vcov_index), NOT by event_study_effects keys
+                    # (which may include an injected reference period).
+                    # Subset to match the surviving rel_times.
+                    vcov_index = getattr(results, "event_study_vcov_index", None)
+                    if vcov_index is not None and len(rel_times) < len(vcov_index):
+                        idx = [vcov_index.index(t) for t in rel_times if t in vcov_index]
+                        if len(idx) == len(rel_times):
+                            sigma = vcov[np.ix_(idx, idx)]
+                        else:
+                            sigma = np.diag(np.array(ses) ** 2)
+                    elif vcov.shape[0] == len(rel_times):
                         sigma = vcov
+                    else:
+                        sigma = np.diag(np.array(ses) ** 2)
                 else:
                     sigma = np.diag(np.array(ses) ** 2)
 

@@ -751,6 +751,12 @@ class CallawaySantAnnaAggregationMixin:
             except (ValueError, np.linalg.LinAlgError):
                 pass  # Fall back to diagonal (None)
 
+        # Store the event-time index that matches VCV columns (for subsetting
+        # in HonestDiD when some event times are filtered out)
+        self._event_study_vcov_index = (
+            [e for e, _ in sorted_periods] if event_study_vcov is not None else None
+        )
+
         # Attach VCV to self for CallawaySantAnna to pick up
         self._event_study_vcov = event_study_vcov
 
