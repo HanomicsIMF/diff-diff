@@ -79,6 +79,7 @@ Homepage = "https://github.com/igerber/diff-diff"
 Documentation = "https://diff-diff.readthedocs.io"
 Repository = "https://github.com/igerber/diff-diff"
 Issues = "https://github.com/igerber/diff-diff/issues"
+"Practitioner Guide" = "https://github.com/igerber/diff-diff/blob/main/docs/llms-practitioner.txt"
 
 [tool.maturin]
 # Build the Rust extension module

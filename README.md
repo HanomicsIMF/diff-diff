@@ -67,6 +67,14 @@ Signif. codes: '***' 0.001, '**' 0.01, '*' 0.05, '.' 0.1
 ======================================================================
 ```
 
+## For AI Agents
+
+If you are an AI agent or LLM using this library, read [`docs/llms.txt`](docs/llms.txt) for a concise API reference with an 8-step practitioner workflow (based on Baker et al. 2025). The workflow ensures rigorous DiD analysis — not just calling `fit()`, but testing assumptions, running sensitivity analysis, and checking robustness.
+
+After estimation, call `practitioner_next_steps(results)` for context-aware guidance on remaining diagnostic steps.
+
+Detailed guide: [`docs/llms-practitioner.txt`](docs/llms-practitioner.txt)
+
 ## Features
 
 - **sklearn-like API**: Familiar `fit()` interface with `get_params()` and `set_params()`

@@ -3,6 +3,13 @@ diff-diff: A library for Difference-in-Differences analysis.
 
 This library provides sklearn-like estimators for causal inference
 using the difference-in-differences methodology.
+
+For rigorous analysis, follow the 8-step practitioner workflow in
+docs/llms-practitioner.txt (based on Baker et al. 2025). After
+estimation, call ``practitioner_next_steps(results)`` for context-aware
+guidance on remaining diagnostic steps.
+
+AI agent reference: docs/llms.txt
 """
 
 # Import backend detection from dedicated module (avoids circular imports)
