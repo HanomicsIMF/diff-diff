@@ -1326,11 +1326,18 @@ over event-study effects).
 Group effects: average across post-treatment time periods for each cohort.
 Reuses `CallawaySantAnnaAggregationMixin._aggregate_by_group()`.
 
-Overall and event-study aggregation SEs include the WIF (Weight Influence Function)
-adjustment for uncertainty in cohort-share weights. Per-cohort group-effect SEs also
-include WIF via the inherited mixin; R's `agg_ddd(type="group")` uses `wif=NULL` for
-per-cohort aggregation since within-cohort weights are fixed. This makes our per-cohort
-group-effect SEs slightly conservative relative to R.
+All aggregation SEs include the WIF (Weight Influence Function) adjustment for
+uncertainty in cohort-share weights, inherited from the CallawaySantAnna mixin.
+
+- **Deviation from R:** Aggregation weights and WIF use the eligible-treated
+  population `P(S=g, Q=1)` (matching the paper's Eq 4.13, where `G_i` is defined
+  only for `Q=1` units). R's `agg_ddd()` uses `P(S=g)` (all units in the enabling
+  group, including ineligible). This is implemented by setting `unit_cohorts=0` for
+  ineligible units before calling the aggregation mixin.
+- **Note:** Per-cohort group-effect SEs include WIF via the inherited mixin.
+  R's `agg_ddd(type="group")` uses `wif=NULL` for per-cohort aggregation since
+  within-cohort weights are fixed. This makes our per-cohort group-effect SEs
+  slightly conservative relative to R.
 
 *Standard errors:*
 

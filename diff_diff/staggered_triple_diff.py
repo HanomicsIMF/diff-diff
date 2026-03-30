@@ -405,9 +405,20 @@ class StaggeredTripleDifference(
                 "timing and eligibility."
             )
 
+        # For aggregation: use eligible-treated-only cohort assignments so
+        # WIF weights match the point estimate weights (n_treated per cohort,
+        # i.e. P(S=g, Q=1)). This matches the paper's Eq 4.13 which defines
+        # aggregation weights over the treated population (G_i defined only
+        # for Q=1 units). Ineligible units get cohort=0 so they don't
+        # contribute to pg for any treatment group.
+        precomputed_agg = dict(precomputed)
+        cohorts_for_agg = precomputed["unit_cohorts"].copy()
+        cohorts_for_agg[eligibility_per_unit == 0] = 0
+        precomputed_agg["unit_cohorts"] = cohorts_for_agg
+
         # Overall ATT via aggregation mixin
         overall_att, overall_se = self._aggregate_simple(
-            group_time_effects, influence_func_info, df, unit, precomputed
+            group_time_effects, influence_func_info, df, unit, precomputed_agg
         )
         overall_t_stat, overall_p_value, overall_conf_int = safe_inference(
             overall_att, overall_se, alpha=self.alpha
@@ -420,12 +431,12 @@ class StaggeredTripleDifference(
             event_study_effects = self._aggregate_event_study(
                 group_time_effects, influence_func_info,
                 treatment_groups, time_periods, balance_e,
-                df, unit, precomputed,
+                df, unit, precomputed_agg,
             )
         if aggregate in ("group", "all"):
             group_effects = self._aggregate_by_group(
                 group_time_effects, influence_func_info,
-                treatment_groups, precomputed, df, unit,
+                treatment_groups, precomputed_agg, df, unit,
             )
 
         # Bootstrap
@@ -436,7 +447,7 @@ class StaggeredTripleDifference(
                 group_time_effects, influence_func_info,
                 aggregate, balance_e,
                 treatment_groups, time_periods,
-                df, unit, precomputed, self.cband,
+                df, unit, precomputed_agg, self.cband,
             )
             if bootstrap_results is not None:
                 overall_se = bootstrap_results.overall_att_se
@@ -1043,7 +1054,12 @@ class StaggeredTripleDifference(
         self, delta_y: np.ndarray, PAa: np.ndarray, covX: np.ndarray,
         cho_cache: Dict, cho_key: Any,
     ) -> np.ndarray:
-        """Fit OLS on control outcome changes. Returns or_delta for all pair units."""
+        """Fit OLS on control outcome changes. Returns or_delta for all pair units.
+
+        Honors self.rank_deficient_action for collinear covariates.
+        """
+        from diff_diff.linalg import solve_ols as _solve_ols
+
         control_mask = PAa > 0
         n_c = int(np.sum(control_mask))
         if n_c == 0:
@@ -1052,16 +1068,14 @@ class StaggeredTripleDifference(
         X_control = covX[control_mask]
         y_control = delta_y[control_mask]
 
-        # Try Cholesky cache
+        # Try Cholesky cache for fast path (full-rank only)
         beta = None
         cached_cho = cho_cache.get(cho_key)
         if cached_cho is False:
-            pass
+            pass  # Previously detected rank-deficient; skip Cholesky
         elif cached_cho is not None:
-            Xty = X_control.T @ y_control
-            beta = np.linalg.solve(cached_cho[0], np.linalg.solve(cached_cho[0].T, Xty))
-            # Actually use scipy cho_solve properly
             from scipy import linalg as sp_linalg
+            Xty = X_control.T @ y_control
             beta = sp_linalg.cho_solve(cached_cho, Xty)
             if np.any(~np.isfinite(beta)):
                 beta = None
@@ -1079,10 +1093,11 @@ class StaggeredTripleDifference(
                 cho_cache[cho_key] = False
 
         if beta is None:
-            try:
-                beta = np.linalg.lstsq(X_control, y_control, rcond=None)[0]
-            except np.linalg.LinAlgError:
-                return np.zeros(len(delta_y))
+            # Fallback: use solve_ols which honors rank_deficient_action
+            beta, _, _ = _solve_ols(
+                X_control, y_control,
+                rank_deficient_action=self.rank_deficient_action,
+            )
             beta = np.where(np.isfinite(beta), beta, 0.0)
 
         return covX @ beta
