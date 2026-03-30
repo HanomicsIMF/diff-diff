@@ -1294,7 +1294,10 @@ This sign convention matches both the paper's Equation 4.1 and the existing
 `TripleDifference` decomposition (DDD = DiD_3 + DiD_2 - DiD_1 with subgroups
 4=G1P1, 3=G1P0, 2=G0P1, 1=G0P0).
 
-Valid comparison groups: `G_c = {g_c : g_c > max(g, t)}`, including never-enabled (S=0).
+Valid comparison groups: for `control_group="nevertreated"`, only the never-enabled
+cohort (S=0). For `control_group="notyettreated"`, `G_c = {g_c : g_c > max(t, base_period)
++ anticipation}`, plus never-enabled. The anticipation-adjusted threshold ensures cohorts
+within the anticipation window are excluded from controls.
 
 *With covariates / doubly robust (DR, recommended):*
 
@@ -1396,7 +1399,8 @@ confidence bands (sup-t) for event study.
 - [x] Panel data with (unit, time, enabling-group S, eligibility Q, outcome Y)
 - [x] Three comparison sub-groups per (g, g_c): (S=g, Q=0), (S=g_c, Q=1), (S=g_c, Q=0)
 - [x] Individual comparison cohorts, never pooled — combined via GMM weights
-- [x] Comparison groups satisfy g_c > max{g, t}
+- [x] Comparison groups satisfy g_c > max(t, base_period) + anticipation (notyettreated)
+  or g_c = never-enabled only (nevertreated)
 - [x] Doubly robust: consistent if either propensity or outcome model correct (per component)
 - [x] GMM-optimal weighting via closed-form inverse-variance formula
 - [x] Event-study aggregation with cohort-share weights (via CS mixin)

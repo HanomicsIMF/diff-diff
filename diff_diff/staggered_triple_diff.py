@@ -272,7 +272,16 @@ class StaggeredTripleDifference(
         gmm_weights_store: Dict[Tuple, Dict] = {}
 
         for g in treatment_groups:
-            for t in time_periods:
+            # In universal mode, skip the reference period (t == g-1-anticipation)
+            # so it's omitted from GT estimation. The event-study mixin injects
+            # a synthetic reference row with effect=0, matching CS behavior.
+            if self.base_period == "universal":
+                universal_base = g - 1 - self.anticipation
+                valid_periods = [t for t in time_periods if t != universal_base]
+            else:
+                valid_periods = time_periods
+
+            for t in valid_periods:
                 base_period_val = self._get_base_period(g, t)
                 if base_period_val is None:
                     continue
