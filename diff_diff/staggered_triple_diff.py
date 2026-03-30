@@ -324,16 +324,10 @@ class StaggeredTripleDifference(
                 if n_treated == 0:
                     continue
 
-                # Compute size_gt: union of treated + all possible sub-groups
-                # across ALL comparison cohorts for this (g, t)
-                all_gc_units = treated_mask.copy()
-                for gc in valid_gc:
-                    all_gc_units |= (unit_cohorts == gc) | (unit_cohorts == g)
-                size_gt = int(np.sum(all_gc_units))
-
                 att_vec = []
-                inf_matrix = []
+                inf_raw = []  # unrescaled IFs
                 gc_labels = []
+                gc_cell_sizes = []  # size_gt_ctrl per surviving gc
 
                 for gc in valid_gc:
                     result = self._compute_ddd_gt_gc(
@@ -346,17 +340,27 @@ class StaggeredTripleDifference(
                     if not np.isfinite(att_gc):
                         continue
 
-                    # R's att_gt IF rescaling per g_c: (size_gt / size_gt_ctrl)
-                    # For single g_c, size_gt == size_gt_ctrl so this is 1.0
-                    if size_gt_ctrl > 0:
-                        inf_gc = inf_gc * (size_gt / size_gt_ctrl)
-
                     att_vec.append(att_gc)
-                    inf_matrix.append(inf_gc)
+                    inf_raw.append(inf_gc)
                     gc_labels.append(gc)
+                    gc_cell_sizes.append(size_gt_ctrl)
 
                 if not att_vec:
                     continue
+
+                # Compute size_gt from SURVIVING comparison cohorts only
+                # (not from all initially valid gc's)
+                surviving_units = treated_mask.copy()
+                for gc in gc_labels:
+                    surviving_units |= (unit_cohorts == gc) | (unit_cohorts == g)
+                size_gt = int(np.sum(surviving_units))
+
+                # Apply IF rescaling now that size_gt is known
+                inf_matrix = []
+                for inf_gc, size_gt_ctrl in zip(inf_raw, gc_cell_sizes):
+                    if size_gt_ctrl > 0:
+                        inf_gc = inf_gc * (size_gt / size_gt_ctrl)
+                    inf_matrix.append(inf_gc)
 
                 att_gmm, inf_gmm, gmm_w, se_gt = self._combine_gmm(
                     np.array(att_vec), np.array(inf_matrix), n_units,
