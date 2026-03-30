@@ -2072,8 +2072,10 @@ class CallawaySantAnna(
                 asy_lin_rep_psi = score_ps @ H_psi_inv
 
                 att_control_weighted = np.sum(weights_control_norm * control_change)
-                # R: M2 = colMeans(w.cont * (y - att) * X)
-                M2 = np.mean(
+                # R: M2 = colMeans(w.cont * (y - att) * X) / mean(w.cont)
+                # np.sum (not mean): subset sum with normalized weights matches
+                # R's full-sample colMeans/mean(w) after cancellation
+                M2 = np.sum(
                     (weights_control_norm * (control_change - att_control_weighted))[:, None]
                     * X_all_int[n_t:],
                     axis=0,
@@ -2331,7 +2333,7 @@ class CallawaySantAnna(
                     asy_lin_rep_psi = score_ps @ H_psi_inv
 
                     dr_resid_control = m_control - control_change
-                    M2_dr = np.mean(
+                    M2_dr = np.sum(
                         ((weights_control / sw_t_sum) * dr_resid_control)[:, None]
                         * X_all_int[n_t:],
                         axis=0,
@@ -2394,7 +2396,7 @@ class CallawaySantAnna(
                     asy_lin_rep_psi = score_ps @ H_psi_inv
 
                     dr_resid_control = m_control - control_change
-                    M2_dr = np.mean(
+                    M2_dr = np.sum(
                         ((weights_control / n_t) * dr_resid_control)[:, None] * X_all_int[n_t:],
                         axis=0,
                     )
@@ -3152,8 +3154,8 @@ class CallawaySantAnna(
         cs_slice = slice(n_gt + n_gs + n_ct, None)
 
         M2 = np.zeros(X_all_int.shape[1])
-        M2 += np.mean(ipw_resid_ct[:, None] * X_all_int[ct_slice], axis=0)
-        M2 -= np.mean(ipw_resid_cs[:, None] * X_all_int[cs_slice], axis=0)
+        M2 += np.sum(ipw_resid_ct[:, None] * X_all_int[ct_slice], axis=0)
+        M2 -= np.sum(ipw_resid_cs[:, None] * X_all_int[cs_slice], axis=0)
 
         # psi-scale correction, convert to phi
         inf_all = inf_all + (asy_lin_rep_psi @ M2) / n_all
@@ -3469,12 +3471,12 @@ class CallawaySantAnna(
 
         M2 = np.zeros(X_all_int.shape[1])
         if sum_w_ipw_ct > 0:
-            M2 -= np.mean(
+            M2 -= np.sum(
                 ((w_ipw_ct * dr_resid_ct / sum_w_ipw_ct)[:, None] * X_all_int[ct_slice]),
                 axis=0,
             )
         if sum_w_ipw_cs > 0:
-            M2 += np.mean(
+            M2 += np.sum(
                 ((w_ipw_cs * dr_resid_cs / sum_w_ipw_cs)[:, None] * X_all_int[cs_slice]),
                 axis=0,
             )
