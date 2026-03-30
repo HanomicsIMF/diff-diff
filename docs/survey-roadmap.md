@@ -149,27 +149,15 @@ CPS monthly) are not panels — units are not followed over time. The R `did`
 package supports `panel=FALSE` for these settings. diff-diff currently
 requires panel data for all staggered estimators.
 
-**What's needed:**
-- `panel` parameter on `CallawaySantAnna` (default `True`, set `False` for
-  repeated cross-sections)
-- Repeated cross-section ATT(g,t) estimation using cross-sectional DRDID
-  (Sant'Anna & Zhao 2020, Section 4)
-- Cross-sectional propensity score: model P(G=g | X) instead of panel
-  first-difference
-- Cross-sectional outcome regression: model E[Y | X, G, T] instead of
-  E[ΔY | X, G]
-- Influence functions for cross-sectional case (different from panel IF)
-- Survey weight support for repeated cross-sections (weights apply per
-  observation, no unit-level collapse)
-- Update `generate_did_data()` / `generate_staggered_data()` with
-  `panel=False` option for testing
+**Implemented.** `CallawaySantAnna(panel=False)` for repeated cross-section
+surveys. Uses cross-sectional DRDID (Sant'Anna & Zhao 2020, Section 4):
+`reg` matches `DRDID::reg_did_rc`, `dr` matches `DRDID::drdid_rc` (locally
+efficient with 4 OLS fits), `ipw` matches `DRDID::std_ipw_did_rc`. Survey
+weights, covariates, and all estimation methods supported.
 
 **Reference:** Sant'Anna, P.H.C. & Zhao, J. (2020). Sections 3 (panel) vs
 4 (repeated cross-sections). Callaway, B. & Sant'Anna, P.H.C. (2021).
 Section 4.1.
-
-**Scope:** CallawaySantAnna only. Other staggered estimators (SunAbraham,
-ImputationDiD, TwoStageDiD, StackedDiD) are inherently panel methods.
 
 ### 7c. Survey-Aware DiD Tutorial
 
@@ -197,25 +185,11 @@ survey data would make the capability discoverable.
 
 ### 7d. HonestDiD with Survey Variance ✅
 
-**Priority: Medium.** Sensitivity analysis (Rambachan & Roth 2023) currently
-uses cluster-robust or HC variance. Under complex survey designs, the
-variance-covariance matrix should come from TSL or replicate weights.
-
-**What's needed:**
-- Accept optional `survey_design` parameter in `HonestDiD`
-- When provided, use survey vcov matrix instead of cluster-robust vcov
-  for computing sensitivity bounds
-- Degrees of freedom from survey design (n_PSU - n_strata) for
-  t-distribution critical values
-- Propagate through all three methods: relative magnitudes, smoothness,
-  and conditional least favorable (C-LF)
-- The core optimization (LP/QP for bounds) is unchanged — only the input
-  vcov and df change
+**Implemented.** Survey df and full event-study VCV from IF vectors
+propagated to HonestDiD sensitivity analysis. When CallawaySantAnna is fit
+with a survey design, HonestDiD uses t-distribution critical values with
+survey degrees of freedom. Bootstrap/replicate designs fall back to
+diagonal VCV with a warning.
 
 **Reference:** Rambachan, A. & Roth, J. (2023). "A More Credible Approach
 to Parallel Trends." *Review of Economic Studies* 90(5).
-
-**Why it matters:** A practitioner who runs CS with survey design but then
-runs HonestDiD sensitivity analysis with cluster-robust SEs gets
-inconsistent inference. The sensitivity bounds should respect the same
-variance structure as the main estimates.

@@ -29,21 +29,16 @@ Close the remaining gaps for practitioners using major population surveys
 (ACS, CPS, BRFSS, MEPS). See [survey-roadmap.md](docs/survey-roadmap.md) for
 full details.
 
-- **CS Covariates + IPW/DR + Survey** *(High priority)*: Implement DRDID
-  nuisance IF corrections under survey weights. Currently the recommended DR
-  method raises `NotImplementedError` with covariates + survey. This is the
-  most commonly needed path in applied work (Medicaid expansion, minimum wage).
-- **Repeated Cross-Sections** *(High priority)*: `panel=False` support for
-  CallawaySantAnna, enabling analysis of surveys that don't track units over
-  time (BRFSS, ACS annual, CPS monthly). Uses cross-sectional DRDID
-  (Sant'Anna & Zhao 2020, Section 4).
-- **Survey-Aware DiD Tutorial** *(High priority)*: Jupyter notebook
-  demonstrating the full workflow with realistic survey data. diff-diff is
-  the only package (R or Python) with design-based variance for modern DiD
-  — this makes that capability discoverable.
-- **HonestDiD + Survey Variance** *(Medium priority)*: Pass survey vcov
-  (TSL or replicate) into sensitivity analysis instead of cluster-robust vcov,
-  so sensitivity bounds respect the same variance structure as main estimates.
+- **CS Covariates + IPW/DR + Survey** *(Implemented)*: DRDID nuisance IF
+  corrections (PS + OR) under survey weights for all estimation methods.
+- **Repeated Cross-Sections** *(Implemented)*: `panel=False` support for
+  CallawaySantAnna using cross-sectional DRDID (Sant'Anna & Zhao 2020,
+  Section 4). Supports BRFSS, ACS annual, CPS monthly.
+- **Survey-Aware DiD Tutorial** *(Open)*: Jupyter notebook demonstrating
+  the full workflow with realistic survey data.
+- **HonestDiD + Survey Variance** *(Implemented)*: Survey df and full
+  event-study VCV propagated to sensitivity analysis, with bootstrap/replicate
+  diagonal fallback.
 
 ### Staggered Triple Difference (DDD)
 

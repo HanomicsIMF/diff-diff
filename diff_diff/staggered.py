@@ -1622,14 +1622,15 @@ class CallawaySantAnna(
             )
 
         # Compute overall ATT (simple aggregation)
-        overall_att, overall_se = self._aggregate_simple(
+        overall_att, overall_se, overall_effective_df = self._aggregate_simple(
             group_time_effects, influence_func_info, df, unit, precomputed
         )
-        # Re-read df_survey in case replicate aggregation updated it
-        df_survey = precomputed.get("df_survey")
-        # Propagate replicate df override to survey_metadata for display consistency
-        if df_survey is not None and survey_metadata is not None:
-            if survey_metadata.df_survey != df_survey:
+        # Use per-statistic effective df from replicate aggregation if available;
+        # otherwise fall back to the original df from the survey design.
+        if overall_effective_df is not None:
+            df_survey = overall_effective_df
+            # Propagate to survey_metadata for display consistency
+            if survey_metadata is not None:
                 survey_metadata.df_survey = df_survey
         # Guard: replicate design with undefined df (rank <= 1) → NaN inference
         if (
