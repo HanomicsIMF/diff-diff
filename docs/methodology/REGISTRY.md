@@ -1362,6 +1362,11 @@ confidence bands (sup-t) for event study.
   analytical SE computation. The multiplier bootstrap provides unit-level
   clustering. Full cluster-robust analytical SEs are deferred.
 - **Note:** Survey design support is deferred; raises `NotImplementedError`.
+- **Deviation from R:** Event-study and simple aggregation reuse
+  `CallawaySantAnnaAggregationMixin` cohort-size weights (`n_treated` per cohort)
+  instead of R's `agg_ddd()` group-probability weights (`pg = P(G=g)` over all
+  units including ineligible). Group-time ATT(g,t) values are identical; only the
+  weighted average across (g,t) pairs differs.
 
 *Edge cases:*
 - Single comparison group: GMM reduces to w=[1], no matrix inversion

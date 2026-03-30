@@ -279,7 +279,6 @@ class StaggeredTripleDifference(
                 if base_period_val not in time_to_col or t not in time_to_col:
                     continue
 
-                threshold = max(g, t)
                 has_never_enabled = bool(np.any(unit_cohorts == 0))
 
                 if self.control_group == "nevertreated":
@@ -287,9 +286,12 @@ class StaggeredTripleDifference(
                     valid_gc = [0] if has_never_enabled else []
                 else:
                     # Use all valid comparison cohorts (not-yet-treated + never)
+                    # Threshold accounts for anticipation: cohorts that start
+                    # treatment within the anticipation window are contaminated.
+                    nyt_threshold = max(t, base_period_val) + self.anticipation
                     valid_gc = [
                         gc for gc in treatment_groups
-                        if gc > threshold and gc != g
+                        if gc > nyt_threshold and gc != g
                     ]
                     if has_never_enabled:
                         valid_gc = [0] + valid_gc
@@ -445,6 +447,27 @@ class StaggeredTripleDifference(
                 overall_p_value = bootstrap_results.overall_att_p_value
                 if bootstrap_results.cband_crit_value is not None:
                     cband_crit_value = bootstrap_results.cband_crit_value
+
+                # Update group-time effects with bootstrap SEs
+                if bootstrap_results.group_time_ses:
+                    for gt_key in group_time_effects:
+                        if gt_key in bootstrap_results.group_time_ses:
+                            group_time_effects[gt_key]["se"] = (
+                                bootstrap_results.group_time_ses[gt_key]
+                            )
+                            group_time_effects[gt_key]["conf_int"] = (
+                                bootstrap_results.group_time_cis[gt_key]
+                            )
+                            group_time_effects[gt_key]["p_value"] = (
+                                bootstrap_results.group_time_p_values[gt_key]
+                            )
+                            t_val, _, _ = safe_inference(
+                                group_time_effects[gt_key]["effect"],
+                                bootstrap_results.group_time_ses[gt_key],
+                                alpha=self.alpha,
+                            )
+                            group_time_effects[gt_key]["t_stat"] = t_val
+
                 if event_study_effects and bootstrap_results.event_study_ses:
                     for e_key in event_study_effects:
                         if e_key in bootstrap_results.event_study_ses:
@@ -583,13 +606,16 @@ class StaggeredTripleDifference(
                 f"{int(dup.sum())} duplicates detected. Panel must have unique rows."
             )
 
-        # Check balanced panel — equal period count per unit
+        # Check balanced panel — every unit observed in every period
+        all_periods = df[time].unique()
+        n_global_periods = len(all_periods)
         periods_per_unit = df.groupby(unit)[time].nunique()
-        if periods_per_unit.nunique() > 1:
+        incomplete = periods_per_unit[periods_per_unit < n_global_periods]
+        if len(incomplete) > 0:
             raise ValueError(
                 "Unbalanced panel detected. All units must be observed in "
-                "all periods. Period counts range from "
-                f"{periods_per_unit.min()} to {periods_per_unit.max()}."
+                f"all {n_global_periods} periods. "
+                f"Found {len(incomplete)} units with fewer periods."
             )
 
         # Check time-invariant first_treat

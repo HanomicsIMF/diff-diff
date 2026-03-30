@@ -367,6 +367,7 @@ class TestStaggeredTripleDiffEdgeCases:
     def test_inf_first_treat_works(self):
         """Never-enabled units encoded as inf should work."""
         data = generate_staggered_ddd_data(n_units=100, seed=33)
+        data["first_treat"] = data["first_treat"].astype(float)
         data.loc[data["first_treat"] == 0, "first_treat"] = np.inf
         est = StaggeredTripleDifference()
         res = est.fit(data, "outcome", "unit", "period",
