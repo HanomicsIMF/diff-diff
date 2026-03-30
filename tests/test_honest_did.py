@@ -1295,9 +1295,15 @@ class TestSurveyVariance:
         # (prevents HonestDiD from mixing analytical VCV with bootstrap SEs)
         assert cs_result.event_study_vcov is None
 
-        # HonestDiD should still work (falls back to diagonal from bootstrap SEs)
+        # HonestDiD should warn about diagonal fallback but still work
         honest = HonestDiD(method="relative_magnitude", M=1.0)
-        h_result = honest.fit(cs_result)
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            h_result = honest.fit(cs_result)
+        diag_warnings = [w for w in caught if "diagonal covariance" in str(w.message)]
+        assert len(diag_warnings) >= 1
         assert np.isfinite(h_result.original_se)
         assert h_result.original_se > 0
 

@@ -668,11 +668,17 @@ def _extract_event_study_params(
                 }
                 rel_times = sorted(event_effects.keys())
 
-                # Infer the omitted reference period from the n_groups=0 entry
-                # (injected by _aggregate_event_study for universal base).
+                # Infer the omitted reference period from the normalization
+                # marker injected by _aggregate_event_study for universal base.
+                # The reference has the exact signature: effect=0.0, se=NaN, n_groups=0.
+                # Other empty bins may also have n_groups=0 but with NaN effect.
                 ref_period = None
                 for t, data in results.event_study_effects.items():
-                    if data.get("n_groups", 1) == 0:
+                    if (
+                        data.get("n_groups", 1) == 0
+                        and data.get("effect", None) == 0.0
+                        and not np.isfinite(data.get("se", 0.0))
+                    ):
                         ref_period = t
                         break
 
@@ -720,6 +726,22 @@ def _extract_event_study_params(
                     else:
                         sigma = np.diag(np.array(ses) ** 2)
                 else:
+                    # No full VCV available. Check if this is a bootstrap fit
+                    # (VCV was cleared to prevent mixing analytical/bootstrap).
+                    if (
+                        hasattr(results, "bootstrap_results")
+                        and results.bootstrap_results is not None
+                    ):
+                        import warnings
+
+                        warnings.warn(
+                            "HonestDiD on bootstrap-fitted CallawaySantAnna results "
+                            "uses a diagonal covariance matrix (cross-event-time "
+                            "covariance is not available from bootstrap). For full "
+                            "covariance structure, use analytical SEs (n_bootstrap=0).",
+                            UserWarning,
+                            stacklevel=4,
+                        )
                     sigma = np.diag(np.array(ses) ** 2)
 
                 # Validate the full event-time grid is consecutive.
