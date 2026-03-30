@@ -158,7 +158,7 @@ class CallawaySantAnnaResults:
             "",
             f"{'Total observations:':<30} {self.n_obs:>10}",
             f"{'Treated ' + ('obs:' if not self.panel else 'units:'):<30} {self.n_treated_units:>10}",
-            f"{'Control ' + ('obs:' if not self.panel else 'units:'):<30} {self.n_control_units:>10}",
+            f"{'Never-treated ' + ('obs:' if not self.panel else 'units:'):<30} {self.n_control_units:>10}",
             f"{'Treatment cohorts:':<30} {len(self.groups):>10}",
             f"{'Time periods:':<30} {len(self.time_periods):>10}",
             f"{'Control group:':<30} {self.control_group:>10}",
