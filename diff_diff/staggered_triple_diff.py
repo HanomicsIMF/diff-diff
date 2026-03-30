@@ -411,14 +411,19 @@ class StaggeredTripleDifference(
         # aggregation weights over the treated population (G_i defined only
         # for Q=1 units). Ineligible units get cohort=0 so they don't
         # contribute to pg for any treatment group.
+        # Both precomputed["unit_cohorts"] AND df["first_treat"] must be
+        # zeroed for ineligible units because the WIF code reads both.
         precomputed_agg = dict(precomputed)
         cohorts_for_agg = precomputed["unit_cohorts"].copy()
         cohorts_for_agg[eligibility_per_unit == 0] = 0
         precomputed_agg["unit_cohorts"] = cohorts_for_agg
 
+        df_agg = df.copy()
+        df_agg.loc[df_agg[eligibility] == 0, "first_treat"] = 0
+
         # Overall ATT via aggregation mixin
         overall_att, overall_se = self._aggregate_simple(
-            group_time_effects, influence_func_info, df, unit, precomputed_agg
+            group_time_effects, influence_func_info, df_agg, unit, precomputed_agg
         )
         overall_t_stat, overall_p_value, overall_conf_int = safe_inference(
             overall_att, overall_se, alpha=self.alpha
@@ -431,12 +436,12 @@ class StaggeredTripleDifference(
             event_study_effects = self._aggregate_event_study(
                 group_time_effects, influence_func_info,
                 treatment_groups, time_periods, balance_e,
-                df, unit, precomputed_agg,
+                df_agg, unit, precomputed_agg,
             )
         if aggregate in ("group", "all"):
             group_effects = self._aggregate_by_group(
                 group_time_effects, influence_func_info,
-                treatment_groups, precomputed_agg, df, unit,
+                treatment_groups, precomputed_agg, df_agg, unit,
             )
 
         # Bootstrap
@@ -447,7 +452,7 @@ class StaggeredTripleDifference(
                 group_time_effects, influence_func_info,
                 aggregate, balance_e,
                 treatment_groups, time_periods,
-                df, unit, precomputed_agg, self.cband,
+                df_agg, unit, precomputed_agg, self.cband,
             )
             if bootstrap_results is not None:
                 overall_se = bootstrap_results.overall_att_se
