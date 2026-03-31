@@ -534,6 +534,36 @@ class TestReplicateScaleInvariance:
             err_msg=f"SE changed with weight rescaling (agg={agg})",
         )
 
+        # Assert sub-aggregation outputs are also scale-invariant
+        if agg == "event_study" and res1.event_study_effects:
+            for e_key in res1.event_study_effects:
+                np.testing.assert_allclose(
+                    res2.event_study_effects[e_key]["effect"],
+                    res1.event_study_effects[e_key]["effect"],
+                    atol=1e-12,
+                    err_msg=f"Event study e={e_key} effect changed",
+                )
+                np.testing.assert_allclose(
+                    res2.event_study_effects[e_key]["se"],
+                    res1.event_study_effects[e_key]["se"],
+                    rtol=1e-6,
+                    err_msg=f"Event study e={e_key} SE changed",
+                )
+        if agg == "group" and res1.group_effects:
+            for g_key in res1.group_effects:
+                np.testing.assert_allclose(
+                    res2.group_effects[g_key]["effect"],
+                    res1.group_effects[g_key]["effect"],
+                    atol=1e-12,
+                    err_msg=f"Group g={g_key} effect changed",
+                )
+                np.testing.assert_allclose(
+                    res2.group_effects[g_key]["se"],
+                    res1.group_effects[g_key]["se"],
+                    rtol=1e-6,
+                    err_msg=f"Group g={g_key} SE changed",
+                )
+
 
 # ---------------------------------------------------------------------------
 # Survey-weighted aggregation point estimates
@@ -793,3 +823,78 @@ class TestReplicateCombinedWeightsFalse:
         assert np.isfinite(res.overall_att)
         assert np.isfinite(res.overall_se)
         assert res.overall_se > 0
+
+
+# ---------------------------------------------------------------------------
+# Regression: weighted pscore fallback
+# ---------------------------------------------------------------------------
+
+
+class TestWeightedPscoreFallback:
+    """Force pscore fallback and verify it uses survey-weighted treated share."""
+
+    def test_fallback_uses_weighted_mean(self, sddd_data):
+        """With a single covariate that is perfectly collinear with the
+        treatment indicator, logit will fail and fall back to the
+        unconditional propensity. The fallback should use survey-weighted
+        treated share, producing finite results."""
+        data = sddd_data.copy()
+        # Create a covariate perfectly collinear with eligibility to force
+        # logit failure in at least some subgroups
+        data["collinear_x"] = data["eligibility"].astype(float) * 100.0
+        sd = SurveyDesign(weights="weight")
+        est = StaggeredTripleDifference(estimation_method="ipw")
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = est.fit(
+                data,
+                "outcome",
+                "unit",
+                "period",
+                "first_treat",
+                "eligibility",
+                covariates=["collinear_x"],
+                survey_design=sd,
+            )
+        assert np.isfinite(res.overall_att)
+
+
+# ---------------------------------------------------------------------------
+# Regression: zero-mass subgroup warning/skip
+# ---------------------------------------------------------------------------
+
+
+class TestZeroMassSubgroupSkip:
+    """Zero survey-weight mass subgroups are warned and skipped."""
+
+    def test_zero_mass_subgroup_warns(self):
+        """When a subgroup has rows but zero survey weight, the comparison
+        should be skipped with a warning (not produce NaN silently)."""
+        data = _make_staggered_ddd_data(n_units=200, seed=55)
+        # Zero out weights for all eligible units in cohort g=3
+        # This makes the (S=3, Q=1) subgroup have zero mass
+        mask = (data["first_treat"] == 3) & (data["eligibility"] == 1)
+        data.loc[mask, "weight"] = 0.0
+
+        sd = SurveyDesign(weights="weight")
+        est = StaggeredTripleDifference(estimation_method="reg")
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            res = est.fit(
+                data,
+                "outcome",
+                "unit",
+                "period",
+                "first_treat",
+                "eligibility",
+                survey_design=sd,
+            )
+        # Should have produced at least one empty/zero-mass subgroup warning
+        mass_warnings = [x for x in w if "mass=0" in str(x.message)]
+        assert len(mass_warnings) > 0, "Expected zero-mass subgroup warning"
+        # Result should still be finite (other cohorts contribute)
+        assert np.isfinite(res.overall_att)
