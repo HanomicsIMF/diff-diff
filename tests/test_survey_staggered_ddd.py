@@ -44,6 +44,8 @@ def _make_staggered_ddd_data(n_units=200, n_periods=5, seed=42):
     strata = rng.choice(4, size=n_units)
     # PSU: 2 PSUs per stratum = 8 PSUs total
     psu = strata * 2 + rng.choice(2, size=n_units)
+    # Unit-level covariate (time-invariant)
+    x1 = rng.normal(0, 1, size=n_units)
 
     rows = []
     for i in range(n_units):
@@ -67,6 +69,7 @@ def _make_staggered_ddd_data(n_units=200, n_periods=5, seed=42):
                     "weight": weights[i],
                     "stratum": strata[i],
                     "psu": psu[i],
+                    "x1": x1[i],
                 }
             )
 
@@ -720,3 +723,73 @@ class TestBasePeriodSurvey:
         )
         assert np.isfinite(res.overall_att)
         assert np.isfinite(res.overall_se)
+
+
+# ---------------------------------------------------------------------------
+# Covariate-adjusted survey paths
+# ---------------------------------------------------------------------------
+
+
+class TestCovariateAdjustedSurvey:
+    """Covariate-adjusted survey estimation produces finite results."""
+
+    @pytest.mark.parametrize("method", ["reg", "ipw", "dr"])
+    def test_covariate_survey(self, sddd_data, method):
+        sd = SurveyDesign(weights="weight")
+        est = StaggeredTripleDifference(estimation_method=method)
+        res = est.fit(
+            sddd_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "eligibility",
+            covariates=["x1"],
+            survey_design=sd,
+        )
+        assert np.isfinite(res.overall_att)
+        assert np.isfinite(res.overall_se)
+        assert res.overall_se > 0
+
+
+# ---------------------------------------------------------------------------
+# combined_weights=False replicate path
+# ---------------------------------------------------------------------------
+
+
+class TestReplicateCombinedWeightsFalse:
+    """Replicate weights with combined_weights=False produce finite results."""
+
+    def test_non_combined_replicate(self, sddd_data):
+        data = sddd_data.copy()
+        rng = np.random.default_rng(77)
+        unit_ids = sorted(data["unit"].unique())
+        n_units = len(unit_ids)
+        R = 20
+        # Non-combined: replicate columns are perturbation factors only
+        for r in range(R):
+            factor = np.abs(1.0 + rng.standard_normal(n_units) * 0.1)
+            unit_w = dict(zip(unit_ids, factor))
+            data[f"rep_{r}"] = data["unit"].map(unit_w)
+
+        rep_cols = [f"rep_{r}" for r in range(R)]
+        sd = SurveyDesign(
+            weights="weight",
+            replicate_weights=rep_cols,
+            replicate_method="BRR",
+            combined_weights=False,
+        )
+        est = StaggeredTripleDifference(estimation_method="reg")
+        res = est.fit(
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "eligibility",
+            aggregate="simple",
+            survey_design=sd,
+        )
+        assert np.isfinite(res.overall_att)
+        assert np.isfinite(res.overall_se)
+        assert res.overall_se > 0

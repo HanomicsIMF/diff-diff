@@ -924,16 +924,27 @@ class StaggeredTripleDifference(
         n_b = int(np.sum(sub_b_mask))
         n_c = int(np.sum(sub_c_mask))
 
-        if n_treated == 0 or n_a == 0 or n_b == 0 or n_c == 0:
-            empty = []
-            if n_treated == 0:
-                empty.append(f"(S={g},Q=1)")
-            if n_a == 0:
-                empty.append(f"(S={g},Q=0)")
-            if n_b == 0:
-                empty.append(f"(S={g_c},Q=1)")
-            if n_c == 0:
-                empty.append(f"(S={g_c},Q=0)")
+        # Check for empty subgroups (by count or by survey weight mass)
+        empty = []
+        if n_treated == 0:
+            empty.append(f"(S={g},Q=1)")
+        if n_a == 0:
+            empty.append(f"(S={g},Q=0)")
+        if n_b == 0:
+            empty.append(f"(S={g_c},Q=1)")
+        if n_c == 0:
+            empty.append(f"(S={g_c},Q=0)")
+        # Zero survey-weight mass after subpopulation filtering = effectively empty
+        if not empty and survey_weights is not None:
+            if np.sum(survey_weights[treated_mask]) <= 0:
+                empty.append(f"(S={g},Q=1,mass=0)")
+            if np.sum(survey_weights[sub_a_mask]) <= 0:
+                empty.append(f"(S={g},Q=0,mass=0)")
+            if np.sum(survey_weights[sub_b_mask]) <= 0:
+                empty.append(f"(S={g_c},Q=1,mass=0)")
+            if np.sum(survey_weights[sub_c_mask]) <= 0:
+                empty.append(f"(S={g_c},Q=0,mass=0)")
+        if empty:
             warnings.warn(
                 f"Empty subgroup(s) {', '.join(empty)} for "
                 f"(g={g}, g_c={g_c}, t={t}). "
@@ -1294,7 +1305,16 @@ class StaggeredTripleDifference(
                     UserWarning,
                     stacklevel=5,
                 )
-                pscore = np.full(n_pair, np.mean(PA4))
+                # Use survey-weighted treated share when weights available
+                if survey_weights is not None:
+                    pos = survey_weights > 0
+                    if np.any(pos):
+                        p_uc = np.average(PA4[pos], weights=survey_weights[pos])
+                    else:
+                        p_uc = np.mean(PA4)
+                else:
+                    p_uc = np.mean(PA4)
+                pscore = np.full(n_pair, p_uc)
                 pscore = np.clip(pscore, self.pscore_trim, 1 - self.pscore_trim)
                 # No hessian for unconditional fallback
                 return pscore, None
