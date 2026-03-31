@@ -496,9 +496,15 @@ class StaggeredTripleDifference(
         df_agg.loc[df_agg[eligibility] == 0, "first_treat"] = 0
 
         # Overall ATT via aggregation mixin
-        overall_att, overall_se, _effective_df = self._aggregate_simple(
+        overall_att, overall_se, overall_effective_df = self._aggregate_simple(
             group_time_effects, influence_func_info, df_agg, unit, precomputed_agg
         )
+        # Use per-statistic effective df from replicate aggregation if available;
+        # otherwise fall back to the original df from the survey design.
+        if overall_effective_df is not None:
+            df_survey = overall_effective_df
+            if survey_metadata is not None:
+                survey_metadata.df_survey = df_survey
         overall_t_stat, overall_p_value, overall_conf_int = safe_inference(
             overall_att, overall_se, alpha=self.alpha, df=df_survey
         )
@@ -525,6 +531,20 @@ class StaggeredTripleDifference(
                 precomputed_agg,
                 df_agg,
                 unit,
+            )
+
+        # Reject replicate-weight designs for bootstrap — replicate variance
+        # is an analytical alternative, not compatible with bootstrap
+        if (
+            self.n_bootstrap > 0
+            and resolved_survey is not None
+            and hasattr(resolved_survey, "uses_replicate_variance")
+            and resolved_survey.uses_replicate_variance
+        ):
+            raise NotImplementedError(
+                "StaggeredTripleDifference bootstrap (n_bootstrap > 0) is not "
+                "supported with replicate-weight survey designs. Replicate "
+                "weights provide analytical variance; use n_bootstrap=0 instead."
             )
 
         # Bootstrap

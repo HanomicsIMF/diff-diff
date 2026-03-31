@@ -409,6 +409,110 @@ class TestReplicateWeights:
 
 
 # ---------------------------------------------------------------------------
+# Replicate + bootstrap rejection
+# ---------------------------------------------------------------------------
+
+
+class TestReplicateBootstrapRejection:
+    """Replicate weights + n_bootstrap>0 raises NotImplementedError."""
+
+    def test_brr_with_bootstrap_rejected(self, sddd_data):
+        data = sddd_data.copy()
+        rng = np.random.default_rng(99)
+        n_units = data["unit"].nunique()
+        unit_ids = sorted(data["unit"].unique())
+        R = 10
+        rep_matrix = np.abs(1.0 + rng.standard_normal((n_units, R)) * 0.1)
+        for r in range(R):
+            unit_w = dict(zip(unit_ids, rep_matrix[:, r]))
+            data[f"rep_{r}"] = data["unit"].map(unit_w)
+
+        rep_cols = [f"rep_{r}" for r in range(R)]
+        sd = SurveyDesign(
+            weights="weight",
+            replicate_weights=rep_cols,
+            replicate_method="BRR",
+        )
+        est = StaggeredTripleDifference(
+            estimation_method="reg",
+            n_bootstrap=49,
+        )
+        with pytest.raises(NotImplementedError, match="replicate"):
+            est.fit(
+                data,
+                "outcome",
+                "unit",
+                "period",
+                "first_treat",
+                "eligibility",
+                survey_design=sd,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Survey-weighted aggregation point estimates
+# ---------------------------------------------------------------------------
+
+
+class TestSurveyWeightedAggregation:
+    """Survey weights change aggregation point estimates (not just SEs)."""
+
+    def test_unequal_cohort_weights_change_aggregate(self):
+        """Cohorts with very different survey weights produce different
+        aggregated ATT from unweighted."""
+        # Create data where cohort g=3 units have weight=10 and g=4 have weight=1
+        data = _make_staggered_ddd_data(n_units=200, seed=123)
+        rng = np.random.default_rng(123)
+        unit_df = data.groupby("unit")["first_treat"].first()
+        # Assign extreme weights: g=3 units 10x heavier than g=4
+        w_map = {}
+        for uid, g in unit_df.items():
+            if g == 3:
+                w_map[uid] = 10.0 + rng.uniform(0, 1)
+            elif g == 4:
+                w_map[uid] = 1.0 + rng.uniform(0, 0.1)
+            else:
+                w_map[uid] = 3.0 + rng.uniform(0, 0.5)
+        data["skewed_w"] = data["unit"].map(w_map)
+
+        est = StaggeredTripleDifference(estimation_method="reg")
+
+        # Unweighted
+        res_uw = est.fit(
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "eligibility",
+            aggregate="simple",
+        )
+
+        # Skewed survey weights
+        sd = SurveyDesign(weights="skewed_w")
+        res_w = est.fit(
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "eligibility",
+            aggregate="simple",
+            survey_design=sd,
+        )
+
+        # Both should be finite
+        assert np.isfinite(res_uw.overall_att)
+        assert np.isfinite(res_w.overall_att)
+
+        # Aggregated ATT should differ due to different cohort weighting
+        assert abs(res_w.overall_att - res_uw.overall_att) > 1e-6, (
+            f"Expected aggregate ATTs to differ with skewed weights: "
+            f"weighted={res_w.overall_att}, unweighted={res_uw.overall_att}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # pweight-only validation
 # ---------------------------------------------------------------------------
 
