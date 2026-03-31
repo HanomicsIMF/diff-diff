@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-03-31
+
+### Added
+- **Staggered Triple Difference estimator** (Ortiz-Villavicencio & Sant'Anna 2025)
+  - `StaggeredTripleDifference` class with group-time ATT(g,t) for DDD designs with staggered adoption
+  - Event study aggregation, pre-treatment placebo effects, multiplier bootstrap inference
+  - R benchmark validation against `triplediff` package
+  - DGP function `generate_staggered_ddd_data()` for simulation and testing
+- **Survey Phase 7a: CS IPW/DR + covariates + survey**
+  - DRDID panel nuisance-estimation IF corrections (PS + OR) under survey weights
+  - Survey-weighted propensity score estimation and outcome regression
+  - IFs account for nuisance parameter estimation uncertainty (Sant'Anna & Zhao 2020, Theorem 3.1)
+- **Survey Phase 7b: Repeated cross-sections**
+  - `CallawaySantAnna(panel=False)` for repeated cross-section surveys (BRFSS, ACS, CPS)
+  - Cross-sectional DRDID: `reg` matches `DRDID::reg_did_rc`, `dr` matches `DRDID::drdid_rc`, `ipw` matches `DRDID::std_ipw_did_rc`
+  - Survey weights, covariates, and all estimation methods supported
+- **Survey Phase 7d: HonestDiD + survey variance**
+  - Survey df and full event-study VCV from IF vectors propagated to sensitivity analysis
+  - t-distribution critical values with survey degrees of freedom
+  - Bootstrap/replicate designs fall back to diagonal VCV with warning
+- **Plotly visualization styling**: thread `marker`, `markersize`, `linewidth`, `capsize`, `ci_linewidth` kwargs through plotly backends (previously silently ignored)
+- AI agent discoverability for practitioner guide
+
+### Changed
+- HonestDiD now raises `ValueError` on non-consecutive event-time grid (was warning)
+- HonestDiD validates full grid around reference period
+- Panel IPW/DR PS correction scaling matches R's `H/n`, `asy_rep/n`, `colMeans` convention
+- RC IF normalization follows R's `psi` convention with explicit `phi` conversion
+
+### Fixed
+- Fix HonestDiD reference-aware pre/post split for varying-base event studies
+- Fix HonestDiD `_estimate_max_pre_violation` to use reference-aware pre_periods
+- Fix panel M2 gradient scaling for IPW/DR nuisance IF corrections
+- Fix VCV index alignment for repeated cross-section aggregation
+- Fix replicate-weight df propagation: return per-statistic df instead of mutating shared state
+- Fix WIF population consistency: zero df `first_treat` for ineligible units
+- Fix bootstrap RCS cohort-mass weighting and stale event-study VCV reset
+
 ## [2.7.6] - 2026-03-28
 
 ### Added
@@ -1006,6 +1044,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.8.0]: https://github.com/igerber/diff-diff/compare/v2.7.6...v2.8.0
 [2.7.6]: https://github.com/igerber/diff-diff/compare/v2.7.5...v2.7.6
 [2.7.5]: https://github.com/igerber/diff-diff/compare/v2.7.4...v2.7.5
 [2.7.4]: https://github.com/igerber/diff-diff/compare/v2.7.3...v2.7.4
