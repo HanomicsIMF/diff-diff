@@ -839,6 +839,12 @@ class StaggeredTripleDifference(
                 .reindex(all_units)
                 .values.astype(np.float64)
             )
+            # Normalize to sum=n for aggregation/rescaling (matches pweight
+            # convention). Raw weights preserved in resolved_survey_unit for
+            # replicate w_r/w_full ratios — those are inherently scale-invariant.
+            sw_sum = np.sum(survey_weights_arr)
+            if sw_sum > 0:
+                survey_weights_arr = survey_weights_arr * (len(survey_weights_arr) / sw_sum)
             resolved_survey_unit = collapse_survey_to_unit_level(
                 resolved_survey, df, unit, all_units
             )

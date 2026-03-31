@@ -378,12 +378,13 @@ class TestReplicateWeights:
         rng = np.random.default_rng(99)
         n_units = data["unit"].nunique()
         R = 20
-        # Generate unit-level replicate weights
+        # Generate combined replicate weights: rep_r = weight * factor_r
+        # (combined_weights=True means each column includes full-sample weight)
         unit_ids = sorted(data["unit"].unique())
-        rep_matrix = 1.0 + rng.standard_normal((n_units, R)) * 0.1
-        rep_matrix = np.abs(rep_matrix)  # Ensure positive
+        base_w = data.groupby("unit")["weight"].first().reindex(unit_ids).values
         for r in range(R):
-            unit_w = dict(zip(unit_ids, rep_matrix[:, r]))
+            factor = np.abs(1.0 + rng.standard_normal(n_units) * 0.1)
+            unit_w = dict(zip(unit_ids, base_w * factor))
             data[f"rep_{r}"] = data["unit"].map(unit_w)
 
         rep_cols = [f"rep_{r}" for r in range(R)]
@@ -422,9 +423,10 @@ class TestReplicateBootstrapRejection:
         n_units = data["unit"].nunique()
         unit_ids = sorted(data["unit"].unique())
         R = 10
-        rep_matrix = np.abs(1.0 + rng.standard_normal((n_units, R)) * 0.1)
+        base_w = data.groupby("unit")["weight"].first().reindex(unit_ids).values
         for r in range(R):
-            unit_w = dict(zip(unit_ids, rep_matrix[:, r]))
+            factor = np.abs(1.0 + rng.standard_normal(n_units) * 0.1)
+            unit_w = dict(zip(unit_ids, base_w * factor))
             data[f"rep_{r}"] = data["unit"].map(unit_w)
 
         rep_cols = [f"rep_{r}" for r in range(R)]
@@ -447,6 +449,87 @@ class TestReplicateBootstrapRejection:
                 "eligibility",
                 survey_design=sd,
             )
+
+
+# ---------------------------------------------------------------------------
+# Replicate-weight scale invariance
+# ---------------------------------------------------------------------------
+
+
+def _make_brr_data(sddd_data, rng_seed=99, R=20):
+    """Helper: build combined BRR replicate weights for sddd_data."""
+    data = sddd_data.copy()
+    rng = np.random.default_rng(rng_seed)
+    unit_ids = sorted(data["unit"].unique())
+    n_units = len(unit_ids)
+    base_w = data.groupby("unit")["weight"].first().reindex(unit_ids).values
+    for r in range(R):
+        factor = np.abs(1.0 + rng.standard_normal(n_units) * 0.1)
+        unit_w = dict(zip(unit_ids, base_w * factor))
+        data[f"rep_{r}"] = data["unit"].map(unit_w)
+    rep_cols = [f"rep_{r}" for r in range(R)]
+    return data, rep_cols
+
+
+class TestReplicateScaleInvariance:
+    """Rescaling all weights + replicates by constant k must not change results."""
+
+    @pytest.mark.parametrize("agg", ["simple", "event_study", "group"])
+    def test_scale_invariance(self, sddd_data, agg):
+        data, rep_cols = _make_brr_data(sddd_data)
+        k = 5.0
+
+        sd1 = SurveyDesign(
+            weights="weight",
+            replicate_weights=rep_cols,
+            replicate_method="BRR",
+        )
+        est = StaggeredTripleDifference(estimation_method="reg")
+        res1 = est.fit(
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "eligibility",
+            aggregate=agg,
+            survey_design=sd1,
+        )
+
+        # Scale all weights and replicate columns by k
+        data_k = data.copy()
+        data_k["weight"] = data_k["weight"] * k
+        for col in rep_cols:
+            data_k[col] = data_k[col] * k
+
+        sd2 = SurveyDesign(
+            weights="weight",
+            replicate_weights=rep_cols,
+            replicate_method="BRR",
+        )
+        res2 = est.fit(
+            data_k,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "eligibility",
+            aggregate=agg,
+            survey_design=sd2,
+        )
+
+        np.testing.assert_allclose(
+            res2.overall_att,
+            res1.overall_att,
+            atol=1e-12,
+            err_msg=f"ATT changed with weight rescaling (agg={agg})",
+        )
+        np.testing.assert_allclose(
+            res2.overall_se,
+            res1.overall_se,
+            rtol=1e-6,
+            err_msg=f"SE changed with weight rescaling (agg={agg})",
+        )
 
 
 # ---------------------------------------------------------------------------
