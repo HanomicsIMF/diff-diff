@@ -193,3 +193,25 @@ diagonal VCV with a warning.
 
 **Reference:** Rambachan, A. & Roth, J. (2023). "A More Credible Approach
 to Parallel Trends." *Review of Economic Studies* 90(5).
+
+### 7e. StaggeredTripleDifference Survey Support ✅
+
+**Implemented.** Full survey design support (pweight only) for the
+Ortiz-Villavicencio & Sant'Anna (2025) staggered DDD estimator. Survey
+weights thread through all three pairwise DiD comparisons: propensity
+score estimation (weighted IRLS via `solve_logit`), outcome regression
+(WLS via `solve_ols`), and Riesz representer computation (weighted
+Hajek normalization). IF combination weights (w1/w2/w3) use
+survey-weighted cell sizes. Per-cell SEs use the standard IF formula
+(matching CallawaySantAnna); aggregated SEs (overall, event study,
+group) use design-based variance via `compute_survey_if_variance()`
+(TSL with strata/PSU/FPC) or `compute_replicate_if_variance()`
+(replicate weights). Bootstrap uses PSU-level multiplier weights
+when survey design is present.
+
+**Note:** The R `triplediff` package does not support survey weights.
+diff-diff is the only implementation (R or Python) with design-based
+variance estimation for staggered triple differences.
+
+**Reference:** Ortiz-Villavicencio, M. & Sant'Anna, P.H.C. (2025).
+"Better Understanding Triple Differences Estimators." arXiv:2505.09942.

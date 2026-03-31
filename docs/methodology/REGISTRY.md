@@ -1390,7 +1390,13 @@ confidence bands (sup-t) for event study.
 - **Note:** The `cluster` parameter is accepted but not currently wired to the
   analytical SE computation. The multiplier bootstrap provides unit-level
   clustering. Full cluster-robust analytical SEs are deferred.
-- **Note:** Survey design support is deferred; raises `NotImplementedError`.
+- **Note:** Full survey design support (pweight only). Survey weights enter
+  propensity score estimation (weighted IRLS), outcome regression (WLS), and
+  Riesz representer computation. IF combination weights (w1/w2/w3) use
+  survey-weighted cell sizes. Aggregated SEs use `compute_survey_if_variance()`
+  (TSL) or `compute_replicate_if_variance()` (replicate weights). Bootstrap
+  uses PSU-level multiplier weights. The R `triplediff` package does not
+  support survey weights.
 - **Deviation from R:** Event-study and simple aggregation reuse
   `CallawaySantAnnaAggregationMixin` cohort-size weights (`n_treated` per cohort)
   instead of R's `agg_ddd()` group-probability weights (`pg = P(G=g)` over all
@@ -1422,7 +1428,7 @@ confidence bands (sup-t) for event study.
 - [x] Influence-function-based SEs
 - [x] Multiplier bootstrap for simultaneous confidence bands (via CS mixin)
 - [ ] Cluster-robust analytical SEs (accepted but not wired — deferred)
-- [ ] Survey design support (deferred — raises NotImplementedError)
+- [x] Survey design support (pweight, strata/PSU/FPC, replicate weights)
 - [x] Validation against R `triplediff` package: group-time ATT and SE match within
   0.001% across 10 scenarios (3 seeds, 3 methods, both control group modes).
   Aggregation (event study, overall ATT) uses CS mixin cohort-size weights which
