@@ -210,7 +210,7 @@ Stacked = StackedDiD
 Bacon = BaconDecomposition
 EDiD = EfficientDiD
 
-__version__ = "2.8.0"
+__version__ = "2.8.1"
 __all__ = [
     # Estimators
     "DifferenceInDifferences",

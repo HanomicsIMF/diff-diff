@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.1] - 2026-04-01
+
+### Added
+- **Survey-aware DiD tutorial** (`docs/tutorials/16_survey_did.ipynb`) — Phase 7c complete. Full workflow with strata, PSU, FPC, replicate weights, subpopulation analysis, and DEFF diagnostics. Includes `generate_survey_did_data()` DGP function.
+- **Survey R cross-validation** — benchmark scripts and tests comparing TSL variance against R's `survey::svyglm()` for basic DiD and TWFE with full survey designs (strata, PSU, FPC). Committed JSON fixtures for CI without R.
+- **HonestDiD methodology review and validation** — 478 lines of methodology tests, paper review document, rewritten optimal FLCI with first-difference reparameterization.
+- **StaggeredTripleDifference survey support** — full `SurveyDesign` integration with strata/PSU/FPC, replicate weights, and survey-aware bootstrap.
+
+### Changed
+- HonestDiD: rewrite optimal FLCI with proper first-difference reparameterization and centrosymmetric LP optimization
+- HonestDiD: use `conf_int` from results instead of hardcoded `1.96*se` in event study plots
+- Survey tutorial cross-referenced from choosing_estimator.rst and quickstart.rst
+
+### Fixed
+- Fix HonestDiD identified set computation and inference (F1-F6 from Rambachan & Roth 2023)
+- Fix FLCI slope count (T not T-1) and constraint formula
+- Fix NaN CI misclassification as significant (P0 finding)
+- Fix M=0 linear extrapolation and survey df folded nct in REGISTRY.md
+- Fix replicate-weight scale invariance and BRR test fixtures
+- Fix JK1 populated-PSU guard and narrow warning filter
+
 ## [2.8.0] - 2026-03-31
 
 ### Added
@@ -1044,6 +1065,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.8.1]: https://github.com/igerber/diff-diff/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/igerber/diff-diff/compare/v2.7.6...v2.8.0
 [2.7.6]: https://github.com/igerber/diff-diff/compare/v2.7.5...v2.7.6
 [2.7.5]: https://github.com/igerber/diff-diff/compare/v2.7.4...v2.7.5
