@@ -1295,6 +1295,10 @@ has no additional effect.
   min(n_subgroup_j, n_subgroup_4) / (n_covariates + 1) checked before IRLS.
   Default threshold: 10 (Peduzzi et al. 1996). Warns when EPV < threshold;
   errors when `rank_deficient_action="error"`.
+- **Note:** When multiple comparison cohorts `g_c` contribute to the same
+  ATT(g,t) cell, `results.epv_diagnostics[(g,t)]` retains the worst-case
+  (minimum EPV) across all contributing propensity fits, rather than per-fit
+  diagnostics. This is a conservative cell-level summary.
 - Propensity score estimation failure: controlled by `pscore_fallback` parameter
   (default `"error"`). If `pscore_fallback="error"`, the error is raised. If
   `pscore_fallback="unconditional"`, falls back to unconditional propensity with

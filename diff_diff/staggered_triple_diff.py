@@ -1070,12 +1070,17 @@ class StaggeredTripleDifference(
         )
 
         # Merge per-DiD EPV diagnostics: keep the worst (lowest EPV) entry
+        # across all three DiDs for this g_c. If multiple g_c contribute to the
+        # same (g, t) cell, retain the overall minimum EPV across all g_c calls.
         if epv_diagnostics is not None:
             candidates = [d for d in [epv_diag_a, epv_diag_b, epv_diag_c] if d]
             if candidates:
-                # Pick the entry with the lowest EPV across the three DiDs
                 worst = min(candidates, key=lambda d: d.get("epv", float("inf")))
-                epv_diagnostics[(g, t)] = worst
+                existing = epv_diagnostics.get((g, t))
+                if existing is None or worst.get("epv", float("inf")) < existing.get(
+                    "epv", float("inf")
+                ):
+                    epv_diagnostics[(g, t)] = worst
 
         if did_a is None or did_b is None or did_c is None:
             return None
@@ -1348,10 +1353,12 @@ class StaggeredTripleDifference(
         n_pair = len(PA4)
 
         if cached is not None:
-            beta_logistic = cached
+            beta_logistic, cached_diag = cached
             z = np.dot(covX, beta_logistic)
             z = np.clip(z, -500, 500)
             pscore = 1 / (1 + np.exp(-z))
+            if epv_diagnostics_out is not None and cached_diag:
+                epv_diagnostics_out.update(cached_diag)
         else:
             X_no_intercept = covX[:, 1:]  # solve_logit adds its own intercept
             diag = {}
@@ -1368,8 +1375,9 @@ class StaggeredTripleDifference(
                 _check_propensity_diagnostics(pscore, self.pscore_trim)
                 # Zero-fill NaN coefficients (from rank-deficient columns)
                 # before caching, so cache reuse doesn't propagate NaN.
+                # Cache alongside EPV diagnostics for replay on cache hits.
                 beta_clean = np.where(np.isfinite(beta_logistic), beta_logistic, 0.0)
-                pscore_cache[pscore_key] = beta_clean
+                pscore_cache[pscore_key] = (beta_clean, diag)
             except (np.linalg.LinAlgError, ValueError):
                 if (
                     self.pscore_fallback == "error"
