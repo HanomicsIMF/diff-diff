@@ -1127,3 +1127,288 @@ def generate_staggered_ddd_data(
             records.append(row)
 
     return pd.DataFrame(records)
+
+
+def generate_survey_did_data(
+    n_units: int = 200,
+    n_periods: int = 8,
+    cohort_periods: Optional[List[int]] = None,
+    never_treated_frac: float = 0.3,
+    treatment_effect: float = 2.0,
+    dynamic_effects: bool = False,
+    effect_growth: float = 0.3,
+    n_strata: int = 5,
+    psu_per_stratum: int = 8,
+    fpc_per_stratum: float = 200.0,
+    weight_variation: str = "moderate",
+    psu_re_sd: float = 2.0,
+    unit_fe_sd: float = 1.0,
+    noise_sd: float = 0.5,
+    include_replicate_weights: bool = False,
+    add_covariates: bool = False,
+    panel: bool = True,
+    seed: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Generate synthetic staggered DiD data with survey structure.
+
+    Creates a balanced panel (or repeated cross-section) with stratified
+    multi-stage sampling design (strata, PSUs, FPC, sampling weights) and
+    known treatment effects. The survey structure introduces intra-cluster
+    correlation via PSU random effects, making design-based SEs larger
+    than naive SEs.
+
+    Modeled on ACS/BRFSS-style stratified household surveys: strata
+    represent geographic region types, PSUs are census tracts sampled
+    within each stratum, and weights are inverse selection probabilities.
+
+    Parameters
+    ----------
+    n_units : int, default=200
+        Number of units (respondents) per period.
+    n_periods : int, default=8
+        Number of time periods (1-indexed).
+    cohort_periods : list of int, optional
+        Treatment cohort periods (1-indexed, each must be >= 2 for at least
+        one pre-treatment period). Default derived from n_periods; [3, 5]
+        when n_periods >= 8. Requires n_periods >= 4 when not specified.
+    never_treated_frac : float, default=0.3
+        Fraction of units that are never treated.
+    treatment_effect : float, default=2.0
+        True ATT for treated units.
+    dynamic_effects : bool, default=False
+        If True, effects grow over time since treatment.
+    effect_growth : float, default=0.3
+        Per-period effect growth rate when dynamic_effects=True.
+    n_strata : int, default=5
+        Number of geographic strata.
+    psu_per_stratum : int, default=8
+        Number of PSUs (census tracts) per stratum.
+    fpc_per_stratum : float, default=200.0
+        Finite population correction (total tracts per stratum).
+    weight_variation : str, default="moderate"
+        Controls sampling weight dispersion across strata.
+        "none": all weights equal (1.0).
+        "moderate": weights range ~1.0-2.0 across strata.
+        "high": weights range ~1.0-4.0 across strata.
+    psu_re_sd : float, default=2.0
+        Standard deviation of PSU random effects. Controls intra-cluster
+        correlation and drives DEFF > 1.
+    unit_fe_sd : float, default=1.0
+        Standard deviation of unit fixed effects.
+    noise_sd : float, default=0.5
+        Standard deviation of idiosyncratic noise.
+    include_replicate_weights : bool, default=False
+        If True, add JK1 (delete-one-PSU) replicate weight columns.
+        Requires at least 2 PSUs.
+    add_covariates : bool, default=False
+        If True, add covariates x1 (continuous) and x2 (binary).
+    panel : bool, default=True
+        If True, generate panel data (same respondents across periods).
+        If False, generate repeated cross-sections with fresh respondent
+        effects and unique unit IDs each period (for use with
+        CallawaySantAnna(panel=False)).
+    seed : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: unit, period, outcome, first_treat, treated, true_effect,
+        stratum, psu, fpc, weight. Also rep_0..rep_K if
+        include_replicate_weights=True, and x1, x2 if add_covariates=True.
+    """
+    rng = np.random.default_rng(seed)
+
+    # --- Upfront parameter validation ---
+    if n_units < 1:
+        raise ValueError(f"n_units must be positive, got {n_units}")
+    if n_periods < 1:
+        raise ValueError(f"n_periods must be positive, got {n_periods}")
+    if n_strata < 1:
+        raise ValueError(f"n_strata must be positive, got {n_strata}")
+    if psu_per_stratum < 1:
+        raise ValueError(f"psu_per_stratum must be positive, got {psu_per_stratum}")
+    if not 0.0 <= never_treated_frac <= 1.0:
+        raise ValueError(
+            f"never_treated_frac must be between 0 and 1, got {never_treated_frac}"
+        )
+    if fpc_per_stratum < psu_per_stratum:
+        raise ValueError(
+            f"fpc_per_stratum ({fpc_per_stratum}) must be >= psu_per_stratum "
+            f"({psu_per_stratum})"
+        )
+
+    if cohort_periods is None:
+        # Derive defaults from n_periods.  Cohorts need g >= 2 (at least one
+        # pre-period for estimability with CallawaySantAnna).
+        if n_periods >= 8:
+            cohort_periods = [3, 5]
+        elif n_periods >= 4:
+            cohort_periods = [max(2, n_periods // 3), max(3, 2 * n_periods // 3)]
+        else:
+            raise ValueError(
+                f"n_periods={n_periods} is too small for default cohort_periods "
+                f"(need n_periods >= 4 for at least one cohort with a pre-period). "
+                f"Pass cohort_periods explicitly for small panels."
+            )
+    # Coerce array-like to list (handles np.array inputs)
+    cohort_periods = list(cohort_periods)
+    if not cohort_periods:
+        raise ValueError("cohort_periods must be a non-empty list of integers")
+    for cp in cohort_periods:
+        if isinstance(cp, bool) or not isinstance(cp, (int, np.integer)):
+            raise ValueError(
+                f"cohort_periods must contain integers, got {cp!r}"
+            )
+        if cp < 2 or cp > n_periods:
+            raise ValueError(
+                f"Cohort period {cp} must be between 2 and {n_periods} "
+                f"(g >= 2 ensures at least one pre-treatment period)"
+            )
+
+    valid_wv = ("none", "moderate", "high")
+    if weight_variation not in valid_wv:
+        raise ValueError(
+            f"weight_variation must be one of {valid_wv}, got {weight_variation!r}"
+        )
+
+    # --- Survey structure: assign units to strata and PSUs ---
+    n_psu_total = n_strata * psu_per_stratum
+    units_per_stratum = n_units // n_strata
+    remainder = n_units % n_strata
+
+    unit_stratum = np.empty(n_units, dtype=int)
+    unit_psu = np.empty(n_units, dtype=int)
+    idx = 0
+    for s in range(n_strata):
+        # Distribute remainder units across first strata
+        n_s = units_per_stratum + (1 if s < remainder else 0)
+        unit_stratum[idx : idx + n_s] = s
+
+        # Assign PSUs within this stratum
+        psu_start = s * psu_per_stratum
+        for j in range(n_s):
+            unit_psu[idx + j] = psu_start + (j % psu_per_stratum)
+        idx += n_s
+
+    # Sampling weights: vary by stratum (inverse selection probability)
+    scale_map = {"none": 0.0, "moderate": 1.0, "high": 3.0}
+    scale = scale_map.get(weight_variation, 1.0)
+    denom = max(n_strata - 1, 1)
+    unit_weight = 1.0 + scale * (unit_stratum / denom)
+
+    # --- Treatment assignment (cohort structure) ---
+    n_never = int(n_units * never_treated_frac)
+    n_treated_total = n_units - n_never
+    n_per_cohort = n_treated_total // len(cohort_periods)
+
+    unit_cohort = np.zeros(n_units, dtype=int)
+    ci = n_never
+    for i, g in enumerate(cohort_periods):
+        n_g = (
+            n_per_cohort
+            if i < len(cohort_periods) - 1
+            else n_treated_total - ci + n_never
+        )
+        unit_cohort[ci : ci + n_g] = g
+        ci += n_g
+
+    # --- JK1 early guard (configured count; populated count checked after build) ---
+    if include_replicate_weights and n_psu_total < 2:
+        raise ValueError(
+            "JK1 replicate weights require at least 2 PSUs, "
+            f"got {n_psu_total}."
+        )
+
+    # --- Random effects ---
+    psu_re = rng.normal(0, psu_re_sd, size=n_psu_total)
+    # PSU-period shocks: intra-cluster correlation that survives first-
+    # differencing in DiD.  Without these, the time-invariant PSU RE
+    # cancels in the treatment-vs-control time-difference and the
+    # cluster-robust / survey SE would be *smaller* than naive OLS SE.
+    psu_period_re = rng.normal(0, psu_re_sd * 0.5, size=(n_psu_total, n_periods))
+
+    # --- Generate panel or repeated cross-sections ---
+    records = []
+    for t in range(1, n_periods + 1):
+        # For repeated cross-sections, draw fresh respondent effects each period
+        unit_fe = rng.normal(0, unit_fe_sd, size=n_units)
+        if panel and t > 1:
+            pass  # reuse unit_fe from first period (set below)
+        if panel and t == 1:
+            _panel_unit_fe = unit_fe  # save for reuse
+        if panel and t > 1:
+            unit_fe = _panel_unit_fe  # type: ignore[possibly-undefined]
+
+        x1 = rng.normal(0, 1, size=n_units) if add_covariates else None
+        if panel and t > 1 and add_covariates:
+            x1 = _panel_x1  # type: ignore[possibly-undefined]
+        elif panel and t == 1 and add_covariates:
+            _panel_x1 = x1
+
+        x2 = rng.choice([0, 1], size=n_units) if add_covariates else None
+        if panel and t > 1 and add_covariates:
+            x2 = _panel_x2  # type: ignore[possibly-undefined]
+        elif panel and t == 1 and add_covariates:
+            _panel_x2 = x2
+
+        for i in range(n_units):
+            g_i = unit_cohort[i]
+            # Outcome: unit FE + PSU RE + PSU-period shock + time trend
+            y = unit_fe[i] + psu_re[unit_psu[i]] + psu_period_re[unit_psu[i], t - 1] + 0.5 * t
+
+            if add_covariates:
+                y += 0.5 * x1[i] + 0.3 * x2[i]
+
+            treated = int(g_i > 0 and t >= g_i)
+            true_eff = 0.0
+            if treated:
+                true_eff = treatment_effect
+                if dynamic_effects:
+                    true_eff *= 1 + effect_growth * (t - g_i)
+                y += true_eff
+
+            y += rng.normal(0, noise_sd)
+
+            # In cross-section mode, each period gets unique unit IDs
+            uid = i if panel else (t - 1) * n_units + i
+
+            row = {
+                "unit": uid,
+                "period": t,
+                "outcome": y,
+                "first_treat": g_i,
+                "treated": treated,
+                "true_effect": true_eff,
+                "stratum": int(unit_stratum[i]),
+                "psu": int(unit_psu[i]),
+                "fpc": fpc_per_stratum,
+                "weight": float(unit_weight[i]),
+            }
+            if add_covariates:
+                row["x1"] = x1[i]
+                row["x2"] = x2[i]
+            records.append(row)
+
+    df = pd.DataFrame(records)
+
+    # --- Replicate weights (JK1 delete-one-PSU) ---
+    if include_replicate_weights:
+        psu_ids = sorted(df["psu"].unique())
+        n_rep = len(psu_ids)
+        if n_rep < 2:
+            raise ValueError(
+                "JK1 replicate weights require at least 2 populated PSUs, "
+                f"got {n_rep}. Increase n_units or decrease psu_per_stratum."
+            )
+        base_w = df["weight"].values
+        for r, psu_id in enumerate(psu_ids):
+            w_r = base_w.copy()
+            mask = df["psu"].values == psu_id
+            w_r[mask] = 0.0
+            # Rescale remaining: k/(k-1) for JK1
+            w_r[w_r > 0] *= n_rep / (n_rep - 1)
+            df[f"rep_{r}"] = w_r
+
+    return df

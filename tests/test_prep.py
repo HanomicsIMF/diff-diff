@@ -1171,3 +1171,262 @@ class TestGenerateEventStudyData:
         data = generate_event_study_data(n_units=100, treatment_fraction=0.4, seed=42)
         n_treated_units = data.groupby("unit")["treated"].first().sum()
         assert n_treated_units == 40
+
+
+class TestGenerateSurveyDidData:
+    """Tests for generate_survey_did_data function."""
+
+    def test_basic_shape_and_columns(self):
+        """Test output shape and expected columns."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(n_units=100, n_periods=4, cohort_periods=[2, 3], seed=42)
+        assert len(data) == 400  # 100 units x 4 periods
+        expected = {"unit", "period", "outcome", "first_treat", "treated",
+                    "true_effect", "stratum", "psu", "fpc", "weight"}
+        assert set(data.columns) == expected
+
+    def test_survey_columns_valid(self):
+        """Test survey columns have valid values."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(seed=42)
+        assert (data["weight"] > 0).all()
+        assert (data["fpc"] > 0).all()
+        assert data["stratum"].dtype in [np.int64, np.int32, int]
+        assert data["psu"].dtype in [np.int64, np.int32, int]
+
+    def test_psu_nested_within_strata(self):
+        """Test each PSU appears in exactly one stratum."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(n_strata=5, psu_per_stratum=8, seed=42)
+        psu_strata = data.groupby("psu")["stratum"].nunique()
+        assert (psu_strata == 1).all(), "PSUs must be nested within strata"
+
+    def test_weight_variation_none(self):
+        """Test that weight_variation='none' gives equal weights."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(weight_variation="none", seed=42)
+        assert data["weight"].nunique() == 1
+        assert data["weight"].iloc[0] == 1.0
+
+    def test_weight_variation_moderate(self):
+        """Test moderate weight variation has reasonable CV."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(weight_variation="moderate", seed=42)
+        unit_weights = data.groupby("unit")["weight"].first()
+        cv = unit_weights.std() / unit_weights.mean()
+        assert 0.05 < cv < 0.6
+
+    def test_weight_variation_high(self):
+        """Test high weight variation has larger CV than moderate."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data_mod = generate_survey_did_data(weight_variation="moderate", seed=42)
+        data_high = generate_survey_did_data(weight_variation="high", seed=42)
+        cv_mod = data_mod.groupby("unit")["weight"].first().std()
+        cv_high = data_high.groupby("unit")["weight"].first().std()
+        assert cv_high > cv_mod
+
+    def test_replicate_weights(self):
+        """Test replicate weight columns are generated correctly."""
+        from diff_diff.prep import generate_survey_did_data
+
+        n_strata, psu_per = 3, 4
+        data = generate_survey_did_data(
+            n_strata=n_strata, psu_per_stratum=psu_per,
+            include_replicate_weights=True, seed=42,
+        )
+        n_psu = n_strata * psu_per
+        rep_cols = [c for c in data.columns if c.startswith("rep_")]
+        assert len(rep_cols) == n_psu
+
+        # Each replicate should zero out one PSU
+        for r in range(n_psu):
+            assert (data.loc[data[f"rep_{r}"] == 0, "psu"].nunique() == 1)
+
+    def test_covariates(self):
+        """Test covariate columns are added when requested."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(add_covariates=True, seed=42)
+        assert "x1" in data.columns
+        assert "x2" in data.columns
+
+    def test_no_covariates_by_default(self):
+        """Test no covariate columns by default."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(seed=42)
+        assert "x1" not in data.columns
+        assert "x2" not in data.columns
+
+    def test_seed_reproducibility(self):
+        """Test that same seed produces identical output."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data1 = generate_survey_did_data(seed=123)
+        data2 = generate_survey_did_data(seed=123)
+        pd.testing.assert_frame_equal(data1, data2)
+
+    def test_treatment_structure(self):
+        """Test treatment cohorts match cohort_periods + never-treated."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(
+            cohort_periods=[3, 5], never_treated_frac=0.3, seed=42,
+        )
+        cohorts = set(data.groupby("unit")["first_treat"].first().unique())
+        assert 0 in cohorts  # never-treated
+        assert 3 in cohorts
+        assert 5 in cohorts
+
+    def test_uneven_units_per_stratum(self):
+        """Test that n_units not divisible by n_strata still works."""
+        from diff_diff.prep import generate_survey_did_data
+
+        # 103 units / 5 strata = 20 remainder 3
+        data = generate_survey_did_data(n_units=103, n_strata=5, seed=42)
+        assert len(data) == 103 * 8  # default 8 periods
+        assert data["stratum"].nunique() == 5
+
+    def test_top_level_import(self):
+        """Test that generate_survey_did_data is importable from diff_diff."""
+        from diff_diff import generate_survey_did_data
+
+        data = generate_survey_did_data(n_units=10, n_periods=4, cohort_periods=[2], seed=42)
+        assert len(data) == 40
+
+    def test_jk1_minimum_psu_guard(self):
+        """Test that JK1 replicates require at least 2 PSUs."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        # Configured count: 1 PSU total
+        with pytest.raises(ValueError, match="at least 2 PSUs"):
+            generate_survey_did_data(
+                n_strata=1, psu_per_stratum=1,
+                include_replicate_weights=True, seed=42,
+            )
+
+    def test_jk1_one_populated_psu_guard(self):
+        """Test JK1 guard fires when only one PSU is populated."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        # 2 configured PSUs but only 1 unit -> only 1 populated PSU
+        with pytest.raises(ValueError, match="at least 2 populated PSUs"):
+            generate_survey_did_data(
+                n_units=1, n_strata=1, psu_per_stratum=2,
+                cohort_periods=[2], n_periods=4,
+                include_replicate_weights=True, seed=42,
+            )
+
+    def test_repeated_cross_section(self):
+        """Test panel=False generates unique unit IDs per period."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(
+            n_units=20, n_periods=4, cohort_periods=[2], panel=False, seed=42,
+        )
+        assert len(data) == 80
+        assert data["unit"].nunique() == 80  # unique across all periods
+        # No unit appears in more than one period
+        assert data.groupby("unit")["period"].nunique().max() == 1
+
+    def test_invalid_weight_variation(self):
+        """Test that invalid weight_variation raises ValueError."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="weight_variation must be"):
+            generate_survey_did_data(weight_variation="invalid", seed=42)
+
+    def test_empty_cohort_periods(self):
+        """Test that empty cohort_periods raises ValueError."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="cohort_periods must be"):
+            generate_survey_did_data(cohort_periods=[], seed=42)
+
+    def test_cohort_period_out_of_range(self):
+        """Test that out-of-range cohort periods raise ValueError."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        # g=1 is invalid: no pre-treatment period (must be >= 2)
+        with pytest.raises(ValueError, match="must be between"):
+            generate_survey_did_data(cohort_periods=[1], seed=42)
+        # g > n_periods is invalid
+        with pytest.raises(ValueError, match="must be between"):
+            generate_survey_did_data(n_periods=8, cohort_periods=[9], seed=42)
+        # g = n_periods is valid (last-period adoption, base period g-1 exists)
+        data = generate_survey_did_data(n_periods=8, cohort_periods=[8], seed=42)
+        assert len(data) == 200 * 8
+
+    def test_cohort_period_non_integer(self):
+        """Test that non-integer cohort periods raise ValueError."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="must contain integers"):
+            generate_survey_did_data(cohort_periods=[2.5], seed=42)
+
+    def test_numpy_integer_cohort_periods(self):
+        """Test that numpy integer cohort periods are accepted (list and array)."""
+        from diff_diff.prep import generate_survey_did_data
+
+        # As list of numpy integers
+        periods = np.array([3, 5], dtype=np.int64)
+        data = generate_survey_did_data(cohort_periods=list(periods), seed=42)
+        assert len(data) == 200 * 8
+
+        # As numpy array directly
+        data2 = generate_survey_did_data(cohort_periods=periods, seed=42)
+        assert len(data2) == 200 * 8
+
+    def test_default_cohort_periods_small_n_periods(self):
+        """Test default cohort_periods adapts to small n_periods with pre-periods."""
+        from diff_diff.prep import generate_survey_did_data
+
+        for n_per in [4, 5, 6, 7]:
+            data = generate_survey_did_data(n_periods=n_per, seed=42)
+            assert len(data) == 200 * n_per
+            cohorts = data.groupby("unit")["first_treat"].first().unique()
+            # Every treated cohort must have g >= 2 (at least one pre-period)
+            for g in cohorts:
+                if g > 0:
+                    assert g >= 2, f"n_periods={n_per}: cohort g={g} has no pre-period"
+                    assert g <= n_per, f"n_periods={n_per}: cohort g={g} > n_periods"
+
+    def test_default_cohort_periods_too_small(self):
+        """Test that n_periods < 4 with default cohort_periods raises."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="too small"):
+            generate_survey_did_data(n_periods=3, seed=42)
+
+    def test_parameter_validation(self):
+        """Test upfront validation for invalid parameter values."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="n_units must be positive"):
+            generate_survey_did_data(n_units=0, seed=42)
+        with pytest.raises(ValueError, match="n_periods must be positive"):
+            generate_survey_did_data(n_periods=0, seed=42)
+        with pytest.raises(ValueError, match="n_strata must be positive"):
+            generate_survey_did_data(n_strata=0, seed=42)
+        with pytest.raises(ValueError, match="psu_per_stratum must be positive"):
+            generate_survey_did_data(psu_per_stratum=0, seed=42)
+        with pytest.raises(ValueError, match="never_treated_frac must be between"):
+            generate_survey_did_data(never_treated_frac=-0.1, seed=42)
+        with pytest.raises(ValueError, match="never_treated_frac must be between"):
+            generate_survey_did_data(never_treated_frac=1.1, seed=42)
+        with pytest.raises(ValueError, match="fpc_per_stratum.*must be >= psu_per_stratum"):
+            generate_survey_did_data(fpc_per_stratum=3, psu_per_stratum=8, seed=42)

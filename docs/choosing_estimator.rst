@@ -569,3 +569,7 @@ If you're unsure which estimator to use:
 
 4. **Compare estimators** - If results differ substantially across estimators,
    investigate why (often reveals violations of assumptions)
+
+5. **Using survey data?** - Pass a ``SurveyDesign`` to ``fit()`` for design-based
+   variance estimation. See the `survey tutorial <https://github.com/igerber/diff-diff/blob/main/docs/tutorials/16_survey_did.ipynb>`_
+   for a full walkthrough with strata, PSU, FPC, replicate weights, and subpopulation analysis.

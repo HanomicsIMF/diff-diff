@@ -205,3 +205,4 @@ Next Steps
 - :doc:`choosing_estimator` - Learn which estimator to use for your design
 - :doc:`r_comparison` - See how diff-diff compares to R packages
 - :doc:`api/index` - Explore the full API reference
+- `Survey-aware DiD tutorial <https://github.com/igerber/diff-diff/blob/main/docs/tutorials/16_survey_did.ipynb>`_ - Using DiD with complex survey designs (strata, PSU, FPC, weights)

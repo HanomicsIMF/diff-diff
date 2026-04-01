@@ -140,6 +140,7 @@ We provide Jupyter notebook tutorials in `docs/tutorials/`:
 | `12_two_stage_did.ipynb` | Two-Stage DiD (Gardner 2022), GMM sandwich variance, per-observation effects |
 | `13_stacked_did.ipynb` | Stacked DiD (Wing et al. 2024), Q-weights, sub-experiment inspection, trimming, clean control definitions |
 | `15_efficient_did.ipynb` | Efficient DiD (Chen et al. 2025), optimal weighting, PT-All vs PT-Post, efficiency gains, bootstrap inference |
+| `16_survey_did.ipynb` | Survey-aware DiD with complex sampling designs (strata, PSU, FPC, weights), replicate weights, subpopulation analysis, DEFF diagnostics |
 
 ## Data Preparation
 
