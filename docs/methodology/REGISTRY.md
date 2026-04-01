@@ -1784,7 +1784,7 @@ Weights depend on group sizes and variance in treatment timing.
 *Assumption checks / warnings:*
 - Requires event-study estimates with pre-treatment coefficients
 - Warns if pre-treatment coefficients suggest parallel trends violation
-- M=0 corresponds to exact parallel trends assumption
+- M=0 for Delta^SD: enforces linear trend extrapolation (not exact parallel trends)
 
 *Restriction classes (Equations 8, Section 2.3):*
 
@@ -1808,7 +1808,7 @@ Post-treatment consecutive first differences bounded by M̄ × max pre-treatment
 CRITICAL: δ_pre = β_pre pins pre-treatment violations to observed coefficients. Solved via LP (scipy.optimize.linprog).
 
 *Inference (Sections 3.2, 4.1):*
-- Delta^SD: Optimal FLCI — jointly optimizes affine estimator direction and half-length via folded normal quantile cv_α(bias/se) (Equation 18)
+- Delta^SD: Optimal FLCI — jointly optimizes affine estimator direction and half-length via folded normal quantile cv_α(bias/se) (Equation 18). When `df_survey` is present, uses folded non-central t (`scipy.stats.nct`) instead of folded normal; `df_survey=0` → NaN inference. For M=0, uses `_get_critical_value(alpha, df)` (standard t/z).
 - Delta^RM: Paper recommends ARP conditional/hybrid confidence sets (Equations 14-15, κ = α/10). Currently uses **naive FLCI** unconditionally (conservative — wider CIs, valid coverage). ARP infrastructure exists but is disabled.
 - **Note (deviation from R):** Delta^RM CIs use naive FLCI (`lb - z*se, ub + z*se`) instead of the paper's ARP hybrid. R's `HonestDiD` package implements full ARP conditional/hybrid. Our naive FLCI is conservative (wider, valid coverage) but does not adapt to the length of the identified set. ARP implementation deferred (see TODO.md).
 - **Note:** `method="combined"` (Delta^SDRM) uses naive FLCI on the intersection of Delta^SD and Delta^RM bounds. The paper proves FLCI is NOT consistent for Delta^SDRM (Proposition 4.2). The paper recommends ARP hybrid for non-SD restriction classes. This is a known conservative approximation; a runtime UserWarning is emitted.
@@ -1822,7 +1822,7 @@ CRITICAL: δ_pre = β_pre pins pre-treatment violations to observed coefficients
 - M̄=0 for Δ^RM: post-treatment first differences = 0, point identification
 - Breakdown point: smallest M where CI includes zero
 - Negative M: not valid (constraints become infeasible)
-- **Note:** Phase 7d: survey variance support. When input results carry `survey_metadata` with `df_survey`, HonestDiD uses t-distribution critical values (via `_get_critical_value(alpha, df)`) instead of normal. CallawaySantAnnaResults now stores `event_study_vcov` (full cross-event-time VCV from IF vectors), which HonestDiD uses instead of the diagonal fallback. For replicate-weight designs, the event-study VCV falls back to diagonal (multivariate replicate VCV deferred).
+- **Note:** Phase 7d: survey variance support. When input results carry `survey_metadata` with `df_survey`, Delta^SD smoothness uses folded non-central t critical values (`scipy.stats.nct`); Delta^RM and naive FLCI paths use `_get_critical_value(alpha, df)` (standard t-distribution). `df_survey=0` → NaN inference. CallawaySantAnnaResults stores `event_study_vcov` (full cross-event-time VCV from IF vectors), which HonestDiD uses instead of the diagonal fallback. For replicate-weight designs, the event-study VCV falls back to diagonal (multivariate replicate VCV deferred).
 - **Note (deviation from R):** When HonestDiD receives bootstrap-fitted CallawaySantAnna results (`n_bootstrap > 0`), the full event-study covariance is unavailable (cleared to prevent mixing analytical VCV with bootstrap SEs). HonestDiD falls back to `diag(se^2)` from the bootstrap SEs with a UserWarning. R's `honest_did.AGGTEobj` computes a full covariance from the influence function matrix; implementing bootstrap event-study covariance is deferred. For full covariance structure in HonestDiD, use analytical SEs (`n_bootstrap=0`).
 - **Note (deviation from R):** When CallawaySantAnna results are passed to HonestDiD, `base_period != "universal"` emits a warning but does not error. R's `honest_did::honest_did.AGGTEobj` requires universal base period. Our implementation warns because the varying-base pre-treatment coefficients use consecutive comparisons (not a common reference), which changes the parallel-trends restriction interpretation.
 
