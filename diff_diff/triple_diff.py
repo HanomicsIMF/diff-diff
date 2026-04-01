@@ -1004,7 +1004,15 @@ class TripleDifference:
                             or self.rank_deficient_action == "error"
                         ):
                             raise
-                        pscore_sub = np.full(n_sub, np.mean(PA4))
+                        if w_sub is not None:
+                            pos = w_sub > 0
+                            if np.any(pos):
+                                p_uc = float(np.average(PA4[pos], weights=w_sub[pos]))
+                            else:
+                                p_uc = float(np.mean(PA4))
+                        else:
+                            p_uc = float(np.mean(PA4))
+                        pscore_sub = np.full(n_sub, p_uc)
                         ps_estimated = False
                         warnings.warn(
                             f"Propensity score estimation failed for subgroup "
