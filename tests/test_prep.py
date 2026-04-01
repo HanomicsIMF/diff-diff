@@ -1305,9 +1305,23 @@ class TestGenerateSurveyDidData:
         import pytest
         from diff_diff.prep import generate_survey_did_data
 
+        # Configured count: 1 PSU total
         with pytest.raises(ValueError, match="at least 2 PSUs"):
             generate_survey_did_data(
                 n_strata=1, psu_per_stratum=1,
+                include_replicate_weights=True, seed=42,
+            )
+
+    def test_jk1_one_populated_psu_guard(self):
+        """Test JK1 guard fires when only one PSU is populated."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        # 2 configured PSUs but only 1 unit -> only 1 populated PSU
+        with pytest.raises(ValueError, match="at least 2 populated PSUs"):
+            generate_survey_did_data(
+                n_units=1, n_strata=1, psu_per_stratum=2,
+                cohort_periods=[2], n_periods=4,
                 include_replicate_weights=True, seed=42,
             )
 

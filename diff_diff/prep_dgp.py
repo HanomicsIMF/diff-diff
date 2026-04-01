@@ -1279,7 +1279,7 @@ def generate_survey_did_data(
         unit_cohort[ci : ci + n_g] = g
         ci += n_g
 
-    # --- JK1 guard ---
+    # --- JK1 early guard (configured count; populated count checked after build) ---
     if include_replicate_weights and n_psu_total < 2:
         raise ValueError(
             "JK1 replicate weights require at least 2 PSUs, "
@@ -1362,6 +1362,11 @@ def generate_survey_did_data(
     if include_replicate_weights:
         psu_ids = sorted(df["psu"].unique())
         n_rep = len(psu_ids)
+        if n_rep < 2:
+            raise ValueError(
+                "JK1 replicate weights require at least 2 populated PSUs, "
+                f"got {n_rep}. Increase n_units or decrease psu_per_stratum."
+            )
         base_w = df["weight"].values
         for r, psu_id in enumerate(psu_ids):
             w_r = base_w.copy()
