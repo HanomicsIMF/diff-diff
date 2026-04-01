@@ -1292,3 +1292,33 @@ class TestGenerateSurveyDidData:
         data = generate_survey_did_data(n_units=103, n_strata=5, seed=42)
         assert len(data) == 103 * 8  # default 8 periods
         assert data["stratum"].nunique() == 5
+
+    def test_top_level_import(self):
+        """Test that generate_survey_did_data is importable from diff_diff."""
+        from diff_diff import generate_survey_did_data
+
+        data = generate_survey_did_data(n_units=10, n_periods=2, seed=42)
+        assert len(data) == 20
+
+    def test_jk1_minimum_psu_guard(self):
+        """Test that JK1 replicates require at least 2 PSUs."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="at least 2 PSUs"):
+            generate_survey_did_data(
+                n_strata=1, psu_per_stratum=1,
+                include_replicate_weights=True, seed=42,
+            )
+
+    def test_repeated_cross_section(self):
+        """Test panel=False generates unique unit IDs per period."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(
+            n_units=20, n_periods=3, panel=False, seed=42,
+        )
+        assert len(data) == 60
+        assert data["unit"].nunique() == 60  # unique across all periods
+        # No unit appears in more than one period
+        assert data.groupby("unit")["period"].nunique().max() == 1

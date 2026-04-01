@@ -1146,15 +1146,17 @@ def generate_survey_did_data(
     noise_sd: float = 0.5,
     include_replicate_weights: bool = False,
     add_covariates: bool = False,
+    panel: bool = True,
     seed: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Generate synthetic staggered DiD data with survey structure.
 
-    Creates a balanced panel with stratified multi-stage sampling design
-    (strata, PSUs, FPC, sampling weights) and known treatment effects.
-    The survey structure introduces intra-cluster correlation via PSU
-    random effects, making design-based SEs larger than naive SEs.
+    Creates a balanced panel (or repeated cross-section) with stratified
+    multi-stage sampling design (strata, PSUs, FPC, sampling weights) and
+    known treatment effects. The survey structure introduces intra-cluster
+    correlation via PSU random effects, making design-based SEs larger
+    than naive SEs.
 
     Modeled on ACS/BRFSS-style stratified household surveys: strata
     represent geographic region types, PSUs are census tracts sampled
@@ -1163,7 +1165,7 @@ def generate_survey_did_data(
     Parameters
     ----------
     n_units : int, default=200
-        Number of units (respondents).
+        Number of units (respondents) per period.
     n_periods : int, default=8
         Number of time periods (1-indexed).
     cohort_periods : list of int, optional
@@ -1196,8 +1198,14 @@ def generate_survey_did_data(
         Standard deviation of idiosyncratic noise.
     include_replicate_weights : bool, default=False
         If True, add JK1 (delete-one-PSU) replicate weight columns.
+        Requires at least 2 PSUs.
     add_covariates : bool, default=False
         If True, add covariates x1 (continuous) and x2 (binary).
+    panel : bool, default=True
+        If True, generate panel data (same respondents across periods).
+        If False, generate repeated cross-sections with fresh respondent
+        effects and unique unit IDs each period (for use with
+        CallawaySantAnna(panel=False)).
     seed : int, optional
         Random seed for reproducibility.
 
@@ -1254,6 +1262,13 @@ def generate_survey_did_data(
         unit_cohort[ci : ci + n_g] = g
         ci += n_g
 
+    # --- JK1 guard ---
+    if include_replicate_weights and n_psu_total < 2:
+        raise ValueError(
+            "JK1 replicate weights require at least 2 PSUs, "
+            f"got {n_psu_total}."
+        )
+
     # --- Random effects ---
     psu_re = rng.normal(0, psu_re_sd, size=n_psu_total)
     # PSU-period shocks: intra-cluster correlation that survives first-
@@ -1261,17 +1276,33 @@ def generate_survey_did_data(
     # cancels in the treatment-vs-control time-difference and the
     # cluster-robust / survey SE would be *smaller* than naive OLS SE.
     psu_period_re = rng.normal(0, psu_re_sd * 0.5, size=(n_psu_total, n_periods))
-    unit_fe = rng.normal(0, unit_fe_sd, size=n_units)
 
-    # Covariates (unit-level, time-invariant)
-    x1 = rng.normal(0, 1, size=n_units) if add_covariates else None
-    x2 = rng.choice([0, 1], size=n_units) if add_covariates else None
-
-    # --- Generate panel ---
+    # --- Generate panel or repeated cross-sections ---
     records = []
-    for i in range(n_units):
-        g_i = unit_cohort[i]
-        for t in range(1, n_periods + 1):
+    for t in range(1, n_periods + 1):
+        # For repeated cross-sections, draw fresh respondent effects each period
+        unit_fe = rng.normal(0, unit_fe_sd, size=n_units)
+        if panel and t > 1:
+            pass  # reuse unit_fe from first period (set below)
+        if panel and t == 1:
+            _panel_unit_fe = unit_fe  # save for reuse
+        if panel and t > 1:
+            unit_fe = _panel_unit_fe  # type: ignore[possibly-undefined]
+
+        x1 = rng.normal(0, 1, size=n_units) if add_covariates else None
+        if panel and t > 1 and add_covariates:
+            x1 = _panel_x1  # type: ignore[possibly-undefined]
+        elif panel and t == 1 and add_covariates:
+            _panel_x1 = x1
+
+        x2 = rng.choice([0, 1], size=n_units) if add_covariates else None
+        if panel and t > 1 and add_covariates:
+            x2 = _panel_x2  # type: ignore[possibly-undefined]
+        elif panel and t == 1 and add_covariates:
+            _panel_x2 = x2
+
+        for i in range(n_units):
+            g_i = unit_cohort[i]
             # Outcome: unit FE + PSU RE + PSU-period shock + time trend
             y = unit_fe[i] + psu_re[unit_psu[i]] + psu_period_re[unit_psu[i], t - 1] + 0.5 * t
 
@@ -1288,8 +1319,11 @@ def generate_survey_did_data(
 
             y += rng.normal(0, noise_sd)
 
+            # In cross-section mode, each period gets unique unit IDs
+            uid = i if panel else (t - 1) * n_units + i
+
             row = {
-                "unit": i,
+                "unit": uid,
                 "period": t,
                 "outcome": y,
                 "first_treat": g_i,
