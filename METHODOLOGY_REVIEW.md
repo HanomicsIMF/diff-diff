@@ -30,7 +30,7 @@ Each estimator in diff-diff should be periodically reviewed to ensure:
 | StackedDiD | `stacked_did.py` | `stacked-did-weights` | **Complete** | 2026-02-19 |
 | TROP | `trop.py` | (forthcoming) | Not Started | - |
 | BaconDecomposition | `bacon.py` | `bacondecomp::bacon()` | Not Started | - |
-| HonestDiD | `honest_did.py` | `HonestDiD` package | Not Started | - |
+| HonestDiD | `honest_did.py` | `HonestDiD` package | **Complete** | 2026-03-31 |
 | PreTrendsPower | `pretrends.py` | `pretrends` package | Not Started | - |
 | PowerAnalysis | `power.py` | `pwr` / `DeclareDesign` | Not Started | - |
 
@@ -618,14 +618,78 @@ variables appear to the left of the `|` separator.
 | Module | `honest_did.py` |
 | Primary Reference | Rambachan & Roth (2023) |
 | R Reference | `HonestDiD` package |
-| Status | Not Started |
-| Last Review | - |
+| Status | **Complete** |
+| Last Review | 2026-03-31 |
+
+**Verified Components:**
+- [x] Delta^SD: second-difference constraints [1,-2,1] with delta_0=0 boundary handling
+- [x] Delta^SD: T+Tbar-1 constraint rows (bridge constraint at t=0)
+- [x] Delta^RM: constrains first differences (not levels), union of polyhedra per Lemma 2.2
+- [x] Identified set LP: pins delta_pre = beta_pre via equality constraints (Equations 5-6)
+- [x] M=0 for Delta^SD: linear extrapolation gives finite point-identified bounds
+- [x] Mbar=0 for Delta^RM: point identification (all post first-diffs = 0)
+- [x] Optimal FLCI for Delta^SD: folded normal cv_alpha, Nelder-Mead over pre-period weights
+- [x] Sensitivity grid: bounds computed for each M in grid, breakdown value via binary search
+- [x] Survey variance: t-distribution critical values from df_survey
+- [x] CallawaySantAnna integration: universal base period, reference period filtering
+- [x] Three-period analytical case matches paper Section 2.3
+- [ ] ARP hybrid for Delta^RM: infrastructure implemented, moment inequality transformation needs calibration
+- [ ] R comparison: pending (benchmark scripts need updating)
+
+**Test Coverage:**
+- 63 existing tests in `tests/test_honest_did.py` (14 classes) — all passing
+- 17 new methodology verification tests in `tests/test_methodology_honest_did.py`
+- R benchmark tests (pending)
 
 **Corrections Made:**
-- (None yet)
+1. **DeltaRM: first differences, not levels** (`honest_did.py`, `_construct_constraints_rm_component`):
+   The paper's Delta^RM constrains `|delta_{t+1} - delta_t|` (consecutive first differences)
+   bounded by Mbar × max pre-treatment first difference. The code constrained `|delta_post|`
+   (absolute levels) bounded by Mbar × max `|beta_pre|`. Completely rewritten using
+   union-of-polyhedra decomposition per Lemma 2.2.
+
+2. **LP pins delta_pre = beta_pre** (`honest_did.py`, `_solve_bounds_lp`):
+   The paper's identified set LP (Equations 5-6) fixes pre-treatment violations to the observed
+   pre-treatment coefficients. The code had no equality constraint — delta_pre was unconstrained.
+   For Delta^SD(M=0), this made the LP unbounded. Added A_eq/b_eq equality constraints.
+
+3. **DeltaSD constraint matrix: delta_0=0 boundary** (`honest_did.py`, `_construct_A_sd`):
+   The code built second-difference matrices treating [delta_{-T},...,delta_{-1},delta_1,...,delta_{Tbar}]
+   as consecutive, missing delta_0=0 at the boundary. Three boundary rows were wrong:
+   - t=-1: `d_{-2} - 2*d_{-1} + 0` (uses delta_0=0)
+   - t=0: `d_{-1} + d_1` (bridge constraint, was missing)
+   - t=1: `0 - 2*d_1 + d_2` (uses delta_0=0)
+   Now produces T+Tbar-1 rows (was T+Tbar-2).
+
+4. **Optimal FLCI for Delta^SD** (`honest_did.py`, `_compute_optimal_flci`):
+   Replaced naive FLCI (`lb - z*se, ub + z*se`) with the paper's optimal FLCI (Section 4.1):
+   jointly optimizes affine estimator direction v and half-length chi using folded normal
+   critical values cv_alpha(bias/se). Significantly narrower CIs.
+
+5. **REGISTRY.md equations** (`docs/methodology/REGISTRY.md`):
+   DeltaSD equation was first differences (should be second differences). DeltaRM equation
+   was absolute levels (should be first differences). Both corrected with full formulations.
+
+6. **Performance** (`honest_did.py`):
+   Sensitivity grid reduced from ~9 minutes to 0.1 seconds via: Newton's method for cv_alpha
+   (5 iterations vs 100), centrosymmetric bias LP (1 solve vs 2), M=0 short-circuit,
+   looser Nelder-Mead tolerances.
 
 **Outstanding Concerns:**
-- (None yet)
+- ARP hybrid confidence sets for Delta^RM: infrastructure implemented (`_arp_confidence_set`,
+  `_enumerate_vertices`, `_compute_arp_test`) but disabled pending calibration of the moment
+  inequality transformation. Currently uses conservative naive FLCI for RM CIs.
+- R benchmark comparison not yet run (Python benchmark needs API update)
+- Combined method uses single M for both SD and RM (DeltaSDRM dataclass has separate M/Mbar)
+
+**Deviations from R's HonestDiD:**
+1. **Delta^RM CI**: R uses full ARP conditional/hybrid confidence sets. Python uses naive FLCI
+   (conservative — wider CIs, valid coverage). ARP implementation exists but needs calibration.
+2. **Optimal FLCI**: R uses the same approach (Armstrong & Kolesar 2018). Python implementation
+   matches the methodology but uses Nelder-Mead optimization vs R's custom solver. Numerical
+   differences expected at tolerance level.
+3. **Base period handling**: Python warns (doesn't error) when CallawaySantAnna results use
+   `base_period != "universal"`. R's HonestDiD requires universal base period.
 
 ---
 
