@@ -1322,3 +1322,19 @@ class TestGenerateSurveyDidData:
         assert data["unit"].nunique() == 60  # unique across all periods
         # No unit appears in more than one period
         assert data.groupby("unit")["period"].nunique().max() == 1
+
+    def test_invalid_weight_variation(self):
+        """Test that invalid weight_variation raises ValueError."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="weight_variation must be"):
+            generate_survey_did_data(weight_variation="invalid", seed=42)
+
+    def test_empty_cohort_periods(self):
+        """Test that empty cohort_periods raises ValueError."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="cohort_periods must be"):
+            generate_survey_did_data(cohort_periods=[], seed=42)

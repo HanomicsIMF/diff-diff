@@ -1220,6 +1220,14 @@ def generate_survey_did_data(
 
     if cohort_periods is None:
         cohort_periods = [3, 5]
+    if not cohort_periods:
+        raise ValueError("cohort_periods must be a non-empty list of integers")
+
+    valid_wv = ("none", "moderate", "high")
+    if weight_variation not in valid_wv:
+        raise ValueError(
+            f"weight_variation must be one of {valid_wv}, got {weight_variation!r}"
+        )
 
     # --- Survey structure: assign units to strata and PSUs ---
     n_psu_total = n_strata * psu_per_stratum
