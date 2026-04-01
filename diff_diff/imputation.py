@@ -1831,12 +1831,14 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 # SE via conservative variance with preperiod_weights
                 n_0 = int(omega_0_mask.sum())
                 preperiod_weights_h = np.zeros(n_0)
-                # Map h_mask_pre (indices in df_pre) to indices in omega_0
+                # Positional mapping: pre-period positions in df → omega_0
                 omega_0_indices = np.where(omega_0_mask.values)[0]
-                pre_in_0 = (~df["_never_treated"] & ~df["_treated"]).values
-                # df_pre indices map to omega_0 positions
+                omega_pre_positions = np.where(
+                    (~df["_never_treated"] & ~df["_treated"]).values
+                )[0]
+                pre_positions_in_df = omega_pre_positions[h_mask_pre]
                 pre_positions_in_0 = np.zeros(len(df), dtype=bool)
-                pre_positions_in_0[df_pre.index[h_mask_pre]] = True
+                pre_positions_in_0[pre_positions_in_df] = True
                 pre_in_0_mask = pre_positions_in_0[omega_0_indices]
 
                 if survey_weights is not None:

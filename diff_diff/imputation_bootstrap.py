@@ -226,10 +226,14 @@ class ImputationDiDBootstrapMixin:
                     if pre_balanced_mask is not None:
                         h_mask_pre = h_mask_pre & pre_balanced_mask
 
-                    # Build preperiod_weights_h on omega_0
+                    # Build preperiod_weights_h on omega_0 (positional mapping)
                     omega_0_indices = np.where(omega_0_mask.values)[0]
+                    omega_pre_positions = np.where(
+                        (~df["_never_treated"] & ~df["_treated"]).values
+                    )[0]
+                    pre_positions_in_df = omega_pre_positions[h_mask_pre]
                     pre_positions_in_0 = np.zeros(len(df), dtype=bool)
-                    pre_positions_in_0[df_pre.index[h_mask_pre]] = True
+                    pre_positions_in_0[pre_positions_in_df] = True
                     pre_in_0_mask = pre_positions_in_0[omega_0_indices]
 
                     preperiod_weights_h = np.zeros(n_0)

@@ -618,3 +618,116 @@ class TestPretrends_Regressions:
         for h, eff in negative.items():
             assert np.isfinite(eff["se"]), f"h={h}: SE not finite"
             assert eff["se"] > 0, f"h={h}: SE not positive"
+
+    def test_nondefault_index_analytical(self):
+        """Pre-period inference identical across index types (analytical).
+
+        Regression for P0: label-based indexing in pre-period target mapping
+        corrupts inference when DataFrame has non-default index.
+        """
+        data = generate_test_data(seed=42)
+
+        # Baseline: default RangeIndex
+        results_default = ImputationDiD(pretrends=True).fit(
+            data.copy(),
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+
+        # Permuted integer index
+        rng = np.random.default_rng(42)
+        data_perm = data.copy()
+        data_perm.index = rng.permutation(len(data_perm))
+        results_perm = ImputationDiD(pretrends=True).fit(
+            data_perm,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+
+        # Gapped/nonconsecutive index
+        data_gap = data.copy()
+        data_gap.index = data_gap.index * 3 + 100
+        results_gap = ImputationDiD(pretrends=True).fit(
+            data_gap,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+
+        # All pre-period effects and SEs must match
+        for h in results_default.event_study_effects:
+            if results_default.event_study_effects[h]["n_obs"] == 0:
+                continue
+            eff_d = results_default.event_study_effects[h]
+            eff_p = results_perm.event_study_effects[h]
+            eff_g = results_gap.event_study_effects[h]
+            np.testing.assert_allclose(
+                eff_d["effect"], eff_p["effect"], rtol=1e-10,
+                err_msg=f"h={h}: permuted index changed effect",
+            )
+            np.testing.assert_allclose(
+                eff_d["se"], eff_p["se"], rtol=1e-10,
+                err_msg=f"h={h}: permuted index changed SE",
+            )
+            np.testing.assert_allclose(
+                eff_d["effect"], eff_g["effect"], rtol=1e-10,
+                err_msg=f"h={h}: gapped index changed effect",
+            )
+            np.testing.assert_allclose(
+                eff_d["se"], eff_g["se"], rtol=1e-10,
+                err_msg=f"h={h}: gapped index changed SE",
+            )
+
+    def test_nondefault_index_bootstrap(self):
+        """Pre-period bootstrap inference identical across index types.
+
+        Regression for P0: same indexing bug in bootstrap path.
+        """
+        data = generate_test_data(seed=42)
+
+        results_default = ImputationDiD(
+            pretrends=True, n_bootstrap=50, seed=99
+        ).fit(
+            data.copy(),
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+
+        rng = np.random.default_rng(42)
+        data_perm = data.copy()
+        data_perm.index = rng.permutation(len(data_perm))
+        results_perm = ImputationDiD(
+            pretrends=True, n_bootstrap=50, seed=99
+        ).fit(
+            data_perm,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+
+        for h in results_default.event_study_effects:
+            if results_default.event_study_effects[h]["n_obs"] == 0:
+                continue
+            eff_d = results_default.event_study_effects[h]
+            eff_p = results_perm.event_study_effects[h]
+            np.testing.assert_allclose(
+                eff_d["effect"], eff_p["effect"], rtol=1e-10,
+                err_msg=f"h={h}: permuted index changed effect",
+            )
+            np.testing.assert_allclose(
+                eff_d["se"], eff_p["se"], rtol=1e-10,
+                err_msg=f"h={h}: permuted index changed bootstrap SE",
+            )
