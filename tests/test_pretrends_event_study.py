@@ -490,3 +490,131 @@ class TestPretrendsCrossEstimator:
                 atol=1e-6,
                 err_msg=f"h={h}: point estimates differ",
             )
+
+
+# =============================================================================
+# Regression tests for P0/P1 review findings
+# =============================================================================
+
+
+class TestPretrends_Regressions:
+    """Regression tests for bugs found in AI code review."""
+
+    def test_imputation_survey_weighted_no_covariates(self):
+        """ImputationDiD with survey weights, no covariates, no pretrends.
+
+        Regression for P1: untreated_units/untreated_times uninitialized
+        in the survey-weighted FE-only variance path.
+        """
+        from diff_diff.survey import SurveyDesign
+
+        data = generate_test_data(seed=42)
+        rng = np.random.default_rng(42)
+        n_units = data["unit"].nunique()
+        unit_weights = rng.uniform(0.5, 2.0, n_units)
+        data["weight"] = data["unit"].map(
+            dict(enumerate(unit_weights))
+        )
+
+        sd = SurveyDesign(weights="weight")
+        est = ImputationDiD()
+        results = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+        )
+
+        assert np.isfinite(results.overall_att)
+        assert np.isfinite(results.overall_se)
+        assert results.overall_se > 0
+
+    def test_imputation_survey_weighted_event_study(self):
+        """ImputationDiD with survey weights and event study aggregation."""
+        from diff_diff.survey import SurveyDesign
+
+        data = generate_test_data(seed=42)
+        rng = np.random.default_rng(42)
+        n_units = data["unit"].nunique()
+        unit_weights = rng.uniform(0.5, 2.0, n_units)
+        data["weight"] = data["unit"].map(
+            dict(enumerate(unit_weights))
+        )
+
+        sd = SurveyDesign(weights="weight")
+        est = ImputationDiD()
+        results = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+            survey_design=sd,
+        )
+
+        for h, eff in results.event_study_effects.items():
+            if eff["n_obs"] == 0:
+                continue
+            assert np.isfinite(eff["se"]), f"h={h}: SE not finite"
+
+    def test_imputation_pretrends_with_covariates(self):
+        """ImputationDiD pretrends=True with covariates.
+
+        Tests _compute_v_untreated_with_covariates_preperiod().
+        """
+        data = generate_test_data(seed=42)
+        rng = np.random.default_rng(42)
+        data["x1"] = rng.standard_normal(len(data))
+
+        est = ImputationDiD(pretrends=True)
+        results = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1"],
+            aggregate="event_study",
+        )
+
+        negative = {
+            h: v
+            for h, v in results.event_study_effects.items()
+            if h < -1 and v["n_obs"] > 0
+        }
+        assert len(negative) > 0, "Should have pre-period horizons"
+        for h, eff in negative.items():
+            assert np.isfinite(eff["se"]), f"h={h}: SE not finite with covariates"
+            assert eff["se"] > 0, f"h={h}: SE not positive with covariates"
+
+    def test_imputation_pretrends_balance_e_bootstrap(self):
+        """ImputationDiD pretrends=True + balance_e + bootstrap.
+
+        Regression for P0: bootstrap must use the same balance_e cohort
+        filter (union of pre + post horizons) as the analytical path.
+        """
+        data = generate_test_data(seed=42)
+        est = ImputationDiD(pretrends=True, n_bootstrap=50, seed=42)
+        results = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+            balance_e=1,
+        )
+
+        assert results.event_study_effects is not None
+        # Verify pre-period horizons have bootstrap inference
+        negative = {
+            h: v
+            for h, v in results.event_study_effects.items()
+            if h < -1 and v["n_obs"] > 0
+        }
+        for h, eff in negative.items():
+            assert np.isfinite(eff["se"]), f"h={h}: SE not finite"
+            assert eff["se"] > 0, f"h={h}: SE not positive"

@@ -81,6 +81,11 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         - "cohort_horizon": Groups by cohort x relative time (tightest SEs)
         - "cohort": Groups by cohort only (more conservative)
         - "horizon": Groups by relative time only (more conservative)
+    pretrends : bool, default=False
+        If True, event study includes pre-treatment horizons for visual
+        pre-trends assessment. Pre-period effects should be ~0 under
+        parallel trends. Only affects event_study aggregation; overall
+        ATT and group aggregation are unchanged.
 
     Attributes
     ----------
@@ -1169,6 +1174,11 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
 
                 w_total = float(np.sum(weights))
 
+            # Always initialize untreated unit/time arrays for the FE loop
+            if not is_preperiod:
+                untreated_units = df_0[unit].values
+                untreated_times = df_0[time].values
+
             # Use survey-weighted sums for untreated denominators when present
             if survey_weights_0 is not None:
                 sw0_series = pd.Series(survey_weights_0, index=df_0.index)
@@ -1176,9 +1186,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 n0_by_time = sw0_series.groupby(df_0[time]).sum().to_dict()
                 n0_denom = float(np.sum(survey_weights_0))
             else:
-                if not is_preperiod:
-                    untreated_units = df_0[unit].values
-                    untreated_times = df_0[time].values
                 n0_by_unit = df_0.groupby(unit).size().to_dict()
                 n0_by_time = df_0.groupby(time).size().to_dict()
                 n0_denom = n_0

@@ -87,6 +87,11 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
     horizon_max : int, optional
         Maximum event-study horizon. If set, event study effects are only
         computed for |h| <= horizon_max.
+    pretrends : bool, default=False
+        If True, event study includes pre-treatment horizons for visual
+        pre-trends assessment. Pre-period effects should be ~0 under
+        parallel trends. Only affects event_study aggregation; overall
+        ATT and group aggregation are unchanged.
 
     Attributes
     ----------

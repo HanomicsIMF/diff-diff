@@ -174,48 +174,43 @@ class ImputationDiDBootstrapMixin:
             df_1 = df.loc[omega_1_mask]
             rel_times = df_1["_rel_time"].values
 
-            # Balanced cohort mask (same logic as _aggregate_event_study)
-            balanced_mask = None
-            if balance_e is not None:
-                all_horizons = sorted(set(int(h) for h in rel_times if np.isfinite(h)))
-                if self.horizon_max is not None:
-                    all_horizons = [h for h in all_horizons if abs(h) <= self.horizon_max]
-                cohort_rel_times = self._build_cohort_rel_times(df, first_treat)
-                balanced_mask = self._compute_balanced_cohort_mask(
-                    df_1, first_treat, all_horizons, balance_e, cohort_rel_times
-                )
-
-            ref_period = -1 - self.anticipation
+            # Compute combined horizon set (pre + post) matching analytical path
+            post_horizons = sorted(set(int(h) for h in rel_times if np.isfinite(h)))
 
             # Pre-period data for pretrends bootstrap
             pre_rel_times = None
-            pre_tau_hat = None
             pre_balanced_mask = None
             n_0 = int(omega_0_mask.sum())
+            df_pre = None
+            pre_horizons: list = []
             if self.pretrends:
                 omega_pre_mask = ~df["_never_treated"] & ~df["_treated"]
                 if omega_pre_mask.any():
                     df_pre = df.loc[omega_pre_mask]
                     pre_rel_times = df_pre["_rel_time"].values
-                    pre_tau_hat = df["_tau_hat"].loc[omega_pre_mask].values
-                    if balance_e is not None:
-                        all_h_pre = sorted(
-                            set(int(h) for h in pre_rel_times if np.isfinite(h))
-                        )
-                        if self.horizon_max is not None:
-                            all_h_pre = [
-                                h for h in all_h_pre if abs(h) <= self.horizon_max
-                            ]
-                        cohort_rel_times_pre = self._build_cohort_rel_times(
-                            df, first_treat
-                        )
-                        pre_balanced_mask = self._compute_balanced_cohort_mask(
-                            df_pre,
-                            first_treat,
-                            all_h_pre,
-                            balance_e,
-                            cohort_rel_times_pre,
-                        )
+                    pre_horizons = sorted(
+                        set(int(h) for h in pre_rel_times if np.isfinite(h))
+                    )
+
+            # Use union of pre + post horizons for balance_e (matches analytical path)
+            all_horizons = sorted(set(post_horizons + pre_horizons))
+            if self.horizon_max is not None:
+                all_horizons = [h for h in all_horizons if abs(h) <= self.horizon_max]
+
+            # Balanced cohort mask (same logic as _aggregate_event_study)
+            balanced_mask = None
+            if balance_e is not None:
+                cohort_rel_times = self._build_cohort_rel_times(df, first_treat)
+                balanced_mask = self._compute_balanced_cohort_mask(
+                    df_1, first_treat, all_horizons, balance_e, cohort_rel_times
+                )
+                if df_pre is not None:
+                    pre_balanced_mask = self._compute_balanced_cohort_mask(
+                        df_pre, first_treat, all_horizons, balance_e,
+                        cohort_rel_times,
+                    )
+
+            ref_period = -1 - self.anticipation
 
             for h in event_study_effects:
                 if event_study_effects[h].get("n_obs", 0) == 0:
@@ -234,10 +229,7 @@ class ImputationDiDBootstrapMixin:
                     # Build preperiod_weights_h on omega_0
                     omega_0_indices = np.where(omega_0_mask.values)[0]
                     pre_positions_in_0 = np.zeros(len(df), dtype=bool)
-                    df_pre_subset = df.loc[
-                        (~df["_never_treated"]) & (~df["_treated"])
-                    ]
-                    pre_positions_in_0[df_pre_subset.index[h_mask_pre]] = True
+                    pre_positions_in_0[df_pre.index[h_mask_pre]] = True
                     pre_in_0_mask = pre_positions_in_0[omega_0_indices]
 
                     preperiod_weights_h = np.zeros(n_0)
