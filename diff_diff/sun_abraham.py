@@ -501,16 +501,13 @@ class SunAbraham:
         if resolved_survey is not None:
             _validate_unit_constant_survey(data, unit, survey_design)
 
-        # Reject replicate-weight designs — SunAbraham's weighted
-        # within-transformation bakes survey weights into X and y, so
-        # replicate refits on the already-transformed design are incorrect.
-        # Full estimator-level replicate refits are not yet implemented.
-        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
-            raise NotImplementedError(
-                "SunAbraham does not yet support replicate-weight survey designs. "
-                "The weighted within-transformation must be recomputed for each "
-                "replicate, which requires estimator-level replicate refits. "
-                "Use a TSL-based survey design (strata/psu/fpc) instead."
+        _uses_replicate_sa = (
+            resolved_survey is not None and resolved_survey.uses_replicate_variance
+        )
+        if _uses_replicate_sa and self.n_bootstrap > 0:
+            raise ValueError(
+                "Cannot use n_bootstrap > 0 with replicate-weight survey designs. "
+                "Replicate weights provide their own variance estimation."
             )
 
         # Bootstrap + survey supported via Rao-Wu rescaled bootstrap.
@@ -633,6 +630,30 @@ class SunAbraham:
             resolved_survey=resolved_survey,
         )
 
+        # Replicate variance override: re-run saturated regression per replicate
+        # and replace vcov_cohort with the replicate version.  The downstream
+        # delta-method aggregation (_compute_iw_effects, _compute_overall_att)
+        # then automatically produces correct replicate-based SEs.
+        if _uses_replicate_sa:
+            from diff_diff.survey import compute_replicate_refit_variance
+
+            _keys_ordered = sorted(coef_index_map.keys(), key=lambda k: coef_index_map[k])
+            _full_cohort_vec = np.array([cohort_effects.get(k, np.nan) for k in _keys_ordered])
+
+            def _refit_sa(w_r):
+                ce_r, _, _, cim_r = self._fit_saturated_regression(
+                    df_reg, outcome, unit, time, first_treat,
+                    treatment_groups, rel_periods_to_estimate, covariates,
+                    cluster_var, survey_weights=w_r,
+                    survey_weight_type=survey_weight_type,
+                    resolved_survey=None,  # prevent internal replicate dispatch
+                )
+                return np.array([ce_r.get(k, np.nan) for k in _keys_ordered])
+
+            vcov_cohort, _n_valid_rep_sa = compute_replicate_refit_variance(
+                _refit_sa, _full_cohort_vec, resolved_survey
+            )
+
         # Resolve survey weight column name for cohort aggregation
         survey_weight_col = (
             survey_design.weights
@@ -648,6 +669,8 @@ class SunAbraham:
             if survey_metadata is not None and survey_metadata.df_survey is not None
             else None
         )
+        if _uses_replicate_sa and _n_valid_rep_sa < resolved_survey.n_replicates:
+            _sa_survey_df = _n_valid_rep_sa - 1 if _n_valid_rep_sa > 1 else 0
 
         # Compute interaction-weighted event study effects
         event_study_effects, cohort_weights = self._compute_iw_effects(

@@ -240,14 +240,14 @@ class DifferenceInDifferences:
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, self.inference)
         )
-        # Reject replicate-weight designs — base DiD uses compute_survey_vcov
-        # (TSL) directly, not LinearRegression's replicate dispatch.
-        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
-            raise NotImplementedError(
-                "DifferenceInDifferences does not yet support replicate-weight "
-                "survey designs. Use CallawaySantAnna, EfficientDiD, "
-                "ContinuousDiD, or TripleDifference for replicate-weight "
-                "inference, or use a TSL-based survey design (strata/psu/fpc)."
+        _uses_replicate = (
+            resolved_survey is not None and resolved_survey.uses_replicate_variance
+        )
+        if _uses_replicate and self.inference == "wild_bootstrap":
+            raise ValueError(
+                "Cannot use inference='wild_bootstrap' with replicate-weight "
+                "survey designs. Replicate weights provide their own variance "
+                "estimation."
             )
 
         # Handle absorbed fixed effects (within-transformation)
@@ -358,6 +358,13 @@ class DifferenceInDifferences:
                 )
                 survey_metadata = compute_survey_metadata(resolved_survey, raw_w)
 
+        # When absorb + replicate: pass survey_design=None to prevent
+        # LinearRegression from computing replicate vcov on already-demeaned
+        # data (demeaning depends on weights, so replicate refits must re-demean).
+        _lr_survey = resolved_survey
+        if _uses_replicate and absorbed_vars:
+            _lr_survey = None
+
         reg = LinearRegression(
             include_intercept=False,  # Intercept already in X
             robust=self.robust,
@@ -366,7 +373,7 @@ class DifferenceInDifferences:
             rank_deficient_action=self.rank_deficient_action,
             weights=survey_weights,
             weight_type=survey_weight_type,
-            survey_design=resolved_survey,
+            survey_design=_lr_survey,
         ).fit(X, y, df_adjustment=n_absorbed_effects)
 
         coefficients = reg.coefficients_
@@ -375,14 +382,59 @@ class DifferenceInDifferences:
         assert coefficients is not None
         att = coefficients[att_idx]
 
-        # Get inference - either from bootstrap or analytical
-        if self.inference == "wild_bootstrap" and self.cluster is not None:
+        # Get inference - replicate absorb override, bootstrap, or analytical
+        if _uses_replicate and absorbed_vars:
+            # Estimator-level replicate variance: re-demean + re-solve per replicate
+            from diff_diff.survey import compute_replicate_refit_variance
+            from diff_diff.utils import safe_inference
+
+            _absorb_list = list(absorbed_vars)  # capture for closure
+
+            def _refit_did_absorb(w_r):
+                wd = data.copy()
+                wd["_treat_time"] = (
+                    wd[treatment].values.astype(float) * wd[time].values.astype(float)
+                )
+                vars_dm = [outcome, treatment, time, "_treat_time"] + (covariates or [])
+                for ab_var in _absorb_list:
+                    wd, _ = demean_by_group(wd, vars_dm, ab_var, inplace=True, weights=w_r)
+                y_r = wd[outcome].values.astype(float)
+                d_r = wd[treatment].values.astype(float)
+                t_r = wd[time].values.astype(float)
+                dt_r = wd["_treat_time"].values.astype(float)
+                X_r = np.column_stack([np.ones(len(y_r)), d_r, t_r, dt_r])
+                if covariates:
+                    for cov in covariates:
+                        X_r = np.column_stack([X_r, wd[cov].values.astype(float)])
+                coef_r, _, _ = solve_ols(
+                    X_r, y_r,
+                    weights=w_r, weight_type=survey_weight_type,
+                    rank_deficient_action="silent", return_vcov=False,
+                )
+                return coef_r
+
+            vcov, _n_valid_rep = compute_replicate_refit_variance(
+                _refit_did_absorb, coefficients, resolved_survey
+            )
+            se = float(np.sqrt(max(vcov[att_idx, att_idx], 0.0)))
+            _df_rep = (
+                survey_metadata.df_survey
+                if survey_metadata and survey_metadata.df_survey
+                else None
+            )
+            if _n_valid_rep < resolved_survey.n_replicates:
+                _df_rep = _n_valid_rep - 1 if _n_valid_rep > 1 else 0
+            t_stat, p_value, conf_int = safe_inference(
+                att, se, alpha=self.alpha, df=_df_rep
+            )
+        elif self.inference == "wild_bootstrap" and self.cluster is not None:
             # Override with wild cluster bootstrap inference
             se, p_value, conf_int, t_stat, vcov, _ = self._run_wild_bootstrap_inference(
                 X, y, residuals, cluster_ids, att_idx
             )
         else:
             # Use analytical inference from LinearRegression
+            # (handles replicate vcov for no-absorb path automatically)
             vcov = reg.vcov_
             inference = reg.get_inference(att_idx)
             se = inference.se
@@ -1017,14 +1069,14 @@ class MultiPeriodDiD(DifferenceInDifferences):
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, effective_inference)
         )
-        # Reject replicate-weight designs — MultiPeriodDiD uses
-        # compute_survey_vcov (TSL) directly without replicate dispatch.
-        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
-            raise NotImplementedError(
-                "MultiPeriodDiD does not yet support replicate-weight survey "
-                "designs. Use CallawaySantAnna for staggered adoption with "
-                "replicate weights, or use a TSL-based survey design "
-                "(strata/psu/fpc)."
+        _uses_replicate_mp = (
+            resolved_survey is not None and resolved_survey.uses_replicate_variance
+        )
+        if _uses_replicate_mp and effective_inference == "wild_bootstrap":
+            raise ValueError(
+                "Cannot use inference='wild_bootstrap' with replicate-weight "
+                "survey designs. Replicate weights provide their own variance "
+                "estimation."
             )
 
         # Handle absorbed fixed effects (within-transformation)
@@ -1177,7 +1229,74 @@ class MultiPeriodDiD(DifferenceInDifferences):
         )
 
         # Compute survey vcov if applicable
-        if _use_survey_vcov:
+        _n_valid_rep_mp = None
+        if _use_survey_vcov and _uses_replicate_mp and absorb:
+            # Absorb + replicate: estimator-level refit (demeaning depends on weights)
+            from diff_diff.survey import compute_replicate_refit_variance
+
+            _absorb_list_mp = list(absorb)
+
+            def _refit_mp_absorb(w_r):
+                wd = data.copy()
+                d_raw_ = wd[treatment].values.astype(float)
+                t_raw_ = wd[time].values
+                wd["_did_treatment"] = d_raw_
+                for period_ in non_ref_periods:
+                    wd[f"_did_period_{period_}"] = (t_raw_ == period_).astype(float)
+                    wd[f"_did_interact_{period_}"] = d_raw_ * (t_raw_ == period_).astype(float)
+                vars_dm_ = (
+                    [outcome, "_did_treatment"]
+                    + [f"_did_period_{p}" for p in non_ref_periods]
+                    + [f"_did_interact_{p}" for p in non_ref_periods]
+                    + (covariates or [])
+                )
+                for ab_var_ in _absorb_list_mp:
+                    wd, _ = demean_by_group(wd, vars_dm_, ab_var_, inplace=True, weights=w_r)
+                y_r = wd[outcome].values.astype(float)
+                d_r = wd["_did_treatment"].values.astype(float)
+                X_r = np.column_stack([np.ones(len(y_r)), d_r])
+                for period_ in non_ref_periods:
+                    X_r = np.column_stack(
+                        [X_r, wd[f"_did_period_{period_}"].values.astype(float)]
+                    )
+                for period_ in non_ref_periods:
+                    X_r = np.column_stack(
+                        [X_r, wd[f"_did_interact_{period_}"].values.astype(float)]
+                    )
+                if covariates:
+                    for cov_ in covariates:
+                        X_r = np.column_stack([X_r, wd[cov_].values.astype(float)])
+                coef_r, _, _ = solve_ols(
+                    X_r, y_r,
+                    weights=w_r, weight_type=survey_weight_type,
+                    rank_deficient_action="silent", return_vcov=False,
+                )
+                return coef_r
+
+            vcov, _n_valid_rep_mp = compute_replicate_refit_variance(
+                _refit_mp_absorb, coefficients, resolved_survey
+            )
+        elif _use_survey_vcov and _uses_replicate_mp:
+            # No absorb + replicate: X is fixed, use compute_replicate_vcov directly
+            from diff_diff.survey import compute_replicate_vcov
+
+            nan_mask = np.isnan(coefficients)
+            if np.any(nan_mask):
+                kept_cols = np.where(~nan_mask)[0]
+                if len(kept_cols) > 0:
+                    vcov_reduced, _n_valid_rep_mp = compute_replicate_vcov(
+                        X[:, kept_cols], y, coefficients[kept_cols], resolved_survey,
+                        weight_type=survey_weight_type,
+                    )
+                    vcov = _expand_vcov_with_nan(vcov_reduced, X.shape[1], kept_cols)
+                else:
+                    vcov = np.full((X.shape[1], X.shape[1]), np.nan)
+                    _n_valid_rep_mp = 0
+            else:
+                vcov, _n_valid_rep_mp = compute_replicate_vcov(
+                    X, y, coefficients, resolved_survey, weight_type=survey_weight_type,
+                )
+        elif _use_survey_vcov:
             from diff_diff.survey import compute_survey_vcov
 
             nan_mask = np.isnan(coefficients)
@@ -1201,6 +1320,10 @@ class MultiPeriodDiD(DifferenceInDifferences):
         df = n_eff_df - k_effective - n_absorbed_effects
         if resolved_survey is not None and resolved_survey.df_survey is not None:
             df = resolved_survey.df_survey
+        # Override df when replicate replicates were dropped
+        if _n_valid_rep_mp is not None and resolved_survey is not None:
+            if _n_valid_rep_mp < resolved_survey.n_replicates:
+                df = _n_valid_rep_mp - 1 if _n_valid_rep_mp > 1 else 0
 
         # Guard: fall back to normal distribution if df is non-positive
         if df is not None and df <= 0:

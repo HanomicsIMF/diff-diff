@@ -242,15 +242,9 @@ class StackedDiD:
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
-        # Reject replicate-weight designs — StackedDiD uses
-        # compute_survey_vcov (TSL) directly without replicate dispatch.
-        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
-            raise NotImplementedError(
-                "StackedDiD does not yet support replicate-weight survey "
-                "designs. Use CallawaySantAnna for staggered adoption with "
-                "replicate weights, or use a TSL-based survey design "
-                "(strata/psu/fpc)."
-            )
+        _uses_replicate_sd = (
+            resolved_survey is not None and resolved_survey.uses_replicate_variance
+        )
 
         # Reject fweight and aweight — Q-weight composition is ratio-valued
         # and breaks both frequency-weight (integer) and analytic-weight
@@ -273,6 +267,9 @@ class StackedDiD:
                 col_name = getattr(survey_design, attr, None)
                 if col_name is not None:
                     survey_cols.append(col_name)
+            # Propagate replicate weight columns through stacked dataset
+            if survey_design.replicate_weights is not None:
+                survey_cols.extend(survey_design.replicate_weights)
 
         df = data.copy()
         df[time] = pd.to_numeric(df[time])
@@ -428,8 +425,42 @@ class StackedDiD:
         )
         assert vcov is not None
 
-        # ---- Survey VCV override (TSL variance) ----
-        if resolved_survey is not None:
+        # ---- Survey VCV override ----
+        _n_valid_rep_sd = None
+        resolved_stacked = None
+        if resolved_survey is not None and _uses_replicate_sd:
+            # Replicate variance: re-run WLS per replicate with composed weights
+            from diff_diff.survey import compute_replicate_refit_variance, compute_survey_metadata
+
+            resolved_stacked = survey_design.resolve(stacked_df)
+
+            # Refit closure: compose Q-weights with replicate survey weights
+            def _refit_stacked(w_r):
+                composed_r = Q_weights * w_r
+                w_sum = np.sum(composed_r)
+                if w_sum > 0:
+                    composed_r = composed_r * (n_stacked / w_sum)
+                sqrt_w_r = np.sqrt(composed_r)
+                coef_r, _, _ = solve_ols(
+                    X * sqrt_w_r[:, np.newaxis], Y * sqrt_w_r,
+                    cluster_ids=cluster_ids,
+                    rank_deficient_action="silent", return_vcov=False,
+                )
+                return coef_r
+
+            # Full-sample cohort effect vector
+            vcov, _n_valid_rep_sd = compute_replicate_refit_variance(
+                _refit_stacked, coef, resolved_stacked
+            )
+
+            # Compute survey metadata
+            raw_w_stacked = (
+                stacked_df[survey_design.weights].values.astype(np.float64)
+                if survey_design.weights is not None
+                else np.ones(n_stacked, dtype=np.float64)
+            )
+            survey_metadata = compute_survey_metadata(resolved_stacked, raw_w_stacked)
+        elif resolved_survey is not None:
             from diff_diff.survey import (
                 _inject_cluster_as_psu,
                 _resolve_effective_cluster,
@@ -487,6 +518,10 @@ class StackedDiD:
                     if survey_metadata is not None and survey_metadata.df_survey is not None
                     else None
                 )
+                # Override df when replicate replicates were dropped
+                if _n_valid_rep_sd is not None and resolved_stacked is not None:
+                    if _n_valid_rep_sd < resolved_stacked.n_replicates:
+                        _survey_df = _n_valid_rep_sd - 1 if _n_valid_rep_sd > 1 else 0
                 t_stat, p_value, conf_int = safe_inference(
                     effect, se, alpha=self.alpha, df=_survey_df
                 )
@@ -524,6 +559,9 @@ class StackedDiD:
             if survey_metadata is not None and survey_metadata.df_survey is not None
             else None
         )
+        if _n_valid_rep_sd is not None and resolved_stacked is not None:
+            if _n_valid_rep_sd < resolved_stacked.n_replicates:
+                _survey_df_overall = _n_valid_rep_sd - 1 if _n_valid_rep_sd > 1 else 0
         overall_t, overall_p, overall_ci = safe_inference(
             overall_att, overall_se, alpha=self.alpha, df=_survey_df_overall
         )

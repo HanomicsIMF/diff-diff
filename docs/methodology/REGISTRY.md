@@ -2245,16 +2245,18 @@ variance from the distribution of replicate estimates.
   t-based inference.
 - **Note:** Replicate-weight support matrix:
   - **Supported**: CallawaySantAnna (reg/ipw/dr without covariates, no
-    bootstrap), ContinuousDiD
-    (no bootstrap), EfficientDiD (no bootstrap), TripleDifference (all
-    methods), LinearRegression (OLS path)
-  - **Rejected with NotImplementedError**: SunAbraham, TwoWayFixedEffects
-    (within-transformation must be recomputed per replicate),
-    DifferenceInDifferences, MultiPeriodDiD, StackedDiD (use
-    compute_survey_vcov directly), ImputationDiD, TwoStageDiD (custom
-    variance), SyntheticDiD, TROP (bootstrap-based variance),
-    BaconDecomposition (diagnostic only)
-  - CS/ContinuousDiD/EfficientDiD reject replicate + `n_bootstrap > 0`
+    bootstrap), ContinuousDiD (no bootstrap), EfficientDiD (no bootstrap),
+    TripleDifference (all methods), LinearRegression (OLS path),
+    DifferenceInDifferences (no-absorb via LinearRegression dispatch,
+    absorb via estimator-level refit), MultiPeriodDiD (no-absorb via
+    `compute_replicate_vcov`, absorb via estimator-level refit),
+    TwoWayFixedEffects (estimator-level refit with within-transformation),
+    SunAbraham (estimator-level refit, replaces `vcov_cohort`),
+    StackedDiD (estimator-level refit with Q-weight composition),
+    ImputationDiD (two-stage refit), TwoStageDiD (two-stage refit)
+  - **Rejected with NotImplementedError**: SyntheticDiD, TROP
+    (bootstrap-based variance), BaconDecomposition (diagnostic only)
+  - Estimators with replicate support reject replicate + bootstrap
     (replicate weights provide analytical variance)
 - **Note:** When invalid replicates are dropped in `compute_replicate_vcov`
   (OLS path), `n_valid` is returned and used for `df_survey = n_valid - 1`

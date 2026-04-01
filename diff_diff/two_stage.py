@@ -240,13 +240,16 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
 
+        _uses_replicate_ts = (
+            resolved_survey is not None and resolved_survey.uses_replicate_variance
+        )
+        if _uses_replicate_ts and self.n_bootstrap > 0:
+            raise ValueError(
+                "Cannot use n_bootstrap > 0 with replicate-weight survey designs. "
+                "Replicate weights provide their own variance estimation."
+            )
         # Validate within-unit constancy for panel survey designs
         if resolved_survey is not None:
-            if resolved_survey.uses_replicate_variance:
-                raise NotImplementedError(
-                    "TwoStageDiD does not yet support replicate-weight survey "
-                    "designs. Use a TSL-based survey design (strata/psu/fpc)."
-                )
             _validate_unit_constant_survey(data, unit, survey_design)
             if resolved_survey.weight_type != "pweight":
                 raise ValueError(
@@ -494,6 +497,40 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             survey_weights=survey_weights,
             survey_weight_type=survey_weight_type,
         )
+
+        # Replicate variance override: re-run both stages per replicate
+        _n_valid_rep_ts = None
+        if _uses_replicate_ts:
+            from diff_diff.survey import compute_replicate_refit_variance
+
+            def _refit_ts(w_r):
+                ufe_r, tfe_r, gm_r, delta_r, kcm_r = self._fit_untreated_model(
+                    df, outcome, unit, time, covariates, omega_0_mask, weights=w_r,
+                )
+                y_tilde_r = self._residualize(
+                    df, outcome, unit, time, covariates,
+                    ufe_r, tfe_r, gm_r, delta_r,
+                )
+                df_tmp = df.copy()
+                df_tmp["_y_tilde"] = y_tilde_r
+                att_r, _ = self._stage2_static(
+                    df=df_tmp, unit=unit, time=time, first_treat=first_treat,
+                    covariates=covariates, omega_0_mask=omega_0_mask,
+                    omega_1_mask=omega_1_mask, unit_fe=ufe_r, time_fe=tfe_r,
+                    grand_mean=gm_r, delta_hat=delta_r, cluster_var=cluster_var,
+                    kept_cov_mask=kcm_r, survey_weights=w_r,
+                    survey_weight_type="pweight",
+                )
+                return np.array([att_r])
+
+            _vcov_rep_ts, _n_valid_rep_ts = compute_replicate_refit_variance(
+                _refit_ts, np.array([overall_att]), resolved_survey
+            )
+            overall_se = float(np.sqrt(max(_vcov_rep_ts[0, 0], 0.0)))
+
+        if _n_valid_rep_ts is not None and resolved_survey is not None:
+            if _n_valid_rep_ts < resolved_survey.n_replicates:
+                _survey_df = _n_valid_rep_ts - 1 if _n_valid_rep_ts > 1 else 0
 
         overall_t, overall_p, overall_ci = safe_inference(
             overall_att, overall_se, alpha=self.alpha, df=_survey_df

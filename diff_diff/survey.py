@@ -16,7 +16,7 @@ References
 
 import warnings
 from dataclasses import dataclass, field, replace
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -1699,6 +1699,151 @@ def compute_replicate_if_variance(
                 continue
             result += ((n_h_original - 1.0) / n_h_original) * float(np.sum(diffs[mask_h] ** 2))
         return scale * result, n_valid
+    else:
+        raise ValueError(f"Unknown replicate method: {method}")
+
+
+def compute_replicate_refit_variance(
+    refit_fn: Callable[[np.ndarray], np.ndarray],
+    full_sample_estimate: np.ndarray,
+    resolved: "ResolvedSurveyDesign",
+) -> Tuple[np.ndarray, int]:
+    """Compute replicate variance by re-running an arbitrary estimation function.
+
+    For each replicate weight column, calls ``refit_fn(w_r)`` and collects
+    the resulting estimate vector.  Variance is computed from the distribution
+    of replicate estimates using method-specific scaling.
+
+    This generalises :func:`compute_replicate_vcov` (which hard-codes
+    ``solve_ols`` as the refit) for estimators whose estimation procedure
+    is more complex than a single OLS call (e.g. within-transformation,
+    two-stage imputation, stacked regression).
+
+    Parameters
+    ----------
+    refit_fn : callable
+        ``(n,) weight array -> (k,) estimate array``.  Must return the same
+        length *k* on every call.  Should return all-NaN when the estimation
+        fails for that replicate.
+    full_sample_estimate : np.ndarray
+        Estimate vector from the full-sample weights, shape ``(k,)``.
+    resolved : ResolvedSurveyDesign
+        Must have ``uses_replicate_variance == True``.
+
+    Returns
+    -------
+    tuple of (np.ndarray, int)
+        ``(vcov, n_valid)`` where *vcov* has shape ``(k, k)`` and *n_valid*
+        is the number of replicates that produced finite estimates.
+    """
+    full_sample_estimate = np.asarray(full_sample_estimate, dtype=np.float64).ravel()
+    k = len(full_sample_estimate)
+    rep_weights = resolved.replicate_weights
+    method = resolved.replicate_method
+    R = resolved.n_replicates
+
+    # Collect replicate estimate vectors
+    est_reps = np.full((R, k), np.nan)
+    for r in range(R):
+        w_r = rep_weights[:, r].copy()
+        if not resolved.combined_weights:
+            w_r = w_r * resolved.weights
+        if np.sum(w_r) == 0:
+            continue
+        try:
+            est_r = refit_fn(w_r)
+            est_r = np.asarray(est_r, dtype=np.float64).ravel()
+            if len(est_r) == k:
+                est_reps[r] = est_r
+        except (np.linalg.LinAlgError, ValueError, RuntimeError):
+            pass  # NaN row for failed replicate
+
+    # Remove replicates with NaN estimates
+    valid = np.all(np.isfinite(est_reps), axis=1)
+    n_invalid = int(R - np.sum(valid))
+    if n_invalid > 0:
+        warnings.warn(
+            f"{n_invalid} of {R} replicate refits failed. "
+            f"Variance computed from {int(np.sum(valid))} valid replicates.",
+            UserWarning,
+            stacklevel=2,
+        )
+    n_valid = int(np.sum(valid))
+    if n_valid < 2:
+        if n_valid == 0:
+            warnings.warn(
+                "All replicate refits failed. Returning NaN variance.",
+                UserWarning,
+                stacklevel=2,
+            )
+        else:
+            warnings.warn(
+                f"Only {n_valid} valid replicate(s) — variance is not estimable "
+                f"with fewer than 2. Returning NaN.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return np.full((k, k), np.nan), n_valid
+
+    est_valid = est_reps[valid]
+    c = full_sample_estimate
+
+    # --- Centering (mse flag) ---
+    if resolved.mse:
+        center = c
+    else:
+        if resolved.replicate_rscales is not None:
+            pos_scale = resolved.replicate_rscales[valid] > 0
+            if np.any(pos_scale):
+                center = np.mean(est_valid[pos_scale], axis=0)
+            else:
+                center = np.mean(est_valid, axis=0)
+        else:
+            center = np.mean(est_valid, axis=0)
+    diffs = est_valid - center[np.newaxis, :]
+
+    outer_sum = diffs.T @ diffs  # (k, k)
+
+    # --- Method-specific scaling ---
+    # BRR/Fay: fixed scaling, ignore user-supplied scale/rscales
+    if method in ("BRR", "Fay"):
+        if resolved.replicate_scale is not None or resolved.replicate_rscales is not None:
+            warnings.warn(
+                f"Custom replicate_scale/replicate_rscales ignored for {method} "
+                f"(BRR/Fay use fixed scaling).",
+                UserWarning,
+                stacklevel=2,
+            )
+        factor = _replicate_variance_factor(method, R, resolved.fay_rho)
+        return factor * outer_sum, n_valid
+
+    # JK1/JKn: apply scale * rscales multiplicatively
+    scale = resolved.replicate_scale if resolved.replicate_scale is not None else 1.0
+
+    if resolved.replicate_rscales is not None:
+        valid_rscales = resolved.replicate_rscales[valid]
+        V = np.zeros((k, k))
+        for i in range(len(diffs)):
+            V += valid_rscales[i] * np.outer(diffs[i], diffs[i])
+        return scale * V, n_valid
+
+    if method == "JK1":
+        factor = _replicate_variance_factor(method, R, resolved.fay_rho)
+        return scale * factor * outer_sum, n_valid
+    elif method == "JKn":
+        rep_strata = resolved.replicate_strata
+        if rep_strata is None:
+            raise ValueError("JKn requires replicate_strata")
+        valid_strata = rep_strata[valid]
+        V = np.zeros((k, k))
+        for h in np.unique(rep_strata):
+            n_h_original = int(np.sum(rep_strata == h))
+            mask_h = valid_strata == h
+            if not np.any(mask_h):
+                continue
+            diffs_h = diffs[mask_h]
+            V += ((n_h_original - 1.0) / n_h_original) * (diffs_h.T @ diffs_h)
+        return scale * V, n_valid
     else:
         raise ValueError(f"Unknown replicate method: {method}")
 

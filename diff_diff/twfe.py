@@ -127,15 +127,14 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, self.inference)
         )
-        # Reject replicate-weight designs — TWFE within-transformation must
-        # be recomputed per replicate (same reason as SunAbraham rejection)
-        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
-            raise NotImplementedError(
-                "TwoWayFixedEffects does not yet support replicate-weight "
-                "survey designs. The weighted within-transformation must be "
-                "recomputed for each replicate. Use CallawaySantAnna or "
-                "TripleDifference for replicate-weight inference, or use a "
-                "TSL-based survey design (strata/psu/fpc)."
+        _uses_replicate_twfe = (
+            resolved_survey is not None and resolved_survey.uses_replicate_variance
+        )
+        if _uses_replicate_twfe and self.inference == "wild_bootstrap":
+            raise ValueError(
+                "Cannot use inference='wild_bootstrap' with replicate-weight "
+                "survey designs. Replicate weights provide their own variance "
+                "estimation."
             )
 
         # Use unit-level clustering if not specified (use local variable to avoid mutation)
@@ -210,6 +209,10 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         # If "error", let LinearRegression raise immediately
         # If "warn" or "silent", suppress generic warning and use TWFE's context-specific
         # error/warning messages (more informative for panel data)
+        # For replicate designs: pass survey_design=None to prevent LinearRegression
+        # from computing replicate vcov on already-demeaned data (demeaning depends
+        # on weights, so replicate refits must re-demean at the estimator level).
+        _lr_survey_twfe = None if _uses_replicate_twfe else resolved_survey
         if self.rank_deficient_action == "error":
             reg = LinearRegression(
                 include_intercept=False,
@@ -219,7 +222,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                 rank_deficient_action="error",
                 weights=survey_weights,
                 weight_type=survey_weight_type,
-                survey_design=resolved_survey,
+                survey_design=_lr_survey_twfe,
             ).fit(X, y, df_adjustment=df_adjustment)
         else:
             # Suppress generic warning, TWFE provides context-specific messages below
@@ -235,7 +238,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                     rank_deficient_action="silent",
                     weights=survey_weights,
                     weight_type=survey_weight_type,
-                    survey_design=resolved_survey,
+                    survey_design=_lr_survey_twfe,
                 ).fit(X, y, df_adjustment=df_adjustment)
 
         coefficients = reg.coefficients_
@@ -281,8 +284,45 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                         stacklevel=2,
                     )
 
-        # Get inference - either from bootstrap or analytical
-        if self.inference == "wild_bootstrap":
+        # Get inference - replicate, bootstrap, or analytical
+        if _uses_replicate_twfe:
+            # Estimator-level replicate variance: re-do within-transform per replicate
+            from diff_diff.linalg import solve_ols
+            from diff_diff.survey import compute_replicate_refit_variance
+            from diff_diff.utils import safe_inference as _safe_inf
+
+            _all_vars_twfe = list(all_vars)
+            _covariates_twfe = list(covariates) if covariates else []
+
+            def _refit_twfe(w_r):
+                data_dem_r = _within_transform_util(
+                    data, _all_vars_twfe, unit, time, suffix="_demeaned", weights=w_r,
+                )
+                y_r = data_dem_r[f"{outcome}_demeaned"].values
+                X_list_r = [data_dem_r["_treatment_post_demeaned"].values]
+                for cov_ in _covariates_twfe:
+                    X_list_r.append(data_dem_r[f"{cov_}_demeaned"].values)
+                X_r = np.column_stack([np.ones(len(y_r))] + X_list_r)
+                coef_r, _, _ = solve_ols(
+                    X_r, y_r,
+                    weights=w_r, weight_type=survey_weight_type,
+                    rank_deficient_action="silent", return_vcov=False,
+                )
+                return coef_r
+
+            vcov, _n_valid_rep_twfe = compute_replicate_refit_variance(
+                _refit_twfe, coefficients, resolved_survey
+            )
+            se = float(np.sqrt(max(vcov[att_idx, att_idx], 0.0)))
+            _df_rep = (
+                survey_metadata.df_survey
+                if survey_metadata and survey_metadata.df_survey
+                else None
+            )
+            if _n_valid_rep_twfe < resolved_survey.n_replicates:
+                _df_rep = _n_valid_rep_twfe - 1 if _n_valid_rep_twfe > 1 else 0
+            t_stat, p_value, conf_int = _safe_inf(att, se, alpha=self.alpha, df=_df_rep)
+        elif self.inference == "wild_bootstrap":
             # Override with wild cluster bootstrap inference
             se, p_value, conf_int, t_stat, vcov, _ = self._run_wild_bootstrap_inference(
                 X, y, residuals, cluster_ids, att_idx

@@ -244,13 +244,16 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             survey_design, data, "analytical"
         )
 
+        _uses_replicate_imp = (
+            resolved_survey is not None and resolved_survey.uses_replicate_variance
+        )
+        if _uses_replicate_imp and self.n_bootstrap > 0:
+            raise ValueError(
+                "Cannot use n_bootstrap > 0 with replicate-weight survey designs. "
+                "Replicate weights provide their own variance estimation."
+            )
         # Validate within-unit constancy for panel survey designs
         if resolved_survey is not None:
-            if resolved_survey.uses_replicate_variance:
-                raise NotImplementedError(
-                    "ImputationDiD does not yet support replicate-weight survey "
-                    "designs. Use a TSL-based survey design (strata/psu/fpc)."
-                )
             _validate_unit_constant_survey(data, unit, survey_design)
             if resolved_survey.weight_type != "pweight":
                 raise ValueError(
@@ -463,43 +466,72 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         else:
             overall_att = float(np.mean(valid_tau))
 
-        # ---- Conservative variance (Theorem 3) ----
-        # Build weights matching the ATT: proportional to survey weights for
-        # finite tau_hat, uniform when no survey
-        overall_weights = np.zeros(n_omega_1)
-        n_valid = int(finite_mask.sum())
-        if n_valid > 0:
-            if survey_weights is not None:
-                treated_sw = survey_weights[omega_1_mask.values]
-                sw_finite = treated_sw[finite_mask]
-                overall_weights[finite_mask] = sw_finite / sw_finite.sum()
-            else:
-                overall_weights[finite_mask] = 1.0 / n_valid
+        # ---- Variance ----
+        _n_valid_rep_imp = None
+        if _uses_replicate_imp:
+            # Replicate variance: re-run two-stage procedure per replicate
+            from diff_diff.survey import compute_replicate_refit_variance
 
-        if n_valid == 0:
-            overall_se = np.nan
-        else:
-            overall_se = self._compute_conservative_variance(
-                df=df,
-                outcome=outcome,
-                unit=unit,
-                time=time,
-                first_treat=first_treat,
-                covariates=covariates,
-                omega_0_mask=omega_0_mask,
-                omega_1_mask=omega_1_mask,
-                unit_fe=unit_fe,
-                time_fe=time_fe,
-                grand_mean=grand_mean,
-                delta_hat=delta_hat,
-                weights=overall_weights,
-                cluster_var=cluster_var,
-                kept_cov_mask=kept_cov_mask,
-                survey_weights=survey_weights,
+            def _refit_imp(w_r):
+                ufe_r, tfe_r, gm_r, delta_r, _ = self._fit_untreated_model(
+                    df, outcome, unit, time, covariates, omega_0_mask, weights=w_r,
+                )
+                tau_r, _ = self._impute_treatment_effects(
+                    df, outcome, unit, time, covariates, omega_1_mask,
+                    ufe_r, tfe_r, gm_r, delta_r,
+                )
+                fin = np.isfinite(tau_r)
+                if not np.any(fin):
+                    return np.array([np.nan])
+                tw = w_r[omega_1_mask.values][fin]
+                tw_sum = np.sum(tw)
+                if tw_sum == 0:
+                    return np.array([np.nan])
+                return np.array([float(np.sum(tau_r[fin] * tw) / tw_sum)])
+
+            _vcov_rep_imp, _n_valid_rep_imp = compute_replicate_refit_variance(
+                _refit_imp, np.array([overall_att]), resolved_survey
             )
+            overall_se = float(np.sqrt(max(_vcov_rep_imp[0, 0], 0.0)))
+        else:
+            # Conservative variance (Theorem 3)
+            overall_weights = np.zeros(n_omega_1)
+            n_valid = int(finite_mask.sum())
+            if n_valid > 0:
+                if survey_weights is not None:
+                    treated_sw = survey_weights[omega_1_mask.values]
+                    sw_finite = treated_sw[finite_mask]
+                    overall_weights[finite_mask] = sw_finite / sw_finite.sum()
+                else:
+                    overall_weights[finite_mask] = 1.0 / n_valid
+
+            if n_valid == 0:
+                overall_se = np.nan
+            else:
+                overall_se = self._compute_conservative_variance(
+                    df=df,
+                    outcome=outcome,
+                    unit=unit,
+                    time=time,
+                    first_treat=first_treat,
+                    covariates=covariates,
+                    omega_0_mask=omega_0_mask,
+                    omega_1_mask=omega_1_mask,
+                    unit_fe=unit_fe,
+                    time_fe=time_fe,
+                    grand_mean=grand_mean,
+                    delta_hat=delta_hat,
+                    weights=overall_weights,
+                    cluster_var=cluster_var,
+                    kept_cov_mask=kept_cov_mask,
+                    survey_weights=survey_weights,
+                )
 
         # Survey degrees of freedom for t-distribution inference
         _survey_df = resolved_survey.df_survey if resolved_survey is not None else None
+        if _n_valid_rep_imp is not None and resolved_survey is not None:
+            if _n_valid_rep_imp < resolved_survey.n_replicates:
+                _survey_df = _n_valid_rep_imp - 1 if _n_valid_rep_imp > 1 else 0
 
         overall_t, overall_p, overall_ci = safe_inference(
             overall_att, overall_se, alpha=self.alpha, df=_survey_df

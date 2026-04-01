@@ -498,8 +498,8 @@ class TestReplicateWeightVariance:
         assert sm.n_replicates == len(rep_cols)
         assert sm.df_survey == len(rep_cols) - 1
 
-    def test_replicate_rejected_by_base_did(self, replicate_data):
-        """DifferenceInDifferences rejects replicate-weight designs."""
+    def test_replicate_accepted_by_base_did(self, replicate_data):
+        """DifferenceInDifferences now supports replicate-weight designs."""
         data, rep_cols = replicate_data
         n = len(data)
         data["treated"] = (np.arange(n) < n // 2).astype(int)
@@ -510,11 +510,12 @@ class TestReplicateWeightVariance:
             weights="weight", replicate_weights=rep_cols,
             replicate_method="JK1",
         )
-        with pytest.raises(NotImplementedError, match="DifferenceInDifferences"):
-            DifferenceInDifferences().fit(
-                data, outcome="outcome", treatment="treated", time="post",
-                survey_design=sd,
-            )
+        result = DifferenceInDifferences().fit(
+            data, outcome="outcome", treatment="treated", time="post",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se) and result.se > 0
 
     def test_replicate_if_variance(self, replicate_data):
         """IF-based replicate variance produces finite results."""
@@ -1284,8 +1285,8 @@ class TestEstimatorReplicateWeights:
         assert np.isfinite(result.se)
         assert result.survey_metadata is not None
 
-    def test_sun_abraham_replicate_rejected(self):
-        """SunAbraham should reject replicate-weight survey designs."""
+    def test_sun_abraham_replicate_accepted(self):
+        """SunAbraham now supports replicate-weight survey designs."""
         from diff_diff import SunAbraham
 
         data, rep_cols = self._make_staggered_replicate_data()
@@ -1293,11 +1294,11 @@ class TestEstimatorReplicateWeights:
             weights="weight", replicate_weights=rep_cols,
             replicate_method="JK1",
         )
-        with pytest.raises(NotImplementedError, match="SunAbraham"):
-            SunAbraham(n_bootstrap=0).fit(
-                data, "outcome", "unit", "time", "first_treat",
-                survey_design=sd,
-            )
+        result = SunAbraham(n_bootstrap=0).fit(
+            data, "outcome", "unit", "time", "first_treat",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
 
 
 class TestSubpopulationMaskValidation:
@@ -1357,23 +1358,49 @@ class TestSubpopulationMaskValidation:
                 survey_design=sd,
             )
 
-    def test_twfe_replicate_rejected(self):
-        """TwoWayFixedEffects should reject replicate-weight designs."""
+    def test_twfe_replicate_accepted(self):
+        """TwoWayFixedEffects now supports replicate-weight designs."""
         from diff_diff.twfe import TwoWayFixedEffects
 
-        data, rep_cols = TestEstimatorReplicateWeights._make_staggered_replicate_data()
+        # Create a simple 2-period panel that works with within-transformation
+        np.random.seed(77)
+        rows = []
+        for i in range(40):
+            treated = 1 if i < 20 else 0
+            wt = 1.0 + 0.2 * (i % 5)
+            for t in [0, 1]:
+                y = 5.0 + i * 0.05 + t * 1.0
+                if treated and t == 1:
+                    y += 2.0
+                y += np.random.normal(0, 0.3)
+                rows.append({
+                    "unit": i, "time": t, "treated": treated,
+                    "post": t, "outcome": y, "weight": wt,
+                })
+        data = pd.DataFrame(rows)
+        # Use BRR to avoid zero-weight units breaking within-transform
+        rng = np.random.RandomState(42)
+        units = sorted(data["unit"].unique())
+        rep_cols = []
+        for r in range(16):
+            signs = rng.choice([-1, 1], size=len(units))
+            sm = dict(zip(units, signs))
+            p = data["unit"].map(sm).values.astype(float)
+            data[f"brr_{r}"] = np.maximum(data["weight"].values * (1.0 + 0.5 * p), 0.0)
+            rep_cols.append(f"brr_{r}")
         sd = SurveyDesign(
             weights="weight", replicate_weights=rep_cols,
-            replicate_method="JK1",
+            replicate_method="BRR",
         )
-        with pytest.raises(NotImplementedError, match="TwoWayFixedEffects"):
-            TwoWayFixedEffects().fit(
-                data, outcome="outcome", treatment="first_treat",
-                unit="unit", time="time", survey_design=sd,
-            )
+        result = TwoWayFixedEffects().fit(
+            data, outcome="outcome", treatment="treated",
+            time="post", unit="unit", survey_design=sd,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se) and result.se > 0
 
-    def test_stacked_did_replicate_rejected(self):
-        """StackedDiD should reject replicate-weight designs."""
+    def test_stacked_did_replicate_accepted(self):
+        """StackedDiD now supports replicate-weight designs."""
         from diff_diff import StackedDiD
 
         data, rep_cols = TestEstimatorReplicateWeights._make_staggered_replicate_data()
@@ -1381,11 +1408,11 @@ class TestSubpopulationMaskValidation:
             weights="weight", replicate_weights=rep_cols,
             replicate_method="JK1",
         )
-        with pytest.raises(NotImplementedError, match="StackedDiD"):
-            StackedDiD().fit(
-                data, outcome="outcome", unit="unit", time="time",
-                first_treat="first_treat", survey_design=sd,
-            )
+        result = StackedDiD().fit(
+            data, outcome="outcome", unit="unit", time="time",
+            first_treat="first_treat", survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
 
     def test_invalid_replicate_scale_rejected(self):
         """Negative or zero replicate_scale should be rejected."""
@@ -1416,37 +1443,37 @@ class TestSubpopulationMaskValidation:
         )
         return data, sd
 
-    def test_multi_period_did_replicate_rejected(self):
-        """MultiPeriodDiD rejects replicate-weight designs."""
+    def test_multi_period_did_replicate_accepted(self):
+        """MultiPeriodDiD now supports replicate-weight designs."""
         from diff_diff.estimators import MultiPeriodDiD
         data, sd = self._replicate_sd_and_data()
         data["treated"] = (data["first_treat"] > 0).astype(int)
         data["post"] = (data["time"] >= 3).astype(int)
-        with pytest.raises(NotImplementedError):
-            MultiPeriodDiD().fit(
-                data, outcome="outcome", treatment="treated",
-                time="post", survey_design=sd,
-            )
+        result = MultiPeriodDiD().fit(
+            data, outcome="outcome", treatment="treated",
+            time="post", survey_design=sd,
+        )
+        assert np.isfinite(result.avg_att)
 
-    def test_imputation_did_replicate_rejected(self):
-        """ImputationDiD rejects replicate-weight designs."""
+    def test_imputation_did_replicate_accepted(self):
+        """ImputationDiD now supports replicate-weight designs."""
         from diff_diff.imputation import ImputationDiD
         data, sd = self._replicate_sd_and_data()
-        with pytest.raises(NotImplementedError):
-            ImputationDiD().fit(
-                data, outcome="outcome", unit="unit", time="time",
-                first_treat="first_treat", survey_design=sd,
-            )
+        result = ImputationDiD(n_bootstrap=0).fit(
+            data, outcome="outcome", unit="unit", time="time",
+            first_treat="first_treat", survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
 
-    def test_two_stage_did_replicate_rejected(self):
-        """TwoStageDiD rejects replicate-weight designs."""
+    def test_two_stage_did_replicate_accepted(self):
+        """TwoStageDiD now supports replicate-weight designs."""
         from diff_diff.two_stage import TwoStageDiD
         data, sd = self._replicate_sd_and_data()
-        with pytest.raises(NotImplementedError):
-            TwoStageDiD().fit(
-                data, outcome="outcome", unit="unit", time="time",
-                first_treat="first_treat", survey_design=sd,
-            )
+        result = TwoStageDiD(n_bootstrap=0).fit(
+            data, outcome="outcome", unit="unit", time="time",
+            first_treat="first_treat", survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
 
     def test_bacon_replicate_rejected(self):
         """BaconDecomposition rejects replicate-weight designs."""
