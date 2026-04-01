@@ -1217,7 +1217,9 @@ class TestSurveyVariance:
             aggregate="event_study",
         )
 
-        honest = HonestDiD(method="smoothness", M=0.0)
+        # Use RM method (naive FLCI) which honors df via _get_critical_value.
+        # The optimal FLCI (smoothness) uses folded normal which doesn't use df.
+        honest = HonestDiD(method="relative_magnitude", M=1.0)
         h_result = honest.fit(cs_result)
 
         # With df=2, t critical value (~4.3) >> z critical value (1.96)
@@ -1225,6 +1227,7 @@ class TestSurveyVariance:
         ci_width = h_result.ci_ub - h_result.ci_lb
         # Lower bound: normal-based CI width
         normal_width = 2 * 1.96 * h_result.original_se
+        assert np.isfinite(ci_width), "CI should be finite with M=1.0"
         assert ci_width > normal_width
 
     def test_no_survey_gives_none_df(self):

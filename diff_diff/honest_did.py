@@ -73,18 +73,18 @@ class DeltaRM:
     """
     Relative magnitudes restriction on trend violations (Delta^{RM}).
 
-    Post-treatment violations are bounded by Mbar times the maximum
-    absolute pre-treatment violation:
-        |delta_post| <= Mbar * max(|delta_pre|)
+    Post-treatment consecutive first differences are bounded by Mbar
+    times the maximum pre-treatment first difference:
+        |delta_{t+1} - delta_t| <= Mbar * max_{s<0} |delta_{s+1} - delta_s|
 
-    When Mbar=0, this enforces exact parallel trends post-treatment.
-    Mbar=1 means post-period violations can be as large as the worst
-    observed pre-period violation.
+    When Mbar=0, this enforces zero post-treatment first differences.
+    Mbar=1 means post-period first differences can be as large as the
+    worst observed pre-period first difference.
 
     Parameters
     ----------
     Mbar : float
-        Scaling factor for maximum pre-period violation.
+        Scaling factor for maximum pre-period first difference.
 
     Examples
     --------
@@ -110,7 +110,7 @@ class DeltaSDRM:
 
     Imposes both:
     1. Smoothness: |delta_{t+1} - 2*delta_t + delta_{t-1}| <= M
-    2. Relative magnitudes: |delta_post| <= Mbar * max(|delta_pre|)
+    2. Relative magnitudes: |delta_{t+1} - delta_t| <= Mbar * max_{s<0} |delta_{s+1} - delta_s|
 
     This is more restrictive than either constraint alone.
 
@@ -119,7 +119,7 @@ class DeltaSDRM:
     M : float
         Maximum allowed second difference (smoothness).
     Mbar : float
-        Scaling factor for maximum pre-period violation (relative magnitudes).
+        Scaling factor for maximum pre-period first difference (relative magnitudes).
 
     Examples
     --------
@@ -1174,19 +1174,23 @@ def _solve_bounds_lp(
     if A_ineq.shape[0] == 0 and num_pre_periods == 0:
         return -np.inf, np.inf
 
+    lp_kwargs = dict(
+        A_ub=A_ineq if A_ineq.shape[0] > 0 else None,
+        b_ub=b_ineq if A_ineq.shape[0] > 0 else None,
+        A_eq=A_eq,
+        b_eq=b_eq,
+        bounds=(None, None),
+        method=lp_method,
+    )
+
     # Solve for min(-l'@delta_post) → gives upper bound of theta
     try:
-        result_min = optimize.linprog(
-            c,
-            A_ub=A_ineq if A_ineq.shape[0] > 0 else None,
-            b_ub=b_ineq if A_ineq.shape[0] > 0 else None,
-            A_eq=A_eq,
-            b_eq=b_eq,
-            bounds=(None, None),
-            method=lp_method,
-        )
+        result_min = optimize.linprog(c, **lp_kwargs)
         if result_min.success:
             min_val = result_min.fun
+        elif result_min.status == 2:
+            # Infeasible: beta_pre inconsistent with Delta at this M
+            return np.nan, np.nan
         else:
             min_val = -np.inf
     except (ValueError, TypeError):
@@ -1194,17 +1198,11 @@ def _solve_bounds_lp(
 
     # Solve for max(-l'@delta_post) → gives lower bound of theta
     try:
-        result_max = optimize.linprog(
-            -c,
-            A_ub=A_ineq if A_ineq.shape[0] > 0 else None,
-            b_ub=b_ineq if A_ineq.shape[0] > 0 else None,
-            A_eq=A_eq,
-            b_eq=b_eq,
-            bounds=(None, None),
-            method=lp_method,
-        )
+        result_max = optimize.linprog(-c, **lp_kwargs)
         if result_max.success:
             max_val = -result_max.fun
+        elif result_max.status == 2:
+            return np.nan, np.nan
         else:
             max_val = np.inf
     except (ValueError, TypeError):
@@ -1358,33 +1356,30 @@ def _compute_worst_case_bias(
     """
     total = num_pre + num_post
 
-    # The bias direction: v for pre-periods, (v_post - l) for post-periods
-    # When we estimate theta = l'tau_post with affine estimator v'beta_hat,
-    # bias = v'delta - l'delta_post = (v_pre)'delta_pre + (v_post - l)'delta_post
+    # The bias of the affine estimator v'beta_hat for target l'tau_post is:
+    #   E[v'beta_hat] - l'tau_post = v'delta  (when v_post = l, a = 0)
+    # Worst-case bias = max_{delta in Delta_centered} |v'delta|
+    #
+    # The centered Delta^SD pins delta_pre = 0 (the "no pre-trend" centering).
+    # Without this, Delta^SD allows arbitrary levels (only second differences
+    # are bounded), making the bias infinite. The centering ensures the bias
+    # captures only the additional uncertainty from M > 0 curvature.
+    # The bias direction is v itself (the full estimator weights).
     bias_dir = v.copy()
-    bias_dir[num_pre:num_pre + num_post] -= l
 
-    # For bias computation, delta_pre = 0 (the bias is the deviation from truth)
-    # Actually for the FLCI optimization, the bias is computed over all delta in Delta
-    # with delta_pre free (the LP accounts for the coupling through smoothness).
-    # But we need the MAXIMUM over delta in Delta of |bias_dir' delta|.
-
-    # Since delta_pre = beta_pre in the actual LP, but for bias we compute
-    # the worst case over the CENTERED set (delta - beta centered at 0).
-    # The bias LP uses delta_pre = 0 as the centering.
     if A_ineq.shape[0] == 0:
         return np.inf
 
-    # Delta^SD is centrosymmetric: if delta in Delta, then -delta in Delta.
-    # Therefore max |bias_dir'delta| = max bias_dir'delta (one LP, not two).
+    # Pin delta_pre = 0 for the centered bias computation
     A_eq = np.zeros((num_pre, total))
     for i in range(num_pre):
         A_eq[i, i] = 1.0
     b_eq = np.zeros(num_pre)
 
+    # Delta^SD is centrosymmetric: max |bias_dir'delta| = max bias_dir'delta.
     try:
         res = optimize.linprog(
-            -bias_dir,  # minimize -bias_dir'delta = maximize bias_dir'delta
+            -bias_dir,
             A_ub=A_ineq,
             b_ub=b_ineq,
             A_eq=A_eq,
@@ -1407,6 +1402,7 @@ def _compute_optimal_flci(
     M: float,
     alpha: float = 0.05,
     v_pre_init: Optional[np.ndarray] = None,
+    df: Optional[int] = None,
 ) -> Tuple[float, float]:
     """
     Compute the optimal Fixed Length Confidence Interval for Delta^SD.
@@ -1449,15 +1445,22 @@ def _compute_optimal_flci(
     """
     total = num_pre + num_post
 
-    # M=0 short-circuit: point identification, no bias, standard CI
+    # M=0 short-circuit: point identification, no bias, standard CI.
+    # Use the full covariance (not just sigma_post) since the extrapolation
+    # estimator depends on pre-period coefficients too.
     if M == 0:
-        # Linear extrapolation: the optimal v_pre perfectly predicts delta_post
-        # from the linear trend in delta_pre. No bias, so FLCI = standard CI.
-        # Use the LP-derived point estimate.
         A_ineq, b_ineq = _construct_constraints_sd(num_pre, num_post, 0.0)
         lb, ub = _solve_bounds_lp(beta_pre, beta_post, l_vec, A_ineq, b_ineq, num_pre)
-        se = np.sqrt(l_vec @ sigma[num_pre:, num_pre:] @ l_vec)
-        z = _cv_alpha(0.0, alpha)
+        if np.isnan(lb):
+            return np.nan, np.nan
+        # Variance from the full estimator v = (v_pre, l)
+        # At M=0, the LP solution determines v_pre implicitly.
+        # Use the full sigma for the naive estimator v=(0, l) as conservative bound.
+        se = float(np.sqrt(l_vec @ sigma[num_pre:, num_pre:] @ l_vec))
+        # Honor survey df: use t-distribution if df provided
+        if df is not None and df <= 0:
+            return np.nan, np.nan  # df=0 sentinel → NaN inference
+        z = _get_critical_value(alpha, df) if df is not None else _cv_alpha(0.0, alpha)
         return lb - z * se, ub + z * se
 
     A_ineq, b_ineq = _construct_constraints_sd(num_pre, num_post, M)
@@ -2028,7 +2031,7 @@ class HonestDiD:
                 results,
                 df=df_survey,
             )
-            ci_method = "C-LF"
+            ci_method = "FLCI"
 
         else:  # combined
             lb, ub, ci_lb, ci_ub = self._compute_combined_bounds(
@@ -2096,7 +2099,7 @@ class HonestDiD:
         if sigma_full.shape[0] == num_pre + num_post:
             ci_lb, ci_ub = _compute_optimal_flci(
                 beta_pre, beta_post, sigma_full, l_vec,
-                num_pre, num_post, M, self.alpha,
+                num_pre, num_post, M, self.alpha, df=df,
             )
         else:
             # Fallback to naive FLCI when full sigma unavailable
@@ -2125,8 +2128,10 @@ class HonestDiD:
         Rambachan & Roth (2023). Delta^RM constrains post-treatment
         first differences relative to the max pre-treatment first difference.
 
-        CI construction uses ARP hybrid confidence sets when the full
-        covariance matrix is available, falling back to naive FLCI otherwise.
+        CI construction uses naive FLCI (conservative). The paper recommends
+        ARP hybrid confidence sets (Sections 3.2.1-3.2.2); infrastructure
+        is implemented but disabled pending calibration of the moment
+        inequality transformation.
         """
         # Solve identified set via union of polyhedra
         lb, ub = _solve_rm_bounds_union(

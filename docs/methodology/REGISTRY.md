@@ -1809,8 +1809,8 @@ CRITICAL: δ_pre = β_pre pins pre-treatment violations to observed coefficients
 
 *Inference (Sections 3.2, 4.1):*
 - Delta^SD: Optimal FLCI — jointly optimizes affine estimator direction and half-length via folded normal quantile cv_α(bias/se) (Equation 18)
-- Delta^RM: ARP conditional/hybrid confidence sets — LP test inversion with truncated normal critical values (Equations 14-15, κ = α/10)
-- **Note (deviation from R):** ARP hybrid for Delta^RM falls back to naive FLCI when the moment inequality transformation produces degenerate results. Full ARP calibration is ongoing.
+- Delta^RM: Paper recommends ARP conditional/hybrid confidence sets (Equations 14-15, κ = α/10). Currently uses **naive FLCI** unconditionally (conservative — wider CIs, valid coverage). ARP infrastructure exists but is disabled.
+- **Note (deviation from R):** Delta^RM CIs use naive FLCI (`lb - z*se, ub + z*se`) instead of the paper's ARP hybrid. R's `HonestDiD` package implements full ARP conditional/hybrid. Our naive FLCI is conservative (wider, valid coverage) but does not adapt to the length of the identified set. ARP implementation deferred (see TODO.md).
 
 *Standard errors:*
 - Inherits Σ̂ from underlying event-study estimation
