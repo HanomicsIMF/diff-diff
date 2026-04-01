@@ -677,19 +677,20 @@ variables appear to the left of the `|` separator.
    looser Nelder-Mead tolerances.
 
 **Outstanding Concerns:**
-- ARP hybrid confidence sets for Delta^RM: infrastructure implemented (`_arp_confidence_set`,
-  `_enumerate_vertices`, `_compute_arp_test`) but disabled pending calibration of the moment
-  inequality transformation. Currently uses conservative naive FLCI for RM CIs.
+- **Delta^RM CI**: uses naive FLCI (conservative) instead of the paper's ARP conditional/hybrid
+  confidence sets. ARP infrastructure exists but moment inequality transformation needs
+  calibration. Tracked in TODO.md.
 - R benchmark comparison not yet run (Python benchmark needs API update)
 - Combined method uses single M for both SD and RM (DeltaSDRM dataclass has separate M/Mbar)
 
 **Deviations from R's HonestDiD:**
-1. **Delta^RM CI**: R uses full ARP conditional/hybrid confidence sets. Python uses naive FLCI
-   (conservative — wider CIs, valid coverage). ARP implementation exists but needs calibration.
-2. **Optimal FLCI**: R uses the same approach (Armstrong & Kolesar 2018). Python implementation
-   matches the methodology but uses Nelder-Mead optimization vs R's custom solver. Numerical
-   differences expected at tolerance level.
-3. **Base period handling**: Python warns (doesn't error) when CallawaySantAnna results use
+1. **Deviation from R:** Delta^RM CIs use naive FLCI (`lb - z*se, ub + z*se`) instead of ARP
+   conditional/hybrid. Conservative (wider CIs, valid coverage). ARP deferred.
+2. **Note:** Delta^SD optimal FLCI matches the paper's Section 4.1 methodology: first-difference
+   reparameterization, slope weights with sum(w)=1 constraint, bias LP in fd-space, folded
+   normal (or folded non-central t for survey df). Nelder-Mead optimizer vs R's custom solver
+   may produce numerical differences at tolerance level.
+3. **Note (deviation from R):** Python warns (doesn't error) when CallawaySantAnna results use
    `base_period != "universal"`. R's HonestDiD requires universal base period.
 
 ---
