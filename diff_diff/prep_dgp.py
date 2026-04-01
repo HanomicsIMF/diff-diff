@@ -1222,6 +1222,15 @@ def generate_survey_did_data(
         cohort_periods = [3, 5]
     if not cohort_periods:
         raise ValueError("cohort_periods must be a non-empty list of integers")
+    for cp in cohort_periods:
+        if not isinstance(cp, int) or isinstance(cp, bool):
+            raise ValueError(
+                f"cohort_periods must contain integers, got {cp!r}"
+            )
+        if cp < 1 or cp >= n_periods:
+            raise ValueError(
+                f"Cohort period {cp} must be between 1 and {n_periods - 1}"
+            )
 
     valid_wv = ("none", "moderate", "high")
     if weight_variation not in valid_wv:

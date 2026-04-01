@@ -1180,7 +1180,7 @@ class TestGenerateSurveyDidData:
         """Test output shape and expected columns."""
         from diff_diff.prep import generate_survey_did_data
 
-        data = generate_survey_did_data(n_units=100, n_periods=4, seed=42)
+        data = generate_survey_did_data(n_units=100, n_periods=4, cohort_periods=[2, 3], seed=42)
         assert len(data) == 400  # 100 units x 4 periods
         expected = {"unit", "period", "outcome", "first_treat", "treated",
                     "true_effect", "stratum", "psu", "fpc", "weight"}
@@ -1297,8 +1297,8 @@ class TestGenerateSurveyDidData:
         """Test that generate_survey_did_data is importable from diff_diff."""
         from diff_diff import generate_survey_did_data
 
-        data = generate_survey_did_data(n_units=10, n_periods=2, seed=42)
-        assert len(data) == 20
+        data = generate_survey_did_data(n_units=10, n_periods=4, cohort_periods=[2], seed=42)
+        assert len(data) == 40
 
     def test_jk1_minimum_psu_guard(self):
         """Test that JK1 replicates require at least 2 PSUs."""
@@ -1316,10 +1316,10 @@ class TestGenerateSurveyDidData:
         from diff_diff.prep import generate_survey_did_data
 
         data = generate_survey_did_data(
-            n_units=20, n_periods=3, panel=False, seed=42,
+            n_units=20, n_periods=4, cohort_periods=[2], panel=False, seed=42,
         )
-        assert len(data) == 60
-        assert data["unit"].nunique() == 60  # unique across all periods
+        assert len(data) == 80
+        assert data["unit"].nunique() == 80  # unique across all periods
         # No unit appears in more than one period
         assert data.groupby("unit")["period"].nunique().max() == 1
 
@@ -1338,3 +1338,23 @@ class TestGenerateSurveyDidData:
 
         with pytest.raises(ValueError, match="cohort_periods must be"):
             generate_survey_did_data(cohort_periods=[], seed=42)
+
+    def test_cohort_period_out_of_range(self):
+        """Test that out-of-range cohort periods raise ValueError."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        # Period 0 is invalid (must be >= 1)
+        with pytest.raises(ValueError, match="must be between"):
+            generate_survey_did_data(cohort_periods=[0], seed=42)
+        # Period == n_periods is invalid (must be < n_periods)
+        with pytest.raises(ValueError, match="must be between"):
+            generate_survey_did_data(n_periods=8, cohort_periods=[8], seed=42)
+
+    def test_cohort_period_non_integer(self):
+        """Test that non-integer cohort periods raise ValueError."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="must contain integers"):
+            generate_survey_did_data(cohort_periods=[2.5], seed=42)
