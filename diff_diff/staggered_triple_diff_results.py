@@ -87,6 +87,7 @@ class StaggeredTripleDiffResults:
     epv_diagnostics: Optional[Dict[Tuple[Any, Any], Dict[str, Any]]] = field(
         default=None, repr=False
     )
+    epv_threshold: float = 10
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -175,7 +176,7 @@ class StaggeredTripleDiffResults:
                         f"{n_affected} of {n_total} cohort-time cell(s).",
                         f"Minimum EPV: {min_entry['epv']:.1f} "
                         f"(cohort g={min_g[0]}). "
-                        f"Threshold: {min_entry.get('epv_threshold', 10):.0f}.",
+                        f"Threshold: {self.epv_threshold:.0f}.",
                         "Consider: estimation_method='reg' or fewer covariates.",
                         "Call results.epv_summary() for per-cohort details.",
                         "-" * 85,

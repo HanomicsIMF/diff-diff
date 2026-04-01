@@ -718,6 +718,7 @@ class StaggeredTripleDifference(
             comparison_group_counts=comparison_group_counts,
             gmm_weights=gmm_weights_store,
             epv_diagnostics=epv_diagnostics if epv_diagnostics else None,
+            epv_threshold=self.epv_threshold,
         )
         self.is_fitted_ = True
         return self.results_
@@ -1370,7 +1371,10 @@ class StaggeredTripleDifference(
                 beta_clean = np.where(np.isfinite(beta_logistic), beta_logistic, 0.0)
                 pscore_cache[pscore_key] = beta_clean
             except (np.linalg.LinAlgError, ValueError):
-                if self.pscore_fallback == "error":
+                if (
+                    self.pscore_fallback == "error"
+                    or self.rank_deficient_action == "error"
+                ):
                     raise
                 ctx = f" for {context_label}" if context_label else ""
                 warnings.warn(

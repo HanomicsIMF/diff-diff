@@ -190,6 +190,24 @@ class CallawaySantAnna(
         each period (stationarity). Uses cross-sectional DRDID
         (Sant'Anna & Zhao 2020, Section 4) with per-observation influence
         functions.
+    epv_threshold : float, default=10
+        Events Per Variable threshold for propensity score logit.
+        When the ratio of minority-class observations to parameters
+        falls below this value, a warning is emitted (or ``ValueError``
+        raised if ``rank_deficient_action="error"``). Based on Peduzzi
+        et al. (1996). Only applies to IPW and DR estimation methods.
+        Use ``diagnose_propensity()`` for a pre-estimation check across
+        all cohorts.
+    pscore_fallback : str, default="error"
+        Action when propensity score estimation fails entirely
+        (``LinAlgError`` or ``ValueError`` from IRLS):
+        - "error": Raise the exception (default). Ensures the user is
+          aware of estimation failures.
+        - "unconditional": Fall back to unconditional propensity
+          ``n_treated / (n_treated + n_control)`` with a warning. This
+          effectively drops all covariates for the affected cell.
+        When ``rank_deficient_action="error"``, errors are always
+        re-raised regardless of this setting.
 
     Attributes
     ----------
@@ -1898,6 +1916,7 @@ class CallawaySantAnna(
             event_study_vcov_index=event_study_vcov_index,
             panel=self.panel,
             epv_diagnostics=epv_diagnostics if epv_diagnostics else None,
+            epv_threshold=self.epv_threshold,
         )
 
         self.is_fitted_ = True
@@ -2089,11 +2108,19 @@ class CallawaySantAnna(
                         diagnostics_out=diag,
                     )
                     _check_propensity_diagnostics(pscore, self.pscore_trim)
-                    # Cache the fitted coefficients
+                    # Cache the fitted coefficients (zero-fill NaN from
+                    # dropped rank-deficient columns to prevent NaN
+                    # propagation on cache reuse)
                     if pscore_cache is not None and pscore_key is not None:
-                        pscore_cache[pscore_key] = beta_logistic
+                        beta_clean = np.where(
+                            np.isfinite(beta_logistic), beta_logistic, 0.0
+                        )
+                        pscore_cache[pscore_key] = beta_clean
                 except (np.linalg.LinAlgError, ValueError):
-                    if self.pscore_fallback == "error":
+                    if (
+                        self.pscore_fallback == "error"
+                        or self.rank_deficient_action == "error"
+                    ):
                         raise
                     # Fallback to unconditional if logistic regression fails
                     ctx = f" for {context_label}" if context_label else ""
@@ -2362,9 +2389,15 @@ class CallawaySantAnna(
                     )
                     _check_propensity_diagnostics(pscore, self.pscore_trim)
                     if pscore_cache is not None and pscore_key is not None:
-                        pscore_cache[pscore_key] = beta_logistic
+                        beta_clean = np.where(
+                            np.isfinite(beta_logistic), beta_logistic, 0.0
+                        )
+                        pscore_cache[pscore_key] = beta_clean
                 except (np.linalg.LinAlgError, ValueError):
-                    if self.pscore_fallback == "error":
+                    if (
+                        self.pscore_fallback == "error"
+                        or self.rank_deficient_action == "error"
+                    ):
                         raise
                     # Fallback to unconditional if logistic regression fails
                     ctx = f" for {context_label}" if context_label else ""

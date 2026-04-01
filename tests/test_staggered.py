@@ -3811,3 +3811,77 @@ class TestEPVDiagnostics:
         if results.epv_diagnostics:
             df = results.to_dataframe(level="group_time")
             assert "epv" in df.columns
+
+    def test_cs_cached_rank_deficient_pscore_no_nan(self):
+        """Cached rank-deficient logit coefficients should not produce NaN ATTs.
+
+        Regression test for P0: solve_logit returns NaN in dropped-column
+        positions. Without zero-filling before caching, cache reuse via
+        X @ beta_cached would propagate NaN into propensity scores.
+        """
+        np.random.seed(123)
+        n_units = 80
+        n_periods = 6
+        units = np.repeat(np.arange(n_units), n_periods)
+        times = np.tile(np.arange(n_periods), n_units)
+        # Two cohorts: period 3 (20 units) and never-treated (60 units)
+        first_treat = np.zeros(n_units)
+        first_treat[:20] = 3
+        first_treat_exp = np.repeat(first_treat, n_periods)
+        post = (times >= first_treat_exp) & (first_treat_exp > 0)
+        outcome = np.random.randn(len(units)) + post.astype(float) * 2.0
+        x1 = np.repeat(np.random.randn(n_units), n_periods)
+        # x2 is a duplicate of x1 — will cause rank deficiency
+        x2 = x1.copy()
+
+        data = pd.DataFrame({
+            "unit": units, "time": times, "first_treat": first_treat_exp,
+            "outcome": outcome, "x1": x1, "x2": x2,
+        })
+
+        cs = CallawaySantAnna(
+            estimation_method="ipw",
+            rank_deficient_action="warn",
+            pscore_fallback="unconditional",
+        )
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results = cs.fit(
+                data, outcome="outcome", unit="unit", time="time",
+                first_treat="first_treat", covariates=["x1", "x2"],
+            )
+
+        # All ATTs should be finite (no NaN from cache poisoning)
+        for (g, t), eff in results.group_time_effects.items():
+            assert np.isfinite(eff["effect"]), (
+                f"ATT({g},{t}) is {eff['effect']} — NaN cache poisoning"
+            )
+        assert np.isfinite(results.overall_att)
+
+    def test_cs_strict_mode_not_swallowed_by_unconditional_fallback(self):
+        """rank_deficient_action='error' raises even with pscore_fallback='unconditional'.
+
+        Regression test for P1: pscore_fallback should not swallow strict-mode
+        errors that rank_deficient_action='error' is supposed to raise.
+        """
+        from unittest.mock import patch
+
+        data = generate_staggered_data_with_covariates(seed=42)
+        cs = CallawaySantAnna(
+            estimation_method="ipw",
+            rank_deficient_action="error",
+            pscore_fallback="unconditional",
+        )
+
+        # Simulate a ValueError from solve_logit (e.g., rank deficiency)
+        with patch(
+            "diff_diff.staggered.solve_logit",
+            side_effect=ValueError("Rank-deficient design"),
+        ):
+            with pytest.raises(ValueError, match="Rank-deficient"):
+                cs.fit(
+                    data, outcome="outcome", unit="unit", time="time",
+                    first_treat="first_treat", covariates=["x1"],
+                )
