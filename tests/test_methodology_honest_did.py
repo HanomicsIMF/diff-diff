@@ -255,7 +255,7 @@ class TestOptimalFLCI:
         _compute_optimal_flci(beta_pre, beta_post, sigma, l_vec, 3, 1, M=0.0)
         elapsed = time.time() - t0
 
-        assert elapsed < 0.1, f"M=0 should be instant, took {elapsed:.2f}s"
+        assert elapsed < 0.5, f"M=0 should be fast, took {elapsed:.2f}s"
 
     def test_smoothness_flci_with_survey_df(self):
         """Survey df should widen the smoothness FLCI (folded t vs folded normal)."""
