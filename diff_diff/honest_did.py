@@ -1274,6 +1274,9 @@ def _cv_alpha(t: float, alpha: float) -> float:
     This is the critical value function from Rambachan & Roth (2023),
     Equation 18. For t=0, this reduces to the standard z_{alpha/2}.
 
+    Uses Newton's method on P(|N(t,1)| <= x) = Phi(x-t) - Phi(-x-t),
+    which converges in ~5 iterations vs ~50 for bisection.
+
     Parameters
     ----------
     t : float
@@ -1288,21 +1291,26 @@ def _cv_alpha(t: float, alpha: float) -> float:
     """
     from scipy.stats import norm
 
-    # P(|N(t,1)| <= x) = Phi(x - t) - Phi(-x - t)
-    # We need to find x such that Phi(x - t) - Phi(-x - t) = 1 - alpha
-    # Use bisection
-    lo = 0.0
-    hi = abs(t) + norm.ppf(1 - alpha / 2) + 5.0  # generous upper bound
+    target = 1 - alpha
+    t = abs(t)  # Symmetric in t
 
-    for _ in range(100):
-        mid = (lo + hi) / 2
-        prob = norm.cdf(mid - t) - norm.cdf(-mid - t)
-        if prob < 1 - alpha:
-            lo = mid
-        else:
-            hi = mid
+    # Starting point: z_{alpha/2} + |t| is a reasonable upper bound
+    x = norm.ppf(1 - alpha / 2) + t
 
-    return (lo + hi) / 2
+    # Newton's method: f(x) = Phi(x-t) - Phi(-x-t) - target = 0
+    # f'(x) = phi(x-t) + phi(-x-t)  (always positive for x > 0)
+    for _ in range(20):
+        f = norm.cdf(x - t) - norm.cdf(-x - t) - target
+        fprime = norm.pdf(x - t) + norm.pdf(-x - t)
+        if fprime < 1e-15:
+            break
+        x_new = x - f / fprime
+        x_new = max(x_new, 0.0)  # cv must be non-negative
+        if abs(x_new - x) < 1e-12:
+            break
+        x = x_new
+
+    return x
 
 
 def _compute_worst_case_bias(
@@ -1364,48 +1372,29 @@ def _compute_worst_case_bias(
     # Since delta_pre = beta_pre in the actual LP, but for bias we compute
     # the worst case over the CENTERED set (delta - beta centered at 0).
     # The bias LP uses delta_pre = 0 as the centering.
-    beta_pre_zero = np.zeros(num_pre)
-
     if A_ineq.shape[0] == 0:
         return np.inf
 
-    # max bias_dir'delta s.t. Delta constraints, delta_pre = 0
-    c_pos = -bias_dir  # minimize -bias_dir'delta = maximize bias_dir'delta
-
+    # Delta^SD is centrosymmetric: if delta in Delta, then -delta in Delta.
+    # Therefore max |bias_dir'delta| = max bias_dir'delta (one LP, not two).
     A_eq = np.zeros((num_pre, total))
     for i in range(num_pre):
         A_eq[i, i] = 1.0
-    b_eq = beta_pre_zero
+    b_eq = np.zeros(num_pre)
 
     try:
         res = optimize.linprog(
-            c_pos,
-            A_ub=A_ineq if A_ineq.shape[0] > 0 else None,
-            b_ub=b_ineq if A_ineq.shape[0] > 0 else None,
+            -bias_dir,  # minimize -bias_dir'delta = maximize bias_dir'delta
+            A_ub=A_ineq,
+            b_ub=b_ineq,
             A_eq=A_eq,
             b_eq=b_eq,
             bounds=(None, None),
             method="highs",
         )
-        max_bias = -res.fun if res.success else np.inf
+        return -res.fun if res.success else np.inf
     except (ValueError, TypeError):
-        max_bias = np.inf
-
-    try:
-        res = optimize.linprog(
-            bias_dir,
-            A_ub=A_ineq if A_ineq.shape[0] > 0 else None,
-            b_ub=b_ineq if A_ineq.shape[0] > 0 else None,
-            A_eq=A_eq,
-            b_eq=b_eq,
-            bounds=(None, None),
-            method="highs",
-        )
-        min_bias = res.fun if res.success else -np.inf
-    except (ValueError, TypeError):
-        min_bias = -np.inf
-
-    return max(abs(max_bias), abs(min_bias))
+        return np.inf
 
 
 def _compute_optimal_flci(
@@ -1417,6 +1406,7 @@ def _compute_optimal_flci(
     num_post: int,
     M: float,
     alpha: float = 0.05,
+    v_pre_init: Optional[np.ndarray] = None,
 ) -> Tuple[float, float]:
     """
     Compute the optimal Fixed Length Confidence Interval for Delta^SD.
@@ -1447,6 +1437,8 @@ def _compute_optimal_flci(
         Smoothness parameter.
     alpha : float
         Significance level.
+    v_pre_init : np.ndarray, optional
+        Initial pre-period weights for warm-starting (from a previous M value).
 
     Returns
     -------
@@ -1456,18 +1448,19 @@ def _compute_optimal_flci(
         Upper bound of FLCI.
     """
     total = num_pre + num_post
+
+    # M=0 short-circuit: point identification, no bias, standard CI
+    if M == 0:
+        # Linear extrapolation: the optimal v_pre perfectly predicts delta_post
+        # from the linear trend in delta_pre. No bias, so FLCI = standard CI.
+        # Use the LP-derived point estimate.
+        A_ineq, b_ineq = _construct_constraints_sd(num_pre, num_post, 0.0)
+        lb, ub = _solve_bounds_lp(beta_pre, beta_post, l_vec, A_ineq, b_ineq, num_pre)
+        se = np.sqrt(l_vec @ sigma[num_pre:, num_pre:] @ l_vec)
+        z = _cv_alpha(0.0, alpha)
+        return lb - z * se, ub + z * se
+
     A_ineq, b_ineq = _construct_constraints_sd(num_pre, num_post, M)
-
-    # The affine estimator is: theta_hat = v' @ beta_hat
-    # where v is optimized to minimize CI half-length.
-    # v must satisfy: E[v'beta_hat] = l'tau_post when delta = 0
-    # i.e., v_pre = 0 and v_post = l (the "naive" estimator).
-    # But the optimal FLCI allows v_pre != 0 to reduce variance
-    # at the cost of increased bias.
-
-    # Starting point: naive estimator (v_pre = 0, v_post = l)
-    v0 = np.zeros(total)
-    v0[num_pre:num_pre + num_post] = l_vec
 
     def flci_half_length(v_pre_params):
         """Compute FLCI half-length for given pre-period weights."""
@@ -1475,7 +1468,7 @@ def _compute_optimal_flci(
         v[:num_pre] = v_pre_params
         v[num_pre:num_pre + num_post] = l_vec
 
-        sigma_v = np.sqrt(v @ sigma @ v)
+        sigma_v = np.sqrt(float(v @ sigma @ v))
         if sigma_v <= 0:
             return np.inf
 
@@ -1483,18 +1476,20 @@ def _compute_optimal_flci(
         if not np.isfinite(bias):
             return np.inf
 
-        t = bias / sigma_v
+        t = float(bias / sigma_v)
         cv = _cv_alpha(t, alpha)
-        return sigma_v * cv
+        return float(sigma_v * cv)
 
-    # Optimize over pre-period weights using Nelder-Mead (gradient-free)
+    # Optimize over pre-period weights using Nelder-Mead
     from scipy.optimize import minimize as scipy_minimize
+
+    x0 = v_pre_init if v_pre_init is not None else np.zeros(num_pre)
 
     result = scipy_minimize(
         flci_half_length,
-        x0=np.zeros(num_pre),
+        x0=x0,
         method="Nelder-Mead",
-        options={"maxiter": 1000, "xatol": 1e-8, "fatol": 1e-10},
+        options={"maxiter": 500, "xatol": 1e-5, "fatol": 1e-6},
     )
 
     # Build optimal v
@@ -1503,14 +1498,13 @@ def _compute_optimal_flci(
     v_opt[num_pre:num_pre + num_post] = l_vec
 
     # Compute the estimator value and half-length
-    theta_hat = v_opt @ np.concatenate([beta_pre, beta_post])
+    theta_hat = float(v_opt @ np.concatenate([beta_pre, beta_post]))
     chi = flci_half_length(result.x)
 
     # Also compute with naive v for comparison (fallback if optimization fails)
     chi_naive = flci_half_length(np.zeros(num_pre))
     if chi > chi_naive or not np.isfinite(chi):
-        # Optimization didn't improve; use naive
-        theta_hat = np.dot(l_vec, beta_post)
+        theta_hat = float(np.dot(l_vec, beta_post))
         chi = chi_naive
 
     return theta_hat - chi, theta_hat + chi
