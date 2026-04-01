@@ -1083,33 +1083,20 @@ def _solve_rm_bounds_union(
     num_post = len(beta_post)
 
     if len(pre_diffs) == 0 or np.max(pre_diffs) == 0:
-        # No pre-period violations: Mbar=0 behavior, point identification
         theta = np.dot(l_vec, beta_post)
         return theta, theta
 
-    # Union over all possible max locations
-    all_lbs = []
-    all_ubs = []
-
-    for max_fd in pre_diffs:
-        if max_fd == 0:
-            continue
-
-        A_ineq, b_ineq = _construct_constraints_rm_component(
-            num_pre_periods, num_post, Mbar, max_fd
-        )
-        lb_k, ub_k = _solve_bounds_lp(
-            beta_pre, beta_post, l_vec, A_ineq, b_ineq, num_pre_periods, lp_method
-        )
-        all_lbs.append(lb_k)
-        all_ubs.append(ub_k)
-
-    if not all_lbs:
-        theta = np.dot(l_vec, beta_post)
-        return theta, theta
-
-    # Union of intervals: [min(lbs), max(ubs)]
-    return min(all_lbs), max(all_ubs)
+    # After pinning delta_pre = beta_pre, the RM bound is determined by
+    # max(pre_diffs). Smaller components give tighter constraints and thus
+    # narrower bounds that are nested inside the max-component bounds.
+    # One LP call suffices (Lemma 2.2 union simplifies to max component).
+    max_pre_fd = float(np.max(pre_diffs))
+    A_ineq, b_ineq = _construct_constraints_rm_component(
+        num_pre_periods, num_post, Mbar, max_pre_fd
+    )
+    return _solve_bounds_lp(
+        beta_pre, beta_post, l_vec, A_ineq, b_ineq, num_pre_periods, lp_method
+    )
 
 
 def _solve_bounds_lp(
@@ -1450,7 +1437,7 @@ def _compute_worst_case_bias(
     Parameters
     ----------
     w : np.ndarray
-        Slope weights (length T-1), sum(w) = 1.
+        Slope weights (length T), sum(w) = sum_j j*l_j (Eq. 17 neutrality).
     l : np.ndarray
         Target parameter weights.
     num_pre : int
@@ -1514,7 +1501,7 @@ def _compute_optimal_flci(
     The estimator is parameterized in terms of slope weights w on
     pre-treatment first differences (Section 4.1.1):
         theta_hat = l'beta_post - sum_s w_s (beta_s - beta_{s-1})
-    with constraint sum(w) = 1 (linear trend invariance).
+    with constraint sum(w) = sum_j j*l_j (linear trend neutrality, Eq. 17).
 
     The bias is computed in first-difference space where Delta^SD is
     a bounded polyhedron, making the LP well-posed.
@@ -2277,6 +2264,17 @@ class HonestDiD:
         df: Optional[int] = None,
     ) -> Tuple[float, float, float, float]:
         """Compute bounds under combined smoothness + RM restriction."""
+        import warnings
+
+        warnings.warn(
+            "HonestDiD method='combined' (Delta^SDRM) uses naive FLCI on the "
+            "intersection of Delta^SD and Delta^RM bounds. The paper proves "
+            "FLCI is NOT consistent for Delta^SDRM (Proposition 4.2). "
+            "Consider using method='smoothness' or method='relative_magnitude' "
+            "separately for paper-supported inference.",
+            UserWarning,
+            stacklevel=3,
+        )
         # Get smoothness bounds
         lb_sd, ub_sd, _, _ = self._compute_smoothness_bounds(
             beta_pre, beta_post, sigma_full, sigma_post, l_vec,

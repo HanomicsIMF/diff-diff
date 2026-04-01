@@ -687,10 +687,14 @@ variables appear to the left of the `|` separator.
 1. **Deviation from R:** Delta^RM CIs use naive FLCI (`lb - z*se, ub + z*se`) instead of ARP
    conditional/hybrid. Conservative (wider CIs, valid coverage). ARP deferred.
 2. **Note:** Delta^SD optimal FLCI matches the paper's Section 4.1 methodology: first-difference
-   reparameterization, slope weights with sum(w)=1 constraint, bias LP in fd-space, folded
-   normal (or folded non-central t for survey df). Nelder-Mead optimizer vs R's custom solver
-   may produce numerical differences at tolerance level.
-3. **Note (deviation from R):** Python warns (doesn't error) when CallawaySantAnna results use
+   reparameterization, slope weights with sum(w)=sum_j j*l_j constraint (Eq. 17), bias LP in
+   fd-space, folded normal (or folded non-central t for survey df). Nelder-Mead optimizer vs
+   R's custom solver may produce numerical differences at tolerance level.
+3. **Note:** `method="combined"` (Delta^SDRM) uses naive FLCI on the intersection of SD and RM
+   bounds. The paper proves FLCI is not consistent for Delta^SDRM (Proposition 4.2). A runtime
+   UserWarning is emitted. Use `method="smoothness"` or `method="relative_magnitude"` separately
+   for paper-supported inference.
+4. **Note (deviation from R):** Python warns (doesn't error) when CallawaySantAnna results use
    `base_period != "universal"`. R's HonestDiD requires universal base period.
 
 ---
