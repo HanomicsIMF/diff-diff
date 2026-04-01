@@ -1220,6 +1220,25 @@ def generate_survey_did_data(
     """
     rng = np.random.default_rng(seed)
 
+    # --- Upfront parameter validation ---
+    if n_units < 1:
+        raise ValueError(f"n_units must be positive, got {n_units}")
+    if n_periods < 1:
+        raise ValueError(f"n_periods must be positive, got {n_periods}")
+    if n_strata < 1:
+        raise ValueError(f"n_strata must be positive, got {n_strata}")
+    if psu_per_stratum < 1:
+        raise ValueError(f"psu_per_stratum must be positive, got {psu_per_stratum}")
+    if not 0.0 <= never_treated_frac <= 1.0:
+        raise ValueError(
+            f"never_treated_frac must be between 0 and 1, got {never_treated_frac}"
+        )
+    if fpc_per_stratum < psu_per_stratum:
+        raise ValueError(
+            f"fpc_per_stratum ({fpc_per_stratum}) must be >= psu_per_stratum "
+            f"({psu_per_stratum})"
+        )
+
     if cohort_periods is None:
         # Derive defaults from n_periods.  Cohorts need g >= 2 (at least one
         # pre-period for estimability with CallawaySantAnna).

@@ -1410,3 +1410,23 @@ class TestGenerateSurveyDidData:
 
         with pytest.raises(ValueError, match="too small"):
             generate_survey_did_data(n_periods=3, seed=42)
+
+    def test_parameter_validation(self):
+        """Test upfront validation for invalid parameter values."""
+        import pytest
+        from diff_diff.prep import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="n_units must be positive"):
+            generate_survey_did_data(n_units=0, seed=42)
+        with pytest.raises(ValueError, match="n_periods must be positive"):
+            generate_survey_did_data(n_periods=0, seed=42)
+        with pytest.raises(ValueError, match="n_strata must be positive"):
+            generate_survey_did_data(n_strata=0, seed=42)
+        with pytest.raises(ValueError, match="psu_per_stratum must be positive"):
+            generate_survey_did_data(psu_per_stratum=0, seed=42)
+        with pytest.raises(ValueError, match="never_treated_frac must be between"):
+            generate_survey_did_data(never_treated_frac=-0.1, seed=42)
+        with pytest.raises(ValueError, match="never_treated_frac must be between"):
+            generate_survey_did_data(never_treated_frac=1.1, seed=42)
+        with pytest.raises(ValueError, match="fpc_per_stratum.*must be >= psu_per_stratum"):
+            generate_survey_did_data(fpc_per_stratum=3, psu_per_stratum=8, seed=42)
