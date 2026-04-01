@@ -1127,3 +1127,197 @@ def generate_staggered_ddd_data(
             records.append(row)
 
     return pd.DataFrame(records)
+
+
+def generate_survey_did_data(
+    n_units: int = 200,
+    n_periods: int = 8,
+    cohort_periods: Optional[List[int]] = None,
+    never_treated_frac: float = 0.3,
+    treatment_effect: float = 2.0,
+    dynamic_effects: bool = False,
+    effect_growth: float = 0.3,
+    n_strata: int = 5,
+    psu_per_stratum: int = 8,
+    fpc_per_stratum: float = 200.0,
+    weight_variation: str = "moderate",
+    psu_re_sd: float = 2.0,
+    unit_fe_sd: float = 1.0,
+    noise_sd: float = 0.5,
+    include_replicate_weights: bool = False,
+    add_covariates: bool = False,
+    seed: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Generate synthetic staggered DiD data with survey structure.
+
+    Creates a balanced panel with stratified multi-stage sampling design
+    (strata, PSUs, FPC, sampling weights) and known treatment effects.
+    The survey structure introduces intra-cluster correlation via PSU
+    random effects, making design-based SEs larger than naive SEs.
+
+    Modeled on ACS/BRFSS-style stratified household surveys: strata
+    represent geographic region types, PSUs are census tracts sampled
+    within each stratum, and weights are inverse selection probabilities.
+
+    Parameters
+    ----------
+    n_units : int, default=200
+        Number of units (respondents).
+    n_periods : int, default=8
+        Number of time periods (1-indexed).
+    cohort_periods : list of int, optional
+        Treatment cohort periods. Default: [3, 5].
+    never_treated_frac : float, default=0.3
+        Fraction of units that are never treated.
+    treatment_effect : float, default=2.0
+        True ATT for treated units.
+    dynamic_effects : bool, default=False
+        If True, effects grow over time since treatment.
+    effect_growth : float, default=0.3
+        Per-period effect growth rate when dynamic_effects=True.
+    n_strata : int, default=5
+        Number of geographic strata.
+    psu_per_stratum : int, default=8
+        Number of PSUs (census tracts) per stratum.
+    fpc_per_stratum : float, default=200.0
+        Finite population correction (total tracts per stratum).
+    weight_variation : str, default="moderate"
+        Controls sampling weight dispersion across strata.
+        "none": all weights equal (1.0).
+        "moderate": weights range ~1.0-2.0 across strata.
+        "high": weights range ~1.0-4.0 across strata.
+    psu_re_sd : float, default=2.0
+        Standard deviation of PSU random effects. Controls intra-cluster
+        correlation and drives DEFF > 1.
+    unit_fe_sd : float, default=1.0
+        Standard deviation of unit fixed effects.
+    noise_sd : float, default=0.5
+        Standard deviation of idiosyncratic noise.
+    include_replicate_weights : bool, default=False
+        If True, add JK1 (delete-one-PSU) replicate weight columns.
+    add_covariates : bool, default=False
+        If True, add covariates x1 (continuous) and x2 (binary).
+    seed : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: unit, period, outcome, first_treat, treated, true_effect,
+        stratum, psu, fpc, weight. Also rep_0..rep_K if
+        include_replicate_weights=True, and x1, x2 if add_covariates=True.
+    """
+    rng = np.random.default_rng(seed)
+
+    if cohort_periods is None:
+        cohort_periods = [3, 5]
+
+    # --- Survey structure: assign units to strata and PSUs ---
+    n_psu_total = n_strata * psu_per_stratum
+    units_per_stratum = n_units // n_strata
+    remainder = n_units % n_strata
+
+    unit_stratum = np.empty(n_units, dtype=int)
+    unit_psu = np.empty(n_units, dtype=int)
+    idx = 0
+    for s in range(n_strata):
+        # Distribute remainder units across first strata
+        n_s = units_per_stratum + (1 if s < remainder else 0)
+        unit_stratum[idx : idx + n_s] = s
+
+        # Assign PSUs within this stratum
+        psu_start = s * psu_per_stratum
+        for j in range(n_s):
+            unit_psu[idx + j] = psu_start + (j % psu_per_stratum)
+        idx += n_s
+
+    # Sampling weights: vary by stratum (inverse selection probability)
+    scale_map = {"none": 0.0, "moderate": 1.0, "high": 3.0}
+    scale = scale_map.get(weight_variation, 1.0)
+    denom = max(n_strata - 1, 1)
+    unit_weight = 1.0 + scale * (unit_stratum / denom)
+
+    # --- Treatment assignment (cohort structure) ---
+    n_never = int(n_units * never_treated_frac)
+    n_treated_total = n_units - n_never
+    n_per_cohort = n_treated_total // len(cohort_periods)
+
+    unit_cohort = np.zeros(n_units, dtype=int)
+    ci = n_never
+    for i, g in enumerate(cohort_periods):
+        n_g = (
+            n_per_cohort
+            if i < len(cohort_periods) - 1
+            else n_treated_total - ci + n_never
+        )
+        unit_cohort[ci : ci + n_g] = g
+        ci += n_g
+
+    # --- Random effects ---
+    psu_re = rng.normal(0, psu_re_sd, size=n_psu_total)
+    # PSU-period shocks: intra-cluster correlation that survives first-
+    # differencing in DiD.  Without these, the time-invariant PSU RE
+    # cancels in the treatment-vs-control time-difference and the
+    # cluster-robust / survey SE would be *smaller* than naive OLS SE.
+    psu_period_re = rng.normal(0, psu_re_sd * 0.5, size=(n_psu_total, n_periods))
+    unit_fe = rng.normal(0, unit_fe_sd, size=n_units)
+
+    # Covariates (unit-level, time-invariant)
+    x1 = rng.normal(0, 1, size=n_units) if add_covariates else None
+    x2 = rng.choice([0, 1], size=n_units) if add_covariates else None
+
+    # --- Generate panel ---
+    records = []
+    for i in range(n_units):
+        g_i = unit_cohort[i]
+        for t in range(1, n_periods + 1):
+            # Outcome: unit FE + PSU RE + PSU-period shock + time trend
+            y = unit_fe[i] + psu_re[unit_psu[i]] + psu_period_re[unit_psu[i], t - 1] + 0.5 * t
+
+            if add_covariates:
+                y += 0.5 * x1[i] + 0.3 * x2[i]
+
+            treated = int(g_i > 0 and t >= g_i)
+            true_eff = 0.0
+            if treated:
+                true_eff = treatment_effect
+                if dynamic_effects:
+                    true_eff *= 1 + effect_growth * (t - g_i)
+                y += true_eff
+
+            y += rng.normal(0, noise_sd)
+
+            row = {
+                "unit": i,
+                "period": t,
+                "outcome": y,
+                "first_treat": g_i,
+                "treated": treated,
+                "true_effect": true_eff,
+                "stratum": int(unit_stratum[i]),
+                "psu": int(unit_psu[i]),
+                "fpc": fpc_per_stratum,
+                "weight": float(unit_weight[i]),
+            }
+            if add_covariates:
+                row["x1"] = x1[i]
+                row["x2"] = x2[i]
+            records.append(row)
+
+    df = pd.DataFrame(records)
+
+    # --- Replicate weights (JK1 delete-one-PSU) ---
+    if include_replicate_weights:
+        psu_ids = sorted(df["psu"].unique())
+        n_rep = len(psu_ids)
+        base_w = df["weight"].values
+        for r, psu_id in enumerate(psu_ids):
+            w_r = base_w.copy()
+            mask = df["psu"].values == psu_id
+            w_r[mask] = 0.0
+            # Rescale remaining: k/(k-1) for JK1
+            w_r[w_r > 0] *= n_rep / (n_rep - 1)
+            df[f"rep_{r}"] = w_r
+
+    return df

@@ -1171,3 +1171,124 @@ class TestGenerateEventStudyData:
         data = generate_event_study_data(n_units=100, treatment_fraction=0.4, seed=42)
         n_treated_units = data.groupby("unit")["treated"].first().sum()
         assert n_treated_units == 40
+
+
+class TestGenerateSurveyDidData:
+    """Tests for generate_survey_did_data function."""
+
+    def test_basic_shape_and_columns(self):
+        """Test output shape and expected columns."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(n_units=100, n_periods=4, seed=42)
+        assert len(data) == 400  # 100 units x 4 periods
+        expected = {"unit", "period", "outcome", "first_treat", "treated",
+                    "true_effect", "stratum", "psu", "fpc", "weight"}
+        assert set(data.columns) == expected
+
+    def test_survey_columns_valid(self):
+        """Test survey columns have valid values."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(seed=42)
+        assert (data["weight"] > 0).all()
+        assert (data["fpc"] > 0).all()
+        assert data["stratum"].dtype in [np.int64, np.int32, int]
+        assert data["psu"].dtype in [np.int64, np.int32, int]
+
+    def test_psu_nested_within_strata(self):
+        """Test each PSU appears in exactly one stratum."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(n_strata=5, psu_per_stratum=8, seed=42)
+        psu_strata = data.groupby("psu")["stratum"].nunique()
+        assert (psu_strata == 1).all(), "PSUs must be nested within strata"
+
+    def test_weight_variation_none(self):
+        """Test that weight_variation='none' gives equal weights."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(weight_variation="none", seed=42)
+        assert data["weight"].nunique() == 1
+        assert data["weight"].iloc[0] == 1.0
+
+    def test_weight_variation_moderate(self):
+        """Test moderate weight variation has reasonable CV."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(weight_variation="moderate", seed=42)
+        unit_weights = data.groupby("unit")["weight"].first()
+        cv = unit_weights.std() / unit_weights.mean()
+        assert 0.05 < cv < 0.6
+
+    def test_weight_variation_high(self):
+        """Test high weight variation has larger CV than moderate."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data_mod = generate_survey_did_data(weight_variation="moderate", seed=42)
+        data_high = generate_survey_did_data(weight_variation="high", seed=42)
+        cv_mod = data_mod.groupby("unit")["weight"].first().std()
+        cv_high = data_high.groupby("unit")["weight"].first().std()
+        assert cv_high > cv_mod
+
+    def test_replicate_weights(self):
+        """Test replicate weight columns are generated correctly."""
+        from diff_diff.prep import generate_survey_did_data
+
+        n_strata, psu_per = 3, 4
+        data = generate_survey_did_data(
+            n_strata=n_strata, psu_per_stratum=psu_per,
+            include_replicate_weights=True, seed=42,
+        )
+        n_psu = n_strata * psu_per
+        rep_cols = [c for c in data.columns if c.startswith("rep_")]
+        assert len(rep_cols) == n_psu
+
+        # Each replicate should zero out one PSU
+        for r in range(n_psu):
+            assert (data.loc[data[f"rep_{r}"] == 0, "psu"].nunique() == 1)
+
+    def test_covariates(self):
+        """Test covariate columns are added when requested."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(add_covariates=True, seed=42)
+        assert "x1" in data.columns
+        assert "x2" in data.columns
+
+    def test_no_covariates_by_default(self):
+        """Test no covariate columns by default."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(seed=42)
+        assert "x1" not in data.columns
+        assert "x2" not in data.columns
+
+    def test_seed_reproducibility(self):
+        """Test that same seed produces identical output."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data1 = generate_survey_did_data(seed=123)
+        data2 = generate_survey_did_data(seed=123)
+        pd.testing.assert_frame_equal(data1, data2)
+
+    def test_treatment_structure(self):
+        """Test treatment cohorts match cohort_periods + never-treated."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data = generate_survey_did_data(
+            cohort_periods=[3, 5], never_treated_frac=0.3, seed=42,
+        )
+        cohorts = set(data.groupby("unit")["first_treat"].first().unique())
+        assert 0 in cohorts  # never-treated
+        assert 3 in cohorts
+        assert 5 in cohorts
+
+    def test_uneven_units_per_stratum(self):
+        """Test that n_units not divisible by n_strata still works."""
+        from diff_diff.prep import generate_survey_did_data
+
+        # 103 units / 5 strata = 20 remainder 3
+        data = generate_survey_did_data(n_units=103, n_strata=5, seed=42)
+        assert len(data) == 103 * 8  # default 8 periods
+        assert data["stratum"].nunique() == 5

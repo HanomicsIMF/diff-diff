@@ -51,6 +51,16 @@ Efficient Difference-in-Differences (Chen, Sant'Anna & Xie 2025):
 - Event study and group-level aggregation
 - Bootstrap inference and diagnostics
 
+### 16. Survey-Aware DiD (`16_survey_did.ipynb`)
+Survey-aware DiD with complex sampling designs (strata, PSU, FPC, weights):
+- Why survey design matters for DiD inference
+- Setting up `SurveyDesign` (weights, strata, PSU, FPC)
+- Basic DiD and staggered DiD with survey design
+- Replicate weights (JK1, BRR, Fay, JKn)
+- Subpopulation analysis
+- DEFF diagnostics
+- Repeated cross-sections with survey design
+
 ## Running the Notebooks
 
 1. Install diff-diff with dependencies:

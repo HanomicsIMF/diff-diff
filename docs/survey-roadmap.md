@@ -159,29 +159,16 @@ weights, covariates, and all estimation methods supported.
 4 (repeated cross-sections). Callaway, B. & Sant'Anna, P.H.C. (2021).
 Section 4.1.
 
-### 7c. Survey-Aware DiD Tutorial
+### 7c. Survey-Aware DiD Tutorial ✅
 
-**Priority: High.** diff-diff is the only package (R or Python) with
-design-based variance estimation for modern DiD estimators, but no one
-knows this. A tutorial demonstrating the full workflow with realistic
-survey data would make the capability discoverable.
-
-**What's needed:**
-- Jupyter notebook: `docs/tutorials/16_survey_did.ipynb`
-- Sections:
-  1. Why survey design matters for DiD (variance inflation from clustering,
-     weight effects on point estimates — cite Solon, Haider & Wooldridge 2015)
-  2. Setting up `SurveyDesign` (weights, strata, PSU, FPC)
-  3. Basic DiD with survey design (compare naive vs. design-based SEs)
-  4. Staggered DiD with survey weights (CallawaySantAnna)
-  5. Replicate weights workflow (BRR/JKn for MEPS/ACS PUMS users)
-  6. Subpopulation analysis
-  7. DEFF diagnostics — interpreting design effects
-  8. Comparison: show that R's `did` package with `weightsname` gives
-     survey-naive variance while diff-diff gives design-based variance
-- Use realistic synthetic data mimicking ACS/CPS structure (stratified
-  multi-stage design with known treatment effect)
-- Cross-reference from README, choosing_estimator.rst, and quickstart.rst
+**Implemented.** `docs/tutorials/16_survey_did.ipynb` — 35-cell tutorial
+framed around a state-level preventive care program evaluated with a
+stratified health survey (ACS/BRFSS-like). Covers: why survey design
+matters, SurveyDesign setup, basic DiD with survey, staggered DiD
+(CallawaySantAnna) with survey, replicate weights (JK1), subpopulation
+analysis, DEFF diagnostics, repeated cross-sections, and estimator
+support reference table. Uses `generate_survey_did_data()` DGP function
+added to `diff_diff.prep`.
 
 ### 7d. HonestDiD with Survey Variance ✅
 
