@@ -288,7 +288,7 @@ class HonestDiDResults:
 
         if self.method == "relative_magnitude":
             lines.append(
-                f"Post-treatment violations bounded at {self.M:.1f}x max pre-period violation."
+                f"Post-treatment first differences bounded at {self.M:.1f}x max pre-period first difference."
             )
         elif self.method == "smoothness":
             if self.M == 0:
@@ -1976,7 +1976,7 @@ class HonestDiD:
     M : float, optional
         Restriction parameter. Interpretation depends on method:
         - smoothness: Max second difference
-        - relative_magnitude: Scaling factor for max pre-period violation
+        - relative_magnitude: Scaling factor for max pre-period first difference
         Default is 1.0 for relative_magnitude, 0.0 for smoothness.
     alpha : float
         Significance level for confidence intervals.

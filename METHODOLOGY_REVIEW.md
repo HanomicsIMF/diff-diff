@@ -618,8 +618,8 @@ variables appear to the left of the `|` separator.
 | Module | `honest_did.py` |
 | Primary Reference | Rambachan & Roth (2023) |
 | R Reference | `HonestDiD` package |
-| Status | **Complete** |
-| Last Review | 2026-03-31 |
+| Status | **Complete** (pending R comparison) |
+| Last Review | 2026-04-01 |
 
 **Verified Components:**
 - [x] Delta^SD: second-difference constraints [1,-2,1] with delta_0=0 boundary handling
