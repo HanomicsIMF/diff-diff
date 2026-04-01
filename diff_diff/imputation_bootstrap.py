@@ -186,6 +186,37 @@ class ImputationDiDBootstrapMixin:
                 )
 
             ref_period = -1 - self.anticipation
+
+            # Pre-period data for pretrends bootstrap
+            pre_rel_times = None
+            pre_tau_hat = None
+            pre_balanced_mask = None
+            n_0 = int(omega_0_mask.sum())
+            if self.pretrends:
+                omega_pre_mask = ~df["_never_treated"] & ~df["_treated"]
+                if omega_pre_mask.any():
+                    df_pre = df.loc[omega_pre_mask]
+                    pre_rel_times = df_pre["_rel_time"].values
+                    pre_tau_hat = df["_tau_hat"].loc[omega_pre_mask].values
+                    if balance_e is not None:
+                        all_h_pre = sorted(
+                            set(int(h) for h in pre_rel_times if np.isfinite(h))
+                        )
+                        if self.horizon_max is not None:
+                            all_h_pre = [
+                                h for h in all_h_pre if abs(h) <= self.horizon_max
+                            ]
+                        cohort_rel_times_pre = self._build_cohort_rel_times(
+                            df, first_treat
+                        )
+                        pre_balanced_mask = self._compute_balanced_cohort_mask(
+                            df_pre,
+                            first_treat,
+                            all_h_pre,
+                            balance_e,
+                            cohort_rel_times_pre,
+                        )
+
             for h in event_study_effects:
                 if event_study_effects[h].get("n_obs", 0) == 0:
                     continue
@@ -193,6 +224,60 @@ class ImputationDiDBootstrapMixin:
                     continue
                 if not np.isfinite(event_study_effects[h].get("effect", np.nan)):
                     continue
+
+                # ---- Pre-period horizon ----
+                if h < -self.anticipation and pre_rel_times is not None:
+                    h_mask_pre = pre_rel_times == h
+                    if pre_balanced_mask is not None:
+                        h_mask_pre = h_mask_pre & pre_balanced_mask
+
+                    # Build preperiod_weights_h on omega_0
+                    omega_0_indices = np.where(omega_0_mask.values)[0]
+                    pre_positions_in_0 = np.zeros(len(df), dtype=bool)
+                    df_pre_subset = df.loc[
+                        (~df["_never_treated"]) & (~df["_treated"])
+                    ]
+                    pre_positions_in_0[df_pre_subset.index[h_mask_pre]] = True
+                    pre_in_0_mask = pre_positions_in_0[omega_0_indices]
+
+                    preperiod_weights_h = np.zeros(n_0)
+                    if survey_weights_0 is not None:
+                        sw_0 = survey_weights_0
+                        sw_target = sw_0[pre_in_0_mask]
+                        tau_at_target = df["_tau_hat"].values[
+                            omega_0_indices[pre_in_0_mask]
+                        ]
+                        finite_in_target = np.isfinite(tau_at_target)
+                        sw_finite = sw_target[finite_in_target]
+                        if sw_finite.sum() > 0:
+                            target_idx = np.where(pre_in_0_mask)[0]
+                            fin_idx = target_idx[finite_in_target]
+                            preperiod_weights_h[fin_idx] = (
+                                sw_finite / sw_finite.sum()
+                            )
+                        else:
+                            continue
+                    else:
+                        tau_at_target = df["_tau_hat"].values[
+                            omega_0_indices[pre_in_0_mask]
+                        ]
+                        finite_target = np.isfinite(tau_at_target)
+                        n_finite = int(finite_target.sum())
+                        if n_finite == 0:
+                            continue
+                        target_idx = np.where(pre_in_0_mask)[0]
+                        fin_idx = target_idx[finite_target]
+                        preperiod_weights_h[fin_idx] = 1.0 / n_finite
+
+                    psi_h, _ = self._compute_cluster_psi_sums(
+                        **common,
+                        weights=np.zeros(len(tau_hat)),
+                        preperiod_weights=preperiod_weights_h,
+                    )
+                    result["event_study"][h] = psi_h
+                    continue
+
+                # ---- Post-treatment horizon ----
                 h_mask = rel_times == h
                 if balanced_mask is not None:
                     h_mask = h_mask & balanced_mask

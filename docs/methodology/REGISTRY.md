@@ -836,6 +836,19 @@ Y_it = alpha_i + beta_t [+ X'_it * delta] + W'_it * gamma + epsilon_it
 - Test `gamma = 0` via cluster-robust Wald F-test
 - Independent of treatment effect estimation (Proposition 9)
 
+*Pre-period event study coefficients (`pretrends=True`, BJS Section 4.2):*
+
+For pre-treatment observation (i,t) of eventually-treated unit i at relative time `K_it = t - E_i < -anticipation`:
+```
+tau_hat_pre(i,t) = Y_it - alpha_hat_i - beta_hat_t [- X'_it * delta_hat]
+theta_h = (1/n_h) * sum_{(i,t): K_it = h} tau_hat_pre(i,t)
+```
+- Under parallel trends (Assumption 1), `E[theta_h] = 0` for all `h < -anticipation`
+- Reference period `h = -1 - anticipation` normalized to zero (not estimated)
+- Variance via Theorem 3 extension: pre-period targets are in `Omega_0`, so `v_it = w_it + FE_correction` (both direct aggregation weight and indirect FE estimation correction)
+- Only affects event study aggregation; overall ATT and group aggregation unchanged
+- Proposition 5 does not apply to pre-period horizons (always identified)
+
 *Edge cases:*
 - **Unbalanced panels:** FE estimated via iterative alternating projection (Gauss-Seidel), equivalent to OLS with unit+time dummies. Converges in O(max_iter) passes; typically 5-20 iterations for unbalanced panels, 1-2 for balanced. One-pass demeaning is only exact for balanced panels.
 - **No never-treated units (Proposition 5):** Long-run effects at horizons `h >= H_bar` are not identified. Set to NaN with warning listing affected horizons.
@@ -925,6 +938,7 @@ Our implementation uses multiplier bootstrap on the GMM influence function: clus
 - **NaN y_tilde handling:** When Stage 1 FE are unidentified for some observations, the residualized outcome `y_tilde` is NaN. These observations are zeroed out (excluded) from the Stage 2 regression and variance computation, matching the treatment of unimputable observations in ImputationDiD.
 - **NaN inference for undefined statistics:** t_stat uses NaN when SE is non-finite or zero; p_value and CI also NaN. Matches CallawaySantAnna/ImputationDiD NaN convention.
 - **Event study aggregation:** Horizon-specific effects use the same two-stage procedure with horizon indicator dummies in Stage 2. Unidentified horizons (e.g., long-run effects without never-treated units, per Proposition 5 of Borusyak et al. 2024) produce NaN.
+- **Pre-period event study coefficients (`pretrends=True`):** When enabled, the Stage 2 design matrix `X_2` includes pre-period relative-time dummies. Pre-period observations have `y_tilde = Step 1 residual` by construction. The GMM sandwich variance accounts for Stage 1 estimation error (Gardner 2022, Theorem 1). Only affects event study aggregation; overall ATT unchanged.
 - **balance_e with no qualifying cohorts:** If no cohorts have sufficient pre/post coverage for the requested `balance_e`, a warning is emitted and event study results contain only the reference period.
 - **No never-treated units (Proposition 5):** When there are no never-treated units and multiple treatment cohorts, horizons h >= h_bar (where h_bar = max(groups) - min(groups)) are unidentified per Proposition 5 of Borusyak et al. (2024). These produce NaN inference with n_obs > 0 (treated observations exist but counterfactual is unidentified) and a warning listing affected horizons. Matches ImputationDiD behavior. Proposition 5 applies to event study horizons only, not cohort aggregation — a cohort whose treated obs all fall at Prop 5 horizons naturally gets n_obs=0 in group effects because all its y_tilde values are NaN.
 - **Zero-observation horizons after filtering:** When `balance_e` or NaN `y_tilde` filtering results in zero observations for some non-Prop-5 event study horizons, those horizons produce NaN for all inference fields (effect, SE, t-stat, p-value, CI) with n_obs=0.
