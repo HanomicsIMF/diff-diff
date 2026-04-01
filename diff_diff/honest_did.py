@@ -1445,21 +1445,37 @@ def _compute_optimal_flci(
     """
     total = num_pre + num_post
 
+    # Survey df gating: df<=0 sentinel means undefined df → NaN inference.
+    # This applies to ALL M values per the project's inference contract.
+    if df is not None and df <= 0:
+        return np.nan, np.nan
+
     # M=0 short-circuit: point identification, no bias, standard CI.
-    # Use the full covariance (not just sigma_post) since the extrapolation
-    # estimator depends on pre-period coefficients too.
     if M == 0:
         A_ineq, b_ineq = _construct_constraints_sd(num_pre, num_post, 0.0)
         lb, ub = _solve_bounds_lp(beta_pre, beta_post, l_vec, A_ineq, b_ineq, num_pre)
         if np.isnan(lb):
             return np.nan, np.nan
-        # Variance from the full estimator v = (v_pre, l)
-        # At M=0, the LP solution determines v_pre implicitly.
-        # Use the full sigma for the naive estimator v=(0, l) as conservative bound.
-        se = float(np.sqrt(l_vec @ sigma[num_pre:, num_pre:] @ l_vec))
-        # Honor survey df: use t-distribution if df provided
-        if df is not None and df <= 0:
-            return np.nan, np.nan  # df=0 sentinel → NaN inference
+        # At M=0, Delta^SD forces linear extrapolation. The implicit
+        # estimator weights v include pre-period terms. Recover v from the
+        # LP solution by solving for the linear trend through beta_pre.
+        # For a proper SE, we need v'Sigma v where v includes pre weights.
+        # Build v: linear extrapolation weights from the constrained solution.
+        if num_pre >= 2:
+            # Linear extrapolation: v_pre weights come from the trend fit
+            # through the pre-period coefficients. For simplicity, use the
+            # last-two-point slope as the weight vector.
+            slope_weight = np.zeros(total)
+            slope_weight[num_pre - 1] = -1.0  # delta_{-1}
+            slope_weight[num_pre:num_pre + num_post] = l_vec
+            # The extrapolation adds the pre-trend contribution
+            se = float(np.sqrt(slope_weight @ sigma @ slope_weight))
+        else:
+            # Single pre-period: extrapolation is just beta_{-1} + l'beta_post
+            v_full = np.zeros(total)
+            v_full[:num_pre] = -l_vec.sum()  # pre-period contributes to SE
+            v_full[num_pre:num_pre + num_post] = l_vec
+            se = float(np.sqrt(v_full @ sigma @ v_full))
         z = _get_critical_value(alpha, df) if df is not None else _cv_alpha(0.0, alpha)
         return lb - z * se, ub + z * se
 
@@ -1854,8 +1870,8 @@ class HonestDiD:
     ----------
     method : {"smoothness", "relative_magnitude", "combined"}
         Type of restriction on trend violations:
-        - "smoothness": Bounds on second differences (Delta^SD)
-        - "relative_magnitude": Post violations <= M * max pre violation (Delta^RM)
+        - "smoothness": Bounds on second differences of trend violations (Delta^SD)
+        - "relative_magnitude": Post first differences <= M * max pre first difference (Delta^RM)
         - "combined": Both restrictions (Delta^SDRM)
     M : float, optional
         Restriction parameter. Interpretation depends on method:
@@ -2094,6 +2110,10 @@ class HonestDiD:
         lb, ub = _solve_bounds_lp(
             beta_pre, beta_post, l_vec, A_ineq, b_ineq, num_pre
         )
+
+        # Propagate infeasibility: if bounds are NaN, CI is NaN too
+        if np.isnan(lb) or np.isnan(ub):
+            return np.nan, np.nan, np.nan, np.nan
 
         # Compute optimal FLCI (Rambachan & Roth Section 4.1)
         if sigma_full.shape[0] == num_pre + num_post:

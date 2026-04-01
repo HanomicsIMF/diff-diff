@@ -630,7 +630,8 @@ variables appear to the left of the `|` separator.
 - [x] Mbar=0 for Delta^RM: point identification (all post first-diffs = 0)
 - [x] Optimal FLCI for Delta^SD: folded normal cv_alpha, Nelder-Mead over pre-period weights
 - [x] Sensitivity grid: bounds computed for each M in grid, breakdown value via binary search
-- [x] Survey variance: t-distribution critical values from df_survey
+- [x] Survey variance (RM, M=0 smoothness): t-distribution critical values from df_survey
+- [ ] Survey variance (M>0 smoothness): optimal FLCI uses asymptotic normal only; df_survey=0 → NaN
 - [x] CallawaySantAnna integration: universal base period, reference period filtering
 - [x] Three-period analytical case matches paper Section 2.3
 - [ ] ARP hybrid for Delta^RM: infrastructure implemented, moment inequality transformation needs calibration
