@@ -1772,8 +1772,8 @@ class TestEPVDiagnostics:
         assert "k" in diag
         assert "is_low" in diag
         assert diag["n_events"] == 20  # minority class
-        assert diag["k"] == 5  # 4 covariates + intercept
-        assert abs(diag["epv"] - 4.0) < 0.01
+        assert diag["k"] == 4  # 4 predictor variables (excluding intercept)
+        assert abs(diag["epv"] - 5.0) < 0.01  # 20 events / 4 predictors
         assert diag["is_low"] is True
 
     def test_epv_uses_post_drop_k(self):
@@ -1794,9 +1794,9 @@ class TestEPVDiagnostics:
             solve_logit(X, y, diagnostics_out=diag, rank_deficient_action="silent")
 
         # Should be 3 params (2 kept covariates + intercept), not 4
-        assert diag["k"] == 3
+        assert diag["k"] == 2  # 2 kept predictor variables (excluding intercept)
         assert diag["n_events"] == 30
-        assert abs(diag["epv"] - 10.0) < 0.01
+        assert abs(diag["epv"] - 15.0) < 0.01  # 30 events / 2 predictors
 
     def test_epv_uses_positive_weight_sample(self):
         """EPV computed on positive-weight sample, not padded rows."""
@@ -1828,7 +1828,7 @@ class TestEPVDiagnostics:
 
         # EPV should reflect the 10-event effective sample, not 260
         assert diag["n_events"] == 10  # min(10, 190) from real sample
-        assert diag["epv"] == 10 / 5  # 10 events / 5 params = 2.0
+        assert diag["epv"] == 10 / 4  # 10 events / 4 predictors = 2.5
         assert diag["is_low"] is True
 
 

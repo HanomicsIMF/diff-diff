@@ -456,7 +456,7 @@ class CallawaySantAnna(
         never_treated_mask = precomputed["never_treated_mask"]
         unit_cohorts = precomputed["unit_cohorts"]
         n_covariates = len(covariates)
-        n_params = n_covariates + 1  # +1 for intercept
+        n_params = n_covariates  # predictor count, excluding intercept (Peduzzi convention)
 
         rows = []
         for g in sorted(cohort_masks.keys()):

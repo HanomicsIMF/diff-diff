@@ -405,7 +405,7 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
   - Trimming: Propensity scores clipped to `[pscore_trim, 1-pscore_trim]` (default
     0.01) before weight computation. Warning emitted when scores are trimmed.
   - **Events Per Variable (EPV) diagnostics:** Per-cohort EPV =
-    min(n_treated, n_control) / (n_covariates + 1) checked before IRLS.
+    min(n_treated, n_control) / n_covariates checked before IRLS.
     Default threshold: 10 (Peduzzi et al. 1996). Warns when EPV < threshold;
     errors when `rank_deficient_action="error"`. Pre-estimation check via
     `diagnose_propensity()`. Results stored in `results.epv_diagnostics`.
@@ -1247,7 +1247,7 @@ has no additional effect.
   function), emits UserWarning. When `rank_deficient_action="error"`, errors
   are always re-raised regardless of `pscore_fallback`.
 - **Events Per Variable (EPV) diagnostics:** Per-logit EPV =
-  min(n_subgroup_j, n_subgroup_4) / (n_covariates + 1) checked before IRLS.
+  min(n_subgroup_j, n_subgroup_4) / n_covariates checked before IRLS.
   Default threshold: 10 (Peduzzi et al. 1996). Warns when EPV < threshold;
   errors when `rank_deficient_action="error"`.
 - **Note:** `pscore_fallback` default changed from unconditional to error.
@@ -1295,7 +1295,7 @@ has no additional effect.
 - Warns if no valid comparison groups exist for a (g, t) pair (skips that pair)
 - Propensity score overlap enforced by clipping at `pscore_trim` (default 0.01)
 - **Events Per Variable (EPV) diagnostics:** Per-DiD EPV =
-  min(n_subgroup_j, n_subgroup_4) / (n_covariates + 1) checked before IRLS.
+  min(n_subgroup_j, n_subgroup_4) / n_covariates checked before IRLS.
   Default threshold: 10 (Peduzzi et al. 1996). Warns when EPV < threshold;
   errors when `rank_deficient_action="error"`.
 - **Note:** When multiple comparison cohorts `g_c` contribute to the same

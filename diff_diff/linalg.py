@@ -1301,12 +1301,15 @@ def solve_logit(
     n_pos_y = int(np.sum(y_eff))
     n_neg_y = n_eff - n_pos_y
     n_events = min(n_pos_y, n_neg_y)
-    epv = n_events / k_solve if k_solve > 0 else float("inf")
+    # Peduzzi et al. (1996) define EPV using predictor variables, excluding
+    # the intercept. k_solve includes the intercept column, so use k_solve - 1.
+    n_predictors = k_solve - 1  # exclude intercept
+    epv = n_events / n_predictors if n_predictors > 0 else float("inf")
 
     if diagnostics_out is not None:
         diagnostics_out["epv"] = epv
         diagnostics_out["n_events"] = n_events
-        diagnostics_out["k"] = k_solve
+        diagnostics_out["k"] = n_predictors
         diagnostics_out["is_low"] = epv < epv_threshold
 
     if epv < epv_threshold:
@@ -1314,7 +1317,7 @@ def solve_logit(
         msg = (
             f"Low Events Per Variable (EPV = {epv:.1f}) in propensity score "
             f"model{ctx}. {n_events} minority-class observations for "
-            f"{k_solve} parameters (including intercept). "
+            f"{n_predictors} predictor variable(s). "
             f"Peduzzi et al. (1996) recommend EPV >= {epv_threshold:.0f}. "
             f"Estimates may be unreliable (overfitting, biased coefficients, "
             f"inflated standard errors). "

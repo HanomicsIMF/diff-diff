@@ -1041,7 +1041,7 @@ class TripleDifference:
                             f"Propensity score estimation failed for subgroup "
                             f"{j} vs 4; dropping covariates and using "
                             f"unconditional probability. "
-                            f"Consider est_method='reg' to avoid propensity "
+                            f"Consider estimation_method='reg' to avoid propensity "
                             f"scores entirely.",
                             UserWarning,
                             stacklevel=3,
