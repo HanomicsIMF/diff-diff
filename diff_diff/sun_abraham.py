@@ -754,11 +754,26 @@ class SunAbraham:
                     event_study_effects[e]["p_value"] = p_e
                     event_study_effects[e]["conf_int"] = ci_e
 
-            # Recompute cohort_ses from the replicate vcov of the raw cohort
-            # coefficients (not from the aggregated vcov) — but since we now
-            # refit the full estimator, cohort SEs are best left from the
-            # analytical path.  Mark as 0.0 to avoid stale values.
-            # (Proper cohort-level replicate SEs would need a separate refit.)
+            # Cohort-level replicate SEs: second refit for raw (g,e) coefficients
+            _keys_ordered = sorted(coef_index_map.keys(), key=lambda k: coef_index_map[k])
+            _full_cohort_vec = np.array([cohort_effects.get(k, np.nan) for k in _keys_ordered])
+
+            def _refit_sa_cohort(w_r):
+                ce_r, _, _, _ = self._fit_saturated_regression(
+                    df_reg, outcome, unit, time, first_treat,
+                    treatment_groups, _sa_rel_periods, covariates,
+                    cluster_var, survey_weights=w_r,
+                    survey_weight_type=survey_weight_type,
+                    resolved_survey=None,
+                )
+                return np.array([ce_r.get(k, np.nan) for k in _keys_ordered])
+
+            _vcov_cohort_rep, _ = compute_replicate_refit_variance(
+                _refit_sa_cohort, _full_cohort_vec, resolved_survey
+            )
+            for key in _keys_ordered:
+                idx = coef_index_map[key]
+                cohort_ses[key] = float(np.sqrt(max(_vcov_cohort_rep[idx, idx], 0.0)))
 
         # Run bootstrap if requested
         bootstrap_results = None
