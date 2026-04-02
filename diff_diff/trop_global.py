@@ -24,7 +24,7 @@ from diff_diff._backend import (
     _rust_bootstrap_trop_variance_global,
     _rust_loocv_grid_search_global,
 )
-from diff_diff.trop_local import _soft_threshold_svd
+from diff_diff.trop_local import _soft_threshold_svd, _validate_and_pivot_treatment
 from diff_diff.trop_results import TROPResults
 from diff_diff.utils import safe_inference
 
@@ -563,20 +563,9 @@ class TROPGlobalMixin:
             .values
         )
 
-        D_raw = data.pivot(index=time, columns=unit, values=treatment).reindex(
-            index=all_periods, columns=all_units
+        D, missing_mask = _validate_and_pivot_treatment(
+            data, time, unit, treatment, all_periods, all_units
         )
-        missing_mask = pd.isna(D_raw).values
-        n_missing_treatment = int(pd.isna(D_raw).sum().sum())
-        if n_missing_treatment > 0:
-            warnings.warn(
-                f"{n_missing_treatment} missing treatment indicator(s) in the "
-                f"(time x unit) panel matrix filled with 0 (assumed "
-                f"untreated). This typically occurs in unbalanced panels.",
-                UserWarning,
-                stacklevel=2,
-            )
-        D = D_raw.fillna(0).astype(int).values
 
         # Validate absorbing state
         violating_units = []

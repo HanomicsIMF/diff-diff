@@ -848,7 +848,7 @@ class CallawaySantAnna(
         treatment_groups: List[Any],
         time_periods: List[Any],
         min_period: Any,
-    ) -> Tuple[Dict, Dict]:
+    ) -> Tuple[Dict, Dict, Dict]:
         """
         Vectorized computation of all ATT(g,t) for the no-covariates regression case.
 
@@ -1006,6 +1006,18 @@ class CallawaySantAnna(
             ses.append(se)
             task_keys.append((g, t))
 
+        # Materialize NaN entries for skipped cells (REGISTRY contract: line 350)
+        for g, t in skipped_missing_period + skipped_empty_cell:
+            group_time_effects[(g, t)] = {
+                "effect": np.nan,
+                "se": np.nan,
+                "t_stat": np.nan,
+                "p_value": np.nan,
+                "conf_int": (np.nan, np.nan),
+                "n_treated": 0,
+                "n_control": 0,
+            }
+
         # Batch inference for all (g,t) pairs at once
         if task_keys:
             df_survey_val = precomputed.get("df_survey")
@@ -1040,7 +1052,7 @@ class CallawaySantAnna(
         treatment_groups: List[Any],
         time_periods: List[Any],
         min_period: Any,
-    ) -> Tuple[Dict, Dict]:
+    ) -> Tuple[Dict, Dict, Dict]:
         """
         Optimized computation of all ATT(g,t) for the covariate regression case.
 
@@ -1357,6 +1369,18 @@ class CallawaySantAnna(
                 UserWarning,
                 stacklevel=2,
             )
+
+        # Materialize NaN entries for skipped cells (REGISTRY contract: line 350)
+        for g, t in skipped_missing_period + skipped_empty_cell:
+            group_time_effects[(g, t)] = {
+                "effect": np.nan,
+                "se": np.nan,
+                "t_stat": np.nan,
+                "p_value": np.nan,
+                "conf_int": (np.nan, np.nan),
+                "n_treated": 0,
+                "n_control": 0,
+            }
 
         # Batch inference
         if task_keys:
@@ -1794,7 +1818,9 @@ class CallawaySantAnna(
                     stacklevel=2,
                 )
 
-        # Consolidated (g,t) cell skip warning
+        # Consolidated (g,t) cell skip warning (vectorized/covariate paths)
+        # General/RC paths already materialize NaN cells which are reported by
+        # _aggregate_simple()'s own NaN-exclusion warning.
         _n_missing = len(_skip_info.get("missing_period", []))
         _n_empty = len(_skip_info.get("empty_cell", []))
         _n_total_skipped = _n_missing + _n_empty
@@ -1807,7 +1833,8 @@ class CallawaySantAnna(
             if _n_empty:
                 _parts.append(f"{_n_empty} due to zero treated or control " f"observations")
             warnings.warn(
-                f"{_n_total_skipped} (group, time) cell(s) skipped: " f"{'; '.join(_parts)}.",
+                f"{_n_total_skipped} (group, time) cell(s) could not be "
+                f"estimated (NaN): {'; '.join(_parts)}.",
                 UserWarning,
                 stacklevel=2,
             )

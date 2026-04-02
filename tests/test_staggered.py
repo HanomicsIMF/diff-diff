@@ -4079,3 +4079,34 @@ class TestSilentWarningAudit:
             )
         skip_warnings = [x for x in w if "cell(s) skipped" in str(x.message)]
         assert len(skip_warnings) == 0, f"Unexpected skip warning: {skip_warnings}"
+
+    def test_skipped_cells_materialized_as_nan(self):
+        """P1-1: Skipped (g,t) cells appear in results with NaN effect."""
+        # Sparse panel: only times 3, 5, 7. Cohort at t=5 needs base=4
+        # (universal), which is missing → NaN materialization.
+        rng = np.random.default_rng(42)
+        rows = []
+        for u in range(30):
+            for t in [3, 5, 7]:
+                ft = 0 if u < 10 else 5
+                outcome = rng.standard_normal() + (2.0 if (ft > 0 and t >= ft) else 0.0)
+                rows.append({"unit": u, "time": t, "outcome": outcome, "first_treat": ft})
+        data = pd.DataFrame(rows)
+
+        # estimation_method="reg" uses the vectorized path with NaN materialization
+        cs = CallawaySantAnna(base_period="universal", estimation_method="reg")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results = cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+            )
+        nan_cells = {k: v for k, v in results.group_time_effects.items() if np.isnan(v["effect"])}
+        assert len(nan_cells) > 0, "Expected NaN-materialized cells"
+        for k, v in nan_cells.items():
+            assert np.isnan(v["se"]), f"Cell {k} se should be NaN"
+            assert np.isnan(v["t_stat"]), f"Cell {k} t_stat should be NaN"
+            assert np.isnan(v["p_value"]), f"Cell {k} p_value should be NaN"

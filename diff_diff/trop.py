@@ -31,7 +31,7 @@ from diff_diff._backend import (
     _rust_loocv_grid_search,
 )
 from diff_diff.trop_global import TROPGlobalMixin
-from diff_diff.trop_local import TROPLocalMixin
+from diff_diff.trop_local import TROPLocalMixin, _validate_and_pivot_treatment
 from diff_diff.trop_results import (
     _LAMBDA_INF,
     _PrecomputedStructures,
@@ -518,22 +518,10 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
             .values
         )
 
-        # For D matrix, track missing values BEFORE fillna to support unbalanced panels
-        # Issue 3 fix: Missing observations should not trigger spurious violations
-        D_raw = data.pivot(index=time, columns=unit, values=treatment).reindex(
-            index=all_periods, columns=all_units
+        # For D matrix, validate observed treatment and handle unbalanced panels
+        D, missing_mask = _validate_and_pivot_treatment(
+            data, time, unit, treatment, all_periods, all_units
         )
-        missing_mask = pd.isna(D_raw).values  # True where originally missing
-        n_missing_treatment = int(pd.isna(D_raw).sum().sum())
-        if n_missing_treatment > 0:
-            warnings.warn(
-                f"{n_missing_treatment} missing treatment indicator(s) in the "
-                f"(time x unit) panel matrix filled with 0 (assumed "
-                f"untreated). This typically occurs in unbalanced panels.",
-                UserWarning,
-                stacklevel=2,
-            )
-        D = D_raw.fillna(0).astype(int).values
 
         # Validate D is monotonic non-decreasing per unit (absorbing state)
         # D[t, i] must satisfy: once D=1, it must stay 1 for all subsequent periods

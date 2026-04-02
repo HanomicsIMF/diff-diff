@@ -27,6 +27,45 @@ from diff_diff._backend import (
 from diff_diff.trop_results import _PrecomputedStructures
 
 
+def _validate_and_pivot_treatment(data, time, unit, treatment, all_periods, all_units):
+    """Validate treatment column and create D matrix with missing mask.
+
+    Rejects observed rows with missing treatment values (data quality error),
+    then pivots to (time x unit) matrix. Structural gaps from unbalanced panels
+    are filled with 0 (assumed untreated) and flagged with a warning.
+
+    Returns
+    -------
+    D : ndarray
+        Treatment matrix (n_periods x n_units), int.
+    missing_mask : ndarray
+        Boolean mask of structurally absent cells (n_periods x n_units).
+    """
+    n_nan_observed = int(data[treatment].isna().sum())
+    if n_nan_observed > 0:
+        raise ValueError(
+            f"{n_nan_observed} observation(s) have missing treatment values. "
+            f"TROP requires non-missing treatment indicators for all observed "
+            f"rows. Remove or impute missing values before fitting."
+        )
+
+    D_raw = data.pivot(index=time, columns=unit, values=treatment).reindex(
+        index=all_periods, columns=all_units
+    )
+    missing_mask = pd.isna(D_raw).values
+    n_missing_structural = int(missing_mask.sum())
+    if n_missing_structural > 0:
+        warnings.warn(
+            f"{n_missing_structural} missing treatment indicator(s) in the "
+            f"(time x unit) panel matrix filled with 0 (assumed "
+            f"untreated). This typically occurs in unbalanced panels.",
+            UserWarning,
+            stacklevel=3,
+        )
+    D = D_raw.fillna(0).astype(int).values
+    return D, missing_mask
+
+
 # Module-level convergence tolerance for SVD singular value truncation.
 # Singular values below this threshold after soft-thresholding are treated
 # as zero to improve numerical stability.

@@ -3926,3 +3926,33 @@ class TestSilentWarningAudit:
         with patch("numpy.linalg.lstsq", side_effect=failing_lstsq):
             with pytest.warns(UserWarning, match="pseudo-inverse"):
                 trop_est.fit(df, "outcome", "treated", "unit", "time")
+
+    def test_observed_treatment_nan_raises_global(self):
+        """P1-2: Observed treatment=NaN raises ValueError (global method)."""
+        df = self._make_panel()
+        df.loc[df.index[5], "treated"] = np.nan
+        trop_est = TROP(
+            method="global",
+            n_bootstrap=2,
+            seed=42,
+            lambda_time_grid=[0.0],
+            lambda_unit_grid=[0.0],
+            lambda_nn_grid=[np.inf],
+        )
+        with pytest.raises(ValueError, match="missing treatment values"):
+            trop_est.fit(df, "outcome", "treated", "unit", "time")
+
+    def test_observed_treatment_nan_raises_local(self):
+        """P1-2: Observed treatment=NaN raises ValueError (local method)."""
+        df = self._make_panel()
+        df.loc[df.index[5], "treated"] = np.nan
+        trop_est = TROP(
+            method="local",
+            n_bootstrap=2,
+            seed=42,
+            lambda_time_grid=[0.0],
+            lambda_unit_grid=[0.0],
+            lambda_nn_grid=[np.inf],
+        )
+        with pytest.raises(ValueError, match="missing treatment values"):
+            trop_est.fit(df, "outcome", "treated", "unit", "time")
