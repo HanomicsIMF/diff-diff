@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.3] - 2026-04-02
+
+### Added
+- **Silent operation warnings** — 8 operations that previously altered analysis results without informing the user now emit `UserWarning`:
+  - TROP lstsq → pseudo-inverse numerical fallback
+  - TwoStageDiD NaN masking of unidentified fixed effects (zeroed out with treatment indicator)
+  - TwoStageDiD always-treated unit removal (sample size change)
+  - CallawaySantAnna silent (g,t) pair skipping (zero treated or control observations)
+  - TROP missing treatment indicator fill with 0 (control)
+  - Rust → Python backend fallback (previously debug log only)
+  - Survey weight normalization (pweights/aweights rescaled to mean=1)
+  - `np.inf` → 0 never-treated convention conversion
+- **ImputationDiD pre-period event study coefficients** — pre-treatment "effects" (should be ~0 under parallel trends) for visual pre-trends assessment, following BJS (2024) Test 1
+- **TwoStageDiD pre-period event study coefficients** — same pre-trends extension
+- **Replicate weight expansion** to 7 additional estimators: DifferenceInDifferences, TwoWayFixedEffects, MultiPeriodDiD, SunAbraham, StackedDiD, ImputationDiD, TwoStageDiD (coverage: 4/13 → 11/13)
+
+### Changed
+- ImputationDiD pre-period coefficients use BJS Test 1 (impute Y(0) for treated units in pre-treatment periods)
+- SunAbraham replicate weights use full interaction-weighted refit per replicate with cohort-level SEs
+
+### Fixed
+- Fix zero-weight demeaning safety in replicate weight paths
+- Fix `df_survey` writeback for rank-deficient replicate designs (df=0)
+- Fix ImputationDiD `balance_e` zero-qualifying-cohort fallback in pretrends path
+- Fix survey zero-mass (g,t) skip warning gap
+- Fix SunAbraham positional assignment in replicate loop
+
 ## [2.8.2] - 2026-04-02
 
 ### Added
@@ -1085,6 +1112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.8.3]: https://github.com/igerber/diff-diff/compare/v2.8.2...v2.8.3
 [2.8.2]: https://github.com/igerber/diff-diff/compare/v2.8.1...v2.8.2
 [2.8.1]: https://github.com/igerber/diff-diff/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/igerber/diff-diff/compare/v2.7.6...v2.8.0
