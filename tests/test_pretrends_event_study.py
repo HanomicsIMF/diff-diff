@@ -443,14 +443,15 @@ class TestTwoStagePretrends:
 # =============================================================================
 
 
-class TestPretrendsCrossEstimator:
-    """Verify ImputationDiD and TwoStageDiD produce consistent pre-period effects."""
+class TestPretrends_ContractTests:
+    """Verify ImputationDiD pre-period coefficients match pretrend_test() lead coefficients."""
 
-    def test_point_estimates_close(self):
-        """ImputationDiD and TwoStageDiD pre-period effects should be similar."""
+    def test_imputation_pretrends_match_pretrend_test(self):
+        """ImputationDiD pretrends=True effects match pretrend_test().lead_coefficients."""
         data = generate_test_data(seed=77)
 
-        imp = ImputationDiD(pretrends=True).fit(
+        est = ImputationDiD(pretrends=True)
+        results = est.fit(
             data,
             outcome="outcome",
             unit="unit",
@@ -458,37 +459,22 @@ class TestPretrendsCrossEstimator:
             first_treat="first_treat",
             aggregate="event_study",
         )
-        ts = TwoStageDiD(pretrends=True).fit(
-            data,
-            outcome="outcome",
-            unit="unit",
-            time="time",
-            first_treat="first_treat",
-            aggregate="event_study",
-        )
 
-        # Both should have negative horizons
-        imp_neg = {
-            h: v["effect"]
-            for h, v in imp.event_study_effects.items()
-            if h < -1 and v["n_obs"] > 0
-        }
-        ts_neg = {
-            h: v["effect"]
-            for h, v in ts.event_study_effects.items()
-            if h < -1 and v["n_obs"] > 0
-        }
+        # Get pretrend_test lead coefficients (called on results object)
+        pt = results.pretrend_test()
+        lead_coefs = pt["lead_coefficients"]
 
-        common_h = set(imp_neg.keys()) & set(ts_neg.keys())
-        assert len(common_h) > 0, "No common pre-period horizons"
-
-        for h in common_h:
-            # Point estimates should be numerically identical (same imputation)
+        # Every lead coefficient should match the event study pre-period effect
+        for h, coef in lead_coefs.items():
+            assert h in results.event_study_effects, (
+                f"h={h}: lead coefficient not in event study"
+            )
+            es_effect = results.event_study_effects[h]["effect"]
             np.testing.assert_allclose(
-                imp_neg[h],
-                ts_neg[h],
-                atol=1e-6,
-                err_msg=f"h={h}: point estimates differ",
+                es_effect,
+                coef,
+                rtol=1e-10,
+                err_msg=f"h={h}: event study effect != pretrend_test lead coefficient",
             )
 
 
@@ -590,34 +576,50 @@ class TestPretrends_Regressions:
             assert np.isfinite(eff["se"]), f"h={h}: SE not finite with covariates"
             assert eff["se"] > 0, f"h={h}: SE not positive with covariates"
 
-    def test_imputation_pretrends_balance_e_bootstrap(self):
-        """ImputationDiD pretrends=True + balance_e + bootstrap.
+    def test_imputation_pretrends_bootstrap_post_only(self):
+        """ImputationDiD pretrends=True + bootstrap: bootstrap updates post SEs only.
 
-        Regression for P0: bootstrap must use the same balance_e cohort
-        filter (union of pre + post horizons) as the analytical path.
+        Pre-period SEs come from Test 1 lead regression (cluster-robust),
+        not from bootstrap. Verify bootstrap doesn't break pre-period inference.
         """
         data = generate_test_data(seed=42)
-        est = ImputationDiD(pretrends=True, n_bootstrap=50, seed=42)
-        results = est.fit(
+
+        # Without bootstrap
+        results_no_boot = ImputationDiD(pretrends=True).fit(
             data,
             outcome="outcome",
             unit="unit",
             time="time",
             first_treat="first_treat",
             aggregate="event_study",
-            balance_e=1,
         )
 
-        assert results.event_study_effects is not None
-        # Verify pre-period horizons have bootstrap inference
-        negative = {
-            h: v
-            for h, v in results.event_study_effects.items()
-            if h < -1 and v["n_obs"] > 0
-        }
-        for h, eff in negative.items():
-            assert np.isfinite(eff["se"]), f"h={h}: SE not finite"
-            assert eff["se"] > 0, f"h={h}: SE not positive"
+        # With bootstrap
+        results_boot = ImputationDiD(
+            pretrends=True, n_bootstrap=50, seed=42
+        ).fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+
+        # Pre-period effects and SEs should be identical (bootstrap doesn't touch them)
+        for h in results_no_boot.event_study_effects:
+            if h >= 0 or results_no_boot.event_study_effects[h]["n_obs"] == 0:
+                continue
+            eff_nb = results_no_boot.event_study_effects[h]
+            eff_b = results_boot.event_study_effects[h]
+            np.testing.assert_allclose(
+                eff_nb["effect"], eff_b["effect"], rtol=1e-10,
+                err_msg=f"h={h}: bootstrap changed pre-period effect",
+            )
+            np.testing.assert_allclose(
+                eff_nb["se"], eff_b["se"], rtol=1e-10,
+                err_msg=f"h={h}: bootstrap changed pre-period SE",
+            )
 
     def test_nondefault_index_analytical(self):
         """Pre-period inference identical across index types (analytical).

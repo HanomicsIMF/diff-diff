@@ -455,25 +455,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         df["_tau_hat"] = np.nan
         df.loc[omega_1_mask, "_tau_hat"] = tau_hat
 
-        # Pre-period tau_hat for eventually-treated units (pretrends feature)
-        omega_pre_mask = None
-        if self.pretrends and aggregate in ("event_study", "all"):
-            omega_pre_mask = ~df["_never_treated"] & ~df["_treated"]
-            if omega_pre_mask.any():
-                tau_hat_pre, _ = self._impute_treatment_effects(
-                    df,
-                    outcome,
-                    unit,
-                    time,
-                    covariates,
-                    omega_pre_mask,
-                    unit_fe,
-                    time_fe,
-                    grand_mean,
-                    delta_hat,
-                )
-                df.loc[omega_pre_mask, "_tau_hat"] = tau_hat_pre
-
         # ---- Step 3: Aggregate ----
         # Always compute overall ATT (simple aggregation)
         finite_mask = np.isfinite(tau_hat)
@@ -1103,19 +1084,11 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         cluster_var: str,
         kept_cov_mask: Optional[np.ndarray] = None,
         survey_weights_0: Optional[np.ndarray] = None,
-        preperiod_weights: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Compute cluster-level influence function sums (Theorem 3).
 
         psi_i = sum_t v_it * epsilon_tilde_it, summed within each cluster.
-
-        Parameters
-        ----------
-        preperiod_weights : np.ndarray, optional
-            Shape (n_0,). Non-zero for pre-period target observations in omega_0.
-            When provided, these observations contribute both directly (via w_it)
-            and indirectly (via FE correction) to the influence function.
 
         Returns
         -------
@@ -1129,55 +1102,30 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         n_0 = len(df_0)
         n_1 = len(df_1)
 
-        is_preperiod = preperiod_weights is not None
-
         # ---- Compute v_it for treated observations ----
-        if is_preperiod:
-            v_treated = np.zeros(n_1)  # omega_1 contributes nothing
-        else:
-            v_treated = weights.copy()
+        v_treated = weights.copy()
 
         # ---- Compute v_it for untreated observations ----
         if covariates is None or len(covariates) == 0:
             # FE-only case: closed-form
             # Build w_by_unit, w_by_time, w_total from the target weights
-            if is_preperiod:
-                # Target weights are on omega_0 observations
-                untreated_units = df_0[unit].values
-                untreated_times = df_0[time].values
+            treated_units = df_1[unit].values
+            treated_times = df_1[time].values
 
-                w_by_unit: Dict[Any, float] = {}
-                for j in range(n_0):
-                    u = untreated_units[j]
-                    w_by_unit[u] = w_by_unit.get(u, 0.0) + preperiod_weights[j]
+            w_by_unit: Dict[Any, float] = {}
+            for i_idx in range(n_1):
+                u = treated_units[i_idx]
+                w_by_unit[u] = w_by_unit.get(u, 0.0) + weights[i_idx]
 
-                w_by_time: Dict[Any, float] = {}
-                for j in range(n_0):
-                    t = untreated_times[j]
-                    w_by_time[t] = w_by_time.get(t, 0.0) + preperiod_weights[j]
+            w_by_time: Dict[Any, float] = {}
+            for i_idx in range(n_1):
+                t = treated_times[i_idx]
+                w_by_time[t] = w_by_time.get(t, 0.0) + weights[i_idx]
 
-                w_total = float(np.sum(preperiod_weights))
-            else:
-                # Target weights are on omega_1 observations
-                treated_units = df_1[unit].values
-                treated_times = df_1[time].values
+            w_total = float(np.sum(weights))
 
-                w_by_unit = {}
-                for i_idx in range(n_1):
-                    u = treated_units[i_idx]
-                    w_by_unit[u] = w_by_unit.get(u, 0.0) + weights[i_idx]
-
-                w_by_time = {}
-                for i_idx in range(n_1):
-                    t = treated_times[i_idx]
-                    w_by_time[t] = w_by_time.get(t, 0.0) + weights[i_idx]
-
-                w_total = float(np.sum(weights))
-
-            # Always initialize untreated unit/time arrays for the FE loop
-            if not is_preperiod:
-                untreated_units = df_0[unit].values
-                untreated_times = df_0[time].values
+            untreated_units = df_0[unit].values
+            untreated_times = df_0[time].values
 
             # Use survey-weighted sums for untreated denominators when present
             if survey_weights_0 is not None:
@@ -1203,35 +1151,19 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 # WLS projection requires per-obs survey weight factor
                 if survey_weights_0 is not None:
                     base_v *= survey_weights_0[j]
-                # For preperiod targets, add direct weight contribution
-                if is_preperiod:
-                    v_untreated[j] = preperiod_weights[j] + base_v
-                else:
-                    v_untreated[j] = base_v
+                v_untreated[j] = base_v
         else:
-            if is_preperiod:
-                v_untreated = self._compute_v_untreated_with_covariates_preperiod(
-                    df_0,
-                    unit,
-                    time,
-                    covariates,
-                    preperiod_weights,
-                    delta_hat,
-                    kept_cov_mask=kept_cov_mask,
-                    survey_weights_0=survey_weights_0,
-                )
-            else:
-                v_untreated = self._compute_v_untreated_with_covariates(
-                    df_0,
-                    df_1,
-                    unit,
-                    time,
-                    covariates,
-                    weights,
-                    delta_hat,
-                    kept_cov_mask=kept_cov_mask,
-                    survey_weights_0=survey_weights_0,
-                )
+            v_untreated = self._compute_v_untreated_with_covariates(
+                df_0,
+                df_1,
+                unit,
+                time,
+                covariates,
+                weights,
+                delta_hat,
+                kept_cov_mask=kept_cov_mask,
+                survey_weights_0=survey_weights_0,
+            )
 
         # ---- Compute auxiliary model residuals (Equation 8) ----
         epsilon_treated = self._compute_auxiliary_residuals_treated(
@@ -1250,25 +1182,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         epsilon_untreated = self._compute_residuals_untreated(
             df_0, outcome, unit, time, covariates, unit_fe, time_fe, grand_mean, delta_hat
         )
-
-        # Override epsilon for pre-period target observations with auxiliary residuals
-        if is_preperiod:
-            target_mask_in_0 = preperiod_weights > 0
-            if target_mask_in_0.any():
-                aux_resid = self._compute_auxiliary_residuals_preperiod(
-                    df_0.loc[df_0.index[target_mask_in_0]],
-                    outcome,
-                    unit,
-                    time,
-                    first_treat,
-                    covariates,
-                    unit_fe,
-                    time_fe,
-                    grand_mean,
-                    delta_hat,
-                    v_untreated[target_mask_in_0],
-                )
-                epsilon_untreated[target_mask_in_0] = aux_resid
 
         # ---- psi_it = v_it * epsilon_tilde_it ----
         v_all = np.empty(len(df))
@@ -1309,7 +1222,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         cluster_var: str,
         kept_cov_mask: Optional[np.ndarray] = None,
         survey_weights: Optional[np.ndarray] = None,
-        preperiod_weights: Optional[np.ndarray] = None,
     ) -> float:
         """
         Compute conservative clustered variance (Theorem 3, Equation 7).
@@ -1322,10 +1234,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         survey_weights : np.ndarray, optional
             Full-panel survey weights. When provided, untreated denominators
             in v_it use survey-weighted sums instead of raw counts.
-        preperiod_weights : np.ndarray, optional
-            Aggregation weights for pre-period target observations in omega_0.
-            Shape: (n_untreated,). When provided, these observations are both
-            in the aggregation target and in the FE estimation sample.
 
         Returns
         -------
@@ -1350,7 +1258,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             cluster_var=cluster_var,
             kept_cov_mask=kept_cov_mask,
             survey_weights_0=sw_0,
-            preperiod_weights=preperiod_weights,
         )
         sigma_sq = float((cluster_psi_sums**2).sum())
         return np.sqrt(max(sigma_sq, 0.0))
@@ -1545,148 +1452,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
 
         return df_0[outcome].values - y_hat
 
-    def _compute_auxiliary_residuals_preperiod(
-        self,
-        df_pre: pd.DataFrame,
-        outcome: str,
-        unit: str,
-        time: str,
-        first_treat: str,
-        covariates: Optional[List[str]],
-        unit_fe: Dict[Any, float],
-        time_fe: Dict[Any, float],
-        grand_mean: float,
-        delta_hat: Optional[np.ndarray],
-        v_pre: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Compute auxiliary residuals for pre-period target observations.
-
-        Analogous to _compute_auxiliary_residuals_treated but operates on
-        pre-treatment observations of eventually-treated units in omega_0.
-
-        epsilon_tilde_it = tau_hat_pre_it - tau_tilde_g
-        where tau_tilde_g = sum(v_it * tau_hat_pre_it) / sum(v_it) within group g.
-        """
-        n_pre = len(df_pre)
-
-        # Compute tau_hat_pre = Y - Y_hat(0) (same as Step 1 residual)
-        alpha_i = df_pre[unit].map(unit_fe).values.astype(float)
-        beta_t = df_pre[time].map(time_fe).values.astype(float)
-        y_hat_0 = grand_mean + alpha_i + beta_t
-
-        if delta_hat is not None and covariates:
-            y_hat_0 = y_hat_0 + np.dot(df_pre[covariates].values, delta_hat)
-
-        tau_hat_pre = df_pre[outcome].values - y_hat_0
-
-        # Partition by aux_partition and compute group means
-        if self.aux_partition == "cohort_horizon":
-            group_keys = list(
-                zip(df_pre[first_treat].values, df_pre["_rel_time"].values)
-            )
-        elif self.aux_partition == "cohort":
-            group_keys = list(df_pre[first_treat].values)
-        elif self.aux_partition == "horizon":
-            group_keys = list(df_pre["_rel_time"].values)
-        else:
-            group_keys = list(range(n_pre))
-
-        group_series = pd.Series(group_keys, index=df_pre.index)
-        tau_series = pd.Series(tau_hat_pre, index=df_pre.index)
-        v_series = pd.Series(v_pre, index=df_pre.index)
-
-        weighted_tau_sum = (v_series * tau_series).groupby(group_series).sum()
-        weight_sum = v_series.groupby(group_series).sum()
-
-        zero_weight_groups = weight_sum.abs() < 1e-15
-        if zero_weight_groups.any():
-            simple_means = tau_series.groupby(group_series).mean()
-            tau_tilde_map = weighted_tau_sum / weight_sum
-            tau_tilde_map = tau_tilde_map.where(~zero_weight_groups, simple_means)
-        else:
-            tau_tilde_map = weighted_tau_sum / weight_sum
-
-        tau_tilde = group_series.map(tau_tilde_map).values
-        return tau_hat_pre - tau_tilde
-
-    def _compute_v_untreated_with_covariates_preperiod(
-        self,
-        df_0: pd.DataFrame,
-        unit: str,
-        time: str,
-        covariates: List[str],
-        preperiod_weights: np.ndarray,
-        delta_hat: Optional[np.ndarray],
-        kept_cov_mask: Optional[np.ndarray] = None,
-        survey_weights_0: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        """
-        Compute v_it for untreated observations when covariates present (preperiod case).
-
-        v = preperiod_weights - [W_0] A_0 (A_0'[W]A_0)^{-1} A_0' preperiod_weights
-        This is (I - P_0) * preperiod_weights where P_0 is the hat matrix.
-        """
-        if kept_cov_mask is not None and not np.all(kept_cov_mask):
-            covariates = [c for c, k in zip(covariates, kept_cov_mask) if k]
-
-        units_0 = df_0[unit].values
-        times_0 = df_0[time].values
-
-        all_units = np.unique(units_0)
-        all_times = np.unique(times_0)
-        unit_to_idx = {u: i for i, u in enumerate(all_units)}
-        time_to_idx = {t: i for i, t in enumerate(all_times)}
-        n_units = len(all_units)
-        n_fe_cols = (n_units - 1) + (len(all_times) - 1)
-
-        n_0 = len(df_0)
-        n_cov = len(covariates)
-
-        # Build A_0 sparse
-        u_indices = np.array([unit_to_idx[u] for u in units_0])
-        u_mask = u_indices > 0
-        u_rows = np.arange(n_0)[u_mask]
-        u_cols = u_indices[u_mask] - 1
-
-        t_indices = np.array([time_to_idx[t] for t in times_0])
-        t_mask = t_indices > 0
-        t_rows = np.arange(n_0)[t_mask]
-        t_cols = (n_units - 1) + t_indices[t_mask] - 1
-
-        rows = np.concatenate([u_rows, t_rows])
-        cols = np.concatenate([u_cols, t_cols])
-        data = np.ones(len(rows))
-
-        A_fe = sparse.csr_matrix((data, (rows, cols)), shape=(n_0, n_fe_cols))
-
-        if n_cov > 0:
-            A_cov = sparse.csr_matrix(df_0[covariates].values)
-            A_0 = sparse.hstack([A_fe, A_cov], format="csr")
-        else:
-            A_0 = A_fe
-
-        # Compute A_0' preperiod_weights
-        A0_w = A_0.T @ preperiod_weights  # shape (p,)
-
-        # Solve (A_0'[W]A_0) z = A_0' preperiod_weights
-        if survey_weights_0 is not None:
-            A0tA0 = A_0.T @ A_0.multiply(survey_weights_0[:, None])
-        else:
-            A0tA0 = A_0.T @ A_0
-        try:
-            z = spsolve(A0tA0.tocsc(), A0_w)
-        except Exception:
-            A0tA0_dense = A0tA0.toarray()
-            z, _, _, _ = np.linalg.lstsq(A0tA0_dense, A0_w, rcond=None)
-
-        # v = preperiod_weights - [W_0] A_0 z
-        projection = A_0 @ z
-        if survey_weights_0 is not None:
-            projection = projection * survey_weights_0
-        v_untreated = preperiod_weights - projection
-        return v_untreated
-
     # =========================================================================
     # Aggregation
     # =========================================================================
@@ -1717,25 +1482,8 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         tau_hat = df["_tau_hat"].loc[omega_1_mask].values
         rel_times = df_1["_rel_time"].values
 
-        # Get post-treatment horizons from omega_1
-        post_horizons = sorted(set(int(h) for h in rel_times if np.isfinite(h)))
-
-        # Pre-period horizons (pretrends feature)
-        pre_horizons: List[int] = []
-        df_pre = None
-        tau_hat_pre = None
-        rel_times_pre = None
-        if self.pretrends:
-            omega_pre_mask = ~df["_never_treated"] & ~df["_treated"]
-            if omega_pre_mask.any():
-                df_pre = df.loc[omega_pre_mask]
-                tau_hat_pre = df["_tau_hat"].loc[omega_pre_mask].values
-                rel_times_pre = df_pre["_rel_time"].values
-                pre_horizons = sorted(
-                    set(int(h) for h in rel_times_pre if np.isfinite(h))
-                )
-
-        all_horizons = sorted(set(post_horizons + pre_horizons))
+        # Get all horizons
+        all_horizons = sorted(set(int(h) for h in rel_times if np.isfinite(h)))
 
         # Apply horizon_max filter
         if self.horizon_max is not None:
@@ -1750,20 +1498,8 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 ),
                 index=df_1.index,
             )
-            if df_pre is not None:
-                balanced_mask_pre = pd.Series(
-                    self._compute_balanced_cohort_mask(
-                        df_pre, first_treat, all_horizons, balance_e, cohort_rel_times
-                    ),
-                    index=df_pre.index,
-                )
-            else:
-                balanced_mask_pre = None
         else:
             balanced_mask = pd.Series(True, index=df_1.index)
-            balanced_mask_pre = (
-                pd.Series(True, index=df_pre.index) if df_pre is not None else None
-            )
 
         # Check Proposition 5: no never-treated units
         has_never_treated = df["_never_treated"].any()
@@ -1786,6 +1522,27 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             "n_obs": 0,
         }
 
+        # Pre-period coefficients via BJS Test 1 lead regression
+        if self.pretrends:
+            df_0 = df.loc[omega_0_mask].copy()
+            rel_time_0 = np.where(
+                ~df_0["_never_treated"],
+                df_0[time] - df_0[first_treat],
+                np.nan,
+            )
+            pre_rel_times = sorted(
+                set(int(h) for h in rel_time_0 if np.isfinite(h) and h < -self.anticipation)
+            )
+            pre_rel_times = [h for h in pre_rel_times if h != ref_period]
+            if self.horizon_max is not None:
+                pre_rel_times = [h for h in pre_rel_times if abs(h) <= self.horizon_max]
+            if pre_rel_times:
+                pre_effects, _, _ = self._compute_lead_coefficients(
+                    df_0, outcome, unit, time, first_treat, covariates,
+                    cluster_var, pre_rel_times, alpha=self.alpha,
+                )
+                event_study_effects.update(pre_effects)
+
         # Collect horizons with Proposition 5 violations
         prop5_horizons = []
 
@@ -1793,115 +1550,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             if h == ref_period:
                 continue
 
-            # ---- Pre-period horizon (from omega_pre observations) ----
-            if h < -self.anticipation:
-                if rel_times_pre is None or balanced_mask_pre is None:
-                    continue
-                h_mask_pre = (rel_times_pre == h) & balanced_mask_pre.values
-                n_h = int(h_mask_pre.sum())
-                if n_h == 0:
-                    continue
-
-                tau_h = tau_hat_pre[h_mask_pre]
-                finite_h = np.isfinite(tau_h)
-                valid_tau = tau_h[finite_h]
-
-                if len(valid_tau) == 0:
-                    event_study_effects[h] = {
-                        "effect": np.nan,
-                        "se": np.nan,
-                        "t_stat": np.nan,
-                        "p_value": np.nan,
-                        "conf_int": (np.nan, np.nan),
-                        "n_obs": n_h,
-                    }
-                    continue
-
-                # Effect: survey-weighted or simple mean
-                if survey_weights is not None:
-                    pre_sw = survey_weights[
-                        (~df["_never_treated"] & ~df["_treated"]).values
-                    ]
-                    sw_h = pre_sw[h_mask_pre]
-                    sw_valid = sw_h[finite_h]
-                    effect = float(np.average(valid_tau, weights=sw_valid))
-                else:
-                    effect = float(np.mean(valid_tau))
-
-                # SE via conservative variance with preperiod_weights
-                n_0 = int(omega_0_mask.sum())
-                preperiod_weights_h = np.zeros(n_0)
-                # Positional mapping: pre-period positions in df → omega_0
-                omega_0_indices = np.where(omega_0_mask.values)[0]
-                omega_pre_positions = np.where(
-                    (~df["_never_treated"] & ~df["_treated"]).values
-                )[0]
-                pre_positions_in_df = omega_pre_positions[h_mask_pre]
-                pre_positions_in_0 = np.zeros(len(df), dtype=bool)
-                pre_positions_in_0[pre_positions_in_df] = True
-                pre_in_0_mask = pre_positions_in_0[omega_0_indices]
-
-                if survey_weights is not None:
-                    sw_0 = survey_weights[omega_0_mask.values]
-                    sw_target = sw_0[pre_in_0_mask]
-                    finite_in_target = np.isfinite(
-                        df["_tau_hat"].values[omega_0_indices[pre_in_0_mask]]
-                    )
-                    sw_finite = sw_target[finite_in_target]
-                    if sw_finite.sum() > 0:
-                        target_indices = np.where(pre_in_0_mask)[0]
-                        finite_indices = target_indices[finite_in_target]
-                        preperiod_weights_h[finite_indices] = (
-                            sw_finite / sw_finite.sum()
-                        )
-                else:
-                    n_finite = int(np.isfinite(
-                        df["_tau_hat"].values[omega_0_indices[pre_in_0_mask]]
-                    ).sum())
-                    if n_finite > 0:
-                        tau_at_target = df["_tau_hat"].values[
-                            omega_0_indices[pre_in_0_mask]
-                        ]
-                        finite_target = np.isfinite(tau_at_target)
-                        target_indices = np.where(pre_in_0_mask)[0]
-                        finite_indices = target_indices[finite_target]
-                        preperiod_weights_h[finite_indices] = 1.0 / n_finite
-
-                se = self._compute_conservative_variance(
-                    df=df,
-                    outcome=outcome,
-                    unit=unit,
-                    time=time,
-                    first_treat=first_treat,
-                    covariates=covariates,
-                    omega_0_mask=omega_0_mask,
-                    omega_1_mask=omega_1_mask,
-                    unit_fe=unit_fe,
-                    time_fe=time_fe,
-                    grand_mean=grand_mean,
-                    delta_hat=delta_hat,
-                    weights=np.zeros(len(tau_hat)),
-                    cluster_var=cluster_var,
-                    kept_cov_mask=kept_cov_mask,
-                    survey_weights=survey_weights,
-                    preperiod_weights=preperiod_weights_h,
-                )
-
-                t_stat, p_value, conf_int = safe_inference(
-                    effect, se, alpha=self.alpha, df=survey_df
-                )
-
-                event_study_effects[h] = {
-                    "effect": effect,
-                    "se": se,
-                    "t_stat": t_stat,
-                    "p_value": p_value,
-                    "conf_int": conf_int,
-                    "n_obs": n_h,
-                }
-                continue
-
-            # ---- Post-treatment horizon (from omega_1 observations) ----
             # Select treated obs at this horizon from balanced cohorts
             h_mask = (rel_times == h) & balanced_mask.values
             n_h = int(h_mask.sum())
@@ -2130,8 +1778,106 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         return group_effects
 
     # =========================================================================
-    # Pre-trend test (Equation 9)
+    # Pre-trend test (Equation 9) & pre-period lead coefficients
     # =========================================================================
+
+    def _compute_lead_coefficients(
+        self,
+        df_0: pd.DataFrame,
+        outcome: str,
+        unit: str,
+        time: str,
+        first_treat: str,
+        covariates: Optional[List[str]],
+        cluster_var: str,
+        pre_rel_times: List[int],
+        alpha: float = 0.05,
+    ) -> Tuple[Dict[int, Dict[str, Any]], np.ndarray, np.ndarray]:
+        """
+        Compute pre-period lead coefficients via within-transformed OLS (Test 1).
+
+        Adds lead indicator dummies W_it(h) = 1[K_it = h] to the untreated
+        model and estimates their coefficients with cluster-robust SEs.
+
+        Returns
+        -------
+        effects : dict
+            Per-horizon event_study_effects entries.
+        gamma : ndarray
+            Lead coefficient vector.
+        V_gamma : ndarray
+            Sub-VCV matrix for lead coefficients.
+        """
+        rel_time_0 = np.where(
+            ~df_0["_never_treated"],
+            df_0[time] - df_0[first_treat],
+            np.nan,
+        )
+
+        # Build lead indicators
+        lead_cols = []
+        for h in pre_rel_times:
+            col_name = f"_lead_{h}"
+            df_0[col_name] = (rel_time_0 == h).astype(float)
+            lead_cols.append(col_name)
+
+        # Within-transform via iterative demeaning
+        y_dm = self._iterative_demean(
+            df_0[outcome].values, df_0[unit].values, df_0[time].values, df_0.index
+        )
+
+        all_x_cols = lead_cols[:]
+        if covariates:
+            all_x_cols.extend(covariates)
+
+        X_dm = np.column_stack(
+            [
+                self._iterative_demean(
+                    df_0[col].values, df_0[unit].values, df_0[time].values, df_0.index
+                )
+                for col in all_x_cols
+            ]
+        )
+
+        # OLS with cluster-robust SEs
+        cluster_ids = df_0[cluster_var].values
+        result = solve_ols(
+            X_dm,
+            y_dm,
+            cluster_ids=cluster_ids,
+            return_vcov=True,
+            rank_deficient_action=self.rank_deficient_action,
+            column_names=all_x_cols,
+        )
+        coefficients = result[0]
+        vcov = result[2]
+        assert vcov is not None
+
+        n_leads = len(lead_cols)
+        gamma = coefficients[:n_leads]
+        V_gamma = vcov[:n_leads, :n_leads]
+
+        # Build per-horizon effects
+        effects: Dict[int, Dict[str, Any]] = {}
+        for j, h in enumerate(pre_rel_times):
+            effect = float(gamma[j])
+            se = float(np.sqrt(max(V_gamma[j, j], 0.0)))
+            n_obs = int((rel_time_0 == h).sum())
+            t_stat, p_value, conf_int = safe_inference(effect, se, alpha=alpha)
+            effects[h] = {
+                "effect": effect,
+                "se": se,
+                "t_stat": t_stat,
+                "p_value": p_value,
+                "conf_int": conf_int,
+                "n_obs": n_obs,
+            }
+
+        # Clean up temporary columns
+        for col in lead_cols:
+            df_0.drop(columns=col, inplace=True)
+
+        return effects, gamma, V_gamma
 
     def _pretrend_test(self, n_leads: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -2164,7 +1910,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         df_0 = df.loc[omega_0_mask].copy()
 
         # Compute relative time for untreated obs
-        # For not-yet-treated units in their pre-treatment periods
         rel_time_0 = np.where(
             ~df_0["_never_treated"],
             df_0[time] - df_0[first_treat],
@@ -2190,7 +1935,6 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         pre_rel_times = [h for h in pre_rel_times if h != ref]
 
         if n_leads is not None:
-            # Take the n_leads periods closest to treatment
             pre_rel_times = sorted(pre_rel_times, reverse=True)[:n_leads]
             pre_rel_times = sorted(pre_rel_times)
 
@@ -2203,49 +1947,13 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 "lead_coefficients": {},
             }
 
-        # Build lead indicators
-        lead_cols = []
-        for h in pre_rel_times:
-            col_name = f"_lead_{h}"
-            df_0[col_name] = ((rel_time_0 == h)).astype(float)
-            lead_cols.append(col_name)
-
-        # Within-transform via iterative demeaning (exact for unbalanced panels)
-        y_dm = self._iterative_demean(
-            df_0[outcome].values, df_0[unit].values, df_0[time].values, df_0.index
+        # Use shared lead coefficient computation
+        effects, gamma, V_gamma = self._compute_lead_coefficients(
+            df_0, outcome, unit, time, first_treat, covariates,
+            cluster_var, pre_rel_times, alpha=self.alpha,
         )
 
-        all_x_cols = lead_cols[:]
-        if covariates:
-            all_x_cols.extend(covariates)
-
-        X_dm = np.column_stack(
-            [
-                self._iterative_demean(
-                    df_0[col].values, df_0[unit].values, df_0[time].values, df_0.index
-                )
-                for col in all_x_cols
-            ]
-        )
-
-        # OLS with cluster-robust SEs
-        cluster_ids = df_0[cluster_var].values
-        result = solve_ols(
-            X_dm,
-            y_dm,
-            cluster_ids=cluster_ids,
-            return_vcov=True,
-            rank_deficient_action=self.rank_deficient_action,
-            column_names=all_x_cols,
-        )
-        coefficients = result[0]
-        vcov = result[2]
-        assert vcov is not None
-
-        # Extract lead coefficients and their sub-VCV
-        n_leads_actual = len(lead_cols)
-        gamma = coefficients[:n_leads_actual]
-        V_gamma = vcov[:n_leads_actual, :n_leads_actual]
+        n_leads_actual = len(pre_rel_times)
 
         # Wald F-test: F = (gamma' V^{-1} gamma) / n_leads
         try:
@@ -2256,6 +1964,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             f_stat = np.nan
 
         # P-value from F distribution
+        cluster_ids = df_0[cluster_var].values
         if np.isfinite(f_stat) and f_stat >= 0:
             n_clusters = len(np.unique(cluster_ids))
             df_denom = max(n_clusters - 1, 1)
@@ -2263,10 +1972,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         else:
             p_value = np.nan
 
-        # Store lead coefficients
-        lead_coefficients = {}
-        for j, h in enumerate(pre_rel_times):
-            lead_coefficients[h] = float(gamma[j])
+        lead_coefficients = {h: effects[h]["effect"] for h in pre_rel_times}
 
         return {
             "f_stat": f_stat,

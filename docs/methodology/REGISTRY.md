@@ -836,18 +836,19 @@ Y_it = alpha_i + beta_t [+ X'_it * delta] + W'_it * gamma + epsilon_it
 - Test `gamma = 0` via cluster-robust Wald F-test
 - Independent of treatment effect estimation (Proposition 9)
 
-*Pre-period event study coefficients (`pretrends=True`, BJS Section 4.2):*
+*Pre-period event study coefficients (`pretrends=True`, Test 1 / Equation 9):*
 
-For pre-treatment observation (i,t) of eventually-treated unit i at relative time `K_it = t - E_i < -anticipation`:
+Pre-period coefficients reuse the existing pre-trend test machinery (BJS Equation 9):
 ```
-tau_hat_pre(i,t) = Y_it - alpha_hat_i - beta_hat_t [- X'_it * delta_hat]
-theta_h = (1/n_h) * sum_{(i,t): K_it = h} tau_hat_pre(i,t)
+Y_it = alpha_i + beta_t [+ X'_it * delta] + sum_h gamma_h * W_it(h) + epsilon_it
 ```
-- Under parallel trends (Assumption 1), `E[theta_h] = 0` for all `h < -anticipation`
-- Reference period `h = -1 - anticipation` normalized to zero (not estimated)
-- Variance via Theorem 3 extension: pre-period targets are in `Omega_0`, so `v_it = w_it + FE_correction` (both direct aggregation weight and indirect FE estimation correction)
+where `W_it(h) = 1[K_it = h]` are lead indicators, estimated on `Omega_0` only.
+- `gamma_h` are the pre-period event study coefficients with cluster-robust SEs
+- Under parallel trends (Assumption 1), `gamma_h = 0` for all `h < -anticipation`
+- Reference period `h = -1 - anticipation` is the omitted category (normalized to zero)
+- SEs from cluster-robust Wald variance (consistent with `pretrend_test()`)
+- Bootstrap does not update pre-period SEs (they are from the lead regression)
 - Only affects event study aggregation; overall ATT and group aggregation unchanged
-- Proposition 5 does not apply to pre-period horizons (always identified)
 
 *Edge cases:*
 - **Unbalanced panels:** FE estimated via iterative alternating projection (Gauss-Seidel), equivalent to OLS with unit+time dummies. Converges in O(max_iter) passes; typically 5-20 iterations for unbalanced panels, 1-2 for balanced. One-pass demeaning is only exact for balanced panels.
