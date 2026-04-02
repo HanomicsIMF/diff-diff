@@ -591,6 +591,18 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 if np.isfinite(group_effects[g]["effect"])
             )
 
+            # Pre-compute balanced cohort mask for balance_e (matches
+            # _aggregate_event_study's filter so replicate SEs match
+            # the reported point estimate's estimand).
+            _balanced_mask_treated = None
+            if balance_e is not None and _sorted_rel_times:
+                cohort_rel_times = self._build_cohort_rel_times(df, first_treat)
+                all_horizons = [int(e) for e in _sorted_rel_times if e >= 0]
+                df_1 = df.loc[omega_1_mask]
+                _balanced_mask_treated = self._compute_balanced_cohort_mask(
+                    df_1, first_treat, all_horizons, balance_e, cohort_rel_times
+                )
+
             for e in _sorted_rel_times:
                 def _refit_es(w_r, _e=e):
                     ufe_r, tfe_r, gm_r, delta_r, _ = self._fit_untreated_model(
@@ -602,16 +614,23 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                     )
                     fin = np.isfinite(tau_r)
                     mask_e = fin & (_rel_times_treated == _e)
+                    # Apply balance_e cohort filter (same as _aggregate_event_study)
+                    if _balanced_mask_treated is not None:
+                        mask_e = mask_e & _balanced_mask_treated
                     tw_e = w_r[omega_1_mask.values][mask_e]
                     s = np.sum(tw_e)
                     return np.array([float(np.sum(tau_r[mask_e] * tw_e) / s) if s > 0 else np.nan])
 
                 eff_e = event_study_effects[e]["effect"]
-                vcov_e, _ = compute_replicate_refit_variance(
+                vcov_e, nv_e = compute_replicate_refit_variance(
                     _refit_es, np.array([eff_e]), resolved_survey
                 )
                 se_e = float(np.sqrt(max(vcov_e[0, 0], 0.0)))
-                t_e, p_e, ci_e = safe_inference(eff_e, se_e, alpha=self.alpha, df=_survey_df)
+                # Use effect-specific df when replicates were dropped
+                df_e = _survey_df
+                if nv_e < resolved_survey.n_replicates:
+                    df_e = nv_e - 1 if nv_e > 1 else 0
+                t_e, p_e, ci_e = safe_inference(eff_e, se_e, alpha=self.alpha, df=df_e)
                 event_study_effects[e]["se"] = se_e
                 event_study_effects[e]["t_stat"] = t_e
                 event_study_effects[e]["p_value"] = p_e
@@ -633,11 +652,15 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                     return np.array([float(np.sum(tau_r[mask_g] * tw_g) / s) if s > 0 else np.nan])
 
                 eff_g = group_effects[g]["effect"]
-                vcov_g, _ = compute_replicate_refit_variance(
+                vcov_g, nv_g = compute_replicate_refit_variance(
                     _refit_grp, np.array([eff_g]), resolved_survey
                 )
                 se_g = float(np.sqrt(max(vcov_g[0, 0], 0.0)))
-                t_g, p_g, ci_g = safe_inference(eff_g, se_g, alpha=self.alpha, df=_survey_df)
+                # Use effect-specific df when replicates were dropped
+                df_g = _survey_df
+                if nv_g < resolved_survey.n_replicates:
+                    df_g = nv_g - 1 if nv_g > 1 else 0
+                t_g, p_g, ci_g = safe_inference(eff_g, se_g, alpha=self.alpha, df=df_g)
                 group_effects[g]["se"] = se_g
                 group_effects[g]["t_stat"] = t_g
                 group_effects[g]["p_value"] = p_g
