@@ -4129,3 +4129,36 @@ class TestSilentWarningAudit:
             )
         skip_warnings = [x for x in w if "could not be estimated" in str(x.message)]
         assert len(skip_warnings) > 0, "Expected skip warning for RC path"
+
+    def test_skip_warning_survey_zero_mass(self):
+        """Skip warning fires when survey weights produce zero effective mass."""
+        from diff_diff.survey import SurveyDesign
+
+        data = generate_staggered_data(
+            n_units=60,
+            n_periods=6,
+            n_cohorts=2,
+            never_treated_frac=0.3,
+            seed=42,
+        )
+        # Set survey weights to 0 for ALL units in one cohort to force
+        # zero effective mass in that cohort's cells
+        data["sw"] = 1.0
+        first_cohort = sorted(data.loc[data["first_treat"] > 0, "first_treat"].unique())[0]
+        cohort_units = data.loc[data["first_treat"] == first_cohort, "unit"].unique()
+        data.loc[data["unit"].isin(cohort_units), "sw"] = 0.0
+
+        survey = SurveyDesign(weights="sw")
+        cs = CallawaySantAnna(estimation_method="reg")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                survey_design=survey,
+            )
+        skip_warnings = [x for x in w if "could not be estimated" in str(x.message)]
+        assert len(skip_warnings) > 0, "Expected skip warning for zero-mass survey cells"

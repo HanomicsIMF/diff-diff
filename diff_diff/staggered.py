@@ -731,9 +731,9 @@ class CallawaySantAnna(
 
         # Guard against zero effective mass after subpopulation filtering
         if sw_treated is not None and np.sum(sw_treated) <= 0:
-            return np.nan, np.nan, 0, 0, None, None
+            return None, 0.0, 0, 0, None, None
         if sw_control is not None and np.sum(sw_control) <= 0:
-            return np.nan, np.nan, 0, 0, None, None
+            return None, 0.0, 0, 0, None, None
 
         # Get covariates if specified (from the base period)
         X_treated = None
@@ -947,6 +947,7 @@ class CallawaySantAnna(
                 sw_c = survey_w[control_valid]
                 # Guard against zero effective mass
                 if np.sum(sw_t) <= 0 or np.sum(sw_c) <= 0:
+                    skipped_empty_cell.append((g, t))
                     continue
                 sw_t_norm = sw_t / np.sum(sw_t)
                 sw_c_norm = sw_c / np.sum(sw_c)
@@ -2892,9 +2893,9 @@ class CallawaySantAnna(
         # Guard against zero effective mass
         if sw_gt is not None:
             if np.sum(sw_gt) <= 0 or np.sum(sw_gs) <= 0:
-                return np.nan, np.nan, 0, 0, None, None
+                return None, 0.0, 0, 0, None, None
             if np.sum(sw_ct) <= 0 or np.sum(sw_cs) <= 0:
-                return np.nan, np.nan, 0, 0, None, None
+                return None, 0.0, 0, 0, None, None
 
         # Get covariates if specified
         obs_covariates = precomputed.get("obs_covariates")
