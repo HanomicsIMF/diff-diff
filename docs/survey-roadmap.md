@@ -1,7 +1,7 @@
 # Survey Data Support Roadmap
 
 This document captures the survey data support roadmap for diff-diff.
-All phases (1-6) are implemented.
+Phases 1-7 are implemented. Phase 8 (maturity refinements) is planned.
 
 ## Implemented (Phases 1-2)
 
@@ -202,3 +202,101 @@ variance estimation for staggered triple differences.
 
 **Reference:** Ortiz-Villavicencio, M. & Sant'Anna, P.H.C. (2025).
 "Better Understanding Triple Differences Estimators." arXiv:2505.09942.
+
+---
+
+## Phase 8: Survey Maturity
+
+Refinements to close remaining gaps versus R's `survey` package and improve
+practitioner experience. Prioritized by user impact.
+
+### 8a. Successive Difference Replication (SDR)
+
+**Priority: High.** ACS PUMS — the most common US survey dataset for DiD
+policy evaluation — provides 80 SDR replicate weight columns. Without SDR
+support, these users can't use their provided replicate weights directly.
+
+**What's needed:**
+- Add `"SDR"` to `valid_rep_methods` in `SurveyDesign`
+- Variance formula: `V = 4/R * sum((theta_r - theta)^2)` — a scaling
+  difference from BRR, not a new algorithm
+- Wire through `compute_replicate_vcov()` and `compute_replicate_if_variance()`
+
+**Reference:** Fay, R.E. & Train, G.F. (1995). "Aspects of Survey and
+Model-Based Postcensal Estimation of Income and Poverty Characteristics
+for States and Counties." ASA Proceedings.
+
+### 8b. FPC in ImputationDiD and TwoStageDiD
+
+**Priority: High.** Both estimators now support replicate weights and TSL
+with strata/PSU, but reject FPC outright (`NotImplementedError`). Adding
+FPC is incremental — thread `fpc` through the existing TSL variance path.
+Matters for finite population surveys (common in state-level sampling).
+
+**Current gate:** `imputation.py:280`, `two_stage.py:268`
+
+### 8c. Silent Operation Warnings
+
+**Priority: High.** Add `UserWarning` emissions for operations that
+silently alter analysis results:
+- TROP lstsq → pseudo-inverse numerical fallback
+- TwoStageDiD NaN masking of unidentified fixed effects
+- TwoStageDiD always-treated unit removal
+- CallawaySantAnna silent (g,t) pair skipping
+- TROP missing treatment indicator fill with 0
+- Rust → Python backend fallback (currently debug log only)
+- Survey weight normalization (pweights rescaled to mean=1)
+- `np.inf` → 0 never-treated conversion
+
+### 8d. Lonely PSU "adjust" in Bootstrap
+
+**Priority: Medium.** `lonely_psu="adjust"` works for analytical (TSL)
+variance but raises `NotImplementedError` for survey-aware bootstrap
+(2 raises in `bootstrap_utils.py`). Real survey data regularly has
+singleton strata. Users needing bootstrap inference with such data hit
+a wall.
+
+**Reference:** Rust, K.F. & Rao, J.N.K. (1996). "Variance Estimation
+for Complex Surveys Using Replication Techniques." Statistical Methods
+in Medical Research 5(3).
+
+### 8e. Survey Diagnostics and Utilities
+
+**Priority: Medium.** Small additions that signal maturity to survey
+statisticians:
+- **CV on estimates**: coefficient of variation (SE/estimate) on results
+  objects — trivial to add, used by federal agencies for publication
+  standards (NCHS requires CV < 30% for releasable estimates)
+- **Weight trimming**: `trim_weights(data, weight_col, upper=None,
+  quantile=None)` utility in `prep.py` for capping extreme weights
+- **ImputationDiD pretrends + survey**: pre-trends F-test currently
+  ignores survey variance (`NotImplementedError` at `imputation.py:240`)
+
+### 8f. Survey Compatibility Matrix
+
+**Priority: Medium.** Users discover survey support limits by hitting
+`NotImplementedError` at runtime. Add a table to the survey tutorial
+or `choosing_estimator.rst` showing which estimator × survey feature
+combinations are supported (weights, strata/PSU, FPC, replicate weights,
+bootstrap + survey).
+
+### 8g. Documentation-Only Items
+
+**Priority: Low.** No code changes required:
+- **Multi-stage design**: document that single-stage (strata + PSU)
+  is sufficient for variance estimation per Lumley (2004) Section 2.2.
+  Don't implement multi-stage — it adds complexity without changing
+  results for DiD applications.
+- **Post-stratification / calibration**: document that `SurveyDesign`
+  expects pre-calibrated weights. Point users to `samplics` or R's
+  `survey::calibrate()` for weight calibration. This is data prep,
+  not DiD estimation — out of scope.
+
+### Deferred
+
+| Estimator | Capability | Reason |
+|-----------|-----------|--------|
+| SyntheticDiD | Replicate weights | No published theory on replicate weights + unit weight optimization |
+| TROP | Replicate weights | No published theory on replicate weights + nuclear norm regularization |
+| BaconDecomposition | Replicate weights | Diagnostic tool with no inference — replicate weights don't apply |
+| EfficientDiD | Covariates + survey, cluster + survey, bootstrap + survey | Lower demand, newer estimator; 3 `NotImplementedError` paths |
