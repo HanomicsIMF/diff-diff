@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.2] - 2026-04-02
+
+### Added
+- **EPV diagnostics for propensity score logit** — events-per-variable (EPV) checks with Peduzzi convention (predictors excluding intercept) for CallawaySantAnna IPW/DR, TripleDifference IPW/DR, and StaggeredTripleDifference
+- `epv_summary()` / `epv_diagnostics` on post-fit results for CallawaySantAnna, TripleDifference, and StaggeredTripleDifference
+- `diagnose_propensity()` pre-estimation helper on CallawaySantAnna
+- EPV summary block in TripleDifference `summary()` output
+- `epv_threshold` parameter for propensity score estimation — warns on low EPV (default) or escalates via `rank_deficient_action="error"`
+
+### Changed
+- Default propensity score fallback behavior: safer defaults with method-specific warning messages
+- EPV denominator uses predictor count excluding intercept (Peduzzi et al. 1996 convention)
+
+### Fixed
+- Fix TripleDifference survey-weighted fallback propensity score
+- Fix NaN cache poisoning in propensity score estimation
+- Fix `epv_summary` column schema on empty results
+- Fix SDDD EPV: use min-EPV across comparison cohorts with cache diagnostic propagation
+- Fix `diagnose_propensity` `np.inf` handling
+
 ## [2.8.1] - 2026-04-01
 
 ### Added
@@ -1065,6 +1085,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.8.2]: https://github.com/igerber/diff-diff/compare/v2.8.1...v2.8.2
 [2.8.1]: https://github.com/igerber/diff-diff/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/igerber/diff-diff/compare/v2.7.6...v2.8.0
 [2.7.6]: https://github.com/igerber/diff-diff/compare/v2.7.5...v2.7.6
