@@ -2302,6 +2302,13 @@ Domain estimation preserving full design structure.
 - **Note:** For replicate-weight designs, `subpopulation()` zeros out both
   full-sample and replicate weight columns for excluded observations,
   preserving all replicate metadata.
+- **Note:** Estimator-level replicate refits (TWFE, SunAbraham, DiD/MultiPeriodDiD
+  with `absorb`) drop zero-weight observations before weighted demeaning to
+  prevent division-by-zero in within-transformation group means.  This matches
+  R's `survey::withReplicates()` convention where zero-weight units are excluded
+  from per-replicate estimation.  Replicates that fail despite this (e.g.,
+  rank-deficient after unit deletion) are counted as invalid and excluded from
+  variance computation.
 - **Note:** Defensive enhancement: ContinuousDiD and TripleDifference
   validate the positive-weight effective sample size before WLS cell fits.
   After `subpopulation()` zeroes weights, raw row counts may exceed the

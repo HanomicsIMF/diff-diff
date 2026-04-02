@@ -298,8 +298,13 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             _id_cols_twfe = np.where(_id_mask_twfe)[0]
 
             def _refit_twfe(w_r):
+                # Drop zero-weight obs to prevent zero-sum demeaning
+                # (JK1/BRR half-samples zero entire clusters)
+                nz = w_r > 0
+                data_nz = data[nz].copy()
+                w_nz = w_r[nz]
                 data_dem_r = _within_transform_util(
-                    data, _all_vars_twfe, unit, time, suffix="_demeaned", weights=w_r,
+                    data_nz, _all_vars_twfe, unit, time, suffix="_demeaned", weights=w_nz,
                 )
                 y_r = data_dem_r[f"{outcome}_demeaned"].values
                 X_list_r = [data_dem_r["_treatment_post_demeaned"].values]
@@ -308,7 +313,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                 X_r = np.column_stack([np.ones(len(y_r))] + X_list_r)
                 coef_r, _, _ = solve_ols(
                     X_r[:, _id_cols_twfe], y_r,
-                    weights=w_r, weight_type=survey_weight_type,
+                    weights=w_nz, weight_type=survey_weight_type,
                     rank_deficient_action="silent", return_vcov=False,
                 )
                 return coef_r
@@ -326,8 +331,8 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             )
             if _n_valid_rep_twfe < resolved_survey.n_replicates:
                 _df_rep = _n_valid_rep_twfe - 1 if _n_valid_rep_twfe > 1 else 0
-            if survey_metadata is not None and _df_rep > 0:
-                survey_metadata.df_survey = _df_rep
+            if survey_metadata is not None:
+                survey_metadata.df_survey = _df_rep if _df_rep > 0 else None
             t_stat, p_value, conf_int = _safe_inf(att, se, alpha=self.alpha, df=_df_rep)
         elif self.inference == "wild_bootstrap":
             # Override with wild cluster bootstrap inference

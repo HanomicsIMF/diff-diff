@@ -645,10 +645,14 @@ class SunAbraham:
             _sa_rel_periods = list(rel_periods_to_estimate)
 
             def _refit_sa(w_r):
+                # Drop zero-weight obs for within-transform safety
+                nz = w_r > 0
+                df_reg_nz = df_reg[nz] if not np.all(nz) else df_reg
+                w_nz = w_r[nz] if not np.all(nz) else w_r
                 ce_r, _, vcov_r, cim_r = self._fit_saturated_regression(
-                    df_reg, outcome, unit, time, first_treat,
+                    df_reg_nz, outcome, unit, time, first_treat,
                     treatment_groups, _sa_rel_periods, covariates,
-                    cluster_var, survey_weights=w_r,
+                    cluster_var, survey_weights=w_nz,
                     survey_weight_type=survey_weight_type,
                     resolved_survey=None,
                 )
@@ -736,8 +740,8 @@ class SunAbraham:
             # Override df if replicates dropped
             if _n_valid_rep_sa < resolved_survey.n_replicates:
                 _sa_survey_df = _n_valid_rep_sa - 1 if _n_valid_rep_sa > 1 else 0
-            if survey_metadata is not None and _sa_survey_df is not None and _sa_survey_df > 0:
-                survey_metadata.df_survey = _sa_survey_df
+            if survey_metadata is not None:
+                survey_metadata.df_survey = _sa_survey_df if _sa_survey_df and _sa_survey_df > 0 else None
 
             # Override overall ATT SE
             overall_se = float(np.sqrt(max(_vcov_sa[0, 0], 0.0)))
@@ -761,10 +765,13 @@ class SunAbraham:
             _full_cohort_vec = np.array([cohort_effects.get(k, np.nan) for k in _keys_ordered])
 
             def _refit_sa_cohort(w_r):
+                nz = w_r > 0
+                df_reg_nz = df_reg[nz] if not np.all(nz) else df_reg
+                w_nz = w_r[nz] if not np.all(nz) else w_r
                 ce_r, _, _, _ = self._fit_saturated_regression(
-                    df_reg, outcome, unit, time, first_treat,
+                    df_reg_nz, outcome, unit, time, first_treat,
                     treatment_groups, _sa_rel_periods, covariates,
-                    cluster_var, survey_weights=w_r,
+                    cluster_var, survey_weights=w_nz,
                     survey_weight_type=survey_weight_type,
                     resolved_survey=None,
                 )

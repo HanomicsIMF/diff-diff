@@ -396,13 +396,15 @@ class DifferenceInDifferences:
             _att_idx_reduced = int(np.searchsorted(_id_cols, att_idx))
 
             def _refit_did_absorb(w_r):
-                wd = data.copy()
+                nz = w_r > 0
+                wd = data[nz].copy()
+                w_nz = w_r[nz]
                 wd["_treat_time"] = (
                     wd[treatment].values.astype(float) * wd[time].values.astype(float)
                 )
                 vars_dm = [outcome, treatment, time, "_treat_time"] + (covariates or [])
                 for ab_var in _absorb_list:
-                    wd, _ = demean_by_group(wd, vars_dm, ab_var, inplace=True, weights=w_r)
+                    wd, _ = demean_by_group(wd, vars_dm, ab_var, inplace=True, weights=w_nz)
                 y_r = wd[outcome].values.astype(float)
                 d_r = wd[treatment].values.astype(float)
                 t_r = wd[time].values.astype(float)
@@ -413,7 +415,7 @@ class DifferenceInDifferences:
                         X_r = np.column_stack([X_r, wd[cov].values.astype(float)])
                 coef_r, _, _ = solve_ols(
                     X_r[:, _id_cols], y_r,
-                    weights=w_r, weight_type=survey_weight_type,
+                    weights=w_nz, weight_type=survey_weight_type,
                     rank_deficient_action="silent", return_vcov=False,
                 )
                 return coef_r
@@ -430,8 +432,8 @@ class DifferenceInDifferences:
             )
             if _n_valid_rep < resolved_survey.n_replicates:
                 _df_rep = _n_valid_rep - 1 if _n_valid_rep > 1 else 0
-            if survey_metadata is not None and _df_rep > 0:
-                survey_metadata.df_survey = _df_rep
+            if survey_metadata is not None:
+                survey_metadata.df_survey = _df_rep if _df_rep > 0 else None
             t_stat, p_value, conf_int = safe_inference(
                 att, se, alpha=self.alpha, df=_df_rep
             )
@@ -1248,7 +1250,9 @@ class MultiPeriodDiD(DifferenceInDifferences):
             _id_cols_mp = np.where(_id_mask_mp)[0]
 
             def _refit_mp_absorb(w_r):
-                wd = data.copy()
+                nz = w_r > 0
+                wd = data[nz].copy()
+                w_nz = w_r[nz]
                 d_raw_ = wd[treatment].values.astype(float)
                 t_raw_ = wd[time].values
                 wd["_did_treatment"] = d_raw_
@@ -1262,7 +1266,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
                     + (covariates or [])
                 )
                 for ab_var_ in _absorb_list_mp:
-                    wd, _ = demean_by_group(wd, vars_dm_, ab_var_, inplace=True, weights=w_r)
+                    wd, _ = demean_by_group(wd, vars_dm_, ab_var_, inplace=True, weights=w_nz)
                 y_r = wd[outcome].values.astype(float)
                 d_r = wd["_did_treatment"].values.astype(float)
                 X_r = np.column_stack([np.ones(len(y_r)), d_r])
@@ -1279,7 +1283,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
                         X_r = np.column_stack([X_r, wd[cov_].values.astype(float)])
                 coef_r, _, _ = solve_ols(
                     X_r[:, _id_cols_mp], y_r,
-                    weights=w_r, weight_type=survey_weight_type,
+                    weights=w_nz, weight_type=survey_weight_type,
                     rank_deficient_action="silent", return_vcov=False,
                 )
                 return coef_r
@@ -1338,8 +1342,8 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 df = 0  # rank-deficient replicate → NaN inference
             if _n_valid_rep_mp is not None and _n_valid_rep_mp < resolved_survey.n_replicates:
                 df = _n_valid_rep_mp - 1 if _n_valid_rep_mp > 1 else 0
-                if survey_metadata is not None and df > 0:
-                    survey_metadata.df_survey = df
+                if survey_metadata is not None:
+                    survey_metadata.df_survey = df if df > 0 else None
 
         # Guard: fall back to normal distribution if df is non-positive
         # Skip for replicate designs — df=0 is intentional for NaN inference

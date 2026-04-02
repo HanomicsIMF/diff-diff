@@ -574,8 +574,8 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             # Override df if replicates were dropped
             if _n_valid_rep_imp < resolved_survey.n_replicates:
                 _survey_df = _n_valid_rep_imp - 1 if _n_valid_rep_imp > 1 else 0
-            if survey_metadata is not None and _survey_df is not None and _survey_df > 0:
-                survey_metadata.df_survey = _survey_df
+            if survey_metadata is not None:
+                survey_metadata.df_survey = _survey_df if _survey_df and _survey_df > 0 else None
 
             # Recompute overall inference with replicate SE/df
             overall_t, overall_p, overall_ci = safe_inference(
