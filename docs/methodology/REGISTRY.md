@@ -347,7 +347,7 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
 
 *Edge cases:*
 - Groups with single observation: included but may have high variance
-- Missing group-time cells: ATT(g,t) set to NaN
+- Missing group-time cells: omitted from `group_time_effects` (non-estimable cells are not included); a consolidated warning is emitted for the `reg` estimation path listing skip reasons
   - **Note:** When `balance_e` is specified, cohorts with NaN effects at the anchor horizon are excluded from the balanced panel
 - Anticipation: `anticipation` parameter shifts reference period
   - Group aggregation includes periods t >= g - anticipation (not just t >= g)

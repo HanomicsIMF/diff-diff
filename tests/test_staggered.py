@@ -4021,17 +4021,23 @@ class TestSilentWarningAudit:
         """Item 4: Consolidated warning when (g,t) cells are skipped."""
         import warnings
 
-        # Create data with a cohort whose base period is outside the panel range.
-        # Cohort with first_treat=1 needs base_period=0 (universal) which exists,
-        # but cohort with first_treat=2 needs base_period=1 — which exists.
-        # To trigger missing period skips, create a very sparse panel.
+        # Two cohorts: g=4 succeeds (base=3 exists), g=6 fails (base=5
+        # exists but post periods 7 need base=5 which exists — so use
+        # g=8 whose base=7 exists). Actually simplest: periods [1,2,4,5]
+        # with cohort g=4 (base=3 missing → some skips) and g=2 (base=1
+        # exists → succeeds).
         rng = np.random.default_rng(42)
-        n_units = 30
+        n_units = 40
         rows = []
         for u in range(n_units):
-            # Only include time periods 3, 5, 7 (skip 0, 1, 2, 4, 6)
-            for t in [3, 5, 7]:
-                ft = 0 if u < 10 else 5  # Cohort at t=5, or never-treated
+            for t in [1, 2, 4, 5]:
+                # u < 10: never-treated; u < 25: cohort g=2; rest: cohort g=4
+                if u < 10:
+                    ft = 0
+                elif u < 25:
+                    ft = 2  # base=1 exists → succeeds
+                else:
+                    ft = 4  # base=3 missing → skipped
                 outcome = rng.standard_normal() + (2.0 if (ft > 0 and t >= ft) else 0.0)
                 rows.append(
                     {
@@ -4043,26 +4049,21 @@ class TestSilentWarningAudit:
                 )
         data = pd.DataFrame(rows)
 
-        cs = CallawaySantAnna(base_period="universal")
+        cs = CallawaySantAnna(base_period="universal", estimation_method="reg")
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            try:
-                cs.fit(
-                    data,
-                    outcome="outcome",
-                    unit="unit",
-                    time="time",
-                    first_treat="first_treat",
-                )
-            except ValueError:
-                pass  # May fail if all cells skipped
+            cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+            )
 
         skip_warnings = [x for x in w if "could not be estimated" in str(x.message)]
-        # Should have at least one skip warning if cells were skipped
-        # (The sparse panel structure should cause missing period skips)
-        if skip_warnings:
-            msg = str(skip_warnings[0].message)
-            assert "missing base/post period" in msg or "zero treated" in msg
+        assert len(skip_warnings) > 0, "Expected consolidated skip warning"
+        msg = str(skip_warnings[0].message)
+        assert "missing base/post period" in msg
 
     def test_item4_no_skip_warning_normal_data(self):
         """Item 4 negative: No skip warning on well-formed balanced data."""
