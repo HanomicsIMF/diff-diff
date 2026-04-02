@@ -1513,6 +1513,8 @@ class TestEstimatorCoverage:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
+            # Skip warning is expected for not_yet_treated (some cells non-estimable)
+            warnings.filterwarnings("ignore", message=".*could not be estimated.*")
             simulate_power(
                 CallawaySantAnna(control_group="not_yet_treated"),
                 data_generator=_custom_staggered,
@@ -1533,6 +1535,8 @@ class TestEstimatorCoverage:
         """data_generator_kwargs with cohort_periods suppresses warning."""
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
+            # Skip warning is expected for not_yet_treated (some cells non-estimable)
+            warnings.filterwarnings("ignore", message=".*could not be estimated.*")
             result = simulate_power(
                 CallawaySantAnna(control_group="not_yet_treated"),
                 n_periods=6,
@@ -2014,6 +2018,8 @@ class TestStaggeredSingleCohort:
         """CS with cohort_periods=[2, 4] does NOT warn."""
         with warnings.catch_warnings():
             warnings.simplefilter("error")
+            # Skip warning is expected for not_yet_treated (some cells non-estimable)
+            warnings.filterwarnings("ignore", message=".*could not be estimated.*")
             simulate_power(
                 CallawaySantAnna(control_group="not_yet_treated"),
                 n_units=60,

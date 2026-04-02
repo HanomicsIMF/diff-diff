@@ -4082,3 +4082,50 @@ class TestSilentWarningAudit:
             )
         skip_warnings = [x for x in w if "could not be estimated" in str(x.message)]
         assert len(skip_warnings) == 0, f"Unexpected skip warning: {skip_warnings}"
+
+    def test_skip_warning_dr_path(self):
+        """Skip warning fires for default DR path (general path)."""
+        data = generate_staggered_data(
+            n_units=50,
+            n_periods=6,
+            n_cohorts=3,
+            never_treated_frac=0.0,
+            seed=42,
+        )
+        cs = CallawaySantAnna(control_group="not_yet_treated")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+            )
+        skip_warnings = [x for x in w if "could not be estimated" in str(x.message)]
+        assert len(skip_warnings) > 0, "Expected skip warning for DR path"
+        assert "insufficient data" in str(skip_warnings[0].message)
+
+    def test_skip_warning_panel_false(self):
+        """Skip warning fires for panel=False (RC path)."""
+        data = generate_staggered_data(
+            n_units=80,
+            n_periods=6,
+            n_cohorts=3,
+            never_treated_frac=0.0,
+            seed=42,
+        )
+        # panel=False needs unique unit IDs (repeated cross-section)
+        data["unit"] = np.arange(len(data))
+        cs = CallawaySantAnna(panel=False, control_group="not_yet_treated")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+            )
+        skip_warnings = [x for x in w if "could not be estimated" in str(x.message)]
+        assert len(skip_warnings) > 0, "Expected skip warning for RC path"

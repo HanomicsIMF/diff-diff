@@ -106,8 +106,8 @@ class CallawaySantAnnaAggregationMixin:
         groups_for_gt = np.array(groups_for_gt)
 
         # Exclude NaN effects from aggregation (R's aggte() convention).
-        # No warning here — upstream code (consolidated skip warning in fit(),
-        # covariate regression NaN warning) already informed the user.
+        # No warning here — fit() emits a consolidated skip warning covering
+        # all estimation paths (vectorized, covariate, general, RC).
         finite_mask = np.isfinite(effects)
         if not np.all(finite_mask):
             effects = effects[finite_mask]

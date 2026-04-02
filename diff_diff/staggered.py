@@ -1623,6 +1623,7 @@ class CallawaySantAnna(
         has_survey = resolved_survey is not None
 
         _skip_info = {"missing_period": [], "empty_cell": []}
+        _n_skipped_other = 0
 
         if not self.panel:
             # --- Repeated cross-section path ---
@@ -1678,6 +1679,8 @@ class CallawaySantAnna(
 
                         if inf_info is not None:
                             influence_func_info[(g, t)] = inf_info
+                    else:
+                        _n_skipped_other += 1
 
         elif covariates is None and self.estimation_method == "reg":
             # Fast vectorized path for the common no-covariates regression case
@@ -1767,6 +1770,8 @@ class CallawaySantAnna(
 
                         if inf_info is not None:
                             influence_func_info[(g, t)] = inf_info
+                    else:
+                        _n_skipped_other += 1
 
         if not group_time_effects:
             raise ValueError(
@@ -1794,12 +1799,10 @@ class CallawaySantAnna(
                     stacklevel=2,
                 )
 
-        # Consolidated (g,t) cell skip warning (vectorized/covariate paths)
-        # General/RC paths already materialize NaN cells which are reported by
-        # _aggregate_simple()'s own NaN-exclusion warning.
+        # Consolidated (g,t) cell skip warning (all paths)
         _n_missing = len(_skip_info.get("missing_period", []))
         _n_empty = len(_skip_info.get("empty_cell", []))
-        _n_total_skipped = _n_missing + _n_empty
+        _n_total_skipped = _n_missing + _n_empty + _n_skipped_other
         if _n_total_skipped > 0:
             _parts = []
             if _n_missing:
@@ -1808,6 +1811,10 @@ class CallawaySantAnna(
                 )
             if _n_empty:
                 _parts.append(f"{_n_empty} due to zero treated or control " f"observations")
+            if _n_skipped_other:
+                _parts.append(
+                    f"{_n_skipped_other} due to insufficient data or " f"non-estimable cells"
+                )
             warnings.warn(
                 f"{_n_total_skipped} (group, time) cell(s) could not be "
                 f"estimated: {'; '.join(_parts)}.",
