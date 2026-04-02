@@ -241,7 +241,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 "pretrends=True is not yet compatible with survey_design. "
                 "The pre-period lead regression uses unweighted demeaning, "
                 "which does not account for survey weights. Use pretrends=False "
-                "with survey_design, or use pretrend_test() for pre-trend assessment."
+                "with survey_design for now."
             )
 
         # Create working copy
@@ -1534,8 +1534,11 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         if self.pretrends:
             df_0 = df.loc[omega_0_mask].copy()
 
-            # Apply balance_e restriction to pre-period lead regression
-            # so negative horizons use the same balanced cohort set
+            # Determine which cohorts' lead indicators to include.
+            # balance_e restricts which cohorts contribute lead dummies,
+            # but the full Omega_0 sample (including never-treated controls)
+            # is kept for the within-transformed OLS (BJS Test 1, Equation 9).
+            balanced_cohorts = None
             if balance_e is not None:
                 cohort_rel_times_0 = self._build_cohort_rel_times(df, first_treat)
                 balanced_cohorts = set()
@@ -1545,31 +1548,35 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                     for g, horizons in cohort_rel_times_0.items():
                         if required_range.issubset(horizons):
                             balanced_cohorts.add(g)
-                if balanced_cohorts:
-                    balance_mask_0 = df_0[first_treat].isin(balanced_cohorts)
-                    df_0 = df_0.loc[balance_mask_0].copy()
-                else:
-                    # No cohorts qualify — skip pre-period coefficients
-                    df_0 = None
+                if not balanced_cohorts:
+                    balanced_cohorts = None  # No cohorts qualify — skip
 
-            if df_0 is not None and len(df_0) > 0:
-                rel_time_0 = np.where(
-                    ~df_0["_never_treated"],
-                    df_0[time] - df_0[first_treat],
-                    np.nan,
+            rel_time_0 = np.where(
+                ~df_0["_never_treated"],
+                df_0[time] - df_0[first_treat],
+                np.nan,
+            )
+
+            # When balance_e is set, only include leads from balanced cohorts
+            if balanced_cohorts is not None:
+                is_balanced = df_0[first_treat].isin(balanced_cohorts).values
+                rel_time_for_leads = np.where(is_balanced, rel_time_0, np.nan)
+            else:
+                rel_time_for_leads = rel_time_0
+
+            pre_rel_times = sorted(
+                set(int(h) for h in rel_time_for_leads if np.isfinite(h) and h < -self.anticipation)
+            )
+            pre_rel_times = [h for h in pre_rel_times if h != ref_period]
+            if self.horizon_max is not None:
+                pre_rel_times = [h for h in pre_rel_times if abs(h) <= self.horizon_max]
+            if pre_rel_times:
+                pre_effects, _, _ = self._compute_lead_coefficients(
+                    df_0, outcome, unit, time, first_treat, covariates,
+                    cluster_var, pre_rel_times, alpha=self.alpha,
+                    balanced_cohorts=balanced_cohorts,
                 )
-                pre_rel_times = sorted(
-                    set(int(h) for h in rel_time_0 if np.isfinite(h) and h < -self.anticipation)
-                )
-                pre_rel_times = [h for h in pre_rel_times if h != ref_period]
-                if self.horizon_max is not None:
-                    pre_rel_times = [h for h in pre_rel_times if abs(h) <= self.horizon_max]
-                if pre_rel_times:
-                    pre_effects, _, _ = self._compute_lead_coefficients(
-                        df_0, outcome, unit, time, first_treat, covariates,
-                        cluster_var, pre_rel_times, alpha=self.alpha,
-                    )
-                    event_study_effects.update(pre_effects)
+                event_study_effects.update(pre_effects)
 
         # Collect horizons with Proposition 5 violations
         prop5_horizons = []
@@ -1820,12 +1827,17 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         cluster_var: str,
         pre_rel_times: List[int],
         alpha: float = 0.05,
+        balanced_cohorts: Optional[set] = None,
     ) -> Tuple[Dict[int, Dict[str, Any]], np.ndarray, np.ndarray]:
         """
         Compute pre-period lead coefficients via within-transformed OLS (Test 1).
 
         Adds lead indicator dummies W_it(h) = 1[K_it = h] to the untreated
         model and estimates their coefficients with cluster-robust SEs.
+
+        The full Omega_0 sample (including never-treated controls) is always
+        used for within-transformation. When balanced_cohorts is provided,
+        lead indicators are restricted to observations from those cohorts only.
 
         Returns
         -------
@@ -1842,11 +1854,19 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             np.nan,
         )
 
-        # Build lead indicators
+        # Build lead indicators — restrict to balanced cohorts if specified
+        if balanced_cohorts is not None:
+            is_balanced = df_0[first_treat].isin(balanced_cohorts).values
+        else:
+            is_balanced = None
+
         lead_cols = []
         for h in pre_rel_times:
             col_name = f"_lead_{h}"
-            df_0[col_name] = (rel_time_0 == h).astype(float)
+            indicator = (rel_time_0 == h).astype(float)
+            if is_balanced is not None:
+                indicator = indicator * is_balanced  # zero out non-balanced cohorts
+            df_0[col_name] = indicator
             lead_cols.append(col_name)
 
         # Within-transform via iterative demeaning

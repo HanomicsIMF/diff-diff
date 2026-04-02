@@ -745,7 +745,9 @@ class TestPretrends_Regressions:
 
         sd = SurveyDesign(weights="weight")
         est = ImputationDiD(pretrends=True)
-        with pytest.raises(NotImplementedError, match="pretrends=True is not yet compatible"):
+        with pytest.raises(
+            NotImplementedError, match="pretrends=True is not yet compatible"
+        ):
             est.fit(
                 data,
                 outcome="outcome",

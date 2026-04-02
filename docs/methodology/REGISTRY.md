@@ -848,7 +848,9 @@ where `W_it(h) = 1[K_it = h]` are lead indicators, estimated on `Omega_0` only.
 - Reference period `h = -1 - anticipation` is the omitted category (normalized to zero)
 - SEs from cluster-robust Wald variance (consistent with `pretrend_test()`)
 - Bootstrap does not update pre-period SEs (they are from the lead regression)
+- When `balance_e` is set, lead indicators are restricted to balanced cohorts; the full Omega_0 sample (including never-treated) is kept for within-transformation
 - Only affects event study aggregation; overall ATT and group aggregation unchanged
+- **Note:** `pretrends=True` with `survey_design` raises `NotImplementedError` because the lead regression uses unweighted demeaning (same limitation as `pretrend_test()`)
 
 *Edge cases:*
 - **Unbalanced panels:** FE estimated via iterative alternating projection (Gauss-Seidel), equivalent to OLS with unit+time dummies. Converges in O(max_iter) passes; typically 5-20 iterations for unbalanced panels, 1-2 for balanced. One-pass demeaning is only exact for balanced panels.
