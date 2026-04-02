@@ -52,6 +52,7 @@ Deferred items from PR reviews that were not addressed before merge.
 
 | Issue | Location | PR | Priority |
 |-------|----------|----|----------|
+| CallawaySantAnna: materialize NaN entries for non-estimable (g,t) cells per REGISTRY.md line 350; currently omitted from group_time_effects dict | `staggered.py` | #256 | Medium |
 | ImputationDiD dense `(A0'A0).toarray()` scales O((U+T+K)^2), OOM risk on large panels | `imputation.py` | #141 | Medium (deferred — only triggers when sparse solver fails) |
 | Multi-absorb weighted demeaning needs iterative alternating projections for N > 1 absorbed FE with survey weights; unweighted multi-absorb also uses single-pass (pre-existing, exact only for balanced panels) | `estimators.py` | #218 | Medium |
 | Replicate-weight survey df — **Resolved**. `df_survey = rank(replicate_weights) - 1` matching R's `survey::degf()`. For IF paths, `n_valid - 1` when dropped replicates reduce effective count. | `survey.py` | #238 | Resolved |

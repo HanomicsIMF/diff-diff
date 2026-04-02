@@ -1296,3 +1296,31 @@ class TestSilentWarningAudit:
             )
         survey_notes = [x for x in w if "survey weights" in str(x.message)]
         assert len(survey_notes) == 0, f"Unexpected survey note: {survey_notes}"
+
+    def test_item2_nan_ytilde_event_study(self):
+        """Item 2: y_tilde warning fires for aggregate='event_study'."""
+        data = generate_test_data(n_units=50, n_periods=10, never_treated_frac=0.0, seed=42)
+        ts = TwoStageDiD()
+        with pytest.warns(UserWarning, match="non-finite imputed outcomes"):
+            ts.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                aggregate="event_study",
+            )
+
+    def test_item2_nan_ytilde_group(self):
+        """Item 2: y_tilde warning fires for aggregate='group'."""
+        data = generate_test_data(n_units=50, n_periods=10, never_treated_frac=0.0, seed=42)
+        ts = TwoStageDiD()
+        with pytest.warns(UserWarning, match="non-finite imputed outcomes"):
+            ts.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                aggregate="group",
+            )

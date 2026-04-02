@@ -247,9 +247,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
 
-        _uses_replicate_ts = (
-            resolved_survey is not None and resolved_survey.uses_replicate_variance
-        )
+        _uses_replicate_ts = resolved_survey is not None and resolved_survey.uses_replicate_variance
         if _uses_replicate_ts and self.n_bootstrap > 0:
             raise ValueError(
                 "Cannot use n_bootstrap > 0 with replicate-weight survey designs. "
@@ -527,25 +525,46 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
 
         if aggregate in ("event_study", "all"):
             event_study_effects = self._stage2_event_study(
-                df=df, unit=unit, time=time, first_treat=first_treat,
-                covariates=covariates, omega_0_mask=omega_0_mask,
-                omega_1_mask=omega_1_mask, unit_fe=unit_fe, time_fe=time_fe,
-                grand_mean=grand_mean, delta_hat=delta_hat,
-                cluster_var=cluster_var, treatment_groups=treatment_groups,
-                ref_period=ref_period, balance_e=balance_e,
-                kept_cov_mask=kept_cov_mask, survey_weights=survey_weights,
-                survey_weight_type=survey_weight_type, survey_df=_survey_df,
+                df=df,
+                unit=unit,
+                time=time,
+                first_treat=first_treat,
+                covariates=covariates,
+                omega_0_mask=omega_0_mask,
+                omega_1_mask=omega_1_mask,
+                unit_fe=unit_fe,
+                time_fe=time_fe,
+                grand_mean=grand_mean,
+                delta_hat=delta_hat,
+                cluster_var=cluster_var,
+                treatment_groups=treatment_groups,
+                ref_period=ref_period,
+                balance_e=balance_e,
+                kept_cov_mask=kept_cov_mask,
+                survey_weights=survey_weights,
+                survey_weight_type=survey_weight_type,
+                survey_df=_survey_df,
             )
 
         if aggregate in ("group", "all"):
             group_effects = self._stage2_group(
-                df=df, unit=unit, time=time, first_treat=first_treat,
-                covariates=covariates, omega_0_mask=omega_0_mask,
-                omega_1_mask=omega_1_mask, unit_fe=unit_fe, time_fe=time_fe,
-                grand_mean=grand_mean, delta_hat=delta_hat,
-                cluster_var=cluster_var, treatment_groups=treatment_groups,
-                kept_cov_mask=kept_cov_mask, survey_weights=survey_weights,
-                survey_weight_type=survey_weight_type, survey_df=_survey_df,
+                df=df,
+                unit=unit,
+                time=time,
+                first_treat=first_treat,
+                covariates=covariates,
+                omega_0_mask=omega_0_mask,
+                omega_1_mask=omega_1_mask,
+                unit_fe=unit_fe,
+                time_fe=time_fe,
+                grand_mean=grand_mean,
+                delta_hat=delta_hat,
+                cluster_var=cluster_var,
+                treatment_groups=treatment_groups,
+                kept_cov_mask=kept_cov_mask,
+                survey_weights=survey_weights,
+                survey_weight_type=survey_weight_type,
+                survey_df=_survey_df,
             )
 
         # Replicate variance override: derive keys from actual outputs, then refit
@@ -556,12 +575,12 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
 
             # Derive keys from actual outputs (excludes filtered/Prop5 horizons)
             _sorted_es_periods_ts = sorted(
-                e for e in (event_study_effects or {}).keys()
+                e
+                for e in (event_study_effects or {}).keys()
                 if np.isfinite(event_study_effects[e]["effect"])
             )
             _sorted_groups_ts = sorted(
-                g for g in (group_effects or {}).keys()
-                if np.isfinite(group_effects[g]["effect"])
+                g for g in (group_effects or {}).keys() if np.isfinite(group_effects[g]["effect"])
             )
             _n_es_ts = len(_sorted_es_periods_ts)
             _n_grp_ts = len(_sorted_groups_ts)
@@ -573,49 +592,92 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
 
             def _refit_ts(w_r):
                 ufe_r, tfe_r, gm_r, delta_r, kcm_r = self._fit_untreated_model(
-                    df, outcome, unit, time, covariates, omega_0_mask, weights=w_r,
+                    df,
+                    outcome,
+                    unit,
+                    time,
+                    covariates,
+                    omega_0_mask,
+                    weights=w_r,
                 )
                 y_tilde_r = self._residualize(
-                    df, outcome, unit, time, covariates,
-                    ufe_r, tfe_r, gm_r, delta_r,
+                    df,
+                    outcome,
+                    unit,
+                    time,
+                    covariates,
+                    ufe_r,
+                    tfe_r,
+                    gm_r,
+                    delta_r,
                 )
                 df_tmp = df.copy()
                 df_tmp["_y_tilde"] = y_tilde_r
                 results = []
 
                 att_r, _ = self._stage2_static(
-                    df=df_tmp, unit=unit, time=time, first_treat=first_treat,
-                    covariates=covariates, omega_0_mask=omega_0_mask,
-                    omega_1_mask=omega_1_mask, unit_fe=ufe_r, time_fe=tfe_r,
-                    grand_mean=gm_r, delta_hat=delta_r, cluster_var=cluster_var,
-                    kept_cov_mask=kcm_r, survey_weights=w_r,
+                    df=df_tmp,
+                    unit=unit,
+                    time=time,
+                    first_treat=first_treat,
+                    covariates=covariates,
+                    omega_0_mask=omega_0_mask,
+                    omega_1_mask=omega_1_mask,
+                    unit_fe=ufe_r,
+                    time_fe=tfe_r,
+                    grand_mean=gm_r,
+                    delta_hat=delta_r,
+                    cluster_var=cluster_var,
+                    kept_cov_mask=kcm_r,
+                    survey_weights=w_r,
                     survey_weight_type="pweight",
                 )
                 results.append(att_r)
 
                 if _sorted_es_periods_ts:
                     es_r = self._stage2_event_study(
-                        df=df_tmp, unit=unit, time=time, first_treat=first_treat,
-                        covariates=covariates, omega_0_mask=omega_0_mask,
-                        omega_1_mask=omega_1_mask, unit_fe=ufe_r, time_fe=tfe_r,
-                        grand_mean=gm_r, delta_hat=delta_r,
-                        cluster_var=cluster_var, treatment_groups=treatment_groups,
-                        ref_period=ref_period, balance_e=balance_e,
-                        kept_cov_mask=kcm_r, survey_weights=w_r,
-                        survey_weight_type="pweight", survey_df=None,
+                        df=df_tmp,
+                        unit=unit,
+                        time=time,
+                        first_treat=first_treat,
+                        covariates=covariates,
+                        omega_0_mask=omega_0_mask,
+                        omega_1_mask=omega_1_mask,
+                        unit_fe=ufe_r,
+                        time_fe=tfe_r,
+                        grand_mean=gm_r,
+                        delta_hat=delta_r,
+                        cluster_var=cluster_var,
+                        treatment_groups=treatment_groups,
+                        ref_period=ref_period,
+                        balance_e=balance_e,
+                        kept_cov_mask=kcm_r,
+                        survey_weights=w_r,
+                        survey_weight_type="pweight",
+                        survey_df=None,
                     )
                     for e in _sorted_es_periods_ts:
                         results.append(es_r[e]["effect"] if e in es_r else np.nan)
 
                 if _sorted_groups_ts:
                     grp_r = self._stage2_group(
-                        df=df_tmp, unit=unit, time=time, first_treat=first_treat,
-                        covariates=covariates, omega_0_mask=omega_0_mask,
-                        omega_1_mask=omega_1_mask, unit_fe=ufe_r, time_fe=tfe_r,
-                        grand_mean=gm_r, delta_hat=delta_r,
-                        cluster_var=cluster_var, treatment_groups=treatment_groups,
-                        kept_cov_mask=kcm_r, survey_weights=w_r,
-                        survey_weight_type="pweight", survey_df=None,
+                        df=df_tmp,
+                        unit=unit,
+                        time=time,
+                        first_treat=first_treat,
+                        covariates=covariates,
+                        omega_0_mask=omega_0_mask,
+                        omega_1_mask=omega_1_mask,
+                        unit_fe=ufe_r,
+                        time_fe=tfe_r,
+                        grand_mean=gm_r,
+                        delta_hat=delta_r,
+                        cluster_var=cluster_var,
+                        treatment_groups=treatment_groups,
+                        kept_cov_mask=kcm_r,
+                        survey_weights=w_r,
+                        survey_weight_type="pweight",
+                        survey_df=None,
                     )
                     for g in _sorted_groups_ts:
                         results.append(grp_r[g]["effect"] if g in grp_r else np.nan)
@@ -652,9 +714,9 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             # Override group SEs (only for identified effects)
             for j, g in enumerate(_sorted_groups_ts):
                 if group_effects is not None and g in group_effects:
-                    se_g = float(np.sqrt(max(
-                        _vcov_rep_ts[1 + _n_es_ts + j, 1 + _n_es_ts + j], 0.0
-                    )))
+                    se_g = float(
+                        np.sqrt(max(_vcov_rep_ts[1 + _n_es_ts + j, 1 + _n_es_ts + j], 0.0))
+                    )
                     eff_g = group_effects[g]["effect"]
                     t_g, p_g, ci_g = safe_inference(eff_g, se_g, alpha=self.alpha, df=_survey_df)
                     group_effects[g]["se"] = se_g
@@ -1024,6 +1086,26 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
     # Stage 2 specifications
     # =========================================================================
 
+    @staticmethod
+    def _mask_nan_ytilde(y_tilde):
+        """Mask non-finite y_tilde values and warn if any found.
+
+        Returns the boolean mask of non-finite values. Modifies y_tilde in-place
+        (sets NaN values to 0.0).
+        """
+        nan_mask = ~np.isfinite(y_tilde)
+        if nan_mask.any():
+            n_nan = int(nan_mask.sum())
+            warnings.warn(
+                f"{n_nan} observation(s) have non-finite imputed outcomes "
+                f"(y_tilde) from unidentified fixed effects. These "
+                f"observations are excluded from ATT estimation.",
+                UserWarning,
+                stacklevel=3,
+            )
+            y_tilde[nan_mask] = 0.0
+        return nan_mask
+
     def _stage2_static(
         self,
         df: pd.DataFrame,
@@ -1048,21 +1130,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         Returns (att, se).
         """
         y_tilde = df["_y_tilde"].values.copy()
-
-        # Handle NaN y_tilde (from unidentified FEs — e.g., rank condition violations)
-        # Set to 0 so solve_ols doesn't reject; these obs have X_2=0 (untreated)
-        # or contribute NaN treatment effects (excluded from point estimate).
-        nan_mask = ~np.isfinite(y_tilde)
-        if nan_mask.any():
-            n_nan = int(nan_mask.sum())
-            warnings.warn(
-                f"{n_nan} observation(s) have non-finite imputed outcomes "
-                f"(y_tilde) from unidentified fixed effects. These "
-                f"observations are excluded from ATT estimation.",
-                UserWarning,
-                stacklevel=2,
-            )
-            y_tilde[nan_mask] = 0.0
+        nan_mask = self._mask_nan_ytilde(y_tilde)
 
         D = omega_1_mask.values.astype(float)
         # Zero out treatment indicator for NaN y_tilde obs (don't count in ATT)
@@ -1131,10 +1199,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
     ) -> Dict[int, Dict[str, Any]]:
         """Event study Stage 2: OLS of y_tilde on relative-time dummies."""
         y_tilde = df["_y_tilde"].values.copy()
-        # Handle NaN y_tilde (unidentified FEs)
-        nan_mask = ~np.isfinite(y_tilde)
-        if nan_mask.any():
-            y_tilde[nan_mask] = 0.0
+        nan_mask = self._mask_nan_ytilde(y_tilde)
         rel_times = df["_rel_time"].values
         n = len(df)
 
@@ -1350,9 +1415,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
     ) -> Dict[Any, Dict[str, Any]]:
         """Group (cohort) Stage 2: OLS of y_tilde on cohort dummies."""
         y_tilde = df["_y_tilde"].values.copy()
-        nan_mask = ~np.isfinite(y_tilde)
-        if nan_mask.any():
-            y_tilde[nan_mask] = 0.0
+        nan_mask = self._mask_nan_ytilde(y_tilde)
         n = len(df)
 
         # Build Stage 2 design: one column per cohort (no intercept)

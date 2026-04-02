@@ -105,18 +105,11 @@ class CallawaySantAnnaAggregationMixin:
         weights = np.array(weights_list, dtype=float)
         groups_for_gt = np.array(groups_for_gt)
 
-        # Exclude NaN effects from aggregation (R's aggte() convention)
+        # Exclude NaN effects from aggregation (R's aggte() convention).
+        # No warning here — upstream code (consolidated skip warning in fit(),
+        # covariate regression NaN warning) already informed the user.
         finite_mask = np.isfinite(effects)
-        n_nan = int(np.sum(~finite_mask))
-        if n_nan > 0:
-            import warnings
-
-            warnings.warn(
-                f"{n_nan} group-time effect(s) are NaN and excluded from overall ATT "
-                "aggregation. Inspect group_time_effects for details.",
-                UserWarning,
-                stacklevel=2,
-            )
+        if not np.all(finite_mask):
             effects = effects[finite_mask]
             weights = weights[finite_mask]
             gt_pairs = [gt for gt, m in zip(gt_pairs, finite_mask) if m]

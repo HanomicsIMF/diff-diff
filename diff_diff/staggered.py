@@ -1006,18 +1006,6 @@ class CallawaySantAnna(
             ses.append(se)
             task_keys.append((g, t))
 
-        # Materialize NaN entries for skipped cells (REGISTRY contract: line 350)
-        for g, t in skipped_missing_period + skipped_empty_cell:
-            group_time_effects[(g, t)] = {
-                "effect": np.nan,
-                "se": np.nan,
-                "t_stat": np.nan,
-                "p_value": np.nan,
-                "conf_int": (np.nan, np.nan),
-                "n_treated": 0,
-                "n_control": 0,
-            }
-
         # Batch inference for all (g,t) pairs at once
         if task_keys:
             df_survey_val = precomputed.get("df_survey")
@@ -1369,18 +1357,6 @@ class CallawaySantAnna(
                 UserWarning,
                 stacklevel=2,
             )
-
-        # Materialize NaN entries for skipped cells (REGISTRY contract: line 350)
-        for g, t in skipped_missing_period + skipped_empty_cell:
-            group_time_effects[(g, t)] = {
-                "effect": np.nan,
-                "se": np.nan,
-                "t_stat": np.nan,
-                "p_value": np.nan,
-                "conf_int": (np.nan, np.nan),
-                "n_treated": 0,
-                "n_control": 0,
-            }
 
         # Batch inference
         if task_keys:
@@ -1834,7 +1810,7 @@ class CallawaySantAnna(
                 _parts.append(f"{_n_empty} due to zero treated or control " f"observations")
             warnings.warn(
                 f"{_n_total_skipped} (group, time) cell(s) could not be "
-                f"estimated (NaN): {'; '.join(_parts)}.",
+                f"estimated: {'; '.join(_parts)}.",
                 UserWarning,
                 stacklevel=2,
             )
