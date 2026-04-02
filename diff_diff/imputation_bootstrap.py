@@ -174,18 +174,20 @@ class ImputationDiDBootstrapMixin:
             df_1 = df.loc[omega_1_mask]
             rel_times = df_1["_rel_time"].values
 
+            all_horizons = sorted(set(int(h) for h in rel_times if np.isfinite(h)))
+            if self.horizon_max is not None:
+                all_horizons = [h for h in all_horizons if abs(h) <= self.horizon_max]
+
             # Balanced cohort mask (same logic as _aggregate_event_study)
             balanced_mask = None
             if balance_e is not None:
-                all_horizons = sorted(set(int(h) for h in rel_times if np.isfinite(h)))
-                if self.horizon_max is not None:
-                    all_horizons = [h for h in all_horizons if abs(h) <= self.horizon_max]
                 cohort_rel_times = self._build_cohort_rel_times(df, first_treat)
                 balanced_mask = self._compute_balanced_cohort_mask(
                     df_1, first_treat, all_horizons, balance_e, cohort_rel_times
                 )
 
             ref_period = -1 - self.anticipation
+
             for h in event_study_effects:
                 if event_study_effects[h].get("n_obs", 0) == 0:
                     continue
@@ -193,6 +195,12 @@ class ImputationDiDBootstrapMixin:
                     continue
                 if not np.isfinite(event_study_effects[h].get("effect", np.nan)):
                     continue
+
+                # Skip pre-period horizons — their SEs come from Test 1
+                # lead regression, not bootstrap
+                if h < -self.anticipation:
+                    continue
+
                 h_mask = rel_times == h
                 if balanced_mask is not None:
                     h_mask = h_mask & balanced_mask

@@ -849,6 +849,22 @@ Y_it = alpha_i + beta_t [+ X'_it * delta] + W'_it * gamma + epsilon_it
 - Test `gamma = 0` via cluster-robust Wald F-test
 - Independent of treatment effect estimation (Proposition 9)
 
+*Pre-period event study coefficients (`pretrends=True`, Test 1 / Equation 9):*
+
+Pre-period coefficients reuse the existing pre-trend test machinery (BJS Equation 9):
+```
+Y_it = alpha_i + beta_t [+ X'_it * delta] + sum_h gamma_h * W_it(h) + epsilon_it
+```
+where `W_it(h) = 1[K_it = h]` are lead indicators, estimated on `Omega_0` only.
+- `gamma_h` are the pre-period event study coefficients with cluster-robust SEs
+- Under parallel trends (Assumption 1), `gamma_h = 0` for all `h < -anticipation`
+- Reference period `h = -1 - anticipation` is the omitted category (normalized to zero)
+- SEs from cluster-robust Wald variance (consistent with `pretrend_test()`)
+- Bootstrap does not update pre-period SEs (they are from the lead regression)
+- When `balance_e` is set, lead indicators are restricted to balanced cohorts; the full Omega_0 sample (including never-treated) is kept for within-transformation
+- Only affects event study aggregation; overall ATT and group aggregation unchanged
+- **Note:** `pretrends=True` with `survey_design` raises `NotImplementedError` because the lead regression uses unweighted demeaning (same limitation as `pretrend_test()`)
+
 *Edge cases:*
 - **Unbalanced panels:** FE estimated via iterative alternating projection (Gauss-Seidel), equivalent to OLS with unit+time dummies. Converges in O(max_iter) passes; typically 5-20 iterations for unbalanced panels, 1-2 for balanced. One-pass demeaning is only exact for balanced panels.
 - **No never-treated units (Proposition 5):** Long-run effects at horizons `h >= H_bar` are not identified. Set to NaN with warning listing affected horizons.
@@ -938,6 +954,7 @@ Our implementation uses multiplier bootstrap on the GMM influence function: clus
 - **NaN y_tilde handling:** When Stage 1 FE are unidentified for some observations, the residualized outcome `y_tilde` is NaN. These observations are zeroed out (excluded) from the Stage 2 regression and variance computation, matching the treatment of unimputable observations in ImputationDiD.
 - **NaN inference for undefined statistics:** t_stat uses NaN when SE is non-finite or zero; p_value and CI also NaN. Matches CallawaySantAnna/ImputationDiD NaN convention.
 - **Event study aggregation:** Horizon-specific effects use the same two-stage procedure with horizon indicator dummies in Stage 2. Unidentified horizons (e.g., long-run effects without never-treated units, per Proposition 5 of Borusyak et al. 2024) produce NaN.
+- **Pre-period event study coefficients (`pretrends=True`):** When enabled, the Stage 2 design matrix `X_2` includes pre-period relative-time dummies. Pre-period observations have `y_tilde = Step 1 residual` by construction. The GMM sandwich variance accounts for Stage 1 estimation error (Gardner 2022, Theorem 1). Only affects event study aggregation; overall ATT unchanged.
 - **balance_e with no qualifying cohorts:** If no cohorts have sufficient pre/post coverage for the requested `balance_e`, a warning is emitted and event study results contain only the reference period.
 - **No never-treated units (Proposition 5):** When there are no never-treated units and multiple treatment cohorts, horizons h >= h_bar (where h_bar = max(groups) - min(groups)) are unidentified per Proposition 5 of Borusyak et al. (2024). These produce NaN inference with n_obs > 0 (treated observations exist but counterfactual is unidentified) and a warning listing affected horizons. Matches ImputationDiD behavior. Proposition 5 applies to event study horizons only, not cohort aggregation — a cohort whose treated obs all fall at Prop 5 horizons naturally gets n_obs=0 in group effects because all its y_tilde values are NaN.
 - **Zero-observation horizons after filtering:** When `balance_e` or NaN `y_tilde` filtering results in zero observations for some non-Prop-5 event study horizons, those horizons produce NaN for all inference fields (effect, SE, t-stat, p-value, CI) with n_obs=0.

@@ -321,8 +321,11 @@ class TwoStageDiDBootstrapMixin:
         if original_event_study and aggregate in ("event_study", "all"):
             # Recompute S scores for event study specification
             rel_times = df["_rel_time"].values
-            treated_rel = rel_times[omega_1_mask.values]
-            all_horizons = sorted(set(int(h) for h in treated_rel if np.isfinite(h)))
+            if self.pretrends:
+                evt_rel = rel_times[~df["_never_treated"].values]
+            else:
+                evt_rel = rel_times[omega_1_mask.values]
+            all_horizons = sorted(set(int(h) for h in evt_rel if np.isfinite(h)))
             if self.horizon_max is not None:
                 all_horizons = [h for h in all_horizons if abs(h) <= self.horizon_max]
 

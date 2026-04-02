@@ -87,6 +87,11 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
     horizon_max : int, optional
         Maximum event-study horizon. If set, event study effects are only
         computed for |h| <= horizon_max.
+    pretrends : bool, default=False
+        If True, event study includes pre-treatment horizons for visual
+        pre-trends assessment. Pre-period effects should be ~0 under
+        parallel trends. Only affects event_study aggregation; overall
+        ATT and group aggregation are unchanged.
 
     Attributes
     ----------
@@ -139,6 +144,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         seed: Optional[int] = None,
         rank_deficient_action: str = "warn",
         horizon_max: Optional[int] = None,
+        pretrends: bool = False,
     ):
         if rank_deficient_action not in ("warn", "error", "silent"):
             raise ValueError(
@@ -159,6 +165,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         self.seed = seed
         self.rank_deficient_action = rank_deficient_action
         self.horizon_max = horizon_max
+        self.pretrends = pretrends
 
         self.is_fitted_ = False
         self.results_: Optional[TwoStageDiDResults] = None
@@ -1015,9 +1022,12 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         rel_times = df["_rel_time"].values
         n = len(df)
 
-        # Get all horizons from treated observations
-        treated_rel = rel_times[omega_1_mask.values]
-        all_horizons = sorted(set(int(h) for h in treated_rel if np.isfinite(h)))
+        # Get all horizons — include pre-periods when pretrends=True
+        if self.pretrends:
+            evt_rel = rel_times[~df["_never_treated"].values]
+        else:
+            evt_rel = rel_times[omega_1_mask.values]
+        all_horizons = sorted(set(int(h) for h in evt_rel if np.isfinite(h)))
 
         # Apply horizon_max filter
         if self.horizon_max is not None:
@@ -1609,6 +1619,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             "seed": self.seed,
             "rank_deficient_action": self.rank_deficient_action,
             "horizon_max": self.horizon_max,
+            "pretrends": self.pretrends,
         }
 
     def set_params(self, **params) -> "TwoStageDiD":
