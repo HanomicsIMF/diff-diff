@@ -430,6 +430,8 @@ class DifferenceInDifferences:
             )
             if _n_valid_rep < resolved_survey.n_replicates:
                 _df_rep = _n_valid_rep - 1 if _n_valid_rep > 1 else 0
+            if survey_metadata is not None and _df_rep > 0:
+                survey_metadata.df_survey = _df_rep
             t_stat, p_value, conf_int = safe_inference(
                 att, se, alpha=self.alpha, df=_df_rep
             )
@@ -1336,6 +1338,8 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 df = 0  # rank-deficient replicate → NaN inference
             if _n_valid_rep_mp is not None and _n_valid_rep_mp < resolved_survey.n_replicates:
                 df = _n_valid_rep_mp - 1 if _n_valid_rep_mp > 1 else 0
+                if survey_metadata is not None and df > 0:
+                    survey_metadata.df_survey = df
 
         # Guard: fall back to normal distribution if df is non-positive
         # Skip for replicate designs — df=0 is intentional for NaN inference

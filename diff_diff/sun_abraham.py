@@ -736,6 +736,8 @@ class SunAbraham:
             # Override df if replicates dropped
             if _n_valid_rep_sa < resolved_survey.n_replicates:
                 _sa_survey_df = _n_valid_rep_sa - 1 if _n_valid_rep_sa > 1 else 0
+            if survey_metadata is not None and _sa_survey_df is not None and _sa_survey_df > 0:
+                survey_metadata.df_survey = _sa_survey_df
 
             # Override overall ATT SE
             overall_se = float(np.sqrt(max(_vcov_sa[0, 0], 0.0)))

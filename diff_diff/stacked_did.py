@@ -522,6 +522,8 @@ class StackedDiD:
                 if _n_valid_rep_sd is not None and resolved_stacked is not None:
                     if _n_valid_rep_sd < resolved_stacked.n_replicates:
                         _survey_df = _n_valid_rep_sd - 1 if _n_valid_rep_sd > 1 else 0
+                        if survey_metadata is not None and _survey_df > 0:
+                            survey_metadata.df_survey = _survey_df
                 t_stat, p_value, conf_int = safe_inference(
                     effect, se, alpha=self.alpha, df=_survey_df
                 )
@@ -562,6 +564,8 @@ class StackedDiD:
         if _n_valid_rep_sd is not None and resolved_stacked is not None:
             if _n_valid_rep_sd < resolved_stacked.n_replicates:
                 _survey_df_overall = _n_valid_rep_sd - 1 if _n_valid_rep_sd > 1 else 0
+                if survey_metadata is not None and _survey_df_overall > 0:
+                    survey_metadata.df_survey = _survey_df_overall
         overall_t, overall_p, overall_ci = safe_inference(
             overall_att, overall_se, alpha=self.alpha, df=_survey_df_overall
         )

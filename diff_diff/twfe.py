@@ -326,6 +326,8 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             )
             if _n_valid_rep_twfe < resolved_survey.n_replicates:
                 _df_rep = _n_valid_rep_twfe - 1 if _n_valid_rep_twfe > 1 else 0
+            if survey_metadata is not None and _df_rep > 0:
+                survey_metadata.df_survey = _df_rep
             t_stat, p_value, conf_int = _safe_inf(att, se, alpha=self.alpha, df=_df_rep)
         elif self.inference == "wild_bootstrap":
             # Override with wild cluster bootstrap inference
