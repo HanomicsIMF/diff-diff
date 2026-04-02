@@ -1328,7 +1328,8 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 df = _n_valid_rep_mp - 1 if _n_valid_rep_mp > 1 else 0
 
         # Guard: fall back to normal distribution if df is non-positive
-        if df is not None and df <= 0:
+        # Skip for replicate designs — df=0 is intentional for NaN inference
+        if df is not None and df <= 0 and not _uses_replicate_mp:
             warnings.warn(
                 f"Degrees of freedom is non-positive (df={df}). "
                 "Using normal distribution instead of t-distribution for inference.",
