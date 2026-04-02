@@ -190,6 +190,26 @@ class CallawaySantAnna(
         each period (stationarity). Uses cross-sectional DRDID
         (Sant'Anna & Zhao 2020, Section 4) with per-observation influence
         functions.
+    epv_threshold : float, default=10
+        Events Per Variable threshold for propensity score logit.
+        When the ratio of minority-class observations to predictor
+        variables (excluding intercept) falls below this value, a
+        warning is emitted (or ``ValueError`` raised if
+        ``rank_deficient_action="error"``). Based on Peduzzi et al.
+        (1996). Only applies to IPW and DR estimation methods.
+        Use ``diagnose_propensity()`` for a pre-estimation check across
+        all cohorts.
+    pscore_fallback : str, default="error"
+        Action when propensity score estimation fails entirely
+        (``LinAlgError`` or ``ValueError`` from IRLS):
+        - "error": Raise the exception (default). Ensures the user is
+          aware of estimation failures.
+        - "unconditional": Fall back to unconditional propensity
+          with a warning. For IPW, this drops all covariates. For DR,
+          the propensity model becomes unconditional but outcome
+          regression still uses covariates.
+        When ``rank_deficient_action="error"``, errors are always
+        re-raised regardless of this setting.
 
     Attributes
     ----------
@@ -280,6 +300,8 @@ class CallawaySantAnna(
         cband: bool = True,
         pscore_trim: float = 0.01,
         panel: bool = True,
+        epv_threshold: float = 10,
+        pscore_fallback: str = "error",
     ):
         import warnings
 
@@ -294,6 +316,13 @@ class CallawaySantAnna(
             )
         if not (0 < pscore_trim < 0.5):
             raise ValueError(f"pscore_trim must be in (0, 0.5), got {pscore_trim}")
+        if epv_threshold <= 0:
+            raise ValueError(f"epv_threshold must be > 0, got {epv_threshold}")
+        if pscore_fallback not in ["error", "unconditional"]:
+            raise ValueError(
+                f"pscore_fallback must be 'error' or 'unconditional', "
+                f"got '{pscore_fallback}'"
+            )
 
         # Handle bootstrap_weight_type deprecation
         if bootstrap_weight_type is not None:
@@ -343,9 +372,129 @@ class CallawaySantAnna(
         self.cband = cband
         self.pscore_trim = pscore_trim
         self.panel = panel
+        self.epv_threshold = epv_threshold
+        self.pscore_fallback = pscore_fallback
 
         self.is_fitted_ = False
         self.results_: Optional[CallawaySantAnnaResults] = None
+
+    def diagnose_propensity(
+        self,
+        df: pd.DataFrame,
+        outcome: str,
+        unit: str,
+        time: str,
+        first_treat: str,
+        covariates: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
+        """
+        Check Events Per Variable (EPV) across all cohorts without estimation.
+
+        Examines the data to identify cohorts where propensity score logit may
+        be unreliable due to too few events per covariate. Based on Peduzzi
+        et al. (1996).
+
+        This is a raw-count heuristic: it uses total cohort/control unit
+        counts without filtering for missing outcomes, zero survey weights,
+        or period-specific validity. The actual fit-time EPV (stored in
+        ``results.epv_diagnostics``) may be lower because ``fit()`` operates
+        on the valid base/post outcome pair and the positive-weight effective
+        sample. Use this method as a quick pre-check; rely on
+        ``results.epv_diagnostics`` for authoritative per-cell EPV.
+
+        Parameters
+        ----------
+        df, outcome, unit, time, first_treat, covariates
+            Same arguments as ``fit()``.
+
+        Returns
+        -------
+        pd.DataFrame
+            Per-cohort EPV diagnostics with columns: group, n_treated,
+            n_control, n_covariates, n_params, epv, status.
+        """
+        if not self.panel:
+            raise NotImplementedError(
+                "diagnose_propensity() is not yet supported for repeated "
+                "cross-section data (panel=False). Use fit() with covariates "
+                "and check results.epv_diagnostics instead."
+            )
+        if self.control_group == "not_yet_treated":
+            raise NotImplementedError(
+                "diagnose_propensity() is not yet supported for "
+                "control_group='not_yet_treated' because the control set "
+                "varies per (g, t) cell. Use fit() with covariates and "
+                "check results.epv_diagnostics instead."
+            )
+        if self.estimation_method == "reg":
+            return pd.DataFrame(
+                columns=[
+                    "group", "n_treated", "n_control",
+                    "n_covariates", "n_params", "epv", "status",
+                ]
+            )
+        if not covariates:
+            return pd.DataFrame(
+                columns=[
+                    "group", "n_treated", "n_control",
+                    "n_covariates", "n_params", "epv", "status",
+                ]
+            )
+
+        # Normalize np.inf → 0 for never-treated encoding (same as fit())
+        df = df.copy()
+        df[first_treat] = df[first_treat].replace([np.inf, float("inf")], 0)
+
+        # Compute time_periods and treatment_groups (same logic as fit())
+        time_periods = sorted(df[time].unique())
+        treatment_groups = sorted(
+            [g for g in df[first_treat].unique() if g > 0]
+        )
+        precomputed = self._precompute_structures(
+            df, outcome, unit, time, first_treat, covariates,
+            time_periods=time_periods, treatment_groups=treatment_groups,
+        )
+        cohort_masks = precomputed["cohort_masks"]
+        never_treated_mask = precomputed["never_treated_mask"]
+        unit_cohorts = precomputed["unit_cohorts"]
+        n_covariates = len(covariates)
+        n_params = n_covariates  # predictor count, excluding intercept (Peduzzi convention)
+
+        rows = []
+        for g in sorted(cohort_masks.keys()):
+            treated_mask = cohort_masks[g]
+            if self.control_group == "never_treated":
+                control_mask = never_treated_mask
+            else:
+                base_period_val = g - 1 - self.anticipation
+                nyt_threshold = base_period_val + self.anticipation
+                control_mask = never_treated_mask | (
+                    (unit_cohorts > nyt_threshold) & (unit_cohorts != g)
+                )
+
+            n_treated = int(np.sum(treated_mask))
+            n_control = int(np.sum(control_mask))
+            n_events = min(n_treated, n_control)
+            epv = n_events / n_params if n_params > 0 else float("inf")
+
+            if epv >= self.epv_threshold:
+                status = "ok"
+            elif epv >= 2:
+                status = "low"
+            else:
+                status = "critical"
+
+            rows.append({
+                "group": g,
+                "n_treated": n_treated,
+                "n_control": n_control,
+                "n_covariates": n_covariates,
+                "n_params": n_params,
+                "epv": round(epv, 1),
+                "status": status,
+            })
+
+        return pd.DataFrame(rows)
 
     @staticmethod
     def _collapse_survey_to_unit_level(resolved_survey, df, unit_col, all_units):
@@ -464,6 +613,7 @@ class CallawaySantAnna(
         covariates: Optional[List[str]],
         pscore_cache: Optional[Dict] = None,
         cho_cache: Optional[Dict] = None,
+        epv_diagnostics: Optional[Dict] = None,
     ) -> Tuple[Optional[float], float, int, int, Optional[Dict[str, Any]], Optional[float]]:
         """
         Compute ATT(g,t) using pre-computed data structures (fast version).
@@ -610,6 +760,7 @@ class CallawaySantAnna(
             )
         elif self.estimation_method == "ipw":
             sw_all = np.concatenate([sw_treated, sw_control]) if sw_treated is not None else None
+            epv_diag: dict = {}
             att_gt, se_gt, inf_func = self._ipw_estimation(
                 treated_change,
                 control_change,
@@ -622,9 +773,14 @@ class CallawaySantAnna(
                 sw_treated=sw_treated,
                 sw_control=sw_control,
                 sw_all=sw_all,
+                context_label=f"cohort g={g}",
+                epv_diagnostics_out=epv_diag,
             )
+            if epv_diagnostics is not None and epv_diag:
+                epv_diagnostics[(g, t)] = epv_diag
         else:  # doubly robust
             sw_all = np.concatenate([sw_treated, sw_control]) if sw_treated is not None else None
+            epv_diag = {}
             att_gt, se_gt, inf_func = self._doubly_robust(
                 treated_change,
                 control_change,
@@ -637,7 +793,11 @@ class CallawaySantAnna(
                 sw_treated=sw_treated,
                 sw_control=sw_control,
                 sw_all=sw_all,
+                context_label=f"cohort g={g}",
+                epv_diagnostics_out=epv_diag,
             )
+            if epv_diagnostics is not None and epv_diag:
+                epv_diagnostics[(g, t)] = epv_diag
 
         # Package influence function info with index arrays (positions into
         # precomputed['all_units']) for O(1) downstream lookups instead of
@@ -1418,6 +1578,9 @@ class CallawaySantAnna(
             # Loop using _compute_att_gt_rc() for each (g,t).
             group_time_effects = {}
             influence_func_info = {}
+            epv_diagnostics = (
+                {} if (covariates and self.estimation_method in ("ipw", "dr")) else None
+            )
 
             for g in treatment_groups:
                 if self.base_period == "universal":
@@ -1434,6 +1597,7 @@ class CallawaySantAnna(
                         g,
                         t,
                         covariates,
+                        epv_diagnostics=epv_diagnostics,
                     )
                     att_gt, se_gt, n_treat, n_ctrl, inf_info, sw_sum = rc_result[:6]
                     agg_w = rc_result[6] if len(rc_result) > 6 else n_treat
@@ -1468,6 +1632,7 @@ class CallawaySantAnna(
             group_time_effects, influence_func_info = self._compute_all_att_gt_vectorized(
                 precomputed, treatment_groups, time_periods, min_period
             )
+            epv_diagnostics = None  # No logit in this path
         elif (
             covariates is not None
             and self.estimation_method == "reg"
@@ -1478,6 +1643,7 @@ class CallawaySantAnna(
             group_time_effects, influence_func_info = self._compute_all_att_gt_covariate_reg(
                 precomputed, treatment_groups, time_periods, min_period
             )
+            epv_diagnostics = None  # No logit in this path
         else:
             # General path: IPW, DR, rank_deficient_action="error", or edge cases
             group_time_effects = {}
@@ -1498,6 +1664,10 @@ class CallawaySantAnna(
                 else None
             )
 
+            epv_diagnostics = (
+                {} if (covariates and self.estimation_method in ("ipw", "dr")) else None
+            )
+
             for g in treatment_groups:
                 if self.base_period == "universal":
                     universal_base = g - 1 - self.anticipation
@@ -1515,6 +1685,7 @@ class CallawaySantAnna(
                         covariates,
                         pscore_cache=pscore_cache,
                         cho_cache=cho_cache,
+                        epv_diagnostics=epv_diagnostics,
                     )
 
                     if att_gt is not None:
@@ -1546,6 +1717,26 @@ class CallawaySantAnna(
                 "Could not estimate any group-time effects. "
                 "Check that data has sufficient observations."
             )
+
+        # Consolidated EPV summary warning
+        if epv_diagnostics:
+            low_epv = {k: v for k, v in epv_diagnostics.items() if v.get("is_low")}
+            if low_epv:
+                n_affected = len(low_epv)
+                n_total = len(epv_diagnostics)
+                min_entry = min(low_epv.values(), key=lambda v: v["epv"])
+                min_g = min(low_epv.keys(), key=lambda k: low_epv[k]["epv"])
+                warnings.warn(
+                    f"Low Events Per Variable (EPV) detected in propensity "
+                    f"score estimation for {n_affected} of {n_total} cell(s). "
+                    f"Minimum EPV = {min_entry['epv']:.1f} "
+                    f"(cohort g={min_g[0]}). "
+                    f"Consider estimation_method='reg' (avoids propensity "
+                    f"scores) or reducing the number of covariates. "
+                    f"See results.epv_summary() for details.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # Compute overall ATT (simple aggregation)
         overall_att, overall_se, overall_effective_df = self._aggregate_simple(
@@ -1751,6 +1942,9 @@ class CallawaySantAnna(
             event_study_vcov=event_study_vcov,
             event_study_vcov_index=event_study_vcov_index,
             panel=self.panel,
+            epv_diagnostics=epv_diagnostics if epv_diagnostics else None,
+            epv_threshold=self.epv_threshold,
+            pscore_fallback=self.pscore_fallback,
         )
 
         self.is_fitted_ = True
@@ -1886,6 +2080,8 @@ class CallawaySantAnna(
         sw_treated: Optional[np.ndarray] = None,
         sw_control: Optional[np.ndarray] = None,
         sw_all: Optional[np.ndarray] = None,
+        context_label: str = "",
+        epv_diagnostics_out: Optional[dict] = None,
     ) -> Tuple[float, float, np.ndarray]:
         """
         Estimate ATT using inverse probability weighting.
@@ -1909,47 +2105,74 @@ class CallawaySantAnna(
 
         if X_treated is not None and X_control is not None and X_treated.shape[1] > 0:
             # Covariate-adjusted IPW estimation
+            ps_fallback_used = False
             # Check propensity score cache
             cached_pscore = None
             if pscore_cache is not None and pscore_key is not None:
                 cached_pscore = pscore_cache.get(pscore_key)
 
             if cached_pscore is not None:
-                # Use cached propensity scores (beta coefficients)
-                beta_logistic = cached_pscore
+                # Use cached propensity scores (beta coefficients + EPV diag)
+                beta_logistic, cached_diag = cached_pscore
                 X_all = np.vstack([X_treated, X_control])
                 X_all_with_intercept = np.column_stack([np.ones(n_t + n_c), X_all])
                 z = np.dot(X_all_with_intercept, beta_logistic)
                 z = np.clip(z, -500, 500)
                 pscore = 1 / (1 + np.exp(-z))
+                if epv_diagnostics_out is not None and cached_diag:
+                    epv_diagnostics_out.update(cached_diag)
             else:
                 # Stack covariates and create treatment indicator
                 X_all = np.vstack([X_treated, X_control])
                 D = np.concatenate([np.ones(n_t), np.zeros(n_c)])
 
                 # Estimate propensity scores using IRLS logistic regression
+                diag = {}
                 try:
                     beta_logistic, pscore = solve_logit(
                         X_all,
                         D,
                         rank_deficient_action=self.rank_deficient_action,
                         weights=sw_all,
+                        epv_threshold=self.epv_threshold,
+                        context_label=context_label,
+                        diagnostics_out=diag,
                     )
                     _check_propensity_diagnostics(pscore, self.pscore_trim)
-                    # Cache the fitted coefficients
+                    # Cache the fitted coefficients (zero-fill NaN from
+                    # dropped rank-deficient columns to prevent NaN
+                    # propagation on cache reuse) alongside EPV diagnostics
                     if pscore_cache is not None and pscore_key is not None:
-                        pscore_cache[pscore_key] = beta_logistic
+                        beta_clean = np.where(
+                            np.isfinite(beta_logistic), beta_logistic, 0.0
+                        )
+                        pscore_cache[pscore_key] = (beta_clean, diag)
                 except (np.linalg.LinAlgError, ValueError):
-                    if self.rank_deficient_action == "error":
+                    if (
+                        self.pscore_fallback == "error"
+                        or self.rank_deficient_action == "error"
+                    ):
                         raise
                     # Fallback to unconditional if logistic regression fails
+                    ctx = f" for {context_label}" if context_label else ""
                     warnings.warn(
-                        "Propensity score estimation failed. "
-                        "Falling back to unconditional estimation.",
+                        f"Propensity score estimation failed{ctx}. "
+                        f"Falling back to unconditional propensity "
+                        f"(all covariates dropped for this cell). "
+                        f"Consider estimation_method='reg' to avoid "
+                        f"propensity scores entirely.",
                         UserWarning,
                         stacklevel=4,
                     )
-                    pscore = np.full(len(D), n_t / (n_t + n_c))
+                    if sw_all is not None:
+                        pos = sw_all > 0
+                        p_uc = float(np.average(D[pos], weights=sw_all[pos]))
+                    else:
+                        p_uc = n_t / (n_t + n_c)
+                    pscore = np.full(len(D), p_uc)
+                    ps_fallback_used = True
+                if epv_diagnostics_out is not None and diag:
+                    epv_diagnostics_out.update(diag)
 
             # Propensity scores for treated and control
             pscore_treated = pscore[:n_t]
@@ -1977,40 +2200,41 @@ class CallawaySantAnna(
                 )
                 inf_func = np.concatenate([inf_treated, inf_control])
 
-                # Propensity score IF correction
-                # Accounts for estimation uncertainty in logistic regression coefficients
-                X_all_int = np.column_stack([np.ones(n_t + n_c), X_all])
-                pscore_all = np.concatenate([pscore_treated, pscore_control])
+                if not ps_fallback_used:
+                    # Propensity score IF correction
+                    # Accounts for estimation uncertainty in logistic regression coefficients
+                    X_all_int = np.column_stack([np.ones(n_t + n_c), X_all])
+                    pscore_all = np.concatenate([pscore_treated, pscore_control])
 
-                # PS IF correction — compute in R's psi convention, convert to phi
-                n_all_panel = n_t + n_c
-                W_ps = pscore_all * (1 - pscore_all)
-                if sw_all is not None:
-                    W_ps = W_ps * sw_all
-                # R: Hessian.ps = crossprod(X * sqrt(W)) / n
-                H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
-                H_psi_inv = _safe_inv(H_psi)
+                    # PS IF correction — compute in R's psi convention, convert to phi
+                    n_all_panel = n_t + n_c
+                    W_ps = pscore_all * (1 - pscore_all)
+                    if sw_all is not None:
+                        W_ps = W_ps * sw_all
+                    # R: Hessian.ps = crossprod(X * sqrt(W)) / n
+                    H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
+                    H_psi_inv = _safe_inv(H_psi)
 
-                D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
-                score_ps = (D_all - pscore_all)[:, None] * X_all_int
-                if sw_all is not None:
-                    score_ps = score_ps * sw_all[:, None]
-                # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale, O(1) per obs)
-                asy_lin_rep_psi = score_ps @ H_psi_inv
+                    D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
+                    score_ps = (D_all - pscore_all)[:, None] * X_all_int
+                    if sw_all is not None:
+                        score_ps = score_ps * sw_all[:, None]
+                    # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale, O(1) per obs)
+                    asy_lin_rep_psi = score_ps @ H_psi_inv
 
-                att_control_weighted = np.sum(weights_control_norm * control_change)
-                # R: M2 = colMeans(w.cont * (y - att) * X) / mean(w.cont)
-                # np.sum (not mean): subset sum with normalized weights matches
-                # R's full-sample colMeans/mean(w) after cancellation
-                M2 = np.sum(
-                    (weights_control_norm * (control_change - att_control_weighted))[:, None]
-                    * X_all_int[n_t:],
-                    axis=0,
-                )
+                    att_control_weighted = np.sum(weights_control_norm * control_change)
+                    # R: M2 = colMeans(w.cont * (y - att) * X) / mean(w.cont)
+                    # np.sum (not mean): subset sum with normalized weights matches
+                    # R's full-sample colMeans/mean(w) after cancellation
+                    M2 = np.sum(
+                        (weights_control_norm * (control_change - att_control_weighted))[:, None]
+                        * X_all_int[n_t:],
+                        axis=0,
+                    )
 
-                # psi-scale correction, convert to phi for storage
-                # Subtract: R adds PS correction to inf.control, then att = treat - control
-                inf_func = inf_func - (asy_lin_rep_psi @ M2) / n_all_panel
+                    # psi-scale correction, convert to phi for storage
+                    # Subtract: R adds PS correction to inf.control, then att = treat - control
+                    inf_func = inf_func - (asy_lin_rep_psi @ M2) / n_all_panel
 
                 # SE from influence function variance
                 var_psi = np.sum(inf_func**2)
@@ -2094,6 +2318,8 @@ class CallawaySantAnna(
         sw_treated: Optional[np.ndarray] = None,
         sw_control: Optional[np.ndarray] = None,
         sw_all: Optional[np.ndarray] = None,
+        context_label: str = "",
+        epv_diagnostics_out: Optional[dict] = None,
     ) -> Tuple[float, float, np.ndarray]:
         """
         Estimate ATT using doubly robust estimation.
@@ -2121,6 +2347,7 @@ class CallawaySantAnna(
 
         if X_treated is not None and X_control is not None and X_treated.shape[1] > 0:
             # Doubly robust estimation with covariates
+            ps_fallback_used = False
             # Step 1: Outcome regression - fit E[Delta Y | X] on control
             # Try Cholesky cache for outcome regression (disabled when survey weights present)
             beta = None
@@ -2178,37 +2405,62 @@ class CallawaySantAnna(
                 cached_pscore = pscore_cache.get(pscore_key)
 
             if cached_pscore is not None:
-                beta_logistic = cached_pscore
+                beta_logistic, cached_diag = cached_pscore
                 X_all = np.vstack([X_treated, X_control])
                 X_all_with_intercept = np.column_stack([np.ones(n_t + n_c), X_all])
                 z = np.dot(X_all_with_intercept, beta_logistic)
                 z = np.clip(z, -500, 500)
                 pscore = 1 / (1 + np.exp(-z))
+                if epv_diagnostics_out is not None and cached_diag:
+                    epv_diagnostics_out.update(cached_diag)
             else:
                 X_all = np.vstack([X_treated, X_control])
                 D = np.concatenate([np.ones(n_t), np.zeros(n_c)])
 
+                diag = {}
                 try:
                     beta_logistic, pscore = solve_logit(
                         X_all,
                         D,
                         rank_deficient_action=self.rank_deficient_action,
                         weights=sw_all,
+                        epv_threshold=self.epv_threshold,
+                        context_label=context_label,
+                        diagnostics_out=diag,
                     )
                     _check_propensity_diagnostics(pscore, self.pscore_trim)
                     if pscore_cache is not None and pscore_key is not None:
-                        pscore_cache[pscore_key] = beta_logistic
+                        beta_clean = np.where(
+                            np.isfinite(beta_logistic), beta_logistic, 0.0
+                        )
+                        pscore_cache[pscore_key] = (beta_clean, diag)
                 except (np.linalg.LinAlgError, ValueError):
-                    if self.rank_deficient_action == "error":
+                    if (
+                        self.pscore_fallback == "error"
+                        or self.rank_deficient_action == "error"
+                    ):
                         raise
                     # Fallback to unconditional if logistic regression fails
+                    ctx = f" for {context_label}" if context_label else ""
                     warnings.warn(
-                        "Propensity score estimation failed. "
-                        "Falling back to unconditional estimation.",
+                        f"Propensity score estimation failed{ctx}. "
+                        f"Falling back to unconditional propensity "
+                        f"(propensity model ignores covariates; outcome "
+                        f"regression still uses them). "
+                        f"Consider estimation_method='reg' to avoid "
+                        f"propensity scores entirely.",
                         UserWarning,
                         stacklevel=4,
                     )
-                    pscore = np.full(len(D), n_t / (n_t + n_c))
+                    if sw_all is not None:
+                        pos = sw_all > 0
+                        p_uc = float(np.average(D[pos], weights=sw_all[pos]))
+                    else:
+                        p_uc = n_t / (n_t + n_c)
+                    pscore = np.full(len(D), p_uc)
+                    ps_fallback_used = True
+                if epv_diagnostics_out is not None and diag:
+                    epv_diagnostics_out.update(diag)
 
             pscore_control = pscore[n_t:]
 
@@ -2237,36 +2489,37 @@ class CallawaySantAnna(
                 inf_func = np.concatenate([psi_treated, psi_control])
 
                 if X_treated is not None and X_control is not None and X_treated.shape[1] > 0:
-                    # --- PS IF correction (mirrors IPW L1929-1961) ---
-                    # Accounts for propensity score estimation uncertainty
-                    X_all_int = np.column_stack([np.ones(n_t + n_c), X_all])
-                    pscore_treated_clipped = np.clip(
-                        pscore[:n_t], self.pscore_trim, 1 - self.pscore_trim
-                    )
-                    pscore_all = np.concatenate([pscore_treated_clipped, pscore_control])
+                    if not ps_fallback_used:
+                        # --- PS IF correction (mirrors IPW L1929-1961) ---
+                        # Accounts for propensity score estimation uncertainty
+                        X_all_int = np.column_stack([np.ones(n_t + n_c), X_all])
+                        pscore_treated_clipped = np.clip(
+                            pscore[:n_t], self.pscore_trim, 1 - self.pscore_trim
+                        )
+                        pscore_all = np.concatenate([pscore_treated_clipped, pscore_control])
 
-                    # PS IF correction — psi convention, convert to phi
-                    n_all_panel = n_t + n_c
-                    W_ps = pscore_all * (1 - pscore_all)
-                    if sw_all is not None:
-                        W_ps = W_ps * sw_all
-                    H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
-                    H_psi_inv = _safe_inv(H_psi)
+                        # PS IF correction — psi convention, convert to phi
+                        n_all_panel = n_t + n_c
+                        W_ps = pscore_all * (1 - pscore_all)
+                        if sw_all is not None:
+                            W_ps = W_ps * sw_all
+                        H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
+                        H_psi_inv = _safe_inv(H_psi)
 
-                    D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
-                    score_ps = (D_all - pscore_all)[:, None] * X_all_int
-                    if sw_all is not None:
-                        score_ps = score_ps * sw_all[:, None]
-                    # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale)
-                    asy_lin_rep_psi = score_ps @ H_psi_inv
+                        D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
+                        score_ps = (D_all - pscore_all)[:, None] * X_all_int
+                        if sw_all is not None:
+                            score_ps = score_ps * sw_all[:, None]
+                        # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale)
+                        asy_lin_rep_psi = score_ps @ H_psi_inv
 
-                    dr_resid_control = m_control - control_change
-                    M2_dr = np.sum(
-                        ((weights_control / sw_t_sum) * dr_resid_control)[:, None]
-                        * X_all_int[n_t:],
-                        axis=0,
-                    )
-                    inf_func = inf_func + (asy_lin_rep_psi @ M2_dr) / n_all_panel
+                        dr_resid_control = m_control - control_change
+                        M2_dr = np.sum(
+                            ((weights_control / sw_t_sum) * dr_resid_control)[:, None]
+                            * X_all_int[n_t:],
+                            axis=0,
+                        )
+                        inf_func = inf_func + (asy_lin_rep_psi @ M2_dr) / n_all_panel
 
                     # --- OR IF correction ---
                     # Accounts for outcome regression estimation uncertainty
@@ -2306,29 +2559,30 @@ class CallawaySantAnna(
                 inf_func = np.concatenate([psi_treated, psi_control])
 
                 if X_treated is not None and X_control is not None and X_treated.shape[1] > 0:
-                    # --- PS IF correction — psi convention, convert to phi ---
-                    n_all_panel = n_t + n_c
-                    X_all_int = np.column_stack([np.ones(n_all_panel), X_all])
-                    pscore_treated_clipped = np.clip(
-                        pscore[:n_t], self.pscore_trim, 1 - self.pscore_trim
-                    )
-                    pscore_all = np.concatenate([pscore_treated_clipped, pscore_control])
+                    if not ps_fallback_used:
+                        # --- PS IF correction — psi convention, convert to phi ---
+                        n_all_panel = n_t + n_c
+                        X_all_int = np.column_stack([np.ones(n_all_panel), X_all])
+                        pscore_treated_clipped = np.clip(
+                            pscore[:n_t], self.pscore_trim, 1 - self.pscore_trim
+                        )
+                        pscore_all = np.concatenate([pscore_treated_clipped, pscore_control])
 
-                    W_ps = pscore_all * (1 - pscore_all)
-                    H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
-                    H_psi_inv = _safe_inv(H_psi)
+                        W_ps = pscore_all * (1 - pscore_all)
+                        H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
+                        H_psi_inv = _safe_inv(H_psi)
 
-                    D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
-                    score_ps = (D_all - pscore_all)[:, None] * X_all_int
-                    # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale)
-                    asy_lin_rep_psi = score_ps @ H_psi_inv
+                        D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
+                        score_ps = (D_all - pscore_all)[:, None] * X_all_int
+                        # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale)
+                        asy_lin_rep_psi = score_ps @ H_psi_inv
 
-                    dr_resid_control = m_control - control_change
-                    M2_dr = np.sum(
-                        ((weights_control / n_t) * dr_resid_control)[:, None] * X_all_int[n_t:],
-                        axis=0,
-                    )
-                    inf_func = inf_func + (asy_lin_rep_psi @ M2_dr) / n_all_panel
+                        dr_resid_control = m_control - control_change
+                        M2_dr = np.sum(
+                            ((weights_control / n_t) * dr_resid_control)[:, None] * X_all_int[n_t:],
+                            axis=0,
+                        )
+                        inf_func = inf_func + (asy_lin_rep_psi @ M2_dr) / n_all_panel
 
                     # --- OR IF correction ---
                     X_c_int = X_control_with_intercept
@@ -2481,6 +2735,7 @@ class CallawaySantAnna(
         g: Any,
         t: Any,
         covariates: Optional[List[str]],
+        epv_diagnostics: Optional[Dict] = None,
     ) -> Tuple[Optional[float], float, int, int, Optional[Dict[str, Any]], Optional[float]]:
         """
         Compute ATT(g,t) for repeated cross-section data.
@@ -2608,6 +2863,7 @@ class CallawaySantAnna(
                 sw_cs=sw_cs,
             )
         elif has_covariates and self.estimation_method == "ipw":
+            epv_diag: dict = {}
             att, se, inf_func_all, idx_all = self._ipw_estimation_rc(
                 y_gt,
                 y_gs,
@@ -2621,8 +2877,13 @@ class CallawaySantAnna(
                 sw_gs=sw_gs,
                 sw_ct=sw_ct,
                 sw_cs=sw_cs,
+                context_label=f"cohort g={g}",
+                epv_diagnostics_out=epv_diag,
             )
+            if epv_diagnostics is not None and epv_diag:
+                epv_diagnostics[(g, t)] = epv_diag
         elif has_covariates and self.estimation_method == "dr":
+            epv_diag = {}
             att, se, inf_func_all, idx_all = self._doubly_robust_rc(
                 y_gt,
                 y_gs,
@@ -2636,7 +2897,11 @@ class CallawaySantAnna(
                 sw_gs=sw_gs,
                 sw_ct=sw_ct,
                 sw_cs=sw_cs,
+                context_label=f"cohort g={g}",
+                epv_diagnostics_out=epv_diag,
             )
+            if epv_diagnostics is not None and epv_diag:
+                epv_diagnostics[(g, t)] = epv_diag
         else:
             # No-covariates 2x2 DiD (all methods reduce to same)
             att, se, inf_func_all, idx_all = self._rc_2x2_did(
@@ -2933,6 +3198,8 @@ class CallawaySantAnna(
         sw_gs=None,
         sw_ct=None,
         sw_cs=None,
+        context_label: str = "",
+        epv_diagnostics_out: Optional[dict] = None,
     ):
         """
         Cross-sectional IPW estimation for ATT(g,t).
@@ -2964,25 +3231,44 @@ class CallawaySantAnna(
         if sw_gt is not None:
             sw_all = np.concatenate([sw_gt, sw_gs, sw_ct, sw_cs])
 
+        ps_fallback_used = False
+        diag = {}
         try:
             beta_logistic, pscore = solve_logit(
                 X_all,
                 D_all,
                 rank_deficient_action=self.rank_deficient_action,
                 weights=sw_all,
+                epv_threshold=self.epv_threshold,
+                context_label=context_label,
+                diagnostics_out=diag,
             )
             _check_propensity_diagnostics(pscore, self.pscore_trim)
         except (np.linalg.LinAlgError, ValueError):
-            if self.rank_deficient_action == "error":
+            if (
+                self.pscore_fallback == "error"
+                or self.rank_deficient_action == "error"
+            ):
                 raise
+            ctx = f" for {context_label}" if context_label else ""
             warnings.warn(
-                "Propensity score estimation failed (RCS IPW). "
-                "Falling back to unconditional estimation.",
+                f"Propensity score estimation failed{ctx} (RCS IPW). "
+                f"Falling back to unconditional propensity "
+                f"(all covariates dropped for this cell). "
+                f"Consider estimation_method='reg' to avoid "
+                f"propensity scores entirely.",
                 UserWarning,
                 stacklevel=4,
             )
-            p_treat = (n_gt + n_gs) / len(D_all)
+            if sw_all is not None:
+                pos = sw_all > 0
+                p_treat = float(np.average(D_all[pos], weights=sw_all[pos]))
+            else:
+                p_treat = (n_gt + n_gs) / len(D_all)
             pscore = np.full(len(D_all), p_treat)
+            ps_fallback_used = True
+        if epv_diagnostics_out is not None and diag:
+            epv_diagnostics_out.update(diag)
 
         # Clip propensity scores
         pscore = np.clip(pscore, self.pscore_trim, 1 - self.pscore_trim)
@@ -3054,40 +3340,41 @@ class CallawaySantAnna(
 
         psi_all = np.concatenate([psi_gt, psi_gs, psi_ct, psi_cs])
 
-        # --- PS IF correction — psi convention, convert to phi ---
-        X_all_int = np.column_stack([np.ones(n_all), X_all])
-
-        W_ps = pscore * (1 - pscore)
-        if sw_all is not None:
-            W_ps = W_ps * sw_all
-        # R: Hessian.ps = crossprod(X * sqrt(W)) / n
-        H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all
-        H_psi_inv = _safe_inv(H_psi)
-
-        score_ps = (D_all - pscore)[:, None] * X_all_int
-        if sw_all is not None:
-            score_ps = score_ps * sw_all[:, None]
-        # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale, O(1) per obs)
-        asy_lin_rep_psi = score_ps @ H_psi_inv
-
         # Convert leading psi to phi: phi = psi / n_all
         inf_all = psi_all / n_all
 
-        # PS nuisance correction in psi convention
-        # R: M2 = colMeans(w_ipw * (y-mu) * X)
-        ipw_resid_ct = w_ct_norm * (y_ct - mu_ct_ipw)
-        ipw_resid_cs = w_cs_norm * (y_cs - mu_cs_ipw)
+        if not ps_fallback_used:
+            # --- PS IF correction — psi convention, convert to phi ---
+            X_all_int = np.column_stack([np.ones(n_all), X_all])
 
-        ct_slice = slice(n_gt + n_gs, n_gt + n_gs + n_ct)
-        cs_slice = slice(n_gt + n_gs + n_ct, None)
+            W_ps = pscore * (1 - pscore)
+            if sw_all is not None:
+                W_ps = W_ps * sw_all
+            # R: Hessian.ps = crossprod(X * sqrt(W)) / n
+            H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all
+            H_psi_inv = _safe_inv(H_psi)
 
-        M2 = np.zeros(X_all_int.shape[1])
-        M2 += np.sum(ipw_resid_ct[:, None] * X_all_int[ct_slice], axis=0)
-        M2 -= np.sum(ipw_resid_cs[:, None] * X_all_int[cs_slice], axis=0)
+            score_ps = (D_all - pscore)[:, None] * X_all_int
+            if sw_all is not None:
+                score_ps = score_ps * sw_all[:, None]
+            # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale, O(1) per obs)
+            asy_lin_rep_psi = score_ps @ H_psi_inv
 
-        # psi-scale correction, convert to phi
-        # Subtract: R adds PS correction to inf.control, then att = treat - control
-        inf_all = inf_all - (asy_lin_rep_psi @ M2) / n_all
+            # PS nuisance correction in psi convention
+            # R: M2 = colMeans(w_ipw * (y-mu) * X)
+            ipw_resid_ct = w_ct_norm * (y_ct - mu_ct_ipw)
+            ipw_resid_cs = w_cs_norm * (y_cs - mu_cs_ipw)
+
+            ct_slice = slice(n_gt + n_gs, n_gt + n_gs + n_ct)
+            cs_slice = slice(n_gt + n_gs + n_ct, None)
+
+            M2 = np.zeros(X_all_int.shape[1])
+            M2 += np.sum(ipw_resid_ct[:, None] * X_all_int[ct_slice], axis=0)
+            M2 -= np.sum(ipw_resid_cs[:, None] * X_all_int[cs_slice], axis=0)
+
+            # psi-scale correction, convert to phi
+            # Subtract: R adds PS correction to inf.control, then att = treat - control
+            inf_all = inf_all - (asy_lin_rep_psi @ M2) / n_all
 
         # =================================================================
         # SE from phi: se = sqrt(sum(phi^2))
@@ -3112,6 +3399,8 @@ class CallawaySantAnna(
         sw_gs=None,
         sw_ct=None,
         sw_cs=None,
+        context_label: str = "",
+        epv_diagnostics_out: Optional[dict] = None,
     ):
         """
         Cross-sectional doubly robust estimation for ATT(g,t).
@@ -3210,25 +3499,45 @@ class CallawaySantAnna(
         if sw_gt is not None:
             sw_all = np.concatenate([sw_gt, sw_gs, sw_ct, sw_cs])
 
+        ps_fallback_used = False
+        diag = {}
         try:
             beta_logistic, pscore = solve_logit(
                 X_all,
                 D_all,
                 rank_deficient_action=self.rank_deficient_action,
                 weights=sw_all,
+                epv_threshold=self.epv_threshold,
+                context_label=context_label,
+                diagnostics_out=diag,
             )
             _check_propensity_diagnostics(pscore, self.pscore_trim)
         except (np.linalg.LinAlgError, ValueError):
-            if self.rank_deficient_action == "error":
+            if (
+                self.pscore_fallback == "error"
+                or self.rank_deficient_action == "error"
+            ):
                 raise
+            ctx = f" for {context_label}" if context_label else ""
             warnings.warn(
-                "Propensity score estimation failed (RCS DR). "
-                "Falling back to unconditional propensity.",
+                f"Propensity score estimation failed{ctx} (RCS DR). "
+                f"Falling back to unconditional propensity "
+                f"(propensity model ignores covariates; outcome "
+                f"regression still uses them). "
+                f"Consider estimation_method='reg' to avoid "
+                f"propensity scores entirely.",
                 UserWarning,
                 stacklevel=4,
             )
-            p_treat = (n_gt + n_gs) / len(D_all)
+            if sw_all is not None:
+                pos = sw_all > 0
+                p_treat = float(np.average(D_all[pos], weights=sw_all[pos]))
+            else:
+                p_treat = (n_gt + n_gs) / len(D_all)
             pscore = np.full(len(D_all), p_treat)
+            ps_fallback_used = True
+        if epv_diagnostics_out is not None and diag:
+            epv_diagnostics_out.update(diag)
 
         pscore = np.clip(pscore, self.pscore_trim, 1 - self.pscore_trim)
 
@@ -3377,41 +3686,41 @@ class CallawaySantAnna(
         # 9. PS nuisance correction — psi convention, convert to phi
         # =====================================================================
         X_all_int = np.column_stack([np.ones(n_all), X_all])
+        if not ps_fallback_used:
+            W_ps = pscore * (1 - pscore)
+            if sw_all is not None:
+                W_ps = W_ps * sw_all
+            # R: Hessian.ps = crossprod(X * sqrt(W)) / n
+            H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all
+            H_psi_inv = _safe_inv(H_psi)
 
-        W_ps = pscore * (1 - pscore)
-        if sw_all is not None:
-            W_ps = W_ps * sw_all
-        # R: Hessian.ps = crossprod(X * sqrt(W)) / n
-        H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all
-        H_psi_inv = _safe_inv(H_psi)
+            score_ps = (D_all - pscore)[:, None] * X_all_int
+            if sw_all is not None:
+                score_ps = score_ps * sw_all[:, None]
+            # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale, O(1) per obs)
+            asy_lin_rep_psi = score_ps @ H_psi_inv
 
-        score_ps = (D_all - pscore)[:, None] * X_all_int
-        if sw_all is not None:
-            score_ps = score_ps * sw_all[:, None]
-        # R: asy.lin.rep.ps = score.ps %*% Hessian.ps  (psi scale, O(1) per obs)
-        asy_lin_rep_psi = score_ps @ H_psi_inv
+            # R: M2 = colMeans(w_ipw * dr_resid / mean(w_ipw) * X)
+            ct_slice = slice(n_gt + n_gs, n_gt + n_gs + n_ct)
+            cs_slice = slice(n_gt + n_gs + n_ct, None)
 
-        # R: M2 = colMeans(w_ipw * dr_resid / mean(w_ipw) * X)
-        ct_slice = slice(n_gt + n_gs, n_gt + n_gs + n_ct)
-        cs_slice = slice(n_gt + n_gs + n_ct, None)
+            dr_resid_ct = y_ct - mu0Y_ct - eta_cont_post
+            dr_resid_cs = y_cs - mu0Y_cs - eta_cont_pre
 
-        dr_resid_ct = y_ct - mu0Y_ct - eta_cont_post
-        dr_resid_cs = y_cs - mu0Y_cs - eta_cont_pre
+            M2 = np.zeros(X_all_int.shape[1])
+            if sum_w_ipw_ct > 0:
+                M2 -= np.sum(
+                    ((w_ipw_ct * dr_resid_ct / sum_w_ipw_ct)[:, None] * X_all_int[ct_slice]),
+                    axis=0,
+                )
+            if sum_w_ipw_cs > 0:
+                M2 += np.sum(
+                    ((w_ipw_cs * dr_resid_cs / sum_w_ipw_cs)[:, None] * X_all_int[cs_slice]),
+                    axis=0,
+                )
 
-        M2 = np.zeros(X_all_int.shape[1])
-        if sum_w_ipw_ct > 0:
-            M2 -= np.sum(
-                ((w_ipw_ct * dr_resid_ct / sum_w_ipw_ct)[:, None] * X_all_int[ct_slice]),
-                axis=0,
-            )
-        if sum_w_ipw_cs > 0:
-            M2 += np.sum(
-                ((w_ipw_cs * dr_resid_cs / sum_w_ipw_cs)[:, None] * X_all_int[cs_slice]),
-                axis=0,
-            )
-
-        # psi-scale correction, convert to phi
-        inf_all = inf_all + (asy_lin_rep_psi @ M2) / n_all
+            # psi-scale correction, convert to phi
+            inf_all = inf_all + (asy_lin_rep_psi @ M2) / n_all
 
         # =====================================================================
         # 10. Control OR nuisance corrections (phi-scale)
@@ -3511,6 +3820,8 @@ class CallawaySantAnna(
             "cband": self.cband,
             "pscore_trim": self.pscore_trim,
             "panel": self.panel,
+            "epv_threshold": self.epv_threshold,
+            "pscore_fallback": self.pscore_fallback,
         }
 
     def set_params(self, **params) -> "CallawaySantAnna":

@@ -843,7 +843,9 @@ class TestWeightedPscoreFallback:
         # logit failure in at least some subgroups
         data["collinear_x"] = data["eligibility"].astype(float) * 100.0
         sd = SurveyDesign(weights="weight")
-        est = StaggeredTripleDifference(estimation_method="ipw")
+        est = StaggeredTripleDifference(
+            estimation_method="ipw", pscore_fallback="unconditional"
+        )
         import warnings
 
         with warnings.catch_warnings():

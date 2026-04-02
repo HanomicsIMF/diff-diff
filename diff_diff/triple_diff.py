@@ -105,6 +105,12 @@ class TripleDifferenceResults:
     n_clusters: Optional[int] = field(default=None)
     # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
     survey_metadata: Optional[Any] = field(default=None)
+    # EPV diagnostics per subgroup comparison
+    epv_diagnostics: Optional[Dict[int, Dict[str, Any]]] = field(
+        default=None, repr=False
+    )
+    epv_threshold: float = 10
+    pscore_fallback: str = "error"
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -173,6 +179,29 @@ class TripleDifferenceResults:
                 f"{conf_level}% Confidence Interval: [{self.conf_int[0]:.4f}, {self.conf_int[1]:.4f}]",
             ]
         )
+
+        # EPV diagnostics block (if any subgroup has low EPV)
+        if self.epv_diagnostics:
+            low_epv = {k: v for k, v in self.epv_diagnostics.items() if v.get("is_low")}
+            if low_epv:
+                n_affected = len(low_epv)
+                n_total = len(self.epv_diagnostics)
+                min_entry = min(low_epv.values(), key=lambda v: v["epv"])
+                lines.extend(
+                    [
+                        "",
+                        "-" * 75,
+                        "EPV Diagnostics".center(75),
+                        "-" * 75,
+                        f"WARNING: Low Events Per Variable (EPV) in "
+                        f"{n_affected} of {n_total} subgroup comparison(s).",
+                        f"Minimum EPV: {min_entry['epv']:.1f}. "
+                        f"Threshold: {self.epv_threshold:.0f}.",
+                        "Consider: estimation_method='reg' or fewer covariates.",
+                        "Call results.epv_summary() for details.",
+                        "-" * 75,
+                    ]
+                )
 
         # Show group means if available
         if self.group_means:
@@ -276,6 +305,39 @@ class TripleDifferenceResults:
         """Return significance stars based on p-value."""
         return _get_significance_stars(self.p_value)
 
+    def epv_summary(self, show_all: bool = False) -> pd.DataFrame:
+        """
+        Return per-subgroup EPV diagnostics as a DataFrame.
+
+        Parameters
+        ----------
+        show_all : bool, default False
+            If False, only show subgroups with low EPV. If True, show all.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: subgroup, epv, n_events, n_params, is_low.
+        """
+        if not self.epv_diagnostics:
+            return pd.DataFrame(
+                columns=["subgroup", "epv", "n_events", "n_params", "is_low"]
+            )
+        rows = []
+        for sg, diag in sorted(self.epv_diagnostics.items()):
+            if show_all or diag.get("is_low", False):
+                rows.append(
+                    {
+                        "subgroup": sg,
+                        "epv": diag.get("epv"),
+                        "n_events": diag.get("n_events"),
+                        "n_params": diag.get("k"),
+                        "is_low": diag.get("is_low", False),
+                    }
+                )
+        cols = ["subgroup", "epv", "n_events", "n_params", "is_low"]
+        return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
+
 
 # =============================================================================
 # Helper Functions
@@ -326,6 +388,22 @@ class TripleDifference:
         - "warn": Issue warning and drop linearly dependent columns (default)
         - "error": Raise ValueError
         - "silent": Drop columns silently without warning
+    epv_threshold : float, default=10
+        Events Per Variable threshold for propensity score logit.
+        When the ratio of minority-class observations to predictor
+        variables (excluding intercept) falls below this value, a
+        warning is emitted (or ``ValueError`` raised if
+        ``rank_deficient_action="error"``). Based on Peduzzi et al.
+        (1996). Only applies to IPW and DR estimation methods.
+    pscore_fallback : str, default="error"
+        Action when propensity score estimation fails:
+        - "error": Raise the exception (default)
+        - "unconditional": Fall back to unconditional propensity with
+          a warning. For IPW, drops all covariates. For DR, the
+          propensity model becomes unconditional but outcome regression
+          still uses covariates.
+        When ``rank_deficient_action="error"``, errors are always
+        re-raised regardless of this setting.
 
     Attributes
     ----------
@@ -405,6 +483,8 @@ class TripleDifference:
         alpha: float = 0.05,
         pscore_trim: float = 0.01,
         rank_deficient_action: str = "warn",
+        epv_threshold: float = 10,
+        pscore_fallback: str = "error",
     ):
         if estimation_method not in ("dr", "reg", "ipw"):
             raise ValueError(
@@ -415,12 +495,23 @@ class TripleDifference:
                 f"rank_deficient_action must be 'warn', 'error', or 'silent', "
                 f"got '{rank_deficient_action}'"
             )
+        if epv_threshold <= 0:
+            raise ValueError(
+                f"epv_threshold must be > 0, got {epv_threshold}"
+            )
+        if pscore_fallback not in {"error", "unconditional"}:
+            raise ValueError(
+                f"pscore_fallback must be 'error' or 'unconditional', "
+                f"got '{pscore_fallback}'"
+            )
         self.estimation_method = estimation_method
         self.robust = robust
         self.cluster = cluster
         self.alpha = alpha
         self.pscore_trim = pscore_trim
         self.rank_deficient_action = rank_deficient_action
+        self.epv_threshold = epv_threshold
+        self.pscore_fallback = pscore_fallback
 
         self.is_fitted_ = False
         self.results_: Optional[TripleDifferenceResults] = None
@@ -548,7 +639,7 @@ class TripleDifference:
 
         # Estimate ATT based on method
         if self.estimation_method == "reg":
-            att, se, r_squared, pscore_stats = self._regression_adjustment(
+            att, se, r_squared, pscore_stats, epv_diag = self._regression_adjustment(
                 y,
                 G,
                 P,
@@ -558,7 +649,7 @@ class TripleDifference:
                 resolved_survey=resolved_survey,
             )
         elif self.estimation_method == "ipw":
-            att, se, r_squared, pscore_stats = self._ipw_estimation(
+            att, se, r_squared, pscore_stats, epv_diag = self._ipw_estimation(
                 y,
                 G,
                 P,
@@ -568,7 +659,7 @@ class TripleDifference:
                 resolved_survey=resolved_survey,
             )
         else:  # doubly robust
-            att, se, r_squared, pscore_stats = self._doubly_robust(
+            att, se, r_squared, pscore_stats, epv_diag = self._doubly_robust(
                 y,
                 G,
                 P,
@@ -629,6 +720,9 @@ class TripleDifference:
             inference_method="analytical",
             n_clusters=n_clusters,
             survey_metadata=survey_metadata,
+            epv_diagnostics=epv_diag if epv_diag else None,
+            epv_threshold=self.epv_threshold,
+            pscore_fallback=self.pscore_fallback,
         )
 
         self.is_fitted_ = True
@@ -762,7 +856,7 @@ class TripleDifference:
         X: Optional[np.ndarray],
         survey_weights: Optional[np.ndarray] = None,
         resolved_survey=None,
-    ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]]]:
+    ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]], Dict[int, Dict[str, Any]]]:
         """
         Estimate ATT using regression adjustment via three-DiD decomposition.
 
@@ -790,7 +884,7 @@ class TripleDifference:
         X: Optional[np.ndarray],
         survey_weights: Optional[np.ndarray] = None,
         resolved_survey=None,
-    ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]]]:
+    ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]], Dict[int, Dict[str, Any]]]:
         """
         Estimate ATT using inverse probability weighting via three-DiD
         decomposition.
@@ -818,7 +912,7 @@ class TripleDifference:
         X: Optional[np.ndarray],
         survey_weights: Optional[np.ndarray] = None,
         resolved_survey=None,
-    ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]]]:
+    ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]], Dict[int, Dict[str, Any]]]:
         """
         Estimate ATT using doubly robust estimation via three-DiD
         decomposition.
@@ -847,7 +941,7 @@ class TripleDifference:
         X: Optional[np.ndarray],
         survey_weights: Optional[np.ndarray] = None,
         resolved_survey=None,
-    ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]]]:
+    ) -> Tuple[float, float, Optional[float], Optional[Dict[str, float]], Dict[int, Dict[str, Any]]]:
         """
         Core DDD estimation via three-DiD decomposition.
 
@@ -895,6 +989,7 @@ class TripleDifference:
         all_pscores = {}  # Collect pscores for diagnostics
         overlap_issues = []  # Collect overlap diagnostics across comparisons
         any_nonfinite_if = False
+        epv_all = {}  # Collect EPV diagnostics per subgroup comparison
 
         with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
             for j in [3, 2, 1]:
@@ -919,25 +1014,44 @@ class TripleDifference:
                 elif has_covariates:
                     # Logistic regression: P(subgroup=4 | X) within {j, 4}
                     ps_estimated = True
+                    diag = {}
                     try:
                         _, pscore_sub = solve_logit(
                             covX_sub[:, 1:],
                             PA4,
                             rank_deficient_action=self.rank_deficient_action,
                             weights=w_sub,
+                            epv_threshold=self.epv_threshold,
+                            context_label=f"subgroup {j} vs 4",
+                            diagnostics_out=diag,
                         )
                     except Exception:
-                        if self.rank_deficient_action == "error":
+                        if (
+                            self.pscore_fallback == "error"
+                            or self.rank_deficient_action == "error"
+                        ):
                             raise
-                        pscore_sub = np.full(n_sub, np.mean(PA4))
+                        if w_sub is not None:
+                            pos = w_sub > 0
+                            if np.any(pos):
+                                p_uc = float(np.average(PA4[pos], weights=w_sub[pos]))
+                            else:
+                                p_uc = float(np.mean(PA4))
+                        else:
+                            p_uc = float(np.mean(PA4))
+                        pscore_sub = np.full(n_sub, p_uc)
                         ps_estimated = False
                         warnings.warn(
                             f"Propensity score estimation failed for subgroup "
                             f"{j} vs 4; using unconditional probability. "
-                            f"SEs may be less efficient.",
+                            f"For DR, outcome regression still uses covariates. "
+                            f"Consider estimation_method='reg' to avoid propensity "
+                            f"scores entirely.",
                             UserWarning,
                             stacklevel=3,
                         )
+                    if diag:
+                        epv_all[j] = diag
 
                     pscore_sub = np.clip(pscore_sub, self.pscore_trim, 1 - self.pscore_trim)
                     all_pscores[j] = pscore_sub
@@ -1186,7 +1300,7 @@ class TripleDifference:
             ss_tot = np.sum((y - np.mean(y)) ** 2)
             r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
 
-        return att, se, r_squared, pscore_stats
+        return att, se, r_squared, pscore_stats, epv_all
 
     def _fit_predict_mu(
         self,
@@ -1784,6 +1898,8 @@ class TripleDifference:
             "alpha": self.alpha,
             "pscore_trim": self.pscore_trim,
             "rank_deficient_action": self.rank_deficient_action,
+            "epv_threshold": self.epv_threshold,
+            "pscore_fallback": self.pscore_fallback,
         }
 
     def set_params(self, **params) -> "TripleDifference":
@@ -1842,6 +1958,8 @@ def triple_difference(
     cluster: Optional[str] = None,
     alpha: float = 0.05,
     rank_deficient_action: str = "warn",
+    epv_threshold: float = 10,
+    pscore_fallback: str = "error",
     survey_design: object = None,
 ) -> TripleDifferenceResults:
     """
@@ -1884,6 +2002,12 @@ def triple_difference(
         - "warn": Issue warning and drop linearly dependent columns (default)
         - "error": Raise ValueError
         - "silent": Drop columns silently without warning
+    epv_threshold : float, default=10
+        Events Per Variable threshold for propensity score logit.
+    pscore_fallback : str, default="error"
+        Action when propensity score estimation fails:
+        - "error": Raise (default)
+        - "unconditional": Fall back to unconditional propensity
 
     Returns
     -------
@@ -1909,6 +2033,8 @@ def triple_difference(
         cluster=cluster,
         alpha=alpha,
         rank_deficient_action=rank_deficient_action,
+        epv_threshold=epv_threshold,
+        pscore_fallback=pscore_fallback,
     )
     return estimator.fit(
         data=data,

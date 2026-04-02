@@ -1443,7 +1443,9 @@ class TestParameterFunctionality:
 
         monkeypatch.setattr(td_module, "solve_logit", _failing_lr)
 
-        ddd = TripleDifference(estimation_method=method)
+        ddd = TripleDifference(
+            estimation_method=method, pscore_fallback="unconditional"
+        )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             result = ddd.fit(

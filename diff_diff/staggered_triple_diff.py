@@ -77,6 +77,12 @@ class StaggeredTripleDifference(
         Column name for cluster-robust standard errors.
     rank_deficient_action : str, default="warn"
         Action for rank-deficient design matrices: "warn", "error", "silent".
+    epv_threshold : float, default=10
+        Minimum events per variable for propensity score logistic regression.
+        A warning is emitted when EPV falls below this threshold.
+    pscore_fallback : str, default="error"
+        Action when propensity score estimation fails: "error" (raise) or
+        "unconditional" (fall back to unconditional propensity).
 
     References
     ----------
@@ -98,6 +104,8 @@ class StaggeredTripleDifference(
         pscore_trim: float = 0.01,
         cluster: Optional[str] = None,
         rank_deficient_action: str = "warn",
+        epv_threshold: float = 10,
+        pscore_fallback: str = "error",
     ):
         if estimation_method not in ["dr", "ipw", "reg"]:
             raise ValueError(
@@ -124,6 +132,13 @@ class StaggeredTripleDifference(
             raise ValueError(
                 f"base_period must be 'varying' or 'universal', " f"got '{base_period}'"
             )
+        if epv_threshold <= 0:
+            raise ValueError(f"epv_threshold must be > 0, got {epv_threshold}")
+        if pscore_fallback not in ["error", "unconditional"]:
+            raise ValueError(
+                f"pscore_fallback must be 'error' or 'unconditional', "
+                f"got '{pscore_fallback}'"
+            )
 
         self.estimation_method = estimation_method
         self.control_group = control_group
@@ -138,6 +153,8 @@ class StaggeredTripleDifference(
         self.pscore_trim = pscore_trim
         self.cluster = cluster
         self.rank_deficient_action = rank_deficient_action
+        self.epv_threshold = epv_threshold
+        self.pscore_fallback = pscore_fallback
 
         self.is_fitted_ = False
         self.results_: Optional[StaggeredTripleDiffResults] = None
@@ -157,6 +174,8 @@ class StaggeredTripleDifference(
             "pscore_trim": self.pscore_trim,
             "cluster": self.cluster,
             "rank_deficient_action": self.rank_deficient_action,
+            "epv_threshold": self.epv_threshold,
+            "pscore_fallback": self.pscore_fallback,
         }
 
     def set_params(self, **params) -> "StaggeredTripleDifference":
@@ -313,6 +332,9 @@ class StaggeredTripleDifference(
         influence_func_info: Dict[Tuple, Dict[str, Any]] = {}
         comparison_group_counts: Dict[Tuple, int] = {}
         gmm_weights_store: Dict[Tuple, Dict] = {}
+        epv_diagnostics: Optional[Dict[Tuple, Dict[str, Any]]] = (
+            {} if (covariates and self.estimation_method in ("ipw", "dr")) else None
+        )
 
         for g in treatment_groups:
             # In universal mode, skip the reference period (t == g-1-anticipation)
@@ -381,6 +403,7 @@ class StaggeredTripleDifference(
                         covariates,
                         pscore_cache,
                         cho_cache,
+                        epv_diagnostics=epv_diagnostics,
                     )
                     if result is None:
                         continue
@@ -471,6 +494,24 @@ class StaggeredTripleDifference(
                 }
                 comparison_group_counts[(g, t)] = len(gc_labels)
                 gmm_weights_store[(g, t)] = dict(zip(gc_labels, gmm_w.tolist()))
+
+        # Consolidated EPV summary warning
+        if epv_diagnostics:
+            low_epv = {k: v for k, v in epv_diagnostics.items() if v.get("is_low")}
+            if low_epv:
+                n_affected = len(low_epv)
+                n_total = len(epv_diagnostics)
+                min_entry = min(low_epv.values(), key=lambda v: v["epv"])
+                min_g = min(low_epv.keys(), key=lambda k: low_epv[k]["epv"])
+                warnings.warn(
+                    f"Low Events Per Variable (EPV) detected in "
+                    f"{n_affected} of {n_total} cohort-time cell(s). "
+                    f"Minimum EPV: {min_entry['epv']:.1f} (cohort g={min_g[0]}). "
+                    f"Consider estimation_method='reg' or fewer covariates. "
+                    f"Call results.epv_summary() for per-cohort details.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         if not group_time_effects:
             raise ValueError(
@@ -676,6 +717,9 @@ class StaggeredTripleDifference(
             survey_metadata=survey_metadata,
             comparison_group_counts=comparison_group_counts,
             gmm_weights=gmm_weights_store,
+            epv_diagnostics=epv_diagnostics if epv_diagnostics else None,
+            epv_threshold=self.epv_threshold,
+            pscore_fallback=self.pscore_fallback,
         )
         self.is_fitted_ = True
         return self.results_
@@ -896,6 +940,7 @@ class StaggeredTripleDifference(
         covariates: Optional[List[str]],
         pscore_cache: Dict,
         cho_cache: Optional[Dict],
+        epv_diagnostics: Optional[Dict] = None,
     ) -> Optional[Tuple[float, np.ndarray, float]]:
         """
         Compute DDD ATT for one (g, g_c, t) triple.
@@ -969,6 +1014,11 @@ class StaggeredTripleDifference(
                 return None
 
         # Three pairwise DiDs, each on a 2-cell subset
+        # Collect per-DiD EPV diagnostics; merge worst into (g,t) key later
+        epv_diag_a = {} if epv_diagnostics is not None else None
+        epv_diag_b = {} if epv_diagnostics is not None else None
+        epv_diag_c = {} if epv_diagnostics is not None else None
+
         # DiD_A: subgroup 4 vs 3 (treated-eligible vs treated-ineligible)
         pair_a_mask = treated_mask | sub_a_mask
         did_a = self._run_pairwise_did(
@@ -982,6 +1032,8 @@ class StaggeredTripleDifference(
             cho_cache,
             ("a", g, g, base_period_val),
             survey_weights=survey_weights,
+            context_label=f"cohort g={g}, DiD_A (g_c={g_c})",
+            epv_diagnostics_out=epv_diag_a,
         )
 
         # DiD_B: subgroup 4 vs 2 (treated-eligible vs control-eligible)
@@ -997,6 +1049,8 @@ class StaggeredTripleDifference(
             cho_cache,
             ("b", g, g_c, base_period_val),
             survey_weights=survey_weights,
+            context_label=f"cohort g={g}, DiD_B (g_c={g_c})",
+            epv_diagnostics_out=epv_diag_b,
         )
 
         # DiD_C: subgroup 4 vs 1 (treated-eligible vs control-ineligible)
@@ -1012,7 +1066,22 @@ class StaggeredTripleDifference(
             cho_cache,
             ("c", g, g_c, base_period_val),
             survey_weights=survey_weights,
+            context_label=f"cohort g={g}, DiD_C (g_c={g_c})",
+            epv_diagnostics_out=epv_diag_c,
         )
+
+        # Merge per-DiD EPV diagnostics: keep the worst (lowest EPV) entry
+        # across all three DiDs for this g_c. If multiple g_c contribute to the
+        # same (g, t) cell, retain the overall minimum EPV across all g_c calls.
+        if epv_diagnostics is not None:
+            candidates = [d for d in [epv_diag_a, epv_diag_b, epv_diag_c] if d]
+            if candidates:
+                worst = min(candidates, key=lambda d: d.get("epv", float("inf")))
+                existing = epv_diagnostics.get((g, t))
+                if existing is None or worst.get("epv", float("inf")) < existing.get(
+                    "epv", float("inf")
+                ):
+                    epv_diagnostics[(g, t)] = worst
 
         if did_a is None or did_b is None or did_c is None:
             return None
@@ -1076,6 +1145,8 @@ class StaggeredTripleDifference(
         cho_cache: Optional[Dict],
         cho_key: Any,
         survey_weights: Optional[np.ndarray] = None,
+        context_label: str = "",
+        epv_diagnostics_out: Optional[dict] = None,
     ) -> Optional[Tuple[float, np.ndarray]]:
         """
         Compute a single pairwise DiD ATT and IF on a 2-cell subset.
@@ -1121,6 +1192,8 @@ class StaggeredTripleDifference(
                 pscore_cache,
                 pscore_key,
                 survey_weights=sw_pair,
+                context_label=context_label,
+                epv_diagnostics_out=epv_diagnostics_out,
             )
 
         if self.estimation_method in ("reg", "dr") and covX is not None:
@@ -1268,6 +1341,8 @@ class StaggeredTripleDifference(
         pscore_cache: Dict,
         pscore_key: Any,
         survey_weights: Optional[np.ndarray] = None,
+        context_label: str = "",
+        epv_diagnostics_out: Optional[dict] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit logistic P(PA4=1|X). Returns (pscore, hessian).
 
@@ -1279,29 +1354,45 @@ class StaggeredTripleDifference(
         n_pair = len(PA4)
 
         if cached is not None:
-            beta_logistic = cached
+            beta_logistic, cached_diag = cached
             z = np.dot(covX, beta_logistic)
             z = np.clip(z, -500, 500)
             pscore = 1 / (1 + np.exp(-z))
+            if epv_diagnostics_out is not None and cached_diag:
+                epv_diagnostics_out.update(cached_diag)
         else:
             X_no_intercept = covX[:, 1:]  # solve_logit adds its own intercept
+            diag = {}
             try:
                 beta_logistic, pscore = solve_logit(
                     X_no_intercept,
                     PA4,
                     rank_deficient_action=self.rank_deficient_action,
                     weights=survey_weights,
+                    epv_threshold=self.epv_threshold,
+                    context_label=context_label,
+                    diagnostics_out=diag,
                 )
                 _check_propensity_diagnostics(pscore, self.pscore_trim)
                 # Zero-fill NaN coefficients (from rank-deficient columns)
                 # before caching, so cache reuse doesn't propagate NaN.
+                # Cache alongside EPV diagnostics for replay on cache hits.
                 beta_clean = np.where(np.isfinite(beta_logistic), beta_logistic, 0.0)
-                pscore_cache[pscore_key] = beta_clean
+                pscore_cache[pscore_key] = (beta_clean, diag)
             except (np.linalg.LinAlgError, ValueError):
-                if self.rank_deficient_action == "error":
+                if (
+                    self.pscore_fallback == "error"
+                    or self.rank_deficient_action == "error"
+                ):
                     raise
+                ctx = f" for {context_label}" if context_label else ""
                 warnings.warn(
-                    "Propensity score estimation failed. " "Falling back to unconditional.",
+                    f"Propensity score estimation failed{ctx}. "
+                    f"Falling back to unconditional propensity "
+                    f"(propensity model ignores covariates; outcome "
+                    f"regression still uses them for DR). "
+                    f"Consider estimation_method='reg' to avoid "
+                    f"propensity scores entirely.",
                     UserWarning,
                     stacklevel=5,
                 )
@@ -1318,6 +1409,8 @@ class StaggeredTripleDifference(
                 pscore = np.clip(pscore, self.pscore_trim, 1 - self.pscore_trim)
                 # No hessian for unconditional fallback
                 return pscore, None
+            if epv_diagnostics_out is not None and diag:
+                epv_diagnostics_out.update(diag)
 
         pscore = np.clip(pscore, 1e-6, 1 - 1e-6)
 

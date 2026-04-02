@@ -84,6 +84,11 @@ class StaggeredTripleDiffResults:
     survey_metadata: Optional[Any] = field(default=None, repr=False)
     comparison_group_counts: Optional[Dict[Tuple, int]] = field(default=None, repr=False)
     gmm_weights: Optional[Dict[Tuple, Dict]] = field(default=None, repr=False)
+    epv_diagnostics: Optional[Dict[Tuple[Any, Any], Dict[str, Any]]] = field(
+        default=None, repr=False
+    )
+    epv_threshold: float = 10
+    pscore_fallback: str = "error"
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -155,6 +160,31 @@ class StaggeredTripleDiffResults:
             ]
         )
 
+        # EPV diagnostics block (if any cohort has low EPV)
+        if self.epv_diagnostics:
+            low_epv = {k: v for k, v in self.epv_diagnostics.items() if v.get("is_low")}
+            if low_epv:
+                n_affected = len(low_epv)
+                n_total = len(self.epv_diagnostics)
+                min_entry = min(low_epv.values(), key=lambda v: v["epv"])
+                min_g = min(low_epv.keys(), key=lambda k: low_epv[k]["epv"])
+                lines.extend(
+                    [
+                        "-" * 85,
+                        "Propensity Score Diagnostics".center(85),
+                        "-" * 85,
+                        f"WARNING: Low Events Per Variable (EPV) in "
+                        f"{n_affected} of {n_total} cohort-time cell(s).",
+                        f"Minimum EPV: {min_entry['epv']:.1f} "
+                        f"(cohort g={min_g[0]}). "
+                        f"Threshold: {self.epv_threshold:.0f}.",
+                        "Consider: estimation_method='reg' or fewer covariates.",
+                        "Call results.epv_summary() for per-cohort details.",
+                        "-" * 85,
+                        "",
+                    ]
+                )
+
         # Event study effects
         if self.event_study_effects:
             ci_label = (
@@ -225,6 +255,40 @@ class StaggeredTripleDiffResults:
         """Print summary to stdout."""
         print(self.summary(alpha))
 
+    def epv_summary(self, show_all: bool = False) -> pd.DataFrame:
+        """
+        Return per-cohort EPV diagnostics as a DataFrame.
+
+        Parameters
+        ----------
+        show_all : bool, default False
+            If False, only show cells with low EPV. If True, show all cells.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: group, time, epv, n_events, n_params, is_low.
+        """
+        if not self.epv_diagnostics:
+            return pd.DataFrame(
+                columns=["group", "time", "epv", "n_events", "n_params", "is_low"]
+            )
+        rows = []
+        for (g, t), diag in sorted(self.epv_diagnostics.items()):
+            if show_all or diag.get("is_low", False):
+                rows.append(
+                    {
+                        "group": g,
+                        "time": t,
+                        "epv": diag.get("epv"),
+                        "n_events": diag.get("n_events"),
+                        "n_params": diag.get("k"),
+                        "is_low": diag.get("is_low", False),
+                    }
+                )
+        cols = ["group", "time", "epv", "n_events", "n_params", "is_low"]
+        return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
+
     def to_dataframe(self, level: str = "group_time") -> pd.DataFrame:
         """
         Convert results to DataFrame.
@@ -242,18 +306,19 @@ class StaggeredTripleDiffResults:
         if level == "group_time":
             rows = []
             for (g, t), data in self.group_time_effects.items():
-                rows.append(
-                    {
-                        "group": g,
-                        "time": t,
-                        "effect": data["effect"],
-                        "se": data["se"],
-                        "t_stat": data["t_stat"],
-                        "p_value": data["p_value"],
-                        "conf_int_lower": data["conf_int"][0],
-                        "conf_int_upper": data["conf_int"][1],
-                    }
-                )
+                row = {
+                    "group": g,
+                    "time": t,
+                    "effect": data["effect"],
+                    "se": data["se"],
+                    "t_stat": data["t_stat"],
+                    "p_value": data["p_value"],
+                    "conf_int_lower": data["conf_int"][0],
+                    "conf_int_upper": data["conf_int"][1],
+                }
+                if self.epv_diagnostics and (g, t) in self.epv_diagnostics:
+                    row["epv"] = self.epv_diagnostics[(g, t)].get("epv")
+                rows.append(row)
             return pd.DataFrame(rows)
 
         elif level == "event_study":

@@ -1122,6 +1122,7 @@ def _compute_robust_vcov_numpy(
 # in the logistic model (predicted probabilities collapse to 0/1).
 _LOGIT_SEPARATION_COEF_THRESHOLD = 10
 _LOGIT_SEPARATION_PROB_THRESHOLD = 1e-5
+_DEFAULT_EPV_THRESHOLD = 10
 
 
 def solve_logit(
@@ -1132,6 +1133,9 @@ def solve_logit(
     check_separation: bool = True,
     rank_deficient_action: str = "warn",
     weights: Optional[np.ndarray] = None,
+    epv_threshold: float = _DEFAULT_EPV_THRESHOLD,
+    context_label: str = "",
+    diagnostics_out: Optional[dict] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Fit logistic regression via IRLS (Fisher scoring).
@@ -1164,6 +1168,18 @@ def solve_logit(
         maximum likelihood estimator, matching R's ``svyglm(family=binomial)``.
         When None (default), behavior is identical to unweighted logistic
         regression.
+    epv_threshold : float, default 10
+        Events Per Variable threshold. When the ratio of minority-class
+        observations to predictor variables (excluding intercept) falls
+        below this value, a warning is
+        emitted (or ValueError raised if ``rank_deficient_action="error"``).
+        Based on Peduzzi et al. (1996).
+    context_label : str, default ""
+        Optional label for warning messages (e.g., "cohort g=4") to help
+        users identify which logit estimation triggered the warning.
+    diagnostics_out : dict, optional
+        If provided, populated with EPV diagnostic info:
+        ``{"epv": float, "n_events": int, "k": int, "is_low": bool}``.
 
     Returns
     -------
@@ -1272,6 +1288,45 @@ def solve_logit(
     else:
         kept_cols = np.arange(k)
         X_solve = X_with_intercept
+
+    # Events Per Variable (EPV) check — Peduzzi et al. (1996)
+    # Use effective (positive-weight) sample when weights have zeros,
+    # since zero-weight rows don't contribute to the likelihood.
+    k_solve = X_solve.shape[1]
+    if weights is not None and np.any(weights == 0):
+        y_eff = y[weights > 0]
+        n_eff = len(y_eff)
+    else:
+        y_eff = y
+        n_eff = n
+    n_pos_y = int(np.sum(y_eff))
+    n_neg_y = n_eff - n_pos_y
+    n_events = min(n_pos_y, n_neg_y)
+    # Peduzzi et al. (1996) define EPV using predictor variables, excluding
+    # the intercept. k_solve includes the intercept column, so use k_solve - 1.
+    n_predictors = k_solve - 1  # exclude intercept
+    epv = n_events / n_predictors if n_predictors > 0 else float("inf")
+
+    if diagnostics_out is not None:
+        diagnostics_out["epv"] = epv
+        diagnostics_out["n_events"] = n_events
+        diagnostics_out["k"] = n_predictors
+        diagnostics_out["is_low"] = epv < epv_threshold
+
+    if epv < epv_threshold:
+        ctx = f" for {context_label}" if context_label else ""
+        msg = (
+            f"Low Events Per Variable (EPV = {epv:.1f}) in propensity score "
+            f"model{ctx}. {n_events} minority-class observations for "
+            f"{n_predictors} predictor variable(s). "
+            f"Peduzzi et al. (1996) recommend EPV >= {epv_threshold:.0f}. "
+            f"Estimates may be unreliable (overfitting, biased coefficients, "
+            f"inflated standard errors). "
+            f"Consider estimation_method='reg' to avoid propensity scores."
+        )
+        if rank_deficient_action == "error":
+            raise ValueError(msg)
+        warnings.warn(msg, UserWarning, stacklevel=2)
 
     # IRLS (Fisher scoring)
     beta_solve = np.zeros(X_solve.shape[1])

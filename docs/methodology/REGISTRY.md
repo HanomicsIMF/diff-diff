@@ -404,9 +404,22 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
     of 0 or 1, or when IRLS fails to converge
   - Trimming: Propensity scores clipped to `[pscore_trim, 1-pscore_trim]` (default
     0.01) before weight computation. Warning emitted when scores are trimmed.
-  - Fallback: If IRLS fails entirely (LinAlgError/ValueError), falls back to
-    unconditional propensity score with warning. Exception: when
-    `rank_deficient_action="error"`, the error is re-raised instead of falling back.
+  - **Events Per Variable (EPV) diagnostics:** Per-cohort EPV =
+    min(n_treated, n_control) / n_covariates checked before IRLS.
+    Default threshold: 10 (Peduzzi et al. 1996). Warns when EPV < threshold;
+    errors when `rank_deficient_action="error"`. Pre-estimation check via
+    `diagnose_propensity()`. Results stored in `results.epv_diagnostics`.
+  - Fallback: Controlled by `pscore_fallback` parameter (default `"error"`).
+    If IRLS fails entirely (LinAlgError/ValueError) and `pscore_fallback="error"`,
+    the error is raised. If `pscore_fallback="unconditional"`, falls back to
+    unconditional propensity score with warning. For IPW, this effectively
+    drops all covariates. For DR, the propensity model is unconditional but
+    the outcome-regression component still uses covariates.
+  - **Note:** `pscore_fallback` default changed from unconditional to error.
+    Set `pscore_fallback="unconditional"` for legacy behavior.
+  - **Note:** When `pscore_fallback="unconditional"` triggers, the propensity-
+    score influence function correction is skipped (constant pscore has zero
+    estimation uncertainty). SEs reflect outcome-model uncertainty only.
 - Control group with `control_group="not_yet_treated"`:
   - Always excludes cohort g from controls when computing ATT(g,t)
   - This applies to both pre-treatment (t < g) and post-treatment (t >= g) periods
@@ -1229,9 +1242,18 @@ has no additional effect.
 - Cluster-robust SE: requires at least 2 clusters (raises `ValueError`)
 - Cluster IDs: must not contain NaN (raises `ValueError`)
 - Overlap warning: emitted when >5% of observations are trimmed at pscore bounds (IPW/DR only)
-- Propensity score estimation failure: falls back to unconditional probability P(subgroup=4),
-  sets hessian=None (skipping PS correction in influence function), emits UserWarning.
-  Exception: when `rank_deficient_action="error"`, the error is re-raised instead of falling back.
+- Propensity score estimation failure: controlled by `pscore_fallback` parameter
+  (default `"error"`). If `pscore_fallback="error"`, the error is raised. If
+  `pscore_fallback="unconditional"`, falls back to unconditional probability
+  P(subgroup=4), sets hessian=None (skipping PS correction in influence
+  function), emits UserWarning. When `rank_deficient_action="error"`, errors
+  are always re-raised regardless of `pscore_fallback`.
+- **Events Per Variable (EPV) diagnostics:** Per-logit EPV =
+  min(n_subgroup_j, n_subgroup_4) / n_covariates checked before IRLS.
+  Default threshold: 10 (Peduzzi et al. 1996). Warns when EPV < threshold;
+  errors when `rank_deficient_action="error"`.
+- **Note:** `pscore_fallback` default changed from unconditional to error.
+  Set `pscore_fallback="unconditional"` for legacy behavior.
 - Collinear covariates: detected via pivoted QR in `solve_ols()`, action controlled by
   `rank_deficient_action` ("warn", "error", "silent")
 - Non-finite influence function values (e.g., from extreme propensity scores in IPW/DR
@@ -1274,6 +1296,20 @@ has no additional effect.
 - Warns if any (S, Q) cell in a three-DiD comparison has < 5 units
 - Warns if no valid comparison groups exist for a (g, t) pair (skips that pair)
 - Propensity score overlap enforced by clipping at `pscore_trim` (default 0.01)
+- **Events Per Variable (EPV) diagnostics:** Per-DiD EPV =
+  min(n_subgroup_j, n_subgroup_4) / n_covariates checked before IRLS.
+  Default threshold: 10 (Peduzzi et al. 1996). Warns when EPV < threshold;
+  errors when `rank_deficient_action="error"`.
+- **Note:** When multiple comparison cohorts `g_c` contribute to the same
+  ATT(g,t) cell, `results.epv_diagnostics[(g,t)]` retains the worst-case
+  (minimum EPV) across all contributing propensity fits, rather than per-fit
+  diagnostics. This is a conservative cell-level summary.
+- Propensity score estimation failure: controlled by `pscore_fallback` parameter
+  (default `"error"`). If `pscore_fallback="error"`, the error is raised. If
+  `pscore_fallback="unconditional"`, falls back to unconditional propensity with
+  warning. When `rank_deficient_action="error"`, errors are always re-raised.
+- **Note:** `pscore_fallback` default changed from unconditional to error.
+  Set `pscore_fallback="unconditional"` for legacy behavior.
 - Warns on singular GMM covariance matrix (falls back to pseudoinverse)
 
 *Data structure:*
