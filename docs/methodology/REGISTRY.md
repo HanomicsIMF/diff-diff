@@ -881,7 +881,7 @@ where `W_it(h) = 1[K_it = h]` are lead indicators, estimated on `Omega_0` only.
 - **treatment_effects DataFrame weights:** `weight` column uses `1/n_valid` for finite tau_hat and 0 for NaN tau_hat, consistent with the ATT estimand (unweighted), or normalized survey weights `sw_i/sum(sw)` when `survey_design` is active.
 - **Rank-deficient covariates in variance:** Covariates with NaN coefficients (dropped for rank deficiency in Step 1) are excluded from the variance design matrices `A_0`/`A_1`. Only covariates with finite coefficients participate in the `v_it` projection.
 - **Sparse variance solver:** `_compute_v_untreated_with_covariates` uses `scipy.sparse.linalg.spsolve` to solve `(A_0'A_0) z = A_1'w` without densifying the normal equations matrix. Falls back to dense `lstsq` if the sparse solver fails.
-- **Note:** Survey weights enter ImputationDiD via weighted iterative FE (Step 1), survey-weighted ATT aggregation (Step 3), and survey-weighted conservative variance (Theorem 3). PSU is used as the cluster variable for Theorem 3 variance. Strata enters survey df (n_PSU - n_strata) for t-distribution inference. FPC is not supported (raises NotImplementedError). Strata does NOT enter the variance formula itself (no stratified sandwich) — this is conservative relative to stratified variance. Bootstrap + survey supported (Phase 6) via PSU-level multiplier weights.
+- **Note:** Survey weights enter ImputationDiD via weighted iterative FE (Step 1), survey-weighted ATT aggregation (Step 3), and design-based variance via `compute_survey_if_variance()`. PSU clustering, stratification, and FPC are fully supported in the Theorem 3 variance path. When `resolved_survey` is present, the observation-level influence function (`v_it * epsilon_tilde_it`) is passed to `compute_survey_if_variance()` which applies the stratified PSU-level sandwich with FPC correction. Strata also enters survey df (n_PSU - n_strata) for t-distribution inference. Bootstrap + survey supported (Phase 6) via PSU-level multiplier weights.
 - **Bootstrap inference:** Uses multiplier bootstrap on the Theorem 3 influence function: `psi_i = sum_t v_it * epsilon_tilde_it`. Cluster-level psi sums are pre-computed for each aggregation target (overall, per-horizon, per-group), then perturbed with multiplier weights (Rademacher by default; configurable via `bootstrap_weights` parameter to use Mammen or Webb weights, matching CallawaySantAnna). This is a library extension (not in the paper) consistent with CallawaySantAnna/SunAbraham bootstrap patterns.
 - **Auxiliary residuals (Equation 8):** Uses v_it-weighted tau_tilde_g formula: `tau_tilde_g = sum(v_it * tau_hat_it) / sum(v_it)` within each partition group. Zero-weight groups (common in event-study SE computation) fall back to unweighted mean.
 
@@ -960,7 +960,7 @@ Our implementation uses multiplier bootstrap on the GMM influence function: clus
 - **No never-treated units (Proposition 5):** When there are no never-treated units and multiple treatment cohorts, horizons h >= h_bar (where h_bar = max(groups) - min(groups)) are unidentified per Proposition 5 of Borusyak et al. (2024). These produce NaN inference with n_obs > 0 (treated observations exist but counterfactual is unidentified) and a warning listing affected horizons. Matches ImputationDiD behavior. Proposition 5 applies to event study horizons only, not cohort aggregation — a cohort whose treated obs all fall at Prop 5 horizons naturally gets n_obs=0 in group effects because all its y_tilde values are NaN.
 - **Zero-observation horizons after filtering:** When `balance_e` or NaN `y_tilde` filtering results in zero observations for some non-Prop-5 event study horizons, those horizons produce NaN for all inference fields (effect, SE, t-stat, p-value, CI) with n_obs=0.
 - **Zero-observation cohorts in group effects:** If all treated observations for a cohort have NaN `y_tilde` (excluded from estimation), that cohort's group effect is NaN with n_obs=0.
-- **Note:** Survey weights in TwoStageDiD GMM sandwich via weighted cross-products: bread uses (X'_2 W X_2)^{-1}, gamma_hat uses (X'_{10} W X_{10})^{-1}(X'_1 W X_2), per-cluster scores multiply by survey weights. PSU is used as the cluster variable for GMM variance. Strata enters survey df (n_PSU - n_strata) for t-distribution inference. FPC is not supported (raises NotImplementedError). Strata does NOT enter the variance formula itself (no stratified sandwich) — this is conservative. Bootstrap + survey supported (Phase 6) via PSU-level multiplier weights.
+- **Note:** Survey weights in TwoStageDiD GMM sandwich via weighted cross-products: bread uses (X'_2 W X_2)^{-1}, gamma_hat uses (X'_{10} W X_{10})^{-1}(X'_1 W X_2), per-cluster scores multiply by survey weights. PSU clustering, stratification, and FPC are fully supported in the meat matrix via `_compute_stratified_meat_from_psu_scores()`. When strata or FPC are present, the meat computation replaces `S' S` with the stratified formula `sum_h (1 - f_h) * (n_h/(n_h-1)) * centered_h' centered_h`. Strata also enters survey df (n_PSU - n_strata) for t-distribution inference. Bootstrap + survey supported (Phase 6) via PSU-level multiplier weights.
 
 **Reference implementation(s):**
 - R: `did2s::did2s()` (Kyle Butts & John Gardner)
@@ -2252,12 +2252,14 @@ variance from the distribution of replicate estimates.
 
 - **Reference**: Wolter (2007) "Introduction to Variance Estimation", 2nd ed.
   Rao & Wu (1988).
-- **Supported methods**: BRR, Fay's BRR, JK1, JKn
+- **Supported methods**: BRR, Fay's BRR, JK1, JKn, SDR
 - **Formulas**:
   - BRR: `V = (1/R) * sum_r (theta_r - theta)^2`
+  - SDR: `V = (4/R) * sum_r (theta_r - theta)^2` (Fay & Train 1995)
   - Fay: `V = 1/(R*(1-rho)^2) * sum_r (theta_r - theta)^2`
   - JK1: `V = (R-1)/R * sum_r (theta_r - theta)^2`
   - JKn: `V = sum_h ((n_h-1)/n_h) * sum_{r in h} (theta_r - theta)^2`
+- **Note:** SDR (Successive Difference Replication) uses variance factor 4/R, following Fay & Train (1995). Used by ACS PUMS (80 replicate columns). Treated identically to BRR for scaling purposes — no fay_rho, no replicate_strata, custom scale/rscales ignored.
 - **IF-based replicate variance**: For influence-function estimators (CS
   aggregation, ContinuousDiD, EfficientDiD, TripleDifference), replicate
   contrasts are formed via weight-ratio rescaling:

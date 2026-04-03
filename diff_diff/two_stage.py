@@ -208,9 +208,9 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             relative times in [-balance_e, max_h].
         survey_design : SurveyDesign, optional
             Survey design specification for design-based inference. Supports
-            pweight only (aweight/fweight raise ValueError). FPC raises
-            NotImplementedError. PSU is used as cluster variable for Theorem 3
-            variance. Strata enters survey df for t-distribution inference.
+            pweight only (aweight/fweight raise ValueError). Supports strata,
+            PSU, and FPC for design-based GMM sandwich variance. Strata enters
+            survey df for t-distribution inference.
             Both analytical (n_bootstrap=0) and bootstrap inference are supported.
 
         Returns
@@ -262,12 +262,8 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                     f"got '{resolved_survey.weight_type}'. The survey variance math "
                     f"assumes probability weights (pweight)."
                 )
-            if resolved_survey.fpc is not None:
-                raise NotImplementedError(
-                    "TwoStageDiD does not yet support FPC (finite population "
-                    "correction) in SurveyDesign. Weights, strata (for survey df), "
-                    "and PSU (for cluster-robust variance) are supported."
-                )
+            # FPC is supported — threaded through _compute_stratified_meat_from_psu_scores()
+            # in _compute_gmm_variance().
 
         # Bootstrap + survey supported via PSU-level multiplier bootstrap.
 
@@ -512,6 +508,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             kept_cov_mask=kept_cov_mask,
             survey_weights=survey_weights,
             survey_weight_type=survey_weight_type,
+            resolved_survey=(resolved_survey if not _uses_replicate_ts else None),
         )
 
         # Compute overall ATT inference (may be overridden by replicate below)
@@ -544,6 +541,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                 survey_weights=survey_weights,
                 survey_weight_type=survey_weight_type,
                 survey_df=_survey_df,
+                resolved_survey=(resolved_survey if not _uses_replicate_ts else None),
             )
 
         if aggregate in ("group", "all"):
@@ -565,6 +563,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                 survey_weights=survey_weights,
                 survey_weight_type=survey_weight_type,
                 survey_df=_survey_df,
+                resolved_survey=(resolved_survey if not _uses_replicate_ts else None),
             )
 
         # Replicate variance override: derive keys from actual outputs, then refit
@@ -1123,6 +1122,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         kept_cov_mask: Optional[np.ndarray],
         survey_weights: Optional[np.ndarray] = None,
         survey_weight_type: str = "pweight",
+        resolved_survey=None,
     ) -> Tuple[float, float]:
         """
         Static (simple ATT) Stage 2: OLS of y_tilde on D_it.
@@ -1170,6 +1170,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             eps_2=eps_2,
             cluster_ids=df[cluster_var].values,
             survey_weights=survey_weights,
+            resolved_survey=resolved_survey,
         )
 
         se = float(np.sqrt(max(V[0, 0], 0.0)))
@@ -1196,6 +1197,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         survey_weights: Optional[np.ndarray] = None,
         survey_weight_type: str = "pweight",
         survey_df: Optional[int] = None,
+        resolved_survey=None,
     ) -> Dict[int, Dict[str, Any]]:
         """Event study Stage 2: OLS of y_tilde on relative-time dummies."""
         y_tilde = df["_y_tilde"].values.copy()
@@ -1336,6 +1338,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             eps_2=eps_2,
             cluster_ids=df[cluster_var].values,
             survey_weights=survey_weights,
+            resolved_survey=resolved_survey,
         )
 
         # Build results dict
@@ -1412,6 +1415,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         survey_weights: Optional[np.ndarray] = None,
         survey_weight_type: str = "pweight",
         survey_df: Optional[int] = None,
+        resolved_survey=None,
     ) -> Dict[Any, Dict[str, Any]]:
         """Group (cohort) Stage 2: OLS of y_tilde on cohort dummies."""
         y_tilde = df["_y_tilde"].values.copy()
@@ -1456,6 +1460,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             eps_2=eps_2,
             cluster_ids=df[cluster_var].values,
             survey_weights=survey_weights,
+            resolved_survey=resolved_survey,
         )
 
         group_effects: Dict[Any, Dict[str, Any]] = {}
@@ -1544,6 +1549,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         eps_2: np.ndarray,
         cluster_ids: np.ndarray,
         survey_weights: Optional[np.ndarray] = None,
+        resolved_survey=None,
     ) -> np.ndarray:
         """
         Compute GMM sandwich variance (Butts & Gardner 2022).
@@ -1686,8 +1692,56 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         S = self._compute_gmm_scores(c_by_cluster, gamma_hat, s2_by_cluster)
 
         # 5. Meat: sum_g S_g S'_g = S' S
-        with np.errstate(invalid="ignore", over="ignore"):
-            meat = S.T @ S  # (k x k)
+        _use_stratified_meat = resolved_survey is not None and (
+            resolved_survey.strata is not None or resolved_survey.fpc is not None
+        )
+        if _use_stratified_meat:
+            from diff_diff.survey import _compute_stratified_meat_from_psu_scores
+
+            # Build PSU→stratum and PSU→FPC mappings from observation-level arrays.
+            # cluster_ids used here match resolved_survey.psu (via _inject_cluster_as_psu).
+            # unique_clusters is already computed at line above (np.unique(cluster_ids)).
+            G_meat = len(unique_clusters)
+
+            # Strata: synthesize single stratum when strata is None (unstratified FPC)
+            if resolved_survey.strata is not None:
+                psu_strata = np.empty(G_meat, dtype=resolved_survey.strata.dtype)
+                for idx, c in enumerate(unique_clusters):
+                    obs_idx = np.where(cluster_ids == c)[0][0]
+                    psu_strata[idx] = resolved_survey.strata[obs_idx]
+            else:
+                psu_strata = np.zeros(G_meat, dtype=int)
+
+            # FPC: map observation-level FPC to PSU level
+            psu_fpc = None
+            if resolved_survey.fpc is not None:
+                psu_fpc = np.empty(G_meat, dtype=np.float64)
+                for idx, c in enumerate(unique_clusters):
+                    obs_idx = np.where(cluster_ids == c)[0][0]
+                    psu_fpc[idx] = resolved_survey.fpc[obs_idx]
+
+            # Unstratified single-PSU: variance is unidentified (matches
+            # _compute_stratified_psu_meat at survey.py:1225 which returns
+            # zero meat with no variance_computed flag for n_psu < 2).
+            if resolved_survey.strata is None and G_meat < 2:
+                return np.full((k, k), np.nan)
+
+            # Reorder S rows to match unique_clusters ordering
+            # S is built using np.add.at with cluster_indices from pd.factorize,
+            # which uses the same order as unique_clusters from the data.
+            meat, _var_computed, _legit_zero = _compute_stratified_meat_from_psu_scores(
+                psu_scores=S,
+                psu_strata=psu_strata,
+                fpc_per_psu=psu_fpc,
+                lonely_psu=resolved_survey.lonely_psu,
+            )
+            # If no variance was computed and no legitimate zeros, variance
+            # is unidentified — return NaN VCV so caller gets NaN SE.
+            if not _var_computed and _legit_zero == 0:
+                return np.full((k, k), np.nan)
+        else:
+            with np.errstate(invalid="ignore", over="ignore"):
+                meat = S.T @ S  # (k x k)
 
         # 6. Bread: (X'_2 W X_2)^{-1}
         with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
@@ -1864,10 +1918,10 @@ def two_stage_did(
         Balance event study to cohorts observed at all relative times.
     survey_design : SurveyDesign, optional
         Survey design specification for design-based inference. Supports
-        pweight only (aweight/fweight raise ValueError). FPC raises
-        NotImplementedError. PSU is used as cluster variable for Theorem 3
-        variance. Strata enters survey df for t-distribution inference.
-        Requires analytical inference (n_bootstrap=0).
+        pweight only (aweight/fweight raise ValueError). Supports strata,
+        PSU, and FPC for design-based GMM sandwich variance. Strata enters
+        survey df for t-distribution inference.
+        Both analytical (n_bootstrap=0) and bootstrap inference are supported.
     **kwargs
         Additional keyword arguments passed to TwoStageDiD constructor.
 

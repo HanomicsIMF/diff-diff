@@ -91,7 +91,7 @@ class ImputationDiDBootstrapMixin:
             cluster_var: str,
             kept_cov_mask: Optional[np.ndarray] = None,
             survey_weights_0: Optional[np.ndarray] = None,
-        ) -> Tuple[np.ndarray, np.ndarray]: ...
+        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]: ...
 
         @staticmethod
         def _build_cohort_rel_times(
@@ -165,7 +165,9 @@ class ImputationDiDBootstrapMixin:
         )
 
         # Overall ATT
-        overall_psi, cluster_ids = self._compute_cluster_psi_sums(**common, weights=overall_weights)
+        overall_psi, cluster_ids, _ = self._compute_cluster_psi_sums(
+            **common, weights=overall_weights
+        )
         result["overall"] = (overall_psi, cluster_ids)
 
         # Event study: per-horizon weights
@@ -227,7 +229,7 @@ class ImputationDiDBootstrapMixin:
                     if n_valid_h == 0:
                         continue
 
-                psi_h, _ = self._compute_cluster_psi_sums(**common, weights=weights_h)
+                psi_h, _, _ = self._compute_cluster_psi_sums(**common, weights=weights_h)
                 result["event_study"][h] = psi_h
 
         # Group effects: per-group weights
@@ -265,7 +267,7 @@ class ImputationDiDBootstrapMixin:
                     if n_valid_g == 0:
                         continue
 
-                psi_g, _ = self._compute_cluster_psi_sums(**common, weights=weights_g)
+                psi_g, _, _ = self._compute_cluster_psi_sums(**common, weights=weights_g)
                 result["group"][g] = psi_g
 
         return result

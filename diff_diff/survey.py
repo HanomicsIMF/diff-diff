@@ -83,7 +83,7 @@ class SurveyDesign:
                 f"lonely_psu must be one of {valid_lonely}, " f"got '{self.lonely_psu}'"
             )
         # Replicate weight validation
-        valid_rep_methods = {"BRR", "Fay", "JK1", "JKn"}
+        valid_rep_methods = {"BRR", "Fay", "JK1", "JKn", "SDR"}
         if self.replicate_method is not None:
             if self.replicate_method not in valid_rep_methods:
                 raise ValueError(
@@ -1305,6 +1305,97 @@ def _compute_stratified_psu_meat(
     return meat, _variance_computed, legitimate_zero_count
 
 
+def _compute_stratified_meat_from_psu_scores(
+    psu_scores: np.ndarray,
+    psu_strata: np.ndarray,
+    fpc_per_psu: "Optional[np.ndarray]" = None,
+    lonely_psu: str = "remove",
+) -> np.ndarray:
+    """Compute stratified meat matrix from pre-aggregated PSU-level scores.
+
+    Like :func:`_compute_stratified_psu_meat`, but accepts scores that are
+    already aggregated to the PSU level (one row per PSU). Used by
+    TwoStageDiD's GMM sandwich where the score matrix ``S`` is built at
+    the cluster/PSU level.
+
+    Parameters
+    ----------
+    psu_scores : np.ndarray
+        Score matrix of shape (G, k) — one row per PSU.
+    psu_strata : np.ndarray
+        Stratum assignment per PSU, shape (G,).
+    fpc_per_psu : np.ndarray, optional
+        FPC population size per PSU, shape (G,). All PSUs in the same
+        stratum should share the same FPC value (first occurrence used).
+    lonely_psu : str
+        How to handle singleton strata: "remove", "certainty", or "adjust".
+
+    Returns
+    -------
+    meat : np.ndarray
+        Meat matrix of shape (k, k).
+    variance_computed : bool
+        Whether any actual variance computation happened.
+    legitimate_zero_count : int
+        Number of strata that legitimately contribute zero variance.
+    """
+    if psu_scores.ndim == 1:
+        psu_scores = psu_scores[:, np.newaxis]
+    k = psu_scores.shape[1]
+    meat = np.zeros((k, k))
+
+    unique_strata = np.unique(psu_strata)
+    _variance_computed = False
+    legitimate_zero_count = 0
+
+    # Pre-compute global mean for lonely_psu="adjust"
+    _global_psu_mean = None
+    if lonely_psu == "adjust":
+        _global_psu_mean = psu_scores.mean(axis=0, keepdims=True)
+
+    for h in unique_strata:
+        mask_h = psu_strata == h
+        scores_h = psu_scores[mask_h]
+        n_psu_h = scores_h.shape[0]
+
+        # Handle singleton strata
+        if n_psu_h < 2:
+            if lonely_psu == "remove":
+                continue
+            elif lonely_psu == "certainty":
+                legitimate_zero_count += 1
+                continue
+            elif lonely_psu == "adjust":
+                centered = scores_h - _global_psu_mean
+                with np.errstate(invalid="ignore", over="ignore"):
+                    meat += centered.T @ centered
+                _variance_computed = True
+                continue
+
+        # FPC
+        f_h = 0.0
+        if fpc_per_psu is not None:
+            N_h = fpc_per_psu[mask_h][0]
+            if N_h < n_psu_h:
+                raise ValueError(
+                    f"FPC ({N_h}) is less than the number of PSUs "
+                    f"({n_psu_h}) in stratum. FPC must be >= n_PSU."
+                )
+            f_h = n_psu_h / N_h
+            if f_h >= 1.0:
+                legitimate_zero_count += 1
+
+        psu_mean_h = scores_h.mean(axis=0, keepdims=True)
+        centered = scores_h - psu_mean_h
+
+        adjustment = (1.0 - f_h) * (n_psu_h / (n_psu_h - 1))
+        with np.errstate(invalid="ignore", over="ignore"):
+            meat += adjustment * (centered.T @ centered)
+        _variance_computed = True
+
+    return meat, _variance_computed, legitimate_zero_count
+
+
 def compute_survey_vcov(
     X: np.ndarray,
     residuals: np.ndarray,
@@ -1427,6 +1518,8 @@ def _replicate_variance_factor(
         return 1.0 / n_replicates
     elif method == "Fay":
         return 1.0 / (n_replicates * (1.0 - fay_rho) ** 2)
+    elif method == "SDR":
+        return 4.0 / n_replicates
     elif method == "JK1":
         return (n_replicates - 1.0) / n_replicates
     # JKn handled separately (per-stratum factors)
@@ -1543,11 +1636,11 @@ def compute_replicate_vcov(
     outer_sum = diffs.T @ diffs  # (k, k)
 
     # BRR/Fay: use fixed scaling, ignore user-supplied scale/rscales (R convention)
-    if method in ("BRR", "Fay"):
+    if method in ("BRR", "Fay", "SDR"):
         if resolved.replicate_scale is not None or resolved.replicate_rscales is not None:
             warnings.warn(
                 f"Custom replicate_scale/replicate_rscales ignored for {method} "
-                f"(BRR/Fay use fixed scaling).",
+                f"(BRR/Fay/SDR use fixed scaling).",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1673,11 +1766,11 @@ def compute_replicate_if_variance(
     ss = float(np.sum(diffs**2))
 
     # BRR/Fay: use fixed scaling, ignore user-supplied scale/rscales (R convention)
-    if method in ("BRR", "Fay"):
+    if method in ("BRR", "Fay", "SDR"):
         if resolved.replicate_scale is not None or resolved.replicate_rscales is not None:
             warnings.warn(
                 f"Custom replicate_scale/replicate_rscales ignored for {method} "
-                f"(BRR/Fay use fixed scaling).",
+                f"(BRR/Fay/SDR use fixed scaling).",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1814,11 +1907,11 @@ def compute_replicate_refit_variance(
 
     # --- Method-specific scaling ---
     # BRR/Fay: fixed scaling, ignore user-supplied scale/rscales
-    if method in ("BRR", "Fay"):
+    if method in ("BRR", "Fay", "SDR"):
         if resolved.replicate_scale is not None or resolved.replicate_rscales is not None:
             warnings.warn(
                 f"Custom replicate_scale/replicate_rscales ignored for {method} "
-                f"(BRR/Fay use fixed scaling).",
+                f"(BRR/Fay/SDR use fixed scaling).",
                 UserWarning,
                 stacklevel=2,
             )
