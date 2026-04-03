@@ -107,7 +107,7 @@ class DiDResults:
     @property
     def coef_var(self) -> float:
         """Coefficient of variation: SE / |ATT|. NaN when ATT is 0 or SE non-finite."""
-        if not (np.isfinite(self.se) and self.se > 0):
+        if not (np.isfinite(self.se) and self.se >= 0):
             return np.nan
         if not np.isfinite(self.att) or self.att == 0:
             return np.nan
@@ -403,7 +403,7 @@ class MultiPeriodDiDResults:
     @property
     def coef_var(self) -> float:
         """Coefficient of variation: SE / |overall ATT|. NaN when ATT is 0 or SE non-finite."""
-        if not (np.isfinite(self.avg_se) and self.avg_se > 0):
+        if not (np.isfinite(self.avg_se) and self.avg_se >= 0):
             return np.nan
         if not np.isfinite(self.avg_att) or self.avg_att == 0:
             return np.nan
@@ -722,7 +722,7 @@ class SyntheticDiDResults:
     @property
     def coef_var(self) -> float:
         """Coefficient of variation: SE / |ATT|. NaN when ATT is 0 or SE non-finite."""
-        if not (np.isfinite(self.se) and self.se > 0):
+        if not (np.isfinite(self.se) and self.se >= 0):
             return np.nan
         if not np.isfinite(self.att) or self.att == 0:
             return np.nan

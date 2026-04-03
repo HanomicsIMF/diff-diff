@@ -2147,11 +2147,22 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         if resolved_survey_0 is not None:
             from diff_diff.survey import compute_survey_vcov
 
-            # Use residuals from solve_ols (safe for rank-deficient fits:
-            # solve_ols rebuilds fitted values from kept columns only,
-            # so residuals are finite even when some coefficients are NaN).
+            # Use residuals from solve_ols (safe for rank-deficient fits).
             residuals = result[1]
-            vcov = compute_survey_vcov(X_dm, residuals, resolved_survey_0)
+
+            # Reduce to kept (finite-coefficient) columns to avoid singular
+            # X'WX in compute_survey_vcov, then expand back.
+            kept_mask = np.isfinite(coefficients)
+            if np.all(kept_mask):
+                vcov = compute_survey_vcov(X_dm, residuals, resolved_survey_0)
+            else:
+                n_full = len(coefficients)
+                X_kept = X_dm[:, kept_mask]
+                vcov_kept = compute_survey_vcov(X_kept, residuals, resolved_survey_0)
+                # Expand back: NaN rows/cols for dropped columns
+                vcov = np.full((n_full, n_full), np.nan)
+                kept_idx = np.where(kept_mask)[0]
+                vcov[np.ix_(kept_idx, kept_idx)] = vcov_kept
 
         n_leads = len(lead_cols)
         gamma = coefficients[:n_leads]
@@ -2310,12 +2321,15 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         # P-value from F distribution (survey df when available)
         if np.isfinite(f_stat) and f_stat >= 0:
             if resolved_survey is not None and resolved_survey.df_survey is not None:
-                df_denom = max(resolved_survey.df_survey, 1)
+                df_denom = resolved_survey.df_survey
             else:
                 cluster_ids = df_0[cluster_var].values
                 n_clusters = len(np.unique(cluster_ids))
                 df_denom = max(n_clusters - 1, 1)
-            p_value = float(stats.f.sf(f_stat, n_leads_actual, df_denom))
+            if df_denom <= 0:
+                p_value = np.nan
+            else:
+                p_value = float(stats.f.sf(f_stat, n_leads_actual, df_denom))
         else:
             p_value = np.nan
 
