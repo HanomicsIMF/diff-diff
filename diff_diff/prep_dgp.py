@@ -1142,6 +1142,7 @@ def generate_survey_did_data(
     fpc_per_stratum: float = 200.0,
     weight_variation: str = "moderate",
     psu_re_sd: float = 2.0,
+    psu_period_factor: float = 0.5,
     unit_fe_sd: float = 1.0,
     noise_sd: float = 0.5,
     include_replicate_weights: bool = False,
@@ -1194,6 +1195,10 @@ def generate_survey_did_data(
     psu_re_sd : float, default=2.0
         Standard deviation of PSU random effects. Controls intra-cluster
         correlation and drives DEFF > 1.
+    psu_period_factor : float, default=0.5
+        Multiplier for PSU-period interaction shocks (relative to psu_re_sd).
+        Higher values increase time-varying within-cluster correlation,
+        which survives DiD's time-differencing and inflates design-based SEs.
     unit_fe_sd : float, default=1.0
         Standard deviation of unit fixed effects.
     noise_sd : float, default=0.5
@@ -1327,7 +1332,11 @@ def generate_survey_did_data(
     # differencing in DiD.  Without these, the time-invariant PSU RE
     # cancels in the treatment-vs-control time-difference and the
     # cluster-robust / survey SE would be *smaller* than naive OLS SE.
-    psu_period_re = rng.normal(0, psu_re_sd * 0.5, size=(n_psu_total, n_periods))
+    # Controlled by psu_period_factor (default 0.5); higher values
+    # increase time-varying clustering and inflate design-based SEs.
+    psu_period_re = rng.normal(
+        0, psu_re_sd * psu_period_factor, size=(n_psu_total, n_periods)
+    )
 
     # --- Generate panel or repeated cross-sections ---
     records = []

@@ -1430,3 +1430,15 @@ class TestGenerateSurveyDidData:
             generate_survey_did_data(never_treated_frac=1.1, seed=42)
         with pytest.raises(ValueError, match="fpc_per_stratum.*must be >= psu_per_stratum"):
             generate_survey_did_data(fpc_per_stratum=3, psu_per_stratum=8, seed=42)
+
+    def test_psu_period_factor(self):
+        """Test that psu_period_factor controls time-varying PSU clustering."""
+        from diff_diff.prep import generate_survey_did_data
+
+        data_low = generate_survey_did_data(psu_period_factor=0.0, seed=42)
+        data_high = generate_survey_did_data(psu_period_factor=2.0, seed=42)
+        # Higher factor increases outcome variance (more PSU-period shocks)
+        assert data_high["outcome"].std() > data_low["outcome"].std()
+        # Same structure
+        assert set(data_low.columns) == set(data_high.columns)
+        assert len(data_low) == len(data_high)
