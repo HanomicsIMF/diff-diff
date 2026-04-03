@@ -2028,7 +2028,10 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         Compute pre-period lead coefficients via within-transformed OLS (Test 1).
 
         Adds lead indicator dummies W_it(h) = 1[K_it = h] to the untreated
-        model and estimates their coefficients with cluster-robust SEs.
+        model and estimates their coefficients. Uses cluster-robust SEs by
+        default, or design-based survey VCV when ``resolved_survey_full``
+        is provided (subpopulation approach: scores zero-padded to full
+        panel length to preserve PSU/strata structure).
 
         The full Omega_0 sample (including never-treated controls) is always
         used for within-transformation. When balanced_cohorts is provided,
@@ -2208,7 +2211,8 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         Run pre-trend test (Equation 9).
 
         Adds pre-treatment lead indicators to the Step 1 OLS on Omega_0
-        and tests their joint significance via cluster-robust Wald F-test.
+        and tests their joint significance via Wald F-test (cluster-robust
+        or design-based survey VCV when survey_design is present).
         """
         if self._fit_data is None:
             raise RuntimeError("Must call fit() before pretrend_test().")

@@ -1203,6 +1203,59 @@ class TestImputationPretrendsSurvey:
             assert np.isfinite(pt["f_stat"])
             assert np.isfinite(pt["p_value"])
 
+    def test_pretrends_survey_always_treated_psu(self):
+        """Survey pretrends with a PSU/stratum that has no untreated obs."""
+        from diff_diff import ImputationDiD
+
+        np.random.seed(77)
+        n_periods = 8
+        rows = []
+        for i in range(40):
+            if i < 10:
+                ft = 2  # early cohort — treated in all but period 1
+            elif i < 25:
+                ft = 5  # late cohort
+            else:
+                ft = 0  # never-treated
+            # PSU 0-9 are in stratum 0 (all early-treated → few untreated obs)
+            # PSU 10-39 are in strata 1-2 (mix of treated/never-treated)
+            stratum = 0 if i < 10 else (1 if i < 25 else 2)
+            for t in range(1, n_periods + 1):
+                y = 5.0 + i * 0.02 + t * 0.1
+                if ft > 0 and t >= ft:
+                    y += 1.5
+                y += np.random.normal(0, 0.3)
+                rows.append(
+                    {
+                        "unit": i,
+                        "time": t,
+                        "first_treat": ft,
+                        "outcome": y,
+                        "weight": 1.0 + 0.2 * (i % 5),
+                        "stratum": stratum,
+                        "psu": i,
+                    }
+                )
+        data = pd.DataFrame(rows)
+
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = ImputationDiD(pretrends=True, horizon_max=3)
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+            aggregate="event_study",
+        )
+        # Should produce finite results even though stratum 0 has
+        # mostly treated PSUs (sparse untreated domain)
+        assert np.isfinite(result.overall_att)
+        pre = [h for h in result.event_study_effects if h < -1]
+        for h in pre:
+            assert np.isfinite(result.event_study_effects[h]["se"])
+
     def test_pretrends_replicate_raises(self, staggered_data):
         """pretrends=True + replicate-weight survey raises NotImplementedError."""
         from diff_diff import ImputationDiD

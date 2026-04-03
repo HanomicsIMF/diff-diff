@@ -433,6 +433,10 @@ def generate_survey_multiplier_weights_batch(
     is present, weights are scaled by ``sqrt(1 - f_h)`` per stratum so
     the bootstrap variance matches the TSL variance.
 
+    For ``lonely_psu="adjust"``, singleton PSUs from different strata are
+    pooled into a combined pseudo-stratum and weights are generated for
+    the pooled group (no FPC scaling on pooled singletons).
+
     Parameters
     ----------
     n_bootstrap : int
@@ -567,6 +571,9 @@ def generate_rao_wu_weights(
     Without FPC: ``m_h = n_h - 1``.
     With FPC: ``m_h = max(1, round((1 - f_h) * (n_h - 1)))``
     (Rao, Wu & Yue 1992, Section 3).
+
+    For ``lonely_psu="adjust"``, singleton PSUs are pooled into a combined
+    pseudo-stratum and resampled together (no FPC scaling on pooled group).
 
     Parameters
     ----------

@@ -413,7 +413,8 @@ class ImputationDiDResults:
         Run a pre-trend test (Equation 9 of Borusyak et al. 2024).
 
         Adds pre-treatment lead indicators to the Step 1 OLS and tests
-        their joint significance via a cluster-robust Wald F-test.
+        their joint significance via a Wald F-test (cluster-robust, or
+        design-based survey VCV when survey_design was provided at fit).
 
         Parameters
         ----------
