@@ -1063,3 +1063,77 @@ class TestTrimWeights:
         data = pd.DataFrame({"w": [1.0, 2.0]})
         with pytest.raises(ValueError, match="upper.*quantile"):
             trim_weights(data, "w", upper=5.0, quantile=0.95)
+
+
+# ===========================================================================
+# 8e-iii: ImputationDiD Pretrends + Survey
+# ===========================================================================
+
+
+class TestImputationPretrendsSurvey:
+    """Tests for pretrends + survey support in ImputationDiD."""
+
+    def test_pretrends_survey_no_raise(self, staggered_data):
+        """ImputationDiD with pretrends=True + survey runs without error."""
+        from diff_diff import ImputationDiD
+
+        data = staggered_data
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = ImputationDiD(pretrends=True, horizon_max=3)
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+            aggregate="event_study",
+        )
+        assert result.event_study_effects is not None
+        # Should have negative-horizon (pre-period) effects
+        pre_horizons = [h for h in result.event_study_effects if h < 0]
+        assert len(pre_horizons) > 0
+
+    def test_pretrends_survey_finite_se(self, staggered_data):
+        """Pre-period lead SEs are finite with survey design."""
+        from diff_diff import ImputationDiD
+
+        data = staggered_data
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = ImputationDiD(pretrends=True, horizon_max=3)
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+            aggregate="event_study",
+        )
+        for h, eff in result.event_study_effects.items():
+            if h < -1:  # Skip reference period (h=-1)
+                assert np.isfinite(eff["se"]), f"Non-finite SE at pre-horizon {h}"
+                assert eff["se"] > 0, f"Zero SE at pre-horizon {h}"
+
+    def test_pretrend_test_survey_no_raise(self, staggered_data):
+        """pretrend_test() works with survey design."""
+        from diff_diff import ImputationDiD
+
+        data = staggered_data
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = ImputationDiD(pretrends=True, horizon_max=3)
+        est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+            aggregate="event_study",
+        )
+        pt = est._pretrend_test()
+        assert "f_stat" in pt
+        assert "p_value" in pt
+        if pt["n_leads"] > 0:
+            assert np.isfinite(pt["f_stat"])
+            assert np.isfinite(pt["p_value"])
