@@ -1118,6 +1118,17 @@ class TestTrimWeights:
         with pytest.raises(ValueError, match="upper.*quantile"):
             trim_weights(data, "w", upper=5.0, quantile=0.95)
 
+    def test_trim_quantile_with_nan(self):
+        """Quantile trimming with NaN weights doesn't poison the column."""
+        from diff_diff.prep import trim_weights
+
+        data = pd.DataFrame({"w": [1.0, 2.0, np.nan, 5.0, 10.0]})
+        result = trim_weights(data, "w", quantile=0.9)
+        # NaN stays NaN, non-NaN values are trimmed
+        assert np.isnan(result["w"].iloc[2])
+        assert np.isfinite(result["w"].iloc[0])
+        assert np.isfinite(result["w"].iloc[4])
+
 
 # ===========================================================================
 # 8e-iii: ImputationDiD Pretrends + Survey

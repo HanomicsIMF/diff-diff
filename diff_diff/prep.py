@@ -1278,7 +1278,7 @@ def trim_weights(
     if quantile is not None:
         if not (0 < quantile < 1):
             raise ValueError(f"quantile must be in (0, 1), got {quantile}")
-        upper = float(np.quantile(w, quantile))
+        upper = float(np.nanquantile(w, quantile))
 
     if upper is not None:
         w = np.minimum(w, upper)
