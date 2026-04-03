@@ -1720,6 +1720,12 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                     obs_idx = np.where(cluster_ids == c)[0][0]
                     psu_fpc[idx] = resolved_survey.fpc[obs_idx]
 
+            # Unstratified single-PSU: variance is unidentified (matches
+            # _compute_stratified_psu_meat at survey.py:1225 which returns
+            # zero meat with no variance_computed flag for n_psu < 2).
+            if resolved_survey.strata is None and G_meat < 2:
+                return np.full((k, k), np.nan)
+
             # Reorder S rows to match unique_clusters ordering
             # S is built using np.add.at with cluster_indices from pd.factorize,
             # which uses the same order as unique_clusters from the data.
@@ -1912,10 +1918,10 @@ def two_stage_did(
         Balance event study to cohorts observed at all relative times.
     survey_design : SurveyDesign, optional
         Survey design specification for design-based inference. Supports
-        pweight only (aweight/fweight raise ValueError). FPC raises
-        NotImplementedError. PSU is used as cluster variable for Theorem 3
-        variance. Strata enters survey df for t-distribution inference.
-        Requires analytical inference (n_bootstrap=0).
+        pweight only (aweight/fweight raise ValueError). Supports strata,
+        PSU, and FPC for design-based GMM sandwich variance. Strata enters
+        survey df for t-distribution inference.
+        Both analytical (n_bootstrap=0) and bootstrap inference are supported.
     **kwargs
         Additional keyword arguments passed to TwoStageDiD constructor.
 

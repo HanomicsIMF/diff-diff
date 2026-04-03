@@ -611,6 +611,51 @@ class TestUnstratifiedFPC:
             assert np.isfinite(eff["se"]), f"Non-finite SE at horizon {h}"
 
 
+class TestSinglePSUUnstratifiedFPC:
+    """Regression: unstratified single-PSU FPC → NaN SE (variance unidentified)."""
+
+    def test_two_stage_single_psu_nan_se(self):
+        """TwoStageDiD with 1 PSU and FPC should produce NaN SE."""
+        from diff_diff import TwoStageDiD
+
+        # Build data where all units are in one PSU
+        np.random.seed(99)
+        n_units, n_periods = 30, 6
+        rows = []
+        for i in range(n_units):
+            ft = 4 if i < 10 else (6 if i < 20 else 0)
+            for t in range(1, n_periods + 1):
+                y = 5.0 + i * 0.02 + t * 0.1
+                if ft > 0 and t >= ft:
+                    y += 1.5
+                y += np.random.normal(0, 0.3)
+                rows.append(
+                    {
+                        "unit": i,
+                        "time": t,
+                        "first_treat": ft,
+                        "outcome": y,
+                        "weight": 1.0,
+                        "psu": 0,  # single PSU
+                        "fpc_col": 1000,
+                    }
+                )
+        data = pd.DataFrame(rows)
+
+        sd = SurveyDesign(weights="weight", psu="psu", fpc="fpc_col")
+        est = TwoStageDiD()
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+        )
+        # Single PSU = variance unidentified → NaN SE
+        assert np.isnan(result.overall_se)
+
+
 class TestPSUMeatHelper:
     """Unit tests for _compute_stratified_meat_from_psu_scores."""
 

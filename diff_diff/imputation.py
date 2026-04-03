@@ -2305,9 +2305,9 @@ def imputation_did(
         Balance event study to cohorts observed at all relative times.
     survey_design : SurveyDesign, optional
         Survey design specification for design-based inference. Supports
-        pweight only (aweight/fweight raise ValueError). FPC raises
-        NotImplementedError. PSU is used as cluster variable for Theorem 3
-        variance. Strata enters survey df for t-distribution inference.
+        pweight only (aweight/fweight raise ValueError). Supports strata,
+        PSU, and FPC for design-based variance. Strata enters survey df
+        for t-distribution inference.
         Both analytical (n_bootstrap=0) and bootstrap inference are supported.
     **kwargs
         Additional keyword arguments passed to ImputationDiD constructor.
