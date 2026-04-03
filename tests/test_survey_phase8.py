@@ -911,6 +911,78 @@ class TestBootstrapLonelyPSUAdjust:
         assert result.overall_se > 0
 
 
+class TestSingleSingletonAdjust:
+    """Single singleton stratum with adjust: warns and contributes zero variance."""
+
+    def test_multiplier_single_singleton_warns(self):
+        """Multiplier bootstrap with 1 singleton warns."""
+        from diff_diff.bootstrap_utils import generate_survey_multiplier_weights_batch
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        np.random.seed(42)
+        n = 15
+        # Stratum 0 has 1 PSU (singleton), strata 1-2 have multiple
+        strata = np.array([0] * 5 + [1] * 5 + [2] * 5)
+        psu = np.array([0] * 5 + [1, 2, 3, 4, 5] + [6, 7, 8, 9, 10])
+
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(n),
+            weight_type="pweight",
+            strata=strata,
+            psu=psu,
+            fpc=None,
+            n_strata=3,
+            n_psu=11,
+            lonely_psu="adjust",
+        )
+        rng = np.random.default_rng(42)
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            weights, _ = generate_survey_multiplier_weights_batch(
+                50,
+                resolved,
+                "rademacher",
+                rng,
+            )
+            user_warns = [x for x in w if issubclass(x.category, UserWarning)]
+            assert any("1 singleton" in str(x.message) for x in user_warns)
+        # Singleton column is zero (same as remove)
+        assert np.all(weights[:, 0] == 0.0)
+
+    def test_rao_wu_single_singleton_warns(self):
+        """Rao-Wu with 1 singleton warns."""
+        from diff_diff.bootstrap_utils import generate_rao_wu_weights
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        np.random.seed(42)
+        n = 15
+        strata = np.array([0] * 5 + [1] * 5 + [2] * 5)
+        psu = np.array([0] * 5 + [1, 2, 3, 4, 5] + [6, 7, 8, 9, 10])
+
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(n),
+            weight_type="pweight",
+            strata=strata,
+            psu=psu,
+            fpc=None,
+            n_strata=3,
+            n_psu=11,
+            lonely_psu="adjust",
+        )
+        rng = np.random.default_rng(42)
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            rescaled = generate_rao_wu_weights(resolved, rng)
+            user_warns = [x for x in w if issubclass(x.category, UserWarning)]
+            assert any("1 singleton" in str(x.message) for x in user_warns)
+        # Singleton obs keep base weights (zero variance contribution)
+        np.testing.assert_allclose(rescaled[:5], np.ones(5))
+
+
 # ===========================================================================
 class TestRaoWuLonelyPSUAdjust:
     """Tests for lonely_psu='adjust' in Rao-Wu bootstrap (SunAbraham consumer)."""
@@ -1212,12 +1284,12 @@ class TestImputationPretrendsSurvey:
         rows = []
         for i in range(40):
             if i < 10:
-                ft = 2  # early cohort — treated in all but period 1
+                ft = 1  # always-treated: treated from period 1 (zero untreated rows)
             elif i < 25:
                 ft = 5  # late cohort
             else:
                 ft = 0  # never-treated
-            # PSU 0-9 are in stratum 0 (all early-treated → few untreated obs)
+            # PSU 0-9 are in stratum 0 (all always-treated → zero untreated obs)
             # PSU 10-39 are in strata 1-2 (mix of treated/never-treated)
             stratum = 0 if i < 10 else (1 if i < 25 else 2)
             for t in range(1, n_periods + 1):

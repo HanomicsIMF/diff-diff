@@ -552,7 +552,18 @@ def generate_survey_multiplier_weights_batch(
                 pooled_cols = np.array(_singleton_cols)
                 weights[:, pooled_cols] = pooled_weights
             else:
-                # Single singleton — variance unidentified, zero weight
+                # Single singleton — cannot pool, zero weight (matches R survey
+                # package behavior where adjust with one singleton = remove).
+                import warnings
+
+                warnings.warn(
+                    "lonely_psu='adjust' with only 1 singleton stratum in "
+                    "bootstrap: singleton PSU contributes zero variance "
+                    "(same as 'remove'). At least 2 singleton strata are "
+                    "needed for pooled pseudo-stratum bootstrap.",
+                    UserWarning,
+                    stacklevel=3,
+                )
                 weights[:, _singleton_cols[0]] = 0.0
 
     return weights, psu_ids
@@ -673,7 +684,18 @@ def generate_rao_wu_weights(
                     p = int(obs_psu[idx])
                     rescaled[idx] = base_weights[idx] * psu_scale_map.get(p, 1.0)
         else:
-            # Single singleton total — variance unidentified, keep base weights
+            # Single singleton — cannot pool, keep base weights (matches R
+            # survey package: adjust with one singleton = remove).
+            import warnings
+
+            warnings.warn(
+                "lonely_psu='adjust' with only 1 singleton stratum in "
+                "bootstrap: singleton PSU contributes zero variance "
+                "(same as 'remove'). At least 2 singleton strata are "
+                "needed for pooled pseudo-stratum bootstrap.",
+                UserWarning,
+                stacklevel=2,
+            )
             for mask_h, _ in _singleton_info:
                 rescaled[mask_h] = base_weights[mask_h]
 

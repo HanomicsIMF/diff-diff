@@ -857,10 +857,10 @@ Pre-period coefficients reuse the existing pre-trend test machinery (BJS Equatio
 Y_it = alpha_i + beta_t [+ X'_it * delta] + sum_h gamma_h * W_it(h) + epsilon_it
 ```
 where `W_it(h) = 1[K_it = h]` are lead indicators, estimated on `Omega_0` only.
-- `gamma_h` are the pre-period event study coefficients with cluster-robust SEs
+- `gamma_h` are the pre-period event study coefficients (cluster-robust SEs by default; design-based survey VCV when analytical `survey_design` is present)
 - Under parallel trends (Assumption 1), `gamma_h = 0` for all `h < -anticipation`
 - Reference period `h = -1 - anticipation` is the omitted category (normalized to zero)
-- SEs from cluster-robust Wald variance (consistent with `pretrend_test()`)
+- SEs from cluster-robust Wald variance by default; design-based when survey present (consistent with `pretrend_test()`)
 - Bootstrap does not update pre-period SEs (they are from the lead regression)
 - When `balance_e` is set, lead indicators are restricted to balanced cohorts; the full Omega_0 sample (including never-treated) is kept for within-transformation
 - Only affects event study aggregation; overall ATT and group aggregation unchanged
@@ -2220,7 +2220,10 @@ ContinuousDiD, EfficientDiD):
   bootstrap analogue of the TSL "adjust" behavior (centering around the global mean).
   Applies to both multiplier bootstrap (CallawaySantAnna, ImputationDiD, TwoStageDiD,
   ContinuousDiD, EfficientDiD) and Rao-Wu bootstrap (SunAbraham, SyntheticDiD, TROP).
-  FPC scaling is skipped for pooled singletons (conservative). Reference: Rust & Rao (1996).
+  FPC scaling is skipped for pooled singletons (conservative). When only one singleton
+  stratum exists total, pooling is not possible — the singleton contributes zero bootstrap
+  variance (same as `remove`), with a `UserWarning` emitted. This matches R's `survey`
+  package behavior. Reference: Rust & Rao (1996).
 - **Deviation from R:** For the no-FPC case (`m_h = n_h - 1`), this matches R
   `survey::as.svrepdesign(type="subbootstrap")`. The FPC-adjusted resample size
   `m_h = round((1-f_h)*(n_h-1))` follows Rao, Wu & Yue (1992) Section 3.
