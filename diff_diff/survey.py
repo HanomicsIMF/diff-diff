@@ -1332,8 +1332,12 @@ def _compute_stratified_meat_from_psu_scores(
 
     Returns
     -------
-    np.ndarray
+    meat : np.ndarray
         Meat matrix of shape (k, k).
+    variance_computed : bool
+        Whether any actual variance computation happened.
+    legitimate_zero_count : int
+        Number of strata that legitimately contribute zero variance.
     """
     if psu_scores.ndim == 1:
         psu_scores = psu_scores[:, np.newaxis]
@@ -1341,6 +1345,8 @@ def _compute_stratified_meat_from_psu_scores(
     meat = np.zeros((k, k))
 
     unique_strata = np.unique(psu_strata)
+    _variance_computed = False
+    legitimate_zero_count = 0
 
     # Pre-compute global mean for lonely_psu="adjust"
     _global_psu_mean = None
@@ -1357,11 +1363,13 @@ def _compute_stratified_meat_from_psu_scores(
             if lonely_psu == "remove":
                 continue
             elif lonely_psu == "certainty":
+                legitimate_zero_count += 1
                 continue
             elif lonely_psu == "adjust":
                 centered = scores_h - _global_psu_mean
                 with np.errstate(invalid="ignore", over="ignore"):
                     meat += centered.T @ centered
+                _variance_computed = True
                 continue
 
         # FPC
@@ -1374,6 +1382,8 @@ def _compute_stratified_meat_from_psu_scores(
                     f"({n_psu_h}) in stratum. FPC must be >= n_PSU."
                 )
             f_h = n_psu_h / N_h
+            if f_h >= 1.0:
+                legitimate_zero_count += 1
 
         psu_mean_h = scores_h.mean(axis=0, keepdims=True)
         centered = scores_h - psu_mean_h
@@ -1381,8 +1391,9 @@ def _compute_stratified_meat_from_psu_scores(
         adjustment = (1.0 - f_h) * (n_psu_h / (n_psu_h - 1))
         with np.errstate(invalid="ignore", over="ignore"):
             meat += adjustment * (centered.T @ centered)
+        _variance_computed = True
 
-    return meat
+    return meat, _variance_computed, legitimate_zero_count
 
 
 def compute_survey_vcov(

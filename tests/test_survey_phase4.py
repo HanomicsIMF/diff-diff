@@ -505,18 +505,20 @@ class TestImputationDiDSurvey:
                 survey_design=sd,
             )
 
-    def test_fpc_raises(self, staggered_survey_data):
-        """FPC survey design should raise NotImplementedError."""
+    def test_fpc_accepted(self, staggered_survey_data):
+        """FPC survey design is now supported (Phase 8b)."""
         sd = SurveyDesign(weights="weight", fpc="fpc")
-        with pytest.raises(NotImplementedError, match="FPC"):
-            ImputationDiD().fit(
-                staggered_survey_data,
-                "outcome",
-                "unit",
-                "period",
-                "first_treat",
-                survey_design=sd,
-            )
+        result = ImputationDiD().fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+        assert result.overall_se > 0
 
 
 # =============================================================================
@@ -737,18 +739,20 @@ class TestTwoStageDiDSurvey:
                 survey_design=sd,
             )
 
-    def test_fpc_raises(self, staggered_survey_data):
-        """FPC survey design should raise NotImplementedError."""
+    def test_fpc_accepted(self, staggered_survey_data):
+        """FPC survey design is now supported (Phase 8b)."""
         sd = SurveyDesign(weights="weight", fpc="fpc")
-        with pytest.raises(NotImplementedError, match="FPC"):
-            TwoStageDiD().fit(
-                staggered_survey_data,
-                "outcome",
-                "unit",
-                "period",
-                "first_treat",
-                survey_design=sd,
-            )
+        result = TwoStageDiD().fit(
+            staggered_survey_data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+        assert result.overall_se > 0
 
 
 # =============================================================================

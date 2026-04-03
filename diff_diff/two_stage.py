@@ -208,9 +208,9 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             relative times in [-balance_e, max_h].
         survey_design : SurveyDesign, optional
             Survey design specification for design-based inference. Supports
-            pweight only (aweight/fweight raise ValueError). FPC raises
-            NotImplementedError. PSU is used as cluster variable for Theorem 3
-            variance. Strata enters survey df for t-distribution inference.
+            pweight only (aweight/fweight raise ValueError). Supports strata,
+            PSU, and FPC for design-based GMM sandwich variance. Strata enters
+            survey df for t-distribution inference.
             Both analytical (n_bootstrap=0) and bootstrap inference are supported.
 
         Returns
@@ -1701,25 +1701,38 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             # Build PSU→stratum and PSU→FPC mappings from observation-level arrays.
             # cluster_ids used here match resolved_survey.psu (via _inject_cluster_as_psu).
             # unique_clusters is already computed at line above (np.unique(cluster_ids)).
-            psu_strata = np.empty(len(unique_clusters), dtype=resolved_survey.strata.dtype)
+            G_meat = len(unique_clusters)
+
+            # Strata: synthesize single stratum when strata is None (unstratified FPC)
+            if resolved_survey.strata is not None:
+                psu_strata = np.empty(G_meat, dtype=resolved_survey.strata.dtype)
+                for idx, c in enumerate(unique_clusters):
+                    obs_idx = np.where(cluster_ids == c)[0][0]
+                    psu_strata[idx] = resolved_survey.strata[obs_idx]
+            else:
+                psu_strata = np.zeros(G_meat, dtype=int)
+
+            # FPC: map observation-level FPC to PSU level
             psu_fpc = None
             if resolved_survey.fpc is not None:
-                psu_fpc = np.empty(len(unique_clusters), dtype=np.float64)
-            for idx, c in enumerate(unique_clusters):
-                obs_idx = np.where(cluster_ids == c)[0][0]
-                psu_strata[idx] = resolved_survey.strata[obs_idx]
-                if psu_fpc is not None:
+                psu_fpc = np.empty(G_meat, dtype=np.float64)
+                for idx, c in enumerate(unique_clusters):
+                    obs_idx = np.where(cluster_ids == c)[0][0]
                     psu_fpc[idx] = resolved_survey.fpc[obs_idx]
 
             # Reorder S rows to match unique_clusters ordering
             # S is built using np.add.at with cluster_indices from pd.factorize,
             # which uses the same order as unique_clusters from the data.
-            meat = _compute_stratified_meat_from_psu_scores(
+            meat, _var_computed, _legit_zero = _compute_stratified_meat_from_psu_scores(
                 psu_scores=S,
                 psu_strata=psu_strata,
                 fpc_per_psu=psu_fpc,
                 lonely_psu=resolved_survey.lonely_psu,
             )
+            # If no variance was computed and no legitimate zeros, variance
+            # is unidentified — return NaN VCV so caller gets NaN SE.
+            if not _var_computed and _legit_zero == 0:
+                return np.full((k, k), np.nan)
         else:
             with np.errstate(invalid="ignore", over="ignore"):
                 meat = S.T @ S  # (k x k)

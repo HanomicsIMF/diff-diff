@@ -543,6 +543,74 @@ class TestTwoStageDiDFPC:
             assert np.isfinite(eff["se"]), f"Non-finite SE for group {g}"
 
 
+class TestUnstratifiedFPC:
+    """Regression tests for FPC without explicit strata (P1 fix)."""
+
+    def test_imputation_unstratified_fpc(self, staggered_data):
+        """ImputationDiD with weights + psu + fpc (no strata) runs."""
+        from diff_diff import ImputationDiD
+
+        data = staggered_data
+        data["fpc_col"] = 500  # constant FPC for all
+
+        sd = SurveyDesign(weights="weight", psu="psu", fpc="fpc_col")
+        est = ImputationDiD(horizon_max=3)
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+        assert result.overall_se > 0
+
+    def test_two_stage_unstratified_fpc(self, staggered_data):
+        """TwoStageDiD with weights + psu + fpc (no strata) runs."""
+        from diff_diff import TwoStageDiD
+
+        data = staggered_data
+        data["fpc_col"] = 500
+
+        sd = SurveyDesign(weights="weight", psu="psu", fpc="fpc_col")
+        est = TwoStageDiD()
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+        assert result.overall_se > 0
+
+    def test_two_stage_unstratified_fpc_event_study(self, staggered_data):
+        """TwoStageDiD unstratified FPC with event study."""
+        from diff_diff import TwoStageDiD
+
+        data = staggered_data
+        data["fpc_col"] = 500
+
+        sd = SurveyDesign(weights="weight", psu="psu", fpc="fpc_col")
+        est = TwoStageDiD()
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+            aggregate="event_study",
+        )
+        assert result.event_study_effects is not None
+        for h, eff in result.event_study_effects.items():
+            assert np.isfinite(eff["se"]), f"Non-finite SE at horizon {h}"
+
+
 class TestPSUMeatHelper:
     """Unit tests for _compute_stratified_meat_from_psu_scores."""
 
@@ -555,11 +623,12 @@ class TestPSUMeatHelper:
         S = np.random.randn(G, k) * 0.1
         # All in one stratum, no FPC
         psu_strata = np.zeros(G, dtype=int)
-        meat = _compute_stratified_meat_from_psu_scores(S, psu_strata)
+        meat, var_computed, legit_zero = _compute_stratified_meat_from_psu_scores(S, psu_strata)
 
         # Without FPC: adjustment = (1 - 0) * (G / (G-1)) = G/(G-1)
         expected = (G / (G - 1)) * (S - S.mean(axis=0)).T @ (S - S.mean(axis=0))
         np.testing.assert_allclose(meat, expected, rtol=1e-10)
+        assert var_computed is True
 
     def test_fpc_reduces_meat(self):
         """FPC should reduce the meat matrix vs no-FPC."""
@@ -570,9 +639,9 @@ class TestPSUMeatHelper:
         S = np.random.randn(G, k) * 0.1
         psu_strata = np.zeros(G, dtype=int)
 
-        meat_no_fpc = _compute_stratified_meat_from_psu_scores(S, psu_strata)
+        meat_no_fpc, _, _ = _compute_stratified_meat_from_psu_scores(S, psu_strata)
         fpc = np.full(G, 100.0)  # 20 out of 100 sampled
-        meat_fpc = _compute_stratified_meat_from_psu_scores(
+        meat_fpc, _, _ = _compute_stratified_meat_from_psu_scores(
             S,
             psu_strata,
             fpc_per_psu=fpc,
@@ -593,12 +662,12 @@ class TestPSUMeatHelper:
         # Stratum 0 has 1 PSU (lonely), stratum 1 has 4 PSUs
         psu_strata = np.array([0, 1, 1, 1, 1])
 
-        meat_remove = _compute_stratified_meat_from_psu_scores(
+        meat_remove, vc_remove, _ = _compute_stratified_meat_from_psu_scores(
             S,
             psu_strata,
             lonely_psu="remove",
         )
-        meat_adjust = _compute_stratified_meat_from_psu_scores(
+        meat_adjust, vc_adjust, _ = _compute_stratified_meat_from_psu_scores(
             S,
             psu_strata,
             lonely_psu="adjust",
@@ -606,3 +675,25 @@ class TestPSUMeatHelper:
 
         # "adjust" should produce larger variance (lonely PSU contributes)
         assert np.all(np.diag(meat_adjust) >= np.diag(meat_remove) - 1e-15)
+        assert vc_adjust is True
+
+    def test_all_singleton_remove_unidentified(self):
+        """All singleton strata with remove: variance unidentified."""
+        from diff_diff.survey import _compute_stratified_meat_from_psu_scores
+
+        np.random.seed(42)
+        G, k = 5, 2
+        S = np.random.randn(G, k)
+        # Every PSU is in its own stratum (all singletons)
+        psu_strata = np.arange(G)
+
+        meat, var_computed, legit_zero = _compute_stratified_meat_from_psu_scores(
+            S,
+            psu_strata,
+            lonely_psu="remove",
+        )
+        # No variance was computed, no legitimate zeros
+        assert var_computed is False
+        assert legit_zero == 0
+        # Meat is zero matrix (unidentified — caller should produce NaN)
+        assert np.all(meat == 0.0)
