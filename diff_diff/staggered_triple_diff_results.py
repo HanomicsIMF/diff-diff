@@ -100,6 +100,15 @@ class StaggeredTripleDiffResults:
             f"n_periods={len(self.time_periods)})"
         )
 
+    @property
+    def coef_var(self) -> float:
+        """Coefficient of variation: SE / |overall ATT|. NaN when ATT is 0 or SE non-finite."""
+        if not (np.isfinite(self.overall_se) and self.overall_se >= 0):
+            return np.nan
+        if not np.isfinite(self.overall_att) or self.overall_att == 0:
+            return np.nan
+        return self.overall_se / abs(self.overall_att)
+
     def summary(self, alpha: Optional[float] = None) -> str:
         """
         Generate formatted summary of estimation results.
@@ -156,9 +165,14 @@ class StaggeredTripleDiffResults:
                 "",
                 f"{conf_level}% Confidence Interval: "
                 f"[{self.overall_conf_int[0]:.4f}, {self.overall_conf_int[1]:.4f}]",
-                "",
             ]
         )
+
+        cv = self.coef_var
+        if np.isfinite(cv):
+            lines.append(f"{'CV (SE/|ATT|):':<25} {cv:>10.4f}")
+
+        lines.append("")
 
         # EPV diagnostics block (if any cohort has low EPV)
         if self.epv_diagnostics:
@@ -187,11 +201,7 @@ class StaggeredTripleDiffResults:
 
         # Event study effects
         if self.event_study_effects:
-            ci_label = (
-                "Simult. CI"
-                if self.cband_crit_value is not None
-                else "Pointwise CI"
-            )
+            ci_label = "Simult. CI" if self.cband_crit_value is not None else "Pointwise CI"
             lines.extend(
                 [
                     "-" * 85,
@@ -270,9 +280,7 @@ class StaggeredTripleDiffResults:
             Columns: group, time, epv, n_events, n_params, is_low.
         """
         if not self.epv_diagnostics:
-            return pd.DataFrame(
-                columns=["group", "time", "epv", "n_events", "n_params", "is_low"]
-            )
+            return pd.DataFrame(columns=["group", "time", "epv", "n_events", "n_params", "is_low"])
         rows = []
         for (g, t), diag in sorted(self.epv_diagnostics.items()):
             if show_all or diag.get("is_low", False):
@@ -323,9 +331,7 @@ class StaggeredTripleDiffResults:
 
         elif level == "event_study":
             if self.event_study_effects is None:
-                raise ValueError(
-                    "Event study effects not computed. Use aggregate='event_study'."
-                )
+                raise ValueError("Event study effects not computed. Use aggregate='event_study'.")
             rows = []
             for rel_t, data in sorted(self.event_study_effects.items()):
                 cband_ci = data.get("cband_conf_int", (np.nan, np.nan))
@@ -346,9 +352,7 @@ class StaggeredTripleDiffResults:
 
         elif level == "group":
             if self.group_effects is None:
-                raise ValueError(
-                    "Group effects not computed. Use aggregate='group'."
-                )
+                raise ValueError("Group effects not computed. Use aggregate='group'.")
             rows = []
             for group, data in sorted(self.group_effects.items()):
                 rows.append(
@@ -366,8 +370,7 @@ class StaggeredTripleDiffResults:
 
         else:
             raise ValueError(
-                f"Unknown level: {level}. "
-                "Use 'group_time', 'event_study', or 'group'."
+                f"Unknown level: {level}. " "Use 'group_time', 'event_study', or 'group'."
             )
 
     def to_dict(self) -> Dict[str, Any]:

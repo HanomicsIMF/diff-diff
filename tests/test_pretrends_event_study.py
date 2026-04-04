@@ -7,7 +7,6 @@ when pretrends=True is set on the estimator.
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from diff_diff.imputation import ImputationDiD
 from diff_diff.two_stage import TwoStageDiD
@@ -49,10 +48,7 @@ def generate_test_data(
     effect = treatment_effect * dynamic_mult
 
     outcomes = (
-        unit_fe_expanded
-        + time_fe_expanded
-        + effect * post
-        + rng.standard_normal(len(units)) * 0.5
+        unit_fe_expanded + time_fe_expanded + effect * post + rng.standard_normal(len(units)) * 0.5
     )
 
     return pd.DataFrame(
@@ -111,9 +107,9 @@ class TestImputationPretrends:
             if h >= 0 or h == ref_period:
                 continue
             assert np.isfinite(eff["effect"]), f"h={h}: effect not finite"
-            assert abs(eff["effect"]) < 3 * eff["se"] + 0.5, (
-                f"h={h}: pre-period effect {eff['effect']:.3f} too large"
-            )
+            assert (
+                abs(eff["effect"]) < 3 * eff["se"] + 0.5
+            ), f"h={h}: pre-period effect {eff['effect']:.3f} too large"
 
     def test_pretrends_se_finite_positive(self):
         """All pre-period horizons have finite, positive SEs."""
@@ -212,9 +208,7 @@ class TestImputationPretrends:
             assert h in results_on.event_study_effects
             eff_off = results_off.event_study_effects[h]
             eff_on = results_on.event_study_effects[h]
-            np.testing.assert_allclose(
-                eff_off["effect"], eff_on["effect"], rtol=1e-10
-            )
+            np.testing.assert_allclose(eff_off["effect"], eff_on["effect"], rtol=1e-10)
             np.testing.assert_allclose(eff_off["se"], eff_on["se"], rtol=1e-10)
 
     def test_horizon_max_interaction(self):
@@ -271,9 +265,7 @@ class TestImputationPretrends:
                 "unit": np.repeat(np.arange(n_units), n_periods),
                 "time": np.tile(np.arange(n_periods), n_units),
                 "outcome": rng.standard_normal(n_units * n_periods),
-                "first_treat": np.repeat(
-                    np.ones(n_units, dtype=int), n_periods
-                ),
+                "first_treat": np.repeat(np.ones(n_units, dtype=int), n_periods),
             }
         )
 
@@ -335,9 +327,9 @@ class TestTwoStagePretrends:
             if h >= 0 or h == ref_period:
                 continue
             assert np.isfinite(eff["effect"]), f"h={h}: effect not finite"
-            assert abs(eff["effect"]) < 3 * eff["se"] + 0.5, (
-                f"h={h}: pre-period effect {eff['effect']:.3f} too large"
-            )
+            assert (
+                abs(eff["effect"]) < 3 * eff["se"] + 0.5
+            ), f"h={h}: pre-period effect {eff['effect']:.3f} too large"
 
     def test_pretrends_se_finite_positive(self):
         """All pre-period horizons have finite, positive SEs."""
@@ -391,9 +383,7 @@ class TestTwoStagePretrends:
             assert h in results_on.event_study_effects
             eff_off = results_off.event_study_effects[h]
             eff_on = results_on.event_study_effects[h]
-            np.testing.assert_allclose(
-                eff_off["effect"], eff_on["effect"], rtol=1e-10
-            )
+            np.testing.assert_allclose(eff_off["effect"], eff_on["effect"], rtol=1e-10)
             np.testing.assert_allclose(eff_off["se"], eff_on["se"], rtol=1e-10)
 
     def test_get_params_includes_pretrends(self):
@@ -466,9 +456,7 @@ class TestPretrends_ContractTests:
 
         # Every lead coefficient should match the event study pre-period effect
         for h, coef in lead_coefs.items():
-            assert h in results.event_study_effects, (
-                f"h={h}: lead coefficient not in event study"
-            )
+            assert h in results.event_study_effects, f"h={h}: lead coefficient not in event study"
             es_effect = results.event_study_effects[h]["effect"]
             np.testing.assert_allclose(
                 es_effect,
@@ -498,9 +486,7 @@ class TestPretrends_Regressions:
         rng = np.random.default_rng(42)
         n_units = data["unit"].nunique()
         unit_weights = rng.uniform(0.5, 2.0, n_units)
-        data["weight"] = data["unit"].map(
-            dict(enumerate(unit_weights))
-        )
+        data["weight"] = data["unit"].map(dict(enumerate(unit_weights)))
 
         sd = SurveyDesign(weights="weight")
         est = ImputationDiD()
@@ -525,9 +511,7 @@ class TestPretrends_Regressions:
         rng = np.random.default_rng(42)
         n_units = data["unit"].nunique()
         unit_weights = rng.uniform(0.5, 2.0, n_units)
-        data["weight"] = data["unit"].map(
-            dict(enumerate(unit_weights))
-        )
+        data["weight"] = data["unit"].map(dict(enumerate(unit_weights)))
 
         sd = SurveyDesign(weights="weight")
         est = ImputationDiD()
@@ -567,9 +551,7 @@ class TestPretrends_Regressions:
         )
 
         negative = {
-            h: v
-            for h, v in results.event_study_effects.items()
-            if h < -1 and v["n_obs"] > 0
+            h: v for h, v in results.event_study_effects.items() if h < -1 and v["n_obs"] > 0
         }
         assert len(negative) > 0, "Should have pre-period horizons"
         for h, eff in negative.items():
@@ -595,9 +577,7 @@ class TestPretrends_Regressions:
         )
 
         # With bootstrap
-        results_boot = ImputationDiD(
-            pretrends=True, n_bootstrap=50, seed=42
-        ).fit(
+        results_boot = ImputationDiD(pretrends=True, n_bootstrap=50, seed=42).fit(
             data,
             outcome="outcome",
             unit="unit",
@@ -613,11 +593,15 @@ class TestPretrends_Regressions:
             eff_nb = results_no_boot.event_study_effects[h]
             eff_b = results_boot.event_study_effects[h]
             np.testing.assert_allclose(
-                eff_nb["effect"], eff_b["effect"], rtol=1e-10,
+                eff_nb["effect"],
+                eff_b["effect"],
+                rtol=1e-10,
                 err_msg=f"h={h}: bootstrap changed pre-period effect",
             )
             np.testing.assert_allclose(
-                eff_nb["se"], eff_b["se"], rtol=1e-10,
+                eff_nb["se"],
+                eff_b["se"],
+                rtol=1e-10,
                 err_msg=f"h={h}: bootstrap changed pre-period SE",
             )
 
@@ -672,19 +656,27 @@ class TestPretrends_Regressions:
             eff_p = results_perm.event_study_effects[h]
             eff_g = results_gap.event_study_effects[h]
             np.testing.assert_allclose(
-                eff_d["effect"], eff_p["effect"], rtol=1e-10,
+                eff_d["effect"],
+                eff_p["effect"],
+                rtol=1e-10,
                 err_msg=f"h={h}: permuted index changed effect",
             )
             np.testing.assert_allclose(
-                eff_d["se"], eff_p["se"], rtol=1e-10,
+                eff_d["se"],
+                eff_p["se"],
+                rtol=1e-10,
                 err_msg=f"h={h}: permuted index changed SE",
             )
             np.testing.assert_allclose(
-                eff_d["effect"], eff_g["effect"], rtol=1e-10,
+                eff_d["effect"],
+                eff_g["effect"],
+                rtol=1e-10,
                 err_msg=f"h={h}: gapped index changed effect",
             )
             np.testing.assert_allclose(
-                eff_d["se"], eff_g["se"], rtol=1e-10,
+                eff_d["se"],
+                eff_g["se"],
+                rtol=1e-10,
                 err_msg=f"h={h}: gapped index changed SE",
             )
 
@@ -695,9 +687,7 @@ class TestPretrends_Regressions:
         """
         data = generate_test_data(seed=42)
 
-        results_default = ImputationDiD(
-            pretrends=True, n_bootstrap=50, seed=99
-        ).fit(
+        results_default = ImputationDiD(pretrends=True, n_bootstrap=50, seed=99).fit(
             data.copy(),
             outcome="outcome",
             unit="unit",
@@ -709,9 +699,7 @@ class TestPretrends_Regressions:
         rng = np.random.default_rng(42)
         data_perm = data.copy()
         data_perm.index = rng.permutation(len(data_perm))
-        results_perm = ImputationDiD(
-            pretrends=True, n_bootstrap=50, seed=99
-        ).fit(
+        results_perm = ImputationDiD(pretrends=True, n_bootstrap=50, seed=99).fit(
             data_perm,
             outcome="outcome",
             unit="unit",
@@ -726,16 +714,20 @@ class TestPretrends_Regressions:
             eff_d = results_default.event_study_effects[h]
             eff_p = results_perm.event_study_effects[h]
             np.testing.assert_allclose(
-                eff_d["effect"], eff_p["effect"], rtol=1e-10,
+                eff_d["effect"],
+                eff_p["effect"],
+                rtol=1e-10,
                 err_msg=f"h={h}: permuted index changed effect",
             )
             np.testing.assert_allclose(
-                eff_d["se"], eff_p["se"], rtol=1e-10,
+                eff_d["se"],
+                eff_p["se"],
+                rtol=1e-10,
                 err_msg=f"h={h}: permuted index changed bootstrap SE",
             )
 
-    def test_imputation_pretrends_survey_raises(self):
-        """pretrends=True + survey_design raises NotImplementedError."""
+    def test_imputation_pretrends_survey_accepted(self):
+        """pretrends=True + survey_design is now supported (Phase 8e-iii)."""
         from diff_diff.survey import SurveyDesign
 
         data = generate_test_data(seed=42)
@@ -745,18 +737,17 @@ class TestPretrends_Regressions:
 
         sd = SurveyDesign(weights="weight")
         est = ImputationDiD(pretrends=True)
-        with pytest.raises(
-            NotImplementedError, match="pretrends=True is not yet compatible"
-        ):
-            est.fit(
-                data,
-                outcome="outcome",
-                unit="unit",
-                time="time",
-                first_treat="first_treat",
-                aggregate="event_study",
-                survey_design=sd,
-            )
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            aggregate="event_study",
+            survey_design=sd,
+        )
+        assert result.event_study_effects is not None
+        assert np.isfinite(result.overall_att)
 
     def test_imputation_pretrends_balance_e(self):
         """balance_e restricts pre-period lead regression to balanced cohorts."""
@@ -802,9 +793,7 @@ class TestPretrends_Regressions:
         )
 
         negative = {
-            h: v
-            for h, v in results.event_study_effects.items()
-            if h < -1 and v["n_obs"] > 0
+            h: v for h, v in results.event_study_effects.items() if h < -1 and v["n_obs"] > 0
         }
         assert len(negative) > 0, "Should have pre-period horizons"
         for h, eff in negative.items():

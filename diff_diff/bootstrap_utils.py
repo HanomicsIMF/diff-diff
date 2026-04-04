@@ -433,6 +433,10 @@ def generate_survey_multiplier_weights_batch(
     is present, weights are scaled by ``sqrt(1 - f_h)`` per stratum so
     the bootstrap variance matches the TSL variance.
 
+    For ``lonely_psu="adjust"``, singleton PSUs from different strata are
+    pooled into a combined pseudo-stratum and weights are generated for
+    the pooled group (no FPC scaling on pooled singletons).
+
     Parameters
     ----------
     n_bootstrap : int
@@ -454,11 +458,7 @@ def generate_survey_multiplier_weights_batch(
     psu = resolved_survey.psu
     strata = resolved_survey.strata
 
-    if resolved_survey.lonely_psu == "adjust":
-        raise NotImplementedError(
-            "lonely_psu='adjust' is not yet supported for survey-aware bootstrap. "
-            "Use lonely_psu='remove' or 'certainty', or use analytical inference."
-        )
+    _lonely_psu = resolved_survey.lonely_psu
 
     if psu is None:
         # Each observation is its own PSU
@@ -499,6 +499,7 @@ def generate_survey_multiplier_weights_batch(
         psu_to_col = {int(p): i for i, p in enumerate(psu_ids)}
 
         unique_strata = np.unique(strata)
+        _singleton_cols = []  # For lonely_psu="adjust" pooling
         for h in unique_strata:
             mask_h = strata == h
 
@@ -511,8 +512,12 @@ def generate_survey_multiplier_weights_batch(
             cols = np.array([psu_to_col[int(p)] for p in psus_in_h])
 
             if n_h < 2:
-                # Lonely PSU — zero weight (matches remove/certainty behavior)
-                weights[:, cols] = 0.0
+                if _lonely_psu == "adjust":
+                    # Collect for pooled pseudo-stratum processing
+                    _singleton_cols.extend(cols.tolist())
+                else:
+                    # remove / certainty — zero weight
+                    weights[:, cols] = 0.0
                 continue
 
             # Generate weights for this stratum
@@ -536,6 +541,31 @@ def generate_survey_multiplier_weights_batch(
 
             weights[:, cols] = stratum_weights
 
+        # Pool singleton PSUs into a pseudo-stratum for "adjust"
+        if _singleton_cols:
+            n_pooled = len(_singleton_cols)
+            if n_pooled >= 2:
+                pooled_weights = generate_bootstrap_weights_batch_numpy(
+                    n_bootstrap, n_pooled, weight_type, rng
+                )
+                # No FPC scaling for pooled singletons (conservative)
+                pooled_cols = np.array(_singleton_cols)
+                weights[:, pooled_cols] = pooled_weights
+            else:
+                # Single singleton — cannot pool, zero weight (library-specific
+                # fallback; bootstrap adjust with one singleton = remove).
+                import warnings
+
+                warnings.warn(
+                    "lonely_psu='adjust' with only 1 singleton stratum in "
+                    "bootstrap: singleton PSU contributes zero variance "
+                    "(same as 'remove'). At least 2 singleton strata are "
+                    "needed for pooled pseudo-stratum bootstrap.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                weights[:, _singleton_cols[0]] = 0.0
+
     return weights, psu_ids
 
 
@@ -552,6 +582,9 @@ def generate_rao_wu_weights(
     Without FPC: ``m_h = n_h - 1``.
     With FPC: ``m_h = max(1, round((1 - f_h) * (n_h - 1)))``
     (Rao, Wu & Yue 1992, Section 3).
+
+    For ``lonely_psu="adjust"``, singleton PSUs are pooled into a combined
+    pseudo-stratum and resampled together (no FPC scaling on pooled group).
 
     Parameters
     ----------
@@ -570,11 +603,7 @@ def generate_rao_wu_weights(
     psu = resolved_survey.psu
     strata = resolved_survey.strata
 
-    if resolved_survey.lonely_psu == "adjust":
-        raise NotImplementedError(
-            "lonely_psu='adjust' is not yet supported for survey-aware bootstrap. "
-            "Use lonely_psu='remove' or 'certainty', or use analytical inference."
-        )
+    _lonely_psu_rw = resolved_survey.lonely_psu
 
     rescaled = np.zeros(n_obs, dtype=np.float64)
 
@@ -589,14 +618,20 @@ def generate_rao_wu_weights(
         unique_strata = np.unique(strata)
         strata_masks = [strata == h for h in unique_strata]
 
+    # Collect singleton PSUs for "adjust" pooling
+    _singleton_info = []  # list of (mask_h, unique_psu_h) tuples
+
     for mask_h in strata_masks:
         psu_h = obs_psu[mask_h]
         unique_psu_h = np.unique(psu_h)
         n_h = len(unique_psu_h)
 
         if n_h < 2:
-            # Census / lonely PSU — keep original weights (zero variance)
-            rescaled[mask_h] = base_weights[mask_h]
+            if _lonely_psu_rw == "adjust":
+                _singleton_info.append((mask_h, unique_psu_h))
+            else:
+                # remove / certainty — keep original weights (zero variance)
+                rescaled[mask_h] = base_weights[mask_h]
             continue
 
         # Compute resample size
@@ -628,6 +663,41 @@ def generate_rao_wu_weights(
         obs_in_h = np.where(mask_h)[0]
         local_indices = np.array([psu_to_local[int(obs_psu[idx])] for idx in obs_in_h])
         rescaled[obs_in_h] = base_weights[obs_in_h] * scale_per_psu[local_indices]
+
+    # Pool singleton PSUs into a pseudo-stratum for "adjust"
+    if _singleton_info:
+        # Combine all singleton PSUs into one group
+        pooled_psus = np.concatenate([p for _, p in _singleton_info])
+        n_pooled = len(pooled_psus)
+
+        if n_pooled >= 2:
+            m_pooled = n_pooled - 1  # No FPC for pooled singletons
+            drawn = rng.choice(n_pooled, size=m_pooled, replace=True)
+            counts = np.bincount(drawn, minlength=n_pooled)
+            scale_per_psu = (n_pooled / m_pooled) * counts.astype(np.float64)
+
+            # Build PSU → scale mapping and apply
+            psu_scale_map = {int(pooled_psus[i]): scale_per_psu[i] for i in range(n_pooled)}
+            for mask_h, _ in _singleton_info:
+                obs_in_h = np.where(mask_h)[0]
+                for idx in obs_in_h:
+                    p = int(obs_psu[idx])
+                    rescaled[idx] = base_weights[idx] * psu_scale_map.get(p, 1.0)
+        else:
+            # Single singleton — cannot pool, keep base weights (library-specific
+            # fallback; bootstrap adjust with one singleton = remove).
+            import warnings
+
+            warnings.warn(
+                "lonely_psu='adjust' with only 1 singleton stratum in "
+                "bootstrap: singleton PSU contributes zero variance "
+                "(same as 'remove'). At least 2 singleton strata are "
+                "needed for pooled pseudo-stratum bootstrap.",
+                UserWarning,
+                stacklevel=2,
+            )
+            for mask_h, _ in _singleton_info:
+                rescaled[mask_h] = base_weights[mask_h]
 
     return rescaled
 

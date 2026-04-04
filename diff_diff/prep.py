@@ -1225,3 +1225,78 @@ def _suggest_treatment_candidates(
     # Return top candidates
     result = result.nlargest(n_candidates, "treatment_candidate_score")
     return result.reset_index(drop=True)
+
+
+def trim_weights(
+    data: pd.DataFrame,
+    weight_col: str,
+    upper: Optional[float] = None,
+    quantile: Optional[float] = None,
+    lower: Optional[float] = None,
+) -> pd.DataFrame:
+    """Trim (winsorize) survey weights to reduce influence of extreme values.
+
+    Caps weights at specified thresholds. Useful for reducing variance from
+    extreme survey weights before DiD estimation. Federal agencies (e.g., NCHS)
+    recommend reviewing weights with CV > 30%.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input DataFrame.
+    weight_col : str
+        Name of the weight column.
+    upper : float, optional
+        Absolute upper cap. Weights above this value are set to it.
+        Mutually exclusive with ``quantile``.
+    quantile : float, optional
+        Quantile-based upper cap (e.g., 0.99). Weights above the quantile
+        value are capped at it. Mutually exclusive with ``upper``.
+    lower : float, optional
+        Absolute lower floor. Weights below this value are set to it.
+        Can be combined with either ``upper`` or ``quantile``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of data with trimmed weights.
+
+    Raises
+    ------
+    ValueError
+        If both ``upper`` and ``quantile`` are provided, or if ``weight_col``
+        is not in the DataFrame.
+    """
+    if upper is not None and quantile is not None:
+        raise ValueError("Specify either 'upper' or 'quantile', not both.")
+    if weight_col not in data.columns:
+        raise ValueError(f"Column '{weight_col}' not found in DataFrame.")
+
+    result = data.copy()
+    w = result[weight_col].values.copy()
+
+    if quantile is not None:
+        if not (0 < quantile < 1):
+            raise ValueError(f"quantile must be in (0, 1), got {quantile}")
+        upper = float(np.nanquantile(w, quantile))
+
+    # Validate cap values are finite and non-negative
+    if upper is not None:
+        if not np.isfinite(upper) or upper < 0:
+            raise ValueError(f"upper must be finite and >= 0, got {upper}")
+    if lower is not None:
+        if not np.isfinite(lower) or lower < 0:
+            raise ValueError(f"lower must be finite and >= 0, got {lower}")
+    if upper is not None and lower is not None and lower > upper:
+        raise ValueError(
+            f"lower ({lower}) must be <= upper ({upper}). "
+            f"When using quantile, the resolved upper cap may be below lower."
+        )
+
+    if upper is not None:
+        w = np.minimum(w, upper)
+    if lower is not None:
+        w = np.maximum(w, lower)
+
+    result[weight_col] = w
+    return result

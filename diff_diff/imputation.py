@@ -236,12 +236,19 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         if missing:
             raise ValueError(f"Missing columns: {missing}")
 
-        if self.pretrends and survey_design is not None and aggregate in ("event_study", "all"):
+        # pretrends + analytical survey is supported (Phase 8e-iii).
+        # Replicate-weight surveys need per-replicate lead regression refits
+        # which are not yet implemented — reject that combination.
+        if (
+            self.pretrends
+            and survey_design is not None
+            and survey_design.replicate_method is not None
+            and aggregate in ("event_study", "all")
+        ):
             raise NotImplementedError(
-                "pretrends=True is not yet compatible with survey_design. "
-                "The pre-period lead regression uses unweighted demeaning, "
-                "which does not account for survey weights. Use pretrends=False "
-                "with survey_design for now."
+                "pretrends=True is not yet compatible with replicate-weight "
+                "survey designs. Analytical survey designs (strata/PSU/FPC) "
+                "are supported. Use pretrends=False with replicate weights."
             )
 
         # Create working copy
@@ -734,6 +741,8 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             "delta_hat": delta_hat,
             "kept_cov_mask": kept_cov_mask,
             "survey_design": survey_design,
+            "resolved_survey": resolved_survey,
+            "survey_weights": survey_weights,
         }
 
         # Pre-compute cluster psi sums for bootstrap
@@ -1724,6 +1733,19 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 if self.horizon_max is not None:
                     pre_rel_times = [h for h in pre_rel_times if abs(h) <= self.horizon_max]
                 if pre_rel_times:
+                    # Survey pretrends: pass full design (subpopulation approach)
+                    _sw_0_pre = None
+                    _rs_full_pre = None
+                    _n_full_pre = None
+                    _o0_idx_pre = None
+                    if survey_weights is not None and resolved_survey is not None:
+                        _sw_0_pre = survey_weights[omega_0_mask.values]
+                        _rs_full_pre = resolved_survey
+                        _n_full_pre = len(df)
+                        _o0_idx_pre = np.where(omega_0_mask.values)[0]
+                    _survey_df_pre = (
+                        resolved_survey.df_survey if resolved_survey is not None else None
+                    )
                     pre_effects, _, _ = self._compute_lead_coefficients(
                         df_0,
                         outcome,
@@ -1735,6 +1757,11 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                         pre_rel_times,
                         alpha=self.alpha,
                         balanced_cohorts=balanced_cohorts,
+                        survey_weights_0=_sw_0_pre,
+                        resolved_survey_full=_rs_full_pre,
+                        n_obs_full=_n_full_pre,
+                        omega_0_indices=_o0_idx_pre,
+                        survey_df=_survey_df_pre,
                     )
                     event_study_effects.update(pre_effects)
 
@@ -1991,12 +2018,20 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         pre_rel_times: List[int],
         alpha: float = 0.05,
         balanced_cohorts: Optional[set] = None,
+        survey_weights_0: Optional[np.ndarray] = None,
+        resolved_survey_full=None,
+        n_obs_full: Optional[int] = None,
+        omega_0_indices: Optional[np.ndarray] = None,
+        survey_df: Optional[int] = None,
     ) -> Tuple[Dict[int, Dict[str, Any]], np.ndarray, np.ndarray]:
         """
         Compute pre-period lead coefficients via within-transformed OLS (Test 1).
 
         Adds lead indicator dummies W_it(h) = 1[K_it = h] to the untreated
-        model and estimates their coefficients with cluster-robust SEs.
+        model and estimates their coefficients. Uses cluster-robust SEs by
+        default, or design-based survey VCV when ``resolved_survey_full``
+        is provided (subpopulation approach: scores zero-padded to full
+        panel length to preserve PSU/strata structure).
 
         The full Omega_0 sample (including never-treated controls) is always
         used for within-transformation. When balanced_cohorts is provided,
@@ -2032,9 +2067,13 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             df_0[col_name] = indicator
             lead_cols.append(col_name)
 
-        # Within-transform via iterative demeaning
+        # Within-transform via iterative demeaning (survey-weighted when present)
         y_dm = self._iterative_demean(
-            df_0[outcome].values, df_0[unit].values, df_0[time].values, df_0.index
+            df_0[outcome].values,
+            df_0[unit].values,
+            df_0[time].values,
+            df_0.index,
+            weights=survey_weights_0,
         )
 
         all_x_cols = lead_cols[:]
@@ -2044,19 +2083,30 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         X_dm = np.column_stack(
             [
                 self._iterative_demean(
-                    df_0[col].values, df_0[unit].values, df_0[time].values, df_0.index
+                    df_0[col].values,
+                    df_0[unit].values,
+                    df_0[time].values,
+                    df_0.index,
+                    weights=survey_weights_0,
                 )
                 for col in all_x_cols
             ]
         )
 
-        # OLS with cluster-robust SEs
+        # OLS for point estimates + VCV. When survey VCV will replace the
+        # cluster-robust VCV, skip cluster_ids to avoid errors on domains
+        # with few PSUs (the cluster-robust VCV is discarded anyway).
         cluster_ids = df_0[cluster_var].values
+        _ols_weights = survey_weights_0
+        _ols_weight_type = "pweight" if survey_weights_0 is not None else None
+        _use_survey_vcov = resolved_survey_full is not None
         try:
             result = solve_ols(
                 X_dm,
                 y_dm,
-                cluster_ids=cluster_ids,
+                weights=_ols_weights,
+                weight_type=_ols_weight_type,
+                cluster_ids=None if _use_survey_vcov else cluster_ids,
                 return_vcov=True,
                 rank_deficient_action=self.rank_deficient_action,
                 column_names=all_x_cols,
@@ -2086,9 +2136,52 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         vcov = result[2]
         assert vcov is not None
 
+        # Replace cluster-robust VCV with survey design-based VCV.
+        # Use the FULL survey design (subpopulation approach): zero-pad
+        # the Omega_0 scores back to full-panel length so PSU/strata
+        # structure is preserved for variance estimation.
+        if resolved_survey_full is not None:
+            from diff_diff.survey import compute_survey_vcov
+
+            # Use residuals from solve_ols (safe for rank-deficient fits).
+            residuals_0 = result[1]
+
+            # Reduce to kept (finite-coefficient) columns for VCV
+            kept_mask = np.isfinite(coefficients)
+            if np.all(kept_mask):
+                X_for_vcov = X_dm
+                res_for_vcov = residuals_0
+            else:
+                X_for_vcov = X_dm[:, kept_mask]
+                res_for_vcov = residuals_0
+
+            # Zero-pad to full panel length (subpopulation approach):
+            # observations outside Omega_0 contribute zero to the score,
+            # but preserve PSU/strata structure for design-based variance.
+            n_full_obs = n_obs_full
+            k_vcov = X_for_vcov.shape[1]
+            X_full = np.zeros((n_full_obs, k_vcov), dtype=np.float64)
+            res_full = np.zeros(n_full_obs, dtype=np.float64)
+            X_full[omega_0_indices] = X_for_vcov
+            res_full[omega_0_indices] = res_for_vcov
+
+            vcov_kept = compute_survey_vcov(X_full, res_full, resolved_survey_full)
+
+            if not np.all(kept_mask):
+                # Expand back: NaN rows/cols for dropped columns
+                n_coef = len(coefficients)
+                vcov = np.full((n_coef, n_coef), np.nan)
+                kept_idx = np.where(kept_mask)[0]
+                vcov[np.ix_(kept_idx, kept_idx)] = vcov_kept
+            else:
+                vcov = vcov_kept
+
         n_leads = len(lead_cols)
         gamma = coefficients[:n_leads]
         V_gamma = vcov[:n_leads, :n_leads]
+
+        # Use full-design survey df for t-distribution inference
+        _df = survey_df
 
         # Build per-horizon effects
         effects = {}
@@ -2097,7 +2190,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             se = float(np.sqrt(max(V_gamma[j, j], 0.0)))
             # n_obs from the lead indicator (respects balanced_cohorts restriction)
             n_obs = int(df_0[f"_lead_{h}"].sum())
-            t_stat, p_value, conf_int = safe_inference(effect, se, alpha=alpha)
+            t_stat, p_value, conf_int = safe_inference(effect, se, alpha=alpha, df=_df)
             effects[h] = {
                 "effect": effect,
                 "se": se,
@@ -2118,20 +2211,22 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         Run pre-trend test (Equation 9).
 
         Adds pre-treatment lead indicators to the Step 1 OLS on Omega_0
-        and tests their joint significance via cluster-robust Wald F-test.
+        and tests their joint significance via Wald F-test (cluster-robust
+        or design-based survey VCV when survey_design is present).
         """
         if self._fit_data is None:
             raise RuntimeError("Must call fit() before pretrend_test().")
 
-        if self._fit_data.get("survey_design") is not None:
+        fd = self._fit_data
+        resolved_survey = fd.get("resolved_survey")
+        if resolved_survey is not None and resolved_survey.uses_replicate_variance:
             raise NotImplementedError(
-                "pretrend_test() is not yet survey-aware. The pre-trend F-test "
-                "uses unweighted demeaning and cluster-count degrees of freedom, "
-                "which do not account for survey weights. Survey-weighted "
-                "pretrend_test() is planned for future work."
+                "pretrend_test() is not yet supported for replicate-weight "
+                "survey designs. Per-replicate Equation 9 lead regression "
+                "refits are not implemented. Use analytical survey designs "
+                "(strata/PSU/FPC) or call pretrend_test() without survey."
             )
 
-        fd = self._fit_data
         df = fd["df"]
         outcome = fd["outcome"]
         unit = fd["unit"]
@@ -2140,6 +2235,8 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         covariates = fd["covariates"]
         omega_0_mask = fd["omega_0_mask"]
         cluster_var = fd["cluster_var"]
+        resolved_survey = fd.get("resolved_survey")
+        survey_weights = fd.get("survey_weights")
 
         df_0 = df.loc[omega_0_mask].copy()
 
@@ -2181,6 +2278,17 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 "lead_coefficients": {},
             }
 
+        # Survey pretrends: pass full design (subpopulation approach)
+        _sw_0_pt = None
+        _rs_full_pt = None
+        _n_full_pt = None
+        _o0_idx_pt = None
+        if survey_weights is not None and resolved_survey is not None:
+            _sw_0_pt = survey_weights[omega_0_mask.values]
+            _rs_full_pt = resolved_survey
+            _n_full_pt = len(fd["df"])
+            _o0_idx_pt = np.where(omega_0_mask.values)[0]
+
         # Use shared lead coefficient computation
         effects, gamma, V_gamma = self._compute_lead_coefficients(
             df_0,
@@ -2192,6 +2300,11 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             cluster_var,
             pre_rel_times,
             alpha=self.alpha,
+            survey_weights_0=_sw_0_pt,
+            resolved_survey_full=_rs_full_pt,
+            n_obs_full=_n_full_pt,
+            omega_0_indices=_o0_idx_pt,
+            survey_df=(resolved_survey.df_survey if resolved_survey is not None else None),
         )
 
         n_leads_actual = len(pre_rel_times)
@@ -2204,12 +2317,18 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
         except np.linalg.LinAlgError:
             f_stat = np.nan
 
-        # P-value from F distribution
-        cluster_ids = df_0[cluster_var].values
+        # P-value from F distribution (survey df when available)
         if np.isfinite(f_stat) and f_stat >= 0:
-            n_clusters = len(np.unique(cluster_ids))
-            df_denom = max(n_clusters - 1, 1)
-            p_value = float(stats.f.sf(f_stat, n_leads_actual, df_denom))
+            if resolved_survey is not None and resolved_survey.df_survey is not None:
+                df_denom = resolved_survey.df_survey
+            else:
+                cluster_ids = df_0[cluster_var].values
+                n_clusters = len(np.unique(cluster_ids))
+                df_denom = max(n_clusters - 1, 1)
+            if df_denom <= 0:
+                p_value = np.nan
+            else:
+                p_value = float(stats.f.sf(f_stat, n_leads_actual, df_denom))
         else:
             p_value = np.nan
 

@@ -857,14 +857,14 @@ Pre-period coefficients reuse the existing pre-trend test machinery (BJS Equatio
 Y_it = alpha_i + beta_t [+ X'_it * delta] + sum_h gamma_h * W_it(h) + epsilon_it
 ```
 where `W_it(h) = 1[K_it = h]` are lead indicators, estimated on `Omega_0` only.
-- `gamma_h` are the pre-period event study coefficients with cluster-robust SEs
+- `gamma_h` are the pre-period event study coefficients (cluster-robust SEs by default; design-based survey VCV when analytical `survey_design` is present)
 - Under parallel trends (Assumption 1), `gamma_h = 0` for all `h < -anticipation`
 - Reference period `h = -1 - anticipation` is the omitted category (normalized to zero)
-- SEs from cluster-robust Wald variance (consistent with `pretrend_test()`)
+- SEs from cluster-robust Wald variance by default; design-based when survey present (consistent with `pretrend_test()`)
 - Bootstrap does not update pre-period SEs (they are from the lead regression)
 - When `balance_e` is set, lead indicators are restricted to balanced cohorts; the full Omega_0 sample (including never-treated) is kept for within-transformation
 - Only affects event study aggregation; overall ATT and group aggregation unchanged
-- **Note:** `pretrends=True` with `survey_design` raises `NotImplementedError` because the lead regression uses unweighted demeaning (same limitation as `pretrend_test()`)
+- **Note:** `pretrends=True` with analytical `survey_design` (strata/PSU/FPC) is supported. The lead regression uses survey-weighted demeaning, WLS point estimates, and `compute_survey_vcov()` for design-based VCV. The full survey design is preserved (subpopulation approach): Omega_0 scores are zero-padded back to full-panel length so PSU/strata structure is maintained for variance estimation. The F-test in `pretrend_test()` uses the full-design `df_survey` as denominator df. Replicate-weight survey designs raise `NotImplementedError` with `pretrends=True` because per-replicate lead regression refits are not yet implemented.
 
 *Edge cases:*
 - **Unbalanced panels:** FE estimated via iterative alternating projection (Gauss-Seidel), equivalent to OLS with unit+time dummies. Converges in O(max_iter) passes; typically 5-20 iterations for unbalanced panels, 1-2 for balanced. One-pass demeaning is only exact for balanced panels.
@@ -2214,9 +2214,17 @@ ContinuousDiD, EfficientDiD):
   Rescaled weight: `w*_i = w_i * (n_h / m_h) * r_hi` where `r_hi` = count of PSU *i* drawn.
 - **Note:** FPC enters through the resample size `m_h`, not as a post-hoc scaling factor.
   When `f_h >= 1` (census stratum), observations keep original weights (zero variance).
-- **Note:** Bootstrap paths support `lonely_psu="remove"` and `"certainty"` only.
-  `lonely_psu="adjust"` raises `NotImplementedError` for survey-aware bootstrap;
-  use analytical inference for designs requiring `adjust` semantics.
+- **Note:** Bootstrap paths support all three `lonely_psu` modes: `"remove"`, `"certainty"`,
+  and `"adjust"`. For `"adjust"`, singleton PSUs from different strata are pooled into a
+  combined pseudo-stratum and weights are generated for the pooled group. This is the
+  bootstrap analogue of the TSL "adjust" behavior (centering around the global mean).
+  Applies to both multiplier bootstrap (CallawaySantAnna, ImputationDiD, TwoStageDiD,
+  ContinuousDiD, EfficientDiD) and Rao-Wu bootstrap (SunAbraham, SyntheticDiD, TROP).
+  FPC scaling is skipped for pooled singletons (conservative). When only one singleton
+  stratum exists total, pooling is not possible — the singleton contributes zero bootstrap
+  variance (same as `remove`), with a `UserWarning` emitted. This is a library-specific
+  documented fallback (R's analytical `adjust` uses grand-mean centering, but the bootstrap
+  analogue for a single singleton is not defined in the literature). Reference: Rust & Rao (1996).
 - **Deviation from R:** For the no-FPC case (`m_h = n_h - 1`), this matches R
   `survey::as.svrepdesign(type="subbootstrap")`. The FPC-adjusted resample size
   `m_h = round((1-f_h)*(n_h-1))` follows Rao, Wu & Yue (1992) Section 3.

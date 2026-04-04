@@ -104,6 +104,15 @@ class DiDResults:
             f"p={self.p_value:.4f})"
         )
 
+    @property
+    def coef_var(self) -> float:
+        """Coefficient of variation: SE / |ATT|. NaN when ATT is 0 or SE non-finite."""
+        if not (np.isfinite(self.se) and self.se >= 0):
+            return np.nan
+        if not np.isfinite(self.att) or self.att == 0:
+            return np.nan
+        return self.se / abs(self.att)
+
     def summary(self, alpha: Optional[float] = None) -> str:
         """
         Generate a formatted summary of the estimation results.
@@ -160,6 +169,10 @@ class DiDResults:
                 f"{conf_level}% Confidence Interval: [{self.conf_int[0]:.4f}, {self.conf_int[1]:.4f}]",
             ]
         )
+
+        cv = self.coef_var
+        if np.isfinite(cv):
+            lines.append(f"{'CV (SE/|ATT|):':<25} {cv:>10.4f}")
 
         # Add significance codes
         lines.extend(
@@ -387,6 +400,15 @@ class MultiPeriodDiDResults:
         """Post-period effects only."""
         return {p: pe for p, pe in self.period_effects.items() if p in self.post_periods}
 
+    @property
+    def coef_var(self) -> float:
+        """Coefficient of variation: SE / |overall ATT|. NaN when ATT is 0 or SE non-finite."""
+        if not (np.isfinite(self.avg_se) and self.avg_se >= 0):
+            return np.nan
+        if not np.isfinite(self.avg_att) or self.avg_att == 0:
+            return np.nan
+        return self.avg_se / abs(self.avg_att)
+
     def summary(self, alpha: Optional[float] = None) -> str:
         """
         Generate a formatted summary of the estimation results.
@@ -494,6 +516,10 @@ class MultiPeriodDiDResults:
                 f"{conf_level}% Confidence Interval: [{self.avg_conf_int[0]:.4f}, {self.avg_conf_int[1]:.4f}]",
             ]
         )
+
+        cv = self.coef_var
+        if np.isfinite(cv):
+            lines.append(f"{'CV (SE/|ATT|):':<25} {cv:>10.4f}")
 
         # Add significance codes
         lines.extend(
@@ -693,6 +719,15 @@ class SyntheticDiDResults:
             f"p={self.p_value:.4f})"
         )
 
+    @property
+    def coef_var(self) -> float:
+        """Coefficient of variation: SE / |ATT|. NaN when ATT is 0 or SE non-finite."""
+        if not (np.isfinite(self.se) and self.se >= 0):
+            return np.nan
+        if not np.isfinite(self.att) or self.att == 0:
+            return np.nan
+        return self.se / abs(self.att)
+
     def summary(self, alpha: Optional[float] = None) -> str:
         """
         Generate a formatted summary of the estimation results.
@@ -755,6 +790,10 @@ class SyntheticDiDResults:
                 f"{conf_level}% Confidence Interval: [{self.conf_int[0]:.4f}, {self.conf_int[1]:.4f}]",
             ]
         )
+
+        cv = self.coef_var
+        if np.isfinite(cv):
+            lines.append(f"{'CV (SE/|ATT|):':<25} {cv:>10.4f}")
 
         # Show top unit weights
         if self.unit_weights:

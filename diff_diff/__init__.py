@@ -94,6 +94,7 @@ from diff_diff.prep import (
     make_treatment_indicator,
     rank_control_units,
     summarize_did_data,
+    trim_weights,
     validate_did_data,
     wide_to_long,
 )
@@ -307,6 +308,7 @@ __all__ = [
     "make_post_indicator",
     "wide_to_long",
     "balance_panel",
+    "trim_weights",
     "validate_did_data",
     "summarize_did_data",
     "generate_did_data",

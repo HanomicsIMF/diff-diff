@@ -172,6 +172,15 @@ class EfficientDiDResults:
             f"n_periods={len(self.time_periods)})"
         )
 
+    @property
+    def coef_var(self) -> float:
+        """Coefficient of variation: SE / |overall ATT|. NaN when ATT is 0 or SE non-finite."""
+        if not (np.isfinite(self.overall_se) and self.overall_se >= 0):
+            return np.nan
+        if not np.isfinite(self.overall_att) or self.overall_att == 0:
+            return np.nan
+        return self.overall_se / abs(self.overall_att)
+
     def summary(self, alpha: Optional[float] = None) -> str:
         """Generate formatted summary of estimation results."""
         alpha = alpha or self.alpha
@@ -219,9 +228,14 @@ class EfficientDiDResults:
                 "",
                 f"{conf_level}% Confidence Interval: "
                 f"[{self.overall_conf_int[0]:.4f}, {self.overall_conf_int[1]:.4f}]",
-                "",
             ]
         )
+
+        cv = self.coef_var
+        if np.isfinite(cv):
+            lines.append(f"{'CV (SE/|ATT|):':<25} {cv:>10.4f}")
+
+        lines.append("")
 
         # Event study effects
         if self.event_study_effects:

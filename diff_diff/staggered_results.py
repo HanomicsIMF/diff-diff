@@ -140,6 +140,15 @@ class CallawaySantAnnaResults:
             f"n_periods={len(self.time_periods)})"
         )
 
+    @property
+    def coef_var(self) -> float:
+        """Coefficient of variation: SE / |overall ATT|. NaN when ATT is 0 or SE non-finite."""
+        if not (np.isfinite(self.overall_se) and self.overall_se >= 0):
+            return np.nan
+        if not np.isfinite(self.overall_att) or self.overall_att == 0:
+            return np.nan
+        return self.overall_se / abs(self.overall_att)
+
     def summary(self, alpha: Optional[float] = None) -> str:
         """
         Generate formatted summary of estimation results.
@@ -191,9 +200,14 @@ class CallawaySantAnnaResults:
                 "-" * 85,
                 "",
                 f"{conf_level}% Confidence Interval: [{self.overall_conf_int[0]:.4f}, {self.overall_conf_int[1]:.4f}]",
-                "",
             ]
         )
+
+        cv = self.coef_var
+        if np.isfinite(cv):
+            lines.append(f"{'CV (SE/|ATT|):':<25} {cv:>10.4f}")
+
+        lines.append("")
 
         # EPV diagnostics block (if any cohort has low EPV)
         if self.epv_diagnostics:
@@ -294,9 +308,7 @@ class CallawaySantAnnaResults:
             Columns: group, time, epv, n_events, n_params, is_low.
         """
         if not self.epv_diagnostics:
-            return pd.DataFrame(
-                columns=["group", "time", "epv", "n_events", "n_params", "is_low"]
-            )
+            return pd.DataFrame(columns=["group", "time", "epv", "n_events", "n_params", "is_low"])
         rows = []
         for (g, t), diag in sorted(self.epv_diagnostics.items()):
             if show_all or diag.get("is_low", False):
@@ -335,15 +347,15 @@ class CallawaySantAnnaResults:
             rows = []
             for (g, t), data in self.group_time_effects.items():
                 row = {
-                        "group": g,
-                        "time": t,
-                        "effect": data["effect"],
-                        "se": data["se"],
-                        "t_stat": data["t_stat"],
-                        "p_value": data["p_value"],
-                        "conf_int_lower": data["conf_int"][0],
-                        "conf_int_upper": data["conf_int"][1],
-                    }
+                    "group": g,
+                    "time": t,
+                    "effect": data["effect"],
+                    "se": data["se"],
+                    "t_stat": data["t_stat"],
+                    "p_value": data["p_value"],
+                    "conf_int_lower": data["conf_int"][0],
+                    "conf_int_upper": data["conf_int"][1],
+                }
                 if self.epv_diagnostics and (g, t) in self.epv_diagnostics:
                     row["epv"] = self.epv_diagnostics[(g, t)].get("epv")
                 rows.append(row)

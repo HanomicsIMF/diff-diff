@@ -97,6 +97,15 @@ class SunAbrahamResults:
             f"n_rel_periods={n_rel_periods})"
         )
 
+    @property
+    def coef_var(self) -> float:
+        """Coefficient of variation: SE / |overall ATT|. NaN when ATT is 0 or SE non-finite."""
+        if not (np.isfinite(self.overall_se) and self.overall_se >= 0):
+            return np.nan
+        if not np.isfinite(self.overall_att) or self.overall_att == 0:
+            return np.nan
+        return self.overall_se / abs(self.overall_att)
+
     def summary(self, alpha: Optional[float] = None) -> str:
         """
         Generate formatted summary of estimation results.
@@ -149,9 +158,14 @@ class SunAbrahamResults:
                 "",
                 f"{conf_level}% Confidence Interval: "
                 f"[{self.overall_conf_int[0]:.4f}, {self.overall_conf_int[1]:.4f}]",
-                "",
             ]
         )
+
+        cv = self.coef_var
+        if np.isfinite(cv):
+            lines.append(f"{'CV (SE/|ATT|):':<25} {cv:>10.4f}")
+
+        lines.append("")
 
         # Event study effects
         lines.extend(
@@ -501,9 +515,7 @@ class SunAbraham:
         if resolved_survey is not None:
             _validate_unit_constant_survey(data, unit, survey_design)
 
-        _uses_replicate_sa = (
-            resolved_survey is not None and resolved_survey.uses_replicate_variance
-        )
+        _uses_replicate_sa = resolved_survey is not None and resolved_survey.uses_replicate_variance
         if _uses_replicate_sa and self.n_bootstrap > 0:
             raise ValueError(
                 "Cannot use n_bootstrap > 0 with replicate-weight survey designs. "
@@ -650,9 +662,16 @@ class SunAbraham:
                 df_reg_nz = df_reg[nz] if not np.all(nz) else df_reg
                 w_nz = w_r[nz] if not np.all(nz) else w_r
                 ce_r, _, vcov_r, cim_r = self._fit_saturated_regression(
-                    df_reg_nz, outcome, unit, time, first_treat,
-                    treatment_groups, _sa_rel_periods, covariates,
-                    cluster_var, survey_weights=w_nz,
+                    df_reg_nz,
+                    outcome,
+                    unit,
+                    time,
+                    first_treat,
+                    treatment_groups,
+                    _sa_rel_periods,
+                    covariates,
+                    cluster_var,
+                    survey_weights=w_nz,
                     survey_weight_type=survey_weight_type,
                     resolved_survey=None,
                 )
@@ -661,11 +680,25 @@ class SunAbraham:
                 _wt_col = "_rep_wt"
                 df[_wt_col] = w_r
                 es_r, _ = self._compute_iw_effects(
-                    df, unit, first_treat, treatment_groups, _sa_rel_periods,
-                    ce_r, {}, vcov_r, cim_r, survey_weight_col=_wt_col,
+                    df,
+                    unit,
+                    first_treat,
+                    treatment_groups,
+                    _sa_rel_periods,
+                    ce_r,
+                    {},
+                    vcov_r,
+                    cim_r,
+                    survey_weight_col=_wt_col,
                 )
                 att_r, _ = self._compute_overall_att(
-                    df, first_treat, es_r, ce_r, _, vcov_r, cim_r,
+                    df,
+                    first_treat,
+                    es_r,
+                    ce_r,
+                    _,
+                    vcov_r,
+                    cim_r,
                     survey_weight_col=_wt_col,
                 )
                 results = [att_r]
@@ -741,7 +774,9 @@ class SunAbraham:
             if _n_valid_rep_sa < resolved_survey.n_replicates:
                 _sa_survey_df = _n_valid_rep_sa - 1 if _n_valid_rep_sa > 1 else 0
             if survey_metadata is not None:
-                survey_metadata.df_survey = _sa_survey_df if _sa_survey_df and _sa_survey_df > 0 else None
+                survey_metadata.df_survey = (
+                    _sa_survey_df if _sa_survey_df and _sa_survey_df > 0 else None
+                )
 
             # Override overall ATT SE
             overall_se = float(np.sqrt(max(_vcov_sa[0, 0], 0.0)))
@@ -769,9 +804,16 @@ class SunAbraham:
                 df_reg_nz = df_reg[nz] if not np.all(nz) else df_reg
                 w_nz = w_r[nz] if not np.all(nz) else w_r
                 ce_r, _, _, _ = self._fit_saturated_regression(
-                    df_reg_nz, outcome, unit, time, first_treat,
-                    treatment_groups, _sa_rel_periods, covariates,
-                    cluster_var, survey_weights=w_nz,
+                    df_reg_nz,
+                    outcome,
+                    unit,
+                    time,
+                    first_treat,
+                    treatment_groups,
+                    _sa_rel_periods,
+                    covariates,
+                    cluster_var,
+                    survey_weights=w_nz,
                     survey_weight_type=survey_weight_type,
                     resolved_survey=None,
                 )
@@ -1421,8 +1463,7 @@ class SunAbraham:
             .groupby(df[unit])
             .first()
             .reindex(all_units)
-            .values
-            .astype(np.float64)
+            .values.astype(np.float64)
         )
 
         strata_unit = None
