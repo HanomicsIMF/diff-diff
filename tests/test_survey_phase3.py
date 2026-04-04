@@ -1120,6 +1120,58 @@ class TestEfficientDiDCovSurvey:
                 survey_design=sd,
             )
 
+    def test_replicate_weight_aggregation(self):
+        """Replicate-weight aggregation SEs use compute_replicate_if_variance."""
+        from diff_diff import EfficientDiD
+
+        # Reuse the fixture from test_survey_phase6
+        np.random.seed(42)
+        n_units, n_periods, n_rep = 60, 6, 15
+        # Generate per-unit replicate weights (constant within unit across time)
+        unit_repwts = {}
+        for unit in range(n_units):
+            wt = 1.0 + 0.3 * (unit % 5)
+            unit_repwts[unit] = {
+                f"repwt_{r}": wt * (0.5 + np.random.random())
+                for r in range(n_rep)
+            }
+        rows = []
+        for unit in range(n_units):
+            ft = 3 if unit < 20 else (5 if unit < 40 else 0)
+            wt = 1.0 + 0.3 * (unit % 5)
+            x1 = np.random.randn()
+            for t in range(1, n_periods + 1):
+                y = 10.0 + unit * 0.05 + t * 0.2 + 0.5 * x1
+                if ft > 0 and t >= ft:
+                    y += 2.0
+                y += np.random.normal(0, 0.5)
+                row = {"unit": unit, "time": t, "first_treat": ft,
+                       "outcome": y, "weight": wt, "x1": x1}
+                row.update(unit_repwts[unit])
+                rows.append(row)
+        import pandas as pd
+        data = pd.DataFrame(rows)
+        rep_cols = [f"repwt_{r}" for r in range(n_rep)]
+
+        sd = SurveyDesign(
+            weights="weight", replicate_weights=rep_cols,
+            replicate_method="JK1",
+        )
+        result = EfficientDiD(n_bootstrap=0).fit(
+            data, "outcome", "unit", "time", "first_treat",
+            covariates=["x1"],
+            aggregate="event_study",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+        assert result.overall_se > 0
+        assert result.event_study_effects is not None
+        for _, eff in result.event_study_effects.items():
+            assert np.isfinite(eff["effect"])
+            assert np.isfinite(eff["se"])
+            assert eff["se"] > 0
+
 
 # =============================================================================
 # Scale Invariance (applies to all estimators)
