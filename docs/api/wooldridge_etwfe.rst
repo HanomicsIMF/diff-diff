@@ -10,7 +10,7 @@ This module implements ETWFE via a single saturated regression that:
 2. **Supports linear (OLS), Poisson QMLE, and logit** link functions
 3. **Uses ASF-based ATT** for nonlinear models: E[f(η₁)] − E[f(η₀)]
 4. **Computes delta-method SEs** for all aggregations (event, group, calendar, simple)
-5. **Matches Stata jwdid** output exactly for both OLS and nonlinear paths
+5. **Follows the Stata jwdid specification** for OLS and nonlinear paths (see Methodology Registry for documented SE/aggregation deviations)
 
 **When to use WooldridgeDiD:**
 

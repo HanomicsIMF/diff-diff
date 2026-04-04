@@ -345,6 +345,15 @@ class WooldridgeDiD:
                 "(cohort == 0) found. Use 'not_yet_treated' or add "
                 "never-treated units."
             )
+        if self.control_group == "not_yet_treated":
+            # Verify at least some untreated comparison observations exist
+            has_untreated = (sample[cohort] == 0).any() or (sample[cohort] > sample[time]).any()
+            if not has_untreated:
+                raise ValueError(
+                    "control_group='not_yet_treated' but no untreated comparison "
+                    "observations exist. All units are treated at all observed "
+                    "time periods. Use 'never_treated' with a never-treated group."
+                )
 
         # 2. Build interaction matrix
         X_int, int_col_names, gt_keys = _build_interaction_matrix(
@@ -626,22 +635,39 @@ class WooldridgeDiD:
         # solve_logit prepends intercept — beta[0] is intercept, beta[1:] are X_full cols
         beta_int_cols = beta[1 : n_int + 1]  # treatment interaction coefficients
 
-        # Handle rank-deficient designs: zero out NaN entries so downstream
-        # matrix ops don't propagate NaN (dropped columns contribute nothing)
+        # Handle rank-deficient designs: identify kept columns, compute vcov
+        # on reduced design, then expand back
         nan_mask = np.isnan(beta)
-        if np.any(nan_mask):
-            beta = np.where(nan_mask, 0.0, beta)
+        beta_clean = np.where(nan_mask, 0.0, beta)
+        kept_beta = ~nan_mask
 
         # QMLE sandwich vcov via shared linalg backend
         resids = y - probs
         X_with_intercept = np.column_stack([np.ones(len(y)), X_full])
-        vcov_full = compute_robust_vcov(
-            X_with_intercept,
-            resids,
-            cluster_ids=cluster_ids,
-            weights=probs * (1 - probs),  # logit QMLE bread: (X'WX)^{-1}
-            weight_type="aweight",  # unweighted scores for QMLE sandwich
-        )
+        if np.any(nan_mask):
+            # Compute vcov on reduced design (only identified columns)
+            X_reduced = X_with_intercept[:, kept_beta]
+            vcov_reduced = compute_robust_vcov(
+                X_reduced,
+                resids,
+                cluster_ids=cluster_ids,
+                weights=probs * (1 - probs),
+                weight_type="aweight",
+            )
+            # Expand back to full size with NaN for dropped columns
+            k_full = len(beta)
+            vcov_full = np.full((k_full, k_full), np.nan)
+            kept_idx = np.where(kept_beta)[0]
+            vcov_full[np.ix_(kept_idx, kept_idx)] = vcov_reduced
+        else:
+            vcov_full = compute_robust_vcov(
+                X_with_intercept,
+                resids,
+                cluster_ids=cluster_ids,
+                weights=probs * (1 - probs),
+                weight_type="aweight",
+            )
+        beta = beta_clean
 
         # ASF ATT(g,t) for treated units in each cell
         gt_effects: Dict[Tuple, Dict] = {}
@@ -766,21 +792,35 @@ class WooldridgeDiD:
 
         beta, mu_hat = solve_poisson(X_full, y, rank_deficient_action=self.rank_deficient_action)
 
-        # Handle rank-deficient designs: zero out NaN entries so downstream
-        # matrix ops don't propagate NaN (dropped columns contribute nothing)
+        # Handle rank-deficient designs: compute vcov on reduced design
         nan_mask = np.isnan(beta)
-        if np.any(nan_mask):
-            beta = np.where(nan_mask, 0.0, beta)
+        beta_clean = np.where(nan_mask, 0.0, beta)
+        kept_beta = ~nan_mask
 
         # QMLE sandwich vcov via shared linalg backend
         resids = y - mu_hat
-        vcov_full = compute_robust_vcov(
-            X_full,
-            resids,
-            cluster_ids=cluster_ids,
-            weights=mu_hat,  # Poisson QMLE bread: (X'WX)^{-1}
-            weight_type="aweight",  # unweighted scores for QMLE sandwich
-        )
+        if np.any(nan_mask):
+            X_reduced = X_full[:, kept_beta]
+            vcov_reduced = compute_robust_vcov(
+                X_reduced,
+                resids,
+                cluster_ids=cluster_ids,
+                weights=mu_hat,
+                weight_type="aweight",
+            )
+            k_full = len(beta)
+            vcov_full = np.full((k_full, k_full), np.nan)
+            kept_idx = np.where(kept_beta)[0]
+            vcov_full[np.ix_(kept_idx, kept_idx)] = vcov_reduced
+        else:
+            vcov_full = compute_robust_vcov(
+                X_full,
+                resids,
+                cluster_ids=cluster_ids,
+                weights=mu_hat,
+                weight_type="aweight",
+            )
+        beta = beta_clean
 
         # Treatment interaction coefficients: beta[1 : 1+n_int]
         beta_int = beta[1 : 1 + n_int]
