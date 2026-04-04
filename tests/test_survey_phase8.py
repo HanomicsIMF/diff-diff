@@ -1283,6 +1283,49 @@ class TestImputationPretrendsSurvey:
             assert np.isfinite(pt["f_stat"])
             assert np.isfinite(pt["p_value"])
 
+    def test_pretrends_survey_with_covariates(self, staggered_data):
+        """Survey pretrends with covariates uses the survey+covariate path."""
+        from diff_diff import ImputationDiD
+
+        data = staggered_data
+        data["x1"] = np.random.default_rng(42).normal(0, 1, len(data))
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = ImputationDiD(pretrends=True, horizon_max=3)
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            covariates=["x1"],
+            survey_design=sd,
+            aggregate="event_study",
+        )
+        pre = [h for h in result.event_study_effects if h < -1]
+        for h in pre:
+            assert np.isfinite(result.event_study_effects[h]["se"])
+
+    def test_pretrends_survey_with_bootstrap(self, staggered_data):
+        """Survey pretrends + bootstrap: bootstrap doesn't overwrite pre-period SEs."""
+        from diff_diff import ImputationDiD
+
+        data = staggered_data
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = ImputationDiD(pretrends=True, horizon_max=3, n_bootstrap=20, seed=42)
+        result = est.fit(
+            data,
+            outcome="outcome",
+            unit="unit",
+            time="time",
+            first_treat="first_treat",
+            survey_design=sd,
+            aggregate="event_study",
+        )
+        pre = [h for h in result.event_study_effects if h < -1]
+        for h in pre:
+            # Pre-period SEs come from lead regression, not bootstrap
+            assert np.isfinite(result.event_study_effects[h]["se"])
+
     def test_pretrends_survey_always_treated_psu(self):
         """Survey pretrends with a PSU/stratum that has no untreated obs."""
         from diff_diff import ImputationDiD

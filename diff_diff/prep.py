@@ -1280,6 +1280,13 @@ def trim_weights(
             raise ValueError(f"quantile must be in (0, 1), got {quantile}")
         upper = float(np.nanquantile(w, quantile))
 
+    # Validate cap values are finite and non-negative
+    if upper is not None:
+        if not np.isfinite(upper) or upper < 0:
+            raise ValueError(f"upper must be finite and >= 0, got {upper}")
+    if lower is not None:
+        if not np.isfinite(lower) or lower < 0:
+            raise ValueError(f"lower must be finite and >= 0, got {lower}")
     if upper is not None and lower is not None and lower > upper:
         raise ValueError(
             f"lower ({lower}) must be <= upper ({upper}). "
