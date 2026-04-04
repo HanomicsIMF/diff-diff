@@ -147,20 +147,13 @@ jobs:
             echo "Changed files:"
             git --no-pager diff --name-status "$BASE_SHA" "$HEAD_SHA"
             echo ""
-            # Identify large data files excluded from the unified diff
-            EXCLUDED_GLOBS="benchmarks/data/real/*.json benchmarks/data/real/*.csv"
-            excluded_files=$(git --no-pager diff --name-only "$BASE_SHA" "$HEAD_SHA" -- $EXCLUDED_GLOBS)
-            if [ -n "$excluded_files" ]; then
-              echo "NOTE: The following files are excluded from the unified diff below"
-              echo "due to size (they are generated data/golden-value files). Their"
-              echo "filenames appear in the 'Changed files' list above, but their"
-              echo "content is NOT shown. Review coverage for these files is metadata-only."
-              echo "$excluded_files" | sed 's/^/  - /'
-              echo ""
-            fi
             echo "Unified diff (context=5):"
+            # Exclude large generated/data files from the full diff to stay
+            # within the model's input limit. The --name-status above still
+            # lists them. Narrowed to real-data assets and notebook outputs.
             git --no-pager diff --unified=5 "$BASE_SHA" "$HEAD_SHA" \
-              -- . ':!benchmarks/data/real/*.json' ':!benchmarks/data/real/*.csv'
+              -- . ':!benchmarks/data/real/*.json' ':!benchmarks/data/real/*.csv' \
+                   ':!docs/tutorials/*.ipynb'
           } >> "$PROMPT"
 
       - name: Run Codex

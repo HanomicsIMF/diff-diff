@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from diff_diff import CallawaySantAnna, DifferenceInDifferences, SurveyDesign
+from diff_diff import DifferenceInDifferences, SurveyDesign
 from diff_diff.twfe import TwoWayFixedEffects
 
 BENCHMARK_DIR = Path(__file__).parent.parent / "benchmarks" / "data" / "real"
@@ -37,19 +37,20 @@ API_RESULTS_FILE = BENCHMARK_DIR / "api_realdata_golden.json"
 NHANES_RESULTS_FILE = BENCHMARK_DIR / "nhanes_realdata_golden.json"
 RECS_RESULTS_FILE = BENCHMARK_DIR / "recs_realdata_golden.json"
 
-# Tolerances — match existing synthetic-data cross-validation
-ATT_RTOL = 1e-4
-ATT_ATOL = 0.01
-SE_RTOL = 0.01  # 1%
-SE_ATOL = 0.05
-CI_RTOL = 0.01
-CI_ATOL = 0.05
+# Tight tolerances — observed gaps are < 1e-10, so 1e-8 guards against
+# regressions without being so loose that a real bug could slip through.
+ATT_RTOL = 1e-8
+ATT_ATOL = 1e-8
+SE_RTOL = 1e-8
+SE_ATOL = 1e-8
+CI_RTOL = 1e-8
+CI_ATOL = 1e-8
 
-# Wider tolerances for replicate weight methods
-REP_SE_RTOL = 0.05  # 5%
-REP_SE_ATOL = 0.1
-REP_CI_RTOL = 0.05
-REP_CI_ATOL = 0.1
+# Replicate weight methods: still tight (observed gaps < 1e-10)
+REP_SE_RTOL = 1e-8
+REP_SE_ATOL = 1e-8
+REP_CI_RTOL = 1e-8
+REP_CI_ATOL = 1e-8
 
 # Mark for easy filtering: pytest -m realdata
 pytestmark = pytest.mark.realdata
@@ -208,6 +209,9 @@ class TestApiSchoolAccountability:
             survey_design=sd,
         )
 
+        # ATT should match R's pooled DiD. SE differs because TWFE absorbs
+        # unit fixed effects (within-transform), giving a smaller residual
+        # variance than R's svyglm(outcome ~ treated * post).
         _assert_close(result.att, r["att"], ATT_RTOL, ATT_ATOL, "A4 TWFE ATT")
         assert np.isfinite(result.se), "A4 TWFE SE should be finite"
         assert result.se > 0, "A4 TWFE SE should be positive"
@@ -230,6 +234,8 @@ class TestApiSchoolAccountability:
 
         _assert_close(result.att, r["att"], ATT_RTOL, ATT_ATOL, "A5 subpop ATT")
         _assert_close(result.se, r["se"], SE_RTOL, SE_ATOL, "A5 subpop SE")
+        # df differs by design: subpopulation() preserves all 3 strata (df=397),
+        # while R's subset() drops to 1 stratum (df=199). ATT and SE match.
 
     def test_a6_covariates(self, api_results):
         """A6: Covariate-adjusted (meals, ell) with strata + FPC."""
@@ -279,6 +285,9 @@ class TestApiSchoolAccountability:
 
         _assert_close(result.att, r["att"], ATT_RTOL, ATT_ATOL, "A7 Fay ATT")
         _assert_close(result.se, r["se"], REP_SE_RTOL, REP_SE_ATOL, "A7 Fay SE")
+        assert result.survey_metadata.df_survey == r["df"], (
+            f"A7 df: Python={result.survey_metadata.df_survey}, R={r['df']}"
+        )
 
     def test_fpc_reduces_se(self, api_results):
         """FPC should reduce SE vs no-FPC (A1 SE < A2 SE)."""
@@ -360,6 +369,13 @@ class TestNhanesAcaCoverage:
 
         _assert_close(result.att, r["att"], ATT_RTOL, ATT_ATOL, "B2 cov ATT")
         _assert_close(result.se, r["se"], SE_RTOL, SE_ATOL, "B2 cov SE")
+        assert result.survey_metadata.df_survey == r["df"], (
+            f"B2 df: Python={result.survey_metadata.df_survey}, R={r['df']}"
+        )
+        _assert_close(result.conf_int[0], r["ci_lower"], CI_RTOL, CI_ATOL,
+                       "B2 CI lower")
+        _assert_close(result.conf_int[1], r["ci_upper"], CI_RTOL, CI_ATOL,
+                       "B2 CI upper")
 
     def test_b3_weights_only(self, nhanes_results):
         """B3: Weighted OLS (no clustering), baseline comparison."""
@@ -372,6 +388,13 @@ class TestNhanesAcaCoverage:
 
         _assert_close(result.att, r["att"], ATT_RTOL, ATT_ATOL, "B3 ATT")
         _assert_close(result.se, r["se"], SE_RTOL, SE_ATOL, "B3 SE")
+        assert result.survey_metadata.df_survey == r["df"], (
+            f"B3 df: Python={result.survey_metadata.df_survey}, R={r['df']}"
+        )
+        _assert_close(result.conf_int[0], r["ci_lower"], CI_RTOL, CI_ATOL,
+                       "B3 CI lower")
+        _assert_close(result.conf_int[1], r["ci_upper"], CI_RTOL, CI_ATOL,
+                       "B3 CI upper")
 
     def test_b4_subpop_female(self, nhanes_results):
         """B4: Subpopulation — female respondents only."""
@@ -392,46 +415,19 @@ class TestNhanesAcaCoverage:
 
         _assert_close(result.att, r["att"], ATT_RTOL, ATT_ATOL, "B4 subpop ATT")
         _assert_close(result.se, r["se"], SE_RTOL, SE_ATOL, "B4 subpop SE")
-
-    def test_b5_callaway_santanna_rc(self, nhanes_results):
-        """B5: CallawaySantAnna repeated cross-section with survey design.
-
-        R's did::att_gt is survey-naive for SE, so only ATT is compared.
-        NOTE: This test is skipped if R's did package couldn't produce
-        golden values (e.g., due to gname type issues with 2-period data).
-        """
-        if "b5_cs_rc" not in nhanes_results:
-            pytest.skip(
-                "B5 golden values not available — R did::att_gt may not "
-                "support 2-period repeated cross-section with this gname setup"
-            )
-        r = nhanes_results["b5_cs_rc"]
-        data = self._load_nhanes_data(nhanes_results)
-
-        sd = SurveyDesign(
-            weights="WTMEC2YR", strata="SDMVSTRA", psu="SDMVPSU", nest=True,
+        assert result.survey_metadata.df_survey == r["df"], (
+            f"B4 df: Python={result.survey_metadata.df_survey}, R={r['df']}"
         )
-        est = CallawaySantAnna(
-            estimation_method="reg",
-            control_group="never_treated",
-            base_period="varying",
-            panel=False,
-            n_bootstrap=0,
-        )
-        result = est.fit(
-            data, "outcome", "unit_id", "period", "first_treat",
-            aggregate="simple",
-            survey_design=sd,
-        )
+        _assert_close(result.conf_int[0], r["ci_lower"], CI_RTOL, CI_ATOL,
+                       "B4 CI lower")
+        _assert_close(result.conf_int[1], r["ci_upper"], CI_RTOL, CI_ATOL,
+                       "B4 CI upper")
 
-        _assert_close(
-            result.overall_att, r["overall_att"],
-            rtol=1e-3, atol=0.05,
-            label="B5 CS RC-DiD overall ATT",
-        )
-        # Design-based SE should be finite and positive
-        assert np.isfinite(result.overall_se), "B5 SE should be finite"
-        assert result.overall_se > 0, "B5 SE should be positive"
+    # B5 (CallawaySantAnna RC-DiD) was removed: R's did::att_gt cannot produce
+    # golden values for a 2-period repeated cross-section, and the time-scale
+    # mismatch between the R script (period_cs=1/2) and the Python data
+    # (period=0/1) made the dormant path untestable. CallawaySantAnna survey
+    # variance is validated in the synthetic-data suite instead.
 
 
 # ============================================================================
@@ -540,8 +536,13 @@ class TestRecsReplicateWeights:
         )
 
     def test_c3_deff_diagnostics(self, recs_results):
-        """C3: DEFF diagnostics from real JK1 replicate SEs."""
-        r = recs_results["c1_simple"]
+        """C3: DEFF diagnostics from real JK1 replicate SEs.
+
+        DEFF = (survey_SE / naive_SE)^2. The naive SE baseline differs between
+        R (weighted lm) and Python (compute_deff_diagnostics SRS baseline), so
+        DEFF values aren't directly comparable. This test verifies DEFFs are
+        finite, positive, and > 1 (expected for a complex survey design).
+        """
         data, rep_cols = self._load_recs_data(recs_results)
         data = data.dropna(subset=["TOTALBTU", "KOWNRENT", "NWEIGHT"]).reset_index(
             drop=True
@@ -577,3 +578,8 @@ class TestRecsReplicateWeights:
         assert all(deff.deff > 0), "DEFF values should be positive"
         assert all(np.isfinite(deff.effective_n)), "Effective n should be finite"
         assert all(deff.effective_n > 0), "Effective n should be positive"
+
+        # DEFF > 1 expected for a complex survey with unequal weights
+        assert deff.deff[1] > 1.0, (
+            f"DEFF(KOWNRENT) = {deff.deff[1]:.4f}, expected > 1.0 for survey data"
+        )
