@@ -164,6 +164,8 @@ from diff_diff.trop import (
     TROPResults,
     trop,
 )
+from diff_diff.wooldridge import WooldridgeDiD
+from diff_diff.wooldridge_results import WooldridgeDiDResults
 from diff_diff.utils import (
     WildBootstrapResults,
     check_parallel_trends,
@@ -210,6 +212,7 @@ SDDD = StaggeredTripleDifference
 Stacked = StackedDiD
 Bacon = BaconDecomposition
 EDiD = EfficientDiD
+ETWFE = WooldridgeDiD
 
 __version__ = "2.8.4"
 __all__ = [
@@ -276,6 +279,10 @@ __all__ = [
     "EfficientDiDResults",
     "EDiDBootstrapResults",
     "EDiD",
+    # WooldridgeDiD (ETWFE)
+    "WooldridgeDiD",
+    "WooldridgeDiDResults",
+    "ETWFE",
     # Visualization
     "plot_bacon",
     "plot_event_study",

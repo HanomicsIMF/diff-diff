@@ -84,7 +84,7 @@ Detailed guide: [`docs/llms-practitioner.txt`](docs/llms-practitioner.txt)
 - **Wild cluster bootstrap**: Valid inference with few clusters (<50) using Rademacher, Webb, or Mammen weights
 - **Panel data support**: Two-way fixed effects estimator for panel designs
 - **Multi-period analysis**: Event-study style DiD with period-specific treatment effects
-- **Staggered adoption**: Callaway-Sant'Anna (2021), Sun-Abraham (2021), Borusyak-Jaravel-Spiess (2024) imputation, Two-Stage DiD (Gardner 2022), Stacked DiD (Wing, Freedman & Hollingsworth 2024), and Efficient DiD (Chen, Sant'Anna & Xie 2025) estimators for heterogeneous treatment timing
+- **Staggered adoption**: Callaway-Sant'Anna (2021), Sun-Abraham (2021), Borusyak-Jaravel-Spiess (2024) imputation, Two-Stage DiD (Gardner 2022), Stacked DiD (Wing, Freedman & Hollingsworth 2024), Efficient DiD (Chen, Sant'Anna & Xie 2025), and Wooldridge ETWFE (2021/2023) estimators for heterogeneous treatment timing
 - **Triple Difference (DDD)**: Ortiz-Villavicencio & Sant'Anna (2025) estimators with proper covariate handling
 - **Synthetic DiD**: Combined DiD with synthetic control for improved robustness
 - **Triply Robust Panel (TROP)**: Factor-adjusted DiD with synthetic weights (Athey et al. 2025)
@@ -117,6 +117,7 @@ All estimators have short aliases for convenience:
 | `Stacked` | `StackedDiD` | Stacked DiD |
 | `Bacon` | `BaconDecomposition` | Goodman-Bacon decomposition |
 | `EDiD` | `EfficientDiD` | Efficient DiD |
+| `ETWFE` | `WooldridgeDiD` | Wooldridge ETWFE (2021/2023) |
 
 `TROP` already uses its short canonical name and needs no alias.
 

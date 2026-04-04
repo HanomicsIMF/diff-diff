@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **WooldridgeDiD (ETWFE)** estimator — Extended Two-Way Fixed Effects from Wooldridge (2025, 2023). Supports OLS, logit, and Poisson QMLE paths with ASF-based ATT and delta-method SEs. Four aggregation types (simple, group, calendar, event) matching Stata `jwdid_estat`. Alias: `ETWFE`. (PR #216, thanks @wenddymacro)
 - **Survey real-data validation** (Phase 9) — 15 cross-validation tests against R's `survey` package using three real federal survey datasets:
   - **API** (R `survey` package): TSL variance with strata, FPC, subpopulations, covariates, and Fay's BRR replicates
   - **NHANES** (CDC/NCHS): TSL variance with strata + PSU + nest=TRUE, validating the ACA young adult coverage provision DiD

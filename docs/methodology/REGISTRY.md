@@ -15,6 +15,7 @@ This document provides the academic foundations and key implementation requireme
    - [ImputationDiD](#imputationdid)
    - [TwoStageDiD](#twostagedid)
    - [StackedDiD](#stackeddid)
+   - [WooldridgeDiD (ETWFE)](#wooldridgedid-etwfe)
 3. [Advanced Estimators](#advanced-estimators)
    - [SyntheticDiD](#syntheticdid)
    - [TripleDifference](#tripledifference)
@@ -1069,6 +1070,110 @@ The paper text states a stricter bound (T_min + 1) but the R code by the co-auth
 - [x] Never-treated encoding (0 and inf)
 - [x] Survey design support (Phase 3): Q-weights compose multiplicatively with survey weights; TSL vcov on composed weights; survey design columns propagated through sub-experiments. Replicate weights supported via estimator-level refit with Q-weight composition (see Replicate Weight Variance section).
 - **Note:** Survey weights compose multiplicatively with Q-weights for StackedDiD; only `weight_type="pweight"` (default) is supported — `fweight` and `aweight` are rejected because Q-weight composition changes weight semantics (non-integer for fweight, non-inverse-variance for aweight)
+
+---
+
+## WooldridgeDiD (ETWFE)
+
+**Primary source:** Wooldridge, J. M. (2025). Two-way fixed effects, the two-way Mundlak regression, and difference-in-differences estimators. *Empirical Economics*, 69(5), 2545–2587. (Published version of the 2021 SSRN working paper NBER WP 29154.)
+
+**Secondary source:** Wooldridge, J. M. (2023). Simple approaches to nonlinear difference-in-differences with panel data. *The Econometrics Journal*, 26(3), C31–C66. https://doi.org/10.1093/ectj/utad016
+
+**Application reference:** Nagengast, A. J., Rios-Avila, F., & Yotov, Y. V. (2026). The European single market and intra-EU trade: an assessment with heterogeneity-robust difference-in-differences methods. *Economica*, 93(369), 298–331.
+
+**Reference implementation:** Stata: `jwdid` package (Rios-Avila, 2021). R: `etwfe` package (McDermott, 2023).
+
+**Key implementation requirements:**
+
+*Core estimand:*
+
+    ATT(g, t) = E[Y_it(g) - Y_it(0) | G_i = g, T = t]    for t >= g
+
+where `g` is cohort (first treatment period), `t` is calendar time.
+
+*OLS design matrix (Wooldridge 2025, Section 5):*
+
+The saturated ETWFE regression includes:
+1. Unit fixed effects (absorbed via within-transformation or as dummies)
+2. Time fixed effects (absorbed or as dummies)
+3. Cohort×time treatment interactions: `I(G_i = g) * I(T = t)` for each post-treatment (g, t) cell
+4. Additional covariates X_it interacted with cohort×time indicators (optional)
+
+The interaction coefficient `δ_{g,t}` identifies `ATT(g, t)` under parallel trends.
+- **Note:** OLS path uses iterative alternating-projection within-transformation (uniform weights) for exact FE absorption on both balanced and unbalanced panels. One-pass demeaning (`y - ȳ_i - ȳ_t + ȳ`) is only exact for balanced panels.
+
+*Nonlinear extensions (Wooldridge 2023):*
+
+For binary outcomes (logit) and count outcomes (Poisson), Wooldridge (2023) provides an
+Average Structural Function (ASF) approach. For each treated cell (g, t):
+
+    ATT(g, t) = mean_i[g(η_i + δ_{g,t}) - g(η_i)]   over units i in cell (g, t)
+
+where `g(·)` is the link inverse (logistic or exp), `η_i` is the individual linear predictor
+(fixed effects + controls), and `δ_{g,t}` is the interaction coefficient from the nonlinear model.
+
+*Standard errors:*
+- OLS: Cluster-robust sandwich estimator at the unit level (default)
+- Logit/Poisson: QMLE sandwich `(X'WX)^{-1} meat (X'WX)^{-1}` via `compute_robust_vcov(..., weights=w, weight_type="aweight")` where `w = p_i(1-p_i)` for logit or `w = μ_i` for Poisson
+- Delta-method SEs for ATT(g,t) from nonlinear models: `Var(ATT) = ∇θ' Σ_β ∇θ`
+- Joint delta method for overall ATT: `agg_grad = Σ_k (w_k/w_total) * ∇θ_k`
+- **Deviation from R:** R's `etwfe` package uses `fixest` for nonlinear paths; this implementation uses direct QMLE via `compute_robust_vcov` to avoid a statsmodels/fixest dependency.
+- **Note:** QMLE sandwich uses `weight_type="aweight"` which applies `(G/(G-1)) * ((n-1)/(n-k))` small-sample adjustment. Stata `jwdid` uses `G/(G-1)` only. The `(n-1)/(n-k)` term is conservative (inflates SEs slightly). For typical ETWFE panels where n >> k, the difference is negligible.
+
+*Aggregations (matching `jwdid_estat`):*
+- `simple`: Weighted average across all post-treatment (g, t) cells with weights `n_{g,t}`:
+
+      ATT_overall = Σ_{(g,t): t≥g} n_{g,t} · ATT(g,t) / Σ_{(g,t): t≥g} n_{g,t}
+
+  Cell weight `n_{g,t}` = count of obs in cohort g at time t in estimation sample.
+  - **Note:** Cell-level weighting (n_{g,t} observation counts) matches Stata `jwdid_estat` behavior. Differs from W2025 Eqs. 7.2-7.4 cohort-share weights that account for the number of post-treatment periods per cohort.
+
+- `group`: Weighted average across t for each cohort g
+- `calendar`: Weighted average across g for each calendar time t
+- `event`: Weighted average across (g, t) cells by relative period k = t - g
+
+*Covariates:*
+- `exovar`: Time-invariant covariates, added without demeaning (corresponds to W2025 Eq. 5.2 `x_i`)
+- `xtvar`: Time-varying covariates, demeaned within cohort×period cells when `demean_covariates=True` (corresponds to W2025 Eq. 10.2 `x_hat_itgs = x_it - x_bar_gs`)
+- `xgvar`: Covariates interacted with each cohort indicator
+- **Note:** Covariate-adjusted ETWFE includes the full W2025 Eq. 5.3 basis: raw X, cohort × X (D_g × X for treated cohorts, auto-generated for `exovar`/`xtvar`), time × X (f_t × X, drop first period), and cell × demeaned X (D_{g,t} × X̃). Variables in `xgvar` already contribute D_g × X via `_prepare_covariates`; `exovar`/`xtvar` get automatic D_g × X generation.
+- **Note:** `xtvar` demeaning operates at the cohort×period level (W2025 Eq. 10.2), not the cohort level (W2025 Eq. 5.2). These are identical for time-constant covariates but differ for time-varying covariates.
+
+*Control groups:*
+- `not_yet_treated` (default): Control pool includes units not yet treated at time t (same as Callaway-Sant'Anna)
+- `never_treated`: Control pool restricted to never-treated units only
+
+*Edge cases:*
+- Single cohort (no staggered adoption): Reduces to standard 2×2 DiD
+- Missing cohorts: Only cohorts observed in the data are included in interactions
+- Anticipation: When `anticipation > 0`, interactions include periods `t >= g - anticipation`
+- **Note:** Aggregation (simple/group/calendar) uses `t >= g` as the post-treatment threshold regardless of `anticipation`. Anticipation-window cells (g - anticipation <= t < g) are estimated but treated as pre-treatment placebos in aggregation, not included in overall ATT. This matches the standard post-treatment ATT definition; users who want anticipation cells in the aggregate should compute custom weighted averages from `group_time_effects`.
+- Never-treated control only: Pre-treatment periods still estimable as placebo ATTs
+- **Note:** Poisson QMLE with cohort+time dummies (not unit dummies) is consistent even in short panels (Wooldridge 1999, JBES). The exponential mean function is unique in that incidental parameters from group dummies do not cause inconsistency.
+- **Note:** Logit path uses cohort×time additive dummies (not unit dummies) to avoid incidental parameters bias — a standard limitation of logit FE in short panels. This matches Stata `jwdid method(logit)` which uses `i.gvar i.tvar`.
+- **Note:** Nonlinear methods (logit, Poisson) with `control_group="never_treated"` restrict the interaction matrix to post-treatment cells only. Pre-treatment placebo cells are OLS-only (where within-transformation absorbs FE). Including all (g,t) cells in the nonlinear design creates exact collinearity between cohort dummies and cell indicator sums, leading to a data-dependent normalization via QR dropping.
+
+*Algorithm:*
+1. Identify cohorts G and time periods T from data
+2. Build within-transformed design matrix (absorb unit + time FE)
+3. Append cohort×time interaction columns for all post-treatment cells
+4. Fit OLS/logit/Poisson
+5. For nonlinear: compute ASF-based ATT(g,t) and delta-method SEs per cell
+6. For OLS: extract δ_{g,t} coefficients directly as ATT(g,t)
+7. Compute overall ATT as weighted average; store full vcov for aggregate SEs
+8. Optionally run multiplier bootstrap for overall SE
+
+**Requirements checklist:**
+- [x] Saturated cohort×time interaction design matrix
+- [x] Unit + time FE absorption (within-transformation)
+- [x] OLS, logit (IRLS), and Poisson (IRLS) fitting methods
+- [x] Cluster-robust SEs at unit level for all methods
+- [x] ASF-based ATT for nonlinear methods with delta-method SEs
+- [x] Joint delta-method SE for aggregate ATT in nonlinear models
+- [x] Four aggregation types: simple, group, calendar, event
+- [x] Both control groups: not_yet_treated, never_treated
+- [x] Anticipation parameter support
+- [x] Multiplier bootstrap (Rademacher/Webb/Mammen) for OLS overall SE
 
 ---
 

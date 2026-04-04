@@ -10,6 +10,7 @@ from diff_diff.linalg import (
     compute_r_squared,
     compute_robust_vcov,
     solve_ols,
+    solve_poisson,
 )
 
 
@@ -1856,3 +1857,46 @@ class TestNoDotRuntimeWarnings:
             f"{[str(x.message) for x in runtime_warnings]}"
         )
         assert np.allclose(coefficients, beta_true, atol=0.1)
+
+
+class TestSolvePoisson:
+    def test_basic_convergence(self):
+        """solve_poisson converges on simple count data."""
+        rng = np.random.default_rng(42)
+        n = 200
+        X = np.column_stack([np.ones(n), rng.standard_normal((n, 2))])
+        true_beta = np.array([0.5, 0.3, -0.2])
+        mu = np.exp(X @ true_beta)
+        y = rng.poisson(mu).astype(float)
+        beta, W = solve_poisson(X, y)
+        assert beta.shape == (3,)
+        assert W.shape == (n,)
+        assert np.allclose(beta, true_beta, atol=0.15)
+
+    def test_returns_weights(self):
+        """solve_poisson returns final mu weights for vcov computation."""
+        rng = np.random.default_rng(0)
+        n = 100
+        X = np.column_stack([np.ones(n), rng.standard_normal(n)])
+        y = rng.poisson(2.0, size=n).astype(float)
+        beta, W = solve_poisson(X, y)
+        assert (W > 0).all()
+
+    def test_non_negative_output(self):
+        """Fitted mu = exp(Xb) should be strictly positive."""
+        rng = np.random.default_rng(1)
+        n = 50
+        X = np.column_stack([np.ones(n), rng.standard_normal(n)])
+        y = rng.poisson(1.0, size=n).astype(float)
+        beta, W = solve_poisson(X, y)
+        mu_hat = np.exp(X @ beta)
+        assert (mu_hat > 0).all()
+
+    def test_no_intercept_prepended(self):
+        """solve_poisson does NOT add intercept (caller's responsibility)."""
+        rng = np.random.default_rng(2)
+        n = 80
+        X = np.column_stack([np.ones(n), rng.standard_normal(n)])
+        y = rng.poisson(1.5, size=n).astype(float)
+        beta, _ = solve_poisson(X, y)
+        assert len(beta) == 2  # not 3

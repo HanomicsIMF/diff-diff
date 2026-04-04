@@ -83,11 +83,7 @@ Implements local projections for dynamic treatment effects. Doesn't require spec
 
 ### Nonlinear DiD
 
-For outcomes where linear models are inappropriate (binary, count, bounded).
-
-- Logit/probit DiD for binary outcomes
-- Poisson DiD for count outcomes
-- Proper handling of incidence rate ratios and odds ratios
+Implemented in `WooldridgeDiD` (alias `ETWFE`) — OLS, Poisson QMLE, and logit paths with ASF-based ATT. See [Tutorial 16](docs/tutorials/16_wooldridge_etwfe.ipynb).
 
 **Reference**: [Wooldridge (2023)](https://academic.oup.com/ectj/article/26/3/C31/7250479). *The Econometrics Journal*.
 

@@ -1204,9 +1204,7 @@ def solve_logit(
         if np.any(weights < 0):
             raise ValueError("weights must be non-negative")
         if np.sum(weights) <= 0:
-            raise ValueError(
-                "weights sum to zero — no observations have positive weight"
-            )
+            raise ValueError("weights sum to zero — no observations have positive weight")
 
     # Validate rank_deficient_action
     valid_actions = {"warn", "error", "silent"}
@@ -1882,7 +1880,9 @@ class LinearRegression:
                     kept_cols = np.where(~nan_mask)[0]
                     if len(kept_cols) > 0:
                         vcov_reduced, _n_valid_rep = compute_replicate_vcov(
-                            X[:, kept_cols], y, coefficients[kept_cols],
+                            X[:, kept_cols],
+                            y,
+                            coefficients[kept_cols],
                             _effective_survey_design,
                             weight_type=self.weight_type,
                         )
@@ -1892,7 +1892,10 @@ class LinearRegression:
                         _n_valid_rep = 0
                 else:
                     vcov, _n_valid_rep = compute_replicate_vcov(
-                        X, y, coefficients, _effective_survey_design,
+                        X,
+                        y,
+                        coefficients,
+                        _effective_survey_design,
                         weight_type=self.weight_type,
                     )
                 # Store effective replicate df only when replicates were dropped
@@ -1948,7 +1951,7 @@ class LinearRegression:
             if isinstance(_effective_survey_design, ResolvedSurveyDesign):
                 self.survey_df_ = _effective_survey_design.df_survey
                 # Override with effective replicate df if available
-                if hasattr(self, '_replicate_df') and self._replicate_df is not None:
+                if hasattr(self, "_replicate_df") and self._replicate_df is not None:
                     self.survey_df_ = self._replicate_df
 
         return self
@@ -1964,10 +1967,9 @@ class LinearRegression:
         DEFFDiagnostics
         """
         self._check_fitted()
-        if not (hasattr(self, 'survey_design') and self.survey_design is not None):
+        if not (hasattr(self, "survey_design") and self.survey_design is not None):
             raise ValueError(
-                "compute_deff() requires a survey design. "
-                "Fit with survey_design= first."
+                "compute_deff() requires a survey design. " "Fit with survey_design= first."
             )
         from diff_diff.survey import compute_deff_diagnostics
 
@@ -1980,17 +1982,23 @@ class LinearRegression:
                 k = len(self.coefficients_)
                 nan_arr = np.full(k, np.nan)
                 from diff_diff.survey import DEFFDiagnostics
+
                 return DEFFDiagnostics(
-                    deff=nan_arr, effective_n=nan_arr.copy(),
-                    srs_se=nan_arr.copy(), survey_se=nan_arr.copy(),
+                    deff=nan_arr,
+                    effective_n=nan_arr.copy(),
+                    srs_se=nan_arr.copy(),
+                    survey_se=nan_arr.copy(),
                     coefficient_names=coefficient_names,
                 )
             # Compute on kept columns only
             X_kept = self._X[:, kept]
             vcov_kept = self.vcov_[np.ix_(kept, kept)]
             deff_kept = compute_deff_diagnostics(
-                X_kept, self.residuals_, vcov_kept,
-                self.weights, weight_type=self.weight_type,
+                X_kept,
+                self.residuals_,
+                vcov_kept,
+                self.weights,
+                weight_type=self.weight_type,
             )
             # Expand back to full size with NaN for dropped
             k = len(self.coefficients_)
@@ -2003,15 +2011,21 @@ class LinearRegression:
             full_srs_se[kept] = deff_kept.srs_se
             full_survey_se[kept] = deff_kept.survey_se
             from diff_diff.survey import DEFFDiagnostics
+
             return DEFFDiagnostics(
-                deff=full_deff, effective_n=full_eff_n,
-                srs_se=full_srs_se, survey_se=full_survey_se,
+                deff=full_deff,
+                effective_n=full_eff_n,
+                srs_se=full_srs_se,
+                survey_se=full_survey_se,
                 coefficient_names=coefficient_names,
             )
 
         return compute_deff_diagnostics(
-            self._X, self.residuals_, self.vcov_,
-            self.weights, weight_type=self.weight_type,
+            self._X,
+            self.residuals_,
+            self.vcov_,
+            self.weights,
+            weight_type=self.weight_type,
             coefficient_names=coefficient_names,
         )
 
@@ -2108,14 +2122,18 @@ class LinearRegression:
             effective_df = df
         elif self.survey_df_ is not None:
             effective_df = self.survey_df_
-        elif (hasattr(self, 'survey_design') and self.survey_design is not None
-              and hasattr(self.survey_design, 'uses_replicate_variance')
-              and self.survey_design.uses_replicate_variance):
+        elif (
+            hasattr(self, "survey_design")
+            and self.survey_design is not None
+            and hasattr(self.survey_design, "uses_replicate_variance")
+            and self.survey_design.uses_replicate_variance
+        ):
             # Replicate design with undefined df (rank <= 1) — NaN inference
             warnings.warn(
                 "Replicate design has undefined survey d.f. (rank <= 1). "
                 "Inference fields will be NaN.",
-                UserWarning, stacklevel=2,
+                UserWarning,
+                stacklevel=2,
             )
             effective_df = 0  # Forces NaN from t-distribution
         else:
@@ -2123,9 +2141,12 @@ class LinearRegression:
 
         # Warn if df is non-positive and fall back to normal distribution
         # (skip for replicate designs — df=0 is intentional for NaN inference)
-        _is_replicate = (hasattr(self, 'survey_design') and self.survey_design is not None
-                         and hasattr(self.survey_design, 'uses_replicate_variance')
-                         and self.survey_design.uses_replicate_variance)
+        _is_replicate = (
+            hasattr(self, "survey_design")
+            and self.survey_design is not None
+            and hasattr(self.survey_design, "uses_replicate_variance")
+            and self.survey_design.uses_replicate_variance
+        )
         if effective_df is not None and effective_df <= 0 and not _is_replicate:
             import warnings
 
@@ -2342,3 +2363,114 @@ def _compute_confidence_interval(
     upper = estimate + critical_value * se
 
     return (lower, upper)
+
+
+def solve_poisson(
+    X: np.ndarray,
+    y: np.ndarray,
+    max_iter: int = 200,
+    tol: float = 1e-8,
+    init_beta: Optional[np.ndarray] = None,
+    rank_deficient_action: str = "warn",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Poisson IRLS (Newton-Raphson with log link).
+
+    Does NOT prepend an intercept — caller must include one if needed.
+    Returns (beta, W_final) where W_final = mu_hat (used for sandwich vcov).
+
+    Parameters
+    ----------
+    X : (n, k) design matrix (caller provides intercept / group FE dummies)
+    y : (n,) non-negative count outcomes
+    max_iter : maximum IRLS iterations
+    tol : convergence threshold on sup-norm of coefficient change
+    init_beta : optional starting coefficient vector; if None, zeros are used
+        with the first column treated as the intercept and initialized to
+        log(mean(y)) to improve convergence for large-scale outcomes.
+    rank_deficient_action : {"warn", "error", "silent"}
+        How to handle rank-deficient design matrices. Mirrors solve_ols/solve_logit.
+
+    Returns
+    -------
+    beta : (k,) coefficient vector (NaN for dropped columns if rank-deficient)
+    W : (n,) final fitted means mu_hat (weights for sandwich vcov)
+    """
+    n, k_orig = X.shape
+
+    # Validate rank_deficient_action (same as solve_logit/solve_ols)
+    valid_actions = ("warn", "error", "silent")
+    if rank_deficient_action not in valid_actions:
+        raise ValueError(
+            f"rank_deficient_action must be one of {valid_actions}, "
+            f"got {rank_deficient_action!r}"
+        )
+
+    # Rank-deficiency detection (same pattern as solve_logit/solve_ols)
+    kept_cols = np.arange(k_orig)
+    rank, dropped_cols, _pivot = _detect_rank_deficiency(X)
+    if len(dropped_cols) > 0:
+        if rank_deficient_action == "error":
+            raise ValueError(
+                f"Rank-deficient design matrix: {len(dropped_cols)} collinear columns detected."
+            )
+        if rank_deficient_action == "warn":
+            warnings.warn(
+                f"Rank-deficient design matrix: dropping {len(dropped_cols)} of {k_orig} columns. "
+                f"Coefficients for these columns are set to NA.",
+                UserWarning,
+                stacklevel=2,
+            )
+        dropped_set = set(int(d) for d in dropped_cols)
+        kept_cols = np.array([i for i in range(k_orig) if i not in dropped_set])
+        X = X[:, kept_cols]
+
+    n, k = X.shape
+    if init_beta is not None:
+        beta = init_beta[kept_cols].copy() if len(dropped_cols) > 0 else init_beta.copy()
+    else:
+        beta = np.zeros(k)
+        # Initialise the intercept to log(mean(y)) so the first IRLS step
+        # starts near the unconditional mean rather than exp(0)=1, which
+        # causes overflow when y is large (e.g. employment levels).
+        mean_y = float(np.mean(y))
+        if mean_y > 0:
+            beta[0] = np.log(mean_y)
+    for _ in range(max_iter):
+        eta = np.clip(X @ beta, -500, 500)
+        mu = np.exp(eta)
+        score = X.T @ (y - mu)  # gradient of log-likelihood
+        hess = X.T @ (mu[:, None] * X)  # -Hessian = X'WX, W=diag(mu)
+        try:
+            delta = np.linalg.solve(hess + 1e-12 * np.eye(k), score)
+        except np.linalg.LinAlgError:
+            warnings.warn(
+                "solve_poisson: Hessian is singular at iteration. "
+                "Design matrix may be rank-deficient.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            break
+        # Damped step: cap the maximum coefficient change to avoid overshooting
+        max_step = np.max(np.abs(delta))
+        if max_step > 1.0:
+            delta = delta / max_step
+        beta_new = beta + delta
+        if np.max(np.abs(beta_new - beta)) < tol:
+            beta = beta_new
+            break
+        beta = beta_new
+    else:
+        warnings.warn(
+            "solve_poisson did not converge in {} iterations".format(max_iter),
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    mu_final = np.exp(np.clip(X @ beta, -500, 500))
+
+    # Expand back to full size if columns were dropped
+    if len(dropped_cols) > 0:
+        beta_full = np.full(k_orig, np.nan)
+        beta_full[kept_cols] = beta
+        beta = beta_full
+
+    return beta, mu_final

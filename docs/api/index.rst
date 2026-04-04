@@ -25,6 +25,7 @@ Core estimator classes for DiD analysis:
    diff_diff.ContinuousDiD
    diff_diff.EfficientDiD
    diff_diff.TwoStageDiD
+   diff_diff.WooldridgeDiD
    diff_diff.BaconDecomposition
 
 Results Classes
@@ -57,6 +58,7 @@ Result containers returned by estimators:
    diff_diff.TwoStageDiDResults
    diff_diff.TwoStageBootstrapResults
    diff_diff.BaconDecompositionResults
+   diff_diff.wooldridge_results.WooldridgeDiDResults
    diff_diff.Comparison2x2
 
 Visualization
@@ -233,6 +235,7 @@ Estimators
    continuous_did
    efficient_did
    two_stage
+   wooldridge_etwfe
    bacon
 
 Diagnostics & Inference

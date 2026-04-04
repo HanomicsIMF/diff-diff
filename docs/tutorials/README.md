@@ -51,7 +51,16 @@ Efficient Difference-in-Differences (Chen, Sant'Anna & Xie 2025):
 - Event study and group-level aggregation
 - Bootstrap inference and diagnostics
 
-### 16. Survey-Aware DiD (`16_survey_did.ipynb`)
+### 16. Wooldridge ETWFE (`16_wooldridge_etwfe.ipynb`)
+Wooldridge Extended Two-Way Fixed Effects (ETWFE) for staggered DiD:
+- Basic OLS estimation with cohort x time ATT cells
+- Aggregation methods: event-study, group, calendar, simple
+- Poisson QMLE for count / non-negative outcomes
+- Logit for binary outcomes
+- Comparison with Callaway-Sant'Anna
+- Delta-method standard errors
+
+### Survey-Aware DiD (`16_survey_did.ipynb`)
 Survey-aware DiD with complex sampling designs (strata, PSU, FPC, weights):
 - Why survey design matters for DiD inference
 - Setting up `SurveyDesign` (weights, strata, PSU, FPC)
