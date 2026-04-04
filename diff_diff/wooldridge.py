@@ -803,8 +803,11 @@ class WooldridgeDiD:
 
         beta, mu_hat = solve_poisson(X_full, y, rank_deficient_action=self.rank_deficient_action)
 
-        # Handle rank-deficient designs: compute vcov on reduced design
+        # Handle rank-deficient designs: compute vcov on reduced design.
+        # Preserve raw interaction coefficients BEFORE zeroing NaN so the
+        # NaN check in the ASF loop correctly skips dropped cells.
         nan_mask = np.isnan(beta)
+        beta_int_raw = beta[1 : 1 + n_int].copy()  # before zeroing
         beta_clean = np.where(nan_mask, 0.0, beta)
         kept_beta = ~nan_mask
 
@@ -833,7 +836,7 @@ class WooldridgeDiD:
             )
         beta = beta_clean
 
-        # Treatment interaction coefficients: beta[1 : 1+n_int]
+        # Treatment interaction coefficients (from cleaned beta for computation)
         beta_int = beta[1 : 1 + n_int]
 
         # ASF ATT(g,t) for treated units in each cell.
@@ -849,7 +852,10 @@ class WooldridgeDiD:
             cell_mask = (sample[cohort] == g) & (sample[time] == t)
             if cell_mask.sum() == 0:
                 continue
-            # Skip cells whose interaction coefficient was dropped (rank deficiency)
+            # Skip cells whose interaction coefficient was dropped (rank deficiency).
+            # Use raw coefficients (before NaN->0 zeroing) to detect dropped cells.
+            if np.isnan(beta_int_raw[idx]):
+                continue
             delta = beta_int[idx]
             if np.isnan(delta):
                 continue

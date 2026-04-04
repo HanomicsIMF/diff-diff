@@ -645,8 +645,9 @@ class TestAnticipation:
             )
 
     def test_anticipation_aggregate_semantics(self):
-        """With anticipation > 0, aggregations should include anticipation cells
-        and produce finite results."""
+        """With anticipation > 0, simple/group/calendar aggregation uses t >= g
+        (not t >= g - anticipation). Anticipation cells are estimated but excluded
+        from the overall ATT."""
         rng = np.random.default_rng(42)
         rows = []
         for u in range(60):
@@ -661,6 +662,19 @@ class TestAnticipation:
         assert np.isfinite(r.overall_att)
         assert r.event_study_effects is not None
         assert r.group_effects is not None
+        # Anticipation cells (t < g but t >= g - anticipation) should be in
+        # group_time_effects but NOT included in overall_att aggregation.
+        # The overall ATT should only average post-treatment cells (t >= g).
+        gt = r.group_time_effects
+        post_keys = [(g, t) for (g, t) in gt if t >= g]
+        antic_keys = [(g, t) for (g, t) in gt if g - 1 <= t < g]
+        assert len(antic_keys) > 0, "Expected anticipation cells in group_time_effects"
+        assert len(post_keys) > 0, "Expected post-treatment cells"
+        # Manually compute post-treatment-only weighted ATT
+        w = r._gt_weights
+        w_total = sum(w.get(k, 0) for k in post_keys)
+        manual_att = sum(w.get(k, 0) * gt[k]["att"] for k in post_keys) / w_total
+        assert abs(r.overall_att - manual_att) < 1e-10
 
 
 class TestXgvarCovariates:

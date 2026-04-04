@@ -1145,6 +1145,7 @@ where `g(·)` is the link inverse (logistic or exp), `η_i` is the individual li
 - Single cohort (no staggered adoption): Reduces to standard 2×2 DiD
 - Missing cohorts: Only cohorts observed in the data are included in interactions
 - Anticipation: When `anticipation > 0`, interactions include periods `t >= g - anticipation`
+- **Note:** Aggregation (simple/group/calendar) uses `t >= g` as the post-treatment threshold regardless of `anticipation`. Anticipation-window cells (g - anticipation <= t < g) are estimated but treated as pre-treatment placebos in aggregation, not included in overall ATT. This matches the standard post-treatment ATT definition; users who want anticipation cells in the aggregate should compute custom weighted averages from `group_time_effects`.
 - Never-treated control only: Pre-treatment periods still estimable as placebo ATTs
 - **Note:** Poisson QMLE with cohort+time dummies (not unit dummies) is consistent even in short panels (Wooldridge 1999, JBES). The exponential mean function is unique in that incidental parameters from group dummies do not cause inconsistency.
 - **Note:** Logit path uses cohort×time additive dummies (not unit dummies) to avoid incidental parameters bias — a standard limitation of logit FE in short panels. This matches Stata `jwdid method(logit)` which uses `i.gvar i.tvar`.
