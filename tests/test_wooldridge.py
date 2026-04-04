@@ -733,3 +733,47 @@ class TestMpdtaLogitPoisson:
         assert r.overall_se > 0
         r.aggregate("simple")
         assert np.isfinite(r.overall_att)
+
+
+class TestControlGroupDistinction:
+    """P0 regression test: never_treated and not_yet_treated must differ."""
+
+    def test_never_treated_differs_from_not_yet_treated(self):
+        """On multi-cohort data with never-treated group, the two control
+        group settings must produce different overall ATT estimates."""
+        from diff_diff.datasets import load_mpdta
+
+        df = load_mpdta()
+        r_nyt = WooldridgeDiD(control_group="not_yet_treated").fit(
+            df, outcome="lemp", unit="countyreal", time="year", cohort="first_treat"
+        )
+        r_nt = WooldridgeDiD(control_group="never_treated").fit(
+            df, outcome="lemp", unit="countyreal", time="year", cohort="first_treat"
+        )
+        assert np.isfinite(r_nyt.overall_att)
+        assert np.isfinite(r_nt.overall_att)
+        # They must differ — if they don't, control_group is a no-op
+        assert r_nyt.overall_att != r_nt.overall_att, (
+            f"never_treated ATT ({r_nt.overall_att:.6f}) == not_yet_treated ATT "
+            f"({r_nyt.overall_att:.6f}); control_group has no effect"
+        )
+
+    def test_never_treated_fewer_observations(self):
+        """never_treated should produce a smaller estimation sample than
+        not_yet_treated (pre-treatment obs from treated units excluded)."""
+        from diff_diff.datasets import load_mpdta
+
+        df = load_mpdta()
+        r_nyt = WooldridgeDiD(control_group="not_yet_treated").fit(
+            df, outcome="lemp", unit="countyreal", time="year", cohort="first_treat"
+        )
+        r_nt = WooldridgeDiD(control_group="never_treated").fit(
+            df, outcome="lemp", unit="countyreal", time="year", cohort="first_treat"
+        )
+        assert r_nt.n_obs < r_nyt.n_obs
+
+
+class TestBootstrapWeightsValidation:
+    def test_invalid_bootstrap_weights_raises(self):
+        with pytest.raises(ValueError, match="bootstrap_weights"):
+            WooldridgeDiD(bootstrap_weights="invalid_dist")

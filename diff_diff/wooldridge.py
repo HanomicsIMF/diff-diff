@@ -77,21 +77,26 @@ def _filter_sample(
 ) -> pd.DataFrame:
     """Return the analysis sample following jwdid selection rules.
 
-    Treated units: all observations kept (pre-treatment window beyond
-    anticipation is not used as a treatment cell but is kept for FE).
-    Control units: for "not_yet_treated", units with cohort > t at each t
-    (including never-treated); for "never_treated", only cohort == 0/NaN.
+    For "not_yet_treated": keep all observations from treated units (pre- and
+    post-treatment) plus all never-treated and not-yet-treated observations.
+    For "never_treated": keep only post-treatment observations from treated
+    units (t >= g - anticipation) plus all never-treated observations.
+    Pre-treatment observations from treated units are excluded so they do not
+    serve as implicit controls in the regression baseline.
     """
     df = data.copy()
     # Normalise never-treated: fill NaN cohort with 0
     df[cohort] = df[cohort].fillna(0)
 
-    treated_mask = df[cohort] > 0
-
     if control_group == "never_treated":
+        # Post-treatment obs from treated units + all never-treated obs.
+        # Pre-treatment obs from treated units are excluded so the
+        # counterfactual is identified solely from never-treated units.
+        treated_mask = (df[cohort] > 0) & (df[time] >= df[cohort] - anticipation)
         control_mask = df[cohort] == 0
     else:  # not_yet_treated
-        # Keep untreated-at-t observations for not-yet-treated units
+        # All treated-unit obs + never-treated + not-yet-treated obs
+        treated_mask = df[cohort] > 0
         control_mask = (df[cohort] == 0) | (df[cohort] > df[time])
 
     return df[treated_mask | control_mask].copy()
@@ -233,6 +238,11 @@ class WooldridgeDiD:
             )
         if anticipation < 0:
             raise ValueError(f"anticipation must be >= 0, got {anticipation}")
+        if bootstrap_weights not in _VALID_BOOTSTRAP_WEIGHTS:
+            raise ValueError(
+                f"bootstrap_weights must be one of {_VALID_BOOTSTRAP_WEIGHTS}, "
+                f"got {bootstrap_weights!r}"
+            )
 
         self.method = method
         self.control_group = control_group
@@ -378,6 +388,15 @@ class WooldridgeDiD:
         self.is_fitted_ = True
         return results
 
+    def _count_control_units(self, sample: pd.DataFrame, unit: str, cohort: str, time: str) -> int:
+        """Count control units consistent with control_group setting."""
+        n_never = int(sample[sample[cohort] == 0][unit].nunique())
+        if self.control_group == "not_yet_treated":
+            # Also count future-treated units that contribute pre-treatment obs
+            nyt = sample[(sample[cohort] > 0) & (sample[time] < sample[cohort])][unit].nunique()
+            return n_never + int(nyt)
+        return n_never
+
     def _fit_ols(
         self,
         sample: pd.DataFrame,
@@ -449,7 +468,7 @@ class WooldridgeDiD:
 
         # Metadata
         n_treated = int(sample[sample[cohort] > 0][unit].nunique())
-        n_control = int(sample[sample[cohort] == 0][unit].nunique())
+        n_control = self._count_control_units(sample, unit, cohort, time)
         all_times = sorted(sample[time].unique().tolist())
 
         results = WooldridgeDiDResults(
@@ -502,7 +521,7 @@ class WooldridgeDiD:
                     X,
                     y_boot,
                     cluster_ids=cluster_ids,
-                    return_vcov=True,
+                    return_vcov=False,
                     rank_deficient_action="silent",
                 )
                 if w_total_b > 0:
@@ -564,6 +583,12 @@ class WooldridgeDiD:
         # solve_logit prepends intercept — beta[0] is intercept, beta[1:] are X_full cols
         beta_int_cols = beta[1 : n_int + 1]  # treatment interaction coefficients
 
+        # Handle rank-deficient designs: zero out NaN entries so downstream
+        # matrix ops don't propagate NaN (dropped columns contribute nothing)
+        nan_mask = np.isnan(beta)
+        if np.any(nan_mask):
+            beta = np.where(nan_mask, 0.0, beta)
+
         # QMLE sandwich vcov via shared linalg backend
         resids = y - probs
         X_with_intercept = np.column_stack([np.ones(len(y)), X_full])
@@ -585,11 +610,14 @@ class WooldridgeDiD:
             cell_mask = (sample[cohort] == g) & (sample[time] == t)
             if cell_mask.sum() == 0:
                 continue
+            # Skip cells whose interaction coefficient was dropped (rank deficiency)
+            delta = beta_int_cols[idx]
+            if np.isnan(delta):
+                continue
             eta_base = X_with_intercept[cell_mask] @ beta
             # eta_base already contains the treatment effect (D_{g,t}=1 in cell).
             # Counterfactual: eta_0 = eta_base - delta (treatment switched off).
             # ATT = E[Λ(η_1)] - E[Λ(η_0)] = E[Λ(η_base)] - E[Λ(η_base - δ)]
-            delta = beta_int_cols[idx]
             eta_0 = eta_base - delta
             att = float(np.mean(_logistic(eta_base) - _logistic(eta_0)))
             # Delta method gradient: d(ATT)/d(β)
@@ -652,7 +680,7 @@ class WooldridgeDiD:
             time_periods=sorted(sample[time].unique().tolist()),
             n_obs=len(sample),
             n_treated_units=int(sample[sample[cohort] > 0][unit].nunique()),
-            n_control_units=int(sample[sample[cohort] == 0][unit].nunique()),
+            n_control_units=self._count_control_units(sample, unit, cohort, time),
             alpha=self.alpha,
             _gt_weights=gt_weights,
             _gt_vcov=gt_vcov,
@@ -721,8 +749,11 @@ class WooldridgeDiD:
             cell_mask = (sample[cohort] == g) & (sample[time] == t)
             if cell_mask.sum() == 0:
                 continue
-            eta_base = np.clip(X_full[cell_mask] @ beta, -500, 500)
+            # Skip cells whose interaction coefficient was dropped (rank deficiency)
             delta = beta_int[idx]
+            if np.isnan(delta):
+                continue
+            eta_base = np.clip(X_full[cell_mask] @ beta, -500, 500)
             eta_0 = eta_base - delta
             mu_1 = np.exp(eta_base)
             mu_0 = np.exp(eta_0)
@@ -787,7 +818,7 @@ class WooldridgeDiD:
             time_periods=sorted(sample[time].unique().tolist()),
             n_obs=len(sample),
             n_treated_units=int(sample[sample[cohort] > 0][unit].nunique()),
-            n_control_units=int(sample[sample[cohort] == 0][unit].nunique()),
+            n_control_units=self._count_control_units(sample, unit, cohort, time),
             alpha=self.alpha,
             _gt_weights=gt_weights,
             _gt_vcov=gt_vcov,
