@@ -273,9 +273,10 @@ deferred to the consolidated list below:
 
 ## Deferred Work (Consolidated)
 
-All items below raise `NotImplementedError` when attempted, with a message
-describing the limitation. This is the single source of truth for remaining
-survey limitations.
+All items below raise an error when attempted (`NotImplementedError` or
+`ValueError` depending on the estimator), with a message describing the
+limitation. This is the single source of truth for remaining survey
+limitations.
 
 ### Replicate Weights Not Supported
 
@@ -301,7 +302,7 @@ survey limitations.
 ### Bootstrap + Replicate Weights (Mutual Exclusion)
 
 Replicate weights and bootstrap are alternative variance estimation methods.
-Combining them raises `NotImplementedError`:
+Combining them raises `NotImplementedError` or `ValueError`:
 
 | Estimator |
 |-----------|
