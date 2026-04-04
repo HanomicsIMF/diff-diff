@@ -2307,9 +2307,10 @@ variance from the distribution of replicate estimates.
   design structure is fixed and dropped replicates contribute zero to the
   sum without changing the scale. Survey df uses `n_valid - 1` for
   t-based inference.
-- **Note:** Replicate-weight support matrix:
-  - **Supported**: CallawaySantAnna (reg/ipw/dr without covariates, no
-    bootstrap), ContinuousDiD (no bootstrap), EfficientDiD (no bootstrap),
+- **Note:** Replicate-weight support matrix (12 of 15 estimators):
+  - **Supported**: CallawaySantAnna (reg/ipw/dr with or without covariates,
+    no bootstrap; IF-based replicate variance is covariate-agnostic),
+    ContinuousDiD (no bootstrap), EfficientDiD (no bootstrap),
     TripleDifference (all methods), LinearRegression (OLS path),
     DifferenceInDifferences (no-absorb via LinearRegression dispatch,
     absorb via estimator-level refit), MultiPeriodDiD (no-absorb via

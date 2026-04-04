@@ -275,8 +275,9 @@ deferred to the consolidated list below:
 
 All items below raise an error when attempted (`NotImplementedError` or
 `ValueError` depending on the estimator), with a message describing the
-limitation. This is the single source of truth for remaining survey
-limitations.
+limitation. This is a summary of the major remaining survey limitations.
+See also `TODO.md` for general tech debt items (e.g., multi-absorb +
+survey weights).
 
 ### Replicate Weights Not Supported
 
