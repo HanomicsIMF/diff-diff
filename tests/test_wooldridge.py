@@ -949,3 +949,37 @@ class TestNonlinearRankDeficiency:
         for cell in r.group_time_effects.values():
             assert np.isfinite(cell["se"]), "SE should be finite for estimable cells"
             assert cell["se"] >= 0
+
+
+class TestCohortTimeInvariance:
+    def test_varying_cohort_raises(self):
+        """cohort must be constant within each unit."""
+        df = pd.DataFrame(
+            {
+                "unit": [1, 1, 2, 2],
+                "time": [1, 2, 1, 2],
+                "cohort": [2, 3, 0, 0],  # unit 1 has varying cohort
+                "y": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        with pytest.raises(ValueError, match="not time-invariant"):
+            WooldridgeDiD().fit(df, outcome="y", unit="unit", time="time", cohort="cohort")
+
+
+class TestAnticipationEventLabels:
+    def test_event_summary_labels_anticipation_cells(self):
+        """summary('event') should label anticipation cells as [antic], not [pre]."""
+        rng = np.random.default_rng(42)
+        rows = []
+        for u in range(60):
+            cohort = 4 if u < 30 else 0
+            for t in range(1, 8):
+                y = rng.standard_normal() + (1.5 if cohort > 0 and t >= cohort else 0)
+                rows.append({"unit": u, "time": t, "cohort": cohort, "y": y})
+        df = pd.DataFrame(rows)
+        est = WooldridgeDiD(anticipation=1)
+        r = est.fit(df, outcome="y", unit="unit", time="time", cohort="cohort")
+        r.aggregate("event")
+        summary = r.summary("event")
+        # k=-1 should be labeled [antic] (within anticipation window)
+        assert "[antic]" in summary, f"Expected [antic] label in summary, got:\n{summary}"

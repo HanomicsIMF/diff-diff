@@ -53,6 +53,7 @@ class WooldridgeDiDResults:
     n_treated_units: int = 0
     n_control_units: int = 0
     alpha: float = 0.05
+    anticipation: int = 0
 
     # ------------------------------------------------------------------ #
     # Internal — used by aggregate() for delta-method SEs                 #
@@ -235,7 +236,13 @@ class WooldridgeDiDResults:
                 )
         elif aggregation == "event" and self.event_study_effects:
             for k, eff in sorted(self.event_study_effects.items()):
-                label = f"ATT(k={k})" + (" [pre]" if k < 0 else "")
+                if k < -self.anticipation:
+                    suffix = " [pre]"
+                elif k < 0:
+                    suffix = " [antic]"
+                else:
+                    suffix = ""
+                label = f"ATT(k={k})" + suffix
                 lines.append(
                     _fmt_row(
                         label,

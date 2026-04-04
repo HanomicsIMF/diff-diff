@@ -321,7 +321,18 @@ class WooldridgeDiD:
         df = data.copy()
         df[cohort] = df[cohort].fillna(0)
 
-        # 0. Reject bootstrap for nonlinear methods (not implemented)
+        # 0a. Validate cohort is time-invariant within unit
+        cohort_per_unit = df.groupby(unit)[cohort].nunique()
+        bad_units = cohort_per_unit[cohort_per_unit > 1]
+        if len(bad_units) > 0:
+            example = bad_units.index[0]
+            raise ValueError(
+                f"Cohort column '{cohort}' is not time-invariant within unit. "
+                f"Unit {example!r} has {int(bad_units.iloc[0])} distinct cohort "
+                f"values. The cohort column must be constant within each unit."
+            )
+
+        # 0b. Reject bootstrap for nonlinear methods (not implemented)
         if self.n_bootstrap > 0 and self.method != "ols":
             raise ValueError(
                 f"Bootstrap inference is only supported for method='ols'. "
@@ -542,6 +553,7 @@ class WooldridgeDiD:
             n_treated_units=n_treated,
             n_control_units=n_control,
             alpha=self.alpha,
+            anticipation=self.anticipation,
             _gt_weights=gt_weights,
             _gt_vcov=gt_vcov,
             _gt_keys=gt_keys_ordered,
@@ -762,6 +774,7 @@ class WooldridgeDiD:
             n_treated_units=int(sample[sample[cohort] > 0][unit].nunique()),
             n_control_units=self._count_control_units(sample, unit, cohort, time),
             alpha=self.alpha,
+            anticipation=self.anticipation,
             _gt_weights=gt_weights,
             _gt_vcov=gt_vcov,
             _gt_keys=gt_keys_ordered,
@@ -931,6 +944,7 @@ class WooldridgeDiD:
             n_treated_units=int(sample[sample[cohort] > 0][unit].nunique()),
             n_control_units=self._count_control_units(sample, unit, cohort, time),
             alpha=self.alpha,
+            anticipation=self.anticipation,
             _gt_weights=gt_weights,
             _gt_vcov=gt_vcov,
             _gt_keys=gt_keys_ordered,
