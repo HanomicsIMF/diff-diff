@@ -274,11 +274,21 @@ deferred to the consolidated list below:
 
 ## Deferred Work (Consolidated)
 
+### Documented Deviations
+
+These are supported paths that use a conservative or simplified approach
+rather than the theoretically optimal one. They do not raise errors.
+
+| Estimator | Deviation | Details |
+|-----------|-----------|---------|
+| CallawaySantAnna | `reg`+covariates uses conservative plug-in IF | Efficient DRDID nuisance IF correction deferred; see REGISTRY.md |
+
+### Runtime Limitations
+
 All items below raise an error when attempted (`NotImplementedError` or
 `ValueError` depending on the estimator), with a message describing the
-limitation. This is a summary of the major remaining survey limitations.
-See also `TODO.md` for general tech debt items (e.g., multi-absorb +
-survey weights).
+limitation. See also `TODO.md` for general tech debt items (e.g.,
+multi-absorb + survey weights).
 
 ### Replicate Weights Not Supported
 
@@ -287,12 +297,6 @@ survey weights).
 | SyntheticDiD | No published theory on replicate weights + unit weight optimization |
 | TROP | No published theory on replicate weights + nuclear norm regularization |
 | BaconDecomposition | Diagnostic tool with no inference — replicate weights don't apply |
-
-### CallawaySantAnna Survey Limitations
-
-| Limitation | Reason |
-|-----------|--------|
-| Efficient DRDID nuisance IF for `reg`+covariates | Code uses conservative plug-in IF; efficient correction deferred (see REGISTRY.md) |
 
 ### EfficientDiD Survey Limitations
 
