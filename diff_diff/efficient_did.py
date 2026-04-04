@@ -607,11 +607,12 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 )
 
         # Guard: never-treated with zero survey weight → no valid comparisons
-        if cohort_fractions.get(np.inf, 0.0) <= 0 and use_covariates:
+        # Applies to both covariates (DR nuisance) and nocov (weighted means) paths
+        if cohort_fractions.get(np.inf, 0.0) <= 0 and unit_level_weights is not None:
             raise ValueError(
-                "Never-treated group has zero survey weight. The doubly "
-                "robust covariates path requires a never-treated control "
-                "group with positive survey weight for nuisance estimation."
+                "Never-treated group has zero survey weight. EfficientDiD "
+                "requires a never-treated control group with positive "
+                "survey weight for estimation."
             )
 
         # ----- Covariate preparation (if provided) -----

@@ -302,7 +302,6 @@ multi-absorb + survey weights).
 
 | Limitation | Reason |
 |-----------|--------|
-| `covariates` + `survey_design` | DR nuisance path doesn't thread survey weights |
 | `cluster` + `survey_design` | Use `survey_design` with PSU/strata instead |
 
 ### Bootstrap + Replicate Weights (Mutual Exclusion)

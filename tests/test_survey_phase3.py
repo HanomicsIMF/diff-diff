@@ -1106,7 +1106,7 @@ class TestEfficientDiDCovSurvey:
         assert np.isfinite(result.overall_se)
 
     def test_zero_weight_never_treated_raises(self, cov_survey_data):
-        """Zero-weight never-treated group should raise ValueError."""
+        """Zero-weight never-treated group should raise ValueError (DR path)."""
         from diff_diff import EfficientDiD
 
         cov_survey_data = cov_survey_data.copy()
@@ -1117,6 +1117,20 @@ class TestEfficientDiDCovSurvey:
                 cov_survey_data,
                 "outcome", "unit", "time", "first_treat",
                 covariates=["x1"],
+                survey_design=sd,
+            )
+
+    def test_zero_weight_never_treated_nocov_raises(self, cov_survey_data):
+        """Zero-weight never-treated group should raise ValueError (nocov path)."""
+        from diff_diff import EfficientDiD
+
+        cov_survey_data = cov_survey_data.copy()
+        cov_survey_data.loc[cov_survey_data["first_treat"] == 0, "weight"] = 0.0
+        sd = SurveyDesign(weights="weight")
+        with pytest.raises(ValueError, match="zero survey weight"):
+            EfficientDiD(n_bootstrap=0).fit(
+                cov_survey_data,
+                "outcome", "unit", "time", "first_treat",
                 survey_design=sd,
             )
 
