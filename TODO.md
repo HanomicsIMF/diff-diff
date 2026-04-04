@@ -15,6 +15,10 @@ Current limitations that may affect users:
 | MultiPeriodDiD wild bootstrap not supported | `estimators.py:778-784` | Low | Edge case |
 | `predict()` raises NotImplementedError | `estimators.py:567-588` | Low | Rarely needed |
 
+For survey-specific limitations (NotImplementedError paths), see the
+[consolidated deferred list](docs/survey-roadmap.md#deferred-work-consolidated)
+in survey-roadmap.md.
+
 ## Code Quality
 
 ### Large Module Files

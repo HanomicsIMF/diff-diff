@@ -8,15 +8,15 @@ For past changes and release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ## Current Status
 
-diff-diff v2.7.5 is a **production-ready** DiD library with feature parity with R's `did` + `HonestDiD` + `synthdid` ecosystem for core DiD analysis, plus **unique survey support** — design-based variance estimation (Taylor linearization, replicate weights) integrated across all estimators. No R or Python package offers this combination:
+diff-diff v2.8.4 is a **production-ready** DiD library with feature parity with R's `did` + `HonestDiD` + `synthdid` ecosystem for core DiD analysis, plus **unique survey support** — all estimators accept survey weights, with design-based variance estimation varying by estimator. No R or Python package offers this combination:
 
-- **Core estimators**: Basic DiD, TWFE, MultiPeriod, Callaway-Sant'Anna, Sun-Abraham, Borusyak-Jaravel-Spiess Imputation, Synthetic DiD, Triple Difference (DDD), TROP, Two-Stage DiD (Gardner 2022), Stacked DiD (Wing et al. 2024), Continuous DiD (Callaway, Goodman-Bacon & Sant'Anna 2024)
+- **Core estimators**: Basic DiD, TWFE, MultiPeriod, Callaway-Sant'Anna, Sun-Abraham, Borusyak-Jaravel-Spiess Imputation, Synthetic DiD, Triple Difference (DDD), Staggered Triple Difference (Ortiz-Villavicencio & Sant'Anna 2025), TROP, Two-Stage DiD (Gardner 2022), Stacked DiD (Wing et al. 2024), Continuous DiD (Callaway, Goodman-Bacon & Sant'Anna 2024)
 - **Valid inference**: Robust SEs, cluster SEs, wild bootstrap, multiplier bootstrap, placebo-based variance
 - **Assumption diagnostics**: Parallel trends tests, placebo tests, Goodman-Bacon decomposition
 - **Sensitivity analysis**: Honest DiD (Rambachan-Roth), Pre-trends power analysis (Roth 2022)
 - **Study design**: Power analysis tools
 - **Data utilities**: Real-world datasets (Card-Krueger, Castle Doctrine, Divorce Laws, MPDTA), DGP functions for all supported designs
-- **Survey support**: Full `SurveyDesign` with strata, PSU, FPC, weight types, replicate weights (BRR/Fay/JK1/JKn), Taylor linearization, DEFF diagnostics, subpopulation analysis — integrated across all estimators (see [survey-roadmap.md](docs/survey-roadmap.md))
+- **Survey support**: `SurveyDesign` with strata, PSU, FPC, weight types, DEFF diagnostics, subpopulation analysis. All 15 estimators accept survey weights; design-based variance estimation (TSL, replicate weights, survey-aware bootstrap) varies by estimator. Replicate weights (BRR/Fay/JK1/JKn/SDR) supported for 12 of 15; `BaconDecomposition` is diagnostic-only. See [choosing_estimator.rst](docs/choosing_estimator.rst#survey-design-support) for the full compatibility matrix.
 - **Performance**: Optional Rust backend for accelerated computation; faster than R at scale (see [CHANGELOG.md](CHANGELOG.md) for benchmarks)
 
 ---
@@ -34,19 +34,20 @@ full details.
 - **Repeated Cross-Sections** *(Implemented)*: `panel=False` support for
   CallawaySantAnna using cross-sectional DRDID (Sant'Anna & Zhao 2020,
   Section 4). Supports BRFSS, ACS annual, CPS monthly.
-- **Survey-Aware DiD Tutorial** *(Open)*: Jupyter notebook demonstrating
+- **Survey-Aware DiD Tutorial** *(Implemented)*: Jupyter notebook demonstrating
   the full workflow with realistic survey data.
 - **HonestDiD + Survey Variance** *(Implemented)*: Survey df and full
   event-study VCV propagated to sensitivity analysis, with bootstrap/replicate
   diagonal fallback.
 
-### Staggered Triple Difference (DDD)
+### Staggered Triple Difference (DDD) *(Implemented)*
 
-Extend the existing `TripleDifference` estimator to handle staggered adoption settings.
+`StaggeredTripleDifference` estimator for staggered adoption DDD settings.
 
 - Group-time ATT(g,t) for DDD designs with variation in treatment timing
 - Event study aggregation and pre-treatment placebo effects
 - Multiplier bootstrap for valid inference in staggered settings
+- Full survey support (pweight, strata/PSU/FPC, replicate weights)
 
 **Reference**: [Ortiz-Villavicencio & Sant'Anna (2025)](https://arxiv.org/abs/2505.09942). "Better Understanding Triple Differences Estimators." *Working Paper*. R package: `triplediff`.
 

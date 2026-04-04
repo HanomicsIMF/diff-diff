@@ -1,7 +1,8 @@
 # Survey Data Support Roadmap
 
 This document captures the survey data support roadmap for diff-diff.
-Phases 1-7 are implemented. Phase 8 (maturity refinements) is planned.
+Phases 1-8f are implemented. Phase 8g (documentation-only items) is partially
+addressed. Remaining deferred items are listed at the bottom.
 
 ## Implemented (Phases 1-2)
 
@@ -19,11 +20,11 @@ Phases 1-7 are implemented. Phase 8 (maturity refinements) is planned.
 | Estimator | File | Survey Support | Notes |
 |-----------|------|----------------|-------|
 | StackedDiD | `stacked_did.py` | pweight only | Q-weights compose multiplicatively with survey weights; TSL vcov on composed weights; fweight/aweight rejected (composition changes weight semantics) |
-| SunAbraham | `sun_abraham.py` | Full | Survey weights in LinearRegression + weighted within-transform; bootstrap+survey deferred |
+| SunAbraham | `sun_abraham.py` | Full | Survey weights in LinearRegression + weighted within-transform; bootstrap via Rao-Wu rescaled (Phase 6) |
 | BaconDecomposition | `bacon.py` | Diagnostic | Weighted cell means, weighted within-transform, weighted group shares; no inference (diagnostic only) |
 | TripleDifference | `triple_diff.py` | Full | Regression, IPW, and DR methods with weighted OLS/logit + TSL on influence functions |
-| ContinuousDiD | `continuous_did.py` | Analytical | Weighted B-spline OLS + TSL on influence functions; bootstrap+survey deferred |
-| EfficientDiD | `efficient_did.py` | Analytical | Weighted means/covariances in Omega* + TSL on EIF scores; bootstrap+survey deferred |
+| ContinuousDiD | `continuous_did.py` | Analytical | Weighted B-spline OLS + TSL on influence functions; bootstrap via multiplier at PSU (Phase 6) |
+| EfficientDiD | `efficient_did.py` | Analytical | Weighted means/covariances in Omega* + TSL on EIF scores; bootstrap via multiplier at PSU (Phase 6) |
 
 ### Phase 3 Deferred Work
 
@@ -32,9 +33,9 @@ Phase 5 infrastructure (bootstrap+survey interaction):
 
 | Estimator | Deferred Capability | Blocker |
 |-----------|-------------------|---------|
-| SunAbraham | Pairs bootstrap + survey | Phase 5: bootstrap+survey interaction |
-| ContinuousDiD | Multiplier bootstrap + survey | Phase 5: bootstrap+survey interaction |
-| EfficientDiD | Multiplier bootstrap + survey | Phase 5: bootstrap+survey interaction |
+| SunAbraham | Pairs bootstrap + survey | **Resolved** (Phase 6, Rao-Wu rescaled) |
+| ContinuousDiD | Multiplier bootstrap + survey | **Resolved** (Phase 6, multiplier at PSU) |
+| EfficientDiD | Multiplier bootstrap + survey | **Resolved** (Phase 6, multiplier at PSU) |
 | EfficientDiD | Covariates (DR path) + survey | DR nuisance estimation needs survey weight threading |
 
 All blocked combinations raise `NotImplementedError` when attempted, with a
@@ -44,9 +45,9 @@ message pointing to the planned phase or describing the limitation.
 
 | Estimator | File | Survey Support | Notes |
 |-----------|------|----------------|-------|
-| ImputationDiD | `imputation.py` | Analytical | Weighted iterative FE, weighted ATT aggregation, weighted conservative variance (Theorem 3); bootstrap+survey deferred |
-| TwoStageDiD | `two_stage.py` | Analytical | Weighted iterative FE, weighted Stage 2 OLS, weighted GMM sandwich variance; bootstrap+survey deferred |
-| CallawaySantAnna | `staggered.py` | Full | Full SurveyDesign (strata/PSU/FPC/replicate weights); reg supports covariates, IPW/DR no-covariate only; survey-weighted WIF in aggregation; replicate IF variance for analytical SEs |
+| ImputationDiD | `imputation.py` | Analytical | Weighted iterative FE, weighted ATT aggregation, weighted conservative variance (Theorem 3); bootstrap via multiplier at PSU (Phase 6) |
+| TwoStageDiD | `two_stage.py` | Analytical | Weighted iterative FE, weighted Stage 2 OLS, weighted GMM sandwich variance; bootstrap via multiplier at PSU (Phase 6) |
+| CallawaySantAnna | `staggered.py` | Full | Full SurveyDesign (strata/PSU/FPC/replicate weights); reg supports covariates, IPW/DR supports covariates (Phase 7a); survey-weighted WIF in aggregation; replicate IF variance for analytical SEs |
 
 **Infrastructure**: Weighted `solve_logit()` added to `linalg.py` — survey weights
 enter the IRLS working weights as `w_survey * mu * (1 - mu)`. This also unblocked
@@ -56,12 +57,12 @@ TripleDifference IPW/DR from Phase 3 deferred work.
 
 | Estimator | Deferred Capability | Blocker |
 |-----------|-------------------|---------|
-| ImputationDiD | Bootstrap + survey | Phase 5: bootstrap+survey interaction |
-| TwoStageDiD | Bootstrap + survey | Phase 5: bootstrap+survey interaction |
-| CallawaySantAnna | Bootstrap + survey | Phase 5: bootstrap+survey interaction |
-| CallawaySantAnna | Strata/PSU/FPC in SurveyDesign | Phase 5: route combined IF/WIF through `compute_survey_vcov()` for design-based aggregation SEs |
-| CallawaySantAnna | Covariates + IPW/DR + survey | Phase 5: DRDID panel nuisance IF corrections |
-| CallawaySantAnna | Efficient DRDID nuisance IF for reg+covariates | Phase 5: replace conservative plug-in IF with semiparametrically efficient IF |
+| ImputationDiD | Bootstrap + survey | **Resolved** (Phase 6, multiplier at PSU) |
+| TwoStageDiD | Bootstrap + survey | **Resolved** (Phase 6, multiplier at PSU) |
+| CallawaySantAnna | Bootstrap + survey | **Resolved** (Phase 6, multiplier at PSU) |
+| CallawaySantAnna | Strata/PSU/FPC in SurveyDesign | **Resolved** (Phase 6, `compute_survey_if_variance()`) |
+| CallawaySantAnna | Covariates + IPW/DR + survey | **Resolved** (Phase 7a, DRDID nuisance IF corrections) |
+| CallawaySantAnna | Efficient DRDID nuisance IF for reg+covariates | Deferred — code uses conservative plug-in IF (see REGISTRY.md) |
 
 ## Implemented (Phase 5): SyntheticDiD + TROP Survey Support
 
@@ -92,7 +93,7 @@ Survey-aware bootstrap for all 8 bootstrap-using estimators. Two strategies:
 
 ### Replicate Weight Variance ✅ (2026-03-26)
 Re-run WLS for each replicate weight column, compute variance from distribution
-of estimates. Supports BRR, Fay's BRR, JK1, JKn methods.
+of estimates. Supports BRR, Fay's BRR, JK1, JKn, and SDR methods.
 JKn requires explicit `replicate_strata` (per-replicate stratum assignment).
 - `replicate_weights`, `replicate_method`, `fay_rho` fields on SurveyDesign
 - `compute_replicate_vcov()` for OLS-based estimators (re-runs WLS per replicate)
@@ -100,12 +101,13 @@ JKn requires explicit `replicate_strata` (per-replicate stratum assignment).
 - Dispatch in `LinearRegression.fit()` and `staggered_aggregation.py`
 - Replicate weights mutually exclusive with strata/PSU/FPC
 - Survey df = rank(replicate_weights) - 1, matching R's `survey::degf()`
-- **Limitations**: Supported in CallawaySantAnna, ContinuousDiD, EfficientDiD,
-  TripleDifference (analytical only, no bootstrap). Rejected with
-  `NotImplementedError` in DifferenceInDifferences, TwoWayFixedEffects,
-  MultiPeriodDiD, StackedDiD, SunAbraham, ImputationDiD, TwoStageDiD,
-  SyntheticDiD, TROP. Expansion to regression-based estimators (SA,
-  Imputation, TwoStage, Stacked) is straightforward but deferred.
+- **Coverage**: 12 of 15 estimators support replicate weights.
+  Supported: DifferenceInDifferences, TwoWayFixedEffects, MultiPeriodDiD,
+  CallawaySantAnna, TripleDifference (analytical only), StaggeredTripleDifference,
+  SunAbraham, StackedDiD, ImputationDiD, TwoStageDiD, ContinuousDiD, EfficientDiD.
+  Rejected: SyntheticDiD, TROP (no published theory on replicate weights +
+  unit weight optimization / nuclear norm regularization), BaconDecomposition
+  (diagnostic tool, no inference).
 
 ### DEFF Diagnostics ✅ (2026-03-26)
 Per-coefficient design effects comparing survey vcov to SRS (HC1) vcov.
@@ -166,8 +168,8 @@ framed around a state-level preventive care program evaluated with a
 stratified health survey (ACS/BRFSS-like). Covers: why survey design
 matters, SurveyDesign setup, basic DiD with survey, staggered DiD
 (CallawaySantAnna) with survey, replicate weights (JK1), subpopulation
-analysis, DEFF diagnostics, repeated cross-sections, and estimator
-support reference table. Uses `generate_survey_did_data()` DGP function
+analysis, DEFF diagnostics, repeated cross-sections, and a link to the
+compatibility matrix in `choosing_estimator.rst`. Uses `generate_survey_did_data()` DGP function
 added to `diff_diff.prep`.
 
 ### 7d. HonestDiD with Survey Variance ✅
@@ -210,93 +212,136 @@ variance estimation for staggered triple differences.
 Refinements to close remaining gaps versus R's `survey` package and improve
 practitioner experience. Prioritized by user impact.
 
-### 8a. Successive Difference Replication (SDR)
+### 8a. Successive Difference Replication (SDR) ✅
 
-**Priority: High.** ACS PUMS — the most common US survey dataset for DiD
-policy evaluation — provides 80 SDR replicate weight columns. Without SDR
-support, these users can't use their provided replicate weights directly.
-
-**What's needed:**
-- Add `"SDR"` to `valid_rep_methods` in `SurveyDesign`
-- Variance formula: `V = 4/R * sum((theta_r - theta)^2)` — a scaling
-  difference from BRR, not a new algorithm
-- Wire through `compute_replicate_vcov()` and `compute_replicate_if_variance()`
+**Shipped in v2.8.4.** ACS PUMS — the most common US survey dataset for DiD
+policy evaluation — provides 80 SDR replicate weight columns.
+`SurveyDesign(replicate_method="SDR")` with variance formula
+`V = 4/R * sum((theta_r - theta)^2)`.
 
 **Reference:** Fay, R.E. & Train, G.F. (1995). "Aspects of Survey and
 Model-Based Postcensal Estimation of Income and Poverty Characteristics
 for States and Counties." ASA Proceedings.
 
-### 8b. FPC in ImputationDiD and TwoStageDiD
+### 8b. FPC in ImputationDiD and TwoStageDiD ✅
 
-**Priority: High.** Both estimators now support replicate weights and TSL
-with strata/PSU, but reject FPC outright (`NotImplementedError`). Adding
-FPC is incremental — thread `fpc` through the existing TSL variance path.
-Matters for finite population surveys (common in state-level sampling).
+**Shipped in v2.8.4.** Both estimators now have full strata/PSU/FPC
+support. FPC is threaded through the existing TSL variance path.
 
-**Current gate:** `imputation.py:280`, `two_stage.py:268`
+### 8c. Silent Operation Warnings ✅
 
-### 8c. Silent Operation Warnings
+**Shipped in v2.8.3.** Eight operations that previously altered analysis
+results without informing the user now emit `UserWarning`:
+TROP lstsq fallback, TwoStageDiD NaN masking, TwoStageDiD always-treated
+removal, CallawaySantAnna (g,t) pair skipping, TROP treatment indicator
+fill, Rust → Python fallback, survey weight normalization, `np.inf` → 0
+never-treated conversion.
 
-**Priority: High.** Add `UserWarning` emissions for operations that
-silently alter analysis results:
-- TROP lstsq → pseudo-inverse numerical fallback
-- TwoStageDiD NaN masking of unidentified fixed effects
-- TwoStageDiD always-treated unit removal
-- CallawaySantAnna silent (g,t) pair skipping
-- TROP missing treatment indicator fill with 0
-- Rust → Python backend fallback (currently debug log only)
-- Survey weight normalization (pweights rescaled to mean=1)
-- `np.inf` → 0 never-treated conversion
+### 8d. Lonely PSU "adjust" in Bootstrap ✅
 
-### 8d. Lonely PSU "adjust" in Bootstrap
-
-**Priority: Medium.** `lonely_psu="adjust"` works for analytical (TSL)
-variance but raises `NotImplementedError` for survey-aware bootstrap
-(2 raises in `bootstrap_utils.py`). Real survey data regularly has
-singleton strata. Users needing bootstrap inference with such data hit
-a wall.
+**Shipped in v2.8.4.** `lonely_psu="adjust"` now works with survey-aware
+bootstrap using Rust & Rao (1996) grand-mean centering.
 
 **Reference:** Rust, K.F. & Rao, J.N.K. (1996). "Variance Estimation
 for Complex Surveys Using Replication Techniques." Statistical Methods
 in Medical Research 5(3).
 
-### 8e. Survey Diagnostics and Utilities
+### 8e. Survey Diagnostics and Utilities ✅
 
-**Priority: Medium.** Small additions that signal maturity to survey
-statisticians:
-- **CV on estimates**: coefficient of variation (SE/estimate) on results
-  objects — trivial to add, used by federal agencies for publication
-  standards (NCHS requires CV < 30% for releasable estimates)
-- **Weight trimming**: `trim_weights(data, weight_col, upper=None,
-  quantile=None)` utility in `prep.py` for capping extreme weights
-- **ImputationDiD pretrends + survey**: pre-trends F-test currently
-  ignores survey variance (`NotImplementedError` at `imputation.py:240`)
+**Shipped in v2.8.4.**
+- **CV on estimates**: `coef_var` property on all results objects (SE/|estimate|).
+  Handles edge cases (SE=0, estimate=0).
+- **Weight trimming**: `trim_weights(data, weight_col, upper=None, lower=None,
+  quantile=None)` in `prep.py` for capping extreme survey weights.
+- **ImputationDiD pretrends + survey**: pre-trends F-test now survey-aware
+  using subpopulation approach for correct variance under complex designs.
 
-### 8f. Survey Compatibility Matrix
+### 8f. Survey Compatibility Matrix ✅
 
-**Priority: Medium.** Users discover survey support limits by hitting
-`NotImplementedError` at runtime. Add a table to the survey tutorial
-or `choosing_estimator.rst` showing which estimator × survey feature
-combinations are supported (weights, strata/PSU, FPC, replicate weights,
-bootstrap + survey).
+**Shipped.** Full compatibility table added to `docs/choosing_estimator.rst`
+(Survey Design Support section) showing estimator × survey feature
+combinations. Tutorial cross-references this table.
 
 ### 8g. Documentation-Only Items
 
-**Priority: Low.** No code changes required:
+**Partially addressed.** No code changes required. Remaining items
+deferred to the consolidated list below:
 - **Multi-stage design**: document that single-stage (strata + PSU)
   is sufficient for variance estimation per Lumley (2004) Section 2.2.
-  Don't implement multi-stage — it adds complexity without changing
-  results for DiD applications.
 - **Post-stratification / calibration**: document that `SurveyDesign`
   expects pre-calibrated weights. Point users to `samplics` or R's
-  `survey::calibrate()` for weight calibration. This is data prep,
-  not DiD estimation — out of scope.
+  `survey::calibrate()` for weight calibration.
 
-### Deferred
+## Deferred Work (Consolidated)
 
-| Estimator | Capability | Reason |
+### Documented Deviations
+
+These are supported paths that use a conservative or simplified approach
+rather than the theoretically optimal one. They do not raise errors.
+
+| Estimator | Deviation | Details |
+|-----------|-----------|---------|
+| CallawaySantAnna | `reg`+covariates uses conservative plug-in IF | Efficient DRDID nuisance IF correction deferred; see REGISTRY.md |
+
+### Runtime Limitations
+
+All items below raise an error when attempted (`NotImplementedError` or
+`ValueError` depending on the estimator), with a message describing the
+limitation. See also `TODO.md` for general tech debt items (e.g.,
+multi-absorb + survey weights).
+
+### Replicate Weights Not Supported
+
+| Estimator | Reason |
+|-----------|--------|
+| SyntheticDiD | No published theory on replicate weights + unit weight optimization |
+| TROP | No published theory on replicate weights + nuclear norm regularization |
+| BaconDecomposition | Diagnostic tool with no inference — replicate weights don't apply |
+
+### EfficientDiD Survey Limitations
+
+| Limitation | Reason |
+|-----------|--------|
+| `covariates` + `survey_design` | DR nuisance path doesn't thread survey weights |
+| `cluster` + `survey_design` | Use `survey_design` with PSU/strata instead |
+
+### Bootstrap + Replicate Weights (Mutual Exclusion)
+
+Replicate weights and bootstrap are alternative variance estimation methods.
+Combining them raises `NotImplementedError` or `ValueError`:
+
+| Estimator |
+|-----------|
+| CallawaySantAnna |
+| ContinuousDiD |
+| EfficientDiD |
+| ImputationDiD |
+| StaggeredTripleDifference |
+| SunAbraham |
+| TwoStageDiD |
+
+### Other Limitations
+
+| Estimator | Limitation | Reason |
 |-----------|-----------|--------|
-| SyntheticDiD | Replicate weights | No published theory on replicate weights + unit weight optimization |
-| TROP | Replicate weights | No published theory on replicate weights + nuclear norm regularization |
-| BaconDecomposition | Replicate weights | Diagnostic tool with no inference — replicate weights don't apply |
-| EfficientDiD | Covariates + survey, cluster + survey, bootstrap + survey | Lower demand, newer estimator; 3 `NotImplementedError` paths |
+| SyntheticDiD | `variance_method='placebo'` + strata/PSU/FPC | Use `variance_method='bootstrap'` |
+| ImputationDiD | `pretrends=True` + replicate weights | Per-replicate lead regression refits not implemented |
+| ImputationDiD | `pretrend_test()` + replicate weights | Per-replicate Equation 9 refits not implemented |
+| DifferenceInDifferences, TwoWayFixedEffects | `inference='wild_bootstrap'` + `survey_design` | Raises `NotImplementedError`; use analytical survey inference (the default) instead |
+
+### Warning/Fallback Behaviors
+
+These do not raise errors but silently change behavior:
+
+| Estimator | Limitation | Behavior |
+|-----------|-----------|----------|
+| MultiPeriodDiD | `inference='wild_bootstrap'` + `survey_design` | Warns and falls back to analytical inference |
+
+---
+
+## Remaining Documentation Tasks (Phase 8g)
+
+These are documentation improvements, not runtime limitations:
+
+- **Multi-stage design**: Document that single-stage (strata + PSU) is sufficient for variance estimation per Lumley (2004) Section 2.2. No code changes needed.
+- **Post-stratification / calibration**: Document that `SurveyDesign` expects pre-calibrated weights. Point users to `samplics` or R's `survey::calibrate()` for weight calibration.

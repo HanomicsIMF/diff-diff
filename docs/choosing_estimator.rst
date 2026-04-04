@@ -571,5 +571,124 @@ If you're unsure which estimator to use:
    investigate why (often reveals violations of assumptions)
 
 5. **Using survey data?** - Pass a ``SurveyDesign`` to ``fit()`` for design-based
-   variance estimation. See the `survey tutorial <https://github.com/igerber/diff-diff/blob/main/docs/tutorials/16_survey_did.ipynb>`_
-   for a full walkthrough with strata, PSU, FPC, replicate weights, and subpopulation analysis.
+   variance estimation. See the :ref:`survey-design-support` section below for
+   the compatibility matrix, and the `survey tutorial <https://github.com/igerber/diff-diff/blob/main/docs/tutorials/16_survey_did.ipynb>`_
+   for a full walkthrough.
+
+.. _survey-design-support:
+
+Survey Design Support
+---------------------
+
+All estimators accept an optional ``survey_design`` parameter in ``fit()``.
+Pass a :class:`~diff_diff.SurveyDesign` object to get design-based variance
+estimation. The depth of support varies by estimator:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 12 18 18 18
+
+   * - Estimator
+     - Weights
+     - Strata/PSU/FPC
+     - Replicate Weights
+     - Survey Bootstrap
+   * - ``DifferenceInDifferences``
+     - Full
+     - Full
+     - Full
+     - --
+   * - ``TwoWayFixedEffects``
+     - Full
+     - Full
+     - Full
+     - --
+   * - ``MultiPeriodDiD``
+     - Full
+     - Full
+     - Full
+     - --
+   * - ``CallawaySantAnna``
+     - pweight only
+     - Full
+     - Full
+     - Multiplier at PSU
+   * - ``TripleDifference``
+     - pweight only
+     - Full
+     - Full (analytical)
+     - --
+   * - ``StaggeredTripleDifference``
+     - pweight only
+     - Full
+     - Full
+     - Multiplier at PSU
+   * - ``SunAbraham``
+     - Full
+     - Full
+     - Full
+     - Rao-Wu rescaled
+   * - ``StackedDiD``
+     - pweight only
+     - Full (pweight only)
+     - Full
+     - --
+   * - ``ImputationDiD``
+     - pweight only
+     - Full
+     - Full (analytical)
+     - Multiplier at PSU
+   * - ``TwoStageDiD``
+     - pweight only
+     - Full
+     - Full (analytical)
+     - Multiplier at PSU
+   * - ``ContinuousDiD``
+     - Full
+     - Full
+     - Full (analytical)
+     - Multiplier at PSU
+   * - ``EfficientDiD``
+     - Full
+     - Full
+     - Full (analytical)
+     - Multiplier at PSU
+   * - ``SyntheticDiD``
+     - pweight only
+     - Via bootstrap
+     - --
+     - Rao-Wu rescaled
+   * - ``TROP``
+     - pweight only
+     - Via bootstrap
+     - --
+     - Rao-Wu rescaled
+   * - ``BaconDecomposition``
+     - Diagnostic
+     - Diagnostic
+     - --
+     - --
+
+**Legend:**
+
+- **Full**: All weight types (pweight/fweight/aweight) + strata/PSU/FPC + Taylor Series Linearization variance
+- **Full (pweight only)**: Full TSL with strata/PSU/FPC, but only ``pweight`` accepted (``fweight``/``aweight`` rejected because composition changes weight semantics)
+- **Via bootstrap**: Strata/PSU/FPC supported only with bootstrap variance. ``SyntheticDiD`` requires ``variance_method='bootstrap'``; ``TROP`` uses bootstrap by default. ``SyntheticDiD`` placebo does not support strata/PSU/FPC.
+- **pweight only** (Weights column): Only ``pweight`` accepted; ``fweight``/``aweight`` raise an error
+- **Diagnostic**: Weighted descriptive statistics only (no inference)
+- **--**: Not supported
+
+.. note::
+
+   ``EfficientDiD`` does not support ``covariates`` and ``survey_design``
+   simultaneously (the DR nuisance path does not yet thread survey weights).
+
+.. note::
+
+   ``SyntheticDiD`` with ``variance_method='placebo'`` does not support
+   strata/PSU/FPC. Use ``variance_method='bootstrap'`` for full survey
+   design support.
+
+For the full walkthrough with code examples, see the
+`survey tutorial <https://github.com/igerber/diff-diff/blob/main/docs/tutorials/16_survey_did.ipynb>`_.
+For deferred work and remaining limitations, see ``docs/survey-roadmap.md``.
