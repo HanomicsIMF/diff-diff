@@ -941,7 +941,8 @@ class TestNonlinearRankDeficiency:
             assert cell["se"] >= 0
 
     def test_logit_with_covariates(self):
-        """Logit with covariates should produce finite ATT/SE."""
+        """Logit with covariates should produce finite ATT/SE and differ from
+        no-covariate fit (confirming covariates are used)."""
         rng = np.random.default_rng(42)
         rows = []
         for u in range(60):
@@ -953,14 +954,20 @@ class TestNonlinearRankDeficiency:
                 y = int(rng.random() < 1 / (1 + np.exp(-eta)))
                 rows.append({"unit": u, "time": t, "cohort": cohort, "y": y, "x1": x1})
         df = pd.DataFrame(rows)
-        est = WooldridgeDiD(method="logit")
-        r = est.fit(df, outcome="y", unit="unit", time="time", cohort="cohort", exovar=["x1"])
-        assert np.isfinite(r.overall_att)
-        assert np.isfinite(r.overall_se)
-        assert r.overall_se > 0
+        r_cov = WooldridgeDiD(method="logit").fit(
+            df, outcome="y", unit="unit", time="time", cohort="cohort", exovar=["x1"]
+        )
+        r_nocov = WooldridgeDiD(method="logit").fit(
+            df, outcome="y", unit="unit", time="time", cohort="cohort"
+        )
+        assert np.isfinite(r_cov.overall_att)
+        assert np.isfinite(r_cov.overall_se)
+        assert r_cov.overall_se > 0
+        assert r_cov.overall_att != r_nocov.overall_att, "Covariates should affect ATT"
 
     def test_poisson_with_covariates(self):
-        """Poisson with covariates should produce finite ATT/SE."""
+        """Poisson with covariates should produce finite ATT/SE and differ from
+        no-covariate fit (confirming covariates are used)."""
         rng = np.random.default_rng(7)
         rows = []
         for u in range(60):
@@ -972,11 +979,16 @@ class TestNonlinearRankDeficiency:
                 y = rng.poisson(mu)
                 rows.append({"unit": u, "time": t, "cohort": cohort, "y": float(y), "x1": x1})
         df = pd.DataFrame(rows)
-        est = WooldridgeDiD(method="poisson")
-        r = est.fit(df, outcome="y", unit="unit", time="time", cohort="cohort", exovar=["x1"])
-        assert np.isfinite(r.overall_att)
-        assert np.isfinite(r.overall_se)
-        assert r.overall_se > 0
+        r_cov = WooldridgeDiD(method="poisson").fit(
+            df, outcome="y", unit="unit", time="time", cohort="cohort", exovar=["x1"]
+        )
+        r_nocov = WooldridgeDiD(method="poisson").fit(
+            df, outcome="y", unit="unit", time="time", cohort="cohort"
+        )
+        assert np.isfinite(r_cov.overall_att)
+        assert np.isfinite(r_cov.overall_se)
+        assert r_cov.overall_se > 0
+        assert r_cov.overall_att != r_nocov.overall_att, "Covariates should affect ATT"
 
 
 class TestCohortTimeInvariance:
@@ -1206,3 +1218,92 @@ class TestNonlinearNeverTreated:
         # OLS never_treated should have pre-treatment cells
         pre_treatment = [(g, t) for (g, t) in r.group_time_effects if t < g]
         assert len(pre_treatment) > 0, "OLS never_treated lost pre-treatment placebo cells"
+
+
+class TestFullCovariateBasis:
+    """Regression: covariate-adjusted ETWFE includes full W2025 Eq. 5.3 basis
+    (D_g × X, f_t × X, D_{g,t} × X̃, raw X)."""
+
+    @pytest.fixture
+    def cov_data(self):
+        rng = np.random.RandomState(42)
+        rows = []
+        for u in range(30):
+            g = 3 if u < 10 else (4 if u < 20 else 0)
+            x1 = rng.normal()
+            for t in range(1, 6):
+                effect = 0.5 if g > 0 and t >= g else 0.0
+                y = rng.normal() + effect + 0.3 * x1
+                rows.append({"unit": u, "time": t, "cohort": g, "y": y, "x1": x1})
+        return pd.DataFrame(rows)
+
+    def test_ols_covariate_parity_with_full_basis_dummy_ols(self, cov_data):
+        """OLS with exovar should match explicit-dummy OLS with full basis."""
+        from diff_diff.linalg import solve_ols
+
+        df = cov_data
+        r = WooldridgeDiD(control_group="not_yet_treated").fit(
+            df, outcome="y", unit="unit", time="time", cohort="cohort", exovar=["x1"]
+        )
+
+        # Build explicit-dummy regression with full basis
+        sample = _filter_sample(df, "unit", "time", "cohort", "not_yet_treated", 0)
+        X_int, _, gt_keys = _build_interaction_matrix(
+            sample, "cohort", "time", 0, "not_yet_treated", "ols"
+        )
+        n_int = X_int.shape[1]
+        x1_raw = sample["x1"].values.astype(float)
+
+        # Cell × demeaned-X interactions
+        groups = sorted(g for g in sample["cohort"].unique() if g > 0)
+        x1_demeaned = x1_raw.copy()
+        for g in groups:
+            mask = sample["cohort"].values == g
+            if mask.any():
+                x1_demeaned[mask] -= x1_raw[mask].mean()
+        cell_cov = np.column_stack([X_int[:, i] * x1_demeaned for i in range(n_int)])
+
+        # D_g × X (cohort × covariate)
+        cohort_cov = np.column_stack([
+            (sample["cohort"].values == g).astype(float) * x1_raw for g in groups
+        ])
+
+        # f_t × X (time × covariate, drop first)
+        times = sorted(sample["time"].unique())
+        time_cov = np.column_stack([
+            (sample["time"].values == t).astype(float) * x1_raw for t in times[1:]
+        ])
+
+        # Full design: intercept + cells + cell×cov + D_g×X + f_t×X + raw_X + unit + time dummies
+        unit_dummies = pd.get_dummies(sample["unit"], drop_first=True).values.astype(float)
+        time_dummies = pd.get_dummies(sample["time"], drop_first=True).values.astype(float)
+        intercept = np.ones((len(sample), 1))
+        X_full = np.hstack([
+            intercept, X_int, cell_cov, cohort_cov, time_cov,
+            x1_raw.reshape(-1, 1), unit_dummies, time_dummies,
+        ])
+        y = sample["y"].values
+        coefs_dummy, _, _ = solve_ols(X_full, y, rank_deficient_action="silent")
+
+        # Compare ATT coefficients (positions 1..n_int in dummy OLS)
+        for i, (g, t) in enumerate(gt_keys):
+            if (g, t) in r.group_time_effects:
+                np.testing.assert_allclose(
+                    r.group_time_effects[(g, t)]["att"],
+                    coefs_dummy[1 + i],
+                    atol=1e-5,
+                    err_msg=f"Covariate ATT mismatch at cell ({g},{t})",
+                )
+
+    def test_covariates_affect_ols_att(self, cov_data):
+        """OLS with covariates should produce different ATT than without."""
+        df = cov_data
+        r_cov = WooldridgeDiD().fit(
+            df, outcome="y", unit="unit", time="time", cohort="cohort", exovar=["x1"]
+        )
+        r_nocov = WooldridgeDiD().fit(
+            df, outcome="y", unit="unit", time="time", cohort="cohort"
+        )
+        assert r_cov.overall_att != r_nocov.overall_att, (
+            "Covariate-adjusted ATT should differ from unadjusted"
+        )

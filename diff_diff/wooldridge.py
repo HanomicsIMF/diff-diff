@@ -446,14 +446,47 @@ class WooldridgeDiD:
                     cov_label = cov_names_list[j] if j < len(cov_names_list) else f"cov{j}"
                     interact_names.append(f"{gt_name}_x_{cov_label}")
 
+            # Cohort × covariate interactions (W2025 Eq. 5.3: D_g × X)
+            # exovar/xtvar get automatic D_g × X; xgvar already has D_g × X
+            cov_cols_for_dg = list(exovar or []) + list(xtvar or [])
+            cohort_cov_cols = []
+            cohort_cov_names = []
+            if cov_cols_for_dg:
+                cohort_vals_arr = sample[cohort].values
+                for g in groups:
+                    g_ind = (cohort_vals_arr == g).astype(float)
+                    for col in cov_cols_for_dg:
+                        cohort_cov_cols.append(g_ind * sample[col].values.astype(float))
+                        cohort_cov_names.append(f"D{g}_x_{col}")
+
+            # Time × covariate interactions (W2025 Eq. 5.3: f_t × X)
+            # All covariates get f_t × X, drop first time for identification
+            all_cov_cols = list(exovar or []) + list(xtvar or []) + list(xgvar or [])
+            times_sorted = sorted(sample[time].unique())
+            time_cov_cols = []
+            time_cov_names = []
+            time_vals_arr = sample[time].values
+            for t in times_sorted[1:]:  # drop first
+                t_ind = (time_vals_arr == t).astype(float)
+                for col in all_cov_cols:
+                    time_cov_cols.append(t_ind * sample[col].values.astype(float))
+                    time_cov_names.append(f"ft{t}_x_{col}")
+
+            # Assemble: [cell_indicators, cell×cov, D_g×X, f_t×X, raw_cov]
+            blocks = [X_int]
             if interact_cols:
-                X_interact = np.column_stack(interact_cols)
-                X_design = np.hstack([X_int, X_interact, X_cov])
+                blocks.append(np.column_stack(interact_cols))
                 all_regressors.extend(interact_names)
-            else:
-                X_design = np.hstack([X_int, X_cov])
+            if cohort_cov_cols:
+                blocks.append(np.column_stack(cohort_cov_cols))
+                all_regressors.extend(cohort_cov_names)
+            if time_cov_cols:
+                blocks.append(np.column_stack(time_cov_cols))
+                all_regressors.extend(time_cov_names)
+            blocks.append(X_cov)
             for i in range(X_cov.shape[1]):
                 all_regressors.append(f"_cov_{i}")
+            X_design = np.hstack(blocks)
         else:
             X_design = X_int
 
