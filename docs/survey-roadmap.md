@@ -1,7 +1,8 @@
 # Survey Data Support Roadmap
 
 This document captures the survey data support roadmap for diff-diff.
-All phases (1-8) are implemented. Remaining deferred items are listed at the bottom.
+Phases 1-8f are implemented. Phase 8g (documentation-only items) is partially
+addressed. Remaining deferred items are listed at the bottom.
 
 ## Implemented (Phases 1-2)
 
@@ -322,7 +323,7 @@ Combining them raises `NotImplementedError` or `ValueError`:
 | SyntheticDiD | `variance_method='placebo'` + strata/PSU/FPC | Use `variance_method='bootstrap'` |
 | ImputationDiD | `pretrends=True` + replicate weights | Per-replicate lead regression refits not implemented |
 | ImputationDiD | `pretrend_test()` + replicate weights | Per-replicate Equation 9 refits not implemented |
-| (all estimators) | Wild bootstrap + survey weights | Use analytical survey SEs or survey-aware multiplier bootstrap instead |
+| DifferenceInDifferences, TwoWayFixedEffects, MultiPeriodDiD | `inference='wild_bootstrap'` + `survey_design` | Use analytical survey inference (the default) instead |
 
 ### Documentation-Only (Phase 8g)
 

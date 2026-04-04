@@ -16,7 +16,7 @@ diff-diff v2.8.4 is a **production-ready** DiD library with feature parity with 
 - **Sensitivity analysis**: Honest DiD (Rambachan-Roth), Pre-trends power analysis (Roth 2022)
 - **Study design**: Power analysis tools
 - **Data utilities**: Real-world datasets (Card-Krueger, Castle Doctrine, Divorce Laws, MPDTA), DGP functions for all supported designs
-- **Survey support**: Full `SurveyDesign` with strata, PSU, FPC, weight types, Taylor linearization, DEFF diagnostics, subpopulation analysis — survey-aware inference across all 15 estimators; replicate weights (BRR/Fay/JK1/JKn/SDR) supported for 12 of 15 (see [choosing_estimator.rst](docs/choosing_estimator.rst#survey-design-support) for the compatibility matrix)
+- **Survey support**: `SurveyDesign` with strata, PSU, FPC, weight types, DEFF diagnostics, subpopulation analysis. All 15 estimators accept survey weights; design-based variance estimation (TSL, replicate weights, survey-aware bootstrap) varies by estimator. Replicate weights (BRR/Fay/JK1/JKn/SDR) supported for 12 of 15; `BaconDecomposition` is diagnostic-only. See [choosing_estimator.rst](docs/choosing_estimator.rst#survey-design-support) for the full compatibility matrix.
 - **Performance**: Optional Rust backend for accelerated computation; faster than R at scale (see [CHANGELOG.md](CHANGELOG.md) for benchmarks)
 
 ---
