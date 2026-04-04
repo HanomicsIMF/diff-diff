@@ -19,11 +19,11 @@ All phases (1-8) are implemented. Remaining deferred items are listed at the bot
 | Estimator | File | Survey Support | Notes |
 |-----------|------|----------------|-------|
 | StackedDiD | `stacked_did.py` | pweight only | Q-weights compose multiplicatively with survey weights; TSL vcov on composed weights; fweight/aweight rejected (composition changes weight semantics) |
-| SunAbraham | `sun_abraham.py` | Full | Survey weights in LinearRegression + weighted within-transform; bootstrap+survey deferred |
+| SunAbraham | `sun_abraham.py` | Full | Survey weights in LinearRegression + weighted within-transform; bootstrap via Rao-Wu rescaled (Phase 6) |
 | BaconDecomposition | `bacon.py` | Diagnostic | Weighted cell means, weighted within-transform, weighted group shares; no inference (diagnostic only) |
 | TripleDifference | `triple_diff.py` | Full | Regression, IPW, and DR methods with weighted OLS/logit + TSL on influence functions |
-| ContinuousDiD | `continuous_did.py` | Analytical | Weighted B-spline OLS + TSL on influence functions; bootstrap+survey deferred |
-| EfficientDiD | `efficient_did.py` | Analytical | Weighted means/covariances in Omega* + TSL on EIF scores; bootstrap+survey deferred |
+| ContinuousDiD | `continuous_did.py` | Analytical | Weighted B-spline OLS + TSL on influence functions; bootstrap via multiplier at PSU (Phase 6) |
+| EfficientDiD | `efficient_did.py` | Analytical | Weighted means/covariances in Omega* + TSL on EIF scores; bootstrap via multiplier at PSU (Phase 6) |
 
 ### Phase 3 Deferred Work
 
@@ -44,9 +44,9 @@ message pointing to the planned phase or describing the limitation.
 
 | Estimator | File | Survey Support | Notes |
 |-----------|------|----------------|-------|
-| ImputationDiD | `imputation.py` | Analytical | Weighted iterative FE, weighted ATT aggregation, weighted conservative variance (Theorem 3); bootstrap+survey deferred |
-| TwoStageDiD | `two_stage.py` | Analytical | Weighted iterative FE, weighted Stage 2 OLS, weighted GMM sandwich variance; bootstrap+survey deferred |
-| CallawaySantAnna | `staggered.py` | Full | Full SurveyDesign (strata/PSU/FPC/replicate weights); reg supports covariates, IPW/DR no-covariate only; survey-weighted WIF in aggregation; replicate IF variance for analytical SEs |
+| ImputationDiD | `imputation.py` | Analytical | Weighted iterative FE, weighted ATT aggregation, weighted conservative variance (Theorem 3); bootstrap via multiplier at PSU (Phase 6) |
+| TwoStageDiD | `two_stage.py` | Analytical | Weighted iterative FE, weighted Stage 2 OLS, weighted GMM sandwich variance; bootstrap via multiplier at PSU (Phase 6) |
+| CallawaySantAnna | `staggered.py` | Full | Full SurveyDesign (strata/PSU/FPC/replicate weights); reg supports covariates, IPW/DR supports covariates (Phase 7a); survey-weighted WIF in aggregation; replicate IF variance for analytical SEs |
 
 **Infrastructure**: Weighted `solve_logit()` added to `linalg.py` — survey weights
 enter the IRLS working weights as `w_survey * mu * (1 - mu)`. This also unblocked
@@ -61,7 +61,7 @@ TripleDifference IPW/DR from Phase 3 deferred work.
 | CallawaySantAnna | Bootstrap + survey | **Resolved** (Phase 6, multiplier at PSU) |
 | CallawaySantAnna | Strata/PSU/FPC in SurveyDesign | **Resolved** (Phase 6, `compute_survey_if_variance()`) |
 | CallawaySantAnna | Covariates + IPW/DR + survey | **Resolved** (Phase 7a, DRDID nuisance IF corrections) |
-| CallawaySantAnna | Efficient DRDID nuisance IF for reg+covariates | **Resolved** (Phase 7a) |
+| CallawaySantAnna | Efficient DRDID nuisance IF for reg+covariates | Deferred — code uses conservative plug-in IF (see REGISTRY.md) |
 
 ## Implemented (Phase 5): SyntheticDiD + TROP Survey Support
 
@@ -285,6 +285,12 @@ survey limitations.
 | TROP | No published theory on replicate weights + nuclear norm regularization |
 | BaconDecomposition | Diagnostic tool with no inference — replicate weights don't apply |
 
+### CallawaySantAnna Survey Limitations
+
+| Limitation | Reason |
+|-----------|--------|
+| Efficient DRDID nuisance IF for `reg`+covariates | Code uses conservative plug-in IF; efficient correction deferred (see REGISTRY.md) |
+
 ### EfficientDiD Survey Limitations
 
 | Limitation | Reason |
@@ -302,7 +308,10 @@ Combining them raises `NotImplementedError`:
 | CallawaySantAnna |
 | ContinuousDiD |
 | EfficientDiD |
+| ImputationDiD |
 | StaggeredTripleDifference |
+| SunAbraham |
+| TwoStageDiD |
 
 ### Other Limitations
 
