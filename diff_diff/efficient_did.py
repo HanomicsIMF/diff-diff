@@ -606,6 +606,15 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                     stacklevel=2,
                 )
 
+        # Guard: never-treated with zero survey weight → no valid comparisons
+        if cohort_fractions.get(np.inf, 0.0) <= 0 and use_covariates:
+            warnings.warn(
+                "Never-treated group has zero survey weight; no valid "
+                "comparisons possible for covariates path.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # ----- Covariate preparation (if provided) -----
         covariate_matrix: Optional[np.ndarray] = None
         m_hat_cache: Dict[Tuple, np.ndarray] = {}
@@ -704,6 +713,15 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                     pt_assumption=self.pt_assumption,
                     anticipation=self.anticipation,
                 )
+
+                # Filter out comparison pairs with zero survey weight
+                if unit_level_weights is not None and pairs:
+                    pairs = [
+                        (gp, tpre) for gp, tpre in pairs
+                        if np.sum(unit_level_weights[
+                            never_treated_mask if np.isinf(gp) else cohort_masks[gp]
+                        ]) > 0
+                    ]
 
                 if not pairs:
                     warnings.warn(
@@ -1256,11 +1274,21 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             keepers, effects, unit_cohorts, cohort_fractions, n_units,
             unit_weights=self._unit_level_weights,
         )
-        agg_eif_total = agg_eif + wif  # both O(1) scale
+        # Compute SE: survey path uses score-level psi + compute_survey_if_variance
+        # to avoid double-weighting (compute_survey_vcov applies w_i internally,
+        # which would double-weight the survey-weighted WIF term).
+        if self._unit_resolved_survey is not None:
+            uw = self._unit_level_weights
+            total_w = float(np.sum(uw))
+            # Score-level: standard = w*eif/sum(w), wif already has w_i in indicator
+            psi_total = uw * agg_eif / total_w + wif / total_w
+            from diff_diff.survey import compute_survey_if_variance
 
-        # SE = sqrt(mean(EIF^2) / n) — standard IF-based SE
-        # (dispatches to survey TSL or cluster-robust when active)
-        se = self._eif_se(agg_eif_total, n_units, cluster_indices, n_clusters)
+            variance = compute_survey_if_variance(psi_total, self._unit_resolved_survey)
+            se = float(np.sqrt(max(variance, 0.0))) if np.isfinite(variance) else np.nan
+        else:
+            agg_eif_total = agg_eif + wif
+            se = self._eif_se(agg_eif_total, n_units, cluster_indices, n_clusters)
 
         return overall_att, se
 
@@ -1346,16 +1374,26 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 agg_eif += w[k] * eif_by_gt[gt]
 
             # WIF correction for event-study aggregation
+            wif_e = np.zeros(n_units)
             if unit_cohorts is not None:
                 es_keepers = [(g, t) for (g, t) in gt_pairs]
                 es_effects = effs
-                wif = self._compute_wif_contribution(
+                wif_e = self._compute_wif_contribution(
                     es_keepers, es_effects, unit_cohorts, cohort_fractions, n_units,
                     unit_weights=self._unit_level_weights,
                 )
-                agg_eif = agg_eif + wif
 
-            agg_se = self._eif_se(agg_eif, n_units, cluster_indices, n_clusters)
+            if self._unit_resolved_survey is not None:
+                uw = self._unit_level_weights
+                total_w = float(np.sum(uw))
+                psi_total = uw * agg_eif / total_w + wif_e / total_w
+                from diff_diff.survey import compute_survey_if_variance
+
+                variance = compute_survey_if_variance(psi_total, self._unit_resolved_survey)
+                agg_se = float(np.sqrt(max(variance, 0.0))) if np.isfinite(variance) else np.nan
+            else:
+                agg_eif = agg_eif + wif_e
+                agg_se = self._eif_se(agg_eif, n_units, cluster_indices, n_clusters)
 
             t_stat, p_val, ci = safe_inference(
                 agg_eff, agg_se, alpha=self.alpha, df=self._survey_df

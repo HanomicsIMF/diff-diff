@@ -1091,16 +1091,19 @@ class TestEfficientDiDCovSurvey:
         """Zero-weight cohort should be skipped with a warning."""
         from diff_diff import EfficientDiD
 
-        # Set early cohort (first_treat=4) weights to near-zero
+        # Set early cohort (first_treat=4) weights to exactly zero
         cov_survey_data = cov_survey_data.copy()
-        cov_survey_data.loc[cov_survey_data["first_treat"] == 4, "weight"] = 1e-15
+        cov_survey_data.loc[cov_survey_data["first_treat"] == 4, "weight"] = 0.0
+        # Need small positive weight for pweight validation (can't be all zero)
+        # Keep remaining cohorts with positive weights
         sd = SurveyDesign(weights="weight")
-        result = EfficientDiD(n_bootstrap=0).fit(
-            cov_survey_data,
-            "outcome", "unit", "time", "first_treat",
-            covariates=["x1"],
-            survey_design=sd,
-        )
+        with pytest.warns(UserWarning, match="zero survey weight"):
+            result = EfficientDiD(n_bootstrap=0).fit(
+                cov_survey_data,
+                "outcome", "unit", "time", "first_treat",
+                covariates=["x1"],
+                survey_design=sd,
+            )
         assert np.isfinite(result.overall_att)
         assert np.isfinite(result.overall_se)
 

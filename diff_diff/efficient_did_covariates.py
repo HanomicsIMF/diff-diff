@@ -364,8 +364,12 @@ def estimate_inverse_propensity_sieve(
     # Weighted loss normalization and fallback
     if unit_weights is not None:
         w_group = unit_weights[group_mask]
+        sum_w_group = float(np.sum(w_group))
+        if sum_w_group <= 0:
+            # Zero survey weight for this group — return unconditional fallback
+            return np.ones(n_units)
         n_units_w = float(np.sum(unit_weights))
-        fallback_ratio = n_units_w / float(np.sum(w_group))
+        fallback_ratio = n_units_w / sum_w_group
     else:
         w_group = None
         n_units_w = float(n_units)
