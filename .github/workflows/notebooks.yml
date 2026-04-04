@@ -21,12 +21,23 @@ on:
     - cron: '0 6 * * 0'
 
 jobs:
+  # Lightweight gate: fails on PRs without the ready-for-ci label.
+  ci-gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require ready-for-ci label on PRs
+        if: >-
+          github.event_name == 'pull_request'
+          && !contains(github.event.pull_request.labels.*.name, 'ready-for-ci')
+        run: |
+          echo "::error::The 'ready-for-ci' label is required to run CI tests."
+          echo "Add the label to trigger CI."
+          exit 1
+
   execute-notebooks:
     name: Execute tutorial notebooks
-    if: >-
-      github.event_name == 'push'
-      || github.event_name == 'schedule'
-      || contains(github.event.pull_request.labels.*.name, 'ready-for-ci')
+    needs: [ci-gate]
     runs-on: ubuntu-latest
 
     steps:

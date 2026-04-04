@@ -130,10 +130,12 @@ When the working tree is clean but commits are ahead, check for methodology issu
 
 3. **Documentation impact check**: Check which source files in `diff_diff/` are in the committed changes.
    If source files are present, read `docs/doc-deps.yaml` and check which dependent
-   documentation files are NOT also in the committed changes. For HIGH drift risk docs, warn:
+   documentation files are NOT also in the committed changes. Warn about:
+   - ALL docs with `type: methodology` (regardless of `drift_risk`)
+   - All HIGH `drift_risk` docs (any type)
    ```
    Documentation impact: source files changed but related docs were not updated:
-     [HIGH] docs/methodology/REGISTRY.md — <section hint>
+     [METHODOLOGY] docs/methodology/REGISTRY.md — <section hint>
      [HIGH] docs/survey-roadmap.md
    Run /docs-impact for full details.
    ```
@@ -171,10 +173,12 @@ Note: Section 3b checks are informational warnings only — no AskUserQuestion p
 
    **Documentation impact check** (if source files are staged):
    If source files in `diff_diff/` are present, read `docs/doc-deps.yaml` and check which
-   dependent documentation files are NOT also in the staged set. For HIGH drift risk docs, warn:
+   dependent documentation files are NOT also in the staged set. Warn about:
+   - ALL docs with `type: methodology` (regardless of `drift_risk`)
+   - All HIGH `drift_risk` docs (any type)
    ```
    Documentation impact: source files changed but related docs were not updated:
-     [HIGH] docs/methodology/REGISTRY.md — <section hint>
+     [METHODOLOGY] docs/methodology/REGISTRY.md — <section hint>
    Run /docs-impact for full details.
    ```
    This is a WARNING, not a blocker.

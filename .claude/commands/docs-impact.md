@@ -77,7 +77,14 @@ Read tool (or Glob). If a path does not exist, flag it:
 
 ### 6. Display Report
 
-Group results by drift risk level (HIGH first, then MEDIUM, then LOW).
+Display results in priority order:
+
+1. **METHODOLOGY (always warn)**: All docs with `type: methodology`, regardless of `drift_risk`.
+   These are shown first because undocumented methodology deviations are P1 in AI review.
+2. **HIGH DRIFT RISK**: Remaining docs (non-methodology) with `drift_risk: high`.
+3. **MEDIUM DRIFT RISK**: Docs with `drift_risk: medium` (excluding methodology, already shown).
+4. **LOW DRIFT RISK**: Docs with `drift_risk: low` (excluding methodology, already shown).
+
 Within each group, show the type label and path, with section hints where available.
 
 **Output format:**
@@ -86,8 +93,10 @@ Within each group, show the type label and path, with section hints where availa
 === Documentation Impact Report ===
 Changed: <comma-separated list of changed source files>
 
+METHODOLOGY (always warn):
+  docs/methodology/REGISTRY.md -- <section hints>
+
 HIGH DRIFT RISK:
-  [methodology] docs/methodology/REGISTRY.md -- <section hints>
   [roadmap] docs/survey-roadmap.md
 
 MEDIUM DRIFT RISK:
@@ -100,7 +109,7 @@ LOW DRIFT RISK:
 
 No map entry: <files not found in sources or groups, or "(none)">
 Stale references: <invalid paths, or "(none)">
-Always update: CHANGELOG.md
+Always check: CHANGELOG.md, ROADMAP.md
 ```
 
 ### 7. Flag Missing Entries

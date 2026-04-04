@@ -7,7 +7,7 @@
 #   tutorial       - Jupyter notebook demonstrating the feature
 #   api_reference  - Sphinx RST auto-generated from docstrings (update if signature/docstring changes)
 #   user_guide     - README.md, llms*.txt, choosing_estimator.rst sections
-#   roadmap        - ROADMAP.md, survey-roadmap.md status tracking
+#   roadmap        - survey-roadmap.md (ROADMAP.md is surfaced globally by /docs-impact)
 #   performance    - benchmarks.rst, performance-plan.md
 #   internal       - CLAUDE.md, CONTRIBUTING.md (developer-facing)
 #

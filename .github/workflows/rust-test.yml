@@ -23,12 +23,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Lightweight gate: fails on PRs without the ready-for-ci label.
+  # Expensive jobs depend on this via needs: so they won't start if the gate fails.
+  ci-gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require ready-for-ci label on PRs
+        if: >-
+          github.event_name == 'pull_request'
+          && !contains(github.event.pull_request.labels.*.name, 'ready-for-ci')
+        run: |
+          echo "::error::The 'ready-for-ci' label is required to run CI tests."
+          echo "Add the label to trigger CI."
+          exit 1
+
   # Run Rust unit tests on all platforms
   rust-tests:
     name: Rust Unit Tests (${{ matrix.os }})
-    if: >-
-      github.event_name == 'push'
-      || contains(github.event.pull_request.labels.*.name, 'ready-for-ci')
+    needs: [ci-gate]
     runs-on: ${{ matrix.os }}
     env:
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: 1
@@ -62,9 +75,7 @@ jobs:
   # Build and test with Python on multiple platforms
   python-tests:
     name: Python Tests (${{ matrix.os }}, py${{ matrix.python-version }})
-    if: >-
-      github.event_name == 'push'
-      || contains(github.event.pull_request.labels.*.name, 'ready-for-ci')
+    needs: [ci-gate]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -165,9 +176,7 @@ jobs:
   # Test pure Python fallback (without Rust extension)
   python-fallback:
     name: Pure Python Fallback
-    if: >-
-      github.event_name == 'push'
-      || contains(github.event.pull_request.labels.*.name, 'ready-for-ci')
+    needs: [ci-gate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

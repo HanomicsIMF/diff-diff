@@ -159,10 +159,12 @@ Determine if this is a fork-based workflow:
    git diff --cached --name-only | grep "^diff_diff/.*\.py$"
    ```
    If source files are present, read `docs/doc-deps.yaml` and check which dependent
-   documentation files are NOT also in the staged set. For HIGH drift risk docs, warn:
+   documentation files are NOT also in the staged set. Warn about:
+   - ALL docs with `type: methodology` (regardless of `drift_risk`)
+   - All HIGH `drift_risk` docs (any type)
    ```
    Documentation impact: source files changed but related docs were not updated:
-     [HIGH] docs/methodology/REGISTRY.md — <section hint>
+     [METHODOLOGY] docs/methodology/REGISTRY.md — <section hint>
      [HIGH] docs/survey-roadmap.md
    Run /docs-impact for full details.
    ```

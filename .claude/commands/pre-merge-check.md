@@ -117,14 +117,17 @@ dependent documentation files are NOT also in the changed file set (from Section
 For each changed source file:
 1. Look up its entry in `docs/doc-deps.yaml` (resolving group membership for multi-file modules)
 2. Check each dependent doc's `path` against the changed file set
-3. Report HIGH drift risk docs that were NOT changed as warnings
+3. Report docs that were NOT changed as warnings:
+   - ALL docs with `type: methodology` (regardless of `drift_risk`) — methodology deviations
+     are P1 in AI review, so this warning must always fire
+   - All HIGH `drift_risk` docs (any type)
 
 **Report format**:
 ```
 Documentation impact: source files changed but related docs were not updated:
-  [HIGH] docs/methodology/REGISTRY.md -- <section hint>
+  [METHODOLOGY] docs/methodology/REGISTRY.md -- <section hint>
   [HIGH] docs/survey-roadmap.md
-  [MEDIUM] README.md -- <section hint> (3 more MEDIUM/LOW docs — run /docs-impact for details)
+  [MEDIUM] README.md -- <section hint> (N more -- run /docs-impact for details)
 ```
 
 This is a WARNING, not a blocker — not every source change requires a doc update.
