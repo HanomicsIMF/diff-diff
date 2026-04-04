@@ -1135,6 +1135,7 @@ where `g(·)` is the link inverse (logistic or exp), `η_i` is the individual li
 - `exovar`: Time-invariant covariates, added without demeaning (corresponds to W2025 Eq. 5.2 `x_i`)
 - `xtvar`: Time-varying covariates, demeaned within cohort×period cells when `demean_covariates=True` (corresponds to W2025 Eq. 10.2 `x_hat_itgs = x_it - x_bar_gs`)
 - `xgvar`: Covariates interacted with each cohort indicator
+- **Note:** Covariates are included as both main effects and treatment × demeaned-covariate interactions (W2025 Eq. 5.3), allowing ATT to vary with covariates within each (g,t) cell.
 - **Note:** `xtvar` demeaning operates at the cohort×period level (W2025 Eq. 10.2), not the cohort level (W2025 Eq. 5.2). These are identical for time-constant covariates but differ for time-varying covariates.
 
 *Control groups:*

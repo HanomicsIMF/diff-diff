@@ -291,6 +291,21 @@ class WooldridgeDiD:
             if not hasattr(self, key):
                 raise ValueError(f"Unknown parameter: {key!r}")
             setattr(self, key, value)
+        # Re-run validation after setting params
+        if self.method not in _VALID_METHODS:
+            raise ValueError(f"method must be one of {_VALID_METHODS}, got {self.method!r}")
+        if self.control_group not in _VALID_CONTROL_GROUPS:
+            raise ValueError(
+                f"control_group must be one of {_VALID_CONTROL_GROUPS}, "
+                f"got {self.control_group!r}"
+            )
+        if self.anticipation < 0:
+            raise ValueError(f"anticipation must be >= 0, got {self.anticipation}")
+        if self.bootstrap_weights not in _VALID_BOOTSTRAP_WEIGHTS:
+            raise ValueError(
+                f"bootstrap_weights must be one of {_VALID_BOOTSTRAP_WEIGHTS}, "
+                f"got {self.bootstrap_weights!r}"
+            )
         return self
 
     def fit(
@@ -396,7 +411,35 @@ class WooldridgeDiD:
 
         all_regressors = int_col_names.copy()
         if X_cov is not None:
-            X_design = np.hstack([X_int, X_cov])
+            # Build treatment × demeaned-covariate interactions (W2025 Eq. 5.3)
+            # For each (g,t) cell indicator and each covariate, create the
+            # moderating interaction: X_int[:, i] * x_hat[:, j]
+            # This allows treatment effects to vary with covariates within cells.
+            cov_names_list = list(exovar or []) + list(xtvar or []) + list(xgvar or [])
+            # Compute cohort-demeaned covariates for interaction terms
+            X_cov_demeaned = X_cov.copy()
+            if self.demean_covariates:
+                cohort_vals = sample[cohort].values
+                for j in range(X_cov.shape[1]):
+                    for g in groups:
+                        mask = cohort_vals == g
+                        if mask.any():
+                            X_cov_demeaned[mask, j] -= X_cov[mask, j].mean()
+
+            interact_cols = []
+            interact_names = []
+            for i, gt_name in enumerate(int_col_names):
+                for j in range(X_cov_demeaned.shape[1]):
+                    interact_cols.append(X_int[:, i] * X_cov_demeaned[:, j])
+                    cov_label = cov_names_list[j] if j < len(cov_names_list) else f"cov{j}"
+                    interact_names.append(f"{gt_name}_x_{cov_label}")
+
+            if interact_cols:
+                X_interact = np.column_stack(interact_cols)
+                X_design = np.hstack([X_int, X_interact, X_cov])
+                all_regressors.extend(interact_names)
+            else:
+                X_design = np.hstack([X_int, X_cov])
             for i in range(X_cov.shape[1]):
                 all_regressors.append(f"_cov_{i}")
         else:
