@@ -347,7 +347,9 @@ class WooldridgeDiD:
             )
         if self.control_group == "not_yet_treated":
             # Verify at least some untreated comparison observations exist
-            has_untreated = (sample[cohort] == 0).any() or (sample[cohort] > sample[time]).any()
+            has_untreated = (sample[cohort] == 0).any() or (
+                (sample[cohort] - self.anticipation) > sample[time]
+            ).any()
             if not has_untreated:
                 raise ValueError(
                     "control_group='not_yet_treated' but no untreated comparison "
@@ -437,8 +439,10 @@ class WooldridgeDiD:
         """Count control units consistent with control_group setting."""
         n_never = int(sample[sample[cohort] == 0][unit].nunique())
         if self.control_group == "not_yet_treated":
-            # Also count future-treated units that contribute pre-treatment obs
-            nyt = sample[(sample[cohort] > 0) & (sample[time] < sample[cohort])][unit].nunique()
+            # Also count future-treated units that contribute pre-anticipation obs
+            nyt = sample[
+                (sample[cohort] > 0) & (sample[time] < sample[cohort] - self.anticipation)
+            ][unit].nunique()
             return n_never + int(nyt)
         return n_never
 

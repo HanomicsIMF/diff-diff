@@ -628,6 +628,40 @@ class TestAnticipation:
         min_t = min(t for (g, t) in keys)
         assert min_t == 2, f"Expected min t=2 with anticipation=1, got {min_t}"
 
+    def test_anticipation_aware_identification_rejects_pseudo_controls(self):
+        """When anticipation consumes all not-yet-treated controls, fit() must
+        raise ValueError rather than proceeding with an unidentified design."""
+        rows = []
+        # Single cohort g=2, times 1-3, no never-treated. With anticipation=1:
+        # cohort - anticipation = 1, so all obs have time >= cohort - anticipation.
+        # No untreated comparison observations remain.
+        for u in range(20):
+            for t in range(1, 4):
+                rows.append({"unit": u, "time": t, "cohort": 2, "y": float(u + t)})
+        df = pd.DataFrame(rows)
+        with pytest.raises(ValueError, match="no untreated comparison"):
+            WooldridgeDiD(anticipation=1, control_group="not_yet_treated").fit(
+                df, outcome="y", unit="unit", time="time", cohort="cohort"
+            )
+
+    def test_anticipation_aggregate_semantics(self):
+        """With anticipation > 0, aggregations should include anticipation cells
+        and produce finite results."""
+        rng = np.random.default_rng(42)
+        rows = []
+        for u in range(60):
+            cohort = 4 if u < 30 else 0
+            for t in range(1, 8):
+                y = rng.standard_normal() + (1.5 if cohort > 0 and t >= cohort else 0)
+                rows.append({"unit": u, "time": t, "cohort": cohort, "y": y})
+        df = pd.DataFrame(rows)
+        est = WooldridgeDiD(anticipation=1)
+        r = est.fit(df, outcome="y", unit="unit", time="time", cohort="cohort")
+        r.aggregate("event").aggregate("group").aggregate("simple")
+        assert np.isfinite(r.overall_att)
+        assert r.event_study_effects is not None
+        assert r.group_effects is not None
+
 
 class TestXgvarCovariates:
     def test_xgvar_fit_runs(self):
