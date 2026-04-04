@@ -355,21 +355,6 @@ class WooldridgeDiD:
                 f"Set n_bootstrap=0 for analytic SEs."
             )
 
-        # 0c. Reject covariates for nonlinear methods until ASF math is updated
-        # The ASF counterfactual computation must zero the full treatment block
-        # (cell indicator + cell × covariate interactions) when computing eta_0.
-        # Currently only the scalar cell effect is subtracted. TODO: implement
-        # the full interacted ASF for nonlinear methods.
-        has_covariates = any(v for v in [exovar, xtvar, xgvar] if v)
-        if has_covariates and self.method != "ols":
-            raise NotImplementedError(
-                f"Covariate-adjusted ETWFE is not yet supported for "
-                f"method={self.method!r}. The nonlinear ASF computation does "
-                f"not yet account for treatment × covariate interactions. "
-                f"Use method='ols' for covariate-adjusted estimation, or "
-                f"omit exovar/xtvar/xgvar for nonlinear methods."
-            )
-
         # 1. Filter to analysis sample
         sample = _filter_sample(df, unit, time, cohort, self.control_group, self.anticipation)
 
@@ -474,6 +459,7 @@ class WooldridgeDiD:
                 groups,
             )
         elif self.method == "logit":
+            n_cov_interact = X_cov.shape[1] if X_cov is not None else 0
             results = self._fit_logit(
                 sample,
                 outcome,
@@ -485,8 +471,10 @@ class WooldridgeDiD:
                 gt_keys,
                 int_col_names,
                 groups,
+                n_cov_interact=n_cov_interact,
             )
         else:  # poisson
+            n_cov_interact = X_cov.shape[1] if X_cov is not None else 0
             results = self._fit_poisson(
                 sample,
                 outcome,
@@ -498,6 +486,7 @@ class WooldridgeDiD:
                 gt_keys,
                 int_col_names,
                 groups,
+                n_cov_interact=n_cov_interact,
             )
 
         self._results = results
@@ -682,6 +671,7 @@ class WooldridgeDiD:
         gt_keys: List[Tuple],
         int_col_names: List[str],
         groups: List[Any],
+        n_cov_interact: int = 0,
     ) -> WooldridgeDiDResults:
         """Logit path: cohort + time additive FEs + solve_logit + ASF ATT.
 
@@ -765,17 +755,29 @@ class WooldridgeDiD:
             if np.isnan(delta):
                 continue
             eta_base = X_with_intercept[cell_mask] @ beta
-            # eta_base already contains the treatment effect (D_{g,t}=1 in cell).
-            # Counterfactual: eta_0 = eta_base - delta (treatment switched off).
-            # ATT = E[Λ(η_1)] - E[Λ(η_0)] = E[Λ(η_base)] - E[Λ(η_base - δ)]
-            eta_0 = eta_base - delta
+            # Counterfactual: zero the FULL treatment block for cell (g,t).
+            # This includes the scalar cell effect δ_{g,t} AND any cell ×
+            # covariate interaction effects ξ_{g,t,j} * x_hat_j (W2023 Eq. 3.15).
+            delta_total = np.full(cell_mask.sum(), float(delta))
+            for j in range(n_cov_interact):
+                coef_pos = 1 + n_int + idx * n_cov_interact + j
+                if coef_pos < len(beta):
+                    x_hat_j = X_with_intercept[cell_mask, coef_pos]
+                    delta_total = delta_total + beta[coef_pos] * x_hat_j
+            eta_0 = eta_base - delta_total
             att = float(np.mean(_logistic(eta_base) - _logistic(eta_0)))
             # Delta method gradient: d(ATT)/d(β)
-            #   for p ≠ int_idx: mean_i[(Λ'(η_1) - Λ'(η_0)) * X_p]
-            #   for p = int_idx: mean_i[Λ'(η_1)]
+            #   for nuisance p: mean_i[(Λ'(η_1) - Λ'(η_0)) * X_p]
+            #   for cell intercept: mean_i[Λ'(η_1)]
+            #   for cell × cov j: mean_i[Λ'(η_1) * x_hat_j]
             d_diff = _logistic_deriv(eta_base) - _logistic_deriv(eta_0)
             grad = np.mean(X_with_intercept[cell_mask] * d_diff[:, None], axis=0)
             grad[1 + idx] = float(np.mean(_logistic_deriv(eta_base)))
+            for j in range(n_cov_interact):
+                coef_pos = 1 + n_int + idx * n_cov_interact + j
+                if coef_pos < len(beta):
+                    x_hat_j = X_with_intercept[cell_mask, coef_pos]
+                    grad[coef_pos] = float(np.mean(_logistic_deriv(eta_base) * x_hat_j))
             # Compute SE in reduced parameter space if rank-deficient
             if np.any(nan_mask):
                 grad_r = grad[kept_beta]
@@ -857,6 +859,7 @@ class WooldridgeDiD:
         gt_keys: List[Tuple],
         int_col_names: List[str],
         groups: List[Any],
+        n_cov_interact: int = 0,
     ) -> WooldridgeDiDResults:
         """Poisson path: cohort + time additive FEs + solve_poisson + ASF ATT.
 
@@ -945,16 +948,29 @@ class WooldridgeDiD:
             if np.isnan(delta):
                 continue
             eta_base = np.clip(X_full[cell_mask] @ beta, -500, 500)
-            eta_0 = eta_base - delta
+            # Counterfactual: zero the FULL treatment block (W2023 Eq. 3.15)
+            delta_total = np.full(cell_mask.sum(), float(delta))
+            for j in range(n_cov_interact):
+                coef_pos = 1 + n_int + idx * n_cov_interact + j
+                if coef_pos < len(beta):
+                    x_hat_j = X_full[cell_mask, coef_pos]
+                    delta_total = delta_total + beta[coef_pos] * x_hat_j
+            eta_0 = eta_base - delta_total
             mu_1 = np.exp(eta_base)
             mu_0 = np.exp(eta_0)
             att = float(np.mean(mu_1 - mu_0))
             # Delta method gradient:
-            #   for p ≠ int_idx: mean_i[(μ_1 - μ_0) * X_p]
-            #   for p = int_idx: mean_i[μ_1]
+            #   for nuisance p: mean_i[(μ_1 - μ_0) * X_p]
+            #   for cell intercept: mean_i[μ_1]
+            #   for cell × cov j: mean_i[μ_1 * x_hat_j]
             diff_mu = mu_1 - mu_0
             grad = np.mean(X_full[cell_mask] * diff_mu[:, None], axis=0)
             grad[1 + idx] = float(np.mean(mu_1))
+            for j in range(n_cov_interact):
+                coef_pos = 1 + n_int + idx * n_cov_interact + j
+                if coef_pos < len(beta):
+                    x_hat_j = X_full[cell_mask, coef_pos]
+                    grad[coef_pos] = float(np.mean(mu_1 * x_hat_j))
             # Compute SE in reduced parameter space if rank-deficient
             if np.any(nan_mask):
                 grad_r = grad[kept_beta]

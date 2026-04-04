@@ -940,21 +940,43 @@ class TestNonlinearRankDeficiency:
             assert np.isfinite(cell["se"]), "SE should be finite for estimable cells"
             assert cell["se"] >= 0
 
-    def test_nonlinear_covariates_rejected(self):
-        """Covariates for nonlinear methods should raise NotImplementedError."""
-        df = pd.DataFrame(
-            {
-                "unit": [1, 1, 2, 2],
-                "time": [1, 2, 1, 2],
-                "cohort": [2, 2, 0, 0],
-                "y": [1.0, 0.0, 0.0, 1.0],
-                "x1": [0.5, 0.3, 0.1, 0.2],
-            }
-        )
-        with pytest.raises(NotImplementedError, match="not yet supported"):
-            WooldridgeDiD(method="logit").fit(
-                df, outcome="y", unit="unit", time="time", cohort="cohort", exovar=["x1"]
-            )
+    def test_logit_with_covariates(self):
+        """Logit with covariates should produce finite ATT/SE."""
+        rng = np.random.default_rng(42)
+        rows = []
+        for u in range(60):
+            cohort = 3 if u < 30 else 0
+            x1 = rng.standard_normal()
+            for t in range(1, 6):
+                treated = int(cohort > 0 and t >= cohort)
+                eta = -0.5 + 1.0 * treated + 0.3 * x1 + 0.1 * rng.standard_normal()
+                y = int(rng.random() < 1 / (1 + np.exp(-eta)))
+                rows.append({"unit": u, "time": t, "cohort": cohort, "y": y, "x1": x1})
+        df = pd.DataFrame(rows)
+        est = WooldridgeDiD(method="logit")
+        r = est.fit(df, outcome="y", unit="unit", time="time", cohort="cohort", exovar=["x1"])
+        assert np.isfinite(r.overall_att)
+        assert np.isfinite(r.overall_se)
+        assert r.overall_se > 0
+
+    def test_poisson_with_covariates(self):
+        """Poisson with covariates should produce finite ATT/SE."""
+        rng = np.random.default_rng(7)
+        rows = []
+        for u in range(60):
+            cohort = 3 if u < 30 else 0
+            x1 = rng.standard_normal()
+            for t in range(1, 6):
+                treated = int(cohort > 0 and t >= cohort)
+                mu = np.exp(0.5 + 0.8 * treated + 0.2 * x1 + 0.1 * rng.standard_normal())
+                y = rng.poisson(mu)
+                rows.append({"unit": u, "time": t, "cohort": cohort, "y": float(y), "x1": x1})
+        df = pd.DataFrame(rows)
+        est = WooldridgeDiD(method="poisson")
+        r = est.fit(df, outcome="y", unit="unit", time="time", cohort="cohort", exovar=["x1"])
+        assert np.isfinite(r.overall_att)
+        assert np.isfinite(r.overall_se)
+        assert r.overall_se > 0
 
 
 class TestCohortTimeInvariance:

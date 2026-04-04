@@ -76,7 +76,6 @@ Deferred items from PR reviews that were not addressed before merge.
 | WooldridgeDiD: aggregation weights use cell-level n_{g,t} counts. Paper (W2025 Eqs. 7.2-7.4) defines cohort-share weights. Add optional `weights="cohort_share"` parameter to `aggregate()`. | `wooldridge_results.py` | #216 | Medium |
 | WooldridgeDiD: canonical link requirement (W2023 Prop 3.1) not enforced — no warning if user applies wrong method to outcome type. Estimator is consistent regardless, but equivalence with imputation breaks. | `wooldridge.py` | #216 | Low |
 | WooldridgeDiD: Stata `jwdid` golden value tests — add R/Stata reference script and `TestReferenceValues` class. | `tests/test_wooldridge.py` | #216 | Medium |
-| WooldridgeDiD: covariate-adjusted nonlinear ASF — implement full interacted counterfactual for logit/Poisson (zero entire treatment block in eta_0, not just scalar delta). Currently rejected with NotImplementedError. | `wooldridge.py` | #216 | Medium |
 
 #### Performance
 
