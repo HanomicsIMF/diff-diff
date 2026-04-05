@@ -1137,8 +1137,9 @@ def _rank_pair_weights(
 ) -> None:
     """Rank-pair weights with Y(0) within each stratum (in-place).
 
-    High-outcome units receive lower weights, modeling informative sampling
-    where hard-to-reach (high-outcome) subpopulations are under-covered.
+    High-outcome units receive higher weights, modeling informative sampling
+    where hard-to-reach (high-outcome) subpopulations are under-covered
+    and therefore carry larger inverse-selection-probability weights.
     """
     for s in range(n_strata):
         mask = unit_stratum == s
@@ -1148,14 +1149,14 @@ def _rank_pair_weights(
         idx_s = np.where(mask)[0]
         w_vals = unit_weight[idx_s].copy()
         if w_vals.std() < 1e-10:
-            # No weight variation: create inverse-rank weights, mean=1
-            ranks = np.argsort(np.argsort(y0[idx_s]))
-            inv_rank = (n_s - ranks).astype(float)
-            unit_weight[idx_s] = inv_rank / inv_rank.mean()
+            # No weight variation: create rank-based weights, mean=1
+            # Higher Y(0) → higher rank → heavier weight
+            ranks = np.argsort(np.argsort(y0[idx_s])).astype(float) + 1.0
+            unit_weight[idx_s] = ranks / ranks.mean()
         else:
-            # Rank-pair: highest Y(0) gets lightest weight
+            # Rank-pair: highest Y(0) gets heaviest weight
             y0_order = np.argsort(-y0[idx_s])
-            w_sorted = np.sort(w_vals)
+            w_sorted = np.sort(w_vals)[::-1]  # heaviest first
             unit_weight[idx_s[y0_order]] = w_sorted
 
 
@@ -1365,8 +1366,10 @@ def generate_survey_did_data(
             )
 
     if weight_cv is not None:
-        if weight_cv <= 0:
-            raise ValueError(f"weight_cv must be positive, got {weight_cv}")
+        if not np.isfinite(weight_cv) or weight_cv <= 0:
+            raise ValueError(
+                f"weight_cv must be finite and positive, got {weight_cv}"
+            )
         if weight_variation != "moderate":
             raise ValueError(
                 "Cannot specify both weight_cv and a non-default "
@@ -1615,10 +1618,19 @@ def generate_survey_did_data(
         cv_w = float(w_all.std() / w_all.mean()) if w_all.mean() > 0 else 0.0
         deff_kish = 1 + cv_w**2
 
-        # Realized ICC (between-PSU / total variance ratio)
-        psu_means = df.groupby("psu")["outcome"].mean()
-        total_var = df["outcome"].var()
-        icc_realized = float(psu_means.var() / total_var) if total_var > 0 else 0.0
+        # Realized ICC (ANOVA-based, period-1 only to avoid TE contamination)
+        _p1 = df[df["period"] == 1]
+        _groups = _p1.groupby("psu")["outcome"]
+        _n_total = len(_p1)
+        _n_groups = _groups.ngroups
+        _n_bar = _n_total / _n_groups
+        _grand_mean = _p1["outcome"].mean()
+        _ssb = (_groups.size() * (_groups.mean() - _grand_mean) ** 2).sum()
+        _msb = _ssb / max(_n_groups - 1, 1)
+        _ssw = _groups.apply(lambda x: ((x - x.mean()) ** 2).sum()).sum()
+        _msw = _ssw / max(_n_total - _n_groups, 1)
+        _denom = _msb + (_n_bar - 1) * _msw
+        icc_realized = float((_msb - _msw) / _denom) if _denom > 0 else 0.0
 
         df.attrs["dgp_truth"] = {
             "population_att": population_att,

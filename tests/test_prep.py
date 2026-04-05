@@ -1568,6 +1568,15 @@ class TestSurveyDGPResearchGrade:
                 weight_cv=0.5, weight_variation="high", seed=42
             )
 
+    def test_weight_cv_nan_inf(self):
+        """weight_cv must reject NaN and Inf."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="weight_cv must be finite"):
+            generate_survey_did_data(weight_cv=np.nan, seed=42)
+        with pytest.raises(ValueError, match="weight_cv must be finite"):
+            generate_survey_did_data(weight_cv=np.inf, seed=42)
+
     def test_informative_sampling_panel(self):
         """Informative sampling should create weight-outcome correlation."""
         from diff_diff.prep_dgp import generate_survey_did_data
@@ -1585,7 +1594,11 @@ class TestSurveyDGPResearchGrade:
         assert abs(wt_mean - unwt_mean) > 0.1
 
     def test_informative_sampling_cross_section(self):
-        """Cross-section informative sampling: per-period negative correlation."""
+        """Cross-section informative sampling: per-period positive correlation.
+
+        Under w_i = 1/pi_i, under-covered (high-outcome) units get heavier
+        weights, so weight and outcome should be positively correlated.
+        """
         from diff_diff.prep_dgp import generate_survey_did_data
 
         df = generate_survey_did_data(
@@ -1598,7 +1611,7 @@ class TestSurveyDGPResearchGrade:
         # Check correlation for period 1
         p1 = df[df["period"] == 1]
         corr = np.corrcoef(p1["weight"], p1["outcome"])[0, 1]
-        assert corr < -0.1
+        assert corr > 0.1
 
     def test_heterogeneous_te_by_strata(self):
         """Unweighted mean TE should differ from population ATT."""
@@ -1638,7 +1651,8 @@ class TestSurveyDGPResearchGrade:
         from diff_diff.prep_dgp import generate_survey_did_data
 
         df = generate_survey_did_data(
-            n_units=200,
+            n_units=1000,
+            icc=0.3,
             return_true_population_att=True,
             seed=42,
         )
@@ -1649,6 +1663,8 @@ class TestSurveyDGPResearchGrade:
         assert "icc_realized" in truth
         assert truth["deff_kish"] >= 1.0
         assert truth["icc_realized"] >= 0.0
+        # icc_realized should track the target ICC (ANOVA-based, same formula)
+        assert abs(truth["icc_realized"] - 0.3) / 0.3 < 0.50
 
     def test_strata_sizes(self):
         """Custom strata_sizes should produce correct per-stratum counts."""
