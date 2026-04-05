@@ -1129,6 +1129,37 @@ def generate_staggered_ddd_data(
     return pd.DataFrame(records)
 
 
+def _rank_pair_weights(
+    unit_weight: np.ndarray,
+    unit_stratum: np.ndarray,
+    y0: np.ndarray,
+    n_strata: int,
+) -> None:
+    """Rank-pair weights with Y(0) within each stratum (in-place).
+
+    High-outcome units receive higher weights, modeling informative sampling
+    where hard-to-reach (high-outcome) subpopulations are under-covered
+    and therefore carry larger inverse-selection-probability weights.
+    """
+    for s in range(n_strata):
+        mask = unit_stratum == s
+        n_s = mask.sum()
+        if n_s <= 1:
+            continue
+        idx_s = np.where(mask)[0]
+        w_vals = unit_weight[idx_s].copy()
+        if w_vals.std() < 1e-10:
+            # No within-stratum variation: create rank-based weights
+            # scaled to preserve stratum baseline weight level
+            ranks = np.argsort(np.argsort(y0[idx_s])).astype(float) + 1.0
+            unit_weight[idx_s] = ranks / ranks.mean() * w_vals.mean()
+        else:
+            # Rank-pair: highest Y(0) gets heaviest weight
+            y0_order = np.argsort(-y0[idx_s])
+            w_sorted = np.sort(w_vals)[::-1]  # heaviest first
+            unit_weight[idx_s[y0_order]] = w_sorted
+
+
 def generate_survey_did_data(
     n_units: int = 200,
     n_periods: int = 8,
@@ -1149,6 +1180,15 @@ def generate_survey_did_data(
     add_covariates: bool = False,
     panel: bool = True,
     seed: Optional[int] = None,
+    # --- Research-grade DGP parameters ---
+    icc: Optional[float] = None,
+    weight_cv: Optional[float] = None,
+    informative_sampling: bool = False,
+    heterogeneous_te_by_strata: bool = False,
+    strata_sizes: Optional[List[int]] = None,
+    return_true_population_att: bool = False,
+    covariate_effects: Optional[tuple] = None,
+    te_covariate_interaction: float = 0.0,
 ) -> pd.DataFrame:
     """
     Generate synthetic staggered DiD data with survey structure.
@@ -1215,6 +1255,52 @@ def generate_survey_did_data(
         CallawaySantAnna(panel=False)).
     seed : int, optional
         Random seed for reproducibility.
+    icc : float, optional
+        Target intra-class correlation coefficient (0 < icc < 1). Overrides
+        ``psu_re_sd`` via the variance decomposition:
+        ``psu_re_sd = sqrt(icc * (sigma2_unit + sigma2_noise + sigma2_cov) /
+        ((1 - icc) * (1 + psu_period_factor^2)))`` where ``sigma2_cov``
+        includes covariate variance when ``add_covariates=True``.
+        Cannot be combined with a non-default ``psu_re_sd``.
+    weight_cv : float, optional
+        Target coefficient of variation for sampling weights. Generates
+        LogNormal weights normalized to mean 1, bypassing ``weight_variation``.
+        Cannot be combined with a non-default ``weight_variation``.
+    informative_sampling : bool, default=False
+        If True, sampling weights correlate with Y(0) — high-outcome units
+        receive higher weights (under-coverage → larger inverse-selection-
+        probability weights). Uses rank-pairing within each stratum. For
+        panel data, ranking is done once from period-1 outcomes. For
+        repeated cross-sections, ranking is refreshed each period. Within
+        each stratum, rank-based weights are scaled to preserve the
+        stratum's baseline weight level from ``weight_variation``.
+        When ``add_covariates=True``, covariate contributions are
+        included in the Y(0) ranking.
+    heterogeneous_te_by_strata : bool, default=False
+        If True, treatment effect varies by stratum:
+        ``TE_h = TE * (1 + 0.5 * (h - mean) / std)``. Creates a gap
+        between unweighted and population ATT. With ``n_strata=1``,
+        all units receive the base ``treatment_effect``.
+    strata_sizes : list of int, optional
+        Custom per-stratum unit counts. Must have length ``n_strata`` and
+        sum to ``n_units``. Replaces equal allocation across strata.
+    return_true_population_att : bool, default=False
+        If True, attaches a diagnostic dict to ``df.attrs["dgp_truth"]``
+        with keys: ``population_att`` (weight-weighted average of treated
+        true effects), ``deff_kish`` (1 + CV(w)^2), ``base_stratum_effects``
+        (base stratum TEs before dynamic/covariate modifiers),
+        ``icc_realized`` (ANOVA-based
+        ICC computed on period-1 data).
+    covariate_effects : tuple of (float, float), optional
+        Coefficients ``(beta1, beta2)`` for covariates x1 and x2 in the
+        outcome equation ``y += beta1 * x1 + beta2 * x2``. Default uses
+        ``(0.5, 0.3)``. Only used when ``add_covariates=True``. The ICC
+        calibration automatically adjusts for the implied covariate variance.
+    te_covariate_interaction : float, default=0.0
+        Coefficient for treatment-by-covariate interaction:
+        ``TE_i = base_TE + te_covariate_interaction * x1_i``. Creates
+        unit-level treatment effect heterogeneity driven by the continuous
+        covariate. Requires ``add_covariates=True``.
 
     Returns
     -------
@@ -1222,6 +1308,8 @@ def generate_survey_did_data(
         Columns: unit, period, outcome, first_treat, treated, true_effect,
         stratum, psu, fpc, weight. Also rep_0..rep_K if
         include_replicate_weights=True, and x1, x2 if add_covariates=True.
+        If ``return_true_population_att=True``, ``df.attrs["dgp_truth"]``
+        contains DGP diagnostics.
     """
     rng = np.random.default_rng(seed)
 
@@ -1284,30 +1372,120 @@ def generate_survey_did_data(
             f"weight_variation must be one of {valid_wv}, got {weight_variation!r}"
         )
 
+    # --- Validate research-grade DGP parameters ---
+    if icc is not None:
+        if not (0 < icc < 1):
+            raise ValueError(f"icc must be between 0 and 1 (exclusive), got {icc}")
+        if psu_re_sd != 2.0:
+            raise ValueError(
+                "Cannot specify both icc and a non-default psu_re_sd. "
+                "icc overrides psu_re_sd via the ICC formula."
+            )
+
+    if weight_cv is not None:
+        if not np.isfinite(weight_cv) or weight_cv <= 0:
+            raise ValueError(
+                f"weight_cv must be finite and positive, got {weight_cv}"
+            )
+        if weight_variation != "moderate":
+            raise ValueError(
+                "Cannot specify both weight_cv and a non-default "
+                "weight_variation. weight_cv overrides weight_variation."
+            )
+
+    if strata_sizes is not None:
+        strata_sizes = list(strata_sizes)
+        for ss in strata_sizes:
+            if isinstance(ss, bool) or not isinstance(ss, (int, np.integer)):
+                raise ValueError(
+                    f"strata_sizes must contain integers, got {ss!r}"
+                )
+        if len(strata_sizes) != n_strata:
+            raise ValueError(
+                f"strata_sizes must have length n_strata={n_strata}, "
+                f"got {len(strata_sizes)}"
+            )
+        if any(s < 1 for s in strata_sizes):
+            raise ValueError("All strata_sizes must be >= 1")
+        if sum(strata_sizes) != n_units:
+            raise ValueError(
+                f"strata_sizes must sum to n_units={n_units}, "
+                f"got {sum(strata_sizes)}"
+            )
+
+    # --- Validate and resolve covariate coefficients ---
+    if covariate_effects is not None:
+        covariate_effects = tuple(covariate_effects)
+        if len(covariate_effects) != 2:
+            raise ValueError(
+                f"covariate_effects must have length 2, got {len(covariate_effects)}"
+            )
+        if not all(np.isfinite(c) for c in covariate_effects):
+            raise ValueError(
+                f"covariate_effects must be finite, got {covariate_effects}"
+            )
+    _beta1, _beta2 = covariate_effects if covariate_effects is not None else (0.5, 0.3)
+
+    if not np.isfinite(te_covariate_interaction):
+        raise ValueError(
+            f"te_covariate_interaction must be finite, got {te_covariate_interaction}"
+        )
+    if te_covariate_interaction != 0.0 and not add_covariates:
+        raise ValueError(
+            "te_covariate_interaction requires add_covariates=True"
+        )
+
+    # --- ICC -> psu_re_sd resolution ---
+    if icc is not None:
+        # Covariate variance: Var(beta1*x1) + Var(beta2*x2)
+        # where x1 ~ N(0,1), x2 ~ Bernoulli(0.5)
+        cov_var = (_beta1**2 * 1.0 + _beta2**2 * 0.25) if add_covariates else 0.0
+        non_psu_var = unit_fe_sd**2 + noise_sd**2 + cov_var
+        if non_psu_var < 1e-12:
+            raise ValueError(
+                "icc requires non-zero non-PSU variance "
+                "(unit_fe_sd, noise_sd, or add_covariates must contribute variance)"
+            )
+        psu_re_sd = np.sqrt(
+            icc * non_psu_var
+            / ((1 - icc) * (1 + psu_period_factor**2))
+        )
+
     # --- Survey structure: assign units to strata and PSUs ---
     n_psu_total = n_strata * psu_per_stratum
-    units_per_stratum = n_units // n_strata
-    remainder = n_units % n_strata
+
+    if strata_sizes is not None:
+        stratum_n = strata_sizes
+    else:
+        units_per_stratum = n_units // n_strata
+        remainder = n_units % n_strata
+        stratum_n = [
+            units_per_stratum + (1 if s < remainder else 0)
+            for s in range(n_strata)
+        ]
 
     unit_stratum = np.empty(n_units, dtype=int)
     unit_psu = np.empty(n_units, dtype=int)
     idx = 0
     for s in range(n_strata):
-        # Distribute remainder units across first strata
-        n_s = units_per_stratum + (1 if s < remainder else 0)
+        n_s = stratum_n[s]
         unit_stratum[idx : idx + n_s] = s
-
-        # Assign PSUs within this stratum
         psu_start = s * psu_per_stratum
         for j in range(n_s):
             unit_psu[idx + j] = psu_start + (j % psu_per_stratum)
         idx += n_s
 
-    # Sampling weights: vary by stratum (inverse selection probability)
-    scale_map = {"none": 0.0, "moderate": 1.0, "high": 3.0}
-    scale = scale_map.get(weight_variation, 1.0)
-    denom = max(n_strata - 1, 1)
-    unit_weight = 1.0 + scale * (unit_stratum / denom)
+    # Sampling weights
+    if weight_cv is not None:
+        sigma_ln = np.sqrt(np.log(1 + weight_cv**2))
+        raw_w = rng.lognormal(-sigma_ln**2 / 2, sigma_ln, size=n_units)
+        unit_weight = raw_w / raw_w.mean()
+    else:
+        # Stratum-based weights (inverse selection probability)
+        scale_map = {"none": 0.0, "moderate": 1.0, "high": 3.0}
+        scale = scale_map.get(weight_variation, 1.0)
+        denom = max(n_strata - 1, 1)
+        unit_weight = 1.0 + scale * (unit_stratum / denom)
 
     # --- Treatment assignment (cohort structure) ---
     n_never = int(n_units * never_treated_frac)
@@ -1344,6 +1522,37 @@ def generate_survey_did_data(
         0, psu_re_sd * psu_period_factor, size=(n_psu_total, n_periods)
     )
 
+    # --- Informative sampling (panel path): pre-draw FEs, rank-pair weights ---
+    if informative_sampling and panel:
+        _panel_unit_fe = rng.normal(0, unit_fe_sd, size=n_units)
+        y0_period1 = (
+            _panel_unit_fe
+            + psu_re[unit_psu]
+            + psu_period_re[unit_psu, 0]
+            + 0.5
+        )
+        if add_covariates:
+            _panel_x1 = rng.normal(0, 1, size=n_units)
+            _panel_x2 = rng.choice([0, 1], size=n_units)
+            y0_period1 = y0_period1 + _beta1 * _panel_x1 + _beta2 * _panel_x2
+        _rank_pair_weights(unit_weight, unit_stratum, y0_period1, n_strata)
+
+    # Save base weights for cross-section informative sampling (reset each period)
+    if informative_sampling and not panel:
+        _base_weight = unit_weight.copy()
+
+    # --- Heterogeneous treatment effects by stratum ---
+    if heterogeneous_te_by_strata:
+        if n_strata == 1:
+            te_by_stratum = np.array([treatment_effect])
+        else:
+            strata_idx = np.arange(n_strata, dtype=float)
+            te_by_stratum = treatment_effect * (
+                1 + 0.5 * (strata_idx - strata_idx.mean()) / strata_idx.std()
+            )
+    else:
+        te_by_stratum = None
+
     # --- Generate panel or repeated cross-sections ---
     records = []
     for t in range(1, n_periods + 1):
@@ -1351,21 +1560,47 @@ def generate_survey_did_data(
         unit_fe = rng.normal(0, unit_fe_sd, size=n_units)
         if panel and t > 1:
             pass  # reuse unit_fe from first period (set below)
-        if panel and t == 1:
+        if informative_sampling and panel:
+            unit_fe = _panel_unit_fe  # use pre-drawn FEs
+        elif panel and t == 1:
             _panel_unit_fe = unit_fe  # save for reuse
-        if panel and t > 1:
+        elif panel and t > 1:
             unit_fe = _panel_unit_fe  # type: ignore[possibly-undefined]
 
-        x1 = rng.normal(0, 1, size=n_units) if add_covariates else None
-        if panel and t > 1 and add_covariates:
-            x1 = _panel_x1  # type: ignore[possibly-undefined]
-        elif panel and t == 1 and add_covariates:
-            _panel_x1 = x1
+        # Cross-section informative sampling: re-rank weights each period
+        if informative_sampling and not panel:
+            # Draw covariates early so they can be included in Y(0) ranking
+            if add_covariates:
+                x1 = rng.normal(0, 1, size=n_units)
+                x2 = rng.choice([0, 1], size=n_units)
+            unit_weight = _base_weight.copy()  # type: ignore[possibly-undefined]
+            y0_t = (
+                unit_fe
+                + psu_re[unit_psu]
+                + psu_period_re[unit_psu, t - 1]
+                + 0.5 * t
+            )
+            if add_covariates:
+                y0_t = y0_t + _beta1 * x1 + _beta2 * x2
+            _rank_pair_weights(unit_weight, unit_stratum, y0_t, n_strata)
 
-        x2 = rng.choice([0, 1], size=n_units) if add_covariates else None
-        if panel and t > 1 and add_covariates:
+        # Covariates — may already be drawn by informative sampling above
+        if informative_sampling and panel and add_covariates:
+            x1 = _panel_x1  # pre-drawn before loop for ranking
+            x2 = _panel_x2
+        elif informative_sampling and not panel and add_covariates:
+            pass  # x1, x2 already drawn in cross-section ranking block
+        elif add_covariates:
+            x1 = rng.normal(0, 1, size=n_units)
+            x2 = rng.choice([0, 1], size=n_units)
+        else:
+            x1 = None
+            x2 = None
+        if not informative_sampling and panel and t > 1 and add_covariates:
+            x1 = _panel_x1  # type: ignore[possibly-undefined]
             x2 = _panel_x2  # type: ignore[possibly-undefined]
-        elif panel and t == 1 and add_covariates:
+        elif not informative_sampling and panel and t == 1 and add_covariates:
+            _panel_x1 = x1
             _panel_x2 = x2
 
         for i in range(n_units):
@@ -1374,12 +1609,17 @@ def generate_survey_did_data(
             y = unit_fe[i] + psu_re[unit_psu[i]] + psu_period_re[unit_psu[i], t - 1] + 0.5 * t
 
             if add_covariates:
-                y += 0.5 * x1[i] + 0.3 * x2[i]
+                y += _beta1 * x1[i] + _beta2 * x2[i]
 
             treated = int(g_i > 0 and t >= g_i)
             true_eff = 0.0
             if treated:
-                true_eff = treatment_effect
+                if te_by_stratum is not None:
+                    true_eff = float(te_by_stratum[unit_stratum[i]])
+                else:
+                    true_eff = treatment_effect
+                if te_covariate_interaction != 0.0:
+                    true_eff += te_covariate_interaction * x1[i]
                 if dynamic_effects:
                     true_eff *= 1 + effect_growth * (t - g_i)
                 y += true_eff
@@ -1425,5 +1665,54 @@ def generate_survey_did_data(
             # Rescale remaining: k/(k-1) for JK1
             w_r[w_r > 0] *= n_rep / (n_rep - 1)
             df[f"rep_{r}"] = w_r
+
+    # --- DGP truth diagnostics ---
+    if return_true_population_att:
+        treated_mask = df["treated"] == 1
+        if treated_mask.any():
+            w_treated = df.loc[treated_mask, "weight"].values
+            te_treated = df.loc[treated_mask, "true_effect"].values
+            population_att = float(np.average(te_treated, weights=w_treated))
+        else:
+            population_att = float("nan")
+
+        if te_by_stratum is not None:
+            stratum_effects = {
+                int(s): float(te_by_stratum[s]) for s in range(n_strata)
+            }
+        else:
+            stratum_effects = {
+                int(s): float(treatment_effect) for s in range(n_strata)
+            }
+
+        # Kish DEFF from weight variation
+        w_all = df.groupby("unit")["weight"].first().values
+        cv_w = float(w_all.std() / w_all.mean()) if w_all.mean() > 0 else 0.0
+        deff_kish = 1 + cv_w**2
+
+        # Realized ICC (ANOVA-based, period-1 only to avoid TE contamination)
+        _p1 = df[df["period"] == 1]
+        _groups = _p1.groupby("psu")["outcome"]
+        _n_total = len(_p1)
+        _n_groups = _groups.ngroups
+        # ICC undefined with < 2 groups or no within-group replication
+        if _n_groups < 2 or _n_total <= _n_groups:
+            icc_realized = float("nan")
+        else:
+            _n_bar = _n_total / _n_groups
+            _grand_mean = _p1["outcome"].mean()
+            _ssb = (_groups.size() * (_groups.mean() - _grand_mean) ** 2).sum()
+            _msb = _ssb / (_n_groups - 1)
+            _ssw = _groups.apply(lambda x: ((x - x.mean()) ** 2).sum()).sum()
+            _msw = _ssw / (_n_total - _n_groups)
+            _denom = _msb + (_n_bar - 1) * _msw
+            icc_realized = float((_msb - _msw) / _denom) if _denom > 0 else float("nan")
+
+        df.attrs["dgp_truth"] = {
+            "population_att": population_att,
+            "deff_kish": float(deff_kish),
+            "base_stratum_effects": stratum_effects,
+            "icc_realized": icc_realized,
+        }
 
     return df

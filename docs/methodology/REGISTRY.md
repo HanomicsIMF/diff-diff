@@ -2515,6 +2515,19 @@ The 8-step workflow in `docs/llms-practitioner.txt` is adapted from Baker et al.
   covariates). Paper's Step 8 is "Keep learning." The mandatory with/without covariate
   comparison is a diff-diff convention.
 
+### Survey DGP (`generate_survey_did_data`)
+
+- **Note:** The `icc` parameter calibrates `psu_re_sd` using the full variance
+  decomposition `Var(Y) = sigma²_psu * (1 + psu_period_factor²) + sigma²_unit +
+  sigma²_noise + sigma²_cov`. When `add_covariates=True`, covariate variance
+  `sigma²_cov = beta1² * Var(x1) + beta2² * Var(x2)` is included, where
+  `(beta1, beta2)` defaults to `(0.5, 0.3)` but is configurable via
+  `covariate_effects`.
+- **Note:** When `informative_sampling=True` and `add_covariates=True`, covariate
+  contributions are included in the Y(0) ranking used for weight assignment.
+  Covariates are pre-drawn before the ranking step (panel: once before the loop;
+  cross-section: each period) and reused in the outcome generation.
+
 ---
 
 # Version History

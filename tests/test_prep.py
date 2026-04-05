@@ -1504,3 +1504,448 @@ class TestGenerateSurveyDidData:
             generate_survey_did_data(psu_period_factor=math.nan, seed=42)
         with pytest.raises(ValueError, match="psu_period_factor"):
             generate_survey_did_data(psu_period_factor=math.inf, seed=42)
+
+
+class TestSurveyDGPResearchGrade:
+    """Tests for research-grade DGP parameters added to generate_survey_did_data."""
+
+    def test_icc_parameter(self):
+        """Realized ICC should be within 50% relative tolerance of target."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        target_icc = 0.3
+        df = generate_survey_did_data(
+            n_units=1000, icc=target_icc, seed=42
+        )
+        # ANOVA-based ICC on period 1 (pre-treatment, no TE contamination)
+        p1 = df[df["period"] == 1]
+        groups = p1.groupby("psu")["outcome"]
+        grand_mean = p1["outcome"].mean()
+        n_total = len(p1)
+        n_groups = groups.ngroups
+        n_bar = n_total / n_groups
+        ssb = (groups.size() * (groups.mean() - grand_mean) ** 2).sum()
+        msb = ssb / (n_groups - 1)
+        ssw = groups.apply(lambda x: ((x - x.mean()) ** 2).sum()).sum()
+        msw = ssw / (n_total - n_groups)
+        realized_icc = (msb - msw) / (msb + (n_bar - 1) * msw)
+        assert abs(realized_icc - target_icc) / target_icc < 0.50
+
+    def test_icc_zero_variance_rejected(self):
+        """icc with zero non-PSU variance should raise ValueError."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="non-zero non-PSU variance"):
+            generate_survey_did_data(
+                icc=0.3, unit_fe_sd=0, noise_sd=0, add_covariates=False, seed=42
+            )
+
+    def test_icc_and_psu_re_sd_conflict(self):
+        """Cannot specify both icc and a non-default psu_re_sd."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="Cannot specify both icc"):
+            generate_survey_did_data(icc=0.3, psu_re_sd=3.0, seed=42)
+
+    def test_icc_out_of_range(self):
+        """icc must be in (0, 1)."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="icc must be between"):
+            generate_survey_did_data(icc=0.0, seed=42)
+        with pytest.raises(ValueError, match="icc must be between"):
+            generate_survey_did_data(icc=1.0, seed=42)
+
+    def test_weight_cv_parameter(self):
+        """Realized weight CV should be within 0.15 of target."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        target_cv = 0.5
+        df = generate_survey_did_data(
+            n_units=1000, weight_cv=target_cv, seed=42
+        )
+        weights = df.groupby("unit")["weight"].first().values
+        realized_cv = weights.std() / weights.mean()
+        assert abs(realized_cv - target_cv) < 0.15
+
+    def test_weight_cv_and_weight_variation_conflict(self):
+        """Cannot specify both weight_cv and a non-default weight_variation."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="Cannot specify both weight_cv"):
+            generate_survey_did_data(
+                weight_cv=0.5, weight_variation="high", seed=42
+            )
+
+    def test_weight_cv_nan_inf(self):
+        """weight_cv must reject NaN and Inf."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="weight_cv must be finite"):
+            generate_survey_did_data(weight_cv=np.nan, seed=42)
+        with pytest.raises(ValueError, match="weight_cv must be finite"):
+            generate_survey_did_data(weight_cv=np.inf, seed=42)
+
+    def test_informative_sampling_panel(self):
+        """Informative sampling should create weight-outcome correlation."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            informative_sampling=True,
+            weight_cv=0.5,
+            seed=42,
+        )
+        # Period-1 outcomes: weighted mean should differ from unweighted
+        p1 = df[df["period"] == 1]
+        unwt_mean = p1["outcome"].mean()
+        wt_mean = np.average(p1["outcome"], weights=p1["weight"])
+        assert abs(wt_mean - unwt_mean) > 0.1
+        # Positive correlation: higher outcome → heavier weight
+        corr = np.corrcoef(p1["weight"], p1["outcome"])[0, 1]
+        assert corr > 0.1
+
+    def test_informative_sampling_default_weights(self):
+        """Informative sampling preserves stratum-level weight structure."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        # Generate with informative_sampling but default weight_variation
+        df = generate_survey_did_data(
+            n_units=1000,
+            informative_sampling=True,
+            seed=42,
+        )
+        # Reference: expected stratum mean weights from weight_variation="moderate"
+        # Formula: 1.0 + 1.0 * (s / max(n_strata-1, 1)) for s=0..4
+        p1 = df[df["period"] == 1]
+        for s in range(5):
+            expected_mean = 1.0 + 1.0 * (s / 4)
+            stratum_weights = p1.loc[p1["stratum"] == s, "weight"]
+            assert abs(stratum_weights.mean() - expected_mean) < 0.15, (
+                f"Stratum {s}: expected mean ~{expected_mean}, "
+                f"got {stratum_weights.mean():.3f}"
+            )
+            # Within-stratum variation should exist (informative sampling)
+            assert stratum_weights.std() > 0.01
+
+    def test_informative_sampling_cross_section(self):
+        """Cross-section informative sampling: per-period positive correlation.
+
+        Under w_i = 1/pi_i, under-covered (high-outcome) units get heavier
+        weights, so weight and outcome should be positively correlated.
+        """
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            informative_sampling=True,
+            weight_cv=0.5,
+            panel=False,
+            seed=42,
+        )
+        # Check correlation for period 1
+        p1 = df[df["period"] == 1]
+        corr = np.corrcoef(p1["weight"], p1["outcome"])[0, 1]
+        assert corr > 0.1
+
+    def test_informative_sampling_cross_section_default_weights(self):
+        """Cross-section informative sampling with default weight_variation."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            informative_sampling=True,
+            panel=False,
+            seed=42,
+        )
+        p1 = df[df["period"] == 1]
+        for s in range(5):
+            expected_mean = 1.0 + 1.0 * (s / 4)
+            stratum_weights = p1.loc[p1["stratum"] == s, "weight"]
+            assert abs(stratum_weights.mean() - expected_mean) < 0.15
+            assert stratum_weights.std() > 0.01
+
+    def test_icc_with_covariates(self):
+        """ICC calibration should account for covariate variance."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        target_icc = 0.3
+        df = generate_survey_did_data(
+            n_units=1000, icc=target_icc, add_covariates=True, seed=42
+        )
+        # ANOVA-based ICC on period 1
+        p1 = df[df["period"] == 1]
+        groups = p1.groupby("psu")["outcome"]
+        grand_mean = p1["outcome"].mean()
+        n_total = len(p1)
+        n_groups = groups.ngroups
+        n_bar = n_total / n_groups
+        ssb = (groups.size() * (groups.mean() - grand_mean) ** 2).sum()
+        msb = ssb / (n_groups - 1)
+        ssw = groups.apply(lambda x: ((x - x.mean()) ** 2).sum()).sum()
+        msw = ssw / (n_total - n_groups)
+        realized_icc = (msb - msw) / (msb + (n_bar - 1) * msw)
+        assert abs(realized_icc - target_icc) / target_icc < 0.50
+
+    def test_informative_sampling_with_covariates_panel(self):
+        """Informative sampling includes covariates in Y(0) ranking (panel)."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            informative_sampling=True,
+            add_covariates=True,
+            seed=42,
+        )
+        p1 = df[df["period"] == 1]
+        # Positive weight-outcome correlation preserved with covariates
+        corr = np.corrcoef(p1["weight"], p1["outcome"])[0, 1]
+        assert corr > 0.1
+        # Covariates should be present
+        assert "x1" in df.columns
+        assert "x2" in df.columns
+
+    def test_informative_sampling_with_covariates_cross_section(self):
+        """Informative sampling includes covariates in Y(0) ranking (cross-section)."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            informative_sampling=True,
+            add_covariates=True,
+            panel=False,
+            seed=42,
+        )
+        p1 = df[df["period"] == 1]
+        corr = np.corrcoef(p1["weight"], p1["outcome"])[0, 1]
+        assert corr > 0.1
+        assert "x1" in df.columns
+
+    def test_informative_sampling_covariate_ranking_direct(self):
+        """Verify covariates actually affect weight assignment in ranking.
+
+        Use large covariate effects with tiny unit_fe_sd/psu_re_sd so
+        covariates dominate Y(0). Weights with nonzero vs zero covariate
+        effects should differ.
+        """
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        # Covariates dominate: large beta, tiny structural variance
+        df_with = generate_survey_did_data(
+            n_units=200,
+            informative_sampling=True,
+            add_covariates=True,
+            covariate_effects=(5.0, 0.0),
+            unit_fe_sd=0.01,
+            psu_re_sd=0.01,
+            noise_sd=0.01,
+            seed=42,
+        )
+        df_without = generate_survey_did_data(
+            n_units=200,
+            informative_sampling=True,
+            add_covariates=True,
+            covariate_effects=(0.0, 0.0),
+            unit_fe_sd=0.01,
+            psu_re_sd=0.01,
+            noise_sd=0.01,
+            seed=42,
+        )
+        # Weight assignments should differ when covariates dominate ranking
+        w_with = df_with[df_with["period"] == 1]["weight"].values
+        w_without = df_without[df_without["period"] == 1]["weight"].values
+        assert not np.allclose(w_with, w_without, atol=0.01)
+
+    def test_heterogeneous_te_by_strata(self):
+        """Unweighted mean TE should differ from population ATT."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            heterogeneous_te_by_strata=True,
+            strata_sizes=[400, 200, 200, 100, 100],
+            return_true_population_att=True,
+            seed=42,
+        )
+        treated = df[df["treated"] == 1]
+        unwt_mean_te = treated["true_effect"].mean()
+        pop_att = df.attrs["dgp_truth"]["population_att"]
+        # With unequal strata sizes + heterogeneous TE, these should differ
+        assert abs(unwt_mean_te - pop_att) > 0.01
+
+    def test_heterogeneous_te_single_stratum(self):
+        """n_strata=1 with heterogeneous TE should not crash."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=50,
+            n_strata=1,
+            psu_per_stratum=8,
+            fpc_per_stratum=200.0,
+            heterogeneous_te_by_strata=True,
+            seed=42,
+        )
+        treated = df[df["treated"] == 1]
+        # All treated units should have the base treatment_effect
+        assert np.allclose(treated["true_effect"].unique(), [2.0], atol=0.01)
+
+    def test_return_true_population_att(self):
+        """dgp_truth dict should have expected keys and reasonable values."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            icc=0.3,
+            return_true_population_att=True,
+            seed=42,
+        )
+        truth = df.attrs["dgp_truth"]
+        assert "population_att" in truth
+        assert "deff_kish" in truth
+        assert "base_stratum_effects" in truth
+        assert "icc_realized" in truth
+        assert truth["deff_kish"] >= 1.0
+        assert truth["icc_realized"] >= 0.0
+        # icc_realized should track the target ICC (ANOVA-based, same formula)
+        assert abs(truth["icc_realized"] - 0.3) / 0.3 < 0.50
+
+    def test_population_att_nan_no_treated(self):
+        """population_att should be NaN when there are no treated units."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=50,
+            never_treated_frac=1.0,
+            return_true_population_att=True,
+            seed=42,
+        )
+        assert np.isnan(df.attrs["dgp_truth"]["population_att"])
+
+    def test_icc_realized_nan_no_replication(self):
+        """icc_realized should be NaN when period-1 has no within-PSU replication."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        # 5 units across 5 strata with 8 PSUs each = 1 unit per PSU (no replication)
+        df = generate_survey_did_data(
+            n_units=5,
+            n_strata=5,
+            psu_per_stratum=8,
+            return_true_population_att=True,
+            seed=42,
+        )
+        assert np.isnan(df.attrs["dgp_truth"]["icc_realized"])
+
+    def test_strata_sizes(self):
+        """Custom strata_sizes should produce correct per-stratum counts."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        sizes = [60, 50, 40, 30, 20]
+        df = generate_survey_did_data(
+            n_units=200, strata_sizes=sizes, seed=42
+        )
+        for s, expected in enumerate(sizes):
+            actual = df[df["period"] == 1]["stratum"].value_counts().get(s, 0)
+            assert actual == expected
+
+    def test_strata_sizes_sum_mismatch(self):
+        """strata_sizes must sum to n_units."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="strata_sizes must sum"):
+            generate_survey_did_data(
+                n_units=200, strata_sizes=[50, 50, 50, 50, 49], seed=42
+            )
+
+    def test_strata_sizes_float_rejected(self):
+        """strata_sizes must contain integers, not floats."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="strata_sizes must contain integers"):
+            generate_survey_did_data(
+                n_units=200, strata_sizes=[40.0, 40.0, 40.0, 40.0, 40.0], seed=42
+            )
+
+    def test_backward_compatibility(self):
+        """Default params with same seed produce identical DataFrames."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df1 = generate_survey_did_data(seed=123)
+        df2 = generate_survey_did_data(seed=123)
+        pd.testing.assert_frame_equal(df1, df2)
+
+    def test_covariate_effects_custom(self):
+        """Custom covariate coefficients should change outcome variance."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df_default = generate_survey_did_data(
+            n_units=500, add_covariates=True, seed=42
+        )
+        df_large = generate_survey_did_data(
+            n_units=500, add_covariates=True,
+            covariate_effects=(2.0, 1.0), seed=42,
+        )
+        # Larger coefficients → larger outcome variance
+        assert df_large["outcome"].var() > df_default["outcome"].var()
+
+    def test_covariate_effects_zero(self):
+        """Zero covariate effects should produce same variance as no covariates."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df_no_cov = generate_survey_did_data(
+            n_units=500, add_covariates=False, seed=42
+        )
+        df_zero = generate_survey_did_data(
+            n_units=500, add_covariates=True,
+            covariate_effects=(0.0, 0.0), seed=42,
+        )
+        # Outcome variance should be similar (covariates contribute nothing)
+        assert abs(df_zero["outcome"].var() - df_no_cov["outcome"].var()) < 0.5
+
+    def test_te_covariate_interaction(self):
+        """Covariate interaction should create unit-level TE heterogeneity."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=500,
+            add_covariates=True,
+            te_covariate_interaction=1.0,
+            seed=42,
+        )
+        treated = df[df["treated"] == 1]
+        # true_effect should vary across treated units (not constant)
+        assert treated["true_effect"].std() > 0.1
+
+    def test_te_covariate_interaction_requires_covariates(self):
+        """te_covariate_interaction without add_covariates should raise."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="te_covariate_interaction requires"):
+            generate_survey_did_data(
+                te_covariate_interaction=0.5, add_covariates=False, seed=42
+            )
+
+    def test_covariate_effects_validation(self):
+        """covariate_effects must be length 2 and finite."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="covariate_effects must have length 2"):
+            generate_survey_did_data(
+                add_covariates=True, covariate_effects=(1.0,), seed=42
+            )
+        with pytest.raises(ValueError, match="covariate_effects must be finite"):
+            generate_survey_did_data(
+                add_covariates=True, covariate_effects=(np.nan, 0.3), seed=42
+            )
+        with pytest.raises(ValueError, match="covariate_effects must be finite"):
+            generate_survey_did_data(
+                add_covariates=True, covariate_effects=(0.5, np.inf), seed=42
+            )
+
+    def test_te_covariate_interaction_validation(self):
+        """te_covariate_interaction must be finite."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="te_covariate_interaction must be finite"):
+            generate_survey_did_data(
+                add_covariates=True, te_covariate_interaction=np.nan, seed=42
+            )
