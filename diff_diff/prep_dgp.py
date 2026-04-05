@@ -1288,7 +1288,8 @@ def generate_survey_did_data(
         If True, attaches a diagnostic dict to ``df.attrs["dgp_truth"]``
         with keys: ``population_att`` (weight-weighted average of treated
         true effects), ``deff_kish`` (1 + CV(w)^2), ``stratum_effects``
-        (dict mapping stratum index to TE), ``icc_realized`` (ANOVA-based
+        (base stratum TEs before dynamic/covariate modifiers),
+        ``icc_realized`` (ANOVA-based
         ICC computed on period-1 data).
     covariate_effects : tuple of (float, float), optional
         Coefficients ``(beta1, beta2)`` for covariates x1 and x2 in the
@@ -1412,9 +1413,23 @@ def generate_survey_did_data(
                 f"got {sum(strata_sizes)}"
             )
 
-    # --- Resolve covariate coefficients ---
+    # --- Validate and resolve covariate coefficients ---
+    if covariate_effects is not None:
+        covariate_effects = tuple(covariate_effects)
+        if len(covariate_effects) != 2:
+            raise ValueError(
+                f"covariate_effects must have length 2, got {len(covariate_effects)}"
+            )
+        if not all(np.isfinite(c) for c in covariate_effects):
+            raise ValueError(
+                f"covariate_effects must be finite, got {covariate_effects}"
+            )
     _beta1, _beta2 = covariate_effects if covariate_effects is not None else (0.5, 0.3)
 
+    if not np.isfinite(te_covariate_interaction):
+        raise ValueError(
+            f"te_covariate_interaction must be finite, got {te_covariate_interaction}"
+        )
     if te_covariate_interaction != 0.0 and not add_covariates:
         raise ValueError(
             "te_covariate_interaction requires add_covariates=True"
@@ -1696,7 +1711,7 @@ def generate_survey_did_data(
         df.attrs["dgp_truth"] = {
             "population_att": population_att,
             "deff_kish": float(deff_kish),
-            "stratum_effects": stratum_effects,
+            "base_stratum_effects": stratum_effects,
             "icc_realized": icc_realized,
         }
 

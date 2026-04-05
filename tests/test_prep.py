@@ -1767,7 +1767,7 @@ class TestSurveyDGPResearchGrade:
         truth = df.attrs["dgp_truth"]
         assert "population_att" in truth
         assert "deff_kish" in truth
-        assert "stratum_effects" in truth
+        assert "base_stratum_effects" in truth
         assert "icc_realized" in truth
         assert truth["deff_kish"] >= 1.0
         assert truth["icc_realized"] >= 0.0
@@ -1887,4 +1887,30 @@ class TestSurveyDGPResearchGrade:
         with pytest.raises(ValueError, match="te_covariate_interaction requires"):
             generate_survey_did_data(
                 te_covariate_interaction=0.5, add_covariates=False, seed=42
+            )
+
+    def test_covariate_effects_validation(self):
+        """covariate_effects must be length 2 and finite."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="covariate_effects must have length 2"):
+            generate_survey_did_data(
+                add_covariates=True, covariate_effects=(1.0,), seed=42
+            )
+        with pytest.raises(ValueError, match="covariate_effects must be finite"):
+            generate_survey_did_data(
+                add_covariates=True, covariate_effects=(np.nan, 0.3), seed=42
+            )
+        with pytest.raises(ValueError, match="covariate_effects must be finite"):
+            generate_survey_did_data(
+                add_covariates=True, covariate_effects=(0.5, np.inf), seed=42
+            )
+
+    def test_te_covariate_interaction_validation(self):
+        """te_covariate_interaction must be finite."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="te_covariate_interaction must be finite"):
+            generate_survey_did_data(
+                add_covariates=True, te_covariate_interaction=np.nan, seed=42
             )
