@@ -12,29 +12,36 @@ Decision Flowchart
 
 Start here and follow the questions:
 
-0. **Is treatment continuous?** (Units receive different doses or intensities)
+0. **Is this a triple-difference (DDD) design?** (Two criteria for treatment: e.g., policy adoption AND group eligibility)
 
    - **No** → Go to question 1
-   - **Yes** → Use :class:`~diff_diff.ContinuousDiD`
+   - **Yes, simultaneous treatment (2×2×2)** → Use :class:`~diff_diff.TripleDifference`
+   - **Yes, with staggered timing** → Use :class:`~diff_diff.StaggeredTripleDifference`
 
-1. **Is treatment staggered?** (Different units treated at different times)
+1. **Is treatment continuous?** (Units receive different doses or intensities)
 
    - **No** → Go to question 2
+   - **Yes** → Use :class:`~diff_diff.ContinuousDiD`
+
+2. **Is treatment staggered?** (Different units treated at different times)
+
+   - **No** → Go to question 3
    - **Yes** → Use :class:`~diff_diff.CallawaySantAnna` (or :class:`~diff_diff.EfficientDiD` for tighter SEs under PT-All)
    - **Yes, and you suspect homogeneous effects** → Use :class:`~diff_diff.ImputationDiD` or :class:`~diff_diff.TwoStageDiD` for tighter CIs
+   - **Yes, with nonlinear outcome (binary/count)** → Use :class:`~diff_diff.WooldridgeDiD` with ``method='logit'`` or ``method='poisson'``
    - **Want to diagnose TWFE bias?** → Use :class:`~diff_diff.BaconDecomposition` first
 
-2. **Do you have panel data?** (Multiple observations per unit over time)
+3. **Do you have panel data?** (Multiple observations per unit over time)
 
    - **No** → Use :class:`~diff_diff.DifferenceInDifferences` (basic 2x2)
-   - **Yes** → Go to question 3
+   - **Yes** → Go to question 4
 
-3. **Do you need period-specific effects?** (Event study design)
+4. **Do you need period-specific effects?** (Event study design)
 
    - **No** → Use :class:`~diff_diff.TwoWayFixedEffects`
    - **Yes** → Use :class:`~diff_diff.MultiPeriodDiD`
 
-4. **Is your treated group small?** (Few treated units, many controls)
+5. **Is your treated group small?** (Few treated units, many controls)
 
    - Consider :class:`~diff_diff.SyntheticDiD` for better pre-treatment fit
 
@@ -97,6 +104,18 @@ Quick Reference
      - Factor confounding suspected
      - Factor model + weights
      - ATT with triple robustness
+   * - ``TripleDifference``
+     - Two eligibility criteria (DDD)
+     - Parallel trends for both dimensions
+     - DDD ATT (regression, IPW, or DR)
+   * - ``StaggeredTripleDifference``
+     - Staggered DDD with treatment timing
+     - Conditional parallel trends (DDD)
+     - Group-time ATT(g,t), aggregations
+   * - ``WooldridgeDiD``
+     - Nonlinear outcomes or saturated OLS
+     - Conditional parallel trends
+     - OLS: direct coefficients; logit/Poisson: ASF-based ATT
    * - ``BaconDecomposition``
      - TWFE diagnostic
      - (diagnostic tool)
@@ -580,9 +599,10 @@ If you're unsure which estimator to use:
 Survey Design Support
 ---------------------
 
-All estimators accept an optional ``survey_design`` parameter in ``fit()``.
-Pass a :class:`~diff_diff.SurveyDesign` object to get design-based variance
-estimation. The depth of support varies by estimator:
+All estimators except :class:`~diff_diff.WooldridgeDiD` accept an optional
+``survey_design`` parameter in ``fit()``. Pass a :class:`~diff_diff.SurveyDesign`
+object to get design-based variance estimation. The depth of support varies by
+estimator (WooldridgeDiD survey support is planned for Phase 10f):
 
 .. list-table::
    :header-rows: 1
@@ -663,11 +683,21 @@ estimation. The depth of support varies by estimator:
      - Via bootstrap
      - --
      - Rao-Wu rescaled
+   * - ``WooldridgeDiD``
+     - --
+     - --
+     - --
+     - --
    * - ``BaconDecomposition``
      - Diagnostic
      - Diagnostic
      - --
      - --
+
+.. note::
+
+   ``WooldridgeDiD`` does not yet accept ``survey_design``. Survey support
+   is planned for Phase 10f. See :doc:`/survey-roadmap` for details.
 
 **Legend:**
 
@@ -677,11 +707,6 @@ estimation. The depth of support varies by estimator:
 - **pweight only** (Weights column): Only ``pweight`` accepted; ``fweight``/``aweight`` raise an error
 - **Diagnostic**: Weighted descriptive statistics only (no inference)
 - **--**: Not supported
-
-.. note::
-
-   ``EfficientDiD`` does not support ``covariates`` and ``survey_design``
-   simultaneously (the DR nuisance path does not yet thread survey weights).
 
 .. note::
 

@@ -660,6 +660,124 @@ results.print_summary()
 plot_bacon(results)
 ```
 
+### StaggeredTripleDifference
+
+Ortiz-Villavicencio & Sant'Anna (2025) staggered DDD estimator for designs with two eligibility criteria and staggered treatment timing.
+
+```python
+StaggeredTripleDifference(
+    estimation_method: str = "dr",          # "dr", "ipw", or "reg"
+    control_group: str = "notyettreated",   # "nevertreated" or "notyettreated"
+    alpha: float = 0.05,
+    anticipation: int = 0,
+    base_period: str = "varying",           # "varying" or "universal"
+    n_bootstrap: int = 0,
+    bootstrap_weights: str = "rademacher",
+    seed: int | None = None,
+    cband: bool = True,
+    pscore_trim: float = 0.01,
+    cluster: str | None = None,
+    rank_deficient_action: str = "warn",
+    epv_threshold: float = 10,              # Min events-per-variable for propensity score
+    pscore_fallback: str = "error",         # "error" or "unconditional"
+)
+```
+
+**Alias:** `SDDD`
+
+**fit() parameters:**
+
+```python
+sddd.fit(
+    data: pd.DataFrame,
+    outcome: str,
+    unit: str,
+    time: str,
+    first_treat: str,
+    eligibility: str,               # Binary eligibility column (0/1)
+    covariates: list[str] | None = None,
+    aggregate: str | None = None,   # None, "simple", "group", "event_study", "all"
+    balance_e: int | None = None,   # Max event time for balanced event study
+    survey_design=None,
+) -> StaggeredTripleDiffResults
+```
+
+**Usage:**
+
+```python
+from diff_diff import StaggeredTripleDifference
+
+sddd = StaggeredTripleDifference(estimation_method='dr', n_bootstrap=999)
+results = sddd.fit(data, outcome='y', unit='id', time='t',
+                   first_treat='ft', eligibility='eligible',
+                   aggregate='event_study')
+results.print_summary()
+```
+
+### WooldridgeDiD
+
+Wooldridge (2023, 2025) Extended Two-Way Fixed Effects (ETWFE) estimator. OLS path uses direct saturated-regression coefficients for ATT(g,t). Logit and Poisson QMLE paths use Average Structural Function (ASF) based ATT with delta-method standard errors.
+
+```python
+WooldridgeDiD(
+    method: str = "ols",                    # "ols", "logit", or "poisson"
+    control_group: str = "not_yet_treated", # "not_yet_treated" or "never_treated"
+    anticipation: int = 0,                  # Number of anticipation periods
+    demean_covariates: bool = True,         # Demean covariates within cohort*period cells
+    alpha: float = 0.05,
+    cluster: str | None = None,
+    n_bootstrap: int = 0,
+    bootstrap_weights: str = "rademacher",
+    seed: int | None = None,
+    rank_deficient_action: str = "warn",
+)
+```
+
+**Alias:** `ETWFE`
+
+**fit() parameters:**
+
+```python
+etwfe.fit(
+    data: pd.DataFrame,
+    outcome: str,
+    unit: str,
+    time: str,
+    cohort: str,                    # First treatment period (0 or NaN = never treated)
+    exovar: list[str] | None = None,  # Time-invariant covariates (no interaction/demeaning)
+    xtvar: list[str] | None = None,   # Time-varying covariates (demeaned within cohort*period)
+    xgvar: list[str] | None = None,   # Covariates interacted with each cohort indicator
+) -> WooldridgeDiDResults
+```
+
+**Aggregation types:**
+
+```python
+results.aggregate("simple")    # Overall ATT
+results.aggregate("group")     # ATT by cohort
+results.aggregate("calendar")  # ATT by calendar period
+results.aggregate("event")     # ATT by event time (relative to treatment)
+```
+
+**Usage:**
+
+```python
+from diff_diff import WooldridgeDiD
+
+# OLS (linear outcomes)
+etwfe = WooldridgeDiD(method='ols')
+results = etwfe.fit(data, outcome='y', unit='id', time='t', cohort='first_treat')
+print(results.aggregate("simple"))
+
+# Logit (binary outcomes)
+etwfe_logit = WooldridgeDiD(method='logit')
+results = etwfe_logit.fit(data, outcome='y_bin', unit='id', time='t', cohort='first_treat')
+
+# Poisson (count outcomes)
+etwfe_pois = WooldridgeDiD(method='poisson')
+results = etwfe_pois.fit(data, outcome='y_count', unit='id', time='t', cohort='first_treat')
+```
+
 ### Convenience Functions
 
 ```python
@@ -1405,6 +1523,61 @@ data = load_card_krueger(force_download=True)
 clear_cache()
 ```
 
+## Survey Support
+
+All estimators except `WooldridgeDiD` accept an optional `survey_design` parameter in `fit()`. Pass a `SurveyDesign` object to get design-based variance estimation. (WooldridgeDiD survey support is planned for Phase 10f.)
+
+```python
+from diff_diff import SurveyDesign, CallawaySantAnna
+
+# Create survey design with strata, PSU, FPC
+sd = SurveyDesign(
+    weights='weight',           # Sampling weight column
+    strata='stratum',           # Stratification variable
+    psu='psu',                  # Primary Sampling Unit (cluster)
+    fpc='fpc',                  # Finite Population Correction
+    weight_type='pweight',      # "pweight", "fweight", or "aweight"
+    nest=False,                 # PSU IDs nested within strata?
+    lonely_psu='remove',        # "remove", "certainty", or "adjust"
+)
+
+# Fit with survey design
+cs = CallawaySantAnna(estimation_method='dr')
+results = cs.fit(data, outcome='y', unit='id', time='t',
+                 first_treat='ft', survey_design=sd)
+
+# Survey metadata on results
+print(results.survey_metadata.design_effect)  # Design effect
+print(results.survey_metadata.effective_n)  # Effective sample size
+print(results.survey_metadata.df_survey)    # Survey degrees of freedom
+```
+
+**Replicate weight designs:**
+
+```python
+sd = SurveyDesign(
+    weights='weight',
+    replicate_weights=['rep_0', 'rep_1', ..., 'rep_79'],  # Column names
+    replicate_method='SDR',     # "BRR", "Fay", "JK1", "JKn", or "SDR"
+)
+```
+
+**Subpopulation analysis:**
+
+```python
+sd_female, data_female = sd.subpopulation(data, mask=lambda df: df['sex'] == 'F')
+```
+
+**Key features:**
+- Taylor Series Linearization (TSL) variance with strata + PSU + FPC
+- Replicate weight variance: BRR, Fay's BRR, JK1, JKn, SDR (12 of 16 estimators)
+- Survey-aware bootstrap: multiplier at PSU or Rao-Wu rescaled
+- DEFF diagnostics, subpopulation analysis, weight trimming (`trim_weights`)
+- Repeated cross-sections: `CallawaySantAnna(panel=False)`
+- Compatibility matrix: see `docs/choosing_estimator.rst` Survey Design Support section
+
+No R or Python package offers design-based variance estimation for modern heterogeneity-robust DiD estimators. (`WooldridgeDiD` does not yet accept `survey_design` — planned for Phase 10f.)
+
 ## Linear Algebra Helpers
 
 ```python
@@ -1459,7 +1632,9 @@ DIFF_DIFF_BACKEND=rust pytest     # Force Rust (fail if unavailable)
 | Few treated units / synthetic control | `SyntheticDiD` |
 | Interactive fixed effects / factor confounding | `TROP` |
 | Continuous treatment intensity | `ContinuousDiD` |
-| Two-criterion treatment (group + eligibility) | `TripleDifference` |
+| Two-criterion treatment, simultaneous (2x2x2 DDD) | `TripleDifference` |
+| Two-criterion treatment, staggered timing + eligibility | `StaggeredTripleDifference` |
+| Nonlinear outcome (binary/count) with staggered timing | `WooldridgeDiD` |
 | Diagnosing TWFE bias | `BaconDecomposition` |
 | Efficiency-optimal estimation | `EfficientDiD` |
 | Corrective weighting for stacked regressions | `StackedDiD` |
