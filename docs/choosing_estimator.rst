@@ -12,30 +12,36 @@ Decision Flowchart
 
 Start here and follow the questions:
 
-0. **Is treatment continuous?** (Units receive different doses or intensities)
+0. **Is this a triple-difference (DDD) design?** (Two criteria for treatment: e.g., policy adoption AND group eligibility)
 
    - **No** → Go to question 1
-   - **Yes** → Use :class:`~diff_diff.ContinuousDiD`
+   - **Yes, simultaneous treatment (2×2×2)** → Use :class:`~diff_diff.TripleDifference`
+   - **Yes, with staggered timing** → Use :class:`~diff_diff.StaggeredTripleDifference`
 
-1. **Is treatment staggered?** (Different units treated at different times)
+1. **Is treatment continuous?** (Units receive different doses or intensities)
 
    - **No** → Go to question 2
+   - **Yes** → Use :class:`~diff_diff.ContinuousDiD`
+
+2. **Is treatment staggered?** (Different units treated at different times)
+
+   - **No** → Go to question 3
    - **Yes** → Use :class:`~diff_diff.CallawaySantAnna` (or :class:`~diff_diff.EfficientDiD` for tighter SEs under PT-All)
    - **Yes, and you suspect homogeneous effects** → Use :class:`~diff_diff.ImputationDiD` or :class:`~diff_diff.TwoStageDiD` for tighter CIs
    - **Yes, with nonlinear outcome (binary/count)** → Use :class:`~diff_diff.WooldridgeDiD` with ``method='logit'`` or ``method='poisson'``
    - **Want to diagnose TWFE bias?** → Use :class:`~diff_diff.BaconDecomposition` first
 
-2. **Do you have panel data?** (Multiple observations per unit over time)
+3. **Do you have panel data?** (Multiple observations per unit over time)
 
    - **No** → Use :class:`~diff_diff.DifferenceInDifferences` (basic 2x2)
-   - **Yes** → Go to question 3
+   - **Yes** → Go to question 4
 
-3. **Do you need period-specific effects?** (Event study design)
+4. **Do you need period-specific effects?** (Event study design)
 
    - **No** → Use :class:`~diff_diff.TwoWayFixedEffects`
    - **Yes** → Use :class:`~diff_diff.MultiPeriodDiD`
 
-4. **Is your treated group small?** (Few treated units, many controls)
+5. **Is your treated group small?** (Few treated units, many controls)
 
    - Consider :class:`~diff_diff.SyntheticDiD` for better pre-treatment fit
 

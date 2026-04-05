@@ -1570,7 +1570,7 @@ sd_female, data_female = sd.subpopulation(data, mask=lambda df: df['sex'] == 'F'
 
 **Key features:**
 - Taylor Series Linearization (TSL) variance with strata + PSU + FPC
-- Replicate weight variance: BRR, Fay's BRR, JK1, JKn, SDR (12 of 15 estimators)
+- Replicate weight variance: BRR, Fay's BRR, JK1, JKn, SDR (12 of 16 estimators)
 - Survey-aware bootstrap: multiplier at PSU or Rao-Wu rescaled
 - DEFF diagnostics, subpopulation analysis, weight trimming (`trim_weights`)
 - Repeated cross-sections: `CallawaySantAnna(panel=False)`

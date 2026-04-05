@@ -28,10 +28,10 @@ diff-diff is a **production-ready** DiD library with feature parity with R's `di
 
 ### Survey Support
 
-`SurveyDesign` with strata, PSU, FPC, weight types (pweight/fweight/aweight), lonely PSU handling. 14 of 15 estimators accept `survey_design` (WooldridgeDiD support planned for Phase 10f); design-based variance estimation varies by estimator:
+`SurveyDesign` with strata, PSU, FPC, weight types (pweight/fweight/aweight), lonely PSU handling. 15 of 16 estimators accept `survey_design` (WooldridgeDiD support planned for Phase 10f); design-based variance estimation varies by estimator:
 
 - **TSL variance** (Taylor Series Linearization) with strata + PSU + FPC
-- **Replicate weights**: BRR, Fay's BRR, JK1, JKn, SDR — 12 of 15 estimators
+- **Replicate weights**: BRR, Fay's BRR, JK1, JKn, SDR — 12 of 16 estimators (not SyntheticDiD, TROP, BaconDecomposition, or WooldridgeDiD)
 - **Survey-aware bootstrap**: multiplier at PSU (IF-based) and Rao-Wu rescaled (resampling-based)
 - **DEFF diagnostics**, **subpopulation analysis**, **weight trimming**, **CV on estimates**
 - **Repeated cross-sections**: `CallawaySantAnna(panel=False)` for BRFSS, ACS, CPS
