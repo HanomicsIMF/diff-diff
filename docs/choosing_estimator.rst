@@ -22,6 +22,7 @@ Start here and follow the questions:
    - **No** → Go to question 2
    - **Yes** → Use :class:`~diff_diff.CallawaySantAnna` (or :class:`~diff_diff.EfficientDiD` for tighter SEs under PT-All)
    - **Yes, and you suspect homogeneous effects** → Use :class:`~diff_diff.ImputationDiD` or :class:`~diff_diff.TwoStageDiD` for tighter CIs
+   - **Yes, with nonlinear outcome (binary/count)** → Use :class:`~diff_diff.WooldridgeDiD` with ``method='logit'`` or ``method='poisson'``
    - **Want to diagnose TWFE bias?** → Use :class:`~diff_diff.BaconDecomposition` first
 
 2. **Do you have panel data?** (Multiple observations per unit over time)
@@ -97,6 +98,18 @@ Quick Reference
      - Factor confounding suspected
      - Factor model + weights
      - ATT with triple robustness
+   * - ``TripleDifference``
+     - Two eligibility criteria (DDD)
+     - Parallel trends for both dimensions
+     - DDD ATT (regression, IPW, or DR)
+   * - ``StaggeredTripleDifference``
+     - Staggered DDD with treatment timing
+     - Conditional parallel trends (DDD)
+     - Group-time ATT(g,t), aggregations
+   * - ``WooldridgeDiD``
+     - Nonlinear outcomes or saturated OLS
+     - Conditional parallel trends
+     - ASF-based ATT (OLS, logit, Poisson)
    * - ``BaconDecomposition``
      - TWFE diagnostic
      - (diagnostic tool)
@@ -677,11 +690,6 @@ estimation. The depth of support varies by estimator:
 - **pweight only** (Weights column): Only ``pweight`` accepted; ``fweight``/``aweight`` raise an error
 - **Diagnostic**: Weighted descriptive statistics only (no inference)
 - **--**: Not supported
-
-.. note::
-
-   ``EfficientDiD`` does not support ``covariates`` and ``survey_design``
-   simultaneously (the DR nuisance path does not yet thread survey weights).
 
 .. note::
 

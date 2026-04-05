@@ -6,62 +6,71 @@ For past changes and release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-## Current Status
+## Current Status (v2.9.0)
 
-diff-diff v2.8.4 is a **production-ready** DiD library with feature parity with R's `did` + `HonestDiD` + `synthdid` ecosystem for core DiD analysis, plus **unique survey support** — all estimators accept survey weights, with design-based variance estimation varying by estimator. No R or Python package offers this combination:
+diff-diff is a **production-ready** DiD library with feature parity with R's `did` + `HonestDiD` + `synthdid` ecosystem for core DiD analysis, plus **unique survey support** that no R or Python package matches.
 
-- **Core estimators**: Basic DiD, TWFE, MultiPeriod, Callaway-Sant'Anna, Sun-Abraham, Borusyak-Jaravel-Spiess Imputation, Synthetic DiD, Triple Difference (DDD), Staggered Triple Difference (Ortiz-Villavicencio & Sant'Anna 2025), TROP, Two-Stage DiD (Gardner 2022), Stacked DiD (Wing et al. 2024), Continuous DiD (Callaway, Goodman-Bacon & Sant'Anna 2024)
-- **Valid inference**: Robust SEs, cluster SEs, wild bootstrap, multiplier bootstrap, placebo-based variance
-- **Assumption diagnostics**: Parallel trends tests, placebo tests, Goodman-Bacon decomposition
-- **Sensitivity analysis**: Honest DiD (Rambachan-Roth), Pre-trends power analysis (Roth 2022)
-- **Study design**: Power analysis tools
-- **Data utilities**: Real-world datasets (Card-Krueger, Castle Doctrine, Divorce Laws, MPDTA), DGP functions for all supported designs
-- **Survey support**: `SurveyDesign` with strata, PSU, FPC, weight types, DEFF diagnostics, subpopulation analysis. All 15 estimators accept survey weights; design-based variance estimation (TSL, replicate weights, survey-aware bootstrap) varies by estimator. Replicate weights (BRR/Fay/JK1/JKn/SDR) supported for 12 of 15; `BaconDecomposition` is diagnostic-only. See [choosing_estimator.rst](docs/choosing_estimator.rst#survey-design-support) for the full compatibility matrix.
-- **Performance**: Optional Rust backend for accelerated computation; faster than R at scale (see [CHANGELOG.md](CHANGELOG.md) for benchmarks)
+### Estimators
 
----
+- **Core**: Basic DiD, TWFE, MultiPeriod event study
+- **Heterogeneity-robust**: Callaway-Sant'Anna (2021), Sun-Abraham (2021), Borusyak-Jaravel-Spiess Imputation (2024), Two-Stage DiD (Gardner 2022), Stacked DiD (Wing et al. 2024)
+- **Specialized**: Synthetic DiD (Arkhangelsky et al. 2021), Triple Difference, Staggered Triple Difference (Ortiz-Villavicencio & Sant'Anna 2025), Continuous DiD (Callaway, Goodman-Bacon & Sant'Anna 2024), TROP
+- **Efficient**: EfficientDiD (Chen, Sant'Anna & Xie 2025) — semiparametrically efficient with doubly robust covariates
+- **Nonlinear**: WooldridgeDiD / ETWFE (Wooldridge 2023, 2025) — OLS, logit, and Poisson QMLE with ASF-based ATT and delta-method SEs
 
-## Near-Term Enhancements (v2.8)
+### Inference & Diagnostics
 
-### Survey Phase 7: Completing the Survey Story
+- Robust SEs, cluster SEs, wild bootstrap, multiplier bootstrap, placebo-based variance
+- Parallel trends tests, placebo tests, Goodman-Bacon decomposition
+- Honest DiD sensitivity analysis (Rambachan & Roth 2023), pre-trends power analysis (Roth 2022)
+- Power analysis and simulation-based MDE tools
+- EPV diagnostics for propensity score estimation
 
-Close the remaining gaps for practitioners using major population surveys
-(ACS, CPS, BRFSS, MEPS). See [survey-roadmap.md](docs/survey-roadmap.md) for
-full details.
+### Survey Support
 
-- **CS Covariates + IPW/DR + Survey** *(Implemented)*: DRDID nuisance IF
-  corrections (PS + OR) under survey weights for all estimation methods.
-- **Repeated Cross-Sections** *(Implemented)*: `panel=False` support for
-  CallawaySantAnna using cross-sectional DRDID (Sant'Anna & Zhao 2020,
-  Section 4). Supports BRFSS, ACS annual, CPS monthly.
-- **Survey-Aware DiD Tutorial** *(Implemented)*: Jupyter notebook demonstrating
-  the full workflow with realistic survey data.
-- **HonestDiD + Survey Variance** *(Implemented)*: Survey df and full
-  event-study VCV propagated to sensitivity analysis, with bootstrap/replicate
-  diagonal fallback.
+`SurveyDesign` with strata, PSU, FPC, weight types (pweight/fweight/aweight), lonely PSU handling. All 15 estimators accept survey weights; design-based variance estimation varies by estimator:
 
-### Staggered Triple Difference (DDD) *(Implemented)*
+- **TSL variance** (Taylor Series Linearization) with strata + PSU + FPC
+- **Replicate weights**: BRR, Fay's BRR, JK1, JKn, SDR — 12 of 15 estimators
+- **Survey-aware bootstrap**: multiplier at PSU (IF-based) and Rao-Wu rescaled (resampling-based)
+- **DEFF diagnostics**, **subpopulation analysis**, **weight trimming**, **CV on estimates**
+- **Repeated cross-sections**: `CallawaySantAnna(panel=False)` for BRFSS, ACS, CPS
+- **R cross-validation**: 15 tests against R's `survey` package using NHANES, RECS, and API datasets
 
-`StaggeredTripleDifference` estimator for staggered adoption DDD settings.
+See [Survey Design Support](docs/choosing_estimator.rst#survey-design-support) for the full compatibility matrix, and [survey-roadmap.md](docs/survey-roadmap.md) for implementation details.
 
-- Group-time ATT(g,t) for DDD designs with variation in treatment timing
-- Event study aggregation and pre-treatment placebo effects
-- Multiplier bootstrap for valid inference in staggered settings
-- Full survey support (pweight, strata/PSU/FPC, replicate weights)
+**Gap**: WooldridgeDiD does not yet accept `survey_design`. Planned for Phase 10f.
 
-**Reference**: [Ortiz-Villavicencio & Sant'Anna (2025)](https://arxiv.org/abs/2505.09942). "Better Understanding Triple Differences Estimators." *Working Paper*. R package: `triplediff`.
+### Infrastructure
+
+- Optional Rust backend for accelerated computation
+- Label-gated CI (tests run only when `ready-for-ci` label is added)
+- Documentation dependency map (`docs/doc-deps.yaml`) with `/docs-impact` skill
+- AI practitioner guardrails based on Baker et al. (2025) 8-step workflow
 
 ---
 
-## Medium-Term Enhancements
+## Active Work: Survey Academic Credibility (Phase 10)
 
-### Efficient DiD Estimators
+Before broadly announcing survey capability, we are establishing the theoretical
+and empirical foundation needed for credibility with practitioners and
+methodologists. See [survey-roadmap.md](docs/survey-roadmap.md) for detailed specs.
 
-Semiparametrically efficient versions of existing DiD/event-study estimators with 40%+ precision gains over current methods.
+| Item | Priority | Status |
+|------|----------|--------|
+| **10a.** Theory document (`survey-theory.md`) | HIGH | Not started |
+| **10b.** Research-grade survey DGP (enhance `generate_survey_did_data`) | HIGH | Not started |
+| **10c.** Expand R validation (ImputationDiD, StackedDiD, SunAbraham, TripleDifference) | HIGH | Not started |
+| **10d.** Tutorial: flat-weight vs design-based comparison | HIGH | Not started — depends on 10b |
+| **10e.** Position paper / arXiv preprint | MEDIUM | Not started — depends on 10b |
+| **10f.** WooldridgeDiD survey support (OLS + logit + Poisson) | MEDIUM | Not started |
+| **10g.** Practitioner guidance: when does survey design matter? | LOW | Not started |
 
-**Reference**: [Chen, Sant'Anna & Xie (2025)](https://arxiv.org/abs/2506.17729). *Working Paper*.
+---
 
-### de Chaisemartin-D'Haultfœuille Estimator
+## Future Estimators
+
+### de Chaisemartin-D'Haultfouille Estimator
 
 Handles treatment that switches on and off (reversible treatments), unlike most other methods.
 
@@ -69,7 +78,7 @@ Handles treatment that switches on and off (reversible treatments), unlike most 
 - Time-varying, heterogeneous treatment effects
 - Comparison with never-switchers or flexible control groups
 
-**Reference**: [de Chaisemartin & D'Haultfœuille (2020, 2024)](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3980758). *American Economic Review*.
+**Reference**: [de Chaisemartin & D'Haultfouille (2020, 2024)](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3980758). *American Economic Review*.
 
 ### Local Projections DiD
 
@@ -79,13 +88,7 @@ Implements local projections for dynamic treatment effects. Doesn't require spec
 - Robust to misspecification of dynamics
 - Natural handling of anticipation effects
 
-**Reference**: Dube, Girardi, Jordà, and Taylor (2023).
-
-### Nonlinear DiD
-
-Implemented in `WooldridgeDiD` (alias `ETWFE`) — OLS, Poisson QMLE, and logit paths with ASF-based ATT. See [Tutorial 16](docs/tutorials/16_wooldridge_etwfe.ipynb).
-
-**Reference**: [Wooldridge (2023)](https://academic.oup.com/ectj/article/26/3/C31/7250479). *The Econometrics Journal*.
+**Reference**: Dube, Girardi, Jorda, and Taylor (2023).
 
 ### Causal Duration Analysis with DiD
 
@@ -98,7 +101,7 @@ Extends DiD to duration/survival outcomes where standard methods fail (hazard ra
 
 ---
 
-## Long-Term Research Directions (v3.0+)
+## Long-Term Research Directions
 
 Frontier methods requiring more research investment.
 
@@ -110,12 +113,11 @@ Standard DiD assumes SUTVA; spatial/network spillovers violate this. Two-stage i
 
 ### Quantile/Distributional DiD
 
-Recover the full counterfactual distribution and quantile treatment effects (QTT), not just mean ATT. Goes beyond "what's the average effect" to "who gains, who loses."
+Recover the full counterfactual distribution and quantile treatment effects (QTT), not just mean ATT.
 
 - Changes-in-Changes (CiC) identification strategy
-- QTT(τ) at user-specified quantiles
+- QTT(tau) at user-specified quantiles
 - Full counterfactual distribution function
-- Two-period foundation, then staggered extension
 
 **Reference**: [Athey & Imbens (2006)](https://onlinelibrary.wiley.com/doi/10.1111/j.1468-0262.2006.00668.x). *Econometrica*.
 
@@ -129,10 +131,6 @@ ML-powered conditional ATT — discover who benefits most from treatment using d
 
 Machine learning methods for discovering heterogeneous treatment effects in DiD settings.
 
-- Estimate treatment effect heterogeneity across covariates
-- Data-driven subgroup discovery
-- Honest confidence intervals for discovered heterogeneity
-
 **References**:
 - [Kattenberg, Scheer & Thiel (2023)](https://ideas.repec.org/p/cpb/discus/452.html). *CPB Discussion Paper*.
 - Athey & Wager (2019). *Annals of Statistics*.
@@ -141,17 +139,11 @@ Machine learning methods for discovering heterogeneous treatment effects in DiD 
 
 Unified framework encompassing synthetic control and regression approaches.
 
-- Nuclear norm regularization for low-rank structure
-- Bridges synthetic control (few units, many periods) and regression (many units, few periods)
-
 **Reference**: [Athey et al. (2021)](https://arxiv.org/abs/1710.10251). *Journal of the American Statistical Association*.
 
 ### Double/Debiased ML for DiD
 
 For high-dimensional settings with many potential confounders.
-
-- ML for nuisance parameter estimation (propensity, outcome models)
-- Cross-fitting for valid inference
 
 **Reference**: Chernozhukov et al. (2018). *The Econometrics Journal*.
 
@@ -163,15 +155,9 @@ For high-dimensional settings with many potential confounders.
 
 ---
 
-## Infrastructure Improvements
-
-- Video tutorials and worked examples
-
----
-
 ## Contributing
 
-Interested in contributing? Features in the "Near-Term" and "Medium-Term" sections are good candidates. See the [GitHub repository](https://github.com/igerber/diff-diff) for open issues.
+Interested in contributing? The Phase 10 items and future estimators are good candidates. See the [GitHub repository](https://github.com/igerber/diff-diff) for open issues.
 
 Key references for implementation:
 - [Roth et al. (2023)](https://www.sciencedirect.com/science/article/abs/pii/S0304407623001318). "What's Trending in Difference-in-Differences?" *Journal of Econometrics*.

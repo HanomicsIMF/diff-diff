@@ -55,6 +55,9 @@ groups:
   stacked_did:
     - diff_diff/stacked_did.py
     - diff_diff/stacked_did_results.py
+  wooldridge:
+    - diff_diff/wooldridge.py
+    - diff_diff/wooldridge_results.py
   visualization:
     - diff_diff/visualization/__init__.py
     - diff_diff/visualization/_common.py
@@ -328,7 +331,28 @@ sources:
       - path: docs/choosing_estimator.rst
         type: user_guide
 
-  # ── TROP (trop group) ──────────────���───────────────────────────────
+  # ── WooldridgeDiD (wooldridge group) ────────────────────────────────
+
+  diff_diff/wooldridge.py:
+    drift_risk: medium
+    docs:
+      - path: docs/methodology/REGISTRY.md
+        section: "WooldridgeDiD"
+        type: methodology
+      - path: docs/api/wooldridge_etwfe.rst
+        type: api_reference
+      - path: docs/tutorials/16_wooldridge_etwfe.ipynb
+        type: tutorial
+      - path: README.md
+        section: "WooldridgeDiD"
+        type: user_guide
+      - path: docs/llms-full.txt
+        section: "WooldridgeDiD"
+        type: user_guide
+      - path: docs/choosing_estimator.rst
+        type: user_guide
+
+  # ── TROP (trop group) ──────────────────────────────────────────────
 
   diff_diff/trop.py:
     drift_risk: medium
