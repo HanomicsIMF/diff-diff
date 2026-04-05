@@ -2515,6 +2515,17 @@ The 8-step workflow in `docs/llms-practitioner.txt` is adapted from Baker et al.
   covariates). Paper's Step 8 is "Keep learning." The mandatory with/without covariate
   comparison is a diff-diff convention.
 
+### Survey DGP (`generate_survey_did_data`)
+
+- **Note:** The `icc` parameter calibrates `psu_re_sd` using the variance
+  decomposition `Var(Y) = sigma²_psu * (1 + psu_period_factor²) + sigma²_unit +
+  sigma²_noise + sigma²_cov`. When `add_covariates=True`, the covariate variance
+  `Var(0.5*x1) + Var(0.3*x2) = 0.2725` is included in the calibration.
+- **Note:** Defensive enhancement: `informative_sampling` ranks units on structural
+  Y(0) (unit FE + PSU effects + time trend), excluding covariate contributions from
+  `add_covariates`. This models selection on structural characteristics (geography,
+  demographics) rather than residual variation, matching real survey sampling frames.
+
 ---
 
 # Version History

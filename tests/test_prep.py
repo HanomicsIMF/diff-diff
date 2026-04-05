@@ -1639,6 +1639,45 @@ class TestSurveyDGPResearchGrade:
         corr = np.corrcoef(p1["weight"], p1["outcome"])[0, 1]
         assert corr > 0.1
 
+    def test_informative_sampling_cross_section_default_weights(self):
+        """Cross-section informative sampling with default weight_variation."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            informative_sampling=True,
+            panel=False,
+            seed=42,
+        )
+        p1 = df[df["period"] == 1]
+        for s in range(5):
+            expected_mean = 1.0 + 1.0 * (s / 4)
+            stratum_weights = p1.loc[p1["stratum"] == s, "weight"]
+            assert abs(stratum_weights.mean() - expected_mean) < 0.15
+            assert stratum_weights.std() > 0.01
+
+    def test_icc_with_covariates(self):
+        """ICC calibration should account for covariate variance."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        target_icc = 0.3
+        df = generate_survey_did_data(
+            n_units=1000, icc=target_icc, add_covariates=True, seed=42
+        )
+        # ANOVA-based ICC on period 1
+        p1 = df[df["period"] == 1]
+        groups = p1.groupby("psu")["outcome"]
+        grand_mean = p1["outcome"].mean()
+        n_total = len(p1)
+        n_groups = groups.ngroups
+        n_bar = n_total / n_groups
+        ssb = (groups.size() * (groups.mean() - grand_mean) ** 2).sum()
+        msb = ssb / (n_groups - 1)
+        ssw = groups.apply(lambda x: ((x - x.mean()) ** 2).sum()).sum()
+        msw = ssw / (n_total - n_groups)
+        realized_icc = (msb - msw) / (msb + (n_bar - 1) * msw)
+        assert abs(realized_icc - target_icc) / target_icc < 0.50
+
     def test_heterogeneous_te_by_strata(self):
         """Unweighted mean TE should differ from population ATT."""
         from diff_diff.prep_dgp import generate_survey_did_data

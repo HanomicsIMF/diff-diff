@@ -1271,6 +1271,8 @@ def generate_survey_did_data(
         repeated cross-sections, ranking is refreshed each period. Within
         each stratum, rank-based weights are scaled to preserve the
         stratum's baseline weight level from ``weight_variation``.
+        Ranking is based on structural Y(0) (unit FE + PSU effects),
+        excluding covariates from ``add_covariates``.
     heterogeneous_te_by_strata : bool, default=False
         If True, treatment effect varies by stratum:
         ``TE_h = TE * (1 + 0.5 * (h - mean) / std)``. Creates a gap
@@ -1399,8 +1401,11 @@ def generate_survey_did_data(
 
     # --- ICC -> psu_re_sd resolution ---
     if icc is not None:
+        # Include covariate variance: Var(0.5*x1) + Var(0.3*x2)
+        # where x1 ~ N(0,1), x2 ~ Bernoulli(0.5)
+        cov_var = (0.25 + 0.09 * 0.25) if add_covariates else 0.0
         psu_re_sd = np.sqrt(
-            icc * (unit_fe_sd**2 + noise_sd**2)
+            icc * (unit_fe_sd**2 + noise_sd**2 + cov_var)
             / ((1 - icc) * (1 + psu_period_factor**2))
         )
 
