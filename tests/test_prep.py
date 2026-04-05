@@ -1504,3 +1504,177 @@ class TestGenerateSurveyDidData:
             generate_survey_did_data(psu_period_factor=math.nan, seed=42)
         with pytest.raises(ValueError, match="psu_period_factor"):
             generate_survey_did_data(psu_period_factor=math.inf, seed=42)
+
+
+class TestSurveyDGPResearchGrade:
+    """Tests for research-grade DGP parameters added to generate_survey_did_data."""
+
+    def test_icc_parameter(self):
+        """Realized ICC should be within 50% relative tolerance of target."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        target_icc = 0.3
+        df = generate_survey_did_data(
+            n_units=1000, icc=target_icc, seed=42
+        )
+        # ANOVA-based ICC on period 1 (pre-treatment, no TE contamination)
+        p1 = df[df["period"] == 1]
+        groups = p1.groupby("psu")["outcome"]
+        grand_mean = p1["outcome"].mean()
+        n_total = len(p1)
+        n_groups = groups.ngroups
+        n_bar = n_total / n_groups
+        ssb = (groups.size() * (groups.mean() - grand_mean) ** 2).sum()
+        msb = ssb / (n_groups - 1)
+        ssw = groups.apply(lambda x: ((x - x.mean()) ** 2).sum()).sum()
+        msw = ssw / (n_total - n_groups)
+        realized_icc = (msb - msw) / (msb + (n_bar - 1) * msw)
+        assert abs(realized_icc - target_icc) / target_icc < 0.50
+
+    def test_icc_and_psu_re_sd_conflict(self):
+        """Cannot specify both icc and a non-default psu_re_sd."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="Cannot specify both icc"):
+            generate_survey_did_data(icc=0.3, psu_re_sd=3.0, seed=42)
+
+    def test_icc_out_of_range(self):
+        """icc must be in (0, 1)."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="icc must be between"):
+            generate_survey_did_data(icc=0.0, seed=42)
+        with pytest.raises(ValueError, match="icc must be between"):
+            generate_survey_did_data(icc=1.0, seed=42)
+
+    def test_weight_cv_parameter(self):
+        """Realized weight CV should be within 0.15 of target."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        target_cv = 0.5
+        df = generate_survey_did_data(
+            n_units=1000, weight_cv=target_cv, seed=42
+        )
+        weights = df.groupby("unit")["weight"].first().values
+        realized_cv = weights.std() / weights.mean()
+        assert abs(realized_cv - target_cv) < 0.15
+
+    def test_weight_cv_and_weight_variation_conflict(self):
+        """Cannot specify both weight_cv and a non-default weight_variation."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="Cannot specify both weight_cv"):
+            generate_survey_did_data(
+                weight_cv=0.5, weight_variation="high", seed=42
+            )
+
+    def test_informative_sampling_panel(self):
+        """Informative sampling should create weight-outcome correlation."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            informative_sampling=True,
+            weight_cv=0.5,
+            seed=42,
+        )
+        # Period-1 outcomes: weighted mean should differ from unweighted
+        p1 = df[df["period"] == 1]
+        unwt_mean = p1["outcome"].mean()
+        wt_mean = np.average(p1["outcome"], weights=p1["weight"])
+        assert abs(wt_mean - unwt_mean) > 0.1
+
+    def test_informative_sampling_cross_section(self):
+        """Cross-section informative sampling: per-period negative correlation."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            informative_sampling=True,
+            weight_cv=0.5,
+            panel=False,
+            seed=42,
+        )
+        # Check correlation for period 1
+        p1 = df[df["period"] == 1]
+        corr = np.corrcoef(p1["weight"], p1["outcome"])[0, 1]
+        assert corr < -0.1
+
+    def test_heterogeneous_te_by_strata(self):
+        """Unweighted mean TE should differ from population ATT."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            heterogeneous_te_by_strata=True,
+            strata_sizes=[400, 200, 200, 100, 100],
+            return_true_population_att=True,
+            seed=42,
+        )
+        treated = df[df["treated"] == 1]
+        unwt_mean_te = treated["true_effect"].mean()
+        pop_att = df.attrs["dgp_truth"]["population_att"]
+        # With unequal strata sizes + heterogeneous TE, these should differ
+        assert abs(unwt_mean_te - pop_att) > 0.01
+
+    def test_heterogeneous_te_single_stratum(self):
+        """n_strata=1 with heterogeneous TE should not crash."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=50,
+            n_strata=1,
+            psu_per_stratum=8,
+            fpc_per_stratum=200.0,
+            heterogeneous_te_by_strata=True,
+            seed=42,
+        )
+        treated = df[df["treated"] == 1]
+        # All treated units should have the base treatment_effect
+        assert np.allclose(treated["true_effect"].unique(), [2.0], atol=0.01)
+
+    def test_return_true_population_att(self):
+        """dgp_truth dict should have expected keys and reasonable values."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=200,
+            return_true_population_att=True,
+            seed=42,
+        )
+        truth = df.attrs["dgp_truth"]
+        assert "population_att" in truth
+        assert "deff_kish" in truth
+        assert "stratum_effects" in truth
+        assert "icc_realized" in truth
+        assert truth["deff_kish"] >= 1.0
+        assert truth["icc_realized"] >= 0.0
+
+    def test_strata_sizes(self):
+        """Custom strata_sizes should produce correct per-stratum counts."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        sizes = [60, 50, 40, 30, 20]
+        df = generate_survey_did_data(
+            n_units=200, strata_sizes=sizes, seed=42
+        )
+        for s, expected in enumerate(sizes):
+            actual = df[df["period"] == 1]["stratum"].value_counts().get(s, 0)
+            assert actual == expected
+
+    def test_strata_sizes_sum_mismatch(self):
+        """strata_sizes must sum to n_units."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="strata_sizes must sum"):
+            generate_survey_did_data(
+                n_units=200, strata_sizes=[50, 50, 50, 50, 49], seed=42
+            )
+
+    def test_backward_compatibility(self):
+        """Default params with same seed produce identical DataFrames."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df1 = generate_survey_did_data(seed=123)
+        df2 = generate_survey_did_data(seed=123)
+        pd.testing.assert_frame_equal(df1, df2)
