@@ -374,8 +374,10 @@ class WooldridgeCarouselPDF(FPDF):
           Economics, 69(5), 2545-2587.
         - Stata jwdid: Rios-Avila (2021), SSC s459114
         - "Single saturated regression": Wooldridge (2023) framework
-        - "Heterogeneous treatment effects": correctly handled by cohort x
-          time interaction dummies (wooldridge.py lines 504-550)
+        - Equation shown is the OLS specification with unit+time FE
+          (REGISTRY.md lines 1094-1103). Logit/Poisson use additive
+          cohort+time dummies instead of unit FE to avoid incidental
+          parameters bias (REGISTRY.md lines 1152-1153).
         - "Nonlinear link functions": _VALID_METHODS = ("ols", "logit",
           "poisson") in wooldridge.py line 25
         """
@@ -390,6 +392,10 @@ class WooldridgeCarouselPDF(FPDF):
         self.centered_text(85, "Wooldridge (2023, 2025)  |  Stata: jwdid",
                            size=15, bold=False, italic=True, color=GRAY)
 
+        # OLS equation label
+        self.centered_text(105, "OLS specification (unit + time FE absorbed):",
+                           size=14, bold=False, color=GRAY)
+
         # Saturated regression equation
         eq_path, epw, eph = self._render_equations(
             [r"$Y_{it} = \alpha_i + \gamma_t + "
@@ -398,12 +404,18 @@ class WooldridgeCarouselPDF(FPDF):
              r" + \mathbf{X}'\beta + \varepsilon_{it}$"],
             fontsize=24,
         )
-        eq_h = self._place_equation_centered(eq_path, epw, eph, 108,
+        eq_h = self._place_equation_centered(eq_path, epw, eph, 120,
                                              max_w=220)
+
+        # Nonlinear note
+        nl_y = 120 + eq_h + 4
+        self.centered_text(nl_y,
+                           "Logit / Poisson: cohort + time dummies, ASF for ATT",
+                           size=14, bold=False, color=EMERALD)
 
         # Three key insight bullets with emerald dashes
         margin = 42
-        y_cursor = 108 + eq_h + 20
+        y_cursor = nl_y + 22
         items = [
             ("Single saturated regression",
              "All ATT(g,t) estimated jointly"),
@@ -427,12 +439,12 @@ class WooldridgeCarouselPDF(FPDF):
             self.cell(WIDTH - margin * 2 - 14, 10, title)
 
             # Description
-            self.set_xy(margin + 14, y_cursor + 22)
-            self.set_font("Helvetica", "", 15)
+            self.set_xy(margin + 14, y_cursor + 20)
+            self.set_font("Helvetica", "", 14)
             self.set_text_color(*GRAY)
             self.cell(WIDTH - margin * 2 - 14, 10, desc)
 
-            y_cursor += 55
+            y_cursor += 46
 
         self.add_footer()
 
@@ -648,7 +660,8 @@ class WooldridgeCarouselPDF(FPDF):
         - from diff_diff import WooldridgeDiD: __init__.py
         - WooldridgeDiD(method='poisson'): wooldridge.py line 25
         - fit() API: wooldridge.py lines 322-332
-        - .aggregate('event').summary(): wooldridge_results.py
+        - .aggregate('event').summary('event'): wooldridge_results.py
+          summary() defaults to 'simple'; must pass 'event' explicitly
         """
         self.add_page()
         self.light_gradient_background()
@@ -679,7 +692,9 @@ class WooldridgeCarouselPDF(FPDF):
             [],  # blank
             [("results.aggregate(", WHITE),
              ("'event'", GREEN_CODE),
-             (").summary()", WHITE)],
+             (").summary(", WHITE),
+             ("'event'", GREEN_CODE),
+             (")", WHITE)],
         ]
 
         code_h = self._add_code_block(
