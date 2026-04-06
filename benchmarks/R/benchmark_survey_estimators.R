@@ -200,12 +200,20 @@ extract_svyglm_results <- function(model, design, coef_name) {
 
   att <- as.numeric(coefs[idx])
   se <- as.numeric(ses[idx])
-  t_stat <- att / se
   df <- degf(design)
 
-  t_crit <- qt(0.975, df)
-  ci_lower <- att - t_crit * se
-  ci_upper <- att + t_crit * se
+  # NaN-all-or-nothing guard: if SE is non-finite or non-positive,
+  # all derived inference fields must be NaN.
+  if (!is.finite(se) || se <= 0) {
+    t_stat <- NaN
+    ci_lower <- NaN
+    ci_upper <- NaN
+  } else {
+    t_stat <- att / se
+    t_crit <- qt(0.975, df)
+    ci_lower <- att - t_crit * se
+    ci_upper <- att + t_crit * se
+  }
 
   list(att = att, se = se, t_stat = t_stat, df = df,
        ci_lower = ci_lower, ci_upper = ci_upper)

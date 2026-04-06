@@ -239,7 +239,7 @@ class TestSurveyEstimatorValidation:
             result.overall_se, r["se"], SE_RTOL, SE_ATOL, "S2 SE"
         )
 
-        # Compare individual event-study coefficients
+        # Compare individual event-study coefficients and SEs
         if "event_study" in r:
             for e_str, r_eff in r["event_study"].items():
                 e = int(e_str)
@@ -251,6 +251,13 @@ class TestSurveyEstimatorValidation:
                         COEF_RTOL,
                         COEF_ATOL,
                         f"S2 delta_{e}",
+                    )
+                    _assert_close(
+                        py_eff["se"],
+                        r_eff["se"],
+                        SE_RTOL,
+                        SE_ATOL,
+                        f"S2 SE_{e}",
                     )
 
     # ------------------------------------------------------------------
@@ -283,7 +290,7 @@ class TestSurveyEstimatorValidation:
             result.overall_se, r["se"], SE_RTOL, SE_ATOL, "S3 SE"
         )
 
-        # Compare individual cohort x rel-time effects (post-treatment only)
+        # Compare individual cohort x rel-time effects and SEs (post-treatment only)
         if "cohort_effects" in r:
             for key_str, r_delta in r["cohort_effects"].items():
                 g, e = _parse_cohort_key(key_str)
@@ -295,6 +302,13 @@ class TestSurveyEstimatorValidation:
                         COEF_RTOL,
                         COEF_ATOL,
                         f"S3 delta_{g}_{e}",
+                    )
+                    _assert_close(
+                        py_entry["se"],
+                        r_delta["se"],
+                        SE_RTOL,
+                        SE_ATOL,
+                        f"S3 SE_{g}_{e}",
                     )
 
     # ------------------------------------------------------------------
@@ -323,3 +337,12 @@ class TestSurveyEstimatorValidation:
             result.att, r["att"], COEF_RTOL, COEF_ATOL, "S4 DDD coef"
         )
         _assert_close(result.se, r["se"], SE_RTOL, SE_ATOL, "S4 DDD SE")
+        _assert_close(
+            result.t_stat, r["t_stat"], SE_RTOL, SE_ATOL, "S4 t_stat"
+        )
+        _assert_close(
+            result.conf_int[0], r["ci_lower"], SE_RTOL, SE_ATOL, "S4 CI lower"
+        )
+        _assert_close(
+            result.conf_int[1], r["ci_upper"], SE_RTOL, SE_ATOL, "S4 CI upper"
+        )
