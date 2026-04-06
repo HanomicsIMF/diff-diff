@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-04-06
+
+### Added
+- **Survey theory document** (`docs/methodology/survey-theory.md`) — formal justification for design-based variance estimation with modern DiD influence functions, citing Binder (1983), Rao & Wu (1988), Shao (1996)
+- **Research-grade survey DGP** — 8 new parameters on `generate_survey_did_data()`: `icc`, `weight_cv`, `informative_sampling`, `heterogeneous_te_by_strata`, `te_covariate_interaction`, `covariate_effects`, `strata_sizes`, `return_true_population_att`. All backward-compatible.
+- **R validation expansion** — 4 additional estimators cross-validated against R's `survey::svyglm()`: ImputationDiD, StackedDiD, SunAbraham, TripleDifference. Survey R validation coverage now 8 of 16 estimators.
+- **LinkedIn carousel** for Wooldridge ETWFE estimator announcement
+
+### Changed
+- Survey tutorial rewritten: leads with "Why Survey Design Matters" section showing flat-weight vs design-based comparison with known ground truth, coverage simulation, and false pre-trend detection rates
+- Documentation refresh: ROADMAP.md, llms.txt, llms-full.txt, llms-practitioner.txt, choosing_estimator.rst updated for v2.9.0 — added WooldridgeDiD and StaggeredTripleDifference, DDD flowchart branch, standardized estimator counts, qualified survey claims
+- Survey roadmap updated: Phase 10a-10d marked shipped, conditional PT noted for 10e
+
+### Fixed
+- Fix stale "EfficientDiD covariates + survey not supported" note in choosing_estimator.rst
+- Fix WooldridgeDiD described as "ASF-based" for OLS path (OLS uses direct coefficients; ASF only for logit/Poisson)
+- Fix dead StaggeredTripleDifference API link in llms.txt
+- Fix survey example attribute: `.design_effect` not `.deff` in llms-full.txt
+- Fix `subpopulation()` example to show tuple unpacking in llms-full.txt
+- Remove 8 resolved items from TODO.md
+
 ## [2.9.0] - 2026-04-04
 
 ### Added
@@ -1152,6 +1173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[2.9.1]: https://github.com/igerber/diff-diff/compare/v2.9.0...v2.9.1
 [2.9.0]: https://github.com/igerber/diff-diff/compare/v2.8.4...v2.9.0
 [2.8.4]: https://github.com/igerber/diff-diff/compare/v2.8.3...v2.8.4
 [2.8.3]: https://github.com/igerber/diff-diff/compare/v2.8.2...v2.8.3

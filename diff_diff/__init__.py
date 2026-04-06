@@ -214,7 +214,7 @@ Bacon = BaconDecomposition
 EDiD = EfficientDiD
 ETWFE = WooldridgeDiD
 
-__version__ = "2.9.0"
+__version__ = "2.9.1"
 __all__ = [
     # Estimators
     "DifferenceInDifferences",
