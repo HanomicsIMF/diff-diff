@@ -746,8 +746,84 @@ comparisons match to machine precision (differences < 1e-10).
    ``subset()`` drops empty strata (df=199). This is a documented deviation
    (see REGISTRY.md); the diff-diff approach is conservative per Lumley (2004).
 
-Reproducing Survey Validation
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Survey Estimator Validation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Four additional estimators are validated against R's ``survey::svyglm()`` using
+synthetic staggered-adoption and DDD datasets. Each estimator reduces to a WLS
+regression under survey weights, so the R comparison fits the equivalent
+``svyglm()`` model and compares coefficients and standard errors.
+
+**Data:** 150-unit staggered panel (5 periods, 4 strata, 10 PSUs, FPC) with
+cohorts at *t* = 3 and *t* = 4; 200-observation DDD cross-section (4 strata,
+10 PSUs, FPC). Both generated with seed 42.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 8 18 30 15 15 14
+
+   * - Test
+     - Estimator
+     - R Comparison
+     - Coef Gap
+     - SE Gap
+     - Tolerance
+   * - S1
+     - ``ImputationDiD``
+     - ``svyglm()`` on control-only (Omega_0) FE regression; covariate coefficients
+     - < 1e-10
+     - 0.00%
+     - 1.5%
+   * - S2
+     - ``StackedDiD``
+     - ``svyglm()`` on stacked dataset with Q-weight x survey weight composition
+     - < 1e-10
+     - 0.77%
+     - 1.5%
+   * - S3
+     - ``SunAbraham``
+     - ``svyglm()`` with cohort x period interactions; IW-aggregated ATT
+     - < 1e-11
+     - 0.00%
+     - 1.5%
+   * - S4
+     - ``TripleDifference``
+     - ``svyglm()`` three-way interaction (``group:partition:time``)
+     - < 1e-10
+     - 0.36%
+     - 1.5%
+
+**Key details:**
+
+- **S1** validates the WLS building block that ``ImputationDiD`` uses internally
+  (control-only regression with absorbed unit + time FE and time-varying
+  covariates). A companion smoke test confirms ``ImputationDiD.fit()`` produces
+  finite ATT/SE under survey weights.
+- **S2** replicates the full stacking pipeline in R: sub-experiment construction,
+  sample-share Q-weight computation, Q x survey weight composition with
+  normalization, then ``svyglm()`` on the stacked data with strata/PSU structure.
+  The 0.77% SE gap arises because R omits FPC on the stacked data while Python
+  re-resolves the full survey design.
+- **S3** compares both individual cohort x relative-time effects and the
+  IW-aggregated overall ATT (with survey-weighted cohort masses and delta-method
+  SE via the vcov submatrix).
+- **S4** exploits the algebraic equivalence between the pairwise DDD
+  decomposition (``estimation_method="reg"``, no covariates) and the three-way
+  interaction coefficient from a single OLS regression.
+
+Reproducing Survey Estimator Validation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   # Generate golden values
+   Rscript benchmarks/R/benchmark_survey_estimators.R
+
+   # Run validation tests
+   pytest tests/test_survey_estimator_validation.py -v
+
+Reproducing Survey Real-Data Validation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: bash
 
