@@ -120,7 +120,7 @@ design-based variance estimation with modern DiD influence functions:
 1. Modern heterogeneity-robust DiD estimators (CS, SA, BJS) are smooth
    functionals of the weighted empirical distribution
 2. Survey-weighted empirical distribution is design-consistent for the
-   superpopulation quantity (Horvitz-Thompson)
+   finite-population quantity (Hájek/design-weighted estimator)
 3. The influence function is a property of the functional, not the
    sampling design — IFs remain valid under survey weighting
 4. TSL (stratified cluster sandwich) and replicate-weight methods are

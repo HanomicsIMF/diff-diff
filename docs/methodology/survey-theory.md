@@ -15,23 +15,27 @@
 
 ## 1. Motivation
 
-### 1.1. The problem: survey data violates the iid assumption
+### 1.1. The problem: naive standard errors under complex survey designs
 
 Policy evaluations frequently rely on nationally representative surveys:
 NHANES (health outcomes), ACS (demographics and housing), BRFSS (behavioral
-risk factors), CPS (labor force), and MEPS (medical expenditure). These surveys
-employ stratified multi-stage cluster sampling to achieve national coverage at
-manageable cost. The resulting data carry two features that invalidate naive
-standard errors: (i) observations within the same primary sampling unit (PSU)
-are correlated, and (ii) stratification constrains the sampling variability.
+risk factors), CPS (labor force), and MEPS (medical expenditure). Most of these
+are repeated cross-sectional surveys (with the partial exception of CPS's
+rotating panel); the sampling frame --- strata, PSUs --- may shift across waves,
+adding a layer of complexity to design-based variance estimation that does not
+arise with a fixed panel. These surveys employ stratified multi-stage cluster
+sampling to achieve national coverage at manageable cost. The resulting data
+carry two features that invalidate naive standard errors:
+(i) observations within the same primary sampling unit (PSU) are correlated,
+and (ii) stratification constrains the sampling variability.
 
 Naive standard errors --- whether heteroskedasticity-robust (HC1) or clustered
 at the individual level --- treat the sample as if it were drawn by simple
 random sampling. Under complex survey designs this ignores intra-cluster
 correlation within PSUs, which typically inflates variance relative to SRS, and
-stratification, which typically deflates it. The net effect is design-specific,
-but in practice the clustering effect dominates and naive SEs understate true
-sampling variance. The ratio of design-based to naive variance is the *design
+stratification, which typically deflates it. The net effect is design-specific;
+naive SEs are generally incorrect --- and often too small --- under complex
+survey designs. The ratio of design-based to naive variance is the *design
 effect* (DEFF); values of 2--5 are common in health and social surveys.
 
 This matters especially for difference-in-differences (DiD) estimation because:
@@ -49,13 +53,21 @@ This matters especially for difference-in-differences (DiD) estimation because:
 
 The modern DiD literature derives estimators and their asymptotic properties
 under sampling assumptions that are incompatible with complex survey designs.
-Every foundational paper in this literature either assumes iid sampling
-explicitly, or adopts a framework that sidesteps sampling design entirely:
+The foundational papers in this literature either assume iid sampling
+explicitly, or adopt frameworks that do not incorporate complex survey design
+features (strata, PSU clustering, FPC):
+
+*Note on terminology.* The recent DiD literature uses "design-based" to refer
+to treatment-assignment design (Athey & Imbens 2022), where uncertainty arises
+from which units receive treatment; throughout this document, "design-based"
+refers to survey sampling design (Binder 1983), where uncertainty arises from
+which units are sampled. Same term, different referent.
 
 - **Callaway & Sant'Anna (2021)** state iid as a numbered assumption
   (Assumption 2) and derive the multiplier bootstrap under it. The paper
-  acknowledges design-based inference as an alternative --- citing Athey &
-  Imbens (2018) --- but does not pursue it.
+  acknowledges design-based inference in the treatment-assignment sense ---
+  citing Athey & Imbens (2018; published 2022) --- but does not pursue
+  survey-design-based inference.
 - **Sant'Anna & Zhao (2020)** assume iid (Assumption 1) and derive the doubly
   robust influence function and semiparametric efficiency bounds under it.
 - **Borusyak, Jaravel & Spiess (2024)** adopt a conditional/fixed-design
@@ -72,31 +84,38 @@ explicitly, or adopts a framework that sidesteps sampling design entirely:
 
 The most comprehensive recent review of the DiD literature --- Roth, Sant'Anna,
 Bilinski & Poe (2023), "What's Trending in Difference-in-Differences?" ---
-contains no discussion of survey weights, complex survey designs, or
-design-based variance estimation.
+discusses design-based inference in the treatment-assignment sense (Section 5.2),
+where randomness comes from treatment assignment rather than sampling, but does
+not address survey sampling design, survey weights, or strata/PSU/FPC-based
+variance estimation.
 
 ### 1.3. The gap in software
 
 Existing software implementations reflect this theoretical gap. R's `did`
 package (Callaway & Sant'Anna) accepts a `weightsname` parameter for point
-estimation, but its multiplier bootstrap draws iid unit-level weights without
-accounting for strata, PSU, or FPC. Stata's `csdid` (Rios-Avila, Sant'Anna &
-Callaway) accepts `pweight` for point estimation but does not support the
-`svy:` prefix --- variance estimation ignores the survey design structure.
-Neither `did_multiplegt_dyn` (de Chaisemartin & D'Haultfoeuille) nor
-`eventstudyinteract` (Sun & Abraham) nor `didimputation` (Borusyak, Jaravel
-& Spiess) provide design-based variance.
+estimation and supports cluster-level multiplier bootstrap via `clustervars`
+(drawing Rademacher weights at the cluster level rather than per unit), but
+does not account for stratification or finite population corrections. Stata's
+`csdid` (Rios-Avila, Sant'Anna & Callaway) accepts `pweight` for point
+estimation and supports clustered wild bootstrap, but does not support the
+`svy:` prefix --- there is no mechanism for strata or FPC.
+`did_multiplegt_dyn` (de Chaisemartin & D'Haultfoeuille) clusters at the group
+level by default but likewise lacks strata and FPC support.
+`eventstudyinteract` (Sun & Abraham) does not accept probability weights.
+`didimputation` (Borusyak, Jaravel & Spiess) accepts estimation weights via
+`wname` but does not provide survey-design variance.
 
-In all these implementations, sampling weights enter the point estimate but the
-variance estimator treats data as if it were iid (or clustered at the panel
-unit, not the survey PSU).
+These implementations support weights for point estimation and allow
+cluster-robust inference, but none provides full survey-design variance
+estimation that jointly accounts for strata, PSU clustering, and finite
+population corrections.
 
 ### 1.4. Adjacent work: survey inference for causal effects
 
 The survey statistics literature has developed design-based variance theory for
 smooth functionals (Binder 1983; Demnati & Rao 2004; Lumley 2004), and recent
-work has extended this to causal inference --- but only for cross-sectional
-estimators, not panel DiD:
+work has extended this to causal inference --- but primarily for cross-sectional
+estimators or simple two-period designs, not for modern staggered DiD:
 
 - **DuGoff, Schuler & Stuart (2014)** provide practical guidance on combining
   propensity score methods with complex surveys using Stata's `svy:` framework,
@@ -105,19 +124,27 @@ estimators, not panel DiD:
   propensity score estimators using influence functions --- the closest work to
   the bridge we describe --- but for cross-sectional IPW/augmented weighting,
   not staggered DiD.
+- **Ye, Bilinski & Lee (2025)** study DiD with repeated cross-sectional survey
+  data, combining propensity scores with survey weights. However, their
+  estimator is limited to two periods and two groups, uses bootstrap-only
+  variance (no analytical design-based derivation), and does not address the
+  modern heterogeneity-robust estimators considered here.
 
-No published work formally derives design-based variance for the influence
-functions of modern heterogeneity-robust DiD estimators.
+No published work formally derives design-based variance --- in the survey-
+statistics sense of strata/PSU/FPC-based Taylor series linearization --- for
+the influence functions of modern heterogeneity-robust DiD estimators
+(Callaway--Sant'Anna, Sun--Abraham, imputation DiD, etc.).
 
 ### 1.5. What this document provides
 
-This document bridges the two literatures. The core argument (Section 4) is
-that modern DiD estimators are smooth functionals of the empirical distribution,
-and Binder's (1983) theorem therefore guarantees that applying the
+This document bridges the two literatures. The core argument (Section 4) is a
+careful application of existing survey linearization theory (Binder 1983) to
+modern DiD estimators: because these estimators are smooth functionals of the
+empirical distribution, Binder's theorem guarantees that applying the
 stratified-cluster variance formula to their influence function values produces
-a design-consistent variance estimator. The argument is a straightforward
-application of existing theory, but it has not previously been stated for the
-DiD case.
+a design-consistent variance estimator. The argument applies existing theory to
+a new setting --- it has not previously been stated for the modern
+heterogeneity-robust DiD case.
 
 diff-diff implements this connection: it is the only package --- across R,
 Stata, and Python --- that provides design-based variance estimation
@@ -146,10 +173,12 @@ stratified multi-stage design used by most federal statistical agencies.
 
 Each sampled observation i carries a sampling weight w_i = 1 / pi_i, where
 pi_i is the inclusion probability. Under probability-weight (`pweight`)
-semantics, w_i represents how many population units observation i represents.
-diff-diff normalizes probability weights to mean 1 (sum = n) to avoid scale
-dependence in regression coefficients while preserving the relative
-representativeness of each observation.
+semantics, the raw weight w_i = 1/pi_i represents how many population units
+observation i represents. diff-diff normalizes probability weights to mean 1
+(sum = n) to avoid scale dependence in regression coefficients. After
+normalization, weights preserve relative representativeness --- w_i = 2 means
+observation i represents twice as many population units as the average --- but
+no longer indicate absolute population counts.
 
 ### Finite population correction
 
@@ -187,7 +216,7 @@ literatures reason about functionals, just from different perspectives.
 
 ## 3. Survey-Weighted Estimation
 
-### Horvitz-Thompson consistency
+### Design consistency
 
 Under the survey design, the survey-weighted empirical distribution is:
 
@@ -195,7 +224,11 @@ Under the survey design, the survey-weighted empirical distribution is:
 F_hat_w = sum_i w_i * delta_{x_i} / sum_i w_i
 ```
 
-where the sum is over sampled observations and delta_{x_i} is the point mass
+This is the Hájek (self-normalized) form of the design-weighted estimator,
+preferred when the population size N is unknown. It is design-consistent for
+the same target as the Horvitz-Thompson estimator.
+
+The sum is over sampled observations and delta_{x_i} is the point mass
 at x_i. When T is a smooth functional, the plug-in estimator theta_hat =
 T(F_hat_w) is design-consistent for theta = T(F): as the sample size grows
 within the finite-population asymptotic framework, theta_hat converges in
@@ -346,7 +379,10 @@ T(F_hat_w) - T(F) = sum_i d_i * psi_i + o_p(n^{-1/2})
 ```
 
 where d_i = 1 if unit i is sampled (0 otherwise), and psi_i = w_i * IF(x_i;
-T, F) / N is the scaled influence function value. The key observation: this
+T, F) / N is the scaled influence function value. (In practice, the population
+size N is typically unknown and is estimated by N_hat = sum_i w_i. After
+diff-diff normalizes pweights to mean 1, sum_i w_i = n; the scaling is
+variance-equivalent because only relative weights affect the sandwich meat.) The key observation: this
 linearized form is a weighted sum over the sampled observations, and its
 variance is determined by the sampling design --- not by T. The IF transforms
 the problem of estimating Var(theta_hat) into the simpler problem of estimating
@@ -369,7 +405,7 @@ values, and psi_h_bar is the within-stratum mean of PSU totals.
 
 This works because theta_hat is asymptotically equivalent to a linear function
 of survey-weighted totals. Once linearized via the IF, the variance of
-theta_hat inherits the same structure as the variance of a Horvitz-Thompson
+theta_hat inherits the same structure as the variance of a design-weighted
 total, which the survey statistics literature has established formulas for.
 
 ### 4.5. Combining the pieces
@@ -487,7 +523,8 @@ strategies via the `lonely_psu` parameter:
 - **"certainty"**: Treat singleton PSUs as sampled with certainty (f_h = 1),
   contributing zero to the variance.
 - **"adjust"**: Center the singleton stratum's PSU total at the grand mean of
-  all PSU totals instead of the (undefined) within-stratum mean.
+  all PSU totals instead of the (undefined) within-stratum mean (matching
+  Stata's `singleunit(centered)` behavior).
 
 ---
 
@@ -589,20 +626,28 @@ surveys --- the t-distribution approximation with df = n_PSU - n_strata may
 be anti-conservative. diff-diff reports the survey degrees of freedom so users
 can assess this directly.
 
-**Informative sampling.** Binder's theorem assumes non-informative sampling:
-selection into the sample depends only on design variables (strata, PSU), not
-on potential outcomes conditional on those variables. If treatment effects vary
-with selection probability in ways not captured by the stratification, IF
-values may be biased even after weighting.
+**Estimand dependence on weights.** The design-based framework treats population
+values as fixed and relies on probability weighting to target finite-population
+parameters. Binder's variance formula is consistent for the variance of
+whatever the weighted estimator targets. However, if treatment effects vary
+with inclusion probability in ways not captured by the stratification, the
+survey-weighted estimator may target a different population quantity than the
+intended ATT. In such cases, the variance estimate is correct for the estimand
+actually being estimated, but that estimand may not correspond to the causal
+parameter of interest.
 
 **SUTVA.** Survey weighting does not address interference between units. If
 treatment of one unit affects outcomes of another (spillovers), the ATT
 estimand is not well-defined regardless of the variance estimator.
 
 **Weight variability.** Highly variable weights reduce effective sample size.
-The design effect DEFF = n * sum(w_i^2) / (sum(w_i))^2 measures this: when
-DEFF >> 1, estimates are less precise than the nominal sample size suggests.
-diff-diff reports DEFF in `SurveyMetadata` to help users assess this.
+The Kish design effect due to unequal weighting,
+deff_w = n * sum(w_i^2) / (sum(w_i))^2, measures this: when deff_w >> 1,
+estimates are less precise than the nominal sample size suggests. (This
+captures only the weighting component of the full design effect discussed in
+Section 1.1, which also incorporates clustering and stratification effects.)
+diff-diff reports this quantity as `SurveyMetadata.design_effect` (the Kish
+deff_w) to help users assess weight variability.
 
 **Model misspecification.** For doubly-robust and IPW estimators
 (CallawaySantAnna with `estimation_method='dr'` or `'ipw'`), the IF
@@ -700,6 +745,9 @@ Two bootstrap strategies interact with survey designs:
 
 ### Modern DiD
 
+- Athey, S. & Imbens, G.W. (2022). "Design-Based Analysis in
+  Difference-in-Differences Settings with Staggered Adoption." *Journal of
+  Econometrics* 226(1), 62--79.
 - Borusyak, K., Jaravel, X. & Spiess, J. (2024). "Revisiting Event-Study
   Designs: Robust and Efficient Estimation." *Review of Economic Studies*
   91(6), 3253--3285.
@@ -728,6 +776,9 @@ Two bootstrap strategies interact with survey designs:
   Surveys." *Health Services Research* 49(1), 284--303.
 - Solon, G., Haider, S.J. & Wooldridge, J.M. (2015). "What Are We Weighting
   For?" *Journal of Human Resources* 50(2), 301--316.
+- Ye, K., Bilinski, A. & Lee, Y. (2025). "Difference-in-differences analysis
+  with repeated cross-sectional survey data." *Health Services & Outcomes
+  Research Methodology*. DOI: 10.1007/s10742-025-00364-7.
 - Zeng, S., Li, F. & Tong, X. (2025). "Moving toward Best Practice when
   Using Propensity Score Weighting in Survey Observational Studies."
   arXiv:2501.16156.
