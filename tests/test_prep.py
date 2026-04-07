@@ -2057,7 +2057,7 @@ class TestAggregateSurvey:
         assert "y2_mean" in panel.columns
         assert "y_precision" in panel.columns
         assert "y2_precision" in panel.columns
-        assert stage2.weights == "y_precision"
+        assert stage2.weights == "y_weight"
 
     def test_covariates_mean_only(self, micro_data, design):
         """Covariates get mean column only, no SE/precision."""
@@ -2081,7 +2081,7 @@ class TestAggregateSurvey:
             survey_design=design,
         )
         assert stage2.weight_type == "aweight"
-        assert stage2.weights == "y_precision"
+        assert stage2.weights == "y_weight"
         assert stage2.psu == "state"
 
     def test_srs_fallback(self):
@@ -2451,6 +2451,59 @@ class TestAggregateSurvey:
                 outcomes="y",
                 survey_design=design_simple,
             )
+
+    def test_stage2_handoff_with_nonfinite_cells(self):
+        """stage2 SurveyDesign works even when some cells have NaN precision."""
+        from diff_diff import DifferenceInDifferences
+
+        rng = np.random.RandomState(99)
+        rows = []
+        for state in range(4):
+            treated = 1 if state < 2 else 0
+            for period in [0, 1]:
+                te = 3.0 if (treated and period == 1) else 0.0
+                n_cell = 30
+                for _ in range(n_cell):
+                    rows.append(
+                        {
+                            "state": state,
+                            "period": period,
+                            "wt": rng.uniform(0.5, 2.0),
+                            "outcome": rng.normal(10 + te, 2),
+                            "treated": treated,
+                        }
+                    )
+        micro = pd.DataFrame(rows)
+        # Make one cell have only 1 observation → NaN SE → NaN precision
+        mask = (micro["state"] == 0) & (micro["period"] == 0)
+        micro = micro.drop(micro[mask].index[1:])  # keep only 1 row
+
+        design = SurveyDesign(weights="wt")
+        panel, stage2 = aggregate_survey(
+            micro,
+            by=["state", "period"],
+            outcomes="outcome",
+            covariates="treated",
+            survey_design=design,
+        )
+
+        # The zero-variance cell should have weight=0 (not NaN)
+        cell_00 = panel[(panel["state"] == 0) & (panel["period"] == 0)]
+        assert np.isnan(cell_00["outcome_precision"].iloc[0])  # diagnostic
+        assert cell_00["outcome_weight"].iloc[0] == 0.0  # fit-ready
+
+        # stage2 should work with fit() despite NaN-precision cells
+        panel["treated_bin"] = (panel["treated_mean"] > 0.5).astype(int)
+        did = DifferenceInDifferences()
+        result = did.fit(
+            panel,
+            outcome="outcome_mean",
+            treatment="treated_bin",
+            time="period",
+            survey_design=stage2,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
 
     def test_zero_weight_rows_excluded_from_n_valid(self):
         """Zero-weight rows should not count as valid observations."""

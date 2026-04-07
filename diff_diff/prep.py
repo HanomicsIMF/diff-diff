@@ -1453,8 +1453,10 @@ def aggregate_survey(
     panel_df : pd.DataFrame
         Aggregated panel with columns: grouping variables,
         ``{outcome}_mean``, ``{outcome}_se``, ``{outcome}_n``,
-        ``{outcome}_precision``, ``{covariate}_mean``, ``cell_n``,
-        ``cell_n_eff``, ``srs_fallback``.
+        ``{outcome}_precision``, ``{outcome}_weight``,
+        ``{covariate}_mean``, ``cell_n``, ``cell_n_eff``,
+        ``srs_fallback``. The ``_weight`` column is a fit-ready
+        version of ``_precision`` with NaN/Inf mapped to 0.0.
     second_stage_design : SurveyDesign
         Pre-configured for second-stage estimation with
         ``weight_type="aweight"``, precision weights from the first
@@ -1637,9 +1639,18 @@ def aggregate_survey(
     panel_df = panel_df.sort_values(by_cols).reset_index(drop=True)
 
     # --- Construct second-stage SurveyDesign ---
+    # Create a fit-ready weight column: NaN/Inf precision → 0.0 so downstream
+    # resolve() doesn't reject missing weights. Diagnostic *_precision is kept.
     first_outcome = outcome_cols[0]
+    weight_col = f"{first_outcome}_weight"
+    panel_df[weight_col] = np.where(
+        np.isfinite(panel_df[f"{first_outcome}_precision"]),
+        panel_df[f"{first_outcome}_precision"],
+        0.0,
+    )
+
     second_stage_design = SurveyDesign(
-        weights=f"{first_outcome}_precision",
+        weights=weight_col,
         weight_type="aweight",
         psu=by_cols[0],
     )
