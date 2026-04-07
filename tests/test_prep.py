@@ -2421,6 +2421,37 @@ class TestAggregateSurvey:
                 survey_design=design,
             )
 
+    def test_error_missing_grouping_keys(self, micro_data, design):
+        """NaN in grouping columns raises ValueError."""
+        data = micro_data.copy()
+        data.loc[0, "state"] = np.nan
+        with pytest.raises(ValueError, match="Missing values in grouping column"):
+            aggregate_survey(
+                data,
+                by=["state", "year"],
+                outcomes="y",
+                survey_design=design,
+            )
+
+    def test_error_all_missing_grouping_keys(self, design):
+        """All-NaN grouping column raises ValueError."""
+        data = pd.DataFrame(
+            {
+                "state": [np.nan] * 10,
+                "year": np.ones(10, dtype=int),
+                "y": np.random.RandomState(1).normal(0, 1, 10),
+                "wt": np.ones(10),
+            }
+        )
+        design_simple = SurveyDesign(weights="wt")
+        with pytest.raises(ValueError, match="Missing values in grouping column"):
+            aggregate_survey(
+                data,
+                by=["state", "year"],
+                outcomes="y",
+                survey_design=design_simple,
+            )
+
     def test_domain_estimation_preserves_full_design(self):
         """Full-design domain estimation accounts for PSUs outside the cell.
 

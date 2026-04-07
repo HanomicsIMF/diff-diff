@@ -1466,10 +1466,13 @@ def aggregate_survey(
     ...     microdata, by=["state", "year"],
     ...     outcomes="smoking_rate", survey_design=design,
     ... )
-    >>> result = DifferenceInDifferences().fit(
-    ...     panel, outcome="smoking_rate_mean",
-    ...     treatment="treated", time="year", survey_design=stage2,
-    ... )
+    >>> # Add treatment/time indicators at the panel level, then fit:
+    >>> # panel["treated"] = ...  # e.g., from policy adoption data
+    >>> # panel["post"] = (panel["year"] >= treatment_year).astype(int)
+    >>> # result = DifferenceInDifferences().fit(
+    >>> #     panel, outcome="smoking_rate_mean",
+    >>> #     treatment="treated", time="post", survey_design=stage2,
+    >>> # )
     """
     import warnings
     from dataclasses import replace
@@ -1507,6 +1510,15 @@ def aggregate_survey(
     # --- Empty-input guard ---
     if data.empty:
         raise ValueError("data must be non-empty")
+
+    # --- Validate grouping columns have no missing values ---
+    by_missing = data[by_cols].isna().any()
+    cols_with_na = list(by_missing[by_missing].index)
+    if cols_with_na:
+        raise ValueError(
+            f"Missing values in grouping column(s): {cols_with_na}. "
+            f"Drop or fill NaN values before calling aggregate_survey()."
+        )
 
     # --- Resolve design once on full data ---
     effective_design = (

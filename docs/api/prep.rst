@@ -284,13 +284,13 @@ Example
    #   cell_n, cell_n_eff, srs_fallback
 
    # stage2 is pre-configured: aweights + state-level clustering
-   result = DifferenceInDifferences().fit(
-       panel,
-       outcome="smoking_rate_mean",
-       treatment="treated",
-       time="year",
-       survey_design=stage2,
-   )
+   # Add treatment/time indicators at the panel level, then fit:
+   # panel["treated"] = ...  # from policy adoption data
+   # panel["post"] = (panel["year"] >= treatment_year).astype(int)
+   # result = DifferenceInDifferences().fit(
+   #     panel, outcome="smoking_rate_mean",
+   #     treatment="treated", time="post", survey_design=stage2,
+   # )
 
 Data Validation
 ---------------
