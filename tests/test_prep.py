@@ -2855,3 +2855,43 @@ class TestAggregateSurvey:
             panel_rep["outcome_se"].values,
             rtol=1e-6,
         )
+
+    def test_srs_fallback_scale_invariant(self):
+        """SRS fallback SEs are invariant to constant weight rescaling."""
+        rng = np.random.RandomState(55)
+        n = 60
+        data = pd.DataFrame(
+            {
+                "geo": np.repeat(["A", "B", "C"], n // 3),
+                "time": np.ones(n, dtype=int),
+                "wt": rng.uniform(0.5, 2.0, n),
+                "y": rng.normal(10, 2, n),
+            }
+        )
+        design1 = SurveyDesign(weights="wt")
+
+        # Force SRS fallback with high min_n
+        with pytest.warns(UserWarning, match="SRS fallback"):
+            panel1, _ = aggregate_survey(
+                data,
+                by=["geo", "time"],
+                outcomes="y",
+                survey_design=design1,
+                min_n=9999,
+            )
+
+        # Rescale weights by 5x → should give identical SEs
+        data2 = data.copy()
+        data2["wt"] = data2["wt"] * 5.0
+        design2 = SurveyDesign(weights="wt")
+        with pytest.warns(UserWarning, match="SRS fallback"):
+            panel2, _ = aggregate_survey(
+                data2,
+                by=["geo", "time"],
+                outcomes="y",
+                survey_design=design2,
+                min_n=9999,
+            )
+
+        np.testing.assert_allclose(panel1["y_se"].values, panel2["y_se"].values, rtol=1e-10)
+        np.testing.assert_allclose(panel1["y_mean"].values, panel2["y_mean"].values, rtol=1e-10)

@@ -1373,10 +1373,17 @@ def _cell_mean_variance(
     y_bar = float(np.sum(w_valid * y_clean) / sum_w)
 
     # SRS fallback if below min_n threshold
+    # Normalize positive weights to mean=1 so fallback is scale-invariant
+    # (replicate designs preserve raw weight scale per survey.py:L189-240)
     used_srs = False
     if n_valid < min_n:
-        resid_sq = w_valid * (y_clean - y_bar) ** 2
-        variance = float(np.sum(resid_sq) / (sum_w**2) * n_valid / (n_valid - 1))
+        w_norm = w_valid.copy()
+        w_pos = w_norm[w_norm > 0]
+        if len(w_pos) > 0:
+            w_norm[w_norm > 0] = w_pos / w_pos.mean()
+        sum_wn = float(np.sum(w_norm))
+        resid_sq = w_norm * (y_clean - y_bar) ** 2
+        variance = float(np.sum(resid_sq) / (sum_wn**2) * n_valid / (n_valid - 1))
         return y_bar, max(variance, 0.0), n_valid, True
 
     # Full-design domain estimation: construct full-length psi with zeros
@@ -1396,8 +1403,13 @@ def _cell_mean_variance(
 
     # SRS fallback when design-based variance is unidentifiable
     if np.isnan(variance):
-        resid_sq = w_valid * (y_clean - y_bar) ** 2
-        variance = float(np.sum(resid_sq) / (sum_w**2) * n_valid / (n_valid - 1))
+        w_norm = w_valid.copy()
+        w_pos = w_norm[w_norm > 0]
+        if len(w_pos) > 0:
+            w_norm[w_norm > 0] = w_pos / w_pos.mean()
+        sum_wn = float(np.sum(w_norm))
+        resid_sq = w_norm * (y_clean - y_bar) ** 2
+        variance = float(np.sum(resid_sq) / (sum_wn**2) * n_valid / (n_valid - 1))
         used_srs = True
 
     return y_bar, max(float(variance), 0.0), n_valid, used_srs
