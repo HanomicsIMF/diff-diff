@@ -2059,6 +2059,32 @@ class TestAggregateSurvey:
         assert "y2_precision" in panel.columns
         assert stage2.weights == "y_weight"
 
+    def test_multi_outcome_filtering_contract(self):
+        """Multi-outcome filtering is based on first outcome; warns about secondary data loss."""
+        rng = np.random.RandomState(33)
+        data = pd.DataFrame(
+            {
+                "geo": np.repeat(["A", "B"], 20),
+                "time": np.ones(40, dtype=int),
+                "wt": np.ones(40),
+                "y1": np.concatenate(
+                    [[np.nan] * 20, rng.normal(10, 2, 20)]
+                ),  # A: all-NaN, B: valid
+                "y2": rng.normal(5, 1, 40),  # valid everywhere
+            }
+        )
+        design = SurveyDesign(weights="wt")
+        with pytest.warns(UserWarning, match="y2.*valid data in dropped"):
+            panel, _ = aggregate_survey(
+                data,
+                by=["geo", "time"],
+                outcomes=["y1", "y2"],
+                survey_design=design,
+            )
+        # Cell A dropped (y1 non-estimable), even though y2 was valid
+        assert len(panel) == 1
+        assert panel["geo"].iloc[0] == "B"
+
     def test_covariates_mean_only(self, micro_data, design):
         """Covariates get mean column only, no SE/precision."""
         panel, _ = aggregate_survey(

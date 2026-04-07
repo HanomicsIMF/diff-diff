@@ -1435,7 +1435,11 @@ def aggregate_survey(
     outcomes : str or list of str
         Outcome variable(s) to aggregate with full precision tracking.
         Each outcome produces ``{name}_mean``, ``{name}_se``,
-        ``{name}_n``, and ``{name}_precision`` columns.
+        ``{name}_n``, and ``{name}_precision`` columns. When multiple
+        outcomes are given, panel filtering (non-estimable cell
+        removal, zero-weight PSU pruning) is based on the **first**
+        outcome only, consistent with the returned SurveyDesign. For
+        independent per-outcome support, call once per outcome.
     survey_design : SurveyDesign
         Survey design specification for the microdata.
     covariates : str or list of str, optional
@@ -1648,12 +1652,23 @@ def aggregate_survey(
     if np.any(nonestimable):
         n_dropped = int(np.sum(nonestimable))
         dropped_keys = panel_df.loc[nonestimable, by_cols].values.tolist()
-        warnings.warn(
-            f"Dropped {n_dropped} non-estimable cell(s) with no valid observations: "
-            f"{dropped_keys[:5]}" + (f" ... and {n_dropped - 5} more" if n_dropped > 5 else ""),
-            UserWarning,
-            stacklevel=2,
+        # Warn about secondary outcomes losing valid data in dropped cells
+        secondary_loss = []
+        for var in outcome_cols[1:]:
+            valid_secondary = np.isfinite(panel_df.loc[nonestimable, f"{var}_mean"].values)
+            if np.any(valid_secondary):
+                secondary_loss.append(var)
+        msg = (
+            f"Dropped {n_dropped} non-estimable cell(s) (based on first outcome "
+            f"'{first_outcome}'): {dropped_keys[:5]}"
+            + (f" ... and {n_dropped - 5} more" if n_dropped > 5 else "")
         )
+        if secondary_loss:
+            msg += (
+                f". Note: {secondary_loss} had valid data in dropped cells. "
+                f"For independent per-outcome support, call once per outcome."
+            )
+        warnings.warn(msg, UserWarning, stacklevel=2)
         panel_df = panel_df[~nonestimable].reset_index(drop=True)
 
     # --- Construct second-stage SurveyDesign ---
