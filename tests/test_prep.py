@@ -2452,6 +2452,38 @@ class TestAggregateSurvey:
                 survey_design=design_simple,
             )
 
+    def test_duplicate_index(self):
+        """Duplicate DataFrame indices do not break aggregation."""
+        rng = np.random.RandomState(77)
+        n = 40
+        data = pd.DataFrame(
+            {
+                "geo": np.repeat(["A", "B"], n // 2),
+                "time": np.tile(np.repeat([0, 1], n // 4), 2),
+                "wt": np.ones(n),
+                "y": rng.normal(10, 2, n),
+            }
+        )
+        # Create duplicate indices (e.g., from concat without reset_index)
+        data.index = list(range(n // 2)) * 2  # 0..19, 0..19
+
+        design = SurveyDesign(weights="wt")
+        panel_dup, _ = aggregate_survey(
+            data, by=["geo", "time"], outcomes="y", survey_design=design
+        )
+
+        # Compare against clean-index version
+        data_clean = data.reset_index(drop=True)
+        panel_clean, _ = aggregate_survey(
+            data_clean, by=["geo", "time"], outcomes="y", survey_design=design
+        )
+
+        # Results should be identical
+        np.testing.assert_allclose(
+            panel_dup["y_mean"].values, panel_clean["y_mean"].values, rtol=1e-12
+        )
+        np.testing.assert_allclose(panel_dup["y_se"].values, panel_clean["y_se"].values, rtol=1e-12)
+
     def test_domain_estimation_preserves_full_design(self):
         """Full-design domain estimation accounts for PSUs outside the cell.
 
