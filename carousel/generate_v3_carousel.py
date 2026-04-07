@@ -346,8 +346,8 @@ class V3SurveyCarouselPDF(FPDF):
         # Teasers
         teasers = [
             "Strata + PSU + FPC",
-            "TSL + replicate weights (BRR, Fay, JK1, JKn, SDR)",
-            "All 16 estimators*",
+            "TSL, replicate weights, survey bootstrap",
+            "Survey support across all 16 estimators*",
             "Validated against R's survey package",
         ]
         y_start = 225
@@ -362,7 +362,7 @@ class V3SurveyCarouselPDF(FPDF):
         self.set_font("Helvetica", "I", 11)
         self.set_text_color(*STONE_300)
         self.cell(WIDTH, 10,
-                  "*Including BaconDecomposition (diagnostic, weighted means only)",
+                  "*Variance paths vary by estimator. See docs for support matrix.",
                   align="C")
 
         self.add_footer()
@@ -502,39 +502,40 @@ class V3SurveyCarouselPDF(FPDF):
         eq2_h = self._place_equation_centered(eq2_path, e2pw, e2ph, eq2_y,
                                               max_w=120)
 
-        # Three-step reasoning chain
+        # Reasoning chain — scoped to IF-amenable estimators
         margin = 42
-        y_cursor = eq2_y + eq2_h + 16
+        y_cursor = eq2_y + eq2_h + 14
         items = [
-            ("Modern DiD estimators are smooth functionals of F",),
-            ("Their IFs are well-defined and design-independent",),
-            ("Binder's theorem: plug IFs into the survey variance formula",),
+            "Most modern DiD estimators are smooth functionals of F",
+            "Their IFs are well-defined and design-independent",
+            "Binder's theorem: plug IFs into the survey variance formula",
+            "SyntheticDiD and TROP: Rao-Wu survey bootstrap instead",
         ]
 
-        for (text,) in items:
+        for text in items:
             # Sienna dash
             self.set_xy(margin, y_cursor)
-            self.set_font("Helvetica", "B", 16)
+            self.set_font("Helvetica", "B", 14)
             self.set_text_color(*SIENNA)
             self.cell(14, 10, "--")
 
             # Text
             self.set_xy(margin + 14, y_cursor)
-            self.set_font("Helvetica", "", 15)
+            self.set_font("Helvetica", "", 13)
             self.set_text_color(*STONE_900)
             self.cell(WIDTH - margin * 2 - 14, 10, text)
 
-            y_cursor += 24
+            y_cursor += 20
 
         # Citation
-        self.centered_text(y_cursor + 8,
+        self.centered_text(y_cursor + 6,
                            "Binder (1983), Demnati & Rao (2004)",
-                           size=13, bold=False, italic=True, color=STONE_500)
+                           size=12, bold=False, italic=True, color=STONE_500)
 
         # Link to full derivation (GitHub URL)
-        self.centered_text(y_cursor + 24,
+        self.centered_text(y_cursor + 20,
                            "github.com/igerber/diff-diff/blob/main/docs/methodology/survey-theory.md",
-                           size=10, bold=False, italic=True, color=SIENNA)
+                           size=9, bold=False, italic=True, color=SIENNA)
 
         self.add_footer()
 
@@ -597,13 +598,16 @@ class V3SurveyCarouselPDF(FPDF):
 
         # Bold callout
         callout_y = start_y + 3 * (box_h + gap) + 8
-        self.centered_text(callout_y, "All 16 estimators.*",
-                           size=22, color=SIENNA)
+        self.centered_text(callout_y, "Survey support across all 16 estimators.*",
+                           size=20, color=SIENNA)
 
         # Asterisk fine print
-        self.centered_text(callout_y + 28,
-                           "*Including BaconDecomposition (diagnostic, weighted means only)",
-                           size=11, bold=False, italic=True, color=STONE_300)
+        self.centered_text(callout_y + 26,
+                           "*TSL for 14 estimators; Rao-Wu bootstrap for SyntheticDiD/TROP.",
+                           size=10, bold=False, italic=True, color=STONE_300)
+        self.centered_text(callout_y + 38,
+                           "Bacon = diagnostic only. See docs for full support matrix.",
+                           size=10, bold=False, italic=True, color=STONE_300)
 
         self.add_footer()
 
@@ -707,7 +711,7 @@ class V3SurveyCarouselPDF(FPDF):
                   align="C")
         self.set_xy(0, fn_y + 12)
         self.cell(WIDTH, 10,
-                  "7 estimators total validated against R golden values.",
+                  "7 estimators validated against R reference implementations.",
                   align="C")
 
         self.add_footer()
