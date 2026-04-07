@@ -209,10 +209,11 @@ co-sign.
 ### 10f. WooldridgeDiD Survey Support — SHIPPED
 
 WooldridgeDiD (ETWFE) now supports `survey_design` for all three methods
-(OLS, logit, Poisson). OLS uses survey-weighted within-transformation +
-WLS + TSL vcov. Logit/Poisson use survey-weighted IRLS + X_tilde
-linearization for TSL vcov. Replicate-weight designs raise
-`NotImplementedError`; bootstrap + survey is rejected.
+(OLS, logit, Poisson) with `pweight` only (`fweight`/`aweight` rejected).
+OLS uses survey-weighted within-transformation + WLS + TSL vcov.
+Logit/Poisson use survey-weighted IRLS + X_tilde linearization for TSL
+vcov. Replicate-weight designs raise `NotImplementedError`; bootstrap +
+survey is rejected.
 
 ### 10g. Practitioner Guidance (LOW priority)
 

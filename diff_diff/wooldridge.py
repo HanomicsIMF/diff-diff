@@ -647,6 +647,23 @@ class WooldridgeDiD:
         # weighted FWL projection — all columns (treatment interactions +
         # covariates) are demeaned together.
         wt_weights = survey_weights if survey_weights is not None else np.ones(len(tmp))
+
+        # Guard: zero-weight unit/time groups cause 0/0 in within_transform
+        if survey_weights is not None and np.any(survey_weights == 0):
+            for grp_col, grp_label in [(unit, "unit"), (time, "time period")]:
+                grp_sums = sample.groupby(grp_col).apply(
+                    lambda g: survey_weights[g.index].sum(),
+                    include_groups=False,
+                )
+                zero_grps = grp_sums[grp_sums == 0].index.tolist()
+                if zero_grps:
+                    raise ValueError(
+                        f"Survey weights sum to zero for {grp_label}(s) "
+                        f"{zero_grps[:3]}. Cannot compute weighted "
+                        f"within-transformation. Remove zero-weight "
+                        f"{grp_label}s or use non-zero weights."
+                    )
+
         transformed = within_transform(
             tmp, all_vars, unit=unit, time=time, suffix="_demeaned",
             weights=wt_weights,
@@ -671,7 +688,15 @@ class WooldridgeDiD:
         # Survey TSL vcov replaces cluster-robust vcov
         if resolved is not None:
             from diff_diff.survey import compute_survey_vcov
-            vcov = compute_survey_vcov(X, resids, resolved)
+            nan_mask_ols = np.isnan(coefs)
+            if np.any(nan_mask_ols):
+                kept = ~nan_mask_ols
+                vcov_kept = compute_survey_vcov(X[:, kept], resids, resolved)
+                vcov = np.full((len(coefs), len(coefs)), np.nan)
+                kept_idx = np.where(kept)[0]
+                vcov[np.ix_(kept_idx, kept_idx)] = vcov_kept
+            else:
+                vcov = compute_survey_vcov(X, resids, resolved)
 
         # 7. Extract β_{g,t} and build gt_effects dict
         gt_effects: Dict[Tuple, Dict] = {}

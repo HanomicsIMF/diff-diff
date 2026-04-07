@@ -1521,3 +1521,29 @@ class TestWooldridgeSurvey:
         )
         assert np.isfinite(r.overall_att)
         assert np.isfinite(r.overall_se)
+
+    def test_ols_survey_rank_deficient(self, survey_panel):
+        """Survey OLS handles rank-deficient all-eventually-treated designs."""
+        from diff_diff.survey import SurveyDesign
+        # Remove never-treated (cohort=0) to create rank-deficient design
+        df = survey_panel[survey_panel["cohort"] > 0].copy()
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="unit")
+        r = WooldridgeDiD(control_group="not_yet_treated").fit(
+            df, outcome="y", unit="unit", time="time",
+            cohort="cohort", survey_design=sd,
+        )
+        assert np.isfinite(r.overall_att)
+        assert np.isfinite(r.overall_se)
+
+    def test_ols_survey_zero_weight_unit_rejected(self, survey_panel):
+        """Zero-weight unit raises ValueError before within_transform."""
+        from diff_diff.survey import SurveyDesign
+        df = survey_panel.copy()
+        # Zero out all weights for unit 0
+        df.loc[df["unit"] == 0, "weight"] = 0.0
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="unit")
+        with pytest.raises(ValueError, match="Survey weights sum to zero for unit"):
+            WooldridgeDiD().fit(
+                df, outcome="y", unit="unit", time="time",
+                cohort="cohort", survey_design=sd,
+            )

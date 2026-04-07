@@ -2401,6 +2401,20 @@ def solve_poisson(
     """
     n, k_orig = X.shape
 
+    # Validate weights (mirrors solve_logit validation)
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float64)
+        if weights.shape != (n,):
+            raise ValueError(f"weights must have shape ({n},), got {weights.shape}")
+        if np.any(np.isnan(weights)):
+            raise ValueError("weights contain NaN values")
+        if np.any(~np.isfinite(weights)):
+            raise ValueError("weights contain Inf values")
+        if np.any(weights < 0):
+            raise ValueError("weights must be non-negative")
+        if np.sum(weights) <= 0:
+            raise ValueError("weights sum to zero — no observations have positive weight")
+
     # Validate rank_deficient_action (same as solve_logit/solve_ols)
     valid_actions = ("warn", "error", "silent")
     if rank_deficient_action not in valid_actions:
