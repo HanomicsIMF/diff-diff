@@ -1384,7 +1384,7 @@ class TestCallawaySantAnnaBootstrap:
         weight_types = ["rademacher", "mammen", "webb"]
 
         for wt in weight_types:
-            cs = CallawaySantAnna(n_bootstrap=n_boot, bootstrap_weight_type=wt, seed=42)
+            cs = CallawaySantAnna(n_bootstrap=n_boot, bootstrap_weights=wt, seed=42)
             results = cs.fit(
                 data, outcome="outcome", unit="unit", time="time", first_treat="first_treat"
             )
@@ -1589,9 +1589,6 @@ class TestCallawaySantAnnaBootstrap:
         # Test with new parameter name
         with pytest.raises(ValueError, match="bootstrap_weights"):
             CallawaySantAnna(bootstrap_weights="invalid")
-        # Test deprecated parameter still validates
-        with pytest.raises(ValueError, match="bootstrap_weights"):
-            CallawaySantAnna(bootstrap_weight_type="invalid")
 
     def test_bootstrap_get_params(self):
         """Test that get_params includes bootstrap_weights."""
@@ -1600,8 +1597,6 @@ class TestCallawaySantAnnaBootstrap:
 
         assert params["n_bootstrap"] == 99
         assert params["bootstrap_weights"] == "mammen"
-        # Deprecated attribute still accessible for backward compat
-        assert params["bootstrap_weight_type"] == "mammen"
         assert params["seed"] == 42
 
     def test_bootstrap_with_not_yet_treated(self, ci_params):

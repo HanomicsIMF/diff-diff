@@ -97,7 +97,7 @@ Full practitioner guide: docs/llms-practitioner.txt
 
 ## Survey Support
 
-All estimators except `WooldridgeDiD` accept an optional `survey_design` parameter. Pass a `SurveyDesign` object to get design-based variance estimation:
+All estimators accept an optional `survey_design` parameter. Pass a `SurveyDesign` object to get design-based variance estimation:
 
 - **Design elements**: strata, PSU, FPC, weight types (pweight/fweight/aweight), lonely PSU handling, nest
 - **Variance methods**: Taylor Series Linearization (TSL), replicate weights (BRR/Fay/JK1/JKn/SDR), survey-aware bootstrap
@@ -105,7 +105,7 @@ All estimators except `WooldridgeDiD` accept an optional `survey_design` paramet
 - **Repeated cross-sections**: `CallawaySantAnna(panel=False)` for BRFSS, ACS, CPS
 - **Compatibility matrix**: [Survey Design Support](https://diff-diff.readthedocs.io/en/stable/choosing_estimator.html#survey-design-support)
 
-No R or Python package offers design-based variance estimation for modern heterogeneity-robust DiD estimators. R's `did`, `fixest`, `synthdid`, and `didimputation` accept flat weight vectors only. (Note: `WooldridgeDiD` does not yet accept `survey_design` — planned for Phase 10f.)
+No R or Python package offers design-based variance estimation for modern heterogeneity-robust DiD estimators. R's `did`, `fixest`, `synthdid`, and `didimputation` accept flat weight vectors only.
 
 ## Optional
 

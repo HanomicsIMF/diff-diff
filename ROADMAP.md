@@ -6,7 +6,7 @@ For past changes and release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-## Current Status (v2.9.0)
+## Current Status (v3.0)
 
 diff-diff is a **production-ready** DiD library with feature parity with R's `did` + `HonestDiD` + `synthdid` ecosystem for core DiD analysis, plus **unique survey support** that no R or Python package matches.
 
@@ -28,18 +28,16 @@ diff-diff is a **production-ready** DiD library with feature parity with R's `di
 
 ### Survey Support
 
-`SurveyDesign` with strata, PSU, FPC, weight types (pweight/fweight/aweight), lonely PSU handling. 15 of 16 estimators accept `survey_design` (WooldridgeDiD support planned for Phase 10f); design-based variance estimation varies by estimator:
+`SurveyDesign` with strata, PSU, FPC, weight types (pweight/fweight/aweight), lonely PSU handling. All 16 estimators accept `survey_design` (15 inference-level + BaconDecomposition diagnostic); design-based variance estimation varies by estimator:
 
 - **TSL variance** (Taylor Series Linearization) with strata + PSU + FPC
-- **Replicate weights**: BRR, Fay's BRR, JK1, JKn, SDR — 12 of 16 estimators (not SyntheticDiD, TROP, BaconDecomposition, or WooldridgeDiD)
+- **Replicate weights**: BRR, Fay's BRR, JK1, JKn, SDR — 12 of 16 estimators (not SyntheticDiD, TROP, BaconDecomposition, WooldridgeDiD)
 - **Survey-aware bootstrap**: multiplier at PSU (IF-based) and Rao-Wu rescaled (resampling-based)
 - **DEFF diagnostics**, **subpopulation analysis**, **weight trimming**, **CV on estimates**
 - **Repeated cross-sections**: `CallawaySantAnna(panel=False)` for BRFSS, ACS, CPS
 - **R cross-validation**: 15 tests against R's `survey` package using NHANES, RECS, and API datasets
 
 See [Survey Design Support](docs/choosing_estimator.rst#survey-design-support) for the full compatibility matrix, and [survey-roadmap.md](docs/survey-roadmap.md) for implementation details.
-
-**Gap**: WooldridgeDiD does not yet accept `survey_design`. Planned for Phase 10f.
 
 ### Infrastructure
 
@@ -50,21 +48,26 @@ See [Survey Design Support](docs/choosing_estimator.rst#survey-design-support) f
 
 ---
 
-## Active Work: Survey Academic Credibility (Phase 10)
+## Survey Academic Credibility (Phase 10)
 
-Before broadly announcing survey capability, we are establishing the theoretical
-and empirical foundation needed for credibility with practitioners and
-methodologists. See [survey-roadmap.md](docs/survey-roadmap.md) for detailed specs.
+Phase 10 established the theoretical and empirical foundation for survey support
+credibility. See [survey-roadmap.md](docs/survey-roadmap.md) for detailed specs.
 
 | Item | Priority | Status |
 |------|----------|--------|
-| **10a.** Theory document (`survey-theory.md`) | HIGH | Not started |
-| **10b.** Research-grade survey DGP (enhance `generate_survey_did_data`) | HIGH | Not started |
-| **10c.** Expand R validation (ImputationDiD, StackedDiD, SunAbraham, TripleDifference) | HIGH | Not started |
-| **10d.** Tutorial: flat-weight vs design-based comparison | HIGH | Not started — depends on 10b |
+| **10a.** Theory document (`survey-theory.md`) | HIGH | ✅ Shipped (v2.9.1) |
+| **10b.** Research-grade survey DGP (enhance `generate_survey_did_data`) | HIGH | ✅ Shipped (v2.9.1) |
+| **10c.** Expand R validation (ImputationDiD, StackedDiD, SunAbraham, TripleDifference) | HIGH | ✅ Shipped (v2.9.1) |
+| **10d.** Tutorial: flat-weight vs design-based comparison | HIGH | ✅ Shipped (v2.9.1) |
 | **10e.** Position paper / arXiv preprint | MEDIUM | Not started — depends on 10b |
-| **10f.** WooldridgeDiD survey support (OLS + logit + Poisson) | MEDIUM | Not started |
+| **10f.** WooldridgeDiD survey support (OLS + logit + Poisson) | MEDIUM | ✅ Shipped (v2.9.0) |
 | **10g.** Practitioner guidance: when does survey design matter? | LOW | Not started |
+
+---
+
+## Future: Survey Aggregation Helper
+
+**`survey_aggregate()` helper function** for the microdata-to-panel workflow. Bridges individual-level survey data (BRFSS, ACS, CPS) collected as repeated cross-sections to geographic-level (state, city) panel DiD. Computes design-based cell means and precision weights that estimators can consume directly.
 
 ---
 

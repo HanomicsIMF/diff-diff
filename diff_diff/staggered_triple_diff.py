@@ -147,7 +147,6 @@ class StaggeredTripleDifference(
         self.base_period = base_period
         self.n_bootstrap = n_bootstrap
         self.bootstrap_weights = bootstrap_weights
-        self.bootstrap_weight_type = bootstrap_weights
         self.seed = seed
         self.cband = cband
         self.pscore_trim = pscore_trim
@@ -186,7 +185,7 @@ class StaggeredTripleDifference(
                 raise ValueError(f"Unknown parameter: {key}")
             setattr(self, key, value)
         if "bootstrap_weights" in params:
-            self.bootstrap_weight_type = params["bootstrap_weights"]
+            self.bootstrap_weights = params["bootstrap_weights"]
         return self
 
     # ------------------------------------------------------------------

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-04-07
+
+v3.0 completes the survey support roadmap: all 16 estimators (15 inference-level +
+BaconDecomposition diagnostic) now accept `survey_design`. See v2.8.0–v2.9.1 entries
+for the full feature history leading to this release.
+
+### Breaking Changes
+- **Remove `bootstrap_weight_type` parameter** from CallawaySantAnna — use `bootstrap_weights` instead (deprecated since v1.0.1)
+- **Remove TROP `method="twostep"` alias** — use `method="local"` (deprecated since v2.7.2)
+- **Remove TROP `method="joint"` alias** — use `method="global"` (deprecated since v2.7.2)
+
+### Upgrading from v2.x
+- `CallawaySantAnna(bootstrap_weight_type="mammen")` → `CallawaySantAnna(bootstrap_weights="mammen")`
+- `TROP(method="twostep")` → `TROP(method="local")`
+- `TROP(method="joint")` → `TROP(method="global")`
+
+### Deprecated
+- SyntheticDiD `lambda_reg` and `zeta` parameters formally scheduled for removal in v3.1 — use `zeta_omega`/`zeta_lambda` instead
+
+### Changed
+- Internal attribute `bootstrap_weight_type` renamed to `bootstrap_weights` in bootstrap mixin and StaggeredTripleDifference for consistency
+- TROP `set_params()` now validates `method` against `("local", "global")` — previously only validated in `__init__`
+- Documentation updated: all survey gap notes for WooldridgeDiD removed, ROADMAP Phase 10 items marked shipped
+
 ## [2.9.1] - 2026-04-06
 
 ### Added

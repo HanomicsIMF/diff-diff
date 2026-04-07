@@ -583,49 +583,6 @@ inaccurate with missing observations.
    results = bacon.fit(balanced, outcome='y', unit='unit_id',
                        time='period', first_treat='first_treat')
 
-Deprecation Warnings
---------------------
-
-"method='twostep' is deprecated"
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Problem:** TROP emits a ``FutureWarning`` that ``method='twostep'`` is
-deprecated.
-
-**Causes:**
-
-1. Code uses the old ``method='twostep'`` parameter name
-
-**Solutions:**
-
-.. code-block:: python
-
-   # Old (deprecated)
-   trop = TROP(method='twostep')
-
-   # New (use 'local' instead)
-   trop = TROP(method='local')
-
-"method='joint' is deprecated"
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Problem:** TROP emits a ``FutureWarning`` that ``method='joint'`` is
-deprecated.
-
-**Causes:**
-
-1. Code uses the old ``method='joint'`` parameter name
-
-**Solutions:**
-
-.. code-block:: python
-
-   # Old (deprecated)
-   trop = TROP(method='joint')
-
-   # New (use 'global' instead)
-   trop = TROP(method='global')
-
 Getting Help
 ------------
 

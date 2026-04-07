@@ -2,7 +2,7 @@
 
 > A Python library for Difference-in-Differences causal inference analysis. Provides sklearn-like estimators with statsmodels-style output for econometric analysis.
 
-- Version: 2.9.1
+- Version: 3.0.0
 - Repository: https://github.com/igerber/diff-diff
 - License: MIT
 - Dependencies: numpy, pandas, scipy (no statsmodels dependency)
@@ -589,7 +589,7 @@ Triply Robust Panel estimator (Athey, Imbens, Qu & Viviano 2025). Combines nucle
 
 ```python
 TROP(
-    method: str = "twostep",                  # "twostep" or "global" (or deprecated "joint")
+    method: str = "local",                     # "local" or "global"
     lambda_time_grid: list[float] = None,     # Time weight decay grid [0, 0.1, 0.5, 1, 2, 5]
     lambda_unit_grid: list[float] = None,     # Unit weight decay grid [0, 0.1, 0.5, 1, 2, 5]
     lambda_nn_grid: list[float] = None,       # Nuclear norm grid [0, 0.01, 0.1, 1, 10]
@@ -618,7 +618,7 @@ trop.fit(
 ```python
 from diff_diff import TROP
 
-trop = TROP(method='twostep', seed=42)
+trop = TROP(method='local', seed=42)
 results = trop.fit(data, outcome='outcome', treatment='treated',
                    unit='unit', time='period')
 results.print_summary()
@@ -1525,7 +1525,7 @@ clear_cache()
 
 ## Survey Support
 
-All estimators except `WooldridgeDiD` accept an optional `survey_design` parameter in `fit()`. Pass a `SurveyDesign` object to get design-based variance estimation. (WooldridgeDiD survey support is planned for Phase 10f.)
+All estimators accept an optional `survey_design` parameter in `fit()`. Pass a `SurveyDesign` object to get design-based variance estimation.
 
 ```python
 from diff_diff import SurveyDesign, CallawaySantAnna
@@ -1576,7 +1576,7 @@ sd_female, data_female = sd.subpopulation(data, mask=lambda df: df['sex'] == 'F'
 - Repeated cross-sections: `CallawaySantAnna(panel=False)`
 - Compatibility matrix: see `docs/choosing_estimator.rst` Survey Design Support section
 
-No R or Python package offers design-based variance estimation for modern heterogeneity-robust DiD estimators. (`WooldridgeDiD` does not yet accept `survey_design` — planned for Phase 10f.)
+No R or Python package offers design-based variance estimation for modern heterogeneity-robust DiD estimators.
 
 ## Linear Algebra Helpers
 

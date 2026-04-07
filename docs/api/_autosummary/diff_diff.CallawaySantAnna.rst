@@ -29,7 +29,7 @@
    .. autosummary::
    
       ~CallawaySantAnna.n_bootstrap
-      ~CallawaySantAnna.bootstrap_weight_type
+      ~CallawaySantAnna.bootstrap_weights
       ~CallawaySantAnna.alpha
       ~CallawaySantAnna.seed
       ~CallawaySantAnna.anticipation

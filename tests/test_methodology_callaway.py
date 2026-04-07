@@ -1184,39 +1184,6 @@ class TestResultsObject:
 # =============================================================================
 
 
-class TestDeprecationWarnings:
-    """Tests for deprecated parameter handling."""
-
-    def test_bootstrap_weight_type_deprecated(self):
-        """Test that bootstrap_weight_type emits deprecation warning."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            cs = CallawaySantAnna(bootstrap_weight_type="mammen")
-
-            # Check deprecation warning was emitted
-            deprecation_warnings = [
-                warning for warning in w
-                if issubclass(warning.category, DeprecationWarning)
-            ]
-            assert len(deprecation_warnings) >= 1
-            assert "bootstrap_weight_type" in str(deprecation_warnings[0].message)
-
-            # Should still work (backward compatibility)
-            assert cs.bootstrap_weights == "mammen"
-
-    def test_bootstrap_weights_takes_precedence(self):
-        """Test that bootstrap_weights takes precedence over deprecated param."""
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            cs = CallawaySantAnna(
-                bootstrap_weights="rademacher",
-                bootstrap_weight_type="mammen"
-            )
-
-            # bootstrap_weights should take precedence
-            assert cs.bootstrap_weights == "rademacher"
-
-
 # =============================================================================
 # MPDTA-based Strict R Comparison Tests
 # =============================================================================

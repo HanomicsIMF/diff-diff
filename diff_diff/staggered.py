@@ -153,9 +153,6 @@ class CallawaySantAnna(
         - "rademacher": +1/-1 with equal probability (standard choice)
         - "mammen": Two-point distribution (asymptotically valid, matches skewness)
         - "webb": Six-point distribution (recommended when n_clusters < 20)
-    bootstrap_weight_type : str, optional
-        .. deprecated:: 1.0.1
-            Use ``bootstrap_weights`` instead. Will be removed in v3.0.
     seed : int, optional
         Random seed for reproducibility.
     rank_deficient_action : str, default="warn"
@@ -293,7 +290,6 @@ class CallawaySantAnna(
         cluster: Optional[str] = None,
         n_bootstrap: int = 0,
         bootstrap_weights: Optional[str] = None,
-        bootstrap_weight_type: Optional[str] = None,
         seed: Optional[int] = None,
         rank_deficient_action: str = "warn",
         base_period: str = "varying",
@@ -323,18 +319,7 @@ class CallawaySantAnna(
                 f"pscore_fallback must be 'error' or 'unconditional', " f"got '{pscore_fallback}'"
             )
 
-        # Handle bootstrap_weight_type deprecation
-        if bootstrap_weight_type is not None:
-            warnings.warn(
-                "bootstrap_weight_type is deprecated and will be removed in v3.0. "
-                "Use bootstrap_weights instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if bootstrap_weights is None:
-                bootstrap_weights = bootstrap_weight_type
-
-        # Default to rademacher if neither specified
+        # Default to rademacher if not specified
         if bootstrap_weights is None:
             bootstrap_weights = "rademacher"
 
@@ -362,8 +347,6 @@ class CallawaySantAnna(
         self.cluster = cluster
         self.n_bootstrap = n_bootstrap
         self.bootstrap_weights = bootstrap_weights
-        # Keep bootstrap_weight_type for backward compatibility
-        self.bootstrap_weight_type = bootstrap_weights
         self.seed = seed
         self.rank_deficient_action = rank_deficient_action
         self.base_period = base_period
@@ -3881,8 +3864,6 @@ class CallawaySantAnna(
             "cluster": self.cluster,
             "n_bootstrap": self.n_bootstrap,
             "bootstrap_weights": self.bootstrap_weights,
-            # Deprecated but kept for backward compatibility
-            "bootstrap_weight_type": self.bootstrap_weight_type,
             "seed": self.seed,
             "rank_deficient_action": self.rank_deficient_action,
             "base_period": self.base_period,

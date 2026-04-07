@@ -145,10 +145,6 @@ For the paper's full per-treated-cell estimator (Algorithm 2), use
 The global method is **faster** (single optimization vs N_treated optimizations).
 Treatment effects are **heterogeneous** per-observation residuals; ATT is their mean.
 
-``method='twostep'`` is a deprecated alias for ``method='local'`` and will be
-removed in v3.0. ``method='joint'`` is a deprecated alias for ``method='global'``
-and will be removed in v3.0.
-
 .. list-table::
    :header-rows: 1
    :widths: 20 40 40

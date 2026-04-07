@@ -144,14 +144,14 @@ class SyntheticDiD(DifferenceInDifferences):
             warnings.warn(
                 "lambda_reg is deprecated and ignored. Regularization is now "
                 "auto-computed from data. Use zeta_omega to override unit weight "
-                "regularization.",
+                "regularization. Will be removed in v3.1.",
                 DeprecationWarning,
                 stacklevel=2,
             )
         if zeta is not None:
             warnings.warn(
                 "zeta is deprecated and ignored. Use zeta_lambda to override "
-                "time weight regularization.",
+                "time weight regularization. Will be removed in v3.1.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -1124,7 +1124,8 @@ class SyntheticDiD(DifferenceInDifferences):
         for key, value in params.items():
             if key in _deprecated:
                 warnings.warn(
-                    f"{key} is deprecated and ignored. Use zeta_omega/zeta_lambda " f"instead.",
+                    f"{key} is deprecated and ignored. Use zeta_omega/zeta_lambda "
+                    f"instead. Will be removed in v3.1.",
                     DeprecationWarning,
                     stacklevel=2,
                 )

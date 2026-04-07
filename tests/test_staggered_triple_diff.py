@@ -72,10 +72,10 @@ class TestStaggeredTripleDiffInit:
         assert est.estimation_method == "ipw"
         assert est.alpha == 0.10
 
-    def test_set_params_updates_bootstrap_weight_type(self):
+    def test_set_params_updates_bootstrap_weights(self):
         est = StaggeredTripleDifference()
         est.set_params(bootstrap_weights="mammen")
-        assert est.bootstrap_weight_type == "mammen"
+        assert est.bootstrap_weights == "mammen"
 
     def test_invalid_estimation_method(self):
         with pytest.raises(ValueError, match="estimation_method"):

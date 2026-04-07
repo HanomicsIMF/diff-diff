@@ -77,10 +77,6 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
           ATT is the mean of these effects. For the paper's full
           per-treated-cell estimator, use ``method='local'``.
 
-        - 'twostep': Deprecated alias for 'local'. Will be removed in v3.0.
-
-        - 'joint': Deprecated alias for 'global'. Will be removed in v3.0.
-
     lambda_time_grid : list, optional
         Grid of time weight decay parameters. 0.0 = uniform weights (disabled).
         Must not contain inf. Default: [0, 0.1, 0.5, 1, 2, 5].
@@ -140,26 +136,9 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         seed: Optional[int] = None,
     ):
         # Validate method parameter
-        # 'local'/'global' are preferred; 'twostep'/'joint' are deprecated aliases
-        valid_methods = ("local", "twostep", "joint", "global")
+        valid_methods = ("local", "global")
         if method not in valid_methods:
             raise ValueError(f"method must be one of {valid_methods}, got '{method}'")
-        if method == "twostep":
-            warnings.warn(
-                "method='twostep' is deprecated and will be removed in v3.0. "
-                "Use method='local' instead.",
-                FutureWarning,
-                stacklevel=2,
-            )
-            method = "local"
-        if method == "joint":
-            warnings.warn(
-                "method='joint' is deprecated and will be removed in v3.0. "
-                "Use method='global' instead.",
-                FutureWarning,
-                stacklevel=2,
-            )
-            method = "global"
         self.method = method
 
         # Default grids from paper
@@ -913,22 +892,10 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
     def set_params(self, **params) -> "TROP":
         """Set estimator parameters."""
         for key, value in params.items():
-            if key == "method" and value == "twostep":
-                warnings.warn(
-                    "method='twostep' is deprecated and will be removed in "
-                    "v3.0. Use method='local' instead.",
-                    FutureWarning,
-                    stacklevel=2,
+            if key == "method" and value not in ("local", "global"):
+                raise ValueError(
+                    f"method must be one of ('local', 'global'), got '{value}'"
                 )
-                value = "local"
-            if key == "method" and value == "joint":
-                warnings.warn(
-                    "method='joint' is deprecated and will be removed in "
-                    "v3.0. Use method='global' instead.",
-                    FutureWarning,
-                    stacklevel=2,
-                )
-                value = "global"
             if hasattr(self, key):
                 setattr(self, key, value)
             else:

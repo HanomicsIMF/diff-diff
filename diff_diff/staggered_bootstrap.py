@@ -118,7 +118,7 @@ class CallawaySantAnnaBootstrapMixin:
 
     # Type hints for attributes accessed from the main class
     n_bootstrap: int
-    bootstrap_weight_type: str
+    bootstrap_weights: str
     alpha: float
     seed: Optional[int]
     anticipation: int
@@ -329,7 +329,7 @@ class CallawaySantAnnaBootstrapMixin:
         if _use_survey_bootstrap:
             # PSU-level multiplier weights
             psu_weights, psu_ids = _generate_survey_multiplier_weights_batch(
-                self.n_bootstrap, resolved_survey_unit, self.bootstrap_weight_type, rng
+                self.n_bootstrap, resolved_survey_unit, self.bootstrap_weights, rng
             )
             # Build unit → PSU column map
             if resolved_survey_unit.psu is not None:
@@ -348,7 +348,7 @@ class CallawaySantAnnaBootstrapMixin:
         else:
             # Standard unit-level weights (no survey or weights-only)
             all_bootstrap_weights = _generate_bootstrap_weights_batch(
-                self.n_bootstrap, n_units, self.bootstrap_weight_type, rng
+                self.n_bootstrap, n_units, self.bootstrap_weights, rng
             )
 
         # Vectorized bootstrap ATT(g,t) computation
@@ -534,7 +534,7 @@ class CallawaySantAnnaBootstrapMixin:
 
         return CSBootstrapResults(
             n_bootstrap=self.n_bootstrap,
-            weight_type=self.bootstrap_weight_type,
+            weight_type=self.bootstrap_weights,
             alpha=self.alpha,
             overall_att_se=overall_se,
             overall_att_ci=overall_ci,

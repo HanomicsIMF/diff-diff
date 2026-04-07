@@ -116,9 +116,9 @@ Mypy reports 0 errors. All mixin `attr-defined` errors resolved via
 
 Deprecated parameters still present for backward compatibility:
 
-- `bootstrap_weight_type` in `CallawaySantAnna` (`staggered.py`)
-  - Deprecated in favor of `bootstrap_weights` parameter
-  - Remove in next major version (v3.0)
+- `lambda_reg` and `zeta` in `SyntheticDiD` (`synthetic_did.py`)
+  - Deprecated in favor of `zeta_omega`/`zeta_lambda` parameters
+  - Remove in v3.1
 
 ---
 

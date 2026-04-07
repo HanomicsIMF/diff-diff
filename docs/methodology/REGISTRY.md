@@ -1753,8 +1753,7 @@ Q(λ) = Σ_{j,s: D_js=0} [τ̂_js^loocv(λ)]²
 
 ### TROP Global Estimation Method
 
-**Method**: `method="global"` in TROP estimator (`method="joint"` is a deprecated alias;
-`method="twostep"` is a deprecated alias for `method="local"`)
+**Method**: `method="global"` in TROP estimator
 
 **Approach**: Computationally efficient adaptation using the (1-W) masking
 principle from Eq. 2. Fits a single global model on control data, then
@@ -1863,8 +1862,6 @@ For global method, LOOCV works as follows:
 - [x] Alternating minimization for nuclear norm penalty
 - [x] Returns ATT = mean of per-observation post-hoc τ̂_{it}
 - [x] Rust acceleration for LOOCV and bootstrap
-
-- **Note:** `method="twostep"` renamed to `method="local"` and `method="joint"` renamed to `method="global"` to form a natural local/global pair. Both old names are deprecated aliases, removal planned for v3.0.
 
 ---
 

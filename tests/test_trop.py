@@ -2907,13 +2907,6 @@ class TestTROPGlobalMethod:
         assert "method" in params
         assert params["method"] == "global"
 
-    def test_method_in_get_params_joint_deprecated(self):
-        """'joint' alias maps to 'global' in get_params()."""
-        with pytest.warns(FutureWarning, match="deprecated"):
-            trop_est = TROP(method="joint")
-        params = trop_est.get_params()
-        assert params["method"] == "global"
-
     def test_method_in_set_params(self):
         """method parameter can be set via set_params()."""
         trop_est = TROP(method="local")
@@ -2922,26 +2915,13 @@ class TestTROPGlobalMethod:
         trop_est.set_params(method="global")
         assert trop_est.method == "global"
 
-    def test_method_set_params_joint_deprecated(self):
-        """'joint' alias maps to 'global' via set_params()."""
+    def test_method_set_params_invalid_rejected(self):
+        """Invalid method values are rejected by set_params()."""
         trop_est = TROP(method="local")
-        with pytest.warns(FutureWarning, match="deprecated"):
-            trop_est.set_params(method="joint")
-        assert trop_est.method == "global"
-
-    def test_method_in_get_params_twostep_deprecated(self):
-        """'twostep' alias maps to 'local' in get_params()."""
-        with pytest.warns(FutureWarning, match="deprecated"):
-            trop_est = TROP(method="twostep")
-        params = trop_est.get_params()
-        assert params["method"] == "local"
-
-    def test_method_set_params_twostep_deprecated(self):
-        """'twostep' alias maps to 'local' via set_params()."""
-        trop_est = TROP(method="global")
-        with pytest.warns(FutureWarning, match="deprecated"):
+        with pytest.raises(ValueError, match="method must be one of"):
             trop_est.set_params(method="twostep")
-        assert trop_est.method == "local"
+        with pytest.raises(ValueError, match="method must be one of"):
+            trop_est.set_params(method="joint")
 
     def test_global_bootstrap_variance(self, simple_panel_data, ci_params):
         """Global method bootstrap variance estimation works."""

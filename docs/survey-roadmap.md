@@ -104,12 +104,19 @@ Files: `benchmarks/R/benchmark_realdata_*.R`, `tests/test_survey_real_data.py`,
   calibration is out of scope for diff-diff today, though building this
   capability is a future possibility.
 
+### Phase 10: Survey Completeness (v2.9.0–v3.0)
+
+- **10a.** Survey theory document (`survey-theory.md`) — formal justification for design-based variance with modern DiD influence functions
+- **10b.** Research-grade survey DGP — 8 new parameters on `generate_survey_did_data()`
+- **10c.** R validation expansion — 8 of 16 estimators cross-validated against R's `survey::svyglm()`
+- **10d.** Tutorial rewrite — flat-weight vs design-based comparison with known ground truth
+- **10f.** WooldridgeDiD survey support — OLS, logit, Poisson paths with `pweight` + strata/PSU/FPC + TSL variance
+
 ---
 
-## Phase 10: Academic Credibility and Announcement Readiness
+## Phase 10: Remaining Items
 
-Before broadly announcing survey capability, these items establish the
-theoretical and empirical foundation needed for credibility with
+The items below establish further credibility with
 practitioners and methodologists.
 
 ### 10a. Theory Document (HIGH priority) ✅
@@ -150,35 +157,17 @@ unconditional PT by construction. A `conditional_pt` parameter is needed
 before the simulation study so that unconditional PT fails but conditional
 PT holds after covariate adjustment (DR/IPW recovers truth).
 
-### 10c. Expand R Validation Coverage (HIGH priority)
+### 10c. Expand R Validation Coverage (HIGH priority) ✅
 
-Current R-validated estimators: DifferenceInDifferences, TWFE,
-CallawaySantAnna, SyntheticDiD (4 of 15). We can validate the OLS
-regression path against R's `survey::svyglm()` for estimators that
-reduce to WLS:
+8 of 16 estimators now cross-validated against R's `survey::svyglm()`:
+DifferenceInDifferences, TWFE, CallawaySantAnna, SyntheticDiD,
+ImputationDiD, StackedDiD, SunAbraham, TripleDifference.
 
-| Estimator | Validation approach | Status |
-|-----------|-------------------|--------|
-| ImputationDiD | Compare WLS step against `svyglm()` | Not started |
-| StackedDiD | Compare stacked WLS against `svyglm()` | Not started |
-| SunAbraham | Compare interaction-weighted WLS against `svyglm()` | Not started |
-| TripleDifference | Compare DDD regression against `svyglm()` | Not started |
-| EfficientDiD | No R reference exists | Deferred |
-| TROP | No R reference exists | Deferred |
+### 10d. Tutorial: Show the Pain (HIGH priority) ✅
 
-### 10d. Tutorial: Show the Pain (HIGH priority)
-
-Expand the survey tutorial with a side-by-side comparison using the DGP
-from 10b:
-
-- ATT with flat weights (what R's `did` package gives you)
-- ATT with full survey design (what diff-diff gives you)
-- DEFF showing how much SEs were underestimated
-- An example where inference conclusions change
-
-Because the DGP has known parameters, the tutorial can show not just that
-the results differ, but which one is *right*. This is the content that
-practitioners share and that converts skeptics.
+Survey tutorial rewritten with side-by-side flat-weight vs design-based
+comparison using the research-grade DGP from 10b, showing known ground
+truth, coverage simulation, and false pre-trend detection rates.
 
 ### 10e. Position Paper / arXiv Preprint (MEDIUM priority, long-term)
 
@@ -231,8 +220,6 @@ the limitation and suggested alternative.
 
 | Estimator | Limitation | Alternative |
 |-----------|-----------|-------------|
-| WooldridgeDiD | Replicate weights | Use strata/PSU/FPC design with TSL variance |
-| WooldridgeDiD | Bootstrap + survey | Use analytical survey SEs (set `n_bootstrap=0`) |
 | SyntheticDiD | Replicate weights | Use strata/PSU/FPC design with Rao-Wu rescaled bootstrap |
 | TROP | Replicate weights | Use strata/PSU/FPC design with Rao-Wu rescaled bootstrap |
 | BaconDecomposition | Replicate weights | Diagnostic only, no inference |
