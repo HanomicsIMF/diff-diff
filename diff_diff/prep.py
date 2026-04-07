@@ -1638,10 +1638,27 @@ def aggregate_survey(
     # Sort by grouping columns
     panel_df = panel_df.sort_values(by_cols).reset_index(drop=True)
 
+    # --- Drop non-estimable cells ---
+    # Cells with non-finite mean (n_valid==0 or all-missing) cannot contribute
+    # to second-stage estimation and would cause fit() to reject NaN outcomes.
+    # Dropping them also removes all-zero-weight PSUs from the panel.
+    first_outcome = outcome_cols[0]
+    mean_col = f"{first_outcome}_mean"
+    nonestimable = ~np.isfinite(panel_df[mean_col].values)
+    if np.any(nonestimable):
+        n_dropped = int(np.sum(nonestimable))
+        dropped_keys = panel_df.loc[nonestimable, by_cols].values.tolist()
+        warnings.warn(
+            f"Dropped {n_dropped} non-estimable cell(s) with no valid observations: "
+            f"{dropped_keys[:5]}" + (f" ... and {n_dropped - 5} more" if n_dropped > 5 else ""),
+            UserWarning,
+            stacklevel=2,
+        )
+        panel_df = panel_df[~nonestimable].reset_index(drop=True)
+
     # --- Construct second-stage SurveyDesign ---
     # Create a fit-ready weight column: NaN/Inf precision → 0.0 so downstream
     # resolve() doesn't reject missing weights. Diagnostic *_precision is kept.
-    first_outcome = outcome_cols[0]
     weight_col = f"{first_outcome}_weight"
     panel_df[weight_col] = np.where(
         np.isfinite(panel_df[f"{first_outcome}_precision"]),

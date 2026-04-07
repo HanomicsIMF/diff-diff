@@ -2453,7 +2453,7 @@ class TestAggregateSurvey:
             )
 
     def test_stage2_handoff_with_nonfinite_cells(self):
-        """stage2 SurveyDesign works even when some cells have NaN precision."""
+        """Non-estimable cells are dropped; stage2 works with fit()."""
         from diff_diff import DifferenceInDifferences
 
         rng = np.random.RandomState(99)
@@ -2474,25 +2474,29 @@ class TestAggregateSurvey:
                         }
                     )
         micro = pd.DataFrame(rows)
-        # Make one cell have only 1 observation → NaN SE → NaN precision
+        # Make one cell all-NaN outcome → n_valid=0 → NaN mean → dropped
         mask = (micro["state"] == 0) & (micro["period"] == 0)
-        micro = micro.drop(micro[mask].index[1:])  # keep only 1 row
+        micro.loc[mask, "outcome"] = np.nan
 
         design = SurveyDesign(weights="wt")
-        panel, stage2 = aggregate_survey(
-            micro,
-            by=["state", "period"],
-            outcomes="outcome",
-            covariates="treated",
-            survey_design=design,
-        )
+        with pytest.warns(UserWarning, match="non-estimable"):
+            panel, stage2 = aggregate_survey(
+                micro,
+                by=["state", "period"],
+                outcomes="outcome",
+                covariates="treated",
+                survey_design=design,
+            )
 
-        # The zero-variance cell should have weight=0 (not NaN)
-        cell_00 = panel[(panel["state"] == 0) & (panel["period"] == 0)]
-        assert np.isnan(cell_00["outcome_precision"].iloc[0])  # diagnostic
-        assert cell_00["outcome_weight"].iloc[0] == 0.0  # fit-ready
+        # Non-estimable cell should be dropped from panel
+        assert len(panel) == 7  # 8 cells - 1 dropped
+        assert not ((panel["state"] == 0) & (panel["period"] == 0)).any()
 
-        # stage2 should work with fit() despite NaN-precision cells
+        # No NaN in outcome mean or weight columns
+        assert panel["outcome_mean"].notna().all()
+        assert panel["outcome_weight"].notna().all()
+
+        # stage2 should work with fit()
         panel["treated_bin"] = (panel["treated_mean"] > 0.5).astype(int)
         did = DifferenceInDifferences()
         result = did.fit(
