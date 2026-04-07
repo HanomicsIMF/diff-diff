@@ -2805,3 +2805,53 @@ class TestAggregateSurvey:
         # All cells should have finite, positive SEs
         assert panel["outcome_se"].notna().all()
         assert (panel["outcome_se"] > 0).all()
+
+    def test_replicate_weight_min_n_fallback(self):
+        """SRS fallback works correctly under replicate-weight designs."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        micro = generate_survey_did_data(
+            n_units=200,
+            n_periods=4,
+            cohort_periods=[3],
+            n_strata=3,
+            psu_per_stratum=6,
+            include_replicate_weights=True,
+            panel=False,
+            seed=42,
+        )
+        rep_cols = [c for c in micro.columns if c.startswith("rep_")]
+        design = SurveyDesign(
+            weights="weight",
+            replicate_weights=rep_cols,
+            replicate_method="JK1",
+        )
+
+        # min_n high enough to force SRS fallback on all cells
+        with pytest.warns(UserWarning, match="SRS fallback"):
+            panel_srs, _ = aggregate_survey(
+                micro,
+                by=["stratum", "period"],
+                outcomes="outcome",
+                survey_design=design,
+                min_n=9999,
+            )
+        assert panel_srs["srs_fallback"].all()
+        assert panel_srs["outcome_se"].notna().all()
+        assert (panel_srs["outcome_se"] > 0).all()
+
+        # Default min_n → replicate-based variance (no fallback)
+        panel_rep, _ = aggregate_survey(
+            micro,
+            by=["stratum", "period"],
+            outcomes="outcome",
+            survey_design=design,
+        )
+        assert not panel_rep["srs_fallback"].any()
+
+        # SEs should differ between SRS fallback and replicate-based
+        assert not np.allclose(
+            panel_srs["outcome_se"].values,
+            panel_rep["outcome_se"].values,
+            rtol=1e-6,
+        )
