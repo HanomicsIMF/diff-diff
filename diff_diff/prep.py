@@ -1492,6 +1492,11 @@ def aggregate_survey(
     )
 
     # --- Validate ---
+    if not by_cols:
+        raise ValueError("'by' must specify at least one grouping column")
+    if not outcome_cols:
+        raise ValueError("'outcomes' must specify at least one outcome variable")
+
     all_cols = by_cols + outcome_cols + cov_cols
     missing = [c for c in all_cols if c not in data.columns]
     if missing:

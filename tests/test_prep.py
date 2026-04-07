@@ -2436,6 +2436,21 @@ class TestAggregateSurvey:
                 min_n=0,
             )
 
+    def test_error_empty_by(self, micro_data, design):
+        """Empty by list raises ValueError."""
+        with pytest.raises(ValueError, match="at least one grouping column"):
+            aggregate_survey(micro_data, by=[], outcomes="y", survey_design=design)
+
+    def test_error_empty_outcomes(self, micro_data, design):
+        """Empty outcomes list raises ValueError."""
+        with pytest.raises(ValueError, match="at least one outcome"):
+            aggregate_survey(
+                micro_data,
+                by=["state", "year"],
+                outcomes=[],
+                survey_design=design,
+            )
+
     def test_error_empty_data(self, design):
         """Empty DataFrame raises ValueError."""
         empty = pd.DataFrame(columns=["state", "year", "y", "wt", "stratum", "cluster"])
@@ -2752,7 +2767,7 @@ class TestAggregateSurvey:
         design = SurveyDesign(
             weights="weight",
             replicate_weights=rep_cols,
-            replicate_method="BRR",
+            replicate_method="JK1",
         )
         panel, _ = aggregate_survey(
             micro,

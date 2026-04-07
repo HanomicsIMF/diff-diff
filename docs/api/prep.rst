@@ -280,8 +280,12 @@ Example
    )
 
    # panel has: state, year, smoking_rate_mean, smoking_rate_se,
-   #   smoking_rate_n, smoking_rate_precision, age_mean, income_mean,
-   #   cell_n, cell_n_eff, srs_fallback
+   #   smoking_rate_n, smoking_rate_precision, smoking_rate_weight,
+   #   age_mean, income_mean, cell_n, cell_n_eff, srs_fallback
+   #
+   # *_weight is fit-ready (NaN precision -> 0.0)
+   # Non-estimable cells and zero-weight geos are dropped automatically.
+   # Multi-outcome filtering is keyed off the first outcome.
 
    # stage2 is pre-configured: aweights + state-level clustering
    # Add treatment/time indicators at the panel level, then fit:
