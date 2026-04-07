@@ -97,6 +97,7 @@ _SKIP_PATTERNS = [
     r"pip\s+install",
     r"wild_bootstrap_se\(X,",  # low-level array API pseudo-code
     r"wide_to_long\(",  # references undefined wide_data variable
+    r"aggregate_survey\(",  # references undefined microdata variable
 ]
 
 # Third-party packages imported by comparison-page snippets that may not
