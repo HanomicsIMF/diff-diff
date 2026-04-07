@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-04-07
+
+### Added
+- **`aggregate_survey()`** — new function in `diff_diff.prep` that bridges individual-level survey microdata to geographic-period panels for DiD estimation. Computes design-based cell means and precision weights using domain estimation (Lumley 2004), with SRS fallback for small cells. Returns a panel DataFrame and pre-configured `SurveyDesign` for second-stage estimation. Supports both TSL and replicate-weight variance.
+- **Python 3.14 support** — upgraded PyO3 from 0.22 to 0.28, updated CI and publish workflow matrices, bumped Rust MSRV to 1.84 for faer 0.24 compatibility.
+
+### Changed
+- Updated README Python support matrix to include 3.14
+
+### Fixed
+- Fix domain estimation zero-padding for correct design-based cell variance
+- Fix SRS fallback weight normalization for scale invariance across replicate designs
+- Validate numeric dtype for outcomes/covariates before aggregation (nullable dtype support)
+- Validate grouping columns for NaN values
+
 ## [3.0.0] - 2026-04-07
 
 v3.0 completes the survey support roadmap: all 16 estimators (15 inference-level +
@@ -1197,6 +1212,8 @@ for the full feature history leading to this release.
   - `to_dict()` and `to_dataframe()` export methods
   - `is_significant` and `significance_stars` properties
 
+[3.0.1]: https://github.com/igerber/diff-diff/compare/v3.0.0...v3.0.1
+[3.0.0]: https://github.com/igerber/diff-diff/compare/v2.9.1...v3.0.0
 [2.9.1]: https://github.com/igerber/diff-diff/compare/v2.9.0...v2.9.1
 [2.9.0]: https://github.com/igerber/diff-diff/compare/v2.8.4...v2.9.0
 [2.8.4]: https://github.com/igerber/diff-diff/compare/v2.8.3...v2.8.4
