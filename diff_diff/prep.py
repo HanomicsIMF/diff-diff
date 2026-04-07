@@ -1313,20 +1313,29 @@ def trim_weights(
 
 
 def _cell_mean_variance(
-    y: np.ndarray,
-    weights: np.ndarray,
-    cell_resolved: ResolvedSurveyDesign,
+    y_full: np.ndarray,
+    full_resolved: ResolvedSurveyDesign,
+    cell_mask: np.ndarray,
+    min_n: int,
 ) -> Tuple[float, float, int, bool]:
     """Compute design-based mean and variance of the weighted mean for one cell.
 
+    Uses full-design domain estimation: the influence function is zero-padded
+    outside the cell, preserving the full strata/PSU structure for variance
+    estimation. This is the methodologically correct approach for domain
+    estimation under complex survey designs (Lumley 2004, Section 3.4).
+
     Parameters
     ----------
-    y : np.ndarray
-        Outcome values for the cell (may contain NaN).
-    weights : np.ndarray
-        Resolved weights for the cell (already extracted from ResolvedSurveyDesign).
-    cell_resolved : ResolvedSurveyDesign
-        Resolved survey design subsetted to this cell.
+    y_full : np.ndarray
+        Outcome values for the full dataset (may contain NaN).
+    full_resolved : ResolvedSurveyDesign
+        Full-sample resolved survey design.
+    cell_mask : np.ndarray
+        Boolean mask identifying cell members in the full dataset.
+    min_n : int
+        Minimum valid observations for design-based variance. Below this
+        threshold, SRS fallback is used.
 
     Returns
     -------
@@ -1334,43 +1343,55 @@ def _cell_mean_variance(
         Design-weighted cell mean.
     variance : float
         Design-based variance of the cell mean (>= 0). Uses SRS fallback
-        when the design-based estimate is unidentifiable.
+        when the design-based estimate is unidentifiable or n_valid < min_n.
     n_valid : int
-        Number of non-missing observations.
+        Number of non-missing observations in the cell.
     used_srs_fallback : bool
         True if SRS variance was used instead of design-based.
     """
-    valid = ~np.isnan(y)
+    y_cell = y_full[cell_mask]
+    w_cell = full_resolved.weights[cell_mask]
+    valid = ~np.isnan(y_cell)
     n_valid = int(np.sum(valid))
 
     if n_valid == 0:
         return np.nan, np.nan, 0, False
 
-    if n_valid == 1:
-        y_bar = float(y[valid][0])
+    if n_valid < 2:
+        y_bar = float(y_cell[valid][0])
         return y_bar, np.nan, 1, False
 
-    # Zero out weights for NaN observations (subpopulation approach)
-    w = weights.copy()
-    y_clean = np.where(valid, y, 0.0)
-    w_valid = w * valid.astype(np.float64)
-    sum_w = np.sum(w_valid)
+    # Weighted mean from cell members (NaN-safe)
+    w_valid = w_cell * valid.astype(np.float64)
+    y_clean = np.where(valid, y_cell, 0.0)
+    sum_w = float(np.sum(w_valid))
 
     if sum_w <= 0:
         return np.nan, np.nan, n_valid, False
 
-    # Design-weighted mean
     y_bar = float(np.sum(w_valid * y_clean) / sum_w)
 
-    # Influence function: psi_i = w_i * (y_i - y_bar) / sum(w)
-    psi = w_valid * (y_clean - y_bar) / sum_w
-
-    # Route to TSL or replicate variance
+    # SRS fallback if below min_n threshold
     used_srs = False
-    if cell_resolved.uses_replicate_variance:
-        variance, _ = compute_replicate_if_variance(psi, cell_resolved)
+    if n_valid < min_n:
+        resid_sq = w_valid * (y_clean - y_bar) ** 2
+        variance = float(np.sum(resid_sq) / (sum_w**2) * n_valid / (n_valid - 1))
+        return y_bar, max(variance, 0.0), n_valid, True
+
+    # Full-design domain estimation: construct full-length psi with zeros
+    # outside the cell, preserving full strata/PSU structure for variance
+    n_total = len(y_full)
+    psi = np.zeros(n_total)
+    # Positions in full array where cell member has valid data
+    cell_indices = np.where(cell_mask)[0]
+    valid_positions = cell_indices[valid]
+    psi[valid_positions] = w_valid[valid] * (y_clean[valid] - y_bar) / sum_w
+
+    # Route to TSL or replicate variance using the full design
+    if full_resolved.uses_replicate_variance:
+        variance, _ = compute_replicate_if_variance(psi, full_resolved)
     else:
-        variance = compute_survey_if_variance(psi, cell_resolved)
+        variance = compute_survey_if_variance(psi, full_resolved)
 
     # SRS fallback when design-based variance is unidentifiable
     if np.isnan(variance):
@@ -1397,9 +1418,10 @@ def aggregate_survey(
     columns. Returns a panel-ready DataFrame with precision weights and a
     pre-configured :class:`SurveyDesign` for second-stage DiD estimation.
 
-    This follows R's ``survey::svyby()`` pattern: the survey design is
-    subsetted to each cell and domain-level statistics are computed using
-    the within-cell strata/PSU structure.
+    Each cell is treated as a subpopulation/domain of the full survey
+    design: influence function values are zero-padded outside the cell,
+    preserving full strata/PSU structure for variance estimation per
+    Lumley (2004) Section 3.4.
 
     Parameters
     ----------
@@ -1446,7 +1468,7 @@ def aggregate_survey(
     ... )
     >>> result = DifferenceInDifferences().fit(
     ...     panel, outcome="smoking_rate_mean",
-    ...     treatment="treated", time="post", survey_design=stage2,
+    ...     treatment="treated", time="year", survey_design=stage2,
     ... )
     """
     import warnings
@@ -1482,11 +1504,20 @@ def aggregate_survey(
             f"lonely_psu must be 'remove', 'certainty', or 'adjust', got '{lonely_psu}'"
         )
 
+    # --- Empty-input guard ---
+    if data.empty:
+        raise ValueError("data must be non-empty")
+
     # --- Resolve design once on full data ---
     effective_design = (
         replace(survey_design, lonely_psu=lonely_psu) if lonely_psu else survey_design
     )
     full_resolved = effective_design.resolve(data)
+
+    # --- Precompute full-length outcome/covariate arrays ---
+    n_total = len(data)
+    all_vars = outcome_cols + cov_cols
+    y_arrays: Dict[str, np.ndarray] = {var: data[var].values.astype(np.float64) for var in all_vars}
 
     # --- Per-cell computation ---
     grouped = data.groupby(by_cols, sort=True)
@@ -1496,32 +1527,17 @@ def aggregate_survey(
 
     for cell_key, cell_df in grouped:
         cell_idx = np.array(cell_df.index)
-        # Convert to positional indices for array subsetting
         pos_idx = data.index.get_indexer(cell_idx)
 
-        cell_n = len(pos_idx)
+        # Boolean mask for full-design domain estimation
+        cell_mask = np.zeros(n_total, dtype=bool)
+        cell_mask[pos_idx] = True
+
+        cell_n = int(np.sum(cell_mask))
         cell_key_str = str(cell_key)
 
-        # Subset arrays from full resolved design
-        cell_w = full_resolved.weights[pos_idx]
-        cell_strata = full_resolved.strata[pos_idx] if full_resolved.strata is not None else None
-        cell_psu = full_resolved.psu[pos_idx] if full_resolved.psu is not None else None
-        cell_fpc = full_resolved.fpc[pos_idx] if full_resolved.fpc is not None else None
-
-        cell_n_strata = int(len(np.unique(cell_strata))) if cell_strata is not None else 0
-        cell_n_psu = int(len(np.unique(cell_psu))) if cell_psu is not None else 0
-
-        cell_resolved = full_resolved.subset_to_units(
-            row_idx=pos_idx,
-            weights=cell_w,
-            strata=cell_strata,
-            psu=cell_psu,
-            fpc=cell_fpc,
-            n_strata=cell_n_strata,
-            n_psu=cell_n_psu,
-        )
-
-        # Cell-level statistics
+        # Cell-level statistics (Kish ESS is a property of the cell)
+        cell_w = full_resolved.weights[cell_mask]
         sum_w = float(np.sum(cell_w))
         sum_w2 = float(np.sum(cell_w**2))
         cell_n_eff = (sum_w**2 / sum_w2) if sum_w2 > 0 else 0.0
@@ -1539,10 +1555,14 @@ def aggregate_survey(
 
         cell_srs_fallback = False
 
-        # Outcomes: mean + SE + n + precision
+        # Outcomes: mean + SE + n + precision (full-design domain estimation)
         for var in outcome_cols:
-            y = cell_df[var].values.astype(np.float64)
-            y_bar, variance, n_valid, used_srs = _cell_mean_variance(y, cell_w, cell_resolved)
+            y_bar, variance, n_valid, used_srs = _cell_mean_variance(
+                y_arrays[var],
+                full_resolved,
+                cell_mask,
+                min_n,
+            )
             se = float(np.sqrt(variance)) if not np.isnan(variance) else np.nan
 
             if used_srs:
@@ -1562,14 +1582,14 @@ def aggregate_survey(
             row[f"{var}_n"] = n_valid
             row[f"{var}_precision"] = precision
 
-        # Covariates: mean only
+        # Covariates: design-weighted mean only
         for var in cov_cols:
-            y = cell_df[var].values.astype(np.float64)
-            valid = ~np.isnan(y)
+            y_cell = y_arrays[var][cell_mask]
+            valid = ~np.isnan(y_cell)
             w_valid = cell_w * valid.astype(np.float64)
             sw = float(np.sum(w_valid))
             if sw > 0:
-                row[f"{var}_mean"] = float(np.sum(w_valid * np.where(valid, y, 0.0)) / sw)
+                row[f"{var}_mean"] = float(np.sum(w_valid * np.where(valid, y_cell, 0.0)) / sw)
             else:
                 row[f"{var}_mean"] = np.nan
 

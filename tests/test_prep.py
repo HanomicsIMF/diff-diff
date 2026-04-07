@@ -2234,19 +2234,25 @@ class TestAggregateSurvey:
             survey_design=design,
         )
 
-        # Manual SRS computation for cell A
-        cell = data[data["geo"] == "A"]
-        w = cell["wt"].values
-        y = cell["y"].values
-        # resolve() normalizes pweights to mean=1
-        w_norm = w / w.mean()
-        sum_w = np.sum(w_norm)
-        y_bar = np.sum(w_norm * y) / sum_w
-        n_cell = len(y)
-        # SRS variance with weights: implicit per-obs PSU
-        # meat = (n/(n-1)) * sum((w*(y-ybar)/sum_w)^2)
-        psi = w_norm * (y - y_bar) / sum_w
-        variance = (n_cell / (n_cell - 1)) * np.sum(psi**2)
+        # Manual full-design domain estimation for cell A:
+        # psi is zero-padded to n_total; adjustment uses n_total/(n_total-1)
+        w_all = data["wt"].values
+        w_all_norm = w_all / w_all.mean()  # resolve() normalizes to mean=1
+        cell_mask = (data["geo"] == "A").values
+        y_all = data["y"].values
+        w_cell = w_all_norm[cell_mask]
+        y_cell = y_all[cell_mask]
+        sum_w = np.sum(w_cell)
+        y_bar = np.sum(w_cell * y_cell) / sum_w
+
+        # Full-length psi with zeros outside cell
+        psi_full = np.zeros(n)
+        psi_full[cell_mask] = w_cell * (y_cell - y_bar) / sum_w
+
+        # Implicit per-obs PSU with full-design adjustment
+        psi_mean = psi_full.mean()
+        centered = psi_full - psi_mean
+        variance = (n / (n - 1)) * np.sum(centered**2)
         expected_se = np.sqrt(variance)
 
         actual_se = panel[panel["geo"] == "A"]["y_se"].iloc[0]
@@ -2403,3 +2409,130 @@ class TestAggregateSurvey:
                 survey_design=design,
                 min_n=0,
             )
+
+    def test_error_empty_data(self, design):
+        """Empty DataFrame raises ValueError."""
+        empty = pd.DataFrame(columns=["state", "year", "y", "wt", "stratum", "cluster"])
+        with pytest.raises(ValueError, match="data must be non-empty"):
+            aggregate_survey(
+                empty,
+                by=["state", "year"],
+                outcomes="y",
+                survey_design=design,
+            )
+
+    def test_domain_estimation_preserves_full_design(self):
+        """Full-design domain estimation accounts for PSUs outside the cell.
+
+        Stratum 0 has PSUs {0, 1}. Cell A contains only PSU 0.
+        With physical subsetting, stratum 0 would be a singleton → skipped.
+        With full-design domain estimation, both PSUs participate → non-zero
+        stratum variance contribution and no SRS fallback.
+        """
+        rng = np.random.RandomState(42)
+        # 2 strata, 2 PSUs each, 5 obs per PSU = 20 obs total
+        # Cell A = first 10 obs (stratum 0 PSU 0 + stratum 1 PSU 2)
+        # Cell B = last 10 obs (stratum 0 PSU 1 + stratum 1 PSU 3)
+        data = pd.DataFrame(
+            {
+                "geo": ["A"] * 10 + ["B"] * 10,
+                "time": np.ones(20, dtype=int),
+                "stratum": np.repeat([0, 0, 1, 1], 5),
+                "psu": np.repeat([0, 1, 2, 3], 5),
+                "wt": np.ones(20),
+                "y": rng.normal(10, 2, 20),
+            }
+        )
+        # Reassign so cell A has only PSU 0 from stratum 0, cell B has only PSU 1
+        data.loc[:4, "geo"] = "A"  # stratum 0, PSU 0
+        data.loc[5:9, "geo"] = "B"  # stratum 0, PSU 1
+        data.loc[10:14, "geo"] = "A"  # stratum 1, PSU 2
+        data.loc[15:19, "geo"] = "B"  # stratum 1, PSU 3
+
+        design = SurveyDesign(weights="wt", strata="stratum", psu="psu", lonely_psu="remove")
+        panel, _ = aggregate_survey(
+            data,
+            by=["geo", "time"],
+            outcomes="y",
+            survey_design=design,
+        )
+
+        cell_a = panel[panel["geo"] == "A"]
+        # With full-design domain estimation:
+        # - Both PSUs in each stratum participate (one with zero psi)
+        # - No singleton PSU → no SRS fallback needed
+        assert not cell_a["srs_fallback"].iloc[0]
+        assert cell_a["y_se"].iloc[0] > 0
+        assert np.isfinite(cell_a["y_se"].iloc[0])
+        assert np.isfinite(cell_a["y_precision"].iloc[0])
+
+    def test_min_n_forces_srs_fallback(self):
+        """min_n parameter forces SRS fallback for small cells."""
+        rng = np.random.RandomState(44)
+        n = 40
+        data = pd.DataFrame(
+            {
+                "geo": np.repeat(["A", "B"], n // 2),
+                "time": np.ones(n, dtype=int),
+                "wt": np.ones(n),
+                "y": rng.normal(10, 2, n),
+            }
+        )
+        design = SurveyDesign(weights="wt")
+
+        # min_n=30 → cells with 20 obs each should use SRS fallback
+        with pytest.warns(UserWarning, match="SRS fallback"):
+            panel_high, _ = aggregate_survey(
+                data,
+                by=["geo", "time"],
+                outcomes="y",
+                survey_design=design,
+                min_n=30,
+            )
+        assert panel_high["srs_fallback"].all()
+
+        # min_n=1 → should use design-based variance (no fallback)
+        panel_low, _ = aggregate_survey(
+            data,
+            by=["geo", "time"],
+            outcomes="y",
+            survey_design=design,
+            min_n=1,
+        )
+        assert not panel_low["srs_fallback"].any()
+
+        # SEs should differ between the two
+        se_high = panel_high[panel_high["geo"] == "A"]["y_se"].iloc[0]
+        se_low = panel_low[panel_low["geo"] == "A"]["y_se"].iloc[0]
+        assert se_high != pytest.approx(se_low, rel=1e-6)
+
+    def test_replicate_weight_aggregation(self):
+        """Aggregation with replicate weight designs produces valid SEs."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        micro = generate_survey_did_data(
+            n_units=200,
+            n_periods=4,
+            cohort_periods=[3],
+            n_strata=3,
+            psu_per_stratum=6,
+            include_replicate_weights=True,
+            panel=False,
+            seed=42,
+        )
+        # Build replicate weight column list
+        rep_cols = [c for c in micro.columns if c.startswith("rep_")]
+        design = SurveyDesign(
+            weights="weight",
+            replicate_weights=rep_cols,
+            replicate_method="BRR",
+        )
+        panel, _ = aggregate_survey(
+            micro,
+            by=["stratum", "period"],
+            outcomes="outcome",
+            survey_design=design,
+        )
+        # All cells should have finite, positive SEs
+        assert panel["outcome_se"].notna().all()
+        assert (panel["outcome_se"] > 0).all()

@@ -288,7 +288,7 @@ Example
        panel,
        outcome="smoking_rate_mean",
        treatment="treated",
-       time="post",
+       time="year",
        survey_design=stage2,
    )
 

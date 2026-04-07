@@ -2310,22 +2310,21 @@ design-based precision estimates, for use as a pre-processing step before panel
 DiD estimation on repeated cross-section survey data.
 
 - **Reference**: Lumley (2004) "Analysis of Complex Survey Samples", Journal of
-  Statistical Software 9(8). R `survey::svyby()` implements similar per-group
-  survey estimation.
+  Statistical Software 9(8), Section 3.4 (domain estimation).
 - **Cell mean**: Design-weighted mean `ȳ_g = Σ w_i y_i / Σ w_i` for each cell g
   defined by grouping columns (e.g., state × year).
-- **Cell variance**: Linearized influence function `ψ_i = w_i (y_i - ȳ_g) / Σ w_j`,
-  then design-based variance via `compute_survey_if_variance()` (TSL) or
-  `compute_replicate_if_variance()` (replicate designs). This is the standard
-  Horvitz-Thompson linearization for a ratio estimator.
+- **Cell variance**: Each cell is treated as a subpopulation/domain of the full
+  survey design (consistent with `SurveyDesign.subpopulation()` and the
+  Subpopulation Analysis section below). The influence function
+  `ψ_i = w_i (y_i - ȳ_g) / Σ w_j` is zero-padded outside the cell, preserving
+  full strata/PSU structure for variance estimation via `compute_survey_if_variance()`
+  (TSL) or `compute_replicate_if_variance()` (replicate designs).
 - **Precision weight**: `1 / V(ȳ_g)` used as inverse-variance weight (aweight)
   in second-stage DiD estimation.
-- **Note:** SRS fallback when design-based variance is unidentifiable within a cell
-  (e.g., all strata have singleton PSUs after cell subsetting). Formula:
-  `V_SRS = Σ w_i(y_i - ȳ)² / (Σ w_j)² × n/(n-1)`. Cells using SRS fallback
-  are flagged via `srs_fallback` column.
-- **Note:** FPC values are passed through unchanged from the full design to cell
-  subsets — they represent population N_h per stratum, not per cell.
+- **Note:** SRS fallback when design-based variance is unidentifiable (e.g., all
+  strata contribute zero variance) or when the cell has fewer than `min_n` valid
+  observations. Formula: `V_SRS = Σ w_i(y_i - ȳ)² / (Σ w_j)² × n/(n-1)`.
+  Cells using SRS fallback are flagged via `srs_fallback` column.
 - **Edge case**: Zero-variance cells (all observations identical) set precision to
   NaN to avoid infinite weights in second-stage WLS.
 
