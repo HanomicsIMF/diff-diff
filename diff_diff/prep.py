@@ -1532,16 +1532,15 @@ def aggregate_survey(
     y_arrays: Dict[str, np.ndarray] = {var: data[var].values.astype(np.float64) for var in all_vars}
 
     # --- Per-cell computation ---
-    # Use stable positional indices (safe with duplicate DataFrame indices)
-    row_positions = np.arange(n_total)
-    grouped = data.assign(_row_pos=row_positions).groupby(by_cols, sort=True)
+    # Use groupby().indices for position-based cell membership (safe with
+    # duplicate DataFrame indices, no column injection into user data)
+    grouped = data.groupby(by_cols, sort=True)
+    cell_indices = grouped.indices  # dict of cell_key → positional indices
     rows: List[Dict[str, Any]] = []
     srs_cells: List[str] = []
     zero_var_cells: List[str] = []
 
-    for cell_key, cell_df in grouped:
-        pos_idx = cell_df["_row_pos"].values
-
+    for cell_key, pos_idx in cell_indices.items():
         # Boolean mask for full-design domain estimation
         cell_mask = np.zeros(n_total, dtype=bool)
         cell_mask[pos_idx] = True
