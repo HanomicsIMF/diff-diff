@@ -81,7 +81,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest, ubuntu-24.04-arm]
-        python-version: ['3.11', '3.13']
+        python-version: ['3.11', '3.13', '3.14']
 
     steps:
       - uses: actions/checkout@v4
@@ -184,7 +184,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.14'
 
       - name: Install dependencies
         # Keep in sync with pyproject.toml [project.dependencies] and [project.optional-dependencies.dev]

@@ -48,7 +48,7 @@ pub fn generate_bootstrap_weights_batch<'py>(
         }
     };
 
-    Ok(weights.to_pyarray_bound(py))
+    Ok(weights.to_pyarray(py))
 }
 
 /// Generate Rademacher weights: ±1 with equal probability.

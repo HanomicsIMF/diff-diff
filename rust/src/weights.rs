@@ -54,7 +54,7 @@ pub fn compute_synthetic_weights<'py>(
     let weights =
         compute_synthetic_weights_internal(&y_control_arr, &y_treated_arr, lambda_reg, max_iter, tol)?;
 
-    Ok(weights.to_pyarray_bound(py))
+    Ok(weights.to_pyarray(py))
 }
 
 /// Internal implementation of synthetic weight computation.
@@ -137,7 +137,7 @@ pub fn project_simplex<'py>(
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let v_arr = v.as_array();
     let result = project_simplex_internal(&v_arr);
-    Ok(result.to_pyarray_bound(py))
+    Ok(result.to_pyarray(py))
 }
 
 /// Internal implementation of simplex projection.
@@ -607,7 +607,7 @@ pub fn sc_weight_fw<'py>(
         min_decrease,
         max_iter,
     );
-    Ok(result.to_pyarray_bound(py))
+    Ok(result.to_pyarray(py))
 }
 
 /// Compute SDID time weights via Frank-Wolfe optimization.
@@ -637,7 +637,7 @@ pub fn compute_time_weights<'py>(
     let y_post = y_post_control.as_array();
 
     let result = compute_time_weights_internal(&y_pre, &y_post, zeta_lambda, intercept, min_decrease, max_iter_pre_sparsify, max_iter);
-    Ok(result.to_pyarray_bound(py))
+    Ok(result.to_pyarray(py))
 }
 
 pub(crate) fn compute_time_weights_internal(
@@ -720,7 +720,7 @@ pub fn compute_sdid_unit_weights<'py>(
         &y_pre, &y_tr_mean, zeta_omega, intercept, min_decrease,
         max_iter_pre_sparsify, max_iter,
     );
-    Ok(result.to_pyarray_bound(py))
+    Ok(result.to_pyarray(py))
 }
 
 pub(crate) fn compute_sdid_unit_weights_internal(

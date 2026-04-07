@@ -44,7 +44,7 @@ pub fn compute_unit_distance_matrix<'py>(
 
     let dist_matrix = compute_unit_distance_matrix_internal(&y_arr, &d_arr);
 
-    Ok(dist_matrix.to_pyarray_bound(py))
+    Ok(dist_matrix.to_pyarray(py))
 }
 
 /// Internal implementation of unit distance matrix computation.
@@ -1098,7 +1098,7 @@ pub fn bootstrap_trop_variance<'py>(
     };
 
     let estimates_arr = Array1::from_vec(bootstrap_estimates);
-    Ok((estimates_arr.to_pyarray_bound(py), se))
+    Ok((estimates_arr.to_pyarray(py), se))
 }
 
 // ============================================================================
@@ -1838,7 +1838,7 @@ pub fn bootstrap_trop_variance_global<'py>(
     };
 
     let estimates_arr = Array1::from_vec(bootstrap_estimates);
-    Ok((estimates_arr.to_pyarray_bound(py), se))
+    Ok((estimates_arr.to_pyarray(py), se))
 }
 
 #[cfg(test)]

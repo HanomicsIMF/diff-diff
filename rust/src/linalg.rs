@@ -144,20 +144,20 @@ pub fn solve_ols<'py>(
             // Rank-deficient: cannot compute valid vcov, return NaN matrix
             let mut nan_vcov = Array2::<f64>::zeros((k, k));
             nan_vcov.fill(f64::NAN);
-            Some(nan_vcov.to_pyarray_bound(py))
+            Some(nan_vcov.to_pyarray(py))
         } else {
             // Full rank: compute robust vcov normally
             let cluster_arr = cluster_ids.as_ref().map(|c| c.as_array().to_owned());
             let vcov_arr = compute_robust_vcov_internal(&x_arr, &residuals.view(), cluster_arr.as_ref(), n, k)?;
-            Some(vcov_arr.to_pyarray_bound(py))
+            Some(vcov_arr.to_pyarray(py))
         }
     } else {
         None
     };
 
     Ok((
-        coefficients.to_pyarray_bound(py),
-        residuals.to_pyarray_bound(py),
+        coefficients.to_pyarray(py),
+        residuals.to_pyarray(py),
         vcov,
     ))
 }
@@ -186,7 +186,7 @@ pub fn compute_robust_vcov<'py>(
     let n = x_arr.nrows();
     let k = x_arr.ncols();
     let vcov = compute_robust_vcov_internal(&x_arr, &residuals_arr, cluster_arr.as_ref(), n, k)?;
-    Ok(vcov.to_pyarray_bound(py))
+    Ok(vcov.to_pyarray(py))
 }
 
 /// Internal implementation of robust variance-covariance computation.
