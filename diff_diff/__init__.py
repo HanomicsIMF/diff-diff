@@ -78,6 +78,7 @@ from diff_diff.pretrends import (
     compute_pretrends_power,
 )
 from diff_diff.prep import (
+    aggregate_survey,
     aggregate_to_cohorts,
     balance_panel,
     create_event_time,
@@ -328,6 +329,7 @@ __all__ = [
     "generate_survey_did_data",
     "generate_continuous_did_data",
     "create_event_time",
+    "aggregate_survey",
     "aggregate_to_cohorts",
     "rank_control_units",
     # Honest DiD sensitivity analysis

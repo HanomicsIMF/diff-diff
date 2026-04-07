@@ -2300,6 +2300,31 @@ unequal selection probabilities).
   Linearization variance estimation, matching the R `survey` package
   convention that clusters are the primary sampling units.
 
+### Survey Aggregation (`aggregate_survey`)
+
+Aggregation of individual-level survey microdata to geographic-period cells with
+design-based precision estimates, for use as a pre-processing step before panel
+DiD estimation on repeated cross-section survey data.
+
+- **Reference**: Lumley (2004) "Analysis of Complex Survey Samples", Journal of
+  Statistical Software 9(8), Section 3.4 (domain estimation).
+- **Cell mean**: Design-weighted mean `ȳ_g = Σ w_i y_i / Σ w_i` for each cell g
+  defined by grouping columns (e.g., state × year).
+- **Cell variance**: Each cell is treated as a subpopulation/domain of the full
+  survey design (consistent with `SurveyDesign.subpopulation()` and the
+  Subpopulation Analysis section below). The influence function
+  `ψ_i = w_i (y_i - ȳ_g) / Σ w_j` is zero-padded outside the cell, preserving
+  full strata/PSU structure for variance estimation via `compute_survey_if_variance()`
+  (TSL) or `compute_replicate_if_variance()` (replicate designs).
+- **Precision weight**: `1 / V(ȳ_g)` used as inverse-variance weight (aweight)
+  in second-stage DiD estimation.
+- **Note:** SRS fallback when design-based variance is unidentifiable (e.g., all
+  strata contribute zero variance) or when the cell has fewer than `min_n` valid
+  observations. Formula: `V_SRS = Σ w_i(y_i - ȳ)² / (Σ w_j)² × n/(n-1)`.
+  Cells using SRS fallback are flagged via `srs_fallback` column.
+- **Edge case**: Zero-variance cells (all observations identical) set precision to
+  NaN to avoid infinite weights in second-stage WLS.
+
 ### Survey-Aware Bootstrap (Phase 6)
 
 Two strategies for bootstrap variance under complex survey designs:

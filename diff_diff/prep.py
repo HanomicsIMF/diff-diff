@@ -9,25 +9,30 @@ Data generation functions (generate_*) are defined in prep_dgp.py and
 re-exported here for backward compatibility.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
-from diff_diff.utils import compute_synthetic_weights
-
 # Re-export data generation functions from prep_dgp for backward compatibility
-from diff_diff.prep_dgp import (
+from diff_diff.prep_dgp import (  # noqa: F401
     generate_continuous_did_data,
-    generate_did_data,
-    generate_staggered_data,
-    generate_factor_data,
     generate_ddd_data,
-    generate_panel_data,
+    generate_did_data,
     generate_event_study_data,
+    generate_factor_data,
+    generate_panel_data,
+    generate_staggered_data,
     generate_staggered_ddd_data,
     generate_survey_did_data,
 )
+from diff_diff.survey import (
+    ResolvedSurveyDesign,
+    SurveyDesign,
+    compute_replicate_if_variance,
+    compute_survey_if_variance,
+)
+from diff_diff.utils import compute_synthetic_weights
 
 # Constants for rank_control_units
 _SIMILARITY_THRESHOLD_SD = 0.5  # Controls within this many SDs are "similar"
@@ -1300,3 +1305,434 @@ def trim_weights(
 
     result[weight_col] = w
     return result
+
+
+# ---------------------------------------------------------------------------
+# Survey aggregation helpers
+# ---------------------------------------------------------------------------
+
+
+def _cell_mean_variance(
+    y_full: np.ndarray,
+    full_resolved: ResolvedSurveyDesign,
+    cell_mask: np.ndarray,
+    min_n: int,
+) -> Tuple[float, float, int, bool]:
+    """Compute design-based mean and variance of the weighted mean for one cell.
+
+    Uses full-design domain estimation: the influence function is zero-padded
+    outside the cell, preserving the full strata/PSU structure for variance
+    estimation. This is the methodologically correct approach for domain
+    estimation under complex survey designs (Lumley 2004, Section 3.4).
+
+    Parameters
+    ----------
+    y_full : np.ndarray
+        Outcome values for the full dataset (may contain NaN).
+    full_resolved : ResolvedSurveyDesign
+        Full-sample resolved survey design.
+    cell_mask : np.ndarray
+        Boolean mask identifying cell members in the full dataset.
+    min_n : int
+        Minimum valid observations for design-based variance. Below this
+        threshold, SRS fallback is used.
+
+    Returns
+    -------
+    mean : float
+        Design-weighted cell mean.
+    variance : float
+        Design-based variance of the cell mean (>= 0). Uses SRS fallback
+        when the design-based estimate is unidentifiable or n_valid < min_n.
+    n_valid : int
+        Number of non-missing observations in the cell.
+    used_srs_fallback : bool
+        True if SRS variance was used instead of design-based.
+    """
+    y_cell = y_full[cell_mask]
+    w_cell = full_resolved.weights[cell_mask]
+    # Valid = non-missing AND positive weight (zero-weight rows are padding)
+    valid = ~np.isnan(y_cell) & (w_cell > 0)
+    n_valid = int(np.sum(valid))
+
+    if n_valid == 0:
+        return np.nan, np.nan, 0, False
+
+    if n_valid < 2:
+        y_bar = float(y_cell[valid][0])
+        return y_bar, np.nan, 1, False
+
+    # Weighted mean from cell members (NaN-safe)
+    w_valid = w_cell * valid.astype(np.float64)
+    y_clean = np.where(valid, y_cell, 0.0)
+    sum_w = float(np.sum(w_valid))
+
+    if sum_w <= 0:
+        return np.nan, np.nan, n_valid, False
+
+    y_bar = float(np.sum(w_valid * y_clean) / sum_w)
+
+    # SRS fallback if below min_n threshold
+    # Normalize positive weights to mean=1 so fallback is scale-invariant
+    # (replicate designs preserve raw weight scale per survey.py:L189-240)
+    used_srs = False
+    if n_valid < min_n:
+        w_norm = w_valid.copy()
+        w_pos = w_norm[w_norm > 0]
+        if len(w_pos) > 0:
+            w_norm[w_norm > 0] = w_pos / w_pos.mean()
+        sum_wn = float(np.sum(w_norm))
+        resid_sq = w_norm * (y_clean - y_bar) ** 2
+        variance = float(np.sum(resid_sq) / (sum_wn**2) * n_valid / (n_valid - 1))
+        return y_bar, max(variance, 0.0), n_valid, True
+
+    # Full-design domain estimation: construct full-length psi with zeros
+    # outside the cell, preserving full strata/PSU structure for variance
+    n_total = len(y_full)
+    psi = np.zeros(n_total)
+    # Positions in full array where cell member has valid data
+    cell_indices = np.where(cell_mask)[0]
+    valid_positions = cell_indices[valid]
+    psi[valid_positions] = w_valid[valid] * (y_clean[valid] - y_bar) / sum_w
+
+    # Route to TSL or replicate variance using the full design
+    if full_resolved.uses_replicate_variance:
+        variance, _ = compute_replicate_if_variance(psi, full_resolved)
+    else:
+        variance = compute_survey_if_variance(psi, full_resolved)
+
+    # SRS fallback when design-based variance is unidentifiable
+    if np.isnan(variance):
+        w_norm = w_valid.copy()
+        w_pos = w_norm[w_norm > 0]
+        if len(w_pos) > 0:
+            w_norm[w_norm > 0] = w_pos / w_pos.mean()
+        sum_wn = float(np.sum(w_norm))
+        resid_sq = w_norm * (y_clean - y_bar) ** 2
+        variance = float(np.sum(resid_sq) / (sum_wn**2) * n_valid / (n_valid - 1))
+        used_srs = True
+
+    return y_bar, max(float(variance), 0.0), n_valid, used_srs
+
+
+def aggregate_survey(
+    data: pd.DataFrame,
+    by: Union[str, List[str]],
+    outcomes: Union[str, List[str]],
+    survey_design: SurveyDesign,
+    covariates: Optional[Union[str, List[str]]] = None,
+    min_n: int = 2,
+    lonely_psu: Optional[str] = None,
+) -> Tuple[pd.DataFrame, SurveyDesign]:
+    """Aggregate survey microdata to geographic-period cells with design-based precision.
+
+    Computes design-weighted cell means and their Taylor-linearized (or
+    replicate-based) standard errors for each cell defined by the ``by``
+    columns. Returns a panel-ready DataFrame with precision weights and a
+    pre-configured :class:`SurveyDesign` for second-stage DiD estimation.
+
+    Each cell is treated as a subpopulation/domain of the full survey
+    design: influence function values are zero-padded outside the cell,
+    preserving full strata/PSU structure for variance estimation per
+    Lumley (2004) Section 3.4.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Individual-level microdata.
+    by : str or list of str
+        Columns defining cells (e.g., ``["state", "year"]``). The first
+        element is used as the clustering variable in the returned
+        SurveyDesign (geographic unit for second-stage inference).
+    outcomes : str or list of str
+        Outcome variable(s) to aggregate with full precision tracking.
+        Each outcome produces ``{name}_mean``, ``{name}_se``,
+        ``{name}_n``, and ``{name}_precision`` columns. When multiple
+        outcomes are given, panel filtering (non-estimable cell
+        removal, zero-weight PSU pruning) is based on the **first**
+        outcome only, consistent with the returned SurveyDesign. For
+        independent per-outcome support, call once per outcome.
+    survey_design : SurveyDesign
+        Survey design specification for the microdata.
+    covariates : str or list of str, optional
+        Additional variables to aggregate as design-weighted means only
+        (no SE/precision columns).
+    min_n : int, default 2
+        Minimum respondents per cell. Cells below this threshold use
+        simple random sampling variance as a fallback.
+    lonely_psu : str, optional
+        Override the survey design's ``lonely_psu`` setting for within-cell
+        computation. One of ``"remove"``, ``"certainty"``, ``"adjust"``.
+
+    Returns
+    -------
+    panel_df : pd.DataFrame
+        Aggregated panel with columns: grouping variables,
+        ``{outcome}_mean``, ``{outcome}_se``, ``{outcome}_n``,
+        ``{outcome}_precision``, ``{outcome}_weight``,
+        ``{covariate}_mean``, ``cell_n``, ``cell_n_eff``,
+        ``srs_fallback``. The ``_weight`` column is a fit-ready
+        version of ``_precision`` with NaN/Inf mapped to 0.0.
+    second_stage_design : SurveyDesign
+        Pre-configured for second-stage estimation with
+        ``weight_type="aweight"``, precision weights from the first
+        outcome, and geographic clustering via ``psu``.
+
+    Examples
+    --------
+    >>> design = SurveyDesign(weights="finalwt", strata="strat", psu="psu")
+    >>> panel, stage2 = aggregate_survey(
+    ...     microdata, by=["state", "year"],
+    ...     outcomes="smoking_rate", survey_design=design,
+    ... )
+    >>> # Add treatment/time indicators at the panel level, then fit:
+    >>> # panel["treated"] = ...  # e.g., from policy adoption data
+    >>> # panel["post"] = (panel["year"] >= treatment_year).astype(int)
+    >>> # result = DifferenceInDifferences().fit(
+    >>> #     panel, outcome="smoking_rate_mean",
+    >>> #     treatment="treated", time="post", survey_design=stage2,
+    >>> # )
+    """
+    import warnings
+    from dataclasses import replace
+
+    # --- Normalize inputs ---
+    by_cols = [by] if isinstance(by, str) else list(by)
+    outcome_cols = [outcomes] if isinstance(outcomes, str) else list(outcomes)
+    cov_cols = (
+        [covariates] if isinstance(covariates, str) else list(covariates) if covariates else []
+    )
+
+    # --- Validate ---
+    if not by_cols:
+        raise ValueError("'by' must specify at least one grouping column")
+    if not outcome_cols:
+        raise ValueError("'outcomes' must specify at least one outcome variable")
+
+    all_cols = by_cols + outcome_cols + cov_cols
+    missing = [c for c in all_cols if c not in data.columns]
+    if missing:
+        raise ValueError(f"Columns not found in DataFrame: {missing}")
+
+    overlap = set(by_cols) & (set(outcome_cols) | set(cov_cols))
+    if overlap:
+        raise ValueError(f"Columns appear in both 'by' and outcomes/covariates: {overlap}")
+
+    if not isinstance(survey_design, SurveyDesign):
+        raise TypeError(
+            f"survey_design must be a SurveyDesign instance, got {type(survey_design).__name__}"
+        )
+
+    if min_n < 1:
+        raise ValueError(f"min_n must be >= 1, got {min_n}")
+
+    if lonely_psu is not None and lonely_psu not in ("remove", "certainty", "adjust"):
+        raise ValueError(
+            f"lonely_psu must be 'remove', 'certainty', or 'adjust', got '{lonely_psu}'"
+        )
+
+    # --- Empty-input guard ---
+    if data.empty:
+        raise ValueError("data must be non-empty")
+
+    # --- Validate grouping columns have no missing values ---
+    by_missing = data[by_cols].isna().any()
+    cols_with_na = list(by_missing[by_missing].index)
+    if cols_with_na:
+        raise ValueError(
+            f"Missing values in grouping column(s): {cols_with_na}. "
+            f"Drop or fill NaN values before calling aggregate_survey()."
+        )
+
+    # --- Resolve design once on full data ---
+    effective_design = (
+        replace(survey_design, lonely_psu=lonely_psu) if lonely_psu else survey_design
+    )
+    full_resolved = effective_design.resolve(data)
+
+    # --- Precompute full-length outcome/covariate arrays ---
+    n_total = len(data)
+    all_vars = outcome_cols + cov_cols
+    non_numeric = [v for v in all_vars if not pd.api.types.is_numeric_dtype(data[v])]
+    if non_numeric:
+        raise ValueError(
+            f"Non-numeric column(s) in outcomes/covariates: {non_numeric}. "
+            f"All outcome and covariate columns must be numeric."
+        )
+    y_arrays: Dict[str, np.ndarray] = {var: data[var].values.astype(np.float64) for var in all_vars}
+
+    # --- Per-cell computation ---
+    # Use groupby().indices for position-based cell membership (safe with
+    # duplicate DataFrame indices, no column injection into user data)
+    grouped = data.groupby(by_cols, sort=True)
+    cell_indices = grouped.indices  # dict of cell_key → positional indices
+    rows: List[Dict[str, Any]] = []
+    srs_cells: List[str] = []
+    zero_var_cells: List[str] = []
+
+    for cell_key, pos_idx in cell_indices.items():
+        # Boolean mask for full-design domain estimation
+        cell_mask = np.zeros(n_total, dtype=bool)
+        cell_mask[pos_idx] = True
+
+        cell_n = int(np.sum(cell_mask))
+        cell_key_str = str(cell_key)
+
+        # Cell-level statistics (Kish ESS is a property of the cell)
+        cell_w = full_resolved.weights[cell_mask]
+        sum_w = float(np.sum(cell_w))
+        sum_w2 = float(np.sum(cell_w**2))
+        cell_n_eff = (sum_w**2 / sum_w2) if sum_w2 > 0 else 0.0
+
+        # Build row dict with grouping columns
+        row: Dict[str, Any] = {}
+        if len(by_cols) == 1:
+            row[by_cols[0]] = cell_key
+        else:
+            for i, col in enumerate(by_cols):
+                row[col] = cell_key[i]
+
+        row["cell_n"] = cell_n
+        row["cell_n_eff"] = cell_n_eff
+
+        cell_srs_fallback = False
+
+        # Outcomes: mean + SE + n + precision (full-design domain estimation)
+        for var in outcome_cols:
+            y_bar, variance, n_valid, used_srs = _cell_mean_variance(
+                y_arrays[var],
+                full_resolved,
+                cell_mask,
+                min_n,
+            )
+            se = float(np.sqrt(variance)) if not np.isnan(variance) else np.nan
+
+            if used_srs:
+                cell_srs_fallback = True
+
+            # Zero variance → precision NaN
+            if se == 0.0:
+                precision = np.nan
+                zero_var_cells.append(cell_key_str)
+            elif np.isnan(se):
+                precision = np.nan
+            else:
+                precision = 1.0 / variance
+
+            row[f"{var}_mean"] = y_bar
+            row[f"{var}_se"] = se
+            row[f"{var}_n"] = n_valid
+            row[f"{var}_precision"] = precision
+
+        # Covariates: design-weighted mean only
+        for var in cov_cols:
+            y_cell = y_arrays[var][cell_mask]
+            valid = ~np.isnan(y_cell)
+            w_valid = cell_w * valid.astype(np.float64)
+            sw = float(np.sum(w_valid))
+            if sw > 0:
+                row[f"{var}_mean"] = float(np.sum(w_valid * np.where(valid, y_cell, 0.0)) / sw)
+            else:
+                row[f"{var}_mean"] = np.nan
+
+        row["srs_fallback"] = cell_srs_fallback
+        if cell_srs_fallback:
+            srs_cells.append(cell_key_str)
+
+        rows.append(row)
+
+    # --- Warnings ---
+    if srs_cells:
+        warnings.warn(
+            f"Design-based variance not estimable for {len(srs_cells)} cell(s); "
+            f"using SRS fallback: {srs_cells[:5]}"
+            + (f" ... and {len(srs_cells) - 5} more" if len(srs_cells) > 5 else ""),
+            UserWarning,
+            stacklevel=2,
+        )
+    if zero_var_cells:
+        warnings.warn(
+            f"Zero variance in {len(zero_var_cells)} cell(s) (precision set to NaN): "
+            f"{zero_var_cells[:5]}"
+            + (f" ... and {len(zero_var_cells) - 5} more" if len(zero_var_cells) > 5 else ""),
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # --- Assemble output ---
+    panel_df = pd.DataFrame(rows)
+
+    # Sort by grouping columns
+    panel_df = panel_df.sort_values(by_cols).reset_index(drop=True)
+
+    # --- Drop non-estimable cells ---
+    # Cells with non-finite mean (n_valid==0 or all-missing) cannot contribute
+    # to second-stage estimation and would cause fit() to reject NaN outcomes.
+    # Dropping them also removes all-zero-weight PSUs from the panel.
+    first_outcome = outcome_cols[0]
+    mean_col = f"{first_outcome}_mean"
+    nonestimable = ~np.isfinite(panel_df[mean_col].values)
+    if np.any(nonestimable):
+        n_dropped = int(np.sum(nonestimable))
+        dropped_keys = panel_df.loc[nonestimable, by_cols].values.tolist()
+        # Warn about secondary outcomes losing valid data in dropped cells
+        secondary_loss = []
+        for var in outcome_cols[1:]:
+            valid_secondary = np.isfinite(panel_df.loc[nonestimable, f"{var}_mean"].values)
+            if np.any(valid_secondary):
+                secondary_loss.append(var)
+        msg = (
+            f"Dropped {n_dropped} non-estimable cell(s) (based on first outcome "
+            f"'{first_outcome}'): {dropped_keys[:5]}"
+            + (f" ... and {n_dropped - 5} more" if n_dropped > 5 else "")
+        )
+        if secondary_loss:
+            msg += (
+                f". Note: {secondary_loss} had valid data in dropped cells. "
+                f"For independent per-outcome support, call once per outcome."
+            )
+        warnings.warn(msg, UserWarning, stacklevel=2)
+        panel_df = panel_df[~nonestimable].reset_index(drop=True)
+
+    # --- Construct second-stage SurveyDesign ---
+    # Create a fit-ready weight column: NaN/Inf precision → 0.0 so downstream
+    # resolve() doesn't reject missing weights. Diagnostic *_precision is kept.
+    weight_col = f"{first_outcome}_weight"
+    panel_df[weight_col] = np.where(
+        np.isfinite(panel_df[f"{first_outcome}_precision"]),
+        panel_df[f"{first_outcome}_precision"],
+        0.0,
+    )
+
+    # Drop geographic units (PSUs) with zero total weight — they would
+    # inflate survey df and distort second-stage variance estimation.
+    geo_col = by_cols[0]
+    geo_weight = panel_df.groupby(geo_col)[weight_col].sum()
+    zero_geos = geo_weight[geo_weight == 0].index
+    if len(zero_geos) > 0:
+        n_before = len(panel_df)
+        panel_df = panel_df[~panel_df[geo_col].isin(zero_geos)].reset_index(drop=True)
+        n_after = len(panel_df)
+        warnings.warn(
+            f"Dropped {n_before - n_after} cell(s) from {len(zero_geos)} "
+            f"geographic unit(s) with zero total weight: "
+            f"{list(zero_geos[:5])}"
+            + (f" ... and {len(zero_geos) - 5} more" if len(zero_geos) > 5 else ""),
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # Guard: all cells dropped
+    if panel_df.empty:
+        raise ValueError(
+            "No estimable cells remain after aggregation. "
+            "All cells had missing outcomes or zero effective weight."
+        )
+
+    second_stage_design = SurveyDesign(
+        weights=weight_col,
+        weight_type="aweight",
+        psu=geo_col,
+    )
+
+    return panel_df, second_stage_design
