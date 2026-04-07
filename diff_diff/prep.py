@@ -1351,7 +1351,8 @@ def _cell_mean_variance(
     """
     y_cell = y_full[cell_mask]
     w_cell = full_resolved.weights[cell_mask]
-    valid = ~np.isnan(y_cell)
+    # Valid = non-missing AND positive weight (zero-weight rows are padding)
+    valid = ~np.isnan(y_cell) & (w_cell > 0)
     n_valid = int(np.sum(valid))
 
     if n_valid == 0:

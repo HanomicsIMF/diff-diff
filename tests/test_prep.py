@@ -2452,6 +2452,36 @@ class TestAggregateSurvey:
                 survey_design=design_simple,
             )
 
+    def test_zero_weight_rows_excluded_from_n_valid(self):
+        """Zero-weight rows should not count as valid observations."""
+        rng = np.random.RandomState(66)
+        # Cell A: 1 positive-weight obs + 9 zero-weight padding
+        # With only 1 effective observation, SE should be NaN
+        data = pd.DataFrame(
+            {
+                "geo": ["A"] * 10 + ["B"] * 10,
+                "time": np.ones(20, dtype=int),
+                "wt": np.concatenate(
+                    [
+                        np.array([1.0] + [0.0] * 9),  # A: 1 real, 9 padding
+                        np.ones(10),  # B: all real
+                    ]
+                ),
+                "y": rng.normal(10, 2, 20),
+            }
+        )
+        design = SurveyDesign(weights="wt")
+        panel, _ = aggregate_survey(data, by=["geo", "time"], outcomes="y", survey_design=design)
+        cell_a = panel[panel["geo"] == "A"]
+        # Only 1 positive-weight obs → n_valid=1, SE=NaN
+        assert cell_a["y_n"].iloc[0] == 1
+        assert np.isnan(cell_a["y_se"].iloc[0])
+
+        cell_b = panel[panel["geo"] == "B"]
+        # 10 positive-weight obs → normal SE
+        assert cell_b["y_n"].iloc[0] == 10
+        assert cell_b["y_se"].iloc[0] > 0
+
     def test_duplicate_index(self):
         """Duplicate DataFrame indices do not break aggregation."""
         rng = np.random.RandomState(77)
