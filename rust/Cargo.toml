@@ -2,6 +2,7 @@
 name = "diff_diff_rust"
 version = "3.0.0"
 edition = "2021"
+rust-version = "1.83"
 description = "Rust backend for diff-diff DiD library"
 license = "MIT"
 
