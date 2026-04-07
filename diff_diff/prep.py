@@ -1541,7 +1541,7 @@ def aggregate_survey(
     # --- Precompute full-length outcome/covariate arrays ---
     n_total = len(data)
     all_vars = outcome_cols + cov_cols
-    non_numeric = [v for v in all_vars if not np.issubdtype(data[v].dtype, np.number)]
+    non_numeric = [v for v in all_vars if not pd.api.types.is_numeric_dtype(data[v])]
     if non_numeric:
         raise ValueError(
             f"Non-numeric column(s) in outcomes/covariates: {non_numeric}. "

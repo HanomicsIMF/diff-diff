@@ -2463,6 +2463,21 @@ class TestAggregateSurvey:
                 survey_design=design,
             )
 
+    def test_nullable_numeric_dtypes(self):
+        """Pandas nullable Int64/Float64 dtypes are accepted as numeric."""
+        data = pd.DataFrame(
+            {
+                "geo": np.repeat(["A", "B"], 10),
+                "time": np.ones(20, dtype=int),
+                "wt": np.ones(20),
+                "y": pd.array(np.random.RandomState(1).normal(0, 1, 20), dtype="Float64"),
+            }
+        )
+        design = SurveyDesign(weights="wt")
+        panel, _ = aggregate_survey(data, by=["geo", "time"], outcomes="y", survey_design=design)
+        assert len(panel) == 2
+        assert panel["y_mean"].notna().all()
+
     def test_error_empty_data(self, design):
         """Empty DataFrame raises ValueError."""
         empty = pd.DataFrame(columns=["state", "year", "y", "wt", "stratum", "cluster"])
