@@ -652,11 +652,9 @@ class WooldridgeDiD:
 
         # Guard: zero-weight unit/time groups cause 0/0 in within_transform
         if survey_weights is not None and np.any(survey_weights == 0):
+            sw_series = pd.Series(survey_weights, index=sample.index)
             for grp_col, grp_label in [(unit, "unit"), (time, "time period")]:
-                grp_sums = sample.groupby(grp_col).apply(
-                    lambda g: survey_weights[g.index].sum(),
-                    include_groups=False,
-                )
+                grp_sums = sw_series.groupby(sample[grp_col]).sum()
                 zero_grps = grp_sums[grp_sums == 0].index.tolist()
                 if zero_grps:
                     raise ValueError(

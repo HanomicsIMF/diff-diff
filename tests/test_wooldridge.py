@@ -1573,3 +1573,23 @@ class TestWooldridgeSurvey:
                 df, outcome="y", unit="unit", time="time",
                 cohort="cohort", survey_design=sd,
             )
+
+    def test_survey_aggregate_and_summary(self, survey_panel):
+        """Survey aggregate() uses df_survey and summary() shows survey block."""
+        from diff_diff.survey import SurveyDesign
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="unit")
+        r = WooldridgeDiD().fit(
+            survey_panel, outcome="y", unit="unit", time="time",
+            cohort="cohort", survey_design=sd,
+        )
+        # aggregate() should use t-distribution with survey df
+        r.aggregate("group")
+        assert r.group_effects is not None
+        assert r._df_survey is not None
+        for eff in r.group_effects.values():
+            assert np.isfinite(eff["p_value"])
+
+        # summary() should include survey design block
+        s = r.summary()
+        assert "Survey Design" in s
+        assert "pweight" in s
