@@ -2451,6 +2451,18 @@ class TestAggregateSurvey:
                 survey_design=design,
             )
 
+    def test_error_non_numeric_outcome(self, micro_data, design):
+        """Non-numeric outcome column raises ValueError."""
+        data = micro_data.copy()
+        data["label"] = "foo"
+        with pytest.raises(ValueError, match="Non-numeric column"):
+            aggregate_survey(
+                data,
+                by=["state", "year"],
+                outcomes="label",
+                survey_design=design,
+            )
+
     def test_error_empty_data(self, design):
         """Empty DataFrame raises ValueError."""
         empty = pd.DataFrame(columns=["state", "year", "y", "wt", "stratum", "cluster"])

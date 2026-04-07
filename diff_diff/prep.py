@@ -1541,6 +1541,12 @@ def aggregate_survey(
     # --- Precompute full-length outcome/covariate arrays ---
     n_total = len(data)
     all_vars = outcome_cols + cov_cols
+    non_numeric = [v for v in all_vars if not np.issubdtype(data[v].dtype, np.number)]
+    if non_numeric:
+        raise ValueError(
+            f"Non-numeric column(s) in outcomes/covariates: {non_numeric}. "
+            f"All outcome and covariate columns must be numeric."
+        )
     y_arrays: Dict[str, np.ndarray] = {var: data[var].values.astype(np.float64) for var in all_vars}
 
     # --- Per-cell computation ---
