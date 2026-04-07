@@ -1442,3 +1442,37 @@ class TestWooldridgeSurvey:
                 survey_panel, outcome="y", unit="unit", time="time",
                 cohort="cohort", survey_design=sd,
             )
+
+    def test_weights_only_plus_cluster(self, survey_panel):
+        """Weights-only survey + cluster= injects cluster as PSU."""
+        from diff_diff.survey import SurveyDesign
+        sd = SurveyDesign(weights="weight")
+        r = WooldridgeDiD(cluster="stratum").fit(
+            survey_panel, outcome="y", unit="unit", time="time",
+            cohort="cohort", survey_design=sd,
+        )
+        # Cluster should have been injected as PSU
+        n_strata = survey_panel["stratum"].nunique()
+        assert r.survey_metadata is not None
+        assert r.survey_metadata.n_psu == n_strata
+
+        # SE should differ from same run without cluster
+        r_no_cluster = WooldridgeDiD().fit(
+            survey_panel, outcome="y", unit="unit", time="time",
+            cohort="cohort", survey_design=sd,
+        )
+        assert r.overall_se != r_no_cluster.overall_se
+
+    def test_survey_gt_weights_are_counts(self, survey_panel):
+        """Survey aggregation uses cell counts, not survey-weight sums."""
+        from diff_diff.survey import SurveyDesign
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="unit")
+        r = WooldridgeDiD(method="logit").fit(
+            survey_panel, outcome="y_bin", unit="unit", time="time",
+            cohort="cohort", survey_design=sd,
+        )
+        for k, w in r._gt_weights.items():
+            assert isinstance(w, int), (
+                f"gt_weights[{k}] = {w} (type {type(w).__name__}); "
+                f"expected int (cell count)"
+            )

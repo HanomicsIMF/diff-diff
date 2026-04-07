@@ -68,6 +68,44 @@ def _compute_weighted_agg(
     return {"att": att, "se": se, "t_stat": t_stat, "p_value": p_value, "conf_int": conf_int}
 
 
+def _resolve_survey_for_wooldridge(survey_design, sample, cluster_ids, cluster_name):
+    """Resolve survey design, inject cluster as PSU, recompute metadata.
+
+    Shared helper for all three WooldridgeDiD sub-fitters.  Matches the
+    resolution chain in DifferenceInDifferences.fit() (estimators.py:344-359).
+    """
+    from diff_diff.survey import (
+        _resolve_survey_for_fit,
+        _resolve_effective_cluster,
+        _inject_cluster_as_psu,
+        compute_survey_metadata,
+    )
+
+    resolved, survey_weights, survey_weight_type, survey_metadata = (
+        _resolve_survey_for_fit(survey_design, sample)
+    )
+    if resolved is not None and resolved.uses_replicate_variance:
+        raise NotImplementedError(
+            "WooldridgeDiD does not yet support replicate-weight variance. "
+            "Use TSL (strata/PSU/FPC) instead."
+        )
+    if resolved is not None:
+        effective_cluster = _resolve_effective_cluster(
+            resolved, cluster_ids, cluster_name
+        )
+        if effective_cluster is not None:
+            resolved = _inject_cluster_as_psu(resolved, effective_cluster)
+            if resolved.psu is not None and survey_metadata is not None:
+                raw_w = (
+                    sample[survey_design.weights].values.astype(np.float64)
+                    if survey_design.weights
+                    else np.ones(len(sample), dtype=np.float64)
+                )
+                survey_metadata = compute_survey_metadata(resolved, raw_w)
+    df_inf = resolved.df_survey if resolved is not None else None
+    return resolved, survey_weights, survey_weight_type, survey_metadata, df_inf
+
+
 def _filter_sample(
     data: pd.DataFrame,
     unit: str,
@@ -581,17 +619,14 @@ class WooldridgeDiD:
         survey_design=None,
     ) -> WooldridgeDiDResults:
         """OLS path: within-transform FE, solve_ols, cluster SE."""
-        # Resolve survey design against the filtered sample
-        from diff_diff.survey import _resolve_survey_for_fit, compute_survey_vcov
-        resolved, survey_weights, survey_weight_type, survey_metadata = (
-            _resolve_survey_for_fit(survey_design, sample)
+        # Cluster IDs (default: unit level) — needed before survey resolution
+        cluster_col = self.cluster if self.cluster else unit
+        cluster_ids = sample[cluster_col].values
+
+        # Resolve survey design, inject cluster as PSU when needed
+        resolved, survey_weights, survey_weight_type, survey_metadata, df_inf = (
+            _resolve_survey_for_wooldridge(survey_design, sample, cluster_ids, self.cluster)
         )
-        if resolved is not None and resolved.uses_replicate_variance:
-            raise NotImplementedError(
-                "WooldridgeDiD does not yet support replicate-weight variance. "
-                "Use TSL (strata/PSU/FPC) instead."
-            )
-        df_inf = resolved.df_survey if resolved is not None else None
 
         # 4. Within-transform: absorb unit + time FE
         all_vars = [outcome] + [f"_x{i}" for i in range(X_design.shape[1])]
@@ -614,10 +649,6 @@ class WooldridgeDiD:
         X_cols = [f"_x{i}_demeaned" for i in range(X_design.shape[1])]
         X = transformed[X_cols].values
 
-        # 5. Cluster IDs (default: unit level)
-        cluster_col = self.cluster if self.cluster else unit
-        cluster_ids = sample[cluster_col].values
-
         # 6. Solve OLS (skip cluster-robust vcov when survey will provide TSL vcov)
         coefs, resids, vcov = solve_ols(
             X,
@@ -632,6 +663,7 @@ class WooldridgeDiD:
 
         # Survey TSL vcov replaces cluster-robust vcov
         if resolved is not None:
+            from diff_diff.survey import compute_survey_vcov
             vcov = compute_survey_vcov(X, resids, resolved)
 
         # 7. Extract β_{g,t} and build gt_effects dict
@@ -771,19 +803,6 @@ class WooldridgeDiD:
         i.gvar i.tvar — cohort main effects + time main effects (additive),
         not cohort×time saturated group FEs.
         """
-        # Resolve survey design against the filtered sample
-        from diff_diff.survey import _resolve_survey_for_fit, compute_survey_vcov
-        resolved, survey_weights, survey_weight_type, survey_metadata = (
-            _resolve_survey_for_fit(survey_design, sample)
-        )
-        if resolved is not None and resolved.uses_replicate_variance:
-            raise NotImplementedError(
-                "WooldridgeDiD does not yet support replicate-weight variance. "
-                "Use TSL (strata/PSU/FPC) instead."
-            )
-        df_inf = resolved.df_survey if resolved is not None else None
-        _has_survey = resolved is not None
-
         n_int = len(int_col_names)
 
         # Design matrix: treatment interactions + cohort FEs + time FEs
@@ -802,6 +821,12 @@ class WooldridgeDiD:
             )
         cluster_col = self.cluster if self.cluster else unit
         cluster_ids = sample[cluster_col].values
+
+        # Resolve survey design, inject cluster as PSU when needed
+        resolved, survey_weights, survey_weight_type, survey_metadata, df_inf = (
+            _resolve_survey_for_wooldridge(survey_design, sample, cluster_ids, self.cluster)
+        )
+        _has_survey = resolved is not None
 
         beta, probs = solve_logit(
             X_full,
@@ -827,6 +852,7 @@ class WooldridgeDiD:
             # produces the correct QMLE sandwich for nonlinear models.
             # Bread: (X_tilde'WX_tilde)^{-1} = (X'diag(w*V)X)^{-1}
             # Scores: w*X_tilde*r_tilde = w*X*(y-mu)
+            from diff_diff.survey import compute_survey_vcov
             V = probs * (1 - probs)
             sqrt_V = np.sqrt(np.clip(V, 1e-20, None))
             X_tilde = X_with_intercept * sqrt_V[:, None]
@@ -928,10 +954,7 @@ class WooldridgeDiD:
                 "p_value": p_value,
                 "conf_int": conf_int,
             }
-            if survey_weights is not None:
-                gt_weights[(g, t)] = float(np.sum(survey_weights[cell_mask]))
-            else:
-                gt_weights[(g, t)] = int(cell_mask.sum())
+            gt_weights[(g, t)] = int(cell_mask.sum())
             # Store gradient in reduced space for aggregate SE
             gt_grads[(g, t)] = grad[kept_beta] if np.any(nan_mask) else grad
 
@@ -1009,19 +1032,6 @@ class WooldridgeDiD:
         i.gvar i.tvar — cohort main effects + time main effects (additive),
         not cohort×time saturated group FEs.
         """
-        # Resolve survey design against the filtered sample
-        from diff_diff.survey import _resolve_survey_for_fit, compute_survey_vcov
-        resolved, survey_weights, survey_weight_type, survey_metadata = (
-            _resolve_survey_for_fit(survey_design, sample)
-        )
-        if resolved is not None and resolved.uses_replicate_variance:
-            raise NotImplementedError(
-                "WooldridgeDiD does not yet support replicate-weight variance. "
-                "Use TSL (strata/PSU/FPC) instead."
-            )
-        df_inf = resolved.df_survey if resolved is not None else None
-        _has_survey = resolved is not None
-
         n_int = len(int_col_names)
 
         # Design matrix: intercept + treatment interactions + cohort FEs + time FEs.
@@ -1044,6 +1054,12 @@ class WooldridgeDiD:
         cluster_col = self.cluster if self.cluster else unit
         cluster_ids = sample[cluster_col].values
 
+        # Resolve survey design, inject cluster as PSU when needed
+        resolved, survey_weights, survey_weight_type, survey_metadata, df_inf = (
+            _resolve_survey_for_wooldridge(survey_design, sample, cluster_ids, self.cluster)
+        )
+        _has_survey = resolved is not None
+
         beta, mu_hat = solve_poisson(
             X_full, y,
             rank_deficient_action=self.rank_deficient_action,
@@ -1063,6 +1079,7 @@ class WooldridgeDiD:
 
         if _has_survey:
             # X_tilde trick for nonlinear survey vcov (V = mu for Poisson)
+            from diff_diff.survey import compute_survey_vcov
             sqrt_V = np.sqrt(np.clip(mu_hat, 1e-20, None))
             X_tilde = X_full * sqrt_V[:, None]
             r_tilde = resids / sqrt_V
@@ -1172,10 +1189,7 @@ class WooldridgeDiD:
                 "p_value": p_value,
                 "conf_int": conf_int,
             }
-            if survey_weights is not None:
-                gt_weights[(g, t)] = float(np.sum(survey_weights[cell_mask]))
-            else:
-                gt_weights[(g, t)] = int(cell_mask.sum())
+            gt_weights[(g, t)] = int(cell_mask.sum())
             gt_grads[(g, t)] = grad[kept_beta] if np.any(nan_mask) else grad
 
         gt_keys_ordered = [k for k in gt_keys if k in gt_effects]

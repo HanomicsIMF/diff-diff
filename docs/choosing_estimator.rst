@@ -599,10 +599,9 @@ If you're unsure which estimator to use:
 Survey Design Support
 ---------------------
 
-All estimators except :class:`~diff_diff.WooldridgeDiD` accept an optional
-``survey_design`` parameter in ``fit()``. Pass a :class:`~diff_diff.SurveyDesign`
-object to get design-based variance estimation. The depth of support varies by
-estimator (WooldridgeDiD survey support is planned for Phase 10f):
+All estimators accept an optional ``survey_design`` parameter in ``fit()``.
+Pass a :class:`~diff_diff.SurveyDesign` object to get design-based variance
+estimation. The depth of support varies by estimator:
 
 .. list-table::
    :header-rows: 1
@@ -687,7 +686,7 @@ estimator (WooldridgeDiD survey support is planned for Phase 10f):
      - Full (pweight only)
      - Full (analytical)
      - --
-     - Multiplier at PSU
+     - --
    * - ``BaconDecomposition``
      - Diagnostic
      - Diagnostic
