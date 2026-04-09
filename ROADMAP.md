@@ -61,7 +61,58 @@ credibility. See [survey-roadmap.md](docs/survey-roadmap.md) for detailed specs.
 | **10d.** Tutorial: flat-weight vs design-based comparison | HIGH | ✅ Shipped (v2.9.1) |
 | **10e.** Position paper / arXiv preprint | MEDIUM | Not started — depends on 10b |
 | **10f.** WooldridgeDiD survey support (OLS + logit + Poisson) | MEDIUM | ✅ Shipped (v2.9.0) |
-| **10g.** Practitioner guidance: when does survey design matter? | LOW | Not started |
+| **10g.** Practitioner guidance: when does survey design matter? | LOW | Subsumed by B1d |
+
+---
+
+## Data Science Practitioners (Phases B1–B4)
+
+Parallel track targeting data science practitioners — marketing, product, operations — who need DiD for real-world problems but are underserved by the current academic framing. See [business-strategy.md](docs/business-strategy.md) for competitive analysis, personas, and full rationale.
+
+### Phase B1: Foundation (Docs & Positioning)
+
+*Goal: Make diff-diff discoverable and approachable for data science practitioners. Zero code changes.*
+
+| Item | Priority | Status |
+|------|----------|--------|
+| **B1a.** Brand Awareness Survey DiD tutorial — lead use case showcasing unique survey support | HIGH | Done (Tutorial 17) |
+| **B1b.** README "For Data Scientists" section alongside "For Academics" and "For AI Agents" | HIGH | Not started |
+| **B1c.** Practitioner decision tree — "which method should I use?" framed for business contexts | HIGH | Not started |
+| **B1d.** "Getting Started" guide for practitioners with business ↔ academic terminology bridge | MEDIUM | Not started |
+
+### Phase B2: Practitioner Content
+
+*Goal: End-to-end tutorials for each persona. Ship incrementally, each as its own PR.*
+
+| Item | Priority | Status |
+|------|----------|--------|
+| **B2a.** Marketing Campaign Lift tutorial (CallawaySantAnna, staggered geo rollout) | HIGH | Not started |
+| **B2b.** Geo-Experiment tutorial (SyntheticDiD, comparison with GeoLift/CausalImpact) | HIGH | Not started |
+| **B2c.** diff-diff vs GeoLift vs CausalImpact comparison page | MEDIUM | Not started |
+| **B2d.** Product Launch Regional Rollout tutorial (staggered estimators) | MEDIUM | Not started |
+| **B2e.** Pricing/Promotion Impact tutorial (ContinuousDiD, dose-response) | MEDIUM | Not started |
+| **B2f.** Loyalty Program Evaluation tutorial (TripleDifference) | LOW | Not started |
+
+### Phase B3: Convenience Layer
+
+*Goal: Reduce time-to-insight and enable stakeholder communication. Core stays numpy/pandas/scipy only.*
+
+| Item | Priority | Status |
+|------|----------|--------|
+| **B3a.** `BusinessReport` class — plain-English summaries, markdown export; rich export via optional `[reporting]` extra | HIGH | Not started |
+| **B3b.** `DiagnosticReport` — unified diagnostic runner with plain-English interpretation. Includes making `practitioner_next_steps()` context-aware (substitute actual column names from fitted results into code snippets instead of generic placeholders). | HIGH | Not started |
+| **B3c.** Practitioner data generator wrappers (thin wrappers around existing generators with business-friendly names) | MEDIUM | Not started |
+| **B3d.** `survey_aggregate()` helper (see [Survey Aggregation Helper](#future-survey-aggregation-helper)) | MEDIUM | Not started |
+
+### Phase B4: Platform (Longer-term)
+
+*Goal: Integrate into data science practitioner workflows.*
+
+| Item | Priority | Status |
+|------|----------|--------|
+| **B4a.** Integration guides (Databricks, Jupyter dashboards, survey platforms) | MEDIUM | Not started |
+| **B4b.** Export templates (PowerPoint via optional extra, Confluence/Notion markdown, HTML widget) | MEDIUM | Not started |
+| **B4c.** AI agent integration — position B3a/B3b as tools for AI agents assisting practitioners | LOW | Not started |
 
 ---
 
@@ -69,13 +120,15 @@ credibility. See [survey-roadmap.md](docs/survey-roadmap.md) for detailed specs.
 
 **`survey_aggregate()` helper function** for the microdata-to-panel workflow. Bridges individual-level survey data (BRFSS, ACS, CPS) collected as repeated cross-sections to geographic-level (state, city) panel DiD. Computes design-based cell means and precision weights that estimators can consume directly.
 
+Also cross-referenced as **B3d** — directly enables the practitioner survey tutorial workflow beyond the original academic framing.
+
 ---
 
 ## Future Estimators
 
 ### de Chaisemartin-D'Haultfouille Estimator
 
-Handles treatment that switches on and off (reversible treatments), unlike most other methods.
+Handles treatment that switches on and off (reversible treatments), unlike most other methods. Reversible treatments are common in marketing (seasonal campaigns, promotions), giving this estimator higher priority for data science practitioners.
 
 - Allows units to move into and out of treatment
 - Time-varying, heterogeneous treatment effects

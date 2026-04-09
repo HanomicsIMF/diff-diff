@@ -142,6 +142,7 @@ We provide Jupyter notebook tutorials in `docs/tutorials/`:
 | `13_stacked_did.ipynb` | Stacked DiD (Wing et al. 2024), Q-weights, sub-experiment inspection, trimming, clean control definitions |
 | `15_efficient_did.ipynb` | Efficient DiD (Chen et al. 2025), optimal weighting, PT-All vs PT-Post, efficiency gains, bootstrap inference |
 | `16_survey_did.ipynb` | Survey-aware DiD with complex sampling designs (strata, PSU, FPC, weights), replicate weights, subpopulation analysis, DEFF diagnostics |
+| `17_brand_awareness_survey.ipynb` | Measuring campaign impact on brand awareness with survey data — naive vs. survey-corrected comparison, brand funnel analysis, staggered rollouts, stakeholder communication |
 
 ## Data Preparation
 
