@@ -75,6 +75,16 @@ After estimation, call `practitioner_next_steps(results)` for context-aware guid
 
 Detailed guide: [`docs/llms-practitioner.txt`](docs/llms-practitioner.txt)
 
+## For Data Scientists
+
+Measuring campaign lift? Evaluating a product launch? diff-diff handles the causal inference so you can focus on the business question.
+
+- **[Which method fits my problem?](docs/practitioner_decision_tree.rst)** - Start from your business scenario (campaign in some markets, staggered rollout, survey data) and find the right estimator
+- **[Getting started for practitioners](docs/practitioner_getting_started.rst)** - End-to-end walkthrough: marketing campaign -> causal estimate -> stakeholder-ready result
+- **[Brand awareness survey tutorial](docs/tutorials/17_brand_awareness_survey.ipynb)** - Full example with complex survey design, brand funnel analysis, and staggered rollouts
+
+Already know DiD? The [academic quickstart](docs/quickstart.rst) and [estimator guide](docs/choosing_estimator.rst) cover the full technical details.
+
 ## Features
 
 - **sklearn-like API**: Familiar `fit()` interface with `get_params()` and `set_params()`

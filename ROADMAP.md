@@ -76,9 +76,9 @@ Parallel track targeting data science practitioners — marketing, product, oper
 | Item | Priority | Status |
 |------|----------|--------|
 | **B1a.** Brand Awareness Survey DiD tutorial — lead use case showcasing unique survey support | HIGH | Done (Tutorial 17) |
-| **B1b.** README "For Data Scientists" section alongside "For Academics" and "For AI Agents" | HIGH | Not started |
-| **B1c.** Practitioner decision tree — "which method should I use?" framed for business contexts | HIGH | Not started |
-| **B1d.** "Getting Started" guide for practitioners with business ↔ academic terminology bridge | MEDIUM | Not started |
+| **B1b.** README "For Data Scientists" section alongside "For Academics" and "For AI Agents" | HIGH | Done |
+| **B1c.** Practitioner decision tree — "which method should I use?" framed for business contexts | HIGH | Done |
+| **B1d.** "Getting Started" guide for practitioners with business ↔ academic terminology bridge | MEDIUM | Done |
 
 ### Phase B2: Practitioner Content
 

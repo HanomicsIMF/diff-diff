@@ -44,6 +44,8 @@ For development:
 Quick Links
 -----------
 
+- :doc:`practitioner_getting_started` - Measuring campaign impact? Start here
+- :doc:`practitioner_decision_tree` - Which method fits your business problem?
 - :doc:`quickstart` - Installation and your first DiD analysis
 - :doc:`choosing_estimator` - Which estimator should I use?
 - :doc:`tutorials/01_basic_did` - Hands-on basic tutorial
@@ -53,12 +55,27 @@ Quick Links
 
 .. toctree::
    :maxdepth: 2
+   :caption: For Data Scientists
+   :hidden:
+
+   practitioner_getting_started
+   practitioner_decision_tree
+
+.. toctree::
+   :maxdepth: 2
    :caption: Getting Started
    :hidden:
 
    quickstart
    choosing_estimator
    troubleshooting
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Tutorials: Business Applications
+   :hidden:
+
+   tutorials/17_brand_awareness_survey
 
 .. toctree::
    :maxdepth: 1
