@@ -88,9 +88,12 @@ Deferred items from PR reviews that were not addressed before merge.
 |-------|----------|----|----------|
 | R comparison tests spawn separate `Rscript` per test (slow CI) | `tests/test_methodology_twfe.py:294` | #139 | Low |
 | CS R helpers hard-code `xformla = ~ 1`; no covariate-adjusted R benchmark for IRLS path | `tests/test_methodology_callaway.py` | #202 | Low |
-| ~376 `duplicate object description` Sphinx warnings — restructure `docs/api/*.rst` to avoid duplicate `:members:` + `autosummary` | `docs/api/*.rst` | — | Low |
+| ~1583 `duplicate object description` Sphinx warnings — restructure `docs/api/*.rst` to avoid duplicate `:members:` + `autosummary` (count grew from ~376 as API surface expanded) | `docs/api/*.rst` | — | Low |
 | Doc-snippet smoke tests only cover `.rst` files; `.txt` AI guides outside CI validation | `tests/test_doc_snippets.py` | #239 | Low |
 | Add CI validation for `docs/doc-deps.yaml` integrity (stale paths, unmapped source files) | `docs/doc-deps.yaml` | #269 | Low |
+| Sphinx autodoc fails to import 3 result members: `DiDResults.ci`, `MultiPeriodDiDResults.att`, `CallawaySantAnnaResults.aggregate` — investigate whether these are renamed/removed or just unresolvable from autosummary template | `docs/api/results.rst`, `docs/api/staggered.rst` | — | Medium |
+| `EDiDBootstrapResults` cross-reference is ambiguous — class is exported from both `diff_diff` and `diff_diff.efficient_did_bootstrap`, producing 3 "more than one target found" warnings. Add `:noindex:` to one source or use full-path refs | `diff_diff/efficient_did_results.py`, `docs/api/efficient_did.rst` | — | Low |
+| Tracked Sphinx autosummary stubs in `docs/api/_autosummary/*.rst` are stale — every sphinx build regenerates them with new attributes (e.g., `coef_var`, `survey_metadata`) that have been added to result classes. Either commit a refresh or move the directory to `.gitignore` and treat as build output. Also 6 untracked stubs exist for newer estimators (`WooldridgeDiD`, `SimulationMDEResults`, etc.) that have never been committed. | `docs/api/_autosummary/` | — | Low |
 
 ---
 

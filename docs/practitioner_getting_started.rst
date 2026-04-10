@@ -293,6 +293,34 @@ Ignoring these makes your confidence intervals too narrow.
 diff-diff handles this via :class:`~diff_diff.SurveyDesign` - pass it to any estimator's
 ``fit()`` method.
 
+If your data is **individual-level microdata** - one row per respondent, with
+sampling weights and strata/PSU columns (BRFSS, ACS, CPS, NHANES) - use
+:func:`~diff_diff.aggregate_survey` first to roll it up to a geographic-period
+panel. The helper computes design-based cell means with precision weights and
+returns a pre-configured ``SurveyDesign`` for the second-stage fit:
+
+.. code-block:: python
+
+   from diff_diff import aggregate_survey, SurveyDesign, DifferenceInDifferences
+
+   # 1. Describe the microdata's sampling design
+   design = SurveyDesign(weights="finalwt", strata="strat", psu="psu")
+
+   # 2. Roll up respondent records into a state-year panel
+   panel, stage2 = aggregate_survey(
+       microdata, by=["state", "year"],
+       outcomes="brand_awareness", survey_design=design,
+   )
+
+   # 3. Add treatment/time indicators on the panel, then fit any estimator
+   #    with the pre-configured second-stage SurveyDesign:
+   # panel["treated"] = ...  # from policy or campaign rollout
+   # panel["post"] = (panel["year"] >= treatment_year).astype(int)
+   # results = DifferenceInDifferences().fit(
+   #     panel, outcome="brand_awareness_mean",
+   #     treatment="treated", time="post", survey_design=stage2,
+   # )
+
 For a complete walkthrough with brand funnel metrics and survey design corrections,
 see `Tutorial 17: Brand Awareness Survey
 <tutorials/17_brand_awareness_survey.ipynb>`_.

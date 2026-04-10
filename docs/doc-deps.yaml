@@ -550,6 +550,14 @@ sources:
     docs:
       - path: docs/api/prep.rst
         type: api_reference
+      - path: docs/practitioner_getting_started.rst
+        type: user_guide
+      - path: docs/practitioner_decision_tree.rst
+        type: user_guide
+      - path: docs/choosing_estimator.rst
+        type: user_guide
+      - path: docs/survey-roadmap.md
+        type: roadmap
 
   diff_diff/prep_dgp.py:
     drift_risk: low

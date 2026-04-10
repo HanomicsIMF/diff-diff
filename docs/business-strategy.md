@@ -329,7 +329,7 @@ The project has an existing ROADMAP.md covering Phase 10 (survey academic credib
 
 **Directly subsumed items:**
 - **10g. "Practitioner guidance: when does survey design matter?"** -- this becomes part of the business tutorials and Getting Started guide. No longer a standalone item.
-- **survey_aggregate() helper** -- the microdata-to-panel workflow helper is directly relevant for Persona A (survey data from BRFSS/ACS -> geographic panel). Should be prioritized alongside business tutorials.
+- **`aggregate_survey()` helper** -- shipped in v3.0.1. The microdata-to-panel workflow helper is in place for Persona A (survey data from BRFSS/ACS -> geographic panel). Practitioner-facing tutorials should reference it.
 
 **Reprioritized by business use cases:**
 - **de Chaisemartin-D'Haultfouille (reversible treatments)** -- marketing interventions frequently switch on/off (seasonal campaigns, promotions). This estimator becomes higher priority for business DS than for academics. Should move up in the roadmap.
@@ -373,7 +373,7 @@ Tutorials in priority order (ship incrementally, not all at once):
 12. `BusinessReport` class (3a) -- core uses only numpy/pandas/scipy; rich export via optional `[reporting]` extra
 13. `DiagnosticReport` descriptive assessment (3b)
 14. Business data generator wrappers (3c)
-15. `survey_aggregate()` helper from existing roadmap -- directly enables the survey tutorial workflow
+15. ~~`survey_aggregate()` helper from existing roadmap~~ -- shipped in v3.0.1 as `aggregate_survey()`; directly enables the survey tutorial workflow
 
 ### Phase 4: Platform (Longer-term)
 *Goal: Integrate into business DS workflows*

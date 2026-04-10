@@ -233,6 +233,11 @@ Ignoring survey weights and clustering makes your confidence intervals too narro
 you will be overconfident about the result. Passing a ``SurveyDesign`` to ``fit()``
 corrects for this automatically.
 
+**If your data is individual-level microdata** (e.g., BRFSS, ACS, CPS, or NHANES
+respondent records), use :func:`~diff_diff.aggregate_survey` first to roll it up
+to a geographic-period panel with design-based precision weights - see
+:doc:`practitioner_getting_started` for an end-to-end example.
+
 .. code-block:: python
 
    from diff_diff import DifferenceInDifferences, SurveyDesign

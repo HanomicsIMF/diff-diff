@@ -603,6 +603,15 @@ All estimators accept an optional ``survey_design`` parameter in ``fit()``.
 Pass a :class:`~diff_diff.SurveyDesign` object to get design-based variance
 estimation. The depth of support varies by estimator:
 
+.. note::
+
+   If your data starts as **individual-level survey microdata** (e.g., BRFSS,
+   ACS, CPS, NHANES respondent records), use :func:`~diff_diff.aggregate_survey`
+   as a preprocessing step. It pools microdata into geographic-period cells with
+   design-based precision weights and returns a pre-configured
+   :class:`~diff_diff.SurveyDesign` ready for second-stage fitting with any of
+   the estimators in the matrix below. See :doc:`api/prep` for the API reference.
+
 .. list-table::
    :header-rows: 1
    :widths: 25 12 18 18 18
