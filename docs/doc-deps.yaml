@@ -101,6 +101,10 @@ sources:
         type: user_guide
       - path: docs/benchmarks.rst
         type: performance
+      - path: docs/practitioner_getting_started.rst
+        type: user_guide
+      - path: docs/practitioner_decision_tree.rst
+        type: user_guide
 
   diff_diff/twfe.py:
     drift_risk: low
@@ -141,6 +145,12 @@ sources:
       - path: docs/survey-roadmap.md
         type: roadmap
         note: "Phase 4/6/7 CS survey sections"
+      - path: docs/practitioner_getting_started.rst
+        section: "What If Your Campaign Rolled Out in Waves?"
+        type: user_guide
+      - path: docs/practitioner_decision_tree.rst
+        section: "Staggered Rollout"
+        type: user_guide
 
   # ── StaggeredTripleDifference (staggered_triple_diff group) ─────────
 
@@ -265,6 +275,9 @@ sources:
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
+      - path: docs/practitioner_decision_tree.rst
+        section: "Varying Spending Levels"
+        type: user_guide
 
   # ── SyntheticDiD ───────────��───────────────────────────────────────
 
@@ -283,6 +296,9 @@ sources:
         type: user_guide
       - path: docs/llms-full.txt
         section: "SyntheticDiD"
+        type: user_guide
+      - path: docs/practitioner_decision_tree.rst
+        section: "Few Test Markets"
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -471,6 +487,12 @@ sources:
       - path: docs/choosing_estimator.rst
         section: "Survey Design Support"
         type: user_guide
+      - path: docs/practitioner_decision_tree.rst
+        section: "Survey Data"
+        type: user_guide
+      - path: docs/practitioner_getting_started.rst
+        section: "What If You Have Survey Data?"
+        type: user_guide
 
   # ── Infrastructure ─────────────────────────────────────────────────
 
@@ -493,6 +515,9 @@ sources:
       - path: docs/methodology/REGISTRY.md
         section: "Inference, safe_inference NaN gating"
         type: methodology
+      - path: docs/practitioner_getting_started.rst
+        section: "Step 4: Check Whether the Result Is Trustworthy"
+        type: user_guide
       - path: CLAUDE.md
         section: "safe_inference pattern"
         type: internal
@@ -531,6 +556,10 @@ sources:
     docs:
       - path: docs/api/prep.rst
         type: api_reference
+      - path: docs/practitioner_getting_started.rst
+        type: user_guide
+      - path: docs/practitioner_decision_tree.rst
+        type: user_guide
 
   diff_diff/datasets.py:
     drift_risk: low
