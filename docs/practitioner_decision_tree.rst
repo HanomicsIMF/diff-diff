@@ -140,8 +140,8 @@ others, $200K in others. You want to know how the effect changes with spending l
 
 **Recommended method:** :class:`~diff_diff.ContinuousDiD`
 
-Instead of a single "did it work?" answer, this gives you a dose-response curve showing
-how the lift changes with the amount spent.
+This estimator can show how the average lift varies with spending level, with the
+appropriate identification assumptions in place.
 
 .. code-block:: python
 
@@ -157,11 +157,21 @@ how the lift changes with the amount spent.
    )
    print(f"Average lift across dose levels: {results.overall_att:.1f}")
 
+.. warning::
+
+   Dose-response curves *ATT(d)* and *ACRT(d)* require **Strong Parallel Trends (SPT)** -
+   no selection into spending level on the basis of treatment effects. Under standard
+   parallel trends, only the binarized average effect (*ATT^loc*) is identified. Your
+   data must also include an untreated group (markets with zero spend), a balanced panel,
+   and time-invariant dose (each market's spending level fixed across periods).
+
 .. note::
 
    **Academic term:** This is a *continuous treatment* DiD (Callaway, Goodman-Bacon &
-   Sant'Anna 2024). The *dose* is the spending level. The estimate *ATT(d)* gives
-   you the lift at each spending level, not just an average.
+   Sant'Anna 2024). The *dose* is the spending level. Under standard parallel trends,
+   the method identifies *ATT(d|d)* - the average lift at dose *d* among markets that
+   actually received dose *d*. Cross-dose comparisons and the full *ATT(d)* curve
+   require Strong Parallel Trends (see warning above).
 
 
 .. _section-few-markets:
@@ -188,10 +198,14 @@ a simple average of all controls.
        treatment_fraction=0.15, treatment_period=7, seed=42,
    )
 
+   # Pass post_periods explicitly so the analysis window matches the campaign window.
+   # (Without this, SyntheticDiD defaults to the last half of periods.)
+   post_periods = sorted(data.loc[data["post"] == 1, "period"].unique())
+
    sdid = SyntheticDiD()
    results = sdid.fit(
        data, outcome="outcome", unit="unit",
-       time="period", treatment="treated",
+       time="period", treatment="treated", post_periods=post_periods,
    )
    print(f"Campaign lift: {results.att:.1f} (SE = {results.se:.2f})")
 
@@ -223,11 +237,11 @@ corrects for this automatically.
 
    from diff_diff import DifferenceInDifferences, SurveyDesign
 
+   # Reference column names in your data; SurveyDesign resolves them at fit time.
    survey = SurveyDesign(
-       data=data,
-       strata="stratum",     # sampling strata
-       psu="cluster_id",     # primary sampling unit (e.g., geography)
-       weight="sample_weight",
+       weights="sample_weight",  # observation-level sampling weight
+       strata="stratum",         # stratification variable
+       psu="cluster_id",         # primary sampling unit (e.g., geography)
    )
 
    did = DifferenceInDifferences()

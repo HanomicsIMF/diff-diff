@@ -117,10 +117,10 @@ Step 3: Measure the Campaign Lift
        time="post",
    )
 
-   print(results)
+   print(results.summary())
 
 This prints a summary table with the estimate, standard error, confidence interval,
-and p-value.
+and p-value. (For a one-line summary, use ``print(results)`` instead.)
 
 .. tip::
 
