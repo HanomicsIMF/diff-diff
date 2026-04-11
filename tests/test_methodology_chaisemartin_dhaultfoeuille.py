@@ -153,8 +153,10 @@ class TestMethodologyWorkedExample:
             treatment="treatment",
         )
         # Clean panel: no crossers, no singleton baselines.
-        # 2 never-switching control groups (g=3, g=4) are filtered from
-        # the variance computation but counted in n_groups_dropped_never_switching.
+        # 2 never-switching control groups (g=3, g=4) participate in the
+        # variance via stable-control roles after the Round 2 full-IF fix,
+        # but are still counted in n_groups_dropped_never_switching for
+        # backwards compatibility (the field name predates the Round 2 fix).
         assert results.n_groups_dropped_crossers == 0
         assert results.n_groups_dropped_singleton_baseline == 0
         assert results.n_groups_dropped_never_switching == 2

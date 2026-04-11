@@ -1210,7 +1210,8 @@ ChaisemartinDHaultfoeuille(
 | `placebo_effect` | Single-lag placebo (`DID_M^pl`) point estimate |
 | `per_period_effects` | Per-period decomposition with explicit A11-violation flags |
 | `twfe_weights`, `twfe_fraction_negative`, `twfe_sigma_fe`, `twfe_beta_fe` | Theorem 1 decomposition diagnostic |
-| `n_groups_dropped_crossers`, `n_groups_dropped_singleton_baseline`, `n_groups_dropped_never_switching` | Filter counts |
+| `n_groups_dropped_crossers`, `n_groups_dropped_singleton_baseline` | Filter counts (multi-switch groups dropped before estimation; singleton-baseline groups excluded from variance) |
+| `n_groups_dropped_never_switching` | Backwards-compatibility metadata. Never-switching groups participate in the variance via stable-control roles; this field is no longer a filter count. |
 
 **Standalone TWFE decomposition diagnostic** (without fitting the full estimator):
 
@@ -1228,6 +1229,8 @@ print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 > **Note:** The Phase 1 placebo SE is intentionally `NaN` with a warning. The dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only — not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo via the dynamic paper's machinery. Until then, the placebo point estimate is meaningful but its inference fields are NaN-consistent (and `results.placebo_se`, `results.placebo_p_value`, etc. remain `NaN` even when `n_bootstrap > 0`).
 
 > **Note:** By default (`drop_larger_lower=True`), the estimator drops groups whose treatment switches more than once before estimation. This matches R `DIDmultiplegtDYN`'s default and is required for the analytical variance formula to be consistent with the point estimate. Each drop emits an explicit warning.
+
+> **Note:** Phase 1 requires panels with a **balanced baseline** (every group observed at the first global period) and **no interior period gaps**. Late-entry groups (missing the baseline) raise `ValueError`; interior-gap groups are dropped with a warning; terminally-missing groups (early exit / right-censoring) are retained and contribute from their observed periods only. This is a documented deviation from R `DIDmultiplegtDYN`, which supports unbalanced panels — see [`docs/methodology/REGISTRY.md`](docs/methodology/REGISTRY.md) for the rationale, the defensive guards that make terminal missingness safe, and workarounds for unbalanced inputs.
 
 > **Note:** Survey design (`survey_design`), event-study aggregation (`aggregate`), covariate adjustment (`controls`), and HonestDiD integration (`honest_did`) are not yet supported. They raise `NotImplementedError` with phase pointers — see [`ROADMAP.md`](ROADMAP.md) for the full multi-phase rollout.
 

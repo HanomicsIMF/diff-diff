@@ -506,6 +506,49 @@ class TestDropLargerLower:
         # Other groups still present
         assert len(results.groups) == 9
 
+    def test_terminal_missingness_retained(self):
+        """
+        Per fit() Step 5a contract: groups observed at the baseline but
+        missing one or more LATER periods (terminal missingness / early
+        exit / right-censoring) are RETAINED. The group contributes from
+        its observed periods only, masked out of missing transitions by
+        the per-period ``present = (N_mat[:, t] > 0) & (N_mat[:, t-1] > 0)``
+        guard at three sites in the variance computation
+        (``_compute_per_period_dids``, ``_compute_full_per_group_contributions``,
+        ``_compute_cohort_recentered_inputs``). NaN never propagates into
+        the arithmetic because ``D_mat[g, t]`` and ``Y_mat[g, t]`` are
+        never read without first checking ``N_mat[g, t] > 0``.
+
+        This pins the remaining unspoken branch of the ragged-panel
+        contract that fit() validates: missing baseline -> ValueError;
+        interior gap -> drop with warning; terminal missingness -> retained.
+        See REGISTRY.md ``Note (deviation from R DIDmultiplegtDYN)`` for
+        the documented contract and the rationale for supporting only
+        terminal missingness in Phase 1.
+        """
+        data = generate_reversible_did_data(n_groups=10, n_periods=5, seed=1)
+        # Group 5 has periods 0, 1, 2 only (terminal missingness: missing 3, 4)
+        data = data[~((data["group"] == 5) & (data["period"].isin([3, 4])))].reset_index(drop=True)
+        est = ChaisemartinDHaultfoeuille()
+        # The fit completes without error
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # Group 5 is RETAINED in the post-filter sample (NOT dropped)
+        assert 5 in results.groups
+        # All 10 groups remain
+        assert len(results.groups) == 10
+        # The point estimate is well-defined (not NaN)
+        assert np.isfinite(results.overall_att)
+        # Per-period DIDs were computed (the structure of per_period_effects
+        # depends on the panel's switch pattern; assert at least one entry
+        # was populated rather than asserting specific counts)
+        assert len(results.per_period_effects) > 0
+
     def test_cell_count_weighting_unbalanced_input(self):
         """
         Regression test: dCDH must use cell counts (paper-literal),

@@ -49,6 +49,28 @@ All other staggered estimators in diff-diff (:class:`~diff_diff.CallawaySantAnna
 once treated, stays treated. ``ChaisemartinDHaultfoeuille`` is the only
 library option for non-absorbing treatments.
 
+**Phase 1 panel requirements (deviation from R DIDmultiplegtDYN):**
+
+- Every group must have an observation at the **first global period**
+  (the panel's earliest time value). Groups missing this baseline raise
+  ``ValueError`` with the offending group IDs.
+- Groups with **interior period gaps** (missing observations between
+  their first and last observed period) are dropped with a
+  ``UserWarning``.
+- **Terminal missingness** (groups observed at the baseline but missing
+  one or more later periods — early exit / right-censoring) is supported.
+  The group contributes from its observed periods only, masked out of
+  the missing transitions by the per-period ``present`` guard in the
+  variance computation.
+- This is a Phase 1 limitation relative to R ``DIDmultiplegtDYN``, which
+  supports unbalanced panels with documented missing-treatment-before-
+  first-switch handling. **Workaround:** pre-process your panel to
+  back-fill the baseline (or drop late-entry groups before fitting), or
+  use R until a future phase lifts the restriction. See the
+  ``Note (deviation from R DIDmultiplegtDYN)`` block in
+  ``docs/methodology/REGISTRY.md`` for the rationale and the exact
+  defensive guards that make terminal missingness safe.
+
 **References:**
 
 - de Chaisemartin, C. & D'Haultfœuille, X. (2020). Two-Way Fixed Effects
