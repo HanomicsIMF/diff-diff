@@ -8,16 +8,16 @@ that the Python ``ChaisemartinDHaultfoeuille`` implementation matches R
 ``did_multiplegt_dyn`` at l = 1 (which is numerically identical to the
 AER 2020 paper's ``DID_M``).
 
-Tests skip cleanly when:
-- The golden values JSON file is absent (run the R script to populate it)
-- R or the ``DIDmultiplegtDYN`` package is unavailable
-
-Both conditions are common on dev machines without R installed; CI may
-also skip these until ``DIDmultiplegtDYN`` is added to the CI image.
+**R is only needed to regenerate the JSON file**, not to run these tests.
+The committed JSON is loaded directly and the assertions run on any
+Python-only environment. Tests skip ONLY if the JSON file is absent
+(run the R script to populate it). The ``require_r_dcdh`` fixture is
+intentionally NOT used here so the parity regression suite remains
+active in CI even when DIDmultiplegtDYN is unavailable.
 
 Tolerances follow the existing ``test_csdid_ported.py`` convention:
-``rtol=1e-4`` for point estimates, ``rtol=1e-3`` for SEs (which are more
-sensitive to floating-point ordering across implementations).
+``rtol=1e-4`` for pure-direction point estimates, looser tolerances for
+SEs and mixed-direction scenarios (see class docstring).
 """
 
 import json
@@ -40,14 +40,15 @@ GOLDEN_VALUES_PATH = (
 @pytest.fixture(scope="module")
 def golden_values():
     """
-    Load R DIDmultiplegtDYN golden values. Skip the entire module if absent.
+    Load R DIDmultiplegtDYN golden values from the committed JSON file.
 
-    Run::
+    Skips ONLY if the JSON file is absent (R is not needed to run this
+    fixture — the committed JSON is the source of truth). To regenerate
+    the JSON, run::
 
         Rscript benchmarks/R/generate_dcdh_dynr_test_values.R
 
-    to populate the JSON file. Requires R + the `DIDmultiplegtDYN` and
-    `jsonlite` packages.
+    which requires R + the `DIDmultiplegtDYN` and `jsonlite` packages.
     """
     if not GOLDEN_VALUES_PATH.exists():
         pytest.skip(
@@ -119,7 +120,7 @@ class TestDCDHDynRParity:
     SE_RTOL = 1e-3
     MIXED_SE_RTOL = 0.10  # SE is also affected by the cohort/period control set choice.
 
-    def test_parity_single_switch_mixed(self, require_r_dcdh, golden_values):
+    def test_parity_single_switch_mixed(self, golden_values):
         scenario = golden_values.get("single_switch_mixed")
         if scenario is None:
             pytest.skip("scenario 'single_switch_mixed' not in golden values")
@@ -137,7 +138,7 @@ class TestDCDHDynRParity:
 
     PURE_DIRECTION_SE_RTOL = 0.05  # 5% rtol on pure-direction scenarios after the full IF fix
 
-    def test_parity_joiners_only(self, require_r_dcdh, golden_values):
+    def test_parity_joiners_only(self, golden_values):
         scenario = golden_values.get("joiners_only")
         if scenario is None:
             pytest.skip("scenario 'joiners_only' not in golden values")
@@ -156,7 +157,7 @@ class TestDCDHDynRParity:
             r_results["overall_se"], rel=self.PURE_DIRECTION_SE_RTOL
         )
 
-    def test_parity_leavers_only(self, require_r_dcdh, golden_values):
+    def test_parity_leavers_only(self, golden_values):
         scenario = golden_values.get("leavers_only")
         if scenario is None:
             pytest.skip("scenario 'leavers_only' not in golden values")
@@ -169,7 +170,7 @@ class TestDCDHDynRParity:
             r_results["overall_se"], rel=self.PURE_DIRECTION_SE_RTOL
         )
 
-    def test_parity_mixed_single_switch(self, require_r_dcdh, golden_values):
+    def test_parity_mixed_single_switch(self, golden_values):
         scenario = golden_values.get("mixed_single_switch")
         if scenario is None:
             pytest.skip("scenario 'mixed_single_switch' not in golden values")
@@ -181,7 +182,7 @@ class TestDCDHDynRParity:
             r_results["overall_att"], rel=self.MIXED_POINT_RTOL
         )
 
-    def test_parity_hand_calculable_worked_example(self, require_r_dcdh, golden_values):
+    def test_parity_hand_calculable_worked_example(self, golden_values):
         """
         Cross-check the 4-group worked example panel against R.
 

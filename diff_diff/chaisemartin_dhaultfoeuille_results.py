@@ -146,9 +146,15 @@ class ChaisemartinDHaultfoeuilleResults:
     joiners_p_value : float
     joiners_conf_int : tuple of float
     n_joiner_cells : int
-        Number of switching ``(g, t)`` cells contributing to ``DID_+``.
+        Total number of joiner switching ``(g, t)`` cells across all
+        periods. Each cell counted once. Equals
+        ``sum_t (#{g : D_{g,t-1}=0, D_{g,t}=1})``.
     n_joiner_obs : int
-        Total observation count across joiner cells.
+        Total raw observation count across joiner cells, summing
+        ``n_gt`` over the same set of cells. For balanced
+        one-observation-per-cell panels this equals ``n_joiner_cells``;
+        for individual-level inputs with multiple observations per
+        ``(g, t)`` it can be larger.
     joiners_available : bool
         ``True`` if at least one joiner switching cell exists.
     leavers_att : float
@@ -159,7 +165,11 @@ class ChaisemartinDHaultfoeuilleResults:
     leavers_p_value : float
     leavers_conf_int : tuple of float
     n_leaver_cells : int
+        Total number of leaver switching ``(g, t)`` cells (mirror of
+        ``n_joiner_cells``).
     n_leaver_obs : int
+        Total raw observation count across leaver cells (mirror of
+        ``n_joiner_obs``).
     leavers_available : bool
     placebo_effect : float
         ``DID_M^pl``: the single-lag placebo. ``NaN`` when
@@ -409,7 +419,10 @@ class ChaisemartinDHaultfoeuilleResults:
             "",
         ]
 
-        # Filter counts (only show if any drops happened)
+        # Filter counts (only show if any drops/exclusions happened).
+        # After Round 2, never-switching groups participate in the variance
+        # via stable-control roles and are NOT dropped — their count is
+        # reported here for backwards compatibility only.
         if (
             self.n_groups_dropped_crossers
             + self.n_groups_dropped_singleton_baseline
@@ -418,12 +431,11 @@ class ChaisemartinDHaultfoeuilleResults:
         ):
             lines.extend(
                 [
-                    "Groups dropped before estimation:",
-                    f"{'  Multi-switch (drop_larger_lower):':<35} "
-                    f"{self.n_groups_dropped_crossers:>10}",
-                    f"{'  Singleton baseline (footnote 15):':<35} "
+                    "Group filter / metadata counts:",
+                    f"{'  Multi-switch (dropped):':<42} " f"{self.n_groups_dropped_crossers:>10}",
+                    f"{'  Singleton baseline (variance only):':<42} "
                     f"{self.n_groups_dropped_singleton_baseline:>10}",
-                    f"{'  Never-switching (S_g = 0):':<35} "
+                    f"{'  Never-switching (reported, not dropped):':<42} "
                     f"{self.n_groups_dropped_never_switching:>10}",
                     "",
                 ]

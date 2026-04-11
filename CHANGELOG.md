@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Validated against R `DIDmultiplegtDYN` v2.3.3 at horizon `l = 1` via `tests/test_chaisemartin_dhaultfoeuille_parity.py`
 - **`twowayfeweights()`** — standalone helper function for the TWFE decomposition diagnostic (Theorem 1 of de Chaisemartin & D'Haultfœuille 2020), available without instantiating the full estimator. Returns a `TWFEWeightsResult` with per-cell weights, fraction negative, `sigma_fe`, and `beta_fe`.
 - **`generate_reversible_did_data()`** — new generator in `diff_diff.prep` producing reversible-treatment panel data for testing and tutorials. Patterns: `single_switch` (default, A5-safe), `joiners_only`, `leavers_only`, `mixed_single_switch`, `random`, `cycles`, `marketing`. Returns columns `group`, `period`, `treatment`, `outcome`, `true_effect`, `d_lag`, `switcher_type`.
-- **Three paper reviews** committed under `docs/methodology/papers/`: AER 2020 main paper, AER 2020 online appendix, and the dynamic companion (NBER WP 29873) — the third is the source for the cohort-recentered variance formula.
+- **REGISTRY.md `## ChaisemartinDHaultfoeuille` section** — single canonical source for dCDH methodology, equations, edge cases, and all documented deviations from the R `DIDmultiplegtDYN` reference implementation. Cites the AER 2020 paper and the dynamic companion paper (NBER WP 29873) by reference; primary papers are upstream sources, not in-repo files.
 
 ## [3.0.1] - 2026-04-07
 

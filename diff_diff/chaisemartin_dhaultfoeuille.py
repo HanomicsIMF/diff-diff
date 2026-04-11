@@ -87,6 +87,135 @@ class TWFEWeightsResult:
 
 
 # =============================================================================
+# Shared validation + cell aggregation helper
+# =============================================================================
+
+
+def _validate_and_aggregate_to_cells(
+    data: pd.DataFrame,
+    outcome: str,
+    group: str,
+    time: str,
+    treatment: str,
+) -> pd.DataFrame:
+    """
+    Validate input data and aggregate to ``(g, t)`` cells per the dCDH contract.
+
+    Used by both :meth:`ChaisemartinDHaultfoeuille.fit` and
+    :func:`twowayfeweights` so the validation rules and aggregation
+    behavior are identical across the two public entry points.
+
+    The contract (matching ``REGISTRY.md`` ``## ChaisemartinDHaultfoeuille``):
+
+    1. **Required columns** ``outcome``, ``group``, ``time``, ``treatment``
+       must all be present in ``data`` (raises ``ValueError`` listing
+       any missing).
+    2. **Treatment** must coerce to numeric and contain no ``NaN``
+       (raises ``ValueError`` — silent dropping would change cell counts
+       without informing the user).
+    3. **Outcome** must coerce to numeric and contain no ``NaN`` (same
+       reasoning).
+    4. **Treatment must be binary** (only ``0`` / ``1`` raw values).
+       Non-binary treatment is reserved for Phase 3 of the dCDH rollout
+       and raises ``ValueError``.
+    5. **Cell aggregation** via ``groupby([group, time]).agg(...)``
+       producing ``y_gt`` (cell mean of ``outcome``), ``d_gt`` (cell
+       mean of ``treatment``, then majority-rounded), and ``n_gt``
+       (count of original observations in the cell).
+    6. **Within-cell-varying treatment** (any cell with fractional
+       ``d_gt``) emits a ``UserWarning`` listing the affected cell
+       count, then rounds to majority (``>= 0.5 -> 1``). Fuzzy DiD is
+       deferred to a separate dCdH 2018 paper not covered by Phase 1.
+
+    Returns the aggregated cell DataFrame with columns
+    ``[group, time, y_gt, d_gt, n_gt]``, sorted by ``[group, time]``
+    with a fresh index.
+
+    Raises
+    ------
+    ValueError
+        On missing columns, NaN treatment / outcome values, non-numeric
+        treatment / outcome that cannot be coerced, or non-binary raw
+        treatment values.
+    """
+    # 1. Required columns
+    missing = [c for c in (outcome, group, time, treatment) if c not in data.columns]
+    if missing:
+        raise ValueError(
+            f"ChaisemartinDHaultfoeuille / twowayfeweights: column(s) {missing!r} "
+            f"not found in data. Required columns: outcome, group, time, treatment."
+        )
+
+    df = data.copy()
+
+    # 2. Treatment numeric coercion + NaN check
+    try:
+        df[treatment] = pd.to_numeric(df[treatment])
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"Could not coerce treatment column {treatment!r} to numeric: {exc}"
+        ) from exc
+    n_nan_treat = int(df[treatment].isna().sum())
+    if n_nan_treat > 0:
+        raise ValueError(
+            f"Treatment column {treatment!r} contains {n_nan_treat} NaN value(s). "
+            "ChaisemartinDHaultfoeuille requires non-missing treatment indicators "
+            "on every observation; impute or drop NaN treatment rows before fitting "
+            "so the dropped count is explicit."
+        )
+
+    # 3. Outcome numeric coercion + NaN check
+    try:
+        df[outcome] = pd.to_numeric(df[outcome])
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"Could not coerce outcome column {outcome!r} to numeric: {exc}") from exc
+    n_nan_outcome = int(df[outcome].isna().sum())
+    if n_nan_outcome > 0:
+        raise ValueError(
+            f"Outcome column {outcome!r} contains {n_nan_outcome} NaN value(s). "
+            "Drop or impute missing outcomes before calling fit() so the "
+            "exclusion is explicit (silently averaging over present values "
+            "would distort per-cell means)."
+        )
+
+    # 4. Binary treatment validation (raw values, before aggregation)
+    unique_treats = pd.unique(df[treatment])
+    invalid = [v for v in unique_treats if v not in (0, 1, 0.0, 1.0)]
+    if invalid:
+        raise ValueError(
+            f"ChaisemartinDHaultfoeuille / twowayfeweights requires binary treatment "
+            f"in {{0, 1}}; found values {invalid[:5]} in column {treatment!r}. "
+            "Non-binary treatment is reserved for Phase 3 of the dCDH rollout "
+            "(see ROADMAP.md Phase 3)."
+        )
+
+    # 5. Cell aggregation
+    cell = df.groupby([group, time], as_index=False).agg(
+        y_gt=(outcome, "mean"),
+        d_gt=(treatment, "mean"),
+        n_gt=(treatment, "count"),
+    )
+
+    # 6. Within-cell rounding warning (only fires if fractional d_gt exists)
+    non_constant_mask = (cell["d_gt"] > 0) & (cell["d_gt"] < 1)
+    if non_constant_mask.any():
+        n_non_constant = int(non_constant_mask.sum())
+        warnings.warn(
+            f"Within-cell-varying treatment detected in {n_non_constant} "
+            f"(group, time) cells. Rounding to majority (>= 0.5 -> 1). Fuzzy "
+            "DiD is deferred to a separate dCDH paper (see Phase 3 / "
+            "out-of-scope in ROADMAP.md).",
+            UserWarning,
+            stacklevel=3,
+        )
+    cell["d_gt"] = (cell["d_gt"] >= 0.5).astype(int)
+
+    # Sort to ensure deterministic order in downstream operations
+    cell = cell.sort_values([group, time]).reset_index(drop=True)
+    return cell
+
+
+# =============================================================================
 # Main estimator class
 # =============================================================================
 
@@ -387,76 +516,95 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             )
 
         # ------------------------------------------------------------------
-        # Step 4: Treatment + outcome NaN validation (no silent failures)
+        # Step 4-5: Validate input + aggregate to (g, t) cells via the
+        # shared helper used by both fit() and twowayfeweights(). The
+        # helper enforces NaN/binary/within-cell-rounding rules from
+        # REGISTRY.md and returns a sorted cell DataFrame with columns
+        # [group, time, y_gt, d_gt, n_gt].
         # ------------------------------------------------------------------
-        df = data.copy()
-        try:
-            df[treatment] = pd.to_numeric(df[treatment])
-        except (ValueError, TypeError) as exc:
-            raise ValueError(
-                f"Could not coerce treatment column {treatment!r} to numeric: {exc}"
-            ) from exc
-        # Reject NaN treatment values up front: silently dropping them via
-        # `dropna()` would change the per-cell counts without informing the
-        # user.
-        n_nan_treat = int(df[treatment].isna().sum())
-        if n_nan_treat > 0:
-            raise ValueError(
-                f"Treatment column {treatment!r} contains {n_nan_treat} NaN value(s). "
-                "ChaisemartinDHaultfoeuille requires non-missing treatment "
-                "indicators on every observation; impute or drop NaN treatment "
-                "rows before calling fit() so the dropped count is explicit."
-            )
-        # Reject NaN outcomes for the same reason.
-        try:
-            df[outcome] = pd.to_numeric(df[outcome])
-        except (ValueError, TypeError) as exc:
-            raise ValueError(
-                f"Could not coerce outcome column {outcome!r} to numeric: {exc}"
-            ) from exc
-        n_nan_outcome = int(df[outcome].isna().sum())
-        if n_nan_outcome > 0:
-            raise ValueError(
-                f"Outcome column {outcome!r} contains {n_nan_outcome} NaN value(s). "
-                "Drop or impute missing outcomes before calling fit() so the "
-                "exclusion is explicit (silently averaging over present values "
-                "would distort per-cell means)."
-            )
-
-        unique_treats = pd.unique(df[treatment])
-        invalid = [v for v in unique_treats if v not in (0, 1, 0.0, 1.0)]
-        if invalid:
-            raise ValueError(
-                f"ChaisemartinDHaultfoeuille requires binary treatment in {{0, 1}}; "
-                f"found values {invalid[:5]} in column {treatment!r}. Non-binary "
-                "treatment is reserved for Phase 3 of the dCDH rollout (see "
-                "ROADMAP.md Phase 3)."
-            )
-
-        # ------------------------------------------------------------------
-        # Step 5: Cell aggregation (individual -> (g, t) cells)
-        # ------------------------------------------------------------------
-        cell = df.groupby([group, time], as_index=False).agg(
-            y_gt=(outcome, "mean"), d_gt=(treatment, "mean"), n_gt=(treatment, "count")
+        cell = _validate_and_aggregate_to_cells(
+            data=data,
+            outcome=outcome,
+            group=group,
+            time=time,
+            treatment=treatment,
         )
-        # Within-cell-varying treatment: round and warn (cell-constant treatment
-        # is the dCDH binary assumption; fuzzy DiD is in a separate paper not
-        # covered by Phase 1).
-        non_constant_mask = (cell["d_gt"] > 0) & (cell["d_gt"] < 1)
-        if non_constant_mask.any():
-            n_non_constant = int(non_constant_mask.sum())
+
+        # ------------------------------------------------------------------
+        # Step 5a: Ragged panel validation
+        #
+        # The cohort/variance path treats D_{g,1} as the canonical
+        # baseline and walks adjacent observed periods to detect first
+        # switches. Ragged panels with missing baseline rows or interior
+        # gaps would either crash the cohort enumeration (NaN -> int
+        # cast) or silently misclassify cohorts. Two-tier handling:
+        #
+        # (a) Reject groups missing the FIRST GLOBAL period (the
+        #     baseline) with a clear ValueError listing offenders.
+        # (b) Drop groups with INTERIOR GAPS (missing intermediate
+        #     periods between their first and last observed period)
+        #     with an explicit UserWarning.
+        # ------------------------------------------------------------------
+        all_periods_pre_drop = sorted(cell[time].unique().tolist())
+        if len(all_periods_pre_drop) < 2:
+            raise ValueError(
+                f"ChaisemartinDHaultfoeuille requires at least 2 distinct time "
+                f"periods in the panel, got {len(all_periods_pre_drop)}."
+            )
+        first_global_period = all_periods_pre_drop[0]
+
+        # (a) Reject groups missing the first global period
+        groups_with_baseline = set(cell.loc[cell[time] == first_global_period, group].tolist())
+        all_groups_pre_validation = set(cell[group].unique().tolist())
+        groups_missing_baseline = sorted(all_groups_pre_validation - groups_with_baseline)
+        if groups_missing_baseline:
+            raise ValueError(
+                f"ChaisemartinDHaultfoeuille requires every group to have an "
+                f"observation at the first global period "
+                f"(period={first_global_period!r}). "
+                f"{len(groups_missing_baseline)} group(s) are missing this baseline. "
+                f"Examples: {groups_missing_baseline[:5]}"
+                + (
+                    f" (and {len(groups_missing_baseline) - 5} more)"
+                    if len(groups_missing_baseline) > 5
+                    else ""
+                )
+                + ". Drop these groups or back-fill the baseline before fitting "
+                "so the exclusion is explicit."
+            )
+
+        # (b) Drop groups with interior gaps
+        period_index = {p: i for i, p in enumerate(all_periods_pre_drop)}
+        groups_with_interior_gaps: List[Any] = []
+        for g_id, sub in cell.groupby(group):
+            g_periods = sub[time].tolist()
+            g_min_idx = period_index[min(g_periods)]
+            g_max_idx = period_index[max(g_periods)]
+            expected_count = g_max_idx - g_min_idx + 1
+            if len(g_periods) != expected_count:
+                groups_with_interior_gaps.append(g_id)
+        if groups_with_interior_gaps:
             warnings.warn(
-                f"Within-cell-varying treatment detected in {n_non_constant} "
-                f"(group, time) cells. Rounding to majority (>= 0.5 -> 1). Fuzzy "
-                "DiD is deferred to a separate dCDH paper (see Phase 3 / "
-                "out-of-scope in ROADMAP.md).",
+                f"Dropping {len(groups_with_interior_gaps)} group(s) with interior "
+                f"period gaps (missing observations between their first and last "
+                f"observed period). Examples: {groups_with_interior_gaps[:5]}"
+                + (
+                    f" (and {len(groups_with_interior_gaps) - 5} more)"
+                    if len(groups_with_interior_gaps) > 5
+                    else ""
+                )
+                + ". dCDH requires consecutive observed periods for the "
+                "cohort/variance path; back-fill or interpolate the missing "
+                "periods if you want these groups in the estimation.",
                 UserWarning,
                 stacklevel=2,
             )
-        cell["d_gt"] = (cell["d_gt"] >= 0.5).astype(int)
-
-        # Sort to ensure deterministic order in downstream operations
-        cell = cell.sort_values([group, time]).reset_index(drop=True)
+            cell = cell[~cell[group].isin(groups_with_interior_gaps)].reset_index(drop=True)
+            if cell.empty:
+                raise ValueError(
+                    "After dropping groups with interior period gaps, no groups "
+                    "remain. Provide a balanced panel or back-fill missing periods."
+                )
 
         all_periods_pre_drop = sorted(cell[time].unique().tolist())
         if len(all_periods_pre_drop) < 2:
@@ -521,11 +669,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # it has no cohort peer. The filter is therefore applied at the
         # variance stage only — the cell DataFrame retains these groups
         # so they can serve as stable controls.
-        baselines_per_group = (
-            cell.sort_values([group, time])
-            .groupby(group, as_index=False)["d_gt"]
-            .first()
-            .rename(columns={"d_gt": "_baseline"})
+        # Use the validated first global period as the canonical baseline.
+        # Step 5a guarantees every group has an observation at this period,
+        # so we can read it directly without a groupby.first() that could
+        # otherwise return a later observed period for late-entry groups.
+        baselines_per_group = cell.loc[cell[time] == first_global_period, [group, "d_gt"]].rename(
+            columns={"d_gt": "_baseline"}
         )
         baseline_counts = baselines_per_group["_baseline"].value_counts()
         singleton_baseline_values = baseline_counts[baseline_counts < 2].index.tolist()
@@ -644,11 +793,26 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         else:
             leavers_att = float("nan")
 
-        # Cell counts for the results
-        n_joiner_cells = int(np.count_nonzero(n_10_t_arr))
-        n_leaver_cells = int(np.count_nonzero(n_01_t_arr))
-        n_joiner_obs = joiner_total
-        n_leaver_obs = leaver_total
+        # Joiner / leaver sample-size metadata.
+        # n_*_cells: total switching cells across all periods (sum of per-period
+        #            cell counts; each (g, t) joiner/leaver cell counted once).
+        # n_*_obs:   actual observation count (sum of n_gt over the same cells),
+        #            which differs from cells when individual-level inputs have
+        #            multiple original observations per (g, t).
+        n_joiner_cells = int(n_10_t_arr.sum())
+        n_leaver_cells = int(n_01_t_arr.sum())
+        n_joiner_obs = 0
+        n_leaver_obs = 0
+        for t_idx in range(1, len(all_periods)):
+            d_curr = D_mat[:, t_idx]
+            d_prev = D_mat[:, t_idx - 1]
+            n_curr = N_mat[:, t_idx]
+            n_prev = N_mat[:, t_idx - 1]
+            present = (n_curr > 0) & (n_prev > 0)
+            joiner_mask_t = (d_prev == 0) & (d_curr == 1) & present
+            leaver_mask_t = (d_prev == 1) & (d_curr == 0) & present
+            n_joiner_obs += int(n_curr[joiner_mask_t].sum())
+            n_leaver_obs += int(n_curr[leaver_mask_t].sum())
 
         # ------------------------------------------------------------------
         # Step 12: Placebo (DID_M^pl) — Theorem 4
@@ -1440,13 +1604,30 @@ def _compute_cohort_recentered_inputs(
             np.array([], dtype=float),
         )
 
-    # Per-group baseline, first switch time, switch direction
-    baselines = D_mat[:, 0]
+    # Per-group baseline, first switch time, switch direction.
+    #
+    # Defensive: even though fit() Step 5a rejects groups missing the
+    # first global period and drops groups with interior gaps, this
+    # helper might also be called from other code paths in the future.
+    # We assert no NaN baselines (would catch a fit() validation
+    # regression) and gate first-switch detection on N_mat presence so
+    # missing intermediate periods can't be misread as switches.
+    if N_mat.size > 0 and (N_mat[:, 0] <= 0).any():
+        raise ValueError(
+            "_compute_cohort_recentered_inputs: at least one group is missing "
+            "the first global period in N_mat. fit() Step 5a should have "
+            "rejected this — if you are calling this helper directly, ensure "
+            "every group has an observation at the first global period."
+        )
+    baselines = D_mat[:, 0].astype(int)
     first_switch_idx = np.full(n_groups, -1, dtype=int)
     switch_direction = np.zeros(n_groups, dtype=int)  # +1 joiner, -1 leaver, 0 never-switching
 
     for g in range(n_groups):
         for t in range(1, n_periods):
+            # Both periods must be observed for the transition to be valid
+            if N_mat[g, t] <= 0 or N_mat[g, t - 1] <= 0:
+                continue
             if D_mat[g, t] != D_mat[g, t - 1]:
                 first_switch_idx[g] = t
                 switch_direction[g] = 1 if D_mat[g, t] > D_mat[g, t - 1] else -1
@@ -1795,18 +1976,17 @@ def twowayfeweights(
         Object with attributes ``weights`` (DataFrame), ``fraction_negative``
         (float), ``sigma_fe`` (float), and ``beta_fe`` (float).
     """
-    missing = [c for c in (outcome, group, time, treatment) if c not in data.columns]
-    if missing:
-        raise ValueError(
-            f"twowayfeweights: column(s) {missing!r} not found in data. "
-            f"Required columns: outcome, group, time, treatment."
-        )
-    df = data.copy()
-    df[treatment] = pd.to_numeric(df[treatment])
-    cell = df.groupby([group, time], as_index=False).agg(
-        y_gt=(outcome, "mean"), d_gt=(treatment, "mean"), n_gt=(treatment, "count")
+    # Validation + cell aggregation via the same helper used by
+    # ChaisemartinDHaultfoeuille.fit() — enforces NaN/binary/within-cell
+    # rules from REGISTRY.md so the standalone diagnostic does not
+    # silently mishandle malformed input.
+    cell = _validate_and_aggregate_to_cells(
+        data=data,
+        outcome=outcome,
+        group=group,
+        time=time,
+        treatment=treatment,
     )
-    cell["d_gt"] = (cell["d_gt"] >= 0.5).astype(int)
     return _compute_twfe_diagnostic(
         cell=cell,
         group_col=group,

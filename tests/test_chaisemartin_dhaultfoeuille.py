@@ -459,6 +459,53 @@ class TestDropLargerLower:
             "VARIANCE computation only" in str(wi.message) for wi in w
         ), "Warning text should clarify the filter is variance-only"
 
+    def test_missing_baseline_period_raises_value_error(self):
+        """
+        Per fit() Step 5a: groups missing the first global period have
+        an undefined baseline D_{g,1} and must be rejected with a clear
+        error rather than crashing the cohort enumeration with NaN.
+        """
+        data = generate_reversible_did_data(n_groups=10, n_periods=5, seed=1)
+        # Drop period 0 for group 5 (a "late-entry" group)
+        data = data[~((data["group"] == 5) & (data["period"] == 0))].reset_index(drop=True)
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="missing this baseline"):
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_interior_gap_drops_group_with_warning(self):
+        """
+        Per fit() Step 5a: groups with missing intermediate periods
+        (interior gaps between their first and last observed period)
+        are dropped with an explicit warning. The cohort/variance path
+        requires consecutive observed periods to detect first switches
+        unambiguously.
+        """
+        data = generate_reversible_did_data(n_groups=10, n_periods=5, seed=1)
+        # Drop period 2 for group 3 (interior gap: g=3 has periods 0, 1, 3, 4)
+        data = data[~((data["group"] == 3) & (data["period"] == 2))].reset_index(drop=True)
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+        # Group 3 was dropped from the post-filter sample
+        assert 3 not in results.groups
+        # The interior-gap warning fired
+        assert any("interior period gaps" in str(wi.message) for wi in w)
+        # Other groups still present
+        assert len(results.groups) == 9
+
     def test_cell_count_weighting_unbalanced_input(self):
         """
         Regression test: dCDH must use cell counts (paper-literal),
@@ -1009,3 +1056,72 @@ class TestTwowayFeweightsHelper:
         # results.
         assert results.twfe_beta_fe == pytest.approx(standalone.beta_fe)
         assert results.twfe_fraction_negative == pytest.approx(standalone.fraction_negative)
+
+    # The four tests below pin the contract that twowayfeweights() and
+    # ChaisemartinDHaultfoeuille.fit() share the same validation rules
+    # via the _validate_and_aggregate_to_cells helper. Without this
+    # contract, the standalone helper could silently mishandle malformed
+    # input (drop NaN rows in groupby, threshold non-binary treatment,
+    # round within-cell varying treatment without warning).
+
+    def test_twowayfeweights_rejects_nan_treatment(self):
+        data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        data.loc[data.index[0], "treatment"] = float("nan")
+        with pytest.raises(ValueError, match="Treatment column.*NaN"):
+            twowayfeweights(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_twowayfeweights_rejects_nan_outcome(self):
+        data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        data.loc[data.index[0], "outcome"] = float("nan")
+        with pytest.raises(ValueError, match="Outcome column.*NaN"):
+            twowayfeweights(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_twowayfeweights_rejects_non_binary_treatment(self):
+        data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        data.loc[data.index[0], "treatment"] = 2  # non-binary
+        with pytest.raises(ValueError, match="binary treatment"):
+            twowayfeweights(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_twowayfeweights_warns_on_within_cell_rounding(self):
+        # Construct a panel with two original rows per (group, period) cell
+        # where the treatment values disagree within a cell. The helper
+        # should aggregate to majority and emit the within-cell rounding
+        # warning.
+        rows = []
+        for g in [1, 2, 3, 4]:
+            for t in [0, 1, 2]:
+                # Two observations per cell with mixed treatment at t=2 for g=1
+                if g == 1 and t == 2:
+                    rows.append({"group": g, "period": t, "treatment": 1, "outcome": 10.0})
+                    rows.append({"group": g, "period": t, "treatment": 0, "outcome": 11.0})
+                else:
+                    base_treat = 1 if (g <= 2 and t == 2) else 0
+                    rows.append({"group": g, "period": t, "treatment": base_treat, "outcome": 10.0})
+                    rows.append({"group": g, "period": t, "treatment": base_treat, "outcome": 10.5})
+        df = pd.DataFrame(rows)
+        with pytest.warns(UserWarning, match="Within-cell-varying treatment"):
+            twowayfeweights(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
