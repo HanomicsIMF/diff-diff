@@ -122,11 +122,11 @@ The dCDH estimator is the only modern DiD estimator in the library that handles 
 
 **Implementation strategy.** A single `ChaisemartinDHaultfoeuille` (alias `DCDH`) class evolves across phases via additional `fit()` parameters and additional fields on the results object. Not an estimator family — features land as enhancements to the single class, matching the library's pattern for `CallawaySantAnna`, `ImputationDiD`, `EfficientDiD`, etc.
 
-**Methodology references** (consult before any methodology change):
+**Methodology source of truth:** [docs/methodology/REGISTRY.md `## ChaisemartinDHaultfoeuille`](docs/methodology/REGISTRY.md) — assumption checks, estimator equations, edge cases, and all documented deviations from the R `DIDmultiplegtDYN` reference implementation. Consult REGISTRY.md before any methodology change.
 
-- **AER 2020 main paper:** [docs/methodology/papers/chaisemartin-dhaultfoeuille-2020-review.md](docs/methodology/papers/chaisemartin-dhaultfoeuille-2020-review.md) — `DID_M` contemporaneous-switch estimator, TWFE decomposition diagnostics
-- **AER 2020 online appendix:** [docs/methodology/papers/chaisemartin-dhaultfoeuille-2020-appendix-review.md](docs/methodology/papers/chaisemartin-dhaultfoeuille-2020-appendix-review.md) — non-binary `DID_M`, covariate decomposition `DID^X`, conservative-CI proof
-- **Dynamic companion paper:** [docs/methodology/papers/chaisemartin-dhaultfoeuille-dynamic-review.md](docs/methodology/papers/chaisemartin-dhaultfoeuille-dynamic-review.md) — full event study `DID_l`, cohort-recentered analytical variance, residualization-style covariates `DID^X`, group-specific linear trends `DID^{fd}`
+**Primary papers** (consulted by the implementer; not committed in-repo as they are upstream sources):
+- de Chaisemartin, C. & D'Haultfœuille, X. (2020). Two-Way Fixed Effects Estimators with Heterogeneous Treatment Effects. *American Economic Review*, 110(9), 2964-2996. — `DID_M` contemporaneous-switch estimator, TWFE decomposition diagnostics.
+- de Chaisemartin, C. & D'Haultfœuille, X. (2022, revised 2024). Difference-in-Differences Estimators of Intertemporal Treatment Effects. NBER Working Paper 29873. — Full dynamic event study `DID_l`, cohort-recentered analytical variance (Web Appendix Section 3.7.3), residualization-style covariates `DID^X`, group-specific linear trends `DID^{fd}`.
 
 The dynamic companion paper subsumes the AER 2020 paper: `DID_1 = DID_M`. The single class implements the dynamic estimator's machinery (`DID_{g,l}` building block, cohort-recentered analytical variance from Web Appendix Section 3.7.3 of the dynamic paper) at horizon `l = 1` for Phase 1, with later phases looping over multiple horizons and adding covariate / extension support.
 

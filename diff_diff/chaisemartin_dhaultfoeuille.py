@@ -508,18 +508,56 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             )
 
         # ------------------------------------------------------------------
-        # Step 7: Singleton-baseline filter (footnote 15 of dynamic paper)
+        # Step 7: Singleton-baseline identification (footnote 15 of dynamic paper)
         # ------------------------------------------------------------------
-        cell, n_groups_dropped_singleton_baseline = _filter_singleton_baseline(
-            cell=cell, group_col=group, time_col=time, d_col="d_gt"
+        # The singleton-baseline filter identifies groups whose baseline
+        # treatment value D_{g,1} is unique in the panel. Per footnote 15
+        # of the dynamic paper, these have no baseline-matched cohort peer
+        # and contribute zero variance under the cohort framework.
+        #
+        # IMPORTANT: under Python's documented period-based stable-control
+        # interpretation, a singleton-baseline group can STILL be a valid
+        # stable_0 / stable_1 control for the point estimate, even though
+        # it has no cohort peer. The filter is therefore applied at the
+        # variance stage only — the cell DataFrame retains these groups
+        # so they can serve as stable controls.
+        baselines_per_group = (
+            cell.sort_values([group, time])
+            .groupby(group, as_index=False)["d_gt"]
+            .first()
+            .rename(columns={"d_gt": "_baseline"})
         )
+        baseline_counts = baselines_per_group["_baseline"].value_counts()
+        singleton_baseline_values = baseline_counts[baseline_counts < 2].index.tolist()
+        singleton_baseline_groups: List[Any] = (
+            baselines_per_group.loc[
+                baselines_per_group["_baseline"].isin(singleton_baseline_values), group
+            ].tolist()
+            if singleton_baseline_values
+            else []
+        )
+        n_groups_dropped_singleton_baseline = len(singleton_baseline_groups)
+        if n_groups_dropped_singleton_baseline > 0:
+            warnings.warn(
+                f"Singleton-baseline filter (footnote 15 of dynamic paper): "
+                f"{n_groups_dropped_singleton_baseline} group(s) excluded from "
+                f"the cohort-recentered VARIANCE computation only — they remain "
+                f"in the point-estimate sample as period-based stable controls. "
+                f"Examples: {singleton_baseline_groups[:5]}"
+                + (
+                    f" (and {n_groups_dropped_singleton_baseline - 5} more)"
+                    if n_groups_dropped_singleton_baseline > 5
+                    else ""
+                ),
+                UserWarning,
+                stacklevel=2,
+            )
 
         if cell.empty or cell[group].nunique() == 0:
             raise ValueError(
-                "After dropping multi-switch cells (drop_larger_lower=True) and "
-                "singleton-baseline groups, no groups remain. The dataset cannot "
-                "support dCDH estimation. Check the input panel for diversity in "
-                "treatment patterns."
+                "After dropping multi-switch cells (drop_larger_lower=True), no "
+                "groups remain. The dataset cannot support dCDH estimation. "
+                "Check the input panel for diversity in treatment patterns."
             )
 
         # Determine the post-filter group set, period set, and per-group state
@@ -555,6 +593,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             did_minus_t_arr,
             n_10_t_arr,
             n_01_t_arr,
+            n_00_t_arr,
+            n_11_t_arr,
+            a11_plus_zeroed_arr,
+            a11_minus_zeroed_arr,
         ) = _compute_per_period_dids(
             D_mat=D_mat,
             Y_mat=Y_mat,
@@ -651,7 +693,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             U_centered_joiners,
             U_centered_leavers,
         ) = _compute_cohort_recentered_inputs(
-            D_mat=D_mat, Y_mat=Y_mat, N_mat=N_mat, periods=all_periods
+            D_mat=D_mat,
+            Y_mat=Y_mat,
+            N_mat=N_mat,
+            n_10_t_arr=n_10_t_arr,
+            n_00_t_arr=n_00_t_arr,
+            n_01_t_arr=n_01_t_arr,
+            n_11_t_arr=n_11_t_arr,
+            a11_plus_zeroed_arr=a11_plus_zeroed_arr,
+            a11_minus_zeroed_arr=a11_minus_zeroed_arr,
+            all_groups=all_groups,
+            singleton_baseline_groups=singleton_baseline_groups,
         )
 
         # Analytical SE for DID_M
@@ -837,7 +889,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             time_periods=all_periods,
             n_obs=n_obs_post,
             n_treated_obs=n_treated_obs_post,
-            n_switcher_obs=N_S,
+            n_switcher_cells=N_S,
             n_cohorts=n_cohorts,
             n_groups_dropped_crossers=n_groups_dropped_crossers,
             n_groups_dropped_singleton_baseline=n_groups_dropped_singleton_baseline,
@@ -959,51 +1011,23 @@ def _drop_crossing_cells(
     return cell, n_dropped
 
 
-def _filter_singleton_baseline(
-    cell: pd.DataFrame, group_col: str, time_col: str, d_col: str
-) -> Tuple[pd.DataFrame, int]:
-    """
-    Drop groups whose baseline ``D_{g,1}`` is unique (footnote 15 of dynamic paper).
-
-    These groups have no baseline-matched control set and contribute zero
-    identifying information to the dCDH point estimate or variance.
-    """
-    # Per-group baseline = treatment value at the earliest observed period
-    baselines = (
-        cell.sort_values([group_col, time_col])
-        .groupby(group_col, as_index=False)[d_col]
-        .first()
-        .rename(columns={d_col: "_baseline"})
-    )
-    # Count groups per baseline value
-    baseline_counts = baselines["_baseline"].value_counts()
-    singleton_baselines = baseline_counts[baseline_counts < 2].index.tolist()
-    if not singleton_baselines:
-        return cell, 0
-    singleton_groups = baselines.loc[
-        baselines["_baseline"].isin(singleton_baselines), group_col
-    ].tolist()
-    n_dropped = len(singleton_groups)
-    if n_dropped > 0:
-        warnings.warn(
-            f"Singleton-baseline filter (footnote 15 of dynamic paper): dropped "
-            f"{n_dropped} group(s) whose baseline treatment value is unique in "
-            f"the panel. These groups have no baseline-matched control set. "
-            f"Examples: {singleton_groups[:5]}"
-            + (f" (and {n_dropped - 5} more)" if n_dropped > 5 else ""),
-            UserWarning,
-            stacklevel=3,
-        )
-        cell = cell[~cell[group_col].isin(singleton_groups)].reset_index(drop=True)
-    return cell, n_dropped
-
-
 def _compute_per_period_dids(
     D_mat: np.ndarray,
     Y_mat: np.ndarray,
     N_mat: np.ndarray,
     periods: List[Any],
-) -> Tuple[Dict[Any, Dict[str, Any]], List[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[
+    Dict[Any, Dict[str, Any]],
+    List[str],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     """
     Compute per-period DID_+,t and DID_-,t with explicit A11 zero-retention.
 
@@ -1022,6 +1046,15 @@ def _compute_per_period_dids(
         Joiner cell counts aligned to ``periods[1:]``.
     n_01_t_arr : np.ndarray
         Leaver cell counts aligned to ``periods[1:]``.
+    n_00_t_arr : np.ndarray
+        Stable-untreated cell counts aligned to ``periods[1:]``.
+    n_11_t_arr : np.ndarray
+        Stable-treated cell counts aligned to ``periods[1:]``.
+    a11_plus_zeroed_arr : np.ndarray
+        Boolean flags marking periods where DID_+,t was zeroed by the
+        A11 convention (joiners present but no stable_0 controls).
+    a11_minus_zeroed_arr : np.ndarray
+        Mirror for DID_-,t.
     """
     n_periods = len(periods)
     per_period_effects: Dict[Any, Dict[str, Any]] = {}
@@ -1030,6 +1063,10 @@ def _compute_per_period_dids(
     did_minus_t_list: List[float] = []
     n_10_t_list: List[int] = []
     n_01_t_list: List[int] = []
+    n_00_t_list: List[int] = []
+    n_11_t_list: List[int] = []
+    a11_plus_zeroed_list: List[bool] = []
+    a11_minus_zeroed_list: List[bool] = []
 
     for t_idx in range(1, n_periods):
         d_curr = D_mat[:, t_idx]
@@ -1038,15 +1075,25 @@ def _compute_per_period_dids(
         y_prev = Y_mat[:, t_idx - 1]
         n_curr = N_mat[:, t_idx]
 
-        joiner_mask = (d_prev == 0) & (d_curr == 1) & (n_curr > 0)
-        stable0_mask = (d_prev == 0) & (d_curr == 0) & (n_curr > 0)
-        leaver_mask = (d_prev == 1) & (d_curr == 0) & (n_curr > 0)
-        stable1_mask = (d_prev == 1) & (d_curr == 1) & (n_curr > 0)
+        # Cell-presence guard: a (g, t) cell only counts if BOTH t and t-1
+        # were observed for that group (n_gt > 0 and n_{g,t-1} > 0).
+        n_prev = N_mat[:, t_idx - 1]
+        present = (n_curr > 0) & (n_prev > 0)
 
-        n_10 = int(n_curr[joiner_mask].sum())
-        n_00 = int(n_curr[stable0_mask].sum())
-        n_01 = int(n_curr[leaver_mask].sum())
-        n_11 = int(n_curr[stable1_mask].sum())
+        joiner_mask = (d_prev == 0) & (d_curr == 1) & present
+        stable0_mask = (d_prev == 0) & (d_curr == 0) & present
+        leaver_mask = (d_prev == 1) & (d_curr == 0) & present
+        stable1_mask = (d_prev == 1) & (d_curr == 1) & present
+
+        # AER 2020 Theorem 3 N_{a,b,t} weights are CELL counts, not
+        # within-cell observation sums. Each (g, t) cell contributes once
+        # regardless of how many original observations fed into the
+        # y_gt cell mean. See REGISTRY.md ChaisemartinDHaultfoeuille
+        # estimator equations.
+        n_10 = int(joiner_mask.sum())
+        n_00 = int(stable0_mask.sum())
+        n_01 = int(leaver_mask.sum())
+        n_11 = int(stable1_mask.sum())
 
         # --- DID_+,t (joiners side) ---
         did_plus_t_a11_zeroed = False
@@ -1058,12 +1105,9 @@ def _compute_per_period_dids(
             did_plus_t_a11_zeroed = True
             a11_warnings.append(f"period {periods[t_idx]}: joiners present, no stable_0")
         else:
-            joiner_avg = float(
-                (n_curr[joiner_mask] * (y_curr[joiner_mask] - y_prev[joiner_mask])).sum() / n_10
-            )
-            stable0_avg = float(
-                (n_curr[stable0_mask] * (y_curr[stable0_mask] - y_prev[stable0_mask])).sum() / n_00
-            )
+            # Unweighted means over cells (each cell contributes equally)
+            joiner_avg = float((y_curr[joiner_mask] - y_prev[joiner_mask]).mean())
+            stable0_avg = float((y_curr[stable0_mask] - y_prev[stable0_mask]).mean())
             did_plus_t = joiner_avg - stable0_avg
 
         # --- DID_-,t (leavers side) ---
@@ -1075,12 +1119,8 @@ def _compute_per_period_dids(
             did_minus_t_a11_zeroed = True
             a11_warnings.append(f"period {periods[t_idx]}: leavers present, no stable_1")
         else:
-            stable1_avg = float(
-                (n_curr[stable1_mask] * (y_curr[stable1_mask] - y_prev[stable1_mask])).sum() / n_11
-            )
-            leaver_avg = float(
-                (n_curr[leaver_mask] * (y_curr[leaver_mask] - y_prev[leaver_mask])).sum() / n_01
-            )
+            stable1_avg = float((y_curr[stable1_mask] - y_prev[stable1_mask]).mean())
+            leaver_avg = float((y_curr[leaver_mask] - y_prev[leaver_mask]).mean())
             did_minus_t = stable1_avg - leaver_avg
 
         per_period_effects[periods[t_idx]] = {
@@ -1097,6 +1137,10 @@ def _compute_per_period_dids(
         did_minus_t_list.append(did_minus_t)
         n_10_t_list.append(n_10)
         n_01_t_list.append(n_01)
+        n_00_t_list.append(n_00)
+        n_11_t_list.append(n_11)
+        a11_plus_zeroed_list.append(did_plus_t_a11_zeroed)
+        a11_minus_zeroed_list.append(did_minus_t_a11_zeroed)
 
     return (
         per_period_effects,
@@ -1105,6 +1149,10 @@ def _compute_per_period_dids(
         np.array(did_minus_t_list, dtype=float),
         np.array(n_10_t_list, dtype=int),
         np.array(n_01_t_list, dtype=int),
+        np.array(n_00_t_list, dtype=int),
+        np.array(n_11_t_list, dtype=int),
+        np.array(a11_plus_zeroed_list, dtype=bool),
+        np.array(a11_minus_zeroed_list, dtype=bool),
     )
 
 
@@ -1136,69 +1184,35 @@ def _compute_placebo(
         d_pre_prev = D_mat[:, t_idx - 2]
         y_prev = Y_mat[:, t_idx - 1]
         y_pre_prev = Y_mat[:, t_idx - 2]
-        n_curr = N_mat[:, t_idx]
+
+        # Cell-presence guard: a (g, t) cell only counts if all three
+        # consecutive periods (t-2, t-1, t) were observed for the group.
+        present = (N_mat[:, t_idx] > 0) & (N_mat[:, t_idx - 1] > 0) & (N_mat[:, t_idx - 2] > 0)
 
         # Joiners that have a 3-period history with stable D=0 in t-2 and t-1
-        joiner_mask = (
-            (d_pre_prev == 0)
-            & (d_prev == 0)
-            & (d_curr == 1)
-            & (n_curr > 0)
-            & (N_mat[:, t_idx - 1] > 0)
-            & (N_mat[:, t_idx - 2] > 0)
-        )
+        joiner_mask = (d_pre_prev == 0) & (d_prev == 0) & (d_curr == 1) & present
         # Stable_0 controls with stable D=0 in t-2 and t-1
-        stable0_mask = (
-            (d_pre_prev == 0)
-            & (d_prev == 0)
-            & (d_curr == 0)
-            & (n_curr > 0)
-            & (N_mat[:, t_idx - 1] > 0)
-            & (N_mat[:, t_idx - 2] > 0)
-        )
+        stable0_mask = (d_pre_prev == 0) & (d_prev == 0) & (d_curr == 0) & present
         # Mirror for leavers/stable_1 (3-period stable treatment then leave)
-        leaver_mask = (
-            (d_pre_prev == 1)
-            & (d_prev == 1)
-            & (d_curr == 0)
-            & (n_curr > 0)
-            & (N_mat[:, t_idx - 1] > 0)
-            & (N_mat[:, t_idx - 2] > 0)
-        )
-        stable1_mask = (
-            (d_pre_prev == 1)
-            & (d_prev == 1)
-            & (d_curr == 1)
-            & (n_curr > 0)
-            & (N_mat[:, t_idx - 1] > 0)
-            & (N_mat[:, t_idx - 2] > 0)
-        )
+        leaver_mask = (d_pre_prev == 1) & (d_prev == 1) & (d_curr == 0) & present
+        stable1_mask = (d_pre_prev == 1) & (d_prev == 1) & (d_curr == 1) & present
 
-        n_10 = int(n_curr[joiner_mask].sum())
-        n_00 = int(n_curr[stable0_mask].sum())
-        n_01 = int(n_curr[leaver_mask].sum())
-        n_11 = int(n_curr[stable1_mask].sum())
+        # Theorem 4 weights are CELL counts (matching Theorem 3 convention)
+        n_10 = int(joiner_mask.sum())
+        n_00 = int(stable0_mask.sum())
+        n_01 = int(leaver_mask.sum())
+        n_11 = int(stable1_mask.sum())
 
         if n_10 > 0 and n_00 > 0:
-            joiner_avg = float(
-                (n_curr[joiner_mask] * (y_prev[joiner_mask] - y_pre_prev[joiner_mask])).sum() / n_10
-            )
-            stable0_avg = float(
-                (n_curr[stable0_mask] * (y_prev[stable0_mask] - y_pre_prev[stable0_mask])).sum()
-                / n_00
-            )
+            joiner_avg = float((y_prev[joiner_mask] - y_pre_prev[joiner_mask]).mean())
+            stable0_avg = float((y_prev[stable0_mask] - y_pre_prev[stable0_mask]).mean())
             placebo_plus_t = joiner_avg - stable0_avg
         else:
             placebo_plus_t = 0.0
 
         if n_01 > 0 and n_11 > 0:
-            stable1_avg = float(
-                (n_curr[stable1_mask] * (y_prev[stable1_mask] - y_pre_prev[stable1_mask])).sum()
-                / n_11
-            )
-            leaver_avg = float(
-                (n_curr[leaver_mask] * (y_prev[leaver_mask] - y_pre_prev[leaver_mask])).sum() / n_01
-            )
+            stable1_avg = float((y_prev[stable1_mask] - y_pre_prev[stable1_mask]).mean())
+            leaver_avg = float((y_prev[leaver_mask] - y_pre_prev[leaver_mask]).mean())
             placebo_minus_t = stable1_avg - leaver_avg
         else:
             placebo_minus_t = 0.0
@@ -1220,67 +1234,216 @@ def _compute_placebo(
     return placebo_effect, True
 
 
+def _compute_full_per_group_contributions(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    n_10_t_arr: np.ndarray,
+    n_00_t_arr: np.ndarray,
+    n_01_t_arr: np.ndarray,
+    n_11_t_arr: np.ndarray,
+    a11_plus_zeroed_arr: np.ndarray,
+    a11_minus_zeroed_arr: np.ndarray,
+    side: str = "overall",
+) -> np.ndarray:
+    """
+    Compute the per-group influence function ``U^G_g`` for ``DID_M``,
+    ``DID_+``, or ``DID_-`` by summing role-weighted outcome differences
+    across all periods (full ``Lambda^G_{g,l=1}`` from Section 3.7.2 of
+    the dynamic companion paper, evaluated at horizon ``l = 1``).
+
+    Decomposition (for ``side='overall'``)::
+
+        N_S * DID_M = sum_t [
+              sum_{g in joiners(t)}  (Y_{g,t} - Y_{g,t-1})
+            - (n_10_t / n_00_t) * sum_{g in stable_0(t)} (Y_{g,t} - Y_{g,t-1})
+            + (n_01_t / n_11_t) * sum_{g in stable_1(t)} (Y_{g,t} - Y_{g,t-1})
+            - sum_{g in leavers(t)}  (Y_{g,t} - Y_{g,t-1})
+        ]
+
+    Each ``(g, t)`` cell contributes to ``U^G_g`` once per period, with
+    the role weight determined by its ``(D_{g,t-1}, D_{g,t})`` transition.
+    A switching group typically contributes from MULTIPLE periods (its
+    own switch period + every period where it serves as a stable
+    control); a never-switching group contributes only via its stable-
+    control roles (which can be non-zero when it serves as a control
+    for other cohorts' switches).
+
+    Periods where ``DID_+,t`` or ``DID_-,t`` were zeroed under the A11
+    convention contribute zero on the affected side, matching the
+    point estimate.
+
+    Parameters
+    ----------
+    D_mat, Y_mat, N_mat : np.ndarray of shape (n_groups, n_periods)
+        Pivoted treatment, outcome, and observation-count matrices.
+    n_10_t_arr, n_00_t_arr, n_01_t_arr, n_11_t_arr : np.ndarray
+        Per-period CELL counts aligned to ``periods[1:]``.
+    a11_plus_zeroed_arr, a11_minus_zeroed_arr : np.ndarray of bool
+        Per-period A11-zeroing flags aligned to ``periods[1:]``.
+    side : {"overall", "joiners", "leavers"}
+        Which contribution to compute:
+
+        - ``"overall"``: returns ``U^G_g`` such that ``U.sum() == N_S * DID_M``
+        - ``"joiners"``: returns ``U^G_g`` such that ``U.sum() == joiner_total * DID_+``
+          (only the joiners + stable_0 terms)
+        - ``"leavers"``: returns ``U^G_g`` such that ``U.sum() == leaver_total * DID_-``
+          (only the leavers + stable_1 terms, with the leavers side's sign convention)
+
+    Returns
+    -------
+    U : np.ndarray of shape (n_groups,)
+        Per-group contributions. NOT cohort-centered; the caller is
+        responsible for centering before computing the SE.
+    """
+    if side not in ("overall", "joiners", "leavers"):
+        raise ValueError(f"side must be one of overall/joiners/leavers, got {side!r}")
+
+    n_groups, n_periods = D_mat.shape
+    U = np.zeros(n_groups, dtype=float)
+
+    include_joiners_side = side in ("overall", "joiners")
+    include_leavers_side = side in ("overall", "leavers")
+
+    for t_idx in range(1, n_periods):
+        d_curr = D_mat[:, t_idx]
+        d_prev = D_mat[:, t_idx - 1]
+        y_diff = Y_mat[:, t_idx] - Y_mat[:, t_idx - 1]
+        n_curr = N_mat[:, t_idx]
+        n_prev = N_mat[:, t_idx - 1]
+        present = (n_curr > 0) & (n_prev > 0)
+
+        joiner_mask = (d_prev == 0) & (d_curr == 1) & present
+        stable0_mask = (d_prev == 0) & (d_curr == 0) & present
+        leaver_mask = (d_prev == 1) & (d_curr == 0) & present
+        stable1_mask = (d_prev == 1) & (d_curr == 1) & present
+
+        n_10_t = int(n_10_t_arr[t_idx - 1])
+        n_00_t = int(n_00_t_arr[t_idx - 1])
+        n_01_t = int(n_01_t_arr[t_idx - 1])
+        n_11_t = int(n_11_t_arr[t_idx - 1])
+
+        # Joiners side (+y_diff for joiners; -(n_10/n_00)*y_diff for stable_0)
+        if (
+            include_joiners_side
+            and not bool(a11_plus_zeroed_arr[t_idx - 1])
+            and n_10_t > 0
+            and n_00_t > 0
+        ):
+            U[joiner_mask] += y_diff[joiner_mask]
+            U[stable0_mask] -= (n_10_t / n_00_t) * y_diff[stable0_mask]
+
+        # Leavers side (-y_diff for leavers; +(n_01/n_11)*y_diff for stable_1)
+        if (
+            include_leavers_side
+            and not bool(a11_minus_zeroed_arr[t_idx - 1])
+            and n_01_t > 0
+            and n_11_t > 0
+        ):
+            U[leaver_mask] -= y_diff[leaver_mask]
+            U[stable1_mask] += (n_01_t / n_11_t) * y_diff[stable1_mask]
+
+    return U
+
+
+def _cohort_recenter(
+    U: np.ndarray,
+    cohort_ids: np.ndarray,
+) -> np.ndarray:
+    """
+    Subtract cohort-conditional means from U.
+
+    For each cohort id, computes ``U_bar_k = mean(U[cohort==k])`` and
+    returns ``U - U_bar_{cohort(g)}``. This is the per-group cohort-
+    recentering step from Web Appendix Section 3.7.3 of the dynamic
+    companion paper. Critical: subtracts the cohort mean, NOT a single
+    grand mean — using a grand mean silently produces a smaller,
+    incorrect variance.
+    """
+    U_centered = U.astype(float).copy()
+    if U.size == 0:
+        return U_centered
+    unique_cohorts = np.unique(cohort_ids)
+    for k in unique_cohorts:
+        in_cohort = cohort_ids == k
+        if in_cohort.any():
+            U_centered[in_cohort] = U[in_cohort] - U[in_cohort].mean()
+    return U_centered
+
+
 def _compute_cohort_recentered_inputs(
     D_mat: np.ndarray,
     Y_mat: np.ndarray,
     N_mat: np.ndarray,
-    periods: List[Any],
+    n_10_t_arr: np.ndarray,
+    n_00_t_arr: np.ndarray,
+    n_01_t_arr: np.ndarray,
+    n_11_t_arr: np.ndarray,
+    a11_plus_zeroed_arr: np.ndarray,
+    a11_minus_zeroed_arr: np.ndarray,
+    all_groups: List[Any],
+    singleton_baseline_groups: List[Any],
 ) -> Tuple[np.ndarray, int, int, int, np.ndarray, np.ndarray]:
     """
     Compute the cohort-centered influence-function vectors for variance.
 
-    For each post-filter group, builds a per-group U^G_g value as the
-    sum of switch contributions over time, then subtracts the cohort-
-    conditional mean (cohort defined by the triple ``(D_{g,1}, F_g, S_g)``
-    where F_g is the first switch period and S_g is the switch direction).
+    Implements the full ``Lambda^G_{g,l=1}`` weight vector from
+    Section 3.7.2 of the dynamic companion paper (NBER WP 29873) at
+    horizon ``l = 1``: each group's per-period role weights (joiner,
+    stable_0, leaver, stable_1) sum to a per-group ``U^G_g`` value
+    that, summed across groups, recovers ``N_S * DID_M``.
 
-    Phase 1 simplification: rather than implementing the full
-    ``lambda^G_{g,l=1}`` weight vector from Eq 22-23 of the dynamic
-    paper (which is most useful at l > 1 for the dynamic estimator),
-    Phase 1 uses the per-group switch contribution that exactly matches
-    the AER 2020 Theorem 3 numerator at l = 1. This produces:
+    Cohorts are defined by the triple ``(D_{g,1}, F_g, S_g)`` where
+    ``F_g`` is the first switch period and ``S_g`` is the switch
+    direction (+1 joiner, -1 leaver, 0 never-switching). Never-
+    switching groups form their own cohorts indexed by baseline only.
 
-    - For a joiner group g switching from 0 -> 1 at period F_g:
-      ``U^G_g = N_{g, F_g} * (Y_{g, F_g} - Y_{g, F_g - 1}) - control_term``
-    - For a leaver group g switching from 1 -> 0 at period F_g:
-      ``U^G_g = control_term - N_{g, F_g} * (Y_{g, F_g} - Y_{g, F_g - 1})``
-
-    where ``control_term`` is the corresponding stable-control average
-    contribution at the same period. Never-switching groups have
-    ``S_g = 0`` and are filtered out for variance computation.
-
-    The cohort-centered vector ``U_centered`` is then:
-    ``U_centered[g] = U^G_g - U_bar_{cohort(g)}``
-    where ``U_bar_k`` is the mean of ``U^G_g`` over groups in cohort
-    ``k``. The plug-in variance from Section 3.7.3 of the dynamic paper
-    becomes:
-    ``sigma_hat^2 = (1/N_l) * sum_g U^G_g^2 - sum_k (|C_k|/N_l) * U_bar_k^2``
-    which is algebraically equal to ``(1/N_l) * sum_g U_centered[g]^2``
-    when ``N_l == G``. We expose ``U_centered`` directly so the bootstrap
-    mixin can multiply it by random weights without re-computing the
-    cohort means.
+    Per footnote 15 of the dynamic paper (passed in via
+    ``singleton_baseline_groups``), groups whose baseline ``D_{g,1}``
+    value is unique in the post-drop panel have no cohort peer and are
+    excluded from the variance computation only. They remain in the
+    point-estimate sample as period-based stable controls (this
+    matches Python's documented period-vs-cohort stable-control
+    interpretation; the cell DataFrame entering ``_compute_per_period_dids``
+    retains them).
 
     Returns
     -------
     U_centered_overall : np.ndarray
-        Cohort-centered IF vector for DID_M, length = number of switching groups.
+        Cohort-centered IF vector for ``DID_M`` over the variance-
+        eligible groups (post-singleton-filter).
     n_groups_for_overall : int
-        ``len(U_centered_overall)`` (for sanity-checking from the caller).
+        ``U_centered_overall.size`` for sanity-checking by the caller.
     n_cohorts : int
-        Distinct ``(D_{g,1}, F_g, S_g)`` triples in the post-filter group set.
+        Distinct cohorts in the variance-eligible group set.
     n_groups_dropped_never_switching : int
-        Number of groups with ``S_g = 0`` (never switched).
+        Count of never-switching groups for results metadata. (They
+        ARE included in the variance computation under the full IF
+        formula because they can have non-zero contributions when
+        serving as stable controls; this count is reported for
+        backwards compatibility with the existing results dataclass
+        field but no longer represents an actual exclusion.)
     U_centered_joiners : np.ndarray
-        Cohort-centered IF vector restricted to joiner groups.
+        Cohort-centered IF vector for ``DID_+`` (joiners-only side).
     U_centered_leavers : np.ndarray
-        Cohort-centered IF vector restricted to leaver groups.
+        Cohort-centered IF vector for ``DID_-`` (leavers-only side).
     """
     n_groups, n_periods = D_mat.shape
+
+    if n_groups == 0:
+        return (
+            np.array([], dtype=float),
+            0,
+            0,
+            0,
+            np.array([], dtype=float),
+            np.array([], dtype=float),
+        )
 
     # Per-group baseline, first switch time, switch direction
     baselines = D_mat[:, 0]
     first_switch_idx = np.full(n_groups, -1, dtype=int)
-    switch_direction = np.zeros(n_groups, dtype=int)  # +1 joiner, -1 leaver, 0 none
+    switch_direction = np.zeros(n_groups, dtype=int)  # +1 joiner, -1 leaver, 0 never-switching
 
     for g in range(n_groups):
         for t in range(1, n_periods):
@@ -1289,107 +1452,80 @@ def _compute_cohort_recentered_inputs(
                 switch_direction[g] = 1 if D_mat[g, t] > D_mat[g, t - 1] else -1
                 break
 
-    switching_mask = switch_direction != 0
-    n_groups_dropped_never_switching = int((~switching_mask).sum())
+    n_groups_dropped_never_switching = int((switch_direction == 0).sum())
 
-    if n_groups_dropped_never_switching > 0:
-        # Per the no-silent-failures policy: warn that groups are filtered
-        # from the variance computation. They still contribute to the point
-        # estimate as stable controls; the filter only excludes them from
-        # the influence-function-based variance.
-        warnings.warn(
-            f"{n_groups_dropped_never_switching} group(s) never switch "
-            "treatment and are excluded from the cohort-recentered variance "
-            "computation (footnote 15 of dynamic paper). They still contribute "
-            "to the DID_M point estimate as stable controls. The exclusion is "
-            "expected: never-switching groups have a zero influence-function "
-            "value by construction.",
-            UserWarning,
-            stacklevel=3,
-        )
+    # Variance-eligibility mask: include all groups EXCEPT singleton-
+    # baseline groups (footnote 15) which have no cohort peer.
+    singleton_baseline_set = set(singleton_baseline_groups)
+    eligible_mask = np.array([g not in singleton_baseline_set for g in all_groups], dtype=bool)
 
-    if not switching_mask.any():
-        # No switchers — variance is undefined
-        return (
-            np.array([], dtype=float),
-            0,
-            0,
-            n_groups_dropped_never_switching,
-            np.array([], dtype=float),
-            np.array([], dtype=float),
-        )
-
-    # Build per-group U^G_g values for switching groups, plus a per-period
-    # cache of stable-control averages so each switcher can subtract its
-    # appropriate control term in O(1).
-    # control_avg_diff_0[t] = avg outcome diff (Y_t - Y_{t-1}) over groups stable at 0
-    # control_avg_diff_1[t] = avg outcome diff over groups stable at 1
-    control_avg_diff_0 = np.zeros(n_periods)
-    control_avg_diff_1 = np.zeros(n_periods)
-    for t in range(1, n_periods):
-        d_curr = D_mat[:, t]
-        d_prev = D_mat[:, t - 1]
-        n_curr = N_mat[:, t]
-        stable0_mask = (d_prev == 0) & (d_curr == 0) & (n_curr > 0)
-        stable1_mask = (d_prev == 1) & (d_curr == 1) & (n_curr > 0)
-        n_00 = n_curr[stable0_mask].sum()
-        n_11 = n_curr[stable1_mask].sum()
-        if n_00 > 0:
-            control_avg_diff_0[t] = float(
-                (n_curr[stable0_mask] * (Y_mat[stable0_mask, t] - Y_mat[stable0_mask, t - 1])).sum()
-                / n_00
-            )
-        if n_11 > 0:
-            control_avg_diff_1[t] = float(
-                (n_curr[stable1_mask] * (Y_mat[stable1_mask, t] - Y_mat[stable1_mask, t - 1])).sum()
-                / n_11
-            )
-
-    # Per-switcher contribution at its first switch period
-    switcher_idxs = np.where(switching_mask)[0]
-    U_overall = np.zeros(switcher_idxs.size, dtype=float)
-    for k, g in enumerate(switcher_idxs):
-        t = first_switch_idx[g]
-        n_gt = int(N_mat[g, t])
-        diff = float(Y_mat[g, t] - Y_mat[g, t - 1])
-        if switch_direction[g] == 1:
-            # Joiner: U_g = n_gt * (diff - control_avg_diff_0[t])
-            U_overall[k] = n_gt * (diff - control_avg_diff_0[t])
-        else:
-            # Leaver: U_g = n_gt * (control_avg_diff_1[t] - diff)
-            U_overall[k] = n_gt * (control_avg_diff_1[t] - diff)
-
-    # Cohort identification: triples (D_{g,1}, F_g, S_g)
-    cohort_keys = list(
-        zip(
-            baselines[switcher_idxs].tolist(),
-            first_switch_idx[switcher_idxs].tolist(),
-            switch_direction[switcher_idxs].tolist(),
-        )
-    )
+    # Cohort identification: (D_{g,1}, F_g, S_g) triples for the
+    # variance-eligible group set. Never-switching groups (S_g = 0)
+    # have F_g = -1 and form cohorts indexed by baseline alone.
+    cohort_keys = [
+        (int(baselines[g]), int(first_switch_idx[g]), int(switch_direction[g]))
+        for g in range(n_groups)
+    ]
     unique_cohorts: Dict[Tuple[int, int, int], int] = {}
-    cohort_id_per_switcher = np.zeros(switcher_idxs.size, dtype=int)
-    for i, key in enumerate(cohort_keys):
+    cohort_id = np.zeros(n_groups, dtype=int)
+    for g in range(n_groups):
+        if not eligible_mask[g]:
+            cohort_id[g] = -1
+            continue
+        key = cohort_keys[g]
         if key not in unique_cohorts:
             unique_cohorts[key] = len(unique_cohorts)
-        cohort_id_per_switcher[i] = unique_cohorts[key]
+        cohort_id[g] = unique_cohorts[key]
     n_cohorts = len(unique_cohorts)
 
-    # Cohort-conditional means and centering
-    U_centered_overall = np.empty_like(U_overall)
-    for k_id in range(n_cohorts):
-        in_cohort = cohort_id_per_switcher == k_id
-        if not in_cohort.any():
-            continue
-        cohort_mean = float(U_overall[in_cohort].mean())
-        U_centered_overall[in_cohort] = U_overall[in_cohort] - cohort_mean
+    # Compute the full IF vectors via the new helper
+    U_overall_full = _compute_full_per_group_contributions(
+        D_mat=D_mat,
+        Y_mat=Y_mat,
+        N_mat=N_mat,
+        n_10_t_arr=n_10_t_arr,
+        n_00_t_arr=n_00_t_arr,
+        n_01_t_arr=n_01_t_arr,
+        n_11_t_arr=n_11_t_arr,
+        a11_plus_zeroed_arr=a11_plus_zeroed_arr,
+        a11_minus_zeroed_arr=a11_minus_zeroed_arr,
+        side="overall",
+    )
+    U_joiners_full = _compute_full_per_group_contributions(
+        D_mat=D_mat,
+        Y_mat=Y_mat,
+        N_mat=N_mat,
+        n_10_t_arr=n_10_t_arr,
+        n_00_t_arr=n_00_t_arr,
+        n_01_t_arr=n_01_t_arr,
+        n_11_t_arr=n_11_t_arr,
+        a11_plus_zeroed_arr=a11_plus_zeroed_arr,
+        a11_minus_zeroed_arr=a11_minus_zeroed_arr,
+        side="joiners",
+    )
+    U_leavers_full = _compute_full_per_group_contributions(
+        D_mat=D_mat,
+        Y_mat=Y_mat,
+        N_mat=N_mat,
+        n_10_t_arr=n_10_t_arr,
+        n_00_t_arr=n_00_t_arr,
+        n_01_t_arr=n_01_t_arr,
+        n_11_t_arr=n_11_t_arr,
+        a11_plus_zeroed_arr=a11_plus_zeroed_arr,
+        a11_minus_zeroed_arr=a11_minus_zeroed_arr,
+        side="leavers",
+    )
 
-    # Joiners-only / leavers-only IF vectors: restrict to the appropriate
-    # switch_direction subset and re-center within those subsets' cohorts.
-    joiner_subset_mask = switch_direction[switcher_idxs] == 1
-    leaver_subset_mask = switch_direction[switcher_idxs] == -1
-    U_centered_joiners = U_centered_overall[joiner_subset_mask]
-    U_centered_leavers = U_centered_overall[leaver_subset_mask]
+    # Restrict to variance-eligible groups (drop singleton-baseline groups)
+    U_overall = U_overall_full[eligible_mask]
+    U_joiners = U_joiners_full[eligible_mask]
+    U_leavers = U_leavers_full[eligible_mask]
+    cohort_id_eligible = cohort_id[eligible_mask]
+
+    # Cohort-recenter each IF vector
+    U_centered_overall = _cohort_recenter(U_overall, cohort_id_eligible)
+    U_centered_joiners = _cohort_recenter(U_joiners, cohort_id_eligible)
+    U_centered_leavers = _cohort_recenter(U_leavers, cohort_id_eligible)
 
     return (
         U_centered_overall,

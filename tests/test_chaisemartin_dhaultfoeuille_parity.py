@@ -135,6 +135,8 @@ class TestDCDHDynRParity:
             r_results["overall_att"], rel=self.MIXED_POINT_RTOL
         )
 
+    PURE_DIRECTION_SE_RTOL = 0.05  # 5% rtol on pure-direction scenarios after the full IF fix
+
     def test_parity_joiners_only(self, require_r_dcdh, golden_values):
         scenario = golden_values.get("joiners_only")
         if scenario is None:
@@ -142,8 +144,17 @@ class TestDCDHDynRParity:
         df = _golden_to_df(scenario["data"])
         results = _fit_dcdh_l1(df)
         r_results = scenario["results"]
-        # Pure-direction scenario: tight parity expected.
+        # Pure-direction scenario: tight point-estimate parity expected
+        # (cell counts and the full IF formula produce identical answers
+        # to R DIDmultiplegtDYN under pure-direction conditions).
         assert results.overall_att == pytest.approx(r_results["overall_att"], rel=self.POINT_RTOL)
+        # SE parity: looser 5% rtol because Python's cohort-recentered
+        # plug-in formula and R's may use slightly different small-sample
+        # corrections. The full Lambda^G_{g,l=1} influence function fix
+        # narrowed this gap from ~18% to ~3% on the test scenarios.
+        assert results.overall_se == pytest.approx(
+            r_results["overall_se"], rel=self.PURE_DIRECTION_SE_RTOL
+        )
 
     def test_parity_leavers_only(self, require_r_dcdh, golden_values):
         scenario = golden_values.get("leavers_only")
@@ -152,8 +163,11 @@ class TestDCDHDynRParity:
         df = _golden_to_df(scenario["data"])
         results = _fit_dcdh_l1(df)
         r_results = scenario["results"]
-        # Pure-direction scenario: tight parity expected.
+        # Pure-direction scenario: tight point-estimate + 5% SE parity
         assert results.overall_att == pytest.approx(r_results["overall_att"], rel=self.POINT_RTOL)
+        assert results.overall_se == pytest.approx(
+            r_results["overall_se"], rel=self.PURE_DIRECTION_SE_RTOL
+        )
 
     def test_parity_mixed_single_switch(self, require_r_dcdh, golden_values):
         scenario = golden_values.get("mixed_single_switch")

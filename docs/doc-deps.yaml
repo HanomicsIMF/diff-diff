@@ -264,15 +264,7 @@ sources:
       - path: docs/methodology/REGISTRY.md
         section: "ChaisemartinDHaultfoeuille"
         type: methodology
-      - path: docs/methodology/papers/chaisemartin-dhaultfoeuille-2020-review.md
-        type: methodology
-        note: "AER 2020 paper review"
-      - path: docs/methodology/papers/chaisemartin-dhaultfoeuille-2020-appendix-review.md
-        type: methodology
-        note: "AER 2020 online appendix review"
-      - path: docs/methodology/papers/chaisemartin-dhaultfoeuille-dynamic-review.md
-        type: methodology
-        note: "Dynamic companion paper review (NBER WP 29873) — source for cohort-recentered variance"
+        note: "Single source of truth for dCDH methodology, equations, deviations from R, and edge cases"
       - path: docs/api/chaisemartin_dhaultfoeuille.rst
         type: api_reference
       - path: README.md

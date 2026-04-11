@@ -209,10 +209,12 @@ class ChaisemartinDHaultfoeuilleResults:
         Total observations after filtering.
     n_treated_obs : int
         Treated observations in the post-filter sample.
-    n_switcher_obs : int
-        Observations contributing to switching cells across periods.
-        Equals ``sum_t (n_10_t + n_01_t)`` (the ``N_S`` denominator of
-        ``DID_M``).
+    n_switcher_cells : int
+        Number of switching ``(g, t)`` cells across periods. Equals
+        ``sum_t (n_10_t + n_01_t)`` where each transition cell counts
+        once regardless of how many original observations fed into it.
+        This is the ``N_S`` denominator of ``DID_M`` per AER 2020
+        Theorem 3 — cell counts, not within-cell observation counts.
     n_cohorts : int
         Distinct cohorts ``(D_{g,1}, F_g, S_g)`` after filtering.
     n_groups_dropped_crossers : int
@@ -295,7 +297,7 @@ class ChaisemartinDHaultfoeuilleResults:
     time_periods: List[Any]
     n_obs: int
     n_treated_obs: int
-    n_switcher_obs: int
+    n_switcher_cells: int
     n_cohorts: int
     n_groups_dropped_crossers: int
     n_groups_dropped_singleton_baseline: int
@@ -340,7 +342,7 @@ class ChaisemartinDHaultfoeuilleResults:
             f"DID_M={self.overall_att:.4f}{sig}, "
             f"SE={self.overall_se:.4f}, "
             f"n_groups={len(self.groups)}, "
-            f"n_switcher_obs={self.n_switcher_obs})"
+            f"n_switcher_cells={self.n_switcher_cells})"
         )
 
     @property
@@ -400,7 +402,7 @@ class ChaisemartinDHaultfoeuilleResults:
             "",
             f"{'Total observations:':<35} {self.n_obs:>10}",
             f"{'Treated observations:':<35} {self.n_treated_obs:>10}",
-            f"{'Switcher observations (N_S):':<35} {self.n_switcher_obs:>10}",
+            f"{'Switcher cells (N_S):':<35} {self.n_switcher_cells:>10}",
             f"{'Groups (post-filter):':<35} {len(self.groups):>10}",
             f"{'Cohorts:':<35} {self.n_cohorts:>10}",
             f"{'Time periods:':<35} {len(self.time_periods):>10}",
@@ -638,7 +640,7 @@ class ChaisemartinDHaultfoeuilleResults:
                     "p_value": self.overall_p_value,
                     "conf_int_lower": self.overall_conf_int[0],
                     "conf_int_upper": self.overall_conf_int[1],
-                    "n_obs": self.n_switcher_obs,
+                    "n_obs": self.n_switcher_cells,
                     "available": True,
                 },
                 {

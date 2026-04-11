@@ -407,10 +407,16 @@ class TestDropLargerLower:
         )
         assert results.n_groups_dropped_crossers == 0
 
-    def test_singleton_baseline_filter(self):
+    def test_singleton_baseline_filter_variance_only(self):
         # Build a panel where one group has a unique baseline (e.g., only group
         # with D_{g,0}=1). This is the footnote-15 condition.
-        # All other groups start at D=0, so the singleton-baseline group is dropped.
+        #
+        # Per the variance-only filter (the dCDH Round 2 fix), the singleton-
+        # baseline group is identified, counted in
+        # n_groups_dropped_singleton_baseline, and excluded from the cohort-
+        # recentered VARIANCE. But it remains in the point-estimate sample
+        # as a period-based stable control (matching Python's documented
+        # period-vs-cohort stable-control interpretation).
         data = generate_reversible_did_data(
             n_groups=20,
             n_periods=4,
@@ -441,10 +447,99 @@ class TestDropLargerLower:
                 time="period",
                 treatment="treatment",
             )
-        # The leaver was the only group with D=1 baseline -> dropped
+        # The leaver has a unique baseline (D=1) -> excluded from variance.
         assert results.n_groups_dropped_singleton_baseline >= 1
-        assert 9999 not in results.groups
+        # Per the variance-only filter, the group is RETAINED in the
+        # point-estimate sample (it can serve as a period-based stable
+        # control), so it appears in results.groups.
+        assert 9999 in results.groups
+        # The warning text mentions the variance-only scope.
         assert any("Singleton-baseline" in str(wi.message) for wi in w)
+        assert any(
+            "VARIANCE computation only" in str(wi.message) for wi in w
+        ), "Warning text should clarify the filter is variance-only"
+
+    def test_cell_count_weighting_unbalanced_input(self):
+        """
+        Regression test: dCDH must use cell counts (paper-literal),
+        not within-cell observation counts, as the Theorem 3 N_{a,b,t}
+        weights.
+
+        Constructed with two joiner groups whose (g, t) cells contain
+        very different numbers of original observations (group 1 has
+        100 obs/cell, group 2 has 1 obs/cell). Both joiners have the
+        same true effect under the cell-weighted formula.
+
+        Under cell weighting (paper-literal, the correct behavior),
+        each cell contributes equally and the result equals the simple
+        average of cell-level effects (~5.0). Under the bug behavior
+        (sample-size weighting), group 1 dominates by 100x because its
+        cells contribute 100x the weight.
+
+        On a noiseless DGP both formulas would give 5.0; we add a
+        deliberate per-cell perturbation to group 1 so that the bug
+        would be visible: under sample-size weighting the result
+        would shift toward group 1's cell mean (which is perturbed),
+        while under cell weighting group 2's pristine effect would
+        anchor the average.
+        """
+        records = []
+        # Group 1: 100 obs per cell, joiner at t=2, but with a +0.5
+        # perturbation to its post-treatment cell mean (so its cell
+        # effect is 5.5, not 5.0)
+        for t in [0, 1, 2]:
+            for i in range(100):
+                d = 1 if t == 2 else 0
+                base = 10.0
+                noise = 0.0  # noiseless within cell
+                if t == 2:
+                    y = base + 5.5 + noise  # perturbed post effect
+                else:
+                    y = base + noise
+                records.append({"group": 1, "period": t, "treatment": d, "outcome": y})
+        # Group 2: 1 obs per cell, joiner at t=2, clean effect of 5.0
+        for t in [0, 1, 2]:
+            d = 1 if t == 2 else 0
+            y = 10.0 + (5.0 if d == 1 else 0)
+            records.append({"group": 2, "period": t, "treatment": d, "outcome": y})
+        # Stable controls
+        for g in [3, 4]:
+            for t in [0, 1, 2]:
+                records.append(
+                    {
+                        "group": g,
+                        "period": t,
+                        "treatment": 0,
+                        "outcome": 10.0,
+                    }
+                )
+
+        df = pd.DataFrame(records)
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results = est.fit(
+                df, outcome="outcome", group="group", time="period", treatment="treatment"
+            )
+
+        # Expected under CELL weighting:
+        #   DID_+,2 = avg over joiner cells - avg over stable_0 cells
+        #         = avg(5.5, 5.0) - avg(0, 0) = 5.25
+        # Expected under SAMPLE-SIZE weighting (the bug):
+        #   DID_+,2 = (100*5.5 + 1*5.0) / 101 - 0 = 5.495
+        # The two differ by ~0.25, so we can detect the bug at 0.05 tolerance.
+        assert abs(results.overall_att - 5.25) < 0.05, (
+            f"Expected DID_M ≈ 5.25 under cell weighting, got "
+            f"{results.overall_att:.4f}. If you see ~5.495 the estimator "
+            f"is using sample-size weighting (the bug)."
+        )
+        # n_switcher_cells should be 2 (one cell per joiner group at t=2),
+        # NOT 101 (the total observation count)
+        assert results.n_switcher_cells == 2, (
+            f"n_switcher_cells should be 2 (cell count), got "
+            f"{results.n_switcher_cells}. If you see 101 the estimator "
+            f"is using sample-size weighting (the bug)."
+        )
 
 
 # =============================================================================
@@ -817,7 +912,7 @@ class TestResultsDataclass:
             time_periods=[0, 1],
             n_obs=2,
             n_treated_obs=1,
-            n_switcher_obs=0,
+            n_switcher_cells=0,
             n_cohorts=0,
             n_groups_dropped_crossers=0,
             n_groups_dropped_singleton_baseline=0,
@@ -859,7 +954,7 @@ class TestResultsDataclass:
             time_periods=[0, 1],
             n_obs=2,
             n_treated_obs=1,
-            n_switcher_obs=0,
+            n_switcher_cells=0,
             n_cohorts=0,
             n_groups_dropped_crossers=0,
             n_groups_dropped_singleton_baseline=0,

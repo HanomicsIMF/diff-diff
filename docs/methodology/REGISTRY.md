@@ -472,8 +472,8 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
 - NaN values in `treatment` or `outcome` columns raise `ValueError` early in `fit()` (no silent drops).
 - Cell aggregation rounds fractional treatment values within `(g, t)` cells to the majority and warns explicitly when rounding occurs.
 - Multi-switch groups (those that switch treatment more than once across periods) are dropped before estimation when `drop_larger_lower=True` (the default, matching R `DIDmultiplegtDYN`). Each drop emits a warning with the count and example group IDs. See the multi-switch Note below.
-- Singleton-baseline groups — groups whose `D_{g,1}` value is unique in the post-drop dataset — are dropped before variance computation per footnote 15 of the dynamic paper. Each drop emits a warning. See the singleton-baseline Note below.
-- Never-switching groups (`S_g = 0`) are filtered from the variance computation (they contribute zero identifying information) but may still serve as stable controls for the point estimate. A warning is emitted listing the dropped count.
+- Singleton-baseline groups — groups whose `D_{g,1}` value is unique in the post-drop dataset — are excluded from the **variance computation only** (per footnote 15 of the dynamic paper, they have no cohort peer). They are **retained** in the point-estimate sample as period-based stable controls. Each emits a warning. See the singleton-baseline Note below.
+- Never-switching groups (`S_g = 0`) participate in the variance computation when they serve as stable controls under the full influence function. The `n_groups_dropped_never_switching` results field is reported for backwards compatibility but the count no longer represents an actual exclusion.
 - Per-period Assumption 11 violations (joiners exist but no stable-untreated controls in some period, or leavers exist but no stable-treated controls) trigger zero-retention behavior with a consolidated warning. See the A11 Note below.
 
 *Estimator equations (Theorem 3 of AER 2020 / Section 3.7.2 of the dynamic paper):*
@@ -488,7 +488,7 @@ DID_{-,t} = (1/N_{1,1,t}) * sum_{g in stable_1(t)} (Y_{g,t} - Y_{g,t-1})
           - (1/N_{0,1,t}) * sum_{g in leavers(t)} (Y_{g,t} - Y_{g,t-1})
 ```
 
-where `joiners(t)` are groups switching from `D_{g,t-1}=0` to `D_{g,t}=1`, `leavers(t)` are groups switching `1->0`, `stable_0(t)` are groups with `D_{g,t-1}=D_{g,t}=0`, and `stable_1(t)` are groups with `D_{g,t-1}=D_{g,t}=1`. `N_{a,b,t}` is the count of `(g, t)` cells in each transition state.
+where `joiners(t)` are groups switching from `D_{g,t-1}=0` to `D_{g,t}=1`, `leavers(t)` are groups switching `1->0`, `stable_0(t)` are groups with `D_{g,t-1}=D_{g,t}=0`, and `stable_1(t)` are groups with `D_{g,t-1}=D_{g,t}=1`. **`N_{a,b,t}` is the COUNT of `(g, t)` cells in each transition state — not the sum of within-cell observation counts.** Each `(g, t)` cell contributes once to its transition's count regardless of how many original observations fed into the cell mean. The cell mean `Y_{g,t}` is computed at the cell-aggregation step via `groupby([group, time]).agg(y_gt=mean)`; the per-period DIDs use these cell means directly without further sample-size weighting. This matches the AER 2020 paper formula literally and matches R `DIDmultiplegtDYN`'s default behavior on cell-aggregated input.
 
 Aggregate `DID_M`:
 
@@ -515,16 +515,29 @@ DID_M^pl = (1/N_S^pl) * sum_{t>=3} (
 
 *Standard errors (Web Appendix Section 3.7.3 of the dynamic companion paper):*
 
-Default: cohort-recentered analytical plug-in variance, evaluated at horizon `l = 1`. Cohorts are defined by the triple `(D_{g,1}, F_g, S_g)` (baseline treatment, first-switch period, switch direction). For each switching group `g`:
+Default: cohort-recentered analytical plug-in variance, evaluated at horizon `l = 1`. Cohorts are defined by the triple `(D_{g,1}, F_g, S_g)` (baseline treatment, first-switch period, switch direction). Each group's per-period role weights (joiner, stable_0, leaver, stable_1) sum to a per-group `U^G_g` value via the full `Lambda^G_{g,l=1}` weight vector from Section 3.7.2 of the dynamic paper:
 
 ```
-U^G_g     = (Lambda^G_{g,l=1} * Y_g).sum()
-U_bar_k   = (1/|C_k|) * sum_{g in C_k} U^G_g                  # cohort-conditional mean
-sigma_hat^2 = (1/N_l) * sum_g (U^G_g)^2 - sum_k (|C_k|/N_l) * (U_bar_k)^2
+N_S * DID_M = sum_t [
+      sum_{g in joiners(t)}  (Y_{g,t} - Y_{g,t-1})
+    - (N_{1,0,t} / N_{0,0,t}) * sum_{g in stable_0(t)} (Y_{g,t} - Y_{g,t-1})
+    + (N_{0,1,t} / N_{1,1,t}) * sum_{g in stable_1(t)} (Y_{g,t} - Y_{g,t-1})
+    - sum_{g in leavers(t)}  (Y_{g,t} - Y_{g,t-1})
+]
+```
+
+Reading off the coefficient on each `(Y_{g,t} - Y_{g,t-1})` gives the per-cell role weight, which sums across periods to:
+
+```
+U^G_g     = sum_t lambda^G_{g,t} * (Y_{g,t} - Y_{g,t-1})    # full IF
+U_bar_k   = (1/|C_k|) * sum_{g in C_k} U^G_g                # cohort-conditional mean
+sigma_hat^2 = sum_g (U^G_g - U_bar_{cohort(g)})^2 / N_l
 SE         = sqrt(sigma_hat^2 / N_l)
 ```
 
-The cohort recentering is critical: subtracting cohort-conditional means is **not** the same as subtracting a single grand mean, and a grand-mean implementation silently produces a smaller (downward-biased) variance. The implementation has a dedicated test (`test_cohort_recentering_not_grand_mean`) that catches this bug.
+Each switching group typically contributes from MULTIPLE periods: its own switch period plus every period where it serves as a stable control for another cohort's switch. Never-switching groups can also have non-zero `U^G_g` when they serve as stable controls. Singleton-baseline groups (footnote 15 of dynamic paper) are excluded from this sum because they have no cohort peer.
+
+The cohort recentering is critical: subtracting cohort-conditional means is **not** the same as subtracting a single grand mean. The implementation has a dedicated regression test (`test_cohort_recentering_not_grand_mean`) that computes both formulas on a designed DGP and asserts they differ materially.
 
 Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` parameter. Available weight distributions: `"rademacher"` (default), `"mammen"`, `"webb"`. The bootstrap is a library extension beyond the original papers and is provided for consistency with `CallawaySantAnna` / `ImputationDiD` / `TwoStageDiD`.
 
@@ -544,9 +557,9 @@ Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` param
 
 - **Note:** When Assumption 11 (existence of stable controls) is violated for some period `t` — i.e., joiners exist but no stable-untreated controls, or leavers exist but no stable-treated controls — `DID_{+,t}` (or `DID_{-,t}`) is set to zero by paper convention, and the period's switcher count is **retained** in the `N_S` denominator. This means the affected period contributes a zero to the numerator with a non-zero weight in the denominator, biasing `DID_M` toward zero in the offending direction. Users can detect this by inspecting `results.per_period_effects[t]['did_plus_t_a11_zeroed']` (or `did_minus_t_a11_zeroed`) or the consolidated `fit()` warning. This matches the AER 2020 Theorem 3 paper convention and the worked example arithmetic.
 
-- **Note:** Groups whose baseline treatment value `D_{g,1}` is unique in the post-drop panel (not shared by any other group) are dropped before variance computation per footnote 15 of the dynamic companion paper. They have no baseline-matched control set and contribute zero identifying information. The dropped count is stored on `results.n_groups_dropped_singleton_baseline` and a warning lists example group IDs.
+- **Note:** Groups whose baseline treatment value `D_{g,1}` is unique in the post-drop panel (not shared by any other group) are excluded from the **variance computation only** per footnote 15 of the dynamic companion paper. They have no cohort peer for the cohort-recentered plug-in formula. They are **retained in the point-estimate sample** as period-based stable controls (Python's documented period-vs-cohort interpretation). The dropped count is stored on `results.n_groups_dropped_singleton_baseline`, a warning lists example group IDs, and the warning text explicitly states "VARIANCE computation only" so users know the filter does not change `DID_M`.
 
-- **Note (deviation from R DIDmultiplegtDYN):** Python uses **period-based** stable-control sets — `stable_0(t)` is any cell with `D_{g,t-1} = D_{g,t} = 0` regardless of baseline `D_{g,1}`, and similarly for `stable_1(t)`. R `DIDmultiplegtDYN` uses **cohort-based** stable-control sets that additionally require `D_{g,1}` to match the side. Python's definition matches the AER 2020 Theorem 3 cell-count notation `N_{0,0,t}` and `N_{1,1,t}` literally; R's definition matches the dynamic companion paper's cohort `(D_{g,1}, F_g, S_g)` framework. The two definitions agree exactly under any of the following conditions: (a) the panel contains only joiners (no leavers), (b) the panel contains only leavers, (c) no joiner's post-switch state ever overlaps a period when leavers are switching (and vice versa). They disagree by O(1%) when both joiners and leavers exist AND some joiners' post-switch cells could serve as leavers' controls (or vice versa). The hand-calculable 4-group worked example `DID_M = 2.5` agrees exactly with R because g=1 (joiner) and g=4 (always-treated) have identical period-1-to-2 trends, so the additional control cell does not change the average. The R parity tests in `tests/test_chaisemartin_dhaultfoeuille_parity.py` use a tight 1e-4 tolerance for pure-direction scenarios and the worked example, and a 2.5% tolerance for mixed-direction scenarios reflecting this documented deviation.
+- **Note (deviation from R DIDmultiplegtDYN):** Python uses **period-based** stable-control sets — `stable_0(t)` is any cell with `D_{g,t-1} = D_{g,t} = 0` regardless of baseline `D_{g,1}`, and similarly for `stable_1(t)`. R `DIDmultiplegtDYN` uses **cohort-based** stable-control sets that additionally require `D_{g,1}` to match the side. Python's definition matches the AER 2020 Theorem 3 cell-count notation `N_{0,0,t}` and `N_{1,1,t}` literally; R's definition matches the dynamic companion paper's cohort `(D_{g,1}, F_g, S_g)` framework. The two definitions agree exactly on (a) panels containing only joiners, (b) panels containing only leavers, (c) the hand-calculable 4-group worked example, or (d) any panel where no joiner's post-switch state overlaps a period when leavers are switching. They disagree by O(1%) on the **point estimate** when both joiners and leavers exist AND some joiners' post-switch cells could serve as leavers' controls (or vice versa). After the Round 2 fix that implemented the full `Lambda^G_{g,l=1}` influence function, the **standard error** parity gap on pure-direction scenarios narrowed from ~18% to ~3%. The R parity tests in `tests/test_chaisemartin_dhaultfoeuille_parity.py` use a tight `1e-4` tolerance for pure-direction point estimates, a 5% rtol for pure-direction SEs, and a 2.5% tolerance for mixed-direction point estimates (with the SE check skipped on mixed scenarios because the period-vs-cohort point-estimate deviation cascades into the variance).
 
 **Reference implementation(s):**
 - R: [`DIDmultiplegtDYN`](https://cran.r-project.org/package=DIDmultiplegtDYN) (CRAN, maintained by the paper authors). The Python implementation matches `did_multiplegt_dyn(..., effects=1)` at horizon `l = 1`. Parity tests live in `tests/test_chaisemartin_dhaultfoeuille_parity.py`.
