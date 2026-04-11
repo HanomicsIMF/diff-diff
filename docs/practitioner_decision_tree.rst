@@ -235,8 +235,12 @@ corrects for this automatically.
 
 **If your data is individual-level microdata** (e.g., BRFSS, ACS, CPS, or NHANES
 respondent records), use :func:`~diff_diff.aggregate_survey` first to roll it up
-to a geographic-period panel with design-based precision weights - see
-:doc:`practitioner_getting_started` for an end-to-end example.
+to a geographic-period panel with inverse-variance precision weights. The
+returned second-stage design uses ``weight_type="aweight"``, so it works with
+estimators marked **Full** in the :ref:`survey-design-support` matrix (DiD,
+TWFE, MultiPeriodDiD, SunAbraham, ContinuousDiD, EfficientDiD) but not with
+``pweight``-only estimators like ``CallawaySantAnna`` or ``ImputationDiD``.
+See :doc:`practitioner_getting_started` for an end-to-end example.
 
 .. code-block:: python
 

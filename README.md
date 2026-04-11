@@ -82,7 +82,7 @@ Measuring campaign lift? Evaluating a product launch? diff-diff handles the caus
 - **[Which method fits my problem?](docs/practitioner_decision_tree.rst)** - Start from your business scenario (campaign in some markets, staggered rollout, survey data) and find the right estimator
 - **[Getting started for practitioners](docs/practitioner_getting_started.rst)** - End-to-end walkthrough: marketing campaign -> causal estimate -> stakeholder-ready result
 - **[Brand awareness survey tutorial](docs/tutorials/17_brand_awareness_survey.ipynb)** - Full example with complex survey design, brand funnel analysis, and staggered rollouts
-- **Have BRFSS/ACS/CPS individual records?** Use [`aggregate_survey()`](docs/api/prep.rst) to roll respondent-level microdata into a geographic-period panel with design-based precision weights before fitting any estimator
+- **Have BRFSS/ACS/CPS individual records?** Use [`aggregate_survey()`](docs/api/prep.rst) to roll respondent-level microdata into a geographic-period panel with inverse-variance precision weights. The returned second-stage design uses analytic weights (`aweight`), so it works directly with `DifferenceInDifferences`, `TwoWayFixedEffects`, `MultiPeriodDiD`, `SunAbraham`, `ContinuousDiD`, and `EfficientDiD` (estimators marked **Full** in the [survey support matrix](docs/choosing_estimator.rst))
 
 Already know DiD? The [academic quickstart](docs/quickstart.rst) and [estimator guide](docs/choosing_estimator.rst) cover the full technical details.
 
