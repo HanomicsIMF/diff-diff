@@ -887,6 +887,24 @@ class TestResultsDataclass:
         df = results.to_dataframe("joiners_leavers")
         assert len(df) == 3
         assert set(df["estimand"].tolist()) == {"DID_M", "DID_+", "DID_-"}
+        # Round 4: n_cells and n_obs are separate columns with consistent
+        # units across all rows. n_cells counts switching (g, t) cells,
+        # n_obs sums raw observation counts over the same cells. The DID_M
+        # row uses the union of joiner + leaver cells.
+        assert "n_cells" in df.columns
+        assert "n_obs" in df.columns
+        # On balanced 1-obs-per-cell test data, n_cells == n_obs everywhere
+        for _, row in df.iterrows():
+            assert row["n_cells"] == row["n_obs"], (
+                f"On balanced data n_cells should equal n_obs for row "
+                f"{row['estimand']}, got n_cells={row['n_cells']}, "
+                f"n_obs={row['n_obs']}"
+            )
+        # The DID_M row's count is the sum of the DID_+ and DID_- rows'
+        did_m_row = df[df["estimand"] == "DID_M"].iloc[0]
+        did_plus_row = df[df["estimand"] == "DID_+"].iloc[0]
+        did_minus_row = df[df["estimand"] == "DID_-"].iloc[0]
+        assert did_m_row["n_cells"] == did_plus_row["n_cells"] + did_minus_row["n_cells"]
 
     def test_to_dataframe_per_period(self, results):
         df = results.to_dataframe("per_period")

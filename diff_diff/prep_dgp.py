@@ -1874,14 +1874,18 @@ def generate_reversible_did_data(
     will produce data where many or all groups are filtered out before
     estimation.
 
-    For binary treatment (Phase 1 of dCDH), the formal Assumption 5
-    (no-crossing) of the dCDH paper is automatically satisfied for every
-    group. The "drop multi-switch groups" filter applied by R
-    ``DIDmultiplegtDYN`` (and by the diff-diff dCDH estimator with
-    ``drop_larger_lower=True``) is what removes groups that have more than
-    one switch — this matches the influence-function support of the
-    cohort-recentered variance formula in the dynamic companion paper
-    (Web Appendix Section 3.7.3).
+    The default ``pattern="single_switch"`` is **A5-safe by construction**:
+    every group has at most one transition, so no group can be a "crosser"
+    that switches in and back out. The dCDH estimator's
+    ``drop_larger_lower=True`` filter (matching R ``DIDmultiplegtDYN``) is
+    a no-op on this pattern. Other patterns (``random``, ``cycles``,
+    ``marketing``) ARE allowed to violate A5 and are useful primarily for
+    stress-testing the multi-switch drop filter — passing them through the
+    estimator with ``drop_larger_lower=True`` should drop a non-zero count
+    of crosser groups, which is the intended check. The cohort-recentered
+    variance formula in Web Appendix Section 3.7.3 of the dynamic
+    companion paper is derived under A5, which is why the drop filter is
+    on by default.
 
     Examples
     --------

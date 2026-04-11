@@ -35,9 +35,16 @@ output_path <- file.path("benchmarks", "data", "dcdh_dynr_golden_values.json")
 
 # ---------------------------------------------------------------------------
 # Helper: Python-mirror reversible-treatment generator.
-# Mirrors generate_reversible_did_data() in diff_diff/prep_dgp.py.
-# Both use np.random.default_rng(seed) / set.seed(seed) so the same seed
-# produces an identical treatment matrix and outcomes.
+# Mirrors generate_reversible_did_data() in diff_diff/prep_dgp.py at the
+# STRUCTURAL level — the two implementations apply the same pattern logic
+# (single_switch / joiners_only / leavers_only / mixed_single_switch) and
+# the same fixed-effect / treatment-effect / time-trend / noise model. They
+# do NOT produce bit-identical draws even with the same seed: R's set.seed
+# and NumPy's default_rng use different RNGs and the parity tests don't
+# rely on RNG identity. Instead, the parity tests load THIS R script's
+# golden-value JSON output and pass the SAME data (group/period/treatment/
+# outcome columns) to the Python estimator, so both sides operate on
+# byte-identical input regardless of how it was originally generated.
 # ---------------------------------------------------------------------------
 gen_reversible <- function(n_groups, n_periods, pattern, seed,
                            p_switch = 0.2, initial_treat_frac = 0.3,

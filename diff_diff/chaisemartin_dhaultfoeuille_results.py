@@ -42,11 +42,19 @@ class DCDHBootstrapResults:
     Web Appendix Section 3.7.3 of the dynamic companion paper. Provided
     for consistency with CallawaySantAnna / ImputationDiD / TwoStageDiD.
 
-    Per-target SE / CI / p-value are populated for each scalar dCDH
-    estimand: overall (``DID_M``), joiners (``DID_+``), leavers
-    (``DID_-``), and the placebo (``DID_M^pl``). When a target is not
-    available in the underlying data (e.g., no leavers), the matching
-    fields are ``None``.
+    Per-target SE / CI / p-value are populated for the three scalar
+    dCDH estimands implemented in Phase 1: overall (``DID_M``), joiners
+    (``DID_+``), and leavers (``DID_-``). When a target is not available
+    in the underlying data (e.g., no leavers), the matching fields are
+    ``None``.
+
+    **Phase 1 placebo bootstrap is intentionally NOT computed.** The
+    dynamic companion paper Section 3.7.3 derives the cohort-recentered
+    analytical variance for ``DID_l`` only, not for the placebo
+    ``DID_M^pl``. The ``placebo_se`` / ``placebo_ci`` / ``placebo_p_value``
+    fields below ALWAYS remain ``None`` in Phase 1, even when
+    ``n_bootstrap > 0``. Phase 2 will add multiplier-bootstrap support
+    for the placebo via the dynamic paper's machinery.
 
     Attributes
     ----------
@@ -76,11 +84,12 @@ class DCDHBootstrapResults:
     leavers_p_value : float, optional
         Bootstrap p-value for leavers-only ``DID_-``.
     placebo_se : float, optional
-        Bootstrap SE for the placebo ``DID_M^pl`` (``None`` if T < 3).
+        **Always ``None`` in Phase 1** — placebo bootstrap is deferred
+        to Phase 2 (see class docstring above).
     placebo_ci : tuple of float, optional
-        Bootstrap CI for the placebo.
+        **Always ``None`` in Phase 1** (see class docstring above).
     placebo_p_value : float, optional
-        Bootstrap p-value for the placebo.
+        **Always ``None`` in Phase 1** (see class docstring above).
     bootstrap_distribution : np.ndarray, optional
         Full bootstrap distribution of the overall ``DID_M`` estimator
         (shape: ``(n_bootstrap,)``). Stored for advanced diagnostics;
@@ -232,12 +241,19 @@ class ChaisemartinDHaultfoeuilleResults:
         R's ``drop_larger_lower=TRUE`` behavior). ``0`` when
         ``drop_larger_lower=False`` or no crossers exist.
     n_groups_dropped_singleton_baseline : int
-        Number of groups dropped because their baseline ``D_{g,1}`` was
-        unique (footnote 15 of the dynamic paper).
+        Number of groups whose baseline ``D_{g,1}`` is unique in the
+        post-drop panel (footnote 15 of the dynamic paper). They are
+        excluded from the cohort-recentered VARIANCE computation only —
+        they remain in the point-estimate sample as period-based stable
+        controls (see REGISTRY.md ``ChaisemartinDHaultfoeuille`` for the
+        period-vs-cohort deviation that makes this distinction matter).
     n_groups_dropped_never_switching : int
-        Number of groups with ``S_g = 0`` (never switched). These are
-        excluded from the variance computation but may still contribute
-        to the point estimate via stable controls.
+        Number of groups with ``S_g = 0`` (never switched). **Reported
+        for backwards compatibility only.** Per the Round 2 full
+        influence-function fix, never-switching groups are NOT excluded
+        from the variance: they contribute via their stable-control
+        roles in the per-period IF formula. The field name retains
+        "dropped" for API stability but no actual exclusion happens.
     alpha : float
         Significance level used for confidence intervals.
     event_study_effects : dict, optional
@@ -643,6 +659,16 @@ class ChaisemartinDHaultfoeuilleResults:
             )
 
         elif level == "joiners_leavers":
+            # Two separate count columns so each has consistent units
+            # across all rows:
+            #   n_cells: total switching cells (each (g, t) cell counted once)
+            #   n_obs:   actual observation count summed over the same cells
+            #            (equals n_cells on balanced 1-obs-per-cell panels;
+            #            larger on individual-level inputs with multiple
+            #            observations per cell).
+            # For the DID_M row, both quantities use the overall switching
+            # cell set: n_cells = sum of joiner + leaver cells, and n_obs
+            # is the same sum of raw observation counts.
             rows = [
                 {
                     "estimand": "DID_M",
@@ -652,7 +678,8 @@ class ChaisemartinDHaultfoeuilleResults:
                     "p_value": self.overall_p_value,
                     "conf_int_lower": self.overall_conf_int[0],
                     "conf_int_upper": self.overall_conf_int[1],
-                    "n_obs": self.n_switcher_cells,
+                    "n_cells": self.n_switcher_cells,
+                    "n_obs": self.n_joiner_obs + self.n_leaver_obs,
                     "available": True,
                 },
                 {
@@ -663,6 +690,7 @@ class ChaisemartinDHaultfoeuilleResults:
                     "p_value": self.joiners_p_value,
                     "conf_int_lower": self.joiners_conf_int[0],
                     "conf_int_upper": self.joiners_conf_int[1],
+                    "n_cells": self.n_joiner_cells,
                     "n_obs": self.n_joiner_obs,
                     "available": self.joiners_available,
                 },
@@ -674,6 +702,7 @@ class ChaisemartinDHaultfoeuilleResults:
                     "p_value": self.leavers_p_value,
                     "conf_int_lower": self.leavers_conf_int[0],
                     "conf_int_upper": self.leavers_conf_int[1],
+                    "n_cells": self.n_leaver_cells,
                     "n_obs": self.n_leaver_obs,
                     "available": self.leavers_available,
                 },
