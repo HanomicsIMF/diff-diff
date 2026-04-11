@@ -1323,9 +1323,7 @@ def generate_survey_did_data(
     if psu_per_stratum < 1:
         raise ValueError(f"psu_per_stratum must be positive, got {psu_per_stratum}")
     if not 0.0 <= never_treated_frac <= 1.0:
-        raise ValueError(
-            f"never_treated_frac must be between 0 and 1, got {never_treated_frac}"
-        )
+        raise ValueError(f"never_treated_frac must be between 0 and 1, got {never_treated_frac}")
     if fpc_per_stratum < psu_per_stratum:
         raise ValueError(
             f"fpc_per_stratum ({fpc_per_stratum}) must be >= psu_per_stratum "
@@ -1351,9 +1349,7 @@ def generate_survey_did_data(
         raise ValueError("cohort_periods must be a non-empty list of integers")
     for cp in cohort_periods:
         if isinstance(cp, bool) or not isinstance(cp, (int, np.integer)):
-            raise ValueError(
-                f"cohort_periods must contain integers, got {cp!r}"
-            )
+            raise ValueError(f"cohort_periods must contain integers, got {cp!r}")
         if cp < 2 or cp > n_periods:
             raise ValueError(
                 f"Cohort period {cp} must be between 2 and {n_periods} "
@@ -1362,15 +1358,12 @@ def generate_survey_did_data(
 
     if not np.isfinite(psu_period_factor) or psu_period_factor < 0:
         raise ValueError(
-            f"psu_period_factor must be finite and non-negative, "
-            f"got {psu_period_factor}"
+            f"psu_period_factor must be finite and non-negative, " f"got {psu_period_factor}"
         )
 
     valid_wv = ("none", "moderate", "high")
     if weight_variation not in valid_wv:
-        raise ValueError(
-            f"weight_variation must be one of {valid_wv}, got {weight_variation!r}"
-        )
+        raise ValueError(f"weight_variation must be one of {valid_wv}, got {weight_variation!r}")
 
     # --- Validate research-grade DGP parameters ---
     if icc is not None:
@@ -1384,9 +1377,7 @@ def generate_survey_did_data(
 
     if weight_cv is not None:
         if not np.isfinite(weight_cv) or weight_cv <= 0:
-            raise ValueError(
-                f"weight_cv must be finite and positive, got {weight_cv}"
-            )
+            raise ValueError(f"weight_cv must be finite and positive, got {weight_cv}")
         if weight_variation != "moderate":
             raise ValueError(
                 "Cannot specify both weight_cv and a non-default "
@@ -1397,43 +1388,31 @@ def generate_survey_did_data(
         strata_sizes = list(strata_sizes)
         for ss in strata_sizes:
             if isinstance(ss, bool) or not isinstance(ss, (int, np.integer)):
-                raise ValueError(
-                    f"strata_sizes must contain integers, got {ss!r}"
-                )
+                raise ValueError(f"strata_sizes must contain integers, got {ss!r}")
         if len(strata_sizes) != n_strata:
             raise ValueError(
-                f"strata_sizes must have length n_strata={n_strata}, "
-                f"got {len(strata_sizes)}"
+                f"strata_sizes must have length n_strata={n_strata}, " f"got {len(strata_sizes)}"
             )
         if any(s < 1 for s in strata_sizes):
             raise ValueError("All strata_sizes must be >= 1")
         if sum(strata_sizes) != n_units:
             raise ValueError(
-                f"strata_sizes must sum to n_units={n_units}, "
-                f"got {sum(strata_sizes)}"
+                f"strata_sizes must sum to n_units={n_units}, " f"got {sum(strata_sizes)}"
             )
 
     # --- Validate and resolve covariate coefficients ---
     if covariate_effects is not None:
         covariate_effects = tuple(covariate_effects)
         if len(covariate_effects) != 2:
-            raise ValueError(
-                f"covariate_effects must have length 2, got {len(covariate_effects)}"
-            )
+            raise ValueError(f"covariate_effects must have length 2, got {len(covariate_effects)}")
         if not all(np.isfinite(c) for c in covariate_effects):
-            raise ValueError(
-                f"covariate_effects must be finite, got {covariate_effects}"
-            )
+            raise ValueError(f"covariate_effects must be finite, got {covariate_effects}")
     _beta1, _beta2 = covariate_effects if covariate_effects is not None else (0.5, 0.3)
 
     if not np.isfinite(te_covariate_interaction):
-        raise ValueError(
-            f"te_covariate_interaction must be finite, got {te_covariate_interaction}"
-        )
+        raise ValueError(f"te_covariate_interaction must be finite, got {te_covariate_interaction}")
     if te_covariate_interaction != 0.0 and not add_covariates:
-        raise ValueError(
-            "te_covariate_interaction requires add_covariates=True"
-        )
+        raise ValueError("te_covariate_interaction requires add_covariates=True")
 
     # --- ICC -> psu_re_sd resolution ---
     if icc is not None:
@@ -1446,10 +1425,7 @@ def generate_survey_did_data(
                 "icc requires non-zero non-PSU variance "
                 "(unit_fe_sd, noise_sd, or add_covariates must contribute variance)"
             )
-        psu_re_sd = np.sqrt(
-            icc * non_psu_var
-            / ((1 - icc) * (1 + psu_period_factor**2))
-        )
+        psu_re_sd = np.sqrt(icc * non_psu_var / ((1 - icc) * (1 + psu_period_factor**2)))
 
     # --- Survey structure: assign units to strata and PSUs ---
     n_psu_total = n_strata * psu_per_stratum
@@ -1459,10 +1435,7 @@ def generate_survey_did_data(
     else:
         units_per_stratum = n_units // n_strata
         remainder = n_units % n_strata
-        stratum_n = [
-            units_per_stratum + (1 if s < remainder else 0)
-            for s in range(n_strata)
-        ]
+        stratum_n = [units_per_stratum + (1 if s < remainder else 0) for s in range(n_strata)]
 
     unit_stratum = np.empty(n_units, dtype=int)
     unit_psu = np.empty(n_units, dtype=int)
@@ -1478,7 +1451,7 @@ def generate_survey_did_data(
     # Sampling weights
     if weight_cv is not None:
         sigma_ln = np.sqrt(np.log(1 + weight_cv**2))
-        raw_w = rng.lognormal(-sigma_ln**2 / 2, sigma_ln, size=n_units)
+        raw_w = rng.lognormal(-(sigma_ln**2) / 2, sigma_ln, size=n_units)
         unit_weight = raw_w / raw_w.mean()
     else:
         # Stratum-based weights (inverse selection probability)
@@ -1495,20 +1468,13 @@ def generate_survey_did_data(
     unit_cohort = np.zeros(n_units, dtype=int)
     ci = n_never
     for i, g in enumerate(cohort_periods):
-        n_g = (
-            n_per_cohort
-            if i < len(cohort_periods) - 1
-            else n_treated_total - ci + n_never
-        )
+        n_g = n_per_cohort if i < len(cohort_periods) - 1 else n_treated_total - ci + n_never
         unit_cohort[ci : ci + n_g] = g
         ci += n_g
 
     # --- JK1 early guard (configured count; populated count checked after build) ---
     if include_replicate_weights and n_psu_total < 2:
-        raise ValueError(
-            "JK1 replicate weights require at least 2 PSUs, "
-            f"got {n_psu_total}."
-        )
+        raise ValueError("JK1 replicate weights require at least 2 PSUs, " f"got {n_psu_total}.")
 
     # --- Random effects ---
     psu_re = rng.normal(0, psu_re_sd, size=n_psu_total)
@@ -1518,19 +1484,12 @@ def generate_survey_did_data(
     # cluster-robust / survey SE would be *smaller* than naive OLS SE.
     # Controlled by psu_period_factor (default 0.5); higher values
     # increase time-varying clustering and inflate design-based SEs.
-    psu_period_re = rng.normal(
-        0, psu_re_sd * psu_period_factor, size=(n_psu_total, n_periods)
-    )
+    psu_period_re = rng.normal(0, psu_re_sd * psu_period_factor, size=(n_psu_total, n_periods))
 
     # --- Informative sampling (panel path): pre-draw FEs, rank-pair weights ---
     if informative_sampling and panel:
         _panel_unit_fe = rng.normal(0, unit_fe_sd, size=n_units)
-        y0_period1 = (
-            _panel_unit_fe
-            + psu_re[unit_psu]
-            + psu_period_re[unit_psu, 0]
-            + 0.5
-        )
+        y0_period1 = _panel_unit_fe + psu_re[unit_psu] + psu_period_re[unit_psu, 0] + 0.5
         if add_covariates:
             _panel_x1 = rng.normal(0, 1, size=n_units)
             _panel_x2 = rng.choice([0, 1], size=n_units)
@@ -1574,12 +1533,7 @@ def generate_survey_did_data(
                 x1 = rng.normal(0, 1, size=n_units)
                 x2 = rng.choice([0, 1], size=n_units)
             unit_weight = _base_weight.copy()  # type: ignore[possibly-undefined]
-            y0_t = (
-                unit_fe
-                + psu_re[unit_psu]
-                + psu_period_re[unit_psu, t - 1]
-                + 0.5 * t
-            )
+            y0_t = unit_fe + psu_re[unit_psu] + psu_period_re[unit_psu, t - 1] + 0.5 * t
             if add_covariates:
                 y0_t = y0_t + _beta1 * x1 + _beta2 * x2
             _rank_pair_weights(unit_weight, unit_stratum, y0_t, n_strata)
@@ -1677,13 +1631,9 @@ def generate_survey_did_data(
             population_att = float("nan")
 
         if te_by_stratum is not None:
-            stratum_effects = {
-                int(s): float(te_by_stratum[s]) for s in range(n_strata)
-            }
+            stratum_effects = {int(s): float(te_by_stratum[s]) for s in range(n_strata)}
         else:
-            stratum_effects = {
-                int(s): float(treatment_effect) for s in range(n_strata)
-            }
+            stratum_effects = {int(s): float(treatment_effect) for s in range(n_strata)}
 
         # Kish DEFF from weight variation
         w_all = df.groupby("unit")["weight"].first().values
@@ -1716,3 +1666,339 @@ def generate_survey_did_data(
         }
 
     return df
+
+
+# =============================================================================
+# Reversible-treatment data generator (dCDH / ChaisemartinDHaultfoeuille)
+# =============================================================================
+
+
+def _generate_reversible_treatment_matrix(
+    pattern: str,
+    n_groups: int,
+    n_periods: int,
+    p_switch: float,
+    initial_treat_frac: float,
+    cycle_length: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Internal helper for ``generate_reversible_did_data``.
+
+    Returns an ``(n_groups, n_periods)`` int array of binary treatment values.
+    """
+    D = np.zeros((n_groups, n_periods), dtype=int)
+
+    if pattern == "single_switch":
+        # Mix of joiners and leavers based on initial_treat_frac.
+        # Each group switches exactly once at a uniform-random time in [1, n_periods - 1].
+        initial_treated = rng.random(n_groups) < initial_treat_frac
+        switch_times = rng.integers(1, n_periods, size=n_groups)
+        for g in range(n_groups):
+            if initial_treated[g]:
+                # Starts treated, switches to untreated at switch_times[g]
+                D[g, : switch_times[g]] = 1
+                D[g, switch_times[g] :] = 0
+            else:
+                # Starts untreated, switches to treated at switch_times[g]
+                D[g, : switch_times[g]] = 0
+                D[g, switch_times[g] :] = 1
+
+    elif pattern == "joiners_only":
+        # All groups start untreated, each switches to treated once at random time
+        switch_times = rng.integers(1, n_periods, size=n_groups)
+        for g in range(n_groups):
+            D[g, switch_times[g] :] = 1
+
+    elif pattern == "leavers_only":
+        # All groups start treated, each switches to untreated once at random time
+        switch_times = rng.integers(1, n_periods, size=n_groups)
+        for g in range(n_groups):
+            D[g, : switch_times[g]] = 1
+
+    elif pattern == "mixed_single_switch":
+        # Deterministic: first half are joiners, second half are leavers.
+        # Each group switches exactly once at a uniform-random time.
+        switch_times = rng.integers(1, n_periods, size=n_groups)
+        n_joiners = n_groups // 2
+        for g in range(n_groups):
+            if g < n_joiners:
+                D[g, switch_times[g] :] = 1  # Joiner
+            else:
+                D[g, : switch_times[g]] = 1  # Leaver
+
+    elif pattern == "random":
+        # Initial state random, then flip with probability p_switch each subsequent period.
+        # Often produces multi-switch groups for n_periods >= 4 and p_switch > 0.
+        D[:, 0] = (rng.random(n_groups) < initial_treat_frac).astype(int)
+        for t in range(1, n_periods):
+            flips = rng.random(n_groups) < p_switch
+            D[:, t] = np.where(flips, 1 - D[:, t - 1], D[:, t - 1])
+
+    elif pattern == "cycles":
+        # Deterministic on/off cycles of length cycle_length.
+        # Half the groups start in the "0" phase, half start in the "1" phase.
+        # All groups are multi-switch when n_periods > 2 * cycle_length.
+        for t in range(n_periods):
+            phase = (t // cycle_length) % 2
+            n_first_half = n_groups // 2
+            D[:n_first_half, t] = phase
+            D[n_first_half:, t] = 1 - phase
+
+    elif pattern == "marketing":
+        # Seasonal "2 on, 1 off" pattern, identical for all groups.
+        # All groups are multi-switch when n_periods >= 4.
+        for t in range(n_periods):
+            phase_in_cycle = t % 3
+            on = phase_in_cycle != 2
+            D[:, t] = int(on)
+
+    return D
+
+
+def generate_reversible_did_data(
+    n_groups: int = 50,
+    n_periods: int = 6,
+    pattern: str = "single_switch",
+    p_switch: float = 0.2,
+    initial_treat_frac: float = 0.3,
+    cycle_length: int = 2,
+    treatment_effect: float = 2.0,
+    heterogeneous_effects: bool = False,
+    effect_sd: float = 0.5,
+    group_fe_sd: float = 2.0,
+    time_trend: float = 0.1,
+    noise_sd: float = 0.5,
+    seed: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Generate synthetic panel data with reversible (non-absorbing) treatment.
+
+    Treatment can switch on and off over time, supporting designs where the
+    canonical staggered-adoption assumption (once treated, always treated)
+    does not hold. This is the only generator in the library that produces
+    reversible-treatment data; intended for the
+    :class:`~diff_diff.ChaisemartinDHaultfoeuille` (dCDH) estimator.
+
+    Seven patterns are supported. Four of them are guaranteed to keep every
+    group as a "single-switch" group (each group switches treatment status
+    at most once), so the dCDH ``drop_larger_lower=True`` filter is a no-op.
+    The other three deliberately produce multi-switch groups for stress-
+    testing the drop logic.
+
+    Parameters
+    ----------
+    n_groups : int, default=50
+        Number of groups in the panel.
+    n_periods : int, default=6
+        Number of time periods. Must be at least 2.
+    pattern : str, default="single_switch"
+        Treatment pattern. One of:
+
+        - ``"single_switch"`` (default, single-switch): each group switches
+          exactly once at a uniform-random time. Mix of joiners and leavers
+          determined by ``initial_treat_frac``.
+        - ``"joiners_only"`` (single-switch): all groups start untreated and
+          each switches to treated once. Pure staggered adoption.
+        - ``"leavers_only"`` (single-switch): mirror of ``joiners_only`` —
+          all groups start treated and each switches to untreated once.
+        - ``"mixed_single_switch"`` (single-switch): deterministic 50/50 mix
+          of joiners and leavers, each with exactly one switch. Useful for
+          parity tests where you want a guaranteed split independent of seed.
+        - ``"random"`` (often multi-switch): each ``(g, t >= 1)`` flips
+          treatment from the previous period with probability ``p_switch``.
+          Initial state drawn from ``Bernoulli(initial_treat_frac)``. With
+          ``n_periods >= 4`` and ``p_switch > 0``, many groups will switch
+          more than once and will be dropped under
+          ``drop_larger_lower=True``. Useful for stress-testing the drop
+          filter.
+        - ``"cycles"`` (always multi-switch): deterministic on/off cycles of
+          length ``cycle_length``. Half the groups start in the "0" phase
+          and half in the "1" phase, so the panel always contains both
+          joiner and leaver transitions. Every group is multi-switch when
+          ``n_periods > 2 * cycle_length``.
+        - ``"marketing"`` (always multi-switch): seasonal "2 on, 1 off"
+          pattern starting in the on phase, identical across groups. Mimics
+          a marketing campaign with periodic breaks.
+    p_switch : float, default=0.2
+        Per-period flip probability. Only used when ``pattern="random"``.
+    initial_treat_frac : float, default=0.3
+        Fraction of groups starting in the treated state at period 0. Only
+        used by ``"single_switch"`` and ``"random"``.
+    cycle_length : int, default=2
+        Length of each on/off phase. Only used when ``pattern="cycles"``.
+    treatment_effect : float, default=2.0
+        Average treatment effect on treated cells. With
+        ``heterogeneous_effects=False``, every treated cell has exactly this
+        effect. With ``True``, this is the mean of a Normal distribution.
+    heterogeneous_effects : bool, default=False
+        If True, per-cell true effects are drawn independently from
+        ``Normal(treatment_effect, effect_sd)``.
+    effect_sd : float, default=0.5
+        Standard deviation of per-cell effects when
+        ``heterogeneous_effects=True``.
+    group_fe_sd : float, default=2.0
+        Standard deviation of group fixed effects.
+    time_trend : float, default=0.1
+        Linear time trend coefficient.
+    noise_sd : float, default=0.5
+        Standard deviation of idiosyncratic noise.
+    seed : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    pd.DataFrame
+        Synthetic balanced panel with one row per ``(group, period)`` cell
+        and the following columns:
+
+        - ``group`` (int): group identifier in ``[0, n_groups)``
+        - ``period`` (int): time period in ``[0, n_periods)``
+        - ``treatment`` (int): per-cell binary treatment (0 or 1)
+        - ``outcome`` (float): outcome variable
+        - ``true_effect`` (float): per-cell true treatment effect (0 if
+          untreated)
+        - ``d_lag`` (float): previous-period treatment, NaN at period 0
+        - ``switcher_type`` (object): one of ``"initial"`` (period 0),
+          ``"joiner"`` (``d_lag=0, treatment=1``), ``"leaver"``
+          (``d_lag=1, treatment=0``), ``"stable_0"``
+          (``d_lag=0, treatment=0``), or ``"stable_1"``
+          (``d_lag=1, treatment=1``)
+
+    Notes
+    -----
+    The default pattern is ``"single_switch"`` so the generator's happy path
+    produces data that the dCDH estimator can use directly without dropping
+    groups. The ``"random"``, ``"cycles"``, and ``"marketing"`` patterns are
+    primarily for stress-testing the ``drop_larger_lower=True`` filter and
+    will produce data where many or all groups are filtered out before
+    estimation.
+
+    For binary treatment (Phase 1 of dCDH), the formal Assumption 5
+    (no-crossing) of the dCDH paper is automatically satisfied for every
+    group. The "drop multi-switch groups" filter applied by R
+    ``DIDmultiplegtDYN`` (and by the diff-diff dCDH estimator with
+    ``drop_larger_lower=True``) is what removes groups that have more than
+    one switch — this matches the influence-function support of the
+    cohort-recentered variance formula in the dynamic companion paper
+    (Web Appendix Section 3.7.3).
+
+    Examples
+    --------
+    Default single-switch panel (mix of joiners and leavers, all groups
+    survive ``drop_larger_lower=True``):
+
+    >>> data = generate_reversible_did_data(n_groups=20, n_periods=6, seed=42)
+    >>> sorted(data.columns.tolist())
+    ['d_lag', 'group', 'outcome', 'period', 'switcher_type', 'treatment', 'true_effect']
+    >>> set(data['switcher_type']).issubset(
+    ...     {'initial', 'joiner', 'leaver', 'stable_0', 'stable_1'}
+    ... )
+    True
+
+    Joiners-only (pure staggered adoption):
+
+    >>> data = generate_reversible_did_data(
+    ...     n_groups=20, pattern="joiners_only", seed=1
+    ... )
+    >>> set(data.query("period == 0")['treatment'].unique()) == {0}
+    True
+
+    Leavers-only:
+
+    >>> data = generate_reversible_did_data(
+    ...     n_groups=20, pattern="leavers_only", seed=2
+    ... )
+    >>> set(data.query("period == 0")['treatment'].unique()) == {1}
+    True
+    """
+    # --- Parameter validation ---
+    valid_patterns = {
+        "single_switch",
+        "joiners_only",
+        "leavers_only",
+        "mixed_single_switch",
+        "random",
+        "cycles",
+        "marketing",
+    }
+    if pattern not in valid_patterns:
+        raise ValueError(f"pattern must be one of {sorted(valid_patterns)}, got {pattern!r}")
+    if n_groups < 1:
+        raise ValueError(f"n_groups must be positive, got {n_groups}")
+    if n_periods < 2:
+        raise ValueError(f"n_periods must be at least 2, got {n_periods}")
+    if not 0.0 <= initial_treat_frac <= 1.0:
+        raise ValueError(f"initial_treat_frac must be in [0, 1], got {initial_treat_frac}")
+    if not 0.0 <= p_switch <= 1.0:
+        raise ValueError(f"p_switch must be in [0, 1], got {p_switch}")
+    if cycle_length < 1:
+        raise ValueError(f"cycle_length must be positive, got {cycle_length}")
+    if effect_sd < 0:
+        raise ValueError(f"effect_sd must be non-negative, got {effect_sd}")
+    if group_fe_sd < 0:
+        raise ValueError(f"group_fe_sd must be non-negative, got {group_fe_sd}")
+    if noise_sd < 0:
+        raise ValueError(f"noise_sd must be non-negative, got {noise_sd}")
+
+    rng = np.random.default_rng(seed)
+
+    # --- Generate the (n_groups, n_periods) treatment matrix ---
+    D = _generate_reversible_treatment_matrix(
+        pattern=pattern,
+        n_groups=n_groups,
+        n_periods=n_periods,
+        p_switch=p_switch,
+        initial_treat_frac=initial_treat_frac,
+        cycle_length=cycle_length,
+        rng=rng,
+    )
+
+    # --- Generate fixed effects, true effects, outcomes ---
+    group_fe = rng.normal(0, group_fe_sd, n_groups)
+    if heterogeneous_effects:
+        true_effects = rng.normal(treatment_effect, effect_sd, (n_groups, n_periods))
+    else:
+        true_effects = np.full((n_groups, n_periods), float(treatment_effect))
+    # Only treated cells have non-zero effect
+    true_effects = np.where(D == 1, true_effects, 0.0)
+
+    period_arr = np.arange(n_periods)
+    Y = (
+        10.0
+        + group_fe[:, None]
+        + time_trend * period_arr[None, :]
+        + true_effects
+        + rng.normal(0, noise_sd, (n_groups, n_periods))
+    )
+
+    # --- Compute d_lag (NaN at period 0) ---
+    D_lag = np.full((n_groups, n_periods), np.nan)
+    D_lag[:, 1:] = D[:, :-1]
+
+    # --- Vectorized switcher_type classification ---
+    treatment_flat = D.flatten()
+    d_lag_flat = D_lag.flatten()
+    switcher_type = np.full(n_groups * n_periods, "stable_1", dtype=object)
+    # Order matters: more specific masks last so they overwrite the default
+    mask_stable_0 = (d_lag_flat == 0) & (treatment_flat == 0)
+    mask_joiner = (d_lag_flat == 0) & (treatment_flat == 1)
+    mask_leaver = (d_lag_flat == 1) & (treatment_flat == 0)
+    mask_initial = np.isnan(d_lag_flat)
+    switcher_type[mask_stable_0] = "stable_0"
+    switcher_type[mask_joiner] = "joiner"
+    switcher_type[mask_leaver] = "leaver"
+    switcher_type[mask_initial] = "initial"  # always wins for period 0
+
+    # --- Build the long-format DataFrame ---
+    return pd.DataFrame(
+        {
+            "group": np.repeat(np.arange(n_groups), n_periods),
+            "period": np.tile(period_arr, n_groups),
+            "treatment": treatment_flat,
+            "outcome": Y.flatten(),
+            "true_effect": true_effects.flatten(),
+            "d_lag": d_lag_flat,
+            "switcher_type": switcher_type,
+        }
+    )

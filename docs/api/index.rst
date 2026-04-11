@@ -17,6 +17,7 @@ Core estimator classes for DiD analysis:
    diff_diff.MultiPeriodDiD
    diff_diff.SyntheticDiD
    diff_diff.CallawaySantAnna
+   diff_diff.ChaisemartinDHaultfoeuille
    diff_diff.SunAbraham
    diff_diff.ImputationDiD
    diff_diff.StackedDiD
@@ -44,6 +45,8 @@ Result containers returned by estimators:
    diff_diff.CallawaySantAnnaResults
    diff_diff.CSBootstrapResults
    diff_diff.GroupTimeEffect
+   diff_diff.ChaisemartinDHaultfoeuilleResults
+   diff_diff.DCDHBootstrapResults
    diff_diff.SunAbrahamResults
    diff_diff.SABootstrapResults
    diff_diff.ImputationDiDResults
@@ -228,6 +231,7 @@ Estimators
 
    estimators
    staggered
+   chaisemartin_dhaultfoeuille
    imputation
    stacked_did
    triple_diff

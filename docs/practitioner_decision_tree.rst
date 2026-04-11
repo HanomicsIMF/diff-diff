@@ -24,17 +24,22 @@ Which of these best describes your situation?
    Different markets started at different times. Go to
    :ref:`section-staggered`.
 
-3. **I varied spending levels across markets** (e.g., $50K, $100K, $200K)
+3. **My campaign turned on and off** (always-on with periodic dark periods, seasonal flights, holdout pulses)
+
+   Treatment switches on AND off in the same market over time. Go to
+   :ref:`section-reversible`.
+
+4. **I varied spending levels across markets** (e.g., $50K, $100K, $200K)
 
    You want to know how the effect changes with the amount spent. Go to
    :ref:`section-dose`.
 
-4. **I only have 3-5 test markets**
+5. **I only have 3-5 test markets**
 
    Too few treated units for standard methods. Go to
    :ref:`section-few-markets`.
 
-5. **I have survey data** (brand tracking, customer satisfaction, etc.)
+6. **I have survey data** (brand tracking, customer satisfaction, etc.)
 
    Your outcome comes from a survey with complex sampling. Go to
    :ref:`section-survey`.
@@ -128,6 +133,74 @@ a few months later, and so on. Different markets were treated at different times
    timing*. Callaway & Sant'Anna (2021) is the standard method. The *ATT(g,t)* gives you
    the lift for each rollout wave at each time period, and the *overall ATT* aggregates
    them into a single number.
+
+
+.. _section-reversible:
+
+Reversible Treatment (On/Off Cycles)
+------------------------------------
+
+**Your situation:** Your campaign isn't a one-time launch. It runs in some markets,
+then pauses for a few weeks, then resumes. Or you have always-on activity with
+periodic "dark periods" where you go quiet in some markets to measure incrementality.
+Or you run seasonal flights that go on, off, and back on across the year.
+
+The key feature: **the same market goes from treated to untreated to treated again**.
+This breaks every other modern staggered estimator (Callaway-Sant'Anna, Sun-Abraham,
+Imputation DiD, Two-Stage DiD, Efficient DiD, ETWFE), which all assume that once a
+market is treated it stays treated.
+
+**Recommended method:** :class:`~diff_diff.ChaisemartinDHaultfoeuille` (alias :class:`~diff_diff.DCDH`)
+
+This is the **only library estimator** that handles non-absorbing (reversible)
+treatments. It compares period-to-period outcome changes in markets that switch
+into treatment ("joiners") and markets that switch out ("leavers"), against
+simultaneously-stable controls. You get three numbers: the overall lift `DID_M`,
+a joiners-only view `DID_+`, and a leavers-only view `DID_-`.
+
+.. code-block:: python
+
+   from diff_diff import ChaisemartinDHaultfoeuille
+   from diff_diff.prep import generate_reversible_did_data
+
+   # 80 markets, 6 periods, treatment switches on or off once per market
+   data = generate_reversible_did_data(
+       n_groups=80, n_periods=6, pattern="single_switch", seed=42,
+   )
+
+   est = ChaisemartinDHaultfoeuille()
+   results = est.fit(
+       data, outcome="outcome", group="group",
+       time="period", treatment="treatment",
+   )
+   results.print_summary()
+
+   print(f"Overall lift (DID_M): {results.overall_att:.2f}")
+   print(f"Joiners only (DID_+): {results.joiners_att:.2f}")
+   print(f"Leavers only (DID_-): {results.leavers_att:.2f}")
+
+.. note::
+
+   **Academic term:** This is the de Chaisemartin & D'Haultfœuille (2020) `DID_M`
+   estimator, equivalently `DID_1` (horizon `l = 1`) of their dynamic companion
+   paper (NBER WP 29873). It is the standard method for *non-absorbing* or
+   *reversible* treatments. The Python implementation matches the R
+   `DIDmultiplegtDYN` reference package maintained by the paper authors.
+
+.. warning::
+
+   By default, the estimator drops markets whose treatment switches more than
+   once before estimation (``drop_larger_lower=True``, matching the R reference).
+   Each drop emits a warning. If your design has many multi-switch markets and
+   you need them all, raise this with the diff-diff maintainers — Phase 2 of the
+   estimator will add explicit multi-switch handling via the dynamic event-study
+   path.
+
+.. note::
+
+   Single-lag placebo (`DID_M^pl`) is computed automatically and exposed via
+   ``results.placebo_effect``. The placebo SE is currently `NaN` with a warning
+   in Phase 1; set ``n_bootstrap > 0`` for a bootstrap-based placebo SE today.
 
 
 .. _section-dose:
@@ -282,6 +355,9 @@ At a Glance
    * - Staggered rollout (waves)
      - ``CallawaySantAnna``
      - Handles different launch dates correctly
+   * - On/off cycles (reversible treatment)
+     - ``ChaisemartinDHaultfoeuille``
+     - Only library option for non-absorbing treatments
    * - Varied spending levels
      - ``ContinuousDiD``
      - Dose-response curve
@@ -296,10 +372,10 @@ At a Glance
 What About the Other Estimators?
 --------------------------------
 
-diff-diff has 16 estimators covering advanced scenarios: Sun-Abraham for
+diff-diff has 17 estimators covering advanced scenarios: Sun-Abraham for
 interaction-weighted estimation, Imputation DiD and Two-Stage DiD for alternative
 staggered approaches, Stacked DiD, Efficient DiD, Triple Difference, TROP, and more.
-The five scenarios above cover the most common business use cases.
+The six scenarios above cover the most common business use cases.
 
 For the full academic decision tree with all estimators, see :doc:`choosing_estimator`.
 

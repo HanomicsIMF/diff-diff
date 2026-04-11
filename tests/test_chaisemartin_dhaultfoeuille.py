@@ -1,0 +1,864 @@
+"""
+API and behavior tests for ``ChaisemartinDHaultfoeuille`` (dCDH) — Phase 1.
+
+Covers basic API, validation, forward-compat NotImplementedError gates,
+``drop_larger_lower``, A11 zero-retention, NaN handling, bootstrap
+plumbing, and the results dataclass round-trip. Methodology validation
+(hand-calculable arithmetic, cohort recentering correctness, parity
+against R) lives in ``test_methodology_chaisemartin_dhaultfoeuille.py``.
+"""
+
+import warnings
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from diff_diff import (
+    DCDH,
+    ChaisemartinDHaultfoeuille,
+    ChaisemartinDHaultfoeuilleResults,
+    DCDHBootstrapResults,
+    chaisemartin_dhaultfoeuille,
+    twowayfeweights,
+)
+from diff_diff.prep import generate_reversible_did_data
+
+# =============================================================================
+# Basic API
+# =============================================================================
+
+
+class TestChaisemartinDHaultfoeuilleBasicAPI:
+    """Smoke tests for the basic happy path."""
+
+    def test_fit_returns_results_object(self):
+        data = generate_reversible_did_data(n_groups=40, n_periods=5, seed=1)
+        est = ChaisemartinDHaultfoeuille()
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        assert isinstance(results, ChaisemartinDHaultfoeuilleResults)
+        assert est.is_fitted_ is True
+        assert est.results_ is results
+
+    def test_fit_recovers_homogeneous_effect_single_switch(self):
+        # With seed and n=120, the analytical CI should bracket the truth
+        data = generate_reversible_did_data(
+            n_groups=120,
+            n_periods=6,
+            treatment_effect=2.0,
+            seed=42,
+        )
+        est = ChaisemartinDHaultfoeuille()
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # CI should bracket the true effect of 2.0
+        lo, hi = results.overall_conf_int
+        assert lo <= 2.0 <= hi, f"95% CI [{lo:.3f}, {hi:.3f}] does not bracket true effect 2.0"
+
+    def test_fit_with_joiners_only_pattern(self):
+        # Use n_periods=10 so the random switch times don't saturate the
+        # final period (which would zero the last period via A11 and bias
+        # DID_M toward zero). 10 periods + 80 groups + uniform switch times
+        # leaves enough late-period stable_0 controls.
+        data = generate_reversible_did_data(
+            n_groups=80,
+            n_periods=10,
+            pattern="joiners_only",
+            treatment_effect=1.5,
+            seed=2,
+        )
+        est = ChaisemartinDHaultfoeuille()
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # Joiners present, no leavers
+        assert results.joiners_available is True
+        assert results.leavers_available is False
+        assert np.isnan(results.leavers_att)
+        # CI brackets the truth (modulo conservative-CI noise)
+        lo, hi = results.overall_conf_int
+        assert lo <= 1.5 <= hi, (
+            f"95% CI [{lo:.3f}, {hi:.3f}] does not bracket true effect 1.5; "
+            f"DID_M = {results.overall_att:.3f}"
+        )
+
+    def test_fit_with_leavers_only_pattern(self):
+        # Same n_periods rationale as the joiners_only test
+        data = generate_reversible_did_data(
+            n_groups=80,
+            n_periods=10,
+            pattern="leavers_only",
+            treatment_effect=1.5,
+            seed=3,
+        )
+        est = ChaisemartinDHaultfoeuille()
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        assert results.joiners_available is False
+        assert results.leavers_available is True
+        assert np.isnan(results.joiners_att)
+
+    def test_missing_column_raises_value_error(self):
+        data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="Missing columns"):
+            est.fit(
+                data,
+                outcome="bogus",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_non_binary_treatment_raises_value_error(self):
+        df = pd.DataFrame(
+            {
+                "group": [1, 1, 2, 2],
+                "period": [0, 1, 0, 1],
+                "outcome": [10.0, 11.0, 10.0, 12.0],
+                "treatment": [0, 2, 0, 1],  # 2 is non-binary
+            }
+        )
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="binary treatment"):
+            est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_alias_DCDH_identity(self):
+        assert DCDH is ChaisemartinDHaultfoeuille
+
+    def test_get_set_params(self):
+        est = ChaisemartinDHaultfoeuille(alpha=0.10, n_bootstrap=99, seed=7)
+        params = est.get_params()
+        assert params["alpha"] == 0.10
+        assert params["n_bootstrap"] == 99
+        assert params["seed"] == 7
+        assert "drop_larger_lower" in params
+        assert "twfe_diagnostic" in params
+        assert "placebo" in params
+
+        est.set_params(alpha=0.01, drop_larger_lower=False)
+        assert est.alpha == 0.01
+        assert est.drop_larger_lower is False
+
+    def test_set_params_unknown_raises(self):
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="Unknown parameter"):
+            est.set_params(bogus_param=True)
+
+    def test_convenience_function_matches_class(self):
+        data = generate_reversible_did_data(n_groups=40, n_periods=5, seed=1)
+        results_class = ChaisemartinDHaultfoeuille(seed=1).fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        results_fn = chaisemartin_dhaultfoeuille(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+            seed=1,
+        )
+        # Same point estimate
+        assert results_class.overall_att == pytest.approx(results_fn.overall_att)
+        assert results_class.overall_se == pytest.approx(results_fn.overall_se)
+
+    def test_minimal_computation_path(self):
+        # Disable everything optional; verify still works
+        data = generate_reversible_did_data(n_groups=30, n_periods=4, seed=1)
+        est = ChaisemartinDHaultfoeuille(
+            twfe_diagnostic=False,
+            placebo=False,
+            n_bootstrap=0,
+        )
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # TWFE fields should be None
+        assert results.twfe_weights is None
+        assert results.twfe_beta_fe is None
+        # Placebo should be NaN with available=False
+        assert results.placebo_available is False
+        assert np.isnan(results.placebo_effect)
+        # Bootstrap should be None
+        assert results.bootstrap_results is None
+        # Main estimate should still be finite
+        assert np.isfinite(results.overall_att)
+
+
+# =============================================================================
+# Forward-compat NotImplementedError gates
+# =============================================================================
+
+
+class TestForwardCompatGates:
+    """Each Phase 2/3/deferred parameter must raise NotImplementedError."""
+
+    @pytest.fixture
+    def data(self):
+        return generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+
+    def _est(self):
+        return ChaisemartinDHaultfoeuille()
+
+    def test_aggregate_simple_raises_not_implemented(self, data):
+        # Per MEDIUM #1: even "simple" must be rejected; require aggregate=None exactly
+        with pytest.raises(NotImplementedError, match="Phase 2"):
+            self._est().fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                aggregate="simple",
+            )
+
+    def test_aggregate_event_study_raises_not_implemented(self, data):
+        with pytest.raises(NotImplementedError, match="Phase 2"):
+            self._est().fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                aggregate="event_study",
+            )
+
+    def test_L_max_raises_not_implemented(self, data):
+        with pytest.raises(NotImplementedError, match="Phase 2"):
+            self._est().fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=4,
+            )
+
+    def test_controls_raises_not_implemented(self, data):
+        with pytest.raises(NotImplementedError, match="Phase 3"):
+            self._est().fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["x"],
+            )
+
+    def test_trends_linear_raises_not_implemented(self, data):
+        with pytest.raises(NotImplementedError, match="Phase 3"):
+            self._est().fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+            )
+
+    def test_trends_nonparam_raises_not_implemented(self, data):
+        with pytest.raises(NotImplementedError, match="Phase 3"):
+            self._est().fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_nonparam="state",
+            )
+
+    def test_honest_did_raises_not_implemented(self, data):
+        with pytest.raises(NotImplementedError, match="Phase 3"):
+            self._est().fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                honest_did=True,
+            )
+
+    def test_survey_design_raises_not_implemented(self, data):
+        with pytest.raises(NotImplementedError, match="separate effort"):
+            self._est().fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                survey_design=object(),
+            )
+
+
+# =============================================================================
+# drop_larger_lower (Critical #1)
+# =============================================================================
+
+
+class TestDropLargerLower:
+    """Multi-switch group filtering matches R DIDmultiplegtDYN behavior."""
+
+    def test_default_drops_a5_violators_with_warning(self):
+        # Mix of single-switch groups and one explicit multi-switch group
+        data = generate_reversible_did_data(
+            n_groups=40,
+            n_periods=4,
+            pattern="single_switch",
+            seed=1,
+        )
+        # Inject a multi-switch group: switch 0 -> 1 -> 0
+        multi_switch = pd.DataFrame(
+            {
+                "group": [9999] * 4,
+                "period": [0, 1, 2, 3],
+                "treatment": [0, 1, 1, 0],
+                "outcome": [10.0, 13.0, 14.0, 11.0],
+                "true_effect": [0.0, 2.0, 2.0, 0.0],
+                "d_lag": [np.nan, 0.0, 1.0, 1.0],
+                "switcher_type": ["initial", "joiner", "stable_1", "leaver"],
+            }
+        )
+        data = pd.concat([data, multi_switch], ignore_index=True)
+
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+        # The multi-switch group should be dropped
+        assert results.n_groups_dropped_crossers >= 1
+        assert 9999 not in results.groups
+        # A drop_larger_lower warning should fire
+        assert any("drop_larger_lower" in str(wi.message) for wi in w)
+
+    def test_drop_larger_lower_false_emits_inconsistency_warning(self):
+        data = generate_reversible_did_data(
+            n_groups=40,
+            n_periods=4,
+            pattern="single_switch",
+            seed=1,
+        )
+        est = ChaisemartinDHaultfoeuille(drop_larger_lower=False)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+        # Inconsistency warning should fire
+        assert any("drop_larger_lower=False" in str(wi.message) for wi in w)
+
+    def test_drop_larger_lower_true_no_op_on_single_switch_data(self):
+        data = generate_reversible_did_data(
+            n_groups=40,
+            n_periods=5,
+            pattern="single_switch",
+            seed=1,
+        )
+        est = ChaisemartinDHaultfoeuille()
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        assert results.n_groups_dropped_crossers == 0
+
+    def test_singleton_baseline_filter(self):
+        # Build a panel where one group has a unique baseline (e.g., only group
+        # with D_{g,0}=1). This is the footnote-15 condition.
+        # All other groups start at D=0, so the singleton-baseline group is dropped.
+        data = generate_reversible_did_data(
+            n_groups=20,
+            n_periods=4,
+            pattern="joiners_only",
+            seed=1,
+        )
+        # Inject a single leaver group (unique baseline=1)
+        leaver = pd.DataFrame(
+            {
+                "group": [9999] * 4,
+                "period": [0, 1, 2, 3],
+                "treatment": [1, 0, 0, 0],
+                "outcome": [10.0, 9.0, 8.0, 7.0],
+                "true_effect": [0.0, 0.0, 0.0, 0.0],
+                "d_lag": [np.nan, 1.0, 0.0, 0.0],
+                "switcher_type": ["initial", "leaver", "stable_0", "stable_0"],
+            }
+        )
+        data = pd.concat([data, leaver], ignore_index=True)
+
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+        # The leaver was the only group with D=1 baseline -> dropped
+        assert results.n_groups_dropped_singleton_baseline >= 1
+        assert 9999 not in results.groups
+        assert any("Singleton-baseline" in str(wi.message) for wi in w)
+
+
+# =============================================================================
+# A11 zero-retention (Critical #2)
+# =============================================================================
+
+
+class TestA11Handling:
+    """Assumption 11 violations are zeroed in numerator, retained in denominator."""
+
+    def test_a11_violation_zero_in_numerator_retain_in_denominator(self):
+        # 4-group, 3-period panel where at t=2 there are joiners (g=1, g=2)
+        # but no stable_0 controls. Both baselines (0, 1) are non-singleton
+        # (2 groups each), so the singleton-baseline filter is a no-op.
+        df = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
+                "period": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2],
+                "treatment": [0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+                "outcome": [10.0, 11.0, 14.0, 10.0, 11.0, 14.0, 10.0, 11.0, 12.0, 10.0, 11.0, 12.0],
+            }
+        )
+        # At t=2: joiners = {g=1, g=2}; stable_1 = {g=3, g=4}; NO stable_0 -> A11 violated
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+        # A11 warning should fire
+        assert any("Assumption 11" in str(wi.message) for wi in w)
+        # Per-period decomposition: t=2 should be A11-zeroed for joiners
+        cell_t2 = results.per_period_effects[2]
+        assert cell_t2["did_plus_t"] == 0.0
+        assert cell_t2["did_plus_t_a11_zeroed"] is True
+        # The joiner count is retained in N_S
+        assert cell_t2["n_10_t"] == 2
+
+    def test_a11_natural_zero_no_switchers_does_not_zero_flag(self):
+        data = generate_reversible_did_data(
+            n_groups=20,
+            n_periods=4,
+            pattern="joiners_only",
+            seed=1,
+        )
+        est = ChaisemartinDHaultfoeuille()
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # No leavers in joiners_only, so leaver A11 flag is always False
+        for t, cell in results.per_period_effects.items():
+            if cell["n_01_t"] == 0:
+                assert cell["did_minus_t_a11_zeroed"] is False
+
+
+# =============================================================================
+# NaN handling
+# =============================================================================
+
+
+class TestNaNHandling:
+    def test_empty_dataframe_raises(self):
+        df = pd.DataFrame(columns=["group", "period", "treatment", "outcome"])
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises((ValueError, KeyError)):
+            est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_no_switchers_raises(self):
+        # All groups stable -> dCDH cannot estimate. The exact error path
+        # depends on which filter fires first (singleton-baseline vs
+        # no-switching-cells), so accept either message.
+        df = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 2, 2, 2],
+                "period": [0, 1, 2, 0, 1, 2],
+                "treatment": [0, 0, 0, 1, 1, 1],
+                "outcome": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+            }
+        )
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match=r"(No switching cells|no groups remain)"):
+            est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+
+# =============================================================================
+# Bootstrap inference
+# =============================================================================
+
+
+class TestBootstrap:
+    @pytest.fixture
+    def data(self):
+        return generate_reversible_did_data(n_groups=80, n_periods=5, seed=1)
+
+    def test_bootstrap_zero_uses_analytical(self, data):
+        est = ChaisemartinDHaultfoeuille(n_bootstrap=0)
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        assert results.bootstrap_results is None
+        assert np.isfinite(results.overall_se)
+
+    def test_bootstrap_rademacher(self, data, ci_params):
+        n_boot = ci_params.bootstrap(199)
+        est = ChaisemartinDHaultfoeuille(
+            n_bootstrap=n_boot,
+            bootstrap_weights="rademacher",
+            seed=42,
+        )
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        assert results.bootstrap_results is not None
+        assert isinstance(results.bootstrap_results, DCDHBootstrapResults)
+        assert results.bootstrap_results.n_bootstrap == n_boot
+        assert results.bootstrap_results.weight_type == "rademacher"
+        assert np.isfinite(results.bootstrap_results.overall_se)
+        assert results.bootstrap_results.overall_se > 0
+
+    def test_bootstrap_mammen(self, data, ci_params):
+        n_boot = ci_params.bootstrap(199)
+        est = ChaisemartinDHaultfoeuille(
+            n_bootstrap=n_boot,
+            bootstrap_weights="mammen",
+            seed=42,
+        )
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        assert results.bootstrap_results is not None
+        assert results.bootstrap_results.weight_type == "mammen"
+
+    def test_bootstrap_webb(self, data, ci_params):
+        n_boot = ci_params.bootstrap(199)
+        est = ChaisemartinDHaultfoeuille(
+            n_bootstrap=n_boot,
+            bootstrap_weights="webb",
+            seed=42,
+        )
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        assert results.bootstrap_results is not None
+        assert results.bootstrap_results.weight_type == "webb"
+
+    def test_bootstrap_seed_reproducibility(self, data, ci_params):
+        n_boot = ci_params.bootstrap(99)
+        r1 = ChaisemartinDHaultfoeuille(n_bootstrap=n_boot, seed=42).fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        r2 = ChaisemartinDHaultfoeuille(n_bootstrap=n_boot, seed=42).fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        assert r1.overall_se == r2.overall_se
+
+
+# =============================================================================
+# Results dataclass round-trip
+# =============================================================================
+
+
+class TestResultsDataclass:
+    @pytest.fixture
+    def results(self):
+        data = generate_reversible_did_data(n_groups=40, n_periods=5, seed=1)
+        return ChaisemartinDHaultfoeuille().fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+
+    def test_summary_formats_without_error(self, results):
+        out = results.summary()
+        assert isinstance(out, str)
+        assert "DID_M" in out
+        assert "DID_+" in out
+        assert "DID_-" in out
+
+    def test_print_summary(self, results, capsys):
+        results.print_summary()
+        captured = capsys.readouterr()
+        assert "DID_M" in captured.out
+
+    def test_to_dataframe_overall(self, results):
+        df = results.to_dataframe("overall")
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 1
+        assert list(df.columns) == [
+            "estimand",
+            "effect",
+            "se",
+            "t_stat",
+            "p_value",
+            "conf_int_lower",
+            "conf_int_upper",
+        ]
+        assert df.iloc[0]["estimand"] == "DID_M"
+
+    def test_to_dataframe_joiners_leavers(self, results):
+        df = results.to_dataframe("joiners_leavers")
+        assert len(df) == 3
+        assert set(df["estimand"].tolist()) == {"DID_M", "DID_+", "DID_-"}
+
+    def test_to_dataframe_per_period(self, results):
+        df = results.to_dataframe("per_period")
+        assert isinstance(df, pd.DataFrame)
+        assert "period" in df.columns
+        assert "did_plus_t" in df.columns
+        assert "did_plus_t_a11_zeroed" in df.columns
+
+    def test_to_dataframe_twfe_weights(self, results):
+        df = results.to_dataframe("twfe_weights")
+        assert isinstance(df, pd.DataFrame)
+        assert "weight" in df.columns
+
+    def test_to_dataframe_unknown_level_raises(self, results):
+        with pytest.raises(ValueError, match="Unknown level"):
+            results.to_dataframe("bogus")
+
+    def test_event_study_effects_populated_at_l1(self, results):
+        # Per review MEDIUM #5: in Phase 1, event_study_effects should not be
+        # None — it should hold a single key 1 with the same effect as overall_att
+        assert results.event_study_effects is not None
+        assert 1 in results.event_study_effects
+        es1 = results.event_study_effects[1]
+        assert es1["effect"] == pytest.approx(results.overall_att)
+        assert es1["se"] == pytest.approx(results.overall_se)
+
+    def test_is_significant_property(self, results):
+        # Boolean reflects whether p-value < alpha
+        expected = results.overall_p_value < results.alpha
+        assert results.is_significant is expected
+
+    def test_coef_var_nan_safe_on_non_finite_se(self):
+        # coef_var = SE / |ATT|. When SE is non-finite (NaN or Inf), the
+        # property must return NaN (not propagate the bad value). When SE
+        # is exactly 0, coef_var = 0 is correct (zero variance).
+        from diff_diff.chaisemartin_dhaultfoeuille_results import (
+            ChaisemartinDHaultfoeuilleResults,
+        )
+
+        r_nan = ChaisemartinDHaultfoeuilleResults(
+            overall_att=2.0,
+            overall_se=float("nan"),
+            overall_t_stat=float("nan"),
+            overall_p_value=float("nan"),
+            overall_conf_int=(float("nan"), float("nan")),
+            joiners_att=float("nan"),
+            joiners_se=float("nan"),
+            joiners_t_stat=float("nan"),
+            joiners_p_value=float("nan"),
+            joiners_conf_int=(float("nan"), float("nan")),
+            n_joiner_cells=0,
+            n_joiner_obs=0,
+            joiners_available=False,
+            leavers_att=float("nan"),
+            leavers_se=float("nan"),
+            leavers_t_stat=float("nan"),
+            leavers_p_value=float("nan"),
+            leavers_conf_int=(float("nan"), float("nan")),
+            n_leaver_cells=0,
+            n_leaver_obs=0,
+            leavers_available=False,
+            placebo_effect=float("nan"),
+            placebo_se=float("nan"),
+            placebo_t_stat=float("nan"),
+            placebo_p_value=float("nan"),
+            placebo_conf_int=(float("nan"), float("nan")),
+            placebo_available=False,
+            per_period_effects={},
+            groups=[1],
+            time_periods=[0, 1],
+            n_obs=2,
+            n_treated_obs=1,
+            n_switcher_obs=0,
+            n_cohorts=0,
+            n_groups_dropped_crossers=0,
+            n_groups_dropped_singleton_baseline=0,
+            n_groups_dropped_never_switching=0,
+        )
+        assert np.isnan(r_nan.coef_var)
+
+        # Independently verify: with finite SE > 0, coef_var equals SE/|ATT|
+        r_finite = ChaisemartinDHaultfoeuilleResults(
+            overall_att=2.0,
+            overall_se=0.5,
+            overall_t_stat=4.0,
+            overall_p_value=0.01,
+            overall_conf_int=(1.0, 3.0),
+            joiners_att=float("nan"),
+            joiners_se=float("nan"),
+            joiners_t_stat=float("nan"),
+            joiners_p_value=float("nan"),
+            joiners_conf_int=(float("nan"), float("nan")),
+            n_joiner_cells=0,
+            n_joiner_obs=0,
+            joiners_available=False,
+            leavers_att=float("nan"),
+            leavers_se=float("nan"),
+            leavers_t_stat=float("nan"),
+            leavers_p_value=float("nan"),
+            leavers_conf_int=(float("nan"), float("nan")),
+            n_leaver_cells=0,
+            n_leaver_obs=0,
+            leavers_available=False,
+            placebo_effect=float("nan"),
+            placebo_se=float("nan"),
+            placebo_t_stat=float("nan"),
+            placebo_p_value=float("nan"),
+            placebo_conf_int=(float("nan"), float("nan")),
+            placebo_available=False,
+            per_period_effects={},
+            groups=[1],
+            time_periods=[0, 1],
+            n_obs=2,
+            n_treated_obs=1,
+            n_switcher_obs=0,
+            n_cohorts=0,
+            n_groups_dropped_crossers=0,
+            n_groups_dropped_singleton_baseline=0,
+            n_groups_dropped_never_switching=0,
+        )
+        assert r_finite.coef_var == pytest.approx(0.25)
+
+
+# =============================================================================
+# Standalone twowayfeweights helper
+# =============================================================================
+
+
+class TestTwowayFeweightsHelper:
+    def test_standalone_function_runs(self):
+        data = generate_reversible_did_data(n_groups=30, n_periods=5, seed=1)
+        result = twowayfeweights(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # Returns a TWFEWeightsResult
+        assert hasattr(result, "weights")
+        assert hasattr(result, "fraction_negative")
+        assert hasattr(result, "sigma_fe")
+        assert hasattr(result, "beta_fe")
+        assert isinstance(result.weights, pd.DataFrame)
+
+    def test_standalone_function_equals_fitted_diagnostic(self):
+        data = generate_reversible_did_data(n_groups=30, n_periods=5, seed=1)
+        # Standalone
+        standalone = twowayfeweights(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # Fitted (twfe_diagnostic=True by default)
+        results = ChaisemartinDHaultfoeuille().fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # The standalone runs on the FULL pre-filter cell dataset; the fitted
+        # diagnostic also runs on the full pre-filter dataset (per the plan).
+        # On single-switch data with no crossers, both should produce identical
+        # results.
+        assert results.twfe_beta_fe == pytest.approx(standalone.beta_fe)
+        assert results.twfe_fraction_negative == pytest.approx(standalone.fraction_negative)

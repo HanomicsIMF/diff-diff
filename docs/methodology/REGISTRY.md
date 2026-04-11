@@ -10,6 +10,7 @@ This document provides the academic foundations and key implementation requireme
    - [TwoWayFixedEffects](#twowayfixedeffects)
 2. [Modern Staggered Estimators](#modern-staggered-estimators)
    - [CallawaySantAnna](#callawaysantanna)
+   - [ChaisemartinDHaultfoeuille](#chaisemartindhaultfoeuille)
    - [ContinuousDiD](#continuousdid)
    - [SunAbraham](#sunabraham)
    - [ImputationDiD](#imputationdid)
@@ -453,6 +454,120 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
 - [ ] Doubly robust estimation when covariates provided
 - [ ] Multiplier bootstrap preserves panel structure
 - [x] Repeated cross-sections (`panel=False`) for non-panel surveys (Phase 7b)
+
+---
+
+## ChaisemartinDHaultfoeuille
+
+**Primary sources:**
+- [de Chaisemartin, C. & D'Haultfœuille, X. (2020). Two-Way Fixed Effects Estimators with Heterogeneous Treatment Effects. *American Economic Review*, 110(9), 2964-2996.](https://doi.org/10.1257/aer.20181169)
+- [de Chaisemartin, C. & D'Haultfœuille, X. (2022, revised 2024). Difference-in-Differences Estimators of Intertemporal Treatment Effects. NBER Working Paper 29873.](https://www.nber.org/papers/w29873) — Web Appendix Section 3.7.3 contains the cohort-recentered plug-in variance formula implemented here.
+
+**Phase 1 scope:** Ships the contemporaneous-switch estimator `DID_M` from the AER 2020 paper, equivalently `DID_1` (horizon `l = 1`) of the dynamic companion paper. The full multi-phase rollout is in `ROADMAP.md`: Phase 2 adds dynamic horizons `DID_l` for `l > 1`, normalized estimators, cost-benefit aggregates, and sup-t bands; Phase 3 adds covariate adjustment (`DID^X`), group-specific linear trends (`DID^{fd}`), state-set-specific trends, and HonestDiD integration. Survey design support is deferred to a separate effort after all phases ship. **This is the only modern staggered estimator in the library that handles non-absorbing (reversible) treatments** — treatment can switch on AND off over time, making it the natural fit for marketing campaigns, seasonal promotions, on/off policy cycles, and binary fuzzy designs.
+
+**Key implementation requirements:**
+
+*Assumption checks / warnings:*
+- Treatment must be binary (0/1). Phase 3 will accept non-binary; Phase 1 raises `ValueError` for non-binary input.
+- NaN values in `treatment` or `outcome` columns raise `ValueError` early in `fit()` (no silent drops).
+- Cell aggregation rounds fractional treatment values within `(g, t)` cells to the majority and warns explicitly when rounding occurs.
+- Multi-switch groups (those that switch treatment more than once across periods) are dropped before estimation when `drop_larger_lower=True` (the default, matching R `DIDmultiplegtDYN`). Each drop emits a warning with the count and example group IDs. See the multi-switch Note below.
+- Singleton-baseline groups — groups whose `D_{g,1}` value is unique in the post-drop dataset — are dropped before variance computation per footnote 15 of the dynamic paper. Each drop emits a warning. See the singleton-baseline Note below.
+- Never-switching groups (`S_g = 0`) are filtered from the variance computation (they contribute zero identifying information) but may still serve as stable controls for the point estimate. A warning is emitted listing the dropped count.
+- Per-period Assumption 11 violations (joiners exist but no stable-untreated controls in some period, or leavers exist but no stable-treated controls) trigger zero-retention behavior with a consolidated warning. See the A11 Note below.
+
+*Estimator equations (Theorem 3 of AER 2020 / Section 3.7.2 of the dynamic paper):*
+
+Per-period DiDs at each switching period `t >= 2`:
+
+```
+DID_{+,t} = (1/N_{1,0,t}) * sum_{g in joiners(t)} (Y_{g,t} - Y_{g,t-1})
+          - (1/N_{0,0,t}) * sum_{g in stable_0(t)} (Y_{g,t} - Y_{g,t-1})
+
+DID_{-,t} = (1/N_{1,1,t}) * sum_{g in stable_1(t)} (Y_{g,t} - Y_{g,t-1})
+          - (1/N_{0,1,t}) * sum_{g in leavers(t)} (Y_{g,t} - Y_{g,t-1})
+```
+
+where `joiners(t)` are groups switching from `D_{g,t-1}=0` to `D_{g,t}=1`, `leavers(t)` are groups switching `1->0`, `stable_0(t)` are groups with `D_{g,t-1}=D_{g,t}=0`, and `stable_1(t)` are groups with `D_{g,t-1}=D_{g,t}=1`. `N_{a,b,t}` is the count of `(g, t)` cells in each transition state.
+
+Aggregate `DID_M`:
+
+```
+N_S   = sum_{t>=2} (N_{1,0,t} + N_{0,1,t})
+DID_M = (1/N_S) * sum_{t>=2} (N_{1,0,t} * DID_{+,t} + N_{0,1,t} * DID_{-,t})
+```
+
+Joiners-only and leavers-only views (each weighted by its own switcher count):
+
+```
+DID_+ = sum_{t>=2} (N_{1,0,t} / sum_{t} N_{1,0,t}) * DID_{+,t}
+DID_- = sum_{t>=2} (N_{0,1,t} / sum_{t} N_{0,1,t}) * DID_{-,t}
+```
+
+Single-lag placebo (Theorem 4 of AER 2020) — applies the same Theorem 3 logic to `Y_{g,t-1} - Y_{g,t-2}` on cells with 3-period histories:
+
+```
+DID_M^pl = (1/N_S^pl) * sum_{t>=3} (
+              N_{1,0,t} * [(Y_{g,t-1} - Y_{g,t-2})_{joiners} - ...] +
+              N_{0,1,t} * [(Y_{g,t-1} - Y_{g,t-2})_{stable_1} - ...]
+          )
+```
+
+*Standard errors (Web Appendix Section 3.7.3 of the dynamic companion paper):*
+
+Default: cohort-recentered analytical plug-in variance, evaluated at horizon `l = 1`. Cohorts are defined by the triple `(D_{g,1}, F_g, S_g)` (baseline treatment, first-switch period, switch direction). For each switching group `g`:
+
+```
+U^G_g     = (Lambda^G_{g,l=1} * Y_g).sum()
+U_bar_k   = (1/|C_k|) * sum_{g in C_k} U^G_g                  # cohort-conditional mean
+sigma_hat^2 = (1/N_l) * sum_g (U^G_g)^2 - sum_k (|C_k|/N_l) * (U_bar_k)^2
+SE         = sqrt(sigma_hat^2 / N_l)
+```
+
+The cohort recentering is critical: subtracting cohort-conditional means is **not** the same as subtracting a single grand mean, and a grand-mean implementation silently produces a smaller (downward-biased) variance. The implementation has a dedicated test (`test_cohort_recentering_not_grand_mean`) that catches this bug.
+
+Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` parameter. Available weight distributions: `"rademacher"` (default), `"mammen"`, `"webb"`. The bootstrap is a library extension beyond the original papers and is provided for consistency with `CallawaySantAnna` / `ImputationDiD` / `TwoStageDiD`.
+
+*Edge cases:*
+- **No switchers in data** (after filtering): raises `ValueError` with a clear message indicating which filters dropped which groups.
+- **No joiners** (only leavers in data): `joiners_available = False`, all `joiners_*` fields are `NaN`. Symmetric for `leavers_available = False`.
+- **`T < 3`**: placebo cannot be computed; `placebo_available = False` with a `UserWarning`.
+- **NaN inference**: `safe_inference()` produces NaN-consistent inference fields (t-stat, p-value, conf int) when SE is non-finite or zero. `assert_nan_inference()` is used in tests to enforce consistency.
+- **TWFE diagnostic with zero denominator**: when `sum(d_gt - d_bar)^2 == 0` (e.g., all cells have identical treatment), the diagnostic returns NaN for `beta_fe` and `sigma_fe` with a `UserWarning`. The diagnostic is non-fatal — it does not block the main estimation.
+- **`placebo=False`** (gating): the results object still exposes `placebo_*` fields, but with `NaN` values and `placebo_available = False`. This keeps the API surface stable.
+
+- **Note:** The analytical CI is **conservative** under Assumption 8 (independent groups) of the dynamic companion paper, and exact only under iid sampling. This is documented as a deliberate deviation from "default nominal coverage". The bootstrap CI uses the same conservative weighting and is provided for users who want a non-asymptotic alternative.
+
+- **Note:** Phase 1 placebo SE is intentionally `NaN` with a `UserWarning`. The dynamic companion paper Section 3.7.3 derives the analytical variance for `DID_l`, not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo via the dynamic paper's machinery; until then, the placebo point estimate is still meaningful but inference fields are NaN-consistent. Users who want a placebo SE today should set `n_bootstrap > 0`, which produces a bootstrap-based placebo SE via the existing mixin path.
+
+- **Note:** By default (`drop_larger_lower=True`), the estimator drops groups whose treatment switches more than once before estimation. This matches R `DIDmultiplegtDYN`'s default and is required for the analytical variance formula (Web Appendix Section 3.7.3 of the dynamic paper, which assumes Assumption 5 / no-crossing) to be consistent with the AER 2020 Theorem 3 point estimate. Both formulas operate on the same post-drop dataset. Setting `drop_larger_lower=False` is supported for diagnostic comparison but produces an inconsistent estimator-variance pairing for any multi-switch groups present, and emits an explicit warning.
+
+- **Note:** When Assumption 11 (existence of stable controls) is violated for some period `t` — i.e., joiners exist but no stable-untreated controls, or leavers exist but no stable-treated controls — `DID_{+,t}` (or `DID_{-,t}`) is set to zero by paper convention, and the period's switcher count is **retained** in the `N_S` denominator. This means the affected period contributes a zero to the numerator with a non-zero weight in the denominator, biasing `DID_M` toward zero in the offending direction. Users can detect this by inspecting `results.per_period_effects[t]['did_plus_t_a11_zeroed']` (or `did_minus_t_a11_zeroed`) or the consolidated `fit()` warning. This matches the AER 2020 Theorem 3 paper convention and the worked example arithmetic.
+
+- **Note:** Groups whose baseline treatment value `D_{g,1}` is unique in the post-drop panel (not shared by any other group) are dropped before variance computation per footnote 15 of the dynamic companion paper. They have no baseline-matched control set and contribute zero identifying information. The dropped count is stored on `results.n_groups_dropped_singleton_baseline` and a warning lists example group IDs.
+
+- **Note (deviation from R DIDmultiplegtDYN):** Python uses **period-based** stable-control sets — `stable_0(t)` is any cell with `D_{g,t-1} = D_{g,t} = 0` regardless of baseline `D_{g,1}`, and similarly for `stable_1(t)`. R `DIDmultiplegtDYN` uses **cohort-based** stable-control sets that additionally require `D_{g,1}` to match the side. Python's definition matches the AER 2020 Theorem 3 cell-count notation `N_{0,0,t}` and `N_{1,1,t}` literally; R's definition matches the dynamic companion paper's cohort `(D_{g,1}, F_g, S_g)` framework. The two definitions agree exactly under any of the following conditions: (a) the panel contains only joiners (no leavers), (b) the panel contains only leavers, (c) no joiner's post-switch state ever overlaps a period when leavers are switching (and vice versa). They disagree by O(1%) when both joiners and leavers exist AND some joiners' post-switch cells could serve as leavers' controls (or vice versa). The hand-calculable 4-group worked example `DID_M = 2.5` agrees exactly with R because g=1 (joiner) and g=4 (always-treated) have identical period-1-to-2 trends, so the additional control cell does not change the average. The R parity tests in `tests/test_chaisemartin_dhaultfoeuille_parity.py` use a tight 1e-4 tolerance for pure-direction scenarios and the worked example, and a 2.5% tolerance for mixed-direction scenarios reflecting this documented deviation.
+
+**Reference implementation(s):**
+- R: [`DIDmultiplegtDYN`](https://cran.r-project.org/package=DIDmultiplegtDYN) (CRAN, maintained by the paper authors). The Python implementation matches `did_multiplegt_dyn(..., effects=1)` at horizon `l = 1`. Parity tests live in `tests/test_chaisemartin_dhaultfoeuille_parity.py`.
+- Stata: `did_multiplegt_dyn` (SSC, also maintained by the paper authors).
+
+**Requirements checklist:**
+- [x] Single class `ChaisemartinDHaultfoeuille` (alias `DCDH`); not a family
+- [x] Forward-compat `fit()` signature with `NotImplementedError` gates for Phase 2/3 parameters (`aggregate`, `L_max`, `controls`, `trends_linear`, `trends_nonparam`, `honest_did`, `survey_design`)
+- [x] `DID_M` point estimate with cohort-recentered analytical SE
+- [x] Joiners-only `DID_+` and leavers-only `DID_-` decompositions with their own inference
+- [x] Single-lag placebo `DID_M^pl` (point estimate; SE deferred to Phase 2)
+- [x] TWFE decomposition diagnostic (Theorem 1 of AER 2020): per-cell weights, fraction negative, `sigma_fe`, `beta_fe`
+- [x] Standalone `twowayfeweights()` helper for users who only want the TWFE diagnostic
+- [x] Multiplier bootstrap with Rademacher / Mammen / Webb weights, clustered at group
+- [x] `drop_larger_lower=True` default (matches R `DIDmultiplegtDYN`); `False` opt-in with explicit inconsistency warning
+- [x] Singleton-baseline filter (footnote 15 of dynamic paper) with explicit warning
+- [x] Never-switching groups filter from variance with explicit warning
+- [x] A11 zero-retention convention with per-period boolean flags (`did_plus_t_a11_zeroed` / `did_minus_t_a11_zeroed`) and consolidated warning
+- [x] No silent failures: every drop / round / fallback emits a `warnings.warn()` or `ValueError`
+- [x] Hand-calculable 4-group worked example: `DID_M = 2.5`, `DID_+ = 2.0`, `DID_- = 3.0` exactly
+- [x] R `DIDmultiplegtDYN` parity tests at `l = 1` (fixture skips cleanly when R or `DIDmultiplegtDYN` is unavailable)
 
 ---
 
