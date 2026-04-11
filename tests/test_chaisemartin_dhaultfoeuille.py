@@ -629,6 +629,67 @@ class TestA11Handling:
         # The joiner count is retained in N_S
         assert cell_t2["n_10_t"] == 2
 
+    def test_placebo_a11_violation_emits_warning(self):
+        """
+        Mirror of the main A11 contract for the placebo (Theorem 4):
+        when placebo joiners exist (3-period stable D=0 history then
+        switch) but no group provides a 3-period stable_0 control,
+        the affected placebo period contribution is zeroed AND a
+        consolidated ``Placebo (DID_M^pl) Assumption 11 violations``
+        warning fires from ``fit()``.
+
+        Construct: 4-group T=3 panel with two D=[0,0,1] joiners (also
+        placebo joiners at t=2) and two always-treated controls. No
+        group has D=[0,0,0], so the placebo joiner side has no
+        stable_0 control. The main path also has an A11 violation
+        on the same panel (its own warning fires too); this test
+        asserts the PLACEBO warning specifically.
+        """
+        df = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
+                "period": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2],
+                "treatment": [0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+                "outcome": [
+                    10.0,
+                    11.0,
+                    15.0,
+                    10.0,
+                    11.0,
+                    16.0,
+                    12.0,
+                    13.0,
+                    14.0,
+                    12.0,
+                    13.0,
+                    14.0,
+                ],
+            }
+        )
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+        # Placebo was computed (T >= 3 + qualifying cells) and is available
+        assert results.placebo_available
+        # The placebo A11 warning fired (text contains "Placebo" + "Assumption 11")
+        placebo_a11_warnings = [
+            wi for wi in w if "Placebo" in str(wi.message) and "Assumption 11" in str(wi.message)
+        ]
+        assert len(placebo_a11_warnings) >= 1, (
+            "Expected the placebo A11 warning to fire on a panel where placebo "
+            "joiners exist but no 3-period stable_0 controls exist. Got warnings: "
+            f"{[str(wi.message) for wi in w]}"
+        )
+        # The warning should mention the affected placebo period
+        assert "stable_0" in str(placebo_a11_warnings[0].message)
+
     def test_a11_natural_zero_no_switchers_does_not_zero_flag(self):
         data = generate_reversible_did_data(
             n_groups=20,

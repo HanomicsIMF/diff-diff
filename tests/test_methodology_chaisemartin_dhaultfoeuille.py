@@ -55,17 +55,66 @@ class TestMethodologyWorkedExample:
 
     def test_hand_calculable_4group_3period_joiners_and_leavers(self, panel):
         est = ChaisemartinDHaultfoeuille()
-        results = est.fit(
-            panel,
-            outcome="outcome",
-            group="group",
-            time="period",
-            treatment="treatment",
-        )
+        with warnings.catch_warnings():
+            # Suppress the expected degenerate-cohort warning here so the
+            # test focuses on the point estimates. The dedicated SE test
+            # below asserts the warning fires.
+            warnings.simplefilter("ignore")
+            results = est.fit(
+                panel,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
         # Exact integer/half-integer arithmetic from the plan's worked example
         assert results.overall_att == 2.5
         assert results.joiners_att == 2.0
         assert results.leavers_att == 3.0
+
+    def test_worked_example_se_is_unidentified_with_warning(self, panel):
+        """
+        On the canonical 4-group worked example, every group lands in
+        its own ``(D_{g,1}, F_g, S_g)`` cohort:
+
+            g=1: (0, 1, +1)
+            g=2: (1, 2, -1)
+            g=3: (0, -1,  0)
+            g=4: (1, -1,  0)
+
+        With every cohort being a singleton, cohort recentering yields
+        an identically-zero centered influence function vector, so the
+        cohort-recentered analytical variance is unidentified (zero
+        degrees of freedom). The estimator returns ``overall_se = NaN``
+        with a ``UserWarning`` rather than silently collapsing to ``0.0``
+        (which would falsely imply infinite precision).
+
+        The DID_M point estimate (2.5) is still well-defined; only the
+        SE / t-stat / p-value / conf int are NaN-consistent.
+        """
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = est.fit(
+                panel,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+        # Point estimate is still exact
+        assert results.overall_att == 2.5
+        # SE is NaN, not 0.0, on the degenerate panel
+        assert np.isnan(results.overall_se)
+        # NaN propagates through inference fields
+        assert np.isnan(results.overall_t_stat)
+        assert np.isnan(results.overall_p_value)
+        assert np.isnan(results.overall_conf_int[0])
+        assert np.isnan(results.overall_conf_int[1])
+        # The degenerate-cohort warning fired
+        assert any(
+            "variance is unidentified" in str(wi.message) for wi in w
+        ), "Expected the degenerate-cohort warning to fire on the worked example"
 
     def test_per_period_decomposition_matches_hand_arithmetic(self, panel):
         est = ChaisemartinDHaultfoeuille()

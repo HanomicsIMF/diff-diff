@@ -843,7 +843,28 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         stacklevel=2,
                     )
                 else:
-                    placebo_effect, placebo_available = placebo_payload
+                    placebo_effect, placebo_available, placebo_a11_warnings = placebo_payload
+                    # Surface placebo A11 violations via a consolidated warning
+                    # mirroring the main DID path's contract. The affected
+                    # per-period placebo contributions are zeroed in the
+                    # numerator with their switcher counts retained in the
+                    # placebo N_S^pl denominator (Theorem 4 zero-retention).
+                    if placebo_a11_warnings:
+                        warnings.warn(
+                            f"Placebo (DID_M^pl) Assumption 11 violations in "
+                            f"{len(placebo_a11_warnings)} period(s); the affected "
+                            f"placebo contributions are zeroed but their switcher "
+                            f"counts are retained in the placebo N_S denominator "
+                            f"(matching Theorem 4 paper convention). Affected: "
+                            + ", ".join(placebo_a11_warnings[:3])
+                            + (
+                                f" (and {len(placebo_a11_warnings) - 3} more)"
+                                if len(placebo_a11_warnings) > 3
+                                else ""
+                            ),
+                            UserWarning,
+                            stacklevel=2,
+                        )
 
         # ------------------------------------------------------------------
         # Step 13-16: Cohort identification, influence-function vectors,
@@ -872,6 +893,30 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
         # Analytical SE for DID_M
         overall_se = _plugin_se(U_centered=U_centered_overall, divisor=N_S)
+        # Detect the degenerate-cohort case: every variance-eligible group
+        # forms its own (D_{g,1}, F_g, S_g) cohort, so the centered
+        # influence function is identically zero and `_plugin_se` returns
+        # NaN. Surface this as a UserWarning so users see the variance is
+        # unidentified rather than silently mistaking NaN for "missing
+        # data" or 0.0 for infinite precision. The bootstrap path inherits
+        # the same degeneracy on this panel because it multiplies the
+        # same all-zero centered IF by random weights.
+        if np.isnan(overall_se) and n_groups_for_overall_var > 0 and N_S > 0:
+            warnings.warn(
+                f"Cohort-recentered analytical variance is unidentified: "
+                f"every variance-eligible group forms its own "
+                f"(D_{{g,1}}, F_g, S_g) cohort "
+                f"({n_groups_for_overall_var} groups across {n_cohorts} "
+                f"cohorts), so the centered influence function vector is "
+                f"identically zero. The DID_M point estimate is still "
+                f"valid; SE / t_stat / p_value / conf_int are NaN-"
+                f"consistent. To get a non-degenerate analytical SE, "
+                f"include more groups so cohorts have peers (real-world "
+                f"panels typically have G >> K). The bootstrap path "
+                f"inherits the same degeneracy on this data.",
+                UserWarning,
+                stacklevel=2,
+            )
         overall_t, overall_p, overall_ci = safe_inference(
             overall_att, overall_se, alpha=self.alpha, df=None
         )
@@ -1325,13 +1370,29 @@ def _compute_placebo(
     Y_mat: np.ndarray,
     N_mat: np.ndarray,
     periods: List[Any],
-) -> Optional[Tuple[float, bool]]:
+) -> Optional[Tuple[float, bool, List[str]]]:
     """
     Compute the single-lag placebo DID_M^pl from Theorem 4 of AER 2020.
 
     Same logic as DID_M but evaluated on the pre-event difference
     ``Y_{g, t-1} - Y_{g, t-2}`` for cells with three-period histories.
     Requires ``T >= 3``.
+
+    Mirrors the main path's A11 zero-retention machinery: when placebo
+    joiners exist but no 3-period stable_0 controls do (or symmetric
+    for leavers/stable_1), the affected per-period contribution is set
+    to zero AND a warning string is appended to ``placebo_a11_warnings``.
+    The caller is responsible for surfacing the consolidated warning.
+    The zero-retention preserves the period's switcher count in the
+    placebo ``N_S^pl`` denominator, biasing the placebo toward zero in
+    the offending direction (matching Theorem 4 paper convention).
+
+    Returns
+    -------
+    None if ``T < 3`` or no qualifying cells. Otherwise a tuple
+    ``(placebo_effect, True, placebo_a11_warnings)`` where
+    ``placebo_a11_warnings`` is a list of one string per period that
+    triggered an A11 violation in the placebo numerator.
     """
     n_periods = len(periods)
     if n_periods < 3:
@@ -1341,6 +1402,7 @@ def _compute_placebo(
     placebo_minus_per_t: List[float] = []
     n_10_per_t: List[int] = []
     n_01_per_t: List[int] = []
+    placebo_a11_warnings: List[str] = []
 
     for t_idx in range(2, n_periods):
         d_curr = D_mat[:, t_idx]
@@ -1367,19 +1429,32 @@ def _compute_placebo(
         n_01 = int(leaver_mask.sum())
         n_11 = int(stable1_mask.sum())
 
-        if n_10 > 0 and n_00 > 0:
+        # Joiners side: distinguish "no joiners" (natural zero) from
+        # "joiners but no stable_0" (A11 violation, flagged + warned)
+        if n_10 == 0:
+            placebo_plus_t = 0.0
+        elif n_00 == 0:
+            placebo_plus_t = 0.0
+            placebo_a11_warnings.append(
+                f"period {periods[t_idx]}: placebo joiners present, no stable_0"
+            )
+        else:
             joiner_avg = float((y_prev[joiner_mask] - y_pre_prev[joiner_mask]).mean())
             stable0_avg = float((y_prev[stable0_mask] - y_pre_prev[stable0_mask]).mean())
             placebo_plus_t = joiner_avg - stable0_avg
-        else:
-            placebo_plus_t = 0.0
 
-        if n_01 > 0 and n_11 > 0:
+        # Leavers side: symmetric A11 distinction
+        if n_01 == 0:
+            placebo_minus_t = 0.0
+        elif n_11 == 0:
+            placebo_minus_t = 0.0
+            placebo_a11_warnings.append(
+                f"period {periods[t_idx]}: placebo leavers present, no stable_1"
+            )
+        else:
             stable1_avg = float((y_prev[stable1_mask] - y_pre_prev[stable1_mask]).mean())
             leaver_avg = float((y_prev[leaver_mask] - y_pre_prev[leaver_mask]).mean())
             placebo_minus_t = stable1_avg - leaver_avg
-        else:
-            placebo_minus_t = 0.0
 
         placebo_plus_per_t.append(placebo_plus_t)
         placebo_minus_per_t.append(placebo_minus_t)
@@ -1395,7 +1470,7 @@ def _compute_placebo(
         (n_10_arr @ np.array(placebo_plus_per_t) + n_01_arr @ np.array(placebo_minus_per_t))
         / N_S_pl
     )
-    return placebo_effect, True
+    return placebo_effect, True, placebo_a11_warnings
 
 
 def _compute_full_per_group_contributions(
@@ -1728,11 +1803,31 @@ def _plugin_se(U_centered: np.ndarray, divisor: int) -> float:
 
     The plain ``(1/N_l) * sum_g U_centered^2 / N_l`` form gives the
     variance; we take its square root for the SE.
+
+    Returns ``NaN`` in three degenerate cases:
+
+    1. ``U_centered`` is empty (no variance-eligible groups).
+    2. ``divisor <= 0`` (no switching cells in N_S).
+    3. ``sum(U_centered**2) <= 0`` — every cohort is a singleton, so
+       cohort recentering produces an identically-zero centered IF
+       vector and the variance is unidentified. The caller should
+       detect this case (NaN return + non-empty input) and emit a
+       user-facing warning explaining the degenerate-cohort condition.
+       Returning ``NaN`` rather than ``0.0`` prevents the silently
+       implies-infinite-precision failure mode.
     """
     n = U_centered.size
     if n == 0 or divisor <= 0:
         return float("nan")
     sum_sq = float((U_centered**2).sum())
+    if sum_sq <= 0:
+        # Degenerate-cohort case: every cohort is a singleton, so
+        # cohort recentering produces all zeros. The variance is
+        # unidentified — return NaN rather than 0.0 so downstream
+        # inference is NaN-consistent and the caller surfaces a
+        # warning. See the **Note** in REGISTRY.md
+        # ChaisemartinDHaultfoeuille.
+        return float("nan")
     sigma_hat_sq = sum_sq / divisor
     if not np.isfinite(sigma_hat_sq) or sigma_hat_sq < 0:
         return float("nan")
