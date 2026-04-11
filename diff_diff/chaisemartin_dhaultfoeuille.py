@@ -248,12 +248,32 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         }
 
     def set_params(self, **params: Any) -> "ChaisemartinDHaultfoeuille":
-        """Set estimator parameters (sklearn-compatible)."""
+        """
+        Set estimator parameters (sklearn-compatible).
+
+        Re-runs the same validation rules as ``__init__`` so invalid
+        parameter combinations cannot be introduced after construction.
+        """
         for key, value in params.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
+            if not hasattr(self, key):
                 raise ValueError(f"Unknown parameter: {key}")
+            setattr(self, key, value)
+
+        # Re-run __init__ validation rules so the post-set state is valid.
+        if self.rank_deficient_action not in ("warn", "error", "silent"):
+            raise ValueError(
+                f"rank_deficient_action must be 'warn', 'error', or 'silent', "
+                f"got '{self.rank_deficient_action}'"
+            )
+        if self.bootstrap_weights not in ("rademacher", "mammen", "webb"):
+            raise ValueError(
+                f"bootstrap_weights must be 'rademacher', 'mammen', or 'webb', "
+                f"got '{self.bootstrap_weights}'"
+            )
+        if not 0.0 < self.alpha < 1.0:
+            raise ValueError(f"alpha must be in (0, 1), got {self.alpha}")
+        if self.n_bootstrap < 0:
+            raise ValueError(f"n_bootstrap must be non-negative, got {self.n_bootstrap}")
         return self
 
     # ------------------------------------------------------------------
@@ -676,14 +696,23 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         placebo_t = float("nan")
         placebo_p = float("nan")
         placebo_ci: Tuple[float, float] = (float("nan"), float("nan"))
-        if placebo_available and self.n_bootstrap == 0:
-            # Without bootstrap, we cannot compute a paper-prescribed analytical
-            # SE for the placebo (Theorem 1 covers DID_l only). Emit a NaN with
-            # a one-time note in the warning channel.
+        if placebo_available:
+            # Phase 1: the dynamic companion paper Section 3.7.3 derives the
+            # cohort-recentered analytical variance for DID_l only — not for
+            # the placebo DID_M^pl. The placebo bootstrap path is also
+            # deferred to Phase 2 (the bootstrap mixin currently covers
+            # DID_M, DID_+, and DID_- only). The placebo point estimate is
+            # still computed and exposed via results.placebo_effect; only
+            # its inference fields stay NaN-consistent.
             warnings.warn(
-                "Phase 1 placebo SE is not analytically derived (the dynamic "
-                "paper Section 3.7.3 covers only DID_l). Set n_bootstrap > 0 "
-                "to obtain a multiplier-bootstrap SE for DID_M^pl.",
+                "Phase 1 placebo SE is intentionally NaN. The dynamic "
+                "companion paper Section 3.7.3 derives the cohort-recentered "
+                "analytical variance for DID_l only, not for the placebo "
+                "DID_M^pl. Phase 2 will add multiplier-bootstrap support for "
+                "the placebo; until then, placebo_se / placebo_t_stat / "
+                "placebo_p_value / placebo_conf_int stay NaN even when "
+                "n_bootstrap > 0. The placebo point estimate "
+                "(results.placebo_effect) is still meaningful.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -704,9 +733,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             leavers_inputs = (
                 (U_centered_leavers, leaver_total, leavers_att) if leavers_available else None
             )
-            # Phase 1 placebo bootstrap: not supported (no centered IF available
-            # for the placebo; the dynamic paper only derives DID_l variance).
-            # Phase 2/3 will add this when implementing the dynamic estimator.
+            # Phase 1 placebo bootstrap: deliberately deferred to Phase 2.
+            # The dynamic companion paper Section 3.7.3 derives the
+            # cohort-recentered analytical variance for DID_l only, not for
+            # the placebo DID_M^pl, and we do not have an influence-function
+            # representation of the placebo to feed the multiplier bootstrap
+            # path. Implementing this from first principles is explicitly out
+            # of scope for Phase 1 — see ROADMAP.md and CHANGELOG.md.
+            # Tests/test_chaisemartin_dhaultfoeuille.py::TestBootstrap::
+            # test_placebo_bootstrap_unavailable_in_phase_1 pins this contract.
             placebo_inputs = None
 
             br = self._compute_dcdh_bootstrap(
@@ -722,22 +757,26 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
             # Replace analytical SE with bootstrap SE for the targets that
             # have valid bootstrap output. The original analytical values
-            # remain available via re-running with n_bootstrap=0.
+            # remain available via re-running with n_bootstrap=0. After
+            # the SE replacement we recompute t-stat / p-value / CI through
+            # ``safe_inference()`` so all inference fields stay consistent
+            # with the library-wide convention (project anti-pattern rule:
+            # never compute t_stat = effect / se inline; use safe_inference).
             if np.isfinite(br.overall_se):
                 overall_se = br.overall_se
-                overall_ci = br.overall_ci
-                overall_p = br.overall_p_value
-                overall_t = overall_att / overall_se if overall_se > 0 else float("nan")
+                overall_t, overall_p, overall_ci = safe_inference(
+                    overall_att, overall_se, alpha=self.alpha, df=None
+                )
             if joiners_available and br.joiners_se is not None and np.isfinite(br.joiners_se):
                 joiners_se = br.joiners_se
-                joiners_ci = br.joiners_ci or joiners_ci
-                joiners_p = br.joiners_p_value or joiners_p
-                joiners_t = joiners_att / joiners_se if joiners_se > 0 else float("nan")
+                joiners_t, joiners_p, joiners_ci = safe_inference(
+                    joiners_att, joiners_se, alpha=self.alpha, df=None
+                )
             if leavers_available and br.leavers_se is not None and np.isfinite(br.leavers_se):
                 leavers_se = br.leavers_se
-                leavers_ci = br.leavers_ci or leavers_ci
-                leavers_p = br.leavers_p_value or leavers_p
-                leavers_t = leavers_att / leavers_se if leavers_se > 0 else float("nan")
+                leavers_t, leavers_p, leavers_ci = safe_inference(
+                    leavers_att, leavers_se, alpha=self.alpha, df=None
+                )
 
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
@@ -1620,8 +1659,12 @@ def twowayfeweights(
         Object with attributes ``weights`` (DataFrame), ``fraction_negative``
         (float), ``sigma_fe`` (float), and ``beta_fe`` (float).
     """
-    if treatment not in data.columns:
-        raise ValueError(f"treatment column {treatment!r} not in data")
+    missing = [c for c in (outcome, group, time, treatment) if c not in data.columns]
+    if missing:
+        raise ValueError(
+            f"twowayfeweights: column(s) {missing!r} not found in data. "
+            f"Required columns: outcome, group, time, treatment."
+        )
     df = data.copy()
     df[treatment] = pd.to_numeric(df[treatment])
     cell = df.groupby([group, time], as_index=False).agg(

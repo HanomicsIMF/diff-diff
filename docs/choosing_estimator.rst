@@ -283,10 +283,13 @@ covariate adjustment.
 
 .. note::
 
-   The Phase 1 placebo SE is intentionally ``NaN`` with a warning — the
-   companion paper does not derive an analytical variance for the placebo,
-   and Phase 2 will add bootstrap support. Set ``n_bootstrap > 0`` for a
-   bootstrap-based placebo SE today.
+   The Phase 1 placebo SE is intentionally ``NaN`` with a warning. The
+   dynamic companion paper Section 3.7.3 derives the cohort-recentered
+   analytical variance for ``DID_l`` only — not for the placebo
+   ``DID_M^pl``. Phase 2 will add multiplier-bootstrap support for the
+   placebo. Until then, the placebo point estimate is meaningful but its
+   inference fields stay NaN-consistent even when ``n_bootstrap > 0``
+   (bootstrap currently covers ``DID_M``, ``DID_+``, and ``DID_-`` only).
 
 .. note::
 

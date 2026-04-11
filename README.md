@@ -1218,14 +1218,14 @@ ChaisemartinDHaultfoeuille(
 from diff_diff import twowayfeweights
 
 diagnostic = twowayfeweights(
-    data, group="group", time="period", treatment="treatment",
+    data, outcome="outcome", group="group", time="period", treatment="treatment",
 )
 print(f"Plain TWFE coefficient: {diagnostic.beta_fe:.3f}")
 print(f"Fraction of negative weights: {diagnostic.fraction_negative:.3f}")
 print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 ```
 
-> **Note:** The Phase 1 placebo SE is intentionally `NaN` with a warning — the dynamic companion paper does not derive an analytical variance for the placebo, and Phase 2 will add bootstrap support. Set `n_bootstrap > 0` for a bootstrap-based placebo SE today.
+> **Note:** The Phase 1 placebo SE is intentionally `NaN` with a warning. The dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only — not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo via the dynamic paper's machinery. Until then, the placebo point estimate is meaningful but its inference fields are NaN-consistent (and `results.placebo_se`, `results.placebo_p_value`, etc. remain `NaN` even when `n_bootstrap > 0`).
 
 > **Note:** By default (`drop_larger_lower=True`), the estimator drops groups whose treatment switches more than once before estimation. This matches R `DIDmultiplegtDYN`'s default and is required for the analytical variance formula to be consistent with the point estimate. Each drop emits an explicit warning.
 

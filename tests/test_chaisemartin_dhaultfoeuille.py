@@ -626,6 +626,58 @@ class TestBootstrap:
         assert results.bootstrap_results is not None
         assert results.bootstrap_results.weight_type == "webb"
 
+    def test_placebo_bootstrap_unavailable_in_phase_1(self, data, ci_params):
+        """
+        Phase 1 commitment: the placebo SE is intentionally NaN even when
+        ``n_bootstrap > 0``. The dynamic companion paper Section 3.7.3
+        derives the cohort-recentered analytical variance for ``DID_l``
+        only — the placebo's influence-function machinery is deferred to
+        Phase 2. The bootstrap path covers ``DID_M``, ``DID_+``, and
+        ``DID_-`` only.
+
+        This test pins down the contract so that future contributors do
+        not silently widen the bootstrap surface to include the placebo
+        without also wiring up the documented Phase 2 derivation. If
+        Phase 2 implements the placebo bootstrap, this test should be
+        updated (not deleted) to assert finite placebo bootstrap fields.
+        """
+        n_boot = ci_params.bootstrap(199)
+        est = ChaisemartinDHaultfoeuille(
+            n_bootstrap=n_boot,
+            placebo=True,
+            seed=42,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+        # Bootstrap is populated for the three implemented targets
+        assert results.bootstrap_results is not None
+        assert np.isfinite(results.bootstrap_results.overall_se)
+
+        # Placebo bootstrap fields are explicitly None (not populated)
+        assert results.bootstrap_results.placebo_se is None
+        assert results.bootstrap_results.placebo_ci is None
+        assert results.bootstrap_results.placebo_p_value is None
+
+        # Placebo inference fields on the main results stay NaN-consistent
+        assert np.isnan(results.placebo_se)
+        assert np.isnan(results.placebo_t_stat)
+        assert np.isnan(results.placebo_p_value)
+        assert np.isnan(results.placebo_conf_int[0])
+        assert np.isnan(results.placebo_conf_int[1])
+
+        # The placebo point estimate itself is still computed and finite
+        # (the deferral is purely about inference, not the point estimate)
+        if results.placebo_available:
+            assert np.isfinite(results.placebo_effect)
+
     def test_bootstrap_seed_reproducibility(self, data, ci_params):
         n_boot = ci_params.bootstrap(99)
         r1 = ChaisemartinDHaultfoeuille(n_bootstrap=n_boot, seed=42).fit(

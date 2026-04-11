@@ -182,7 +182,7 @@ Standalone TWFE diagnostic (without fitting the full estimator)::
     from diff_diff import twowayfeweights
 
     diagnostic = twowayfeweights(
-        data, group="group", time="period", treatment="treatment",
+        data, outcome="outcome", group="group", time="period", treatment="treatment",
     )
     print(f"Plain TWFE coefficient: {diagnostic.beta_fe:.3f}")
     print(f"Fraction of negative weights: {diagnostic.fraction_negative:.3f}")
