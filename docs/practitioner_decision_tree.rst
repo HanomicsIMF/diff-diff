@@ -199,8 +199,11 @@ a joiners-only view `DID_+`, and a leavers-only view `DID_-`.
 .. note::
 
    Single-lag placebo (`DID_M^pl`) is computed automatically and exposed via
-   ``results.placebo_effect``. The placebo SE is currently `NaN` with a warning
-   in Phase 1; set ``n_bootstrap > 0`` for a bootstrap-based placebo SE today.
+   ``results.placebo_effect``. The placebo inference fields (SE, p-value, CI)
+   are intentionally ``NaN`` in Phase 1 — and stay ``NaN`` even when
+   ``n_bootstrap > 0``. The dynamic companion paper Section 3.7.3 derives
+   the cohort-recentered analytical variance for ``DID_l`` only;
+   placebo-bootstrap support is deferred to Phase 2.
 
 
 .. _section-dose:
