@@ -70,6 +70,14 @@ Survey-aware DiD with complex sampling designs (strata, PSU, FPC, weights):
 - DEFF diagnostics
 - Repeated cross-sections with survey design
 
+### 18. Geo-Experiment Analysis with SyntheticDiD (`18_geo_experiments.ipynb`)
+Practitioner walkthrough for marketing analytics teams measuring geo-experiment lift:
+- The geo-experiment problem framed for marketing analytics
+- Synthetic panel of 80 markets with simulated campaign launch
+- `SyntheticDiD` fit, diagnostics, and inference (placebo + bootstrap)
+- Unit weights and time weights interpretation
+- Stakeholder communication template (Tutorial 17 Section 9 pattern)
+
 ## Running the Notebooks
 
 1. Install diff-diff with dependencies:

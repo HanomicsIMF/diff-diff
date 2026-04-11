@@ -216,6 +216,12 @@ a simple average of all controls.
    that minimize pre-treatment differences, then estimates the treatment effect using those
    weights.
 
+.. tip::
+
+   For a full walkthrough including diagnostics, inference, and a stakeholder
+   communication template, see `Tutorial 18: Geo-Experiment Analysis with SyntheticDiD
+   <tutorials/18_geo_experiments.ipynb>`_.
+
 
 .. _section-survey:
 

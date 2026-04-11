@@ -340,5 +340,7 @@ Next Steps
 - :doc:`practitioner_decision_tree` - Not sure which method fits? Match your scenario
 - `Tutorial 17: Brand Awareness Survey <tutorials/17_brand_awareness_survey.ipynb>`_ -
   Full survey analysis with complex sampling design
+- `Tutorial 18: Geo-Experiment Analysis with SyntheticDiD <tutorials/18_geo_experiments.ipynb>`_ -
+  Geo-experiment walkthrough on a simulated DMA panel: SDiD fit, diagnostics, and stakeholder summary
 - :doc:`choosing_estimator` - The complete academic estimator guide
 - :doc:`api/index` - Full API reference
