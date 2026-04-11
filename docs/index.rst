@@ -77,6 +77,7 @@ Quick Links
    :hidden:
 
    tutorials/17_brand_awareness_survey
+   tutorials/18_geo_experiments
 
 .. toctree::
    :maxdepth: 1

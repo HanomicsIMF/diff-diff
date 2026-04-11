@@ -216,6 +216,13 @@ a simple average of all controls.
    that minimize pre-treatment differences, then estimates the treatment effect using those
    weights.
 
+.. tip::
+
+   For a full walkthrough including diagnostics, stakeholder communication, and a
+   cross-validation against GeoLift's published Simulated Retail dataset, see
+   `Tutorial 18: Geo-Experiment Analysis with SyntheticDiD
+   <tutorials/18_geo_experiments.ipynb>`_.
+
 
 .. _section-survey:
 
