@@ -87,7 +87,7 @@ Parallel track targeting data science practitioners — marketing, product, oper
 | Item | Priority | Status |
 |------|----------|--------|
 | **B2a.** Marketing Campaign Lift tutorial (CallawaySantAnna, staggered geo rollout) | HIGH | Not started |
-| **B2b.** Geo-Experiment tutorial (SyntheticDiD, comparison with GeoLift/CausalImpact) | HIGH | In progress |
+| **B2b.** Geo-Experiment tutorial (SyntheticDiD) | HIGH | Done (Tutorial 18) |
 | **B2c.** diff-diff vs GeoLift vs CausalImpact comparison page | MEDIUM | Not started |
 | **B2d.** Product Launch Regional Rollout tutorial (staggered estimators) | MEDIUM | Not started |
 | **B2e.** Pricing/Promotion Impact tutorial (ContinuousDiD, dose-response) | MEDIUM | Not started |
