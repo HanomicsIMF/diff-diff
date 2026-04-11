@@ -102,7 +102,7 @@ Parallel track targeting data science practitioners — marketing, product, oper
 | **B3a.** `BusinessReport` class — plain-English summaries, markdown export; rich export via optional `[reporting]` extra | HIGH | Not started |
 | **B3b.** `DiagnosticReport` — unified diagnostic runner with plain-English interpretation. Includes making `practitioner_next_steps()` context-aware (substitute actual column names from fitted results into code snippets instead of generic placeholders). | HIGH | Not started |
 | **B3c.** Practitioner data generator wrappers (thin wrappers around existing generators with business-friendly names) | MEDIUM | Not started |
-| **B3d.** `survey_aggregate()` helper (see [Survey Aggregation Helper](#future-survey-aggregation-helper)) | MEDIUM | Not started |
+| **B3d.** `aggregate_survey()` helper (microdata-to-panel bridge for BRFSS/ACS/CPS) | MEDIUM | Shipped (v3.0.1) |
 
 ### Phase B4: Platform (Longer-term)
 
@@ -113,14 +113,6 @@ Parallel track targeting data science practitioners — marketing, product, oper
 | **B4a.** Integration guides (Databricks, Jupyter dashboards, survey platforms) | MEDIUM | Not started |
 | **B4b.** Export templates (PowerPoint via optional extra, Confluence/Notion markdown, HTML widget) | MEDIUM | Not started |
 | **B4c.** AI agent integration — position B3a/B3b as tools for AI agents assisting practitioners | LOW | Not started |
-
----
-
-## Future: Survey Aggregation Helper
-
-**`survey_aggregate()` helper function** for the microdata-to-panel workflow. Bridges individual-level survey data (BRFSS, ACS, CPS) collected as repeated cross-sections to geographic-level (state, city) panel DiD. Computes design-based cell means and precision weights that estimators can consume directly.
-
-Also cross-referenced as **B3d** — directly enables the practitioner survey tutorial workflow beyond the original academic framing.
 
 ---
 

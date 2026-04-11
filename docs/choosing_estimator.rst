@@ -603,6 +603,22 @@ All estimators accept an optional ``survey_design`` parameter in ``fit()``.
 Pass a :class:`~diff_diff.SurveyDesign` object to get design-based variance
 estimation. The depth of support varies by estimator:
 
+.. note::
+
+   If your data starts as **individual-level survey microdata** (e.g., BRFSS,
+   ACS, CPS, NHANES respondent records), use :func:`~diff_diff.aggregate_survey`
+   as a preprocessing step. It pools microdata into geographic-period cells with
+   inverse-variance precision weights and returns a pre-configured
+   :class:`~diff_diff.SurveyDesign` with ``weight_type="aweight"``. This
+   second-stage design is directly compatible with estimators marked **Full** in
+   the matrix below: :class:`~diff_diff.DifferenceInDifferences`,
+   :class:`~diff_diff.TwoWayFixedEffects`, :class:`~diff_diff.MultiPeriodDiD`,
+   :class:`~diff_diff.SunAbraham`, :class:`~diff_diff.ContinuousDiD`, and
+   :class:`~diff_diff.EfficientDiD`. Estimators marked **pweight only** (CS,
+   ImputationDiD, TwoStageDiD, StackedDiD, TripleDifference, etc.) explicitly
+   reject ``aweight`` and require a manually constructed second-stage
+   ``SurveyDesign`` instead. See :doc:`api/prep` for the API reference.
+
 .. list-table::
    :header-rows: 1
    :widths: 25 12 18 18 18

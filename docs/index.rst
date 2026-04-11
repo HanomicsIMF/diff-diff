@@ -48,6 +48,7 @@ Quick Links
 - :doc:`practitioner_decision_tree` - Which method fits your business problem?
 - :doc:`quickstart` - Installation and your first DiD analysis
 - :doc:`choosing_estimator` - Which estimator should I use?
+- :func:`~diff_diff.aggregate_survey` - Have BRFSS/ACS/CPS microdata? Bridge it to a geographic panel for DiD
 - :doc:`tutorials/01_basic_did` - Hands-on basic tutorial
 - :doc:`troubleshooting` - Common issues and solutions
 - :doc:`r_comparison` - Coming from R?
@@ -99,6 +100,8 @@ Quick Links
    tutorials/13_stacked_did
    tutorials/14_continuous_did
    tutorials/15_efficient_did
+   tutorials/16_survey_did
+   tutorials/16_wooldridge_etwfe
 
 .. toctree::
    :maxdepth: 1

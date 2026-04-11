@@ -293,6 +293,42 @@ Ignoring these makes your confidence intervals too narrow.
 diff-diff handles this via :class:`~diff_diff.SurveyDesign` - pass it to any estimator's
 ``fit()`` method.
 
+If your data is **individual-level microdata** - one row per respondent, with
+sampling weights and strata/PSU columns (BRFSS, ACS, CPS, NHANES) - use
+:func:`~diff_diff.aggregate_survey` first to roll it up to a geographic-period
+panel. The helper computes design-based cell means with inverse-variance
+precision weights and returns a pre-configured ``SurveyDesign`` (with
+``weight_type="aweight"``) for the second-stage fit. This second-stage design
+works directly with estimators marked **Full** in the
+:ref:`survey-design-support` matrix - notably
+:class:`~diff_diff.DifferenceInDifferences`, :class:`~diff_diff.SunAbraham`,
+:class:`~diff_diff.MultiPeriodDiD`, and :class:`~diff_diff.EfficientDiD`.
+``pweight``-only estimators (``CallawaySantAnna``, ``ImputationDiD``, etc.)
+require a manually constructed ``SurveyDesign`` instead.
+
+.. code-block:: python
+
+   from diff_diff import aggregate_survey, SurveyDesign, SunAbraham
+
+   # 1. Describe the microdata's sampling design
+   design = SurveyDesign(weights="finalwt", strata="strat", psu="psu")
+
+   # 2. Roll up respondent records into a state-year panel
+   panel, stage2 = aggregate_survey(
+       microdata, by=["state", "year"],
+       outcomes="brand_awareness", survey_design=design,
+   )
+
+   # 3. Add the campaign launch year per state, then fit a modern staggered
+   #    estimator with the pre-configured second-stage SurveyDesign:
+   # panel["first_treat"] = panel["state"].map(campaign_launch_year)  # NaN = control
+   # results = SunAbraham().fit(
+   #     panel, outcome="brand_awareness_mean",
+   #     unit="state", time="year", first_treat="first_treat",
+   #     survey_design=stage2,
+   # )
+   # results.print_summary()
+
 For a complete walkthrough with brand funnel metrics and survey design corrections,
 see `Tutorial 17: Brand Awareness Survey
 <tutorials/17_brand_awareness_survey.ipynb>`_.

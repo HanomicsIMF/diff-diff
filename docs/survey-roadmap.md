@@ -112,6 +112,18 @@ Files: `benchmarks/R/benchmark_realdata_*.R`, `tests/test_survey_real_data.py`,
 - **10d.** Tutorial rewrite — flat-weight vs design-based comparison with known ground truth
 - **10f.** WooldridgeDiD survey support — OLS, logit, Poisson paths with `pweight` + strata/PSU/FPC + TSL variance
 
+### v3.0.1: Survey Aggregation Helper
+
+`aggregate_survey()` (in `diff_diff.prep`) bridges individual-level survey
+microdata (BRFSS, ACS, CPS, NHANES) to geographic-period panels for
+second-stage DiD estimation. Computes design-based cell means and precision
+weights using domain estimation (Lumley 2004 §3.4), with SRS fallback for
+small cells. Returns a panel DataFrame plus a pre-configured `SurveyDesign`
+for the second-stage fit. Supports both TSL and replicate-weight variance.
+
+See `docs/api/prep.rst` for the API reference and `docs/methodology/REGISTRY.md`
+for the methodology entry.
+
 ---
 
 ## Phase 10: Remaining Items
