@@ -341,6 +341,6 @@ Next Steps
 - `Tutorial 17: Brand Awareness Survey <tutorials/17_brand_awareness_survey.ipynb>`_ -
   Full survey analysis with complex sampling design
 - `Tutorial 18: Geo-Experiment Analysis with SyntheticDiD <tutorials/18_geo_experiments.ipynb>`_ -
-  Geo-experiment walkthrough with cross-validation against GeoLift's public dataset
+  Geo-experiment walkthrough with cross-method comparison against GeoLift's public dataset
 - :doc:`choosing_estimator` - The complete academic estimator guide
 - :doc:`api/index` - Full API reference

@@ -219,7 +219,7 @@ a simple average of all controls.
 .. tip::
 
    For a full walkthrough including diagnostics, stakeholder communication, and a
-   cross-validation against GeoLift's published Simulated Retail dataset, see
+   cross-method comparison against GeoLift's published Simulated Retail dataset, see
    `Tutorial 18: Geo-Experiment Analysis with SyntheticDiD
    <tutorials/18_geo_experiments.ipynb>`_.
 

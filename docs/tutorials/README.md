@@ -76,7 +76,8 @@ Practitioner walkthrough for marketing analytics teams measuring geo-experiment 
 - Synthetic panel of 80 markets with simulated campaign launch
 - `SyntheticDiD` fit, diagnostics, and inference (placebo + bootstrap)
 - Unit weights and time weights interpretation
-- Cross-validation against GeoLift's published Simulated Retail dataset
+- Cross-method comparison against GeoLift's published Simulated Retail dataset
+  (see `data/README.md` for dataset provenance)
 - Stakeholder communication template
 - Positioning for practitioners coming from GeoLift or CausalImpact
 
