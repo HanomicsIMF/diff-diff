@@ -1093,13 +1093,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         unique_c[key] = len(unique_c)
                     cid_l[g] = unique_c[key]
 
-                # Combine singleton-baseline exclusion with the finalized
-                # eligible_mask from _compute_multi_horizon_dids (which
-                # excludes groups with empty control pools).
-                did_eligible = multi_horizon_dids[l_h]["eligible_mask"]
-                combined_mask = eligible_mask_var & did_eligible
-                U_l_elig = U_l[combined_mask]
-                cid_elig = cid_l[combined_mask]
+                # Use the full variance-eligible group set (singleton-
+                # baseline exclusion only). Do NOT intersect with
+                # did_eligible — never-switchers and later-switching
+                # controls can have non-zero IF mass via their control
+                # roles, and dropping them understates the SE.
+                U_l_elig = U_l[eligible_mask_var]
+                cid_elig = cid_l[eligible_mask_var]
                 U_centered_l = _cohort_recenter(U_l_elig, cid_elig)
                 N_l_h = multi_horizon_dids[l_h]["N_l"]
                 se_l = _plugin_se(U_centered=U_centered_l, divisor=N_l_h)
@@ -1361,10 +1361,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     if h_data is None or h_data["N_l"] == 0:
                         continue
                     U_l_full = multi_horizon_if[l_h]
-                    # Use same combined mask as analytical SE path
-                    did_eligible_b = h_data["eligible_mask"]
-                    combined_b = eligible_mask_b & did_eligible_b
-                    U_l_elig = U_l_full[combined_b]
+                    # Full variance-eligible group set (matching
+                    # analytical SE path: singleton-baseline only)
+                    U_l_elig = U_l_full[eligible_mask_b]
                     # Use the same cohort IDs as the analytical SE path
                     cohort_keys_b = [
                         (
@@ -1377,14 +1376,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     unique_cb: Dict[Tuple[int, int, int], int] = {}
                     cid_b = np.zeros(len(all_groups), dtype=int)
                     for g in range(len(all_groups)):
-                        if not combined_b[g]:
+                        if not eligible_mask_b[g]:
                             cid_b[g] = -1
                             continue
                         key = cohort_keys_b[g]
                         if key not in unique_cb:
                             unique_cb[key] = len(unique_cb)
                         cid_b[g] = unique_cb[key]
-                    cid_elig = cid_b[combined_b]
+                    cid_elig = cid_b[eligible_mask_b]
                     U_centered_h = _cohort_recenter(U_l_elig, cid_elig)
                     mh_boot_inputs[l_h] = (
                         U_centered_h,
@@ -1519,13 +1518,23 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # Assumption 8). Works on both analytical and bootstrap
                 # SEs since event_study_effects[l]["se"] holds whichever
                 # was propagated.
+                # Require ALL positively-weighted horizons to have finite
+                # SE. If any has NaN, delta SE is NaN (NaN-consistent
+                # inference contract: no partial aggregation).
                 weights = cost_benefit_result.get("weights", {})
                 var_delta = 0.0
+                all_finite = True
                 for l_w, w_l in weights.items():
+                    if w_l <= 0:
+                        continue
                     se_l = event_study_effects.get(l_w, {}).get("se", float("nan"))
-                    if np.isfinite(se_l):
-                        var_delta += (w_l * se_l) ** 2
-                delta_se = float(np.sqrt(var_delta)) if var_delta > 0 else float("nan")
+                    if not np.isfinite(se_l):
+                        all_finite = False
+                        break
+                    var_delta += (w_l * se_l) ** 2
+                delta_se = (
+                    float(np.sqrt(var_delta)) if all_finite and var_delta > 0 else float("nan")
+                )
 
                 if np.isfinite(delta_se):
                     effective_overall_se = delta_se
