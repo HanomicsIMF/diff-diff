@@ -1966,6 +1966,304 @@ class TestSurveyDGPResearchGrade:
         with pytest.raises(ValueError, match="te_covariate_interaction must be finite"):
             generate_survey_did_data(add_covariates=True, te_covariate_interaction=np.nan, seed=42)
 
+    # --- conditional_pt parameter tests ---
+
+    def test_conditional_pt_requires_both_groups(self):
+        """conditional_pt requires at least one ever-treated and one never-treated."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        # Zero never-treated (exact)
+        with pytest.raises(ValueError, match="conditional_pt requires at least one"):
+            generate_survey_did_data(
+                add_covariates=True, conditional_pt=0.3,
+                never_treated_frac=0.0, seed=42,
+            )
+        # Small fraction that floors to zero never-treated units
+        with pytest.raises(ValueError, match="conditional_pt requires at least one"):
+            generate_survey_did_data(
+                n_units=50, add_covariates=True, conditional_pt=0.3,
+                never_treated_frac=0.01, seed=42,
+            )
+        # All never-treated (no ever-treated units)
+        with pytest.raises(ValueError, match="conditional_pt requires at least one"):
+            generate_survey_did_data(
+                add_covariates=True, conditional_pt=0.3,
+                never_treated_frac=1.0, seed=42,
+            )
+
+    def test_conditional_pt_requires_covariates(self):
+        """conditional_pt requires add_covariates=True."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="conditional_pt requires add_covariates"):
+            generate_survey_did_data(conditional_pt=0.3, add_covariates=False, seed=42)
+
+    def test_conditional_pt_nonfinite_rejected(self):
+        """conditional_pt must be finite."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="conditional_pt must be finite"):
+            generate_survey_did_data(
+                add_covariates=True, conditional_pt=np.inf, seed=42
+            )
+        with pytest.raises(ValueError, match="conditional_pt must be finite"):
+            generate_survey_did_data(
+                add_covariates=True, conditional_pt=np.nan, seed=42
+            )
+
+    def test_conditional_pt_x1_distribution_shift(self):
+        """Treated units should have higher x1 when conditional_pt is active."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=1000,
+            n_periods=4,
+            add_covariates=True,
+            conditional_pt=0.3,
+            seed=42,
+        )
+        p1 = df[df["period"] == 1]
+        x1_treated = p1.loc[p1["first_treat"] > 0, "x1"].values
+        x1_control = p1.loc[p1["first_treat"] == 0, "x1"].values
+        shift = x1_treated.mean() - x1_control.mean()
+        # Expect ~1.0 SD shift; require at least 0.5
+        assert shift > 0.5, f"x1 mean shift too small: {shift:.3f}"
+
+    def test_conditional_pt_unconditional_pt_fails(self):
+        """With conditional_pt active, unconditional pre-trends should differ."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=2000,
+            n_periods=8,
+            add_covariates=True,
+            conditional_pt=0.5,
+            never_treated_frac=0.5,
+            seed=42,
+        )
+        # Compute mean outcome change (period 2 - period 1) for each group
+        # before any treatment (use periods 1 and 2, treatment starts at 3+)
+        p1 = df[df["period"] == 1].set_index("unit")
+        p2 = df[df["period"] == 2].set_index("unit")
+        common = p1.index.intersection(p2.index)
+        dy = p2.loc[common, "outcome"] - p1.loc[common, "outcome"]
+        is_treated = p1.loc[common, "first_treat"] > 0
+
+        trend_treated = dy[is_treated].mean()
+        trend_control = dy[~is_treated].mean()
+        gap = abs(trend_treated - trend_control)
+        # With conditional_pt=0.5 and 1 SD shift, expect a detectable gap
+        assert gap > 0.01, f"Unconditional PT gap too small: {gap:.4f}"
+
+    def test_conditional_pt_conditional_pt_holds(self):
+        """Controlling for x1, treated/control pre-trends should be equal.
+
+        Use low PSU noise so the conditional_pt signal dominates.
+        """
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=2000,
+            n_periods=8,
+            add_covariates=True,
+            conditional_pt=2.0,
+            never_treated_frac=0.5,
+            psu_re_sd=0.1,
+            psu_period_factor=0.1,
+            noise_sd=0.2,
+            seed=42,
+        )
+        p1 = df[df["period"] == 1].set_index("unit")
+        p2 = df[df["period"] == 2].set_index("unit")
+        common = p1.index.intersection(p2.index)
+        dy = p2.loc[common, "outcome"].values - p1.loc[common, "outcome"].values
+        x1_vals = p1.loc[common, "x1"].values
+        is_treated = (p1.loc[common, "first_treat"] > 0).values.astype(float)
+
+        # Unconditional regression: dy ~ treated (should show large gap)
+        n = len(dy)
+        X_uncond = np.column_stack([np.ones(n), is_treated])
+        beta_uncond = np.linalg.lstsq(X_uncond, dy, rcond=None)[0]
+        uncond_gap = abs(beta_uncond[1])
+
+        # Conditional regression: dy ~ treated + x1 (gap should shrink)
+        X_cond = np.column_stack([np.ones(n), is_treated, x1_vals])
+        beta_cond = np.linalg.lstsq(X_cond, dy, rcond=None)[0]
+        cond_gap = abs(beta_cond[1])
+
+        # With low noise and strong signal, controlling for x1 should
+        # substantially reduce the treated coefficient
+        assert uncond_gap > 0.05, f"Unconditional gap too small: {uncond_gap:.4f}"
+        assert cond_gap < uncond_gap * 0.5, (
+            f"Conditional gap ({cond_gap:.4f}) should be much smaller than "
+            f"unconditional ({uncond_gap:.4f})"
+        )
+
+    def test_conditional_pt_crosssection_trend_did(self):
+        """In cross-section mode, DID across pre-periods isolates the trend term.
+
+        Uses group-level mean DID across periods 1 and 2 (both pre-treatment).
+        This is specific to the conditional_pt * x1 * (t/T) trend - the level
+        effect _beta1 * x1 cancels in the period difference.
+        """
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=2000,
+            n_periods=8,
+            add_covariates=True,
+            conditional_pt=2.0,
+            never_treated_frac=0.5,
+            psu_re_sd=0.1,
+            psu_period_factor=0.1,
+            noise_sd=0.2,
+            panel=False,
+            seed=42,
+        )
+        # Group-mean DID across pre-treatment periods 1 and 2.
+        # The conditional_pt trend creates differential growth:
+        # DID = conditional_pt * (E[x1|treated] - E[x1|control]) * (1/T)
+        # With conditional_pt=2.0, shift=1.0, T=8: DID ≈ 0.25
+        p1 = df[df["period"] == 1]
+        p2 = df[df["period"] == 2]
+
+        mean_t_p1 = p1.loc[p1["first_treat"] > 0, "outcome"].mean()
+        mean_c_p1 = p1.loc[p1["first_treat"] == 0, "outcome"].mean()
+        mean_t_p2 = p2.loc[p2["first_treat"] > 0, "outcome"].mean()
+        mean_c_p2 = p2.loc[p2["first_treat"] == 0, "outcome"].mean()
+
+        did = (mean_t_p2 - mean_c_p2) - (mean_t_p1 - mean_c_p1)
+        # Expected DID ≈ 0.25; should be positive and detectable
+        assert did > 0.05, (
+            f"Cross-section DID too small: {did:.4f}. "
+            f"The conditional_pt trend term may not be active."
+        )
+
+    def test_conditional_pt_crosssection_conditional_did(self):
+        """In cross-section mode, x1-adjusted DID should shrink vs unconditional.
+
+        Pools periods 1 and 2, regresses outcome on treated, post, treated*post,
+        x1, and x1*post. The treated*post coefficient should shrink when x1
+        interactions are included.
+        """
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=2000,
+            n_periods=8,
+            add_covariates=True,
+            conditional_pt=2.0,
+            never_treated_frac=0.5,
+            psu_re_sd=0.1,
+            psu_period_factor=0.1,
+            noise_sd=0.2,
+            panel=False,
+            seed=42,
+        )
+        pre = df[df["period"].isin([1, 2])].copy()
+        y = pre["outcome"].values
+        treated = (pre["first_treat"] > 0).values.astype(float)
+        post = (pre["period"] == 2).values.astype(float)
+        treated_post = treated * post
+        x1 = pre["x1"].values
+        x1_post = x1 * post
+        n = len(y)
+
+        # Unconditional DID: outcome ~ 1 + treated + post + treated*post
+        X_uncond = np.column_stack([np.ones(n), treated, post, treated_post])
+        beta_uncond = np.linalg.lstsq(X_uncond, y, rcond=None)[0]
+        uncond_did = abs(beta_uncond[3])
+
+        # Conditional DID: add x1 and x1*post
+        X_cond = np.column_stack([
+            np.ones(n), treated, post, treated_post, x1, x1_post
+        ])
+        beta_cond = np.linalg.lstsq(X_cond, y, rcond=None)[0]
+        cond_did = abs(beta_cond[3])
+
+        assert uncond_did > 0.05, f"Unconditional DID too small: {uncond_did:.4f}"
+        assert cond_did < uncond_did * 0.5, (
+            f"Cross-section conditional DID ({cond_did:.4f}) should be much "
+            f"smaller than unconditional ({uncond_did:.4f})"
+        )
+
+    def test_conditional_pt_backward_compatible(self):
+        """conditional_pt=0.0 should produce identical output to default."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df_default = generate_survey_did_data(
+            n_units=100, add_covariates=True, seed=99
+        )
+        df_explicit = generate_survey_did_data(
+            n_units=100, add_covariates=True, conditional_pt=0.0, seed=99
+        )
+        pd.testing.assert_frame_equal(df_default, df_explicit)
+
+    def test_conditional_pt_informative_sampling(self):
+        """conditional_pt x1 shift should survive informative-sampling ranking."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        for panel_mode in [True, False]:
+            df = generate_survey_did_data(
+                n_units=1000,
+                n_periods=4,
+                add_covariates=True,
+                conditional_pt=0.3,
+                informative_sampling=True,
+                panel=panel_mode,
+                seed=42,
+            )
+            p1 = df[df["period"] == 1]
+            x1_treated = p1.loc[p1["first_treat"] > 0, "x1"].mean()
+            x1_control = p1.loc[p1["first_treat"] == 0, "x1"].mean()
+            shift = x1_treated - x1_control
+            assert shift > 0.5, (
+                f"panel={panel_mode}: x1 shift too small after "
+                f"informative sampling ranking: {shift:.3f}"
+            )
+
+    def test_conditional_pt_dgp_truth_diagnostics(self):
+        """dgp_truth should include conditional_pt_active and valid ICC."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=500,
+            n_periods=4,
+            add_covariates=True,
+            conditional_pt=0.3,
+            icc=0.15,
+            return_true_population_att=True,
+            seed=42,
+        )
+        truth = df.attrs["dgp_truth"]
+        assert truth["conditional_pt_active"] is True
+        assert np.isfinite(truth["icc_realized"])
+        assert np.isfinite(truth["population_att"])
+
+    def test_conditional_pt_panel_and_crosssection(self):
+        """conditional_pt should work in both panel and cross-section modes."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        for panel_mode in [True, False]:
+            df = generate_survey_did_data(
+                n_units=500,
+                n_periods=4,
+                add_covariates=True,
+                conditional_pt=0.3,
+                panel=panel_mode,
+                seed=42,
+            )
+            # Basic sanity: data is produced
+            assert len(df) == 500 * 4
+            assert "x1" in df.columns
+            # Check x1 shift exists in period 1
+            p1 = df[df["period"] == 1]
+            x1_treated = p1.loc[p1["first_treat"] > 0, "x1"].mean()
+            x1_control = p1.loc[p1["first_treat"] == 0, "x1"].mean()
+            assert x1_treated > x1_control, (
+                f"panel={panel_mode}: treated x1 not shifted"
+            )
+
 
 class TestAggregateSurvey:
     """Tests for aggregate_survey function."""

@@ -2700,6 +2700,21 @@ The 8-step workflow in `docs/llms-practitioner.txt` is adapted from Baker et al.
   contributions are included in the Y(0) ranking used for weight assignment.
   Covariates are pre-drawn before the ranking step (panel: once before the loop;
   cross-section: each period) and reused in the outcome generation.
+- **Note:** When `conditional_pt != 0`, the DGP creates X-dependent time trends
+  that violate unconditional parallel trends while preserving conditional PT.
+  Two mechanisms activate: (1) treated units' x1 is drawn from N(1, 1) instead
+  of N(0, 1), creating differential covariate distributions; (2) the outcome
+  includes `conditional_pt * x1_i * (t / n_periods)` for all units. Because
+  E[x1 | treated] != E[x1 | control], the average time trend differs by group
+  (unconditional PT fails). Conditional on x1, trends are identical (conditional
+  PT holds). DR/IPW estimators with x1 as covariate recover the true ATT.
+  Requires at least one ever-treated and one never-treated unit (rejected
+  otherwise because the x1 mean shift only differentiates ever-treated from
+  never-treated units).
+- **Note:** When `conditional_pt != 0` is combined with `icc`, the ICC
+  calibration is approximate. The x1 mean shift creates a mixture distribution
+  with marginal Var(x1) = 1 + p_treated * (1 - p_treated) > 1, slightly
+  inflating non-PSU variance and causing realized ICC to undershoot the target.
 
 ---
 

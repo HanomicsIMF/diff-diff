@@ -1189,6 +1189,7 @@ def generate_survey_did_data(
     return_true_population_att: bool = False,
     covariate_effects: Optional[tuple] = None,
     te_covariate_interaction: float = 0.0,
+    conditional_pt: float = 0.0,
 ) -> pd.DataFrame:
     """
     Generate synthetic staggered DiD data with survey structure.
@@ -1289,8 +1290,9 @@ def generate_survey_did_data(
         with keys: ``population_att`` (weight-weighted average of treated
         true effects), ``deff_kish`` (1 + CV(w)^2), ``base_stratum_effects``
         (base stratum TEs before dynamic/covariate modifiers),
-        ``icc_realized`` (ANOVA-based
-        ICC computed on period-1 data).
+        ``icc_realized`` (ANOVA-based ICC computed on period-1 data),
+        and ``conditional_pt_active`` (bool, whether conditional PT
+        regime is active).
     covariate_effects : tuple of (float, float), optional
         Coefficients ``(beta1, beta2)`` for covariates x1 and x2 in the
         outcome equation ``y += beta1 * x1 + beta2 * x2``. Default uses
@@ -1301,6 +1303,21 @@ def generate_survey_did_data(
         ``TE_i = base_TE + te_covariate_interaction * x1_i``. Creates
         unit-level treatment effect heterogeneity driven by the continuous
         covariate. Requires ``add_covariates=True``.
+    conditional_pt : float, default=0.0
+        Coefficient for X-dependent time trend:
+        ``y += conditional_pt * x1_i * (t / n_periods)``. When nonzero,
+        treated units' x1 is drawn from N(1, 1) instead of N(0, 1),
+        creating differential pre-trends correlated with covariates.
+        Conditional on x1, trends remain parallel (conditional PT holds).
+        DR/IPW estimators with covariates recover truth; no-covariate
+        estimators are biased. Uses normalized time (t/n_periods) for
+        scale independence. Requires ``add_covariates=True`` and at least
+        one ever-treated and one never-treated unit (the x1 mean shift
+        only differentiates ever-treated from never-treated units).
+
+        .. note:: When used with ``icc``, the ICC calibration is approximate
+           because the x1 mean shift creates a mixture distribution with
+           slightly higher marginal variance than the assumed Var(x1) = 1.
 
     Returns
     -------
@@ -1414,6 +1431,25 @@ def generate_survey_did_data(
     if te_covariate_interaction != 0.0 and not add_covariates:
         raise ValueError("te_covariate_interaction requires add_covariates=True")
 
+    if not np.isfinite(conditional_pt):
+        raise ValueError(
+            f"conditional_pt must be finite, got {conditional_pt}"
+        )
+    if conditional_pt != 0.0 and not add_covariates:
+        raise ValueError("conditional_pt requires add_covariates=True")
+    if conditional_pt != 0.0:
+        n_never = int(n_units * never_treated_frac)
+        n_treated = n_units - n_never
+        if n_never < 1 or n_treated < 1:
+            raise ValueError(
+                "conditional_pt requires at least one ever-treated and one "
+                f"never-treated unit (n_units={n_units}, "
+                f"never_treated_frac={never_treated_frac} yields "
+                f"{n_never} never-treated, {n_treated} treated). "
+                "The x1 mean shift differentiates ever-treated from "
+                "never-treated units; both groups must be present."
+            )
+
     # --- ICC -> psu_re_sd resolution ---
     if icc is not None:
         # Covariate variance: Var(beta1*x1) + Var(beta2*x2)
@@ -1492,8 +1528,12 @@ def generate_survey_did_data(
         y0_period1 = _panel_unit_fe + psu_re[unit_psu] + psu_period_re[unit_psu, 0] + 0.5
         if add_covariates:
             _panel_x1 = rng.normal(0, 1, size=n_units)
+            if conditional_pt != 0.0:
+                _panel_x1[unit_cohort > 0] += 1.0
             _panel_x2 = rng.choice([0, 1], size=n_units)
             y0_period1 = y0_period1 + _beta1 * _panel_x1 + _beta2 * _panel_x2
+            if conditional_pt != 0.0:
+                y0_period1 = y0_period1 + conditional_pt * _panel_x1 * (1 / n_periods)
         _rank_pair_weights(unit_weight, unit_stratum, y0_period1, n_strata)
 
     # Save base weights for cross-section informative sampling (reset each period)
@@ -1531,11 +1571,15 @@ def generate_survey_did_data(
             # Draw covariates early so they can be included in Y(0) ranking
             if add_covariates:
                 x1 = rng.normal(0, 1, size=n_units)
+                if conditional_pt != 0.0:
+                    x1[unit_cohort > 0] += 1.0
                 x2 = rng.choice([0, 1], size=n_units)
             unit_weight = _base_weight.copy()  # type: ignore[possibly-undefined]
             y0_t = unit_fe + psu_re[unit_psu] + psu_period_re[unit_psu, t - 1] + 0.5 * t
             if add_covariates:
                 y0_t = y0_t + _beta1 * x1 + _beta2 * x2
+                if conditional_pt != 0.0:
+                    y0_t = y0_t + conditional_pt * x1 * (t / n_periods)
             _rank_pair_weights(unit_weight, unit_stratum, y0_t, n_strata)
 
         # Covariates — may already be drawn by informative sampling above
@@ -1546,6 +1590,8 @@ def generate_survey_did_data(
             pass  # x1, x2 already drawn in cross-section ranking block
         elif add_covariates:
             x1 = rng.normal(0, 1, size=n_units)
+            if conditional_pt != 0.0:
+                x1[unit_cohort > 0] += 1.0
             x2 = rng.choice([0, 1], size=n_units)
         else:
             x1 = None
@@ -1564,6 +1610,8 @@ def generate_survey_did_data(
 
             if add_covariates:
                 y += _beta1 * x1[i] + _beta2 * x2[i]
+                if conditional_pt != 0.0:
+                    y += conditional_pt * x1[i] * (t / n_periods)
 
             treated = int(g_i > 0 and t >= g_i)
             true_eff = 0.0
@@ -1663,6 +1711,7 @@ def generate_survey_did_data(
             "deff_kish": float(deff_kish),
             "base_stratum_effects": stratum_effects,
             "icc_realized": icc_realized,
+            "conditional_pt_active": conditional_pt != 0.0,
         }
 
     return df
