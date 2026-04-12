@@ -372,38 +372,17 @@ class TestForwardCompatGates:
 
     def test_rank_deficient_action_error_raises_on_fitted_twfe(self):
         """
-        Per Round 13: rank_deficient_action="error" must be honored on
-        the fitted TWFE diagnostic path, not swallowed by the blanket
-        try/except. The standalone twowayfeweights() always honors it;
-        the fitted path must too.
+        The TWFE diagnostic requires at least 2 groups and 2 periods
+        to build a meaningful FE design. A 1-group panel triggers a
+        ValueError from _build_group_time_design's guard, and when
+        rank_deficient_action="error" the blanket except in fit()
+        re-raises it instead of swallowing it as a warning.
 
-        Uses a minimal panel (1 joiner group + 1 control group, 3
-        periods, 1 obs per cell = 6 cells total) where the FE design
-        has more columns than cells and triggers the underdetermined-
-        system ValueError from solve_ols.
+        This also exercises the code path where rank_deficient_action
+        ="warn" downgrades the failure to a warning so the main
+        estimation can proceed.
         """
-        # 2 groups, 3 periods: 6 cells but the FE design has
-        # (2-1) + (3-1) + 1 = 4 columns. That's fine.
-        # To trigger rank-deficient: use a panel so small that the
-        # number of cells equals the number of FE dummies.
-        # With 3 groups, 3 periods: 9 cells, (3-1) + (3-1) + 1 = 5 columns. Not rank-deficient.
-        # With 2 groups, 2 periods: 4 cells, (2-1) + (2-1) + 1 = 3 columns. Not rank-deficient.
-        # Trigger via an unbalanced panel: 3 groups, 3 periods, but
-        # group 3 only has period 0 (terminal missingness), giving
-        # 7 cells with 3+3-1 = 5 columns. Not rank-deficient.
-        #
-        # Simplest route: a single-group joiner panel (1 group, 2
-        # periods = 2 cells, but group+time dummies need 3 columns).
-        # This also needs a control group. Use 2 groups, but one
-        # is a singleton-period (contributing 1 cell to 1 period only).
-        # Actually, the easiest verified trigger: 1 group, 2 periods.
-        # solve_ols raises "Fewer observations (2) than parameters (3)."
-        # But fit() will also raise for missing-baseline or insufficient
-        # groups BEFORE reaching the TWFE diagnostic — so the TWFE
-        # diagnostic must run first (it does: Step 5a).
-        #
-        # Use the confirmed trigger: 1 group, 2 periods, which has
-        # 2 cells < 3 columns in the FE design.
+        # 1 group, 2 periods: triggers "at least 2 groups" guard
         df = pd.DataFrame(
             {
                 "group": [1, 1],
@@ -414,7 +393,7 @@ class TestForwardCompatGates:
         )
         # rank_deficient_action="error" should propagate through
         est = ChaisemartinDHaultfoeuille(twfe_diagnostic=True, rank_deficient_action="error")
-        with pytest.raises(ValueError, match="Fewer observations"):
+        with pytest.raises(ValueError, match="at least 2 groups"):
             est.fit(
                 df,
                 outcome="outcome",
@@ -423,17 +402,10 @@ class TestForwardCompatGates:
                 treatment="treatment",
             )
 
-        # rank_deficient_action="warn" should NOT raise on the same panel
-        # (the diagnostic fails gracefully and main estimation continues)
+        # rank_deficient_action="warn" should NOT raise the TWFE error
         est_warn = ChaisemartinDHaultfoeuille(twfe_diagnostic=True, rank_deficient_action="warn")
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            # The estimation may still raise for other reasons (e.g.,
-            # no switching cells after the 1-group panel has no controls).
-            # What we're testing is that the TWFE diagnostic does NOT
-            # raise. If the main estimation raises, that's fine — the
-            # test goal is that rank_deficient_action="warn" doesn't
-            # propagate the ValueError.
             try:
                 est_warn.fit(
                     df,
@@ -444,11 +416,8 @@ class TestForwardCompatGates:
                 )
             except ValueError as exc:
                 # Acceptable if the error is from main estimation
-                # (not from the TWFE diagnostic)
-                assert "Fewer observations" not in str(exc), (
-                    "rank_deficient_action='warn' should not raise the "
-                    "TWFE rank-deficiency error"
-                )
+                # (not from the TWFE diagnostic guard)
+                assert "at least 2 groups" not in str(exc)
 
 
 # =============================================================================

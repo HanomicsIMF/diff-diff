@@ -1984,6 +1984,11 @@ def _build_group_time_design(
     n = len(cell)
     n_groups = len(groups)
     n_times = len(times)
+    if n_groups < 2 or n_times < 2:
+        raise ValueError(
+            f"TWFE diagnostic requires at least 2 groups and 2 time periods, "
+            f"got {n_groups} group(s) and {n_times} period(s)."
+        )
 
     # Columns: [intercept, group_1, ..., group_{G-1}, time_1, ..., time_{T-1}]
     n_cols = 1 + (n_groups - 1) + (n_times - 1)
