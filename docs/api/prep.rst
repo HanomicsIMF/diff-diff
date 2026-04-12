@@ -311,13 +311,14 @@ Example
 
    # panel has: state, year, smoking_rate_mean, smoking_rate_se,
    #   smoking_rate_n, smoking_rate_precision, smoking_rate_weight,
-   #   age_mean, income_mean, cell_n, cell_n_eff, srs_fallback
+   #   age_mean, income_mean, cell_n, cell_n_eff, cell_sum_w, srs_fallback
    #
-   # *_weight is fit-ready (NaN precision -> 0.0)
+   # *_weight is fit-ready: unit-constant population weight (pweight, default)
+   #   or cleaned precision with NaN/Inf -> 0.0 (aweight opt-in).
+   # cell_sum_w is a per-cell diagnostic (sum of survey weights per cell).
    # Non-estimable cells and zero-weight geos are dropped automatically.
-   # Multi-outcome filtering is keyed off the first outcome.
 
-   # stage2 is pre-configured: aweights + state-level clustering
+   # stage2 is pre-configured: pweights + state-level clustering
    # Add treatment/time indicators at the panel level, then fit:
    # panel["treated"] = ...  # from policy adoption data
    # panel["post"] = (panel["year"] >= treatment_year).astype(int)

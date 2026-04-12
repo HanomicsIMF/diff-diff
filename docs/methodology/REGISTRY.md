@@ -2459,14 +2459,32 @@ DiD estimation on repeated cross-section survey data.
   `ψ_i = w_i (y_i - ȳ_g) / Σ w_j` is zero-padded outside the cell, preserving
   full strata/PSU structure for variance estimation via `compute_survey_if_variance()`
   (TSL) or `compute_replicate_if_variance()` (replicate designs).
-- **Precision weight**: `1 / V(ȳ_g)` used as inverse-variance weight (aweight)
-  in second-stage DiD estimation.
+- **Second-stage weights** (`second_stage_weights` parameter):
+  - `"pweight"` (default): Population weight = mean of per-cell `Σ w_i` within each
+    geographic unit (first `by` column), constant across periods. Proportional to
+    the Horvitz-Thompson estimated population count, averaged over periods to
+    satisfy the unit-constant survey column contract required by panel estimators.
+    Compatible with all survey-capable estimators including pweight-only estimators
+    (CallawaySantAnna, ImputationDiD, TwoStageDiD, StackedDiD, etc.).
+  - `"aweight"`: Precision weight = `1 / V(ȳ_g)` (inverse variance). Produces
+    efficiency-weighted estimates via WLS. Compatible only with estimators that
+    accept aweight (DifferenceInDifferences, TwoWayFixedEffects, MultiPeriodDiD,
+    SunAbraham, ContinuousDiD, EfficientDiD).
+  - **Reference**: Solon, Haider & Wooldridge (2015) "What Are We Weighting For?",
+    Journal of Human Resources 50(2), 301-316. Population weights estimate the
+    population parameter; precision weights are efficient under correct variance
+    specification. Both are valid with heteroskedasticity-robust standard errors.
+  - **Reference**: Donald & Lang (2007) "Inference with Difference-in-Differences
+    and Other Panel Data", Review of Economics and Statistics 89(2), 221-233.
+  - **Note:** The pweight default matches the R `did` package convention where
+    `weightsname` accepts sampling/population weights, not inverse-variance weights.
 - **Note:** SRS fallback when design-based variance is unidentifiable (e.g., all
   strata contribute zero variance) or when the cell has fewer than `min_n` valid
   observations. Formula: `V_SRS = Σ w_i(y_i - ȳ)² / (Σ w_j)² × n/(n-1)`.
   Cells using SRS fallback are flagged via `srs_fallback` column.
 - **Edge case**: Zero-variance cells (all observations identical) set precision to
-  NaN to avoid infinite weights in second-stage WLS.
+  NaN. Under aweight mode this maps to weight 0.0; under pweight mode the cell
+  retains its positive population weight.
 
 ### Survey-Aware Bootstrap (Phase 6)
 
