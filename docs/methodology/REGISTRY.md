@@ -2708,8 +2708,9 @@ The 8-step workflow in `docs/llms-practitioner.txt` is adapted from Baker et al.
   E[x1 | treated] != E[x1 | control], the average time trend differs by group
   (unconditional PT fails). Conditional on x1, trends are identical (conditional
   PT holds). DR/IPW estimators with x1 as covariate recover the true ATT.
-  Requires at least one never-treated unit (rejected otherwise because the x1
-  mean shift only differentiates ever-treated from never-treated units).
+  Requires at least one ever-treated and one never-treated unit (rejected
+  otherwise because the x1 mean shift only differentiates ever-treated from
+  never-treated units).
 - **Note:** When `conditional_pt != 0` is combined with `icc`, the ICC
   calibration is approximate. The x1 mean shift creates a mixture distribution
   with marginal Var(x1) = 1 + p_treated * (1 - p_treated) > 1, slightly

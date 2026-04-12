@@ -1312,8 +1312,8 @@ def generate_survey_did_data(
         DR/IPW estimators with covariates recover truth; no-covariate
         estimators are biased. Uses normalized time (t/n_periods) for
         scale independence. Requires ``add_covariates=True`` and at least
-        one never-treated unit (the x1 mean shift only differentiates
-        ever-treated from never-treated units).
+        one ever-treated and one never-treated unit (the x1 mean shift
+        only differentiates ever-treated from never-treated units).
 
         .. note:: When used with ``icc``, the ICC calibration is approximate
            because the x1 mean shift creates a mixture distribution with
@@ -1437,15 +1437,18 @@ def generate_survey_did_data(
         )
     if conditional_pt != 0.0 and not add_covariates:
         raise ValueError("conditional_pt requires add_covariates=True")
-    if conditional_pt != 0.0 and int(n_units * never_treated_frac) < 1:
-        raise ValueError(
-            "conditional_pt requires at least one never-treated unit "
-            f"(n_units={n_units}, never_treated_frac={never_treated_frac} "
-            f"yields {int(n_units * never_treated_frac)} never-treated). "
-            "The x1 mean shift applies to all ever-treated units; without a "
-            "never-treated group, treated and control units share the same x1 "
-            "distribution and unconditional parallel trends are not violated."
-        )
+    if conditional_pt != 0.0:
+        n_never = int(n_units * never_treated_frac)
+        n_treated = n_units - n_never
+        if n_never < 1 or n_treated < 1:
+            raise ValueError(
+                "conditional_pt requires at least one ever-treated and one "
+                f"never-treated unit (n_units={n_units}, "
+                f"never_treated_frac={never_treated_frac} yields "
+                f"{n_never} never-treated, {n_treated} treated). "
+                "The x1 mean shift differentiates ever-treated from "
+                "never-treated units; both groups must be present."
+            )
 
     # --- ICC -> psu_re_sd resolution ---
     if icc is not None:
