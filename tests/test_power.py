@@ -2602,6 +2602,17 @@ class TestSurveyPower:
                 **_SIM_KW,
             )
 
+    def test_survey_rejects_last_cohort(self):
+        """control_group='last_cohort' rejected (needs multi-cohort DGP)."""
+        with pytest.raises(ValueError, match="last_cohort"):
+            simulate_power(
+                EfficientDiD(control_group="last_cohort"),
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
+
     def test_survey_rejects_clean_control_strict(self):
         """clean_control='strict' rejected (needs multi-cohort DGP)."""
         with pytest.raises(ValueError, match="clean_control.*strict"):
@@ -2629,3 +2640,15 @@ class TestSurveyPower:
                 sigma=1.0,
                 progress=False,
             )
+
+    def test_survey_config_validation_psu_re_sd_negative(self):
+        with pytest.raises(ValueError, match="psu_re_sd"):
+            SurveyPowerConfig(psu_re_sd=-1.0)
+
+    def test_survey_config_validation_psu_re_sd_nan(self):
+        with pytest.raises(ValueError, match="psu_re_sd"):
+            SurveyPowerConfig(psu_re_sd=np.nan)
+
+    def test_survey_config_validation_fpc_nan(self):
+        with pytest.raises(ValueError, match="fpc_per_stratum must be finite"):
+            SurveyPowerConfig(fpc_per_stratum=np.inf)

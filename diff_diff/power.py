@@ -137,6 +137,10 @@ class SurveyPowerConfig:
                 f"weight_variation must be 'none', 'moderate', or 'high', "
                 f"got '{self.weight_variation}'"
             )
+        if not np.isfinite(self.psu_re_sd) or self.psu_re_sd < 0:
+            raise ValueError(f"psu_re_sd must be finite and >= 0, got {self.psu_re_sd}")
+        if not np.isfinite(self.fpc_per_stratum):
+            raise ValueError(f"fpc_per_stratum must be finite, got {self.fpc_per_stratum}")
         if self.icc is not None and not (0 < self.icc < 1):
             raise ValueError(f"icc must be between 0 and 1 (exclusive), got {self.icc}")
         if self.icc is not None and self.psu_re_sd != 2.0:
@@ -1997,11 +2001,11 @@ def simulate_power(
         # cohort_periods/never_treated_frac overrides.
         control_group = getattr(estimator, "control_group", "never_treated")
         clean_control = getattr(estimator, "clean_control", None)
-        if control_group == "not_yet_treated":
+        if control_group in ("not_yet_treated", "last_cohort"):
             raise ValueError(
-                f"survey_config does not support control_group='not_yet_treated' "
+                f"survey_config does not support control_group='{control_group}' "
                 f"(requires multi-cohort DGP). Use the custom data_generator "
-                f"path for survey power with not-yet-treated controls."
+                f"path for survey power with this control-group design."
             )
         if clean_control == "strict":
             raise ValueError(
