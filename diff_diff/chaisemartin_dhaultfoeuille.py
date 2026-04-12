@@ -246,10 +246,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
     ----------
     alpha : float, default=0.05
         Significance level for confidence intervals.
-    cluster : str, optional
-        Reserved for future cluster-robust SE customization. Currently
-        unused — analytical SEs are always at the group level via the
-        cohort-recentered plug-in.
+    cluster : str, optional, default=None
+        **Phase 1 contract:** ``cluster`` must be ``None`` (the default).
+        dCDH always clusters at the group level via the cohort-recentered
+        influence-function plug-in (analytical SEs) and the multiplier
+        bootstrap (also grouped at the ``group`` column). Passing any
+        non-``None`` value raises ``NotImplementedError`` with a Phase 1
+        pointer. Custom clustering at a coarser or finer level than the
+        group is reserved for a future phase. See REGISTRY.md
+        ``ChaisemartinDHaultfoeuille`` section for the full contract.
     n_bootstrap : int, default=0
         Number of multiplier-bootstrap iterations. ``0`` (default) uses
         only the analytical SE. Set to ``999`` or higher for stable
@@ -344,6 +349,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             raise ValueError(f"alpha must be in (0, 1), got {alpha}")
         if n_bootstrap < 0:
             raise ValueError(f"n_bootstrap must be non-negative, got {n_bootstrap}")
+        if cluster is not None:
+            raise NotImplementedError(
+                f"cluster={cluster!r}: custom clustering is not supported in "
+                f"Phase 1 of ChaisemartinDHaultfoeuille. dCDH always clusters "
+                f"at the group level via the cohort-recentered influence-"
+                f"function plug-in (analytical SEs) and the multiplier "
+                f"bootstrap (also grouped at the group column). To use the "
+                f"supported group-level clustering, pass cluster=None (the "
+                f"default). Custom clustering is reserved for a future "
+                f"phase. See REGISTRY.md ChaisemartinDHaultfoeuille section "
+                f"for the full contract."
+            )
 
         self.alpha = alpha
         self.cluster = cluster
@@ -403,6 +420,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             raise ValueError(f"alpha must be in (0, 1), got {self.alpha}")
         if self.n_bootstrap < 0:
             raise ValueError(f"n_bootstrap must be non-negative, got {self.n_bootstrap}")
+        if self.cluster is not None:
+            raise NotImplementedError(
+                f"cluster={self.cluster!r}: custom clustering is not supported "
+                f"in Phase 1 of ChaisemartinDHaultfoeuille. dCDH always clusters "
+                f"at the group level. To use the supported group-level "
+                f"clustering, pass cluster=None (the default). Custom clustering "
+                f"is reserved for a future phase. See REGISTRY.md "
+                f"ChaisemartinDHaultfoeuille section for the full contract."
+            )
         return self
 
     # ------------------------------------------------------------------
@@ -531,7 +557,34 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         )
 
         # ------------------------------------------------------------------
-        # Step 5a: Ragged panel validation
+        # Step 5a: Compute the TWFE diagnostic on the FULL pre-filter cell
+        #          dataset, so the diagnostic reflects the data the user
+        #          actually passed in. This MUST run BEFORE Step 5b (the
+        #          ragged-panel filter) so that the fitted diagnostic and
+        #          the standalone twowayfeweights() function produce
+        #          identical results on ragged panels — both operate on
+        #          the same _validate_and_aggregate_to_cells() output.
+        # ------------------------------------------------------------------
+        twfe_diagnostic_payload = None
+        if self.twfe_diagnostic:
+            try:
+                twfe_diagnostic_payload = _compute_twfe_diagnostic(
+                    cell=cell,
+                    group_col=group,
+                    time_col=time,
+                    rank_deficient_action=self.rank_deficient_action,
+                )
+            except Exception as exc:  # noqa: BLE001
+                warnings.warn(
+                    f"TWFE decomposition diagnostic failed: {exc}. "
+                    "Skipping diagnostic; main estimation continues.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                twfe_diagnostic_payload = None
+
+        # ------------------------------------------------------------------
+        # Step 5b: Ragged panel validation
         #
         # The cohort/variance path treats D_{g,1} as the canonical
         # baseline and walks adjacent observed periods to detect first
@@ -612,29 +665,6 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 f"ChaisemartinDHaultfoeuille requires at least 2 periods, "
                 f"got {len(all_periods_pre_drop)}"
             )
-
-        # ------------------------------------------------------------------
-        # Step 5b: Compute the TWFE diagnostic on the FULL pre-filter cell
-        #          dataset, so the diagnostic reflects the data the user
-        #          actually passed in (per the plan).
-        # ------------------------------------------------------------------
-        twfe_diagnostic_payload = None
-        if self.twfe_diagnostic:
-            try:
-                twfe_diagnostic_payload = _compute_twfe_diagnostic(
-                    cell=cell,
-                    group_col=group,
-                    time_col=time,
-                    rank_deficient_action=self.rank_deficient_action,
-                )
-            except Exception as exc:  # noqa: BLE001
-                warnings.warn(
-                    f"TWFE decomposition diagnostic failed: {exc}. "
-                    "Skipping diagnostic; main estimation continues.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-                twfe_diagnostic_payload = None
 
         # ------------------------------------------------------------------
         # Step 6: Drop A5-violating (multi-switch) cells per drop_larger_lower

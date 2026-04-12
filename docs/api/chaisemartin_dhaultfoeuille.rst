@@ -19,7 +19,7 @@ The estimator:
 
 1. Aggregates individual-level panel data to ``(group, time)`` cells
 2. Drops multi-switch groups by default (matches R ``DIDmultiplegtDYN``)
-3. Filters singleton-baseline groups (footnote 15 of the dynamic paper)
+3. Excludes singleton-baseline groups from the variance computation only (footnote 15 of the dynamic paper)
 4. Computes per-period joiner (``DID_{+,t}``) and leaver (``DID_{-,t}``)
    contributions via Theorem 3 of the AER 2020 paper
 5. Aggregates them into ``DID_M``, the joiners-only ``DID_+``, and the

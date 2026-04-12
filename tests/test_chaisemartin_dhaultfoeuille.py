@@ -323,6 +323,53 @@ class TestForwardCompatGates:
                 survey_design=object(),
             )
 
+    def test_cluster_parameter_raises_not_implemented(self, data):
+        """
+        Per Phase 1 cluster contract: dCDH always clusters at the
+        group level via the cohort-recentered influence function
+        (analytical SEs) and the multiplier bootstrap (also grouped at
+        the group column). Custom clustering is not supported in
+        Phase 1.
+
+        The reviewer flagged that ``cluster`` was previously accepted
+        on ``__init__`` and stored on ``self.cluster`` but never
+        actually read by ``fit()`` or ``_compute_dcdh_bootstrap()``,
+        making it a silent no-op. This test pins the new contract: any
+        non-None cluster value raises ``NotImplementedError`` at
+        construction time with a message naming the offending value
+        and pointing at the Phase 1 reservation. The same gate fires
+        from ``set_params``.
+
+        See REGISTRY.md ``Note (Phase 1 cluster contract)``.
+        """
+        # __init__ rejects any non-None cluster
+        with pytest.raises(NotImplementedError, match=r"cluster.*Phase 1"):
+            ChaisemartinDHaultfoeuille(cluster="state")
+        with pytest.raises(NotImplementedError, match=r"cluster.*Phase 1"):
+            ChaisemartinDHaultfoeuille(cluster="unit")
+
+        # set_params after construction also rejects
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(NotImplementedError, match=r"cluster.*Phase 1"):
+            est.set_params(cluster="state")
+
+        # cluster=None still works (the only supported value)
+        est_default = ChaisemartinDHaultfoeuille(cluster=None)
+        assert est_default.cluster is None
+        assert est_default.get_params()["cluster"] is None
+
+        # The convenience function also rejects (forward-compat gate
+        # propagates through the wrapper at __init__ time)
+        with pytest.raises(NotImplementedError, match=r"cluster.*Phase 1"):
+            chaisemartin_dhaultfoeuille(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                cluster="state",
+            )
+
 
 # =============================================================================
 # drop_larger_lower (Critical #1)
@@ -461,7 +508,7 @@ class TestDropLargerLower:
 
     def test_missing_baseline_period_raises_value_error(self):
         """
-        Per fit() Step 5a: groups missing the first global period have
+        Per fit() Step 5b: groups missing the first global period have
         an undefined baseline D_{g,1} and must be rejected with a clear
         error rather than crashing the cohort enumeration with NaN.
         """
@@ -480,7 +527,7 @@ class TestDropLargerLower:
 
     def test_interior_gap_drops_group_with_warning(self):
         """
-        Per fit() Step 5a: groups with missing intermediate periods
+        Per fit() Step 5b: groups with missing intermediate periods
         (interior gaps between their first and last observed period)
         are dropped with an explicit warning. The cohort/variance path
         requires consecutive observed periods to detect first switches
@@ -508,7 +555,7 @@ class TestDropLargerLower:
 
     def test_terminal_missingness_retained(self):
         """
-        Per fit() Step 5a contract: groups observed at the baseline but
+        Per fit() Step 5b contract: groups observed at the baseline but
         missing one or more LATER periods (terminal missingness / early
         exit / right-censoring) are RETAINED. The group contributes from
         its observed periods only, masked out of missing transitions by
