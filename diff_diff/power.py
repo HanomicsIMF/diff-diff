@@ -139,8 +139,18 @@ class SurveyPowerConfig:
             )
         if self.icc is not None and not (0 < self.icc < 1):
             raise ValueError(f"icc must be between 0 and 1 (exclusive), got {self.icc}")
+        if self.icc is not None and self.psu_re_sd != 2.0:
+            raise ValueError(
+                "Cannot specify both icc and a non-default psu_re_sd. "
+                "icc overrides psu_re_sd via the ICC formula."
+            )
         if self.weight_cv is not None and self.weight_cv <= 0:
             raise ValueError(f"weight_cv must be > 0, got {self.weight_cv}")
+        if self.weight_cv is not None and self.weight_variation != "moderate":
+            raise ValueError(
+                "Cannot specify both weight_cv and a non-default "
+                "weight_variation. weight_cv overrides weight_variation."
+            )
         if self.fpc_per_stratum < self.psu_per_stratum:
             raise ValueError(
                 f"fpc_per_stratum ({self.fpc_per_stratum}) must be >= "
@@ -1923,6 +1933,15 @@ def simulate_power(
 
     data_gen_kwargs = data_generator_kwargs or {}
     est_kwargs = estimator_kwargs or {}
+
+    # Block survey_design in estimator_kwargs when survey_config is active.
+    # Custom survey design overrides go through SurveyPowerConfig.survey_design.
+    if use_survey_dgp and "survey_design" in est_kwargs:
+        raise ValueError(
+            "estimator_kwargs cannot contain 'survey_design' when survey_config "
+            "is set. To override the auto-built SurveyDesign, pass it via "
+            "SurveyPowerConfig(survey_design=...)."
+        )
 
     # Block survey-config-managed keys in data_generator_kwargs
     if use_survey_dgp and data_gen_kwargs:

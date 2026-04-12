@@ -2548,3 +2548,23 @@ class TestSurveyPower:
     def test_survey_config_validation_fpc(self):
         with pytest.raises(ValueError, match="fpc_per_stratum"):
             SurveyPowerConfig(fpc_per_stratum=3, psu_per_stratum=8)
+
+    def test_survey_config_validation_icc_psu_re_sd_conflict(self):
+        with pytest.raises(ValueError, match="icc.*psu_re_sd"):
+            SurveyPowerConfig(icc=0.05, psu_re_sd=3.0)
+
+    def test_survey_config_validation_weight_cv_variation_conflict(self):
+        with pytest.raises(ValueError, match="weight_cv.*weight_variation"):
+            SurveyPowerConfig(weight_cv=0.5, weight_variation="high")
+
+    def test_survey_rejects_estimator_kwargs_survey_design(self):
+        """estimator_kwargs cannot contain survey_design when survey_config set."""
+        with pytest.raises(ValueError, match="estimator_kwargs.*survey_design"):
+            simulate_power(
+                CallawaySantAnna(),
+                estimator_kwargs={"survey_design": None},
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
