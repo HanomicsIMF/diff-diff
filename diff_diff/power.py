@@ -2834,9 +2834,9 @@ def simulate_sample_size(
         )
 
     def _snap_n(n: int, direction: str = "down", floor: Optional[int] = None) -> int:
-        if grid_step == 1:
-            return n
         actual_floor = floor if floor is not None else min_n
+        if grid_step == 1:
+            return max(actual_floor, n)
         if direction == "up":
             return max(actual_floor, ((n + grid_step - 1) // grid_step) * grid_step)
         return max(actual_floor, (n // grid_step) * grid_step)

@@ -2395,6 +2395,25 @@ class TestSurveyPower:
         )
         assert result.required_n >= cfg.min_viable_n  # must be >= 200
 
+    def test_survey_sample_size_explicit_n_range_clamped(self):
+        """Explicit n_range below survey floor is clamped to min_viable_n."""
+        cfg = SurveyPowerConfig(n_strata=5, psu_per_stratum=8)
+        # n_range=(10, 200) but min_viable_n=80, so lo should be clamped to 80
+        result = simulate_sample_size(
+            CallawaySantAnna(),
+            treatment_effect=3.0,
+            sigma=1.0,
+            n_range=(10, 200),
+            n_simulations=10,
+            max_steps=3,
+            seed=42,
+            survey_config=cfg,
+            n_periods=4,
+            treatment_period=2,
+            progress=False,
+        )
+        assert result.required_n >= cfg.min_viable_n  # must be >= 80
+
     def test_survey_rejects_heterogeneous_te(self):
         """heterogeneous_te_by_strata=True rejected with simulation power."""
         cfg = SurveyPowerConfig(heterogeneous_te_by_strata=True)
