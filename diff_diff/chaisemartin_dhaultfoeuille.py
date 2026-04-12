@@ -1149,6 +1149,19 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     T_g=T_g_arr,
                     L_max=L_max,
                 )
+                # Surface placebo A11 warnings
+                pl_a11 = multi_horizon_placebos.pop("_a11_warnings", None)
+                if pl_a11:
+                    warnings.warn(
+                        f"Multi-horizon placebo control-availability "
+                        f"violations in {len(pl_a11)} (group, lag) pair(s): "
+                        f"affected DID^{{pl}}_l values are zeroed but "
+                        f"retained in N^{{pl}}_l. Examples: "
+                        + ", ".join(pl_a11[:3])
+                        + (f" (and {len(pl_a11) - 3} more)" if len(pl_a11) > 3 else ""),
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
             # Normalized effects DID^n_l
             normalized_effects_dict = _compute_normalized_effects(
@@ -2388,6 +2401,7 @@ def _compute_multi_horizon_placebos(
         baseline_f[int(d)] = first_switch_idx[mask]
 
     results: Dict[int, Dict[str, Any]] = {}
+    a11_placebo_warnings: List[str] = []
 
     for l in range(1, L_max + 1):  # noqa: E741
         eligible = np.zeros(n_groups, dtype=bool)
@@ -2427,9 +2441,9 @@ def _compute_multi_horizon_placebos(
             forward_idx = ref_idx + l
             d_base = int(baselines[g])
 
-            # Switcher's backward outcome change: reference minus pre-period
-            # (matching Phase 1 convention: Y_{ref} - Y_{earlier})
-            switcher_change = Y_mat[g, ref_idx] - Y_mat[g, backward_idx]
+            # Switcher's backward outcome change: pre-period minus reference
+            # (paper convention: Y_{F_g-1-l} - Y_{F_g-1})
+            switcher_change = Y_mat[g, backward_idx] - Y_mat[g, ref_idx]
 
             # Control pool: same baseline, not switched by forward_idx
             ctrl_indices = baseline_groups[d_base]
@@ -2443,9 +2457,10 @@ def _compute_multi_horizon_placebos(
 
             if ctrl_pool.size == 0:
                 pl_g_l[g] = 0.0
+                a11_placebo_warnings.append(f"placebo lag {l}, group_idx {g}: no controls")
                 continue
 
-            ctrl_changes = Y_mat[ctrl_pool, ref_idx] - Y_mat[ctrl_pool, backward_idx]
+            ctrl_changes = Y_mat[ctrl_pool, backward_idx] - Y_mat[ctrl_pool, ref_idx]
             ctrl_avg = float(ctrl_changes.mean())
             pl_g_l[g] = switcher_change - ctrl_avg
 
@@ -2458,6 +2473,9 @@ def _compute_multi_horizon_placebos(
             "N_pl_l": N_pl_l,
             "eligible_mask": eligible,
         }
+
+    if a11_placebo_warnings:
+        results["_a11_warnings"] = a11_placebo_warnings  # type: ignore[assignment]
 
     return results
 
@@ -2545,7 +2563,9 @@ def _compute_cost_benefit_delta(
     dict with keys: delta, weights, has_leavers, delta_joiners, delta_leavers
     """
 
-    # Total cumulative dose across all eligible (g, l) pairs
+    # Per-horizon dose via Lemma 4: w_l uses the PER-PERIOD dose
+    # D_{g,F_g-1+l} - D_{g,1} (NOT the cumulative delta^D_{g,l}).
+    # For binary joiners this is 1 per (g,l) pair, so w_l = N_l / sum N_l'.
     total_dose = 0.0
     per_horizon_dose: Dict[int, float] = {}
     for l in range(1, L_max + 1):  # noqa: E741
@@ -2557,14 +2577,9 @@ def _compute_cost_benefit_delta(
         dose_l = 0.0
         for g in np.where(eligible)[0]:
             f_g = first_switch_idx[g]
-            # Cumulative dose: delta^D_{g,l} = sum_{k=0}^{l-1} |D_{g,F_g+k} - D_{g,1}|
-            # For binary treatment this equals l (each period contributes 1).
-            cum_dose = 0.0
-            for k in range(l):
-                col_k = f_g + k
-                if col_k < D_mat.shape[1]:
-                    cum_dose += abs(float(D_mat[g, col_k] - baselines[g]))
-            dose_l += cum_dose
+            col = f_g - 1 + l
+            if col < D_mat.shape[1]:
+                dose_l += abs(float(D_mat[g, col] - baselines[g]))
         per_horizon_dose[l] = dose_l
         total_dose += dose_l
 
@@ -2612,12 +2627,9 @@ def _compute_cost_benefit_delta(
                     if switch_direction[g] != direction:
                         continue
                     f_g = first_switch_idx[g]
-                    cum_dose = 0.0
-                    for k in range(l):
-                        col_k = f_g + k
-                        if col_k < D_mat.shape[1]:
-                            cum_dose += abs(float(D_mat[g, col_k] - baselines[g]))
-                    dose_l += cum_dose
+                    col = f_g - 1 + l
+                    if col < D_mat.shape[1]:
+                        dose_l += abs(float(D_mat[g, col] - baselines[g]))
                 dir_horizon_dose[l] = dose_l
                 dir_dose += dose_l
 

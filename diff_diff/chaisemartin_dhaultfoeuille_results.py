@@ -411,9 +411,10 @@ class ChaisemartinDHaultfoeuilleResults:
     def __repr__(self) -> str:
         """Concise string representation."""
         sig = _get_significance_stars(self.overall_p_value)
+        label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
         return (
             f"ChaisemartinDHaultfoeuilleResults("
-            f"DID_M={self.overall_att:.4f}{sig}, "
+            f"{label}={self.overall_att:.4f}{sig}, "
             f"SE={self.overall_se:.4f}, "
             f"n_groups={len(self.groups)}, "
             f"n_switcher_cells={self.n_switcher_cells})"
@@ -802,9 +803,10 @@ class ChaisemartinDHaultfoeuilleResults:
             # For the DID_M row, both quantities use the overall switching
             # cell set: n_cells = sum of joiner + leaver cells, and n_obs
             # is the same sum of raw observation counts.
+            overall_est_label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
             rows = [
                 {
-                    "estimand": "DID_M",
+                    "estimand": overall_est_label,
                     "effect": self.overall_att,
                     "se": self.overall_se,
                     "t_stat": self.overall_t_stat,
