@@ -533,6 +533,8 @@ Cost-benefit aggregate `delta = sum_l w_l * DID_l` (Lemma 4) where `w_l` are non
 
 Dynamic placebos `DID^{pl}_l` look backward from each group's reference period, with a dual eligibility condition: `F_g - 1 - l >= 1` AND `F_g - 1 + l <= T_g`.
 
+- **Note (Phase 2 equal-cell weighting, deviation from R `DIDmultiplegtDYN`):** The Phase 1 equal-cell weighting contract carries forward to all Phase 2 estimands (`DID_l`, `DID^{pl}_l`, `DID^n_l`, `delta`). Each `(g, t)` cell contributes equally regardless of within-cell observation count. On individual-level inputs with uneven cell sizes, this produces a different estimand than R `DIDmultiplegtDYN` which weights by cell size. The parity tests use one-observation-per-cell generators so parity holds. See the Phase 1 weighting Note above for the full rationale.
+
 - **Note (Phase 2 `<50%` switcher warning):** When fewer than 50% of the l=1 switchers contribute at a far horizon l, `fit()` emits a `UserWarning`. The paper recommends not reporting such horizons (Favara-Imbs application, footnote 14).
 
 - **Note (Phase 2 Assumption 7 and cost-benefit delta):** Assumption 7 (`D_{g,t} >= D_{g,1}`) is required for the single-sign cost-benefit interpretation. When leavers are present (binary: 1->0 groups violate Assumption 7), the estimator emits a `UserWarning` and provides `delta_joiners` / `delta_leavers` separately on `results.cost_benefit_delta`.
