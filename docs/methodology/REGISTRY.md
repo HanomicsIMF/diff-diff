@@ -10,6 +10,7 @@ This document provides the academic foundations and key implementation requireme
    - [TwoWayFixedEffects](#twowayfixedeffects)
 2. [Modern Staggered Estimators](#modern-staggered-estimators)
    - [CallawaySantAnna](#callawaysantanna)
+   - [ChaisemartinDHaultfoeuille](#chaisemartindhaultfoeuille)
    - [ContinuousDiD](#continuousdid)
    - [SunAbraham](#sunabraham)
    - [ImputationDiD](#imputationdid)
@@ -453,6 +454,148 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
 - [ ] Doubly robust estimation when covariates provided
 - [ ] Multiplier bootstrap preserves panel structure
 - [x] Repeated cross-sections (`panel=False`) for non-panel surveys (Phase 7b)
+
+---
+
+## ChaisemartinDHaultfoeuille
+
+**Primary sources:**
+- [de Chaisemartin, C. & D'Haultfœuille, X. (2020). Two-Way Fixed Effects Estimators with Heterogeneous Treatment Effects. *American Economic Review*, 110(9), 2964-2996.](https://doi.org/10.1257/aer.20181169)
+- [de Chaisemartin, C. & D'Haultfœuille, X. (2022, revised 2024). Difference-in-Differences Estimators of Intertemporal Treatment Effects. NBER Working Paper 29873.](https://www.nber.org/papers/w29873) — Web Appendix Section 3.7.3 contains the cohort-recentered plug-in variance formula implemented here.
+
+**Phase 1 scope:** Ships the contemporaneous-switch estimator `DID_M` from the AER 2020 paper, equivalently `DID_1` (horizon `l = 1`) of the dynamic companion paper. The full multi-phase rollout is in `ROADMAP.md`: Phase 2 adds dynamic horizons `DID_l` for `l > 1`, normalized estimators, cost-benefit aggregates, and sup-t bands; Phase 3 adds covariate adjustment (`DID^X`), group-specific linear trends (`DID^{fd}`), state-set-specific trends, and HonestDiD integration. Survey design support is deferred to a separate effort after all phases ship. **This is the only modern staggered estimator in the library that handles non-absorbing (reversible) treatments** — treatment can switch on AND off over time, making it the natural fit for marketing campaigns, seasonal promotions, on/off policy cycles.
+
+**Key implementation requirements:**
+
+*Assumption checks / warnings:*
+- Treatment must be binary (0/1). Phase 3 will accept non-binary; Phase 1 raises `ValueError` for non-binary input.
+- NaN values in `treatment` or `outcome` columns raise `ValueError` early in `fit()` (no silent drops).
+- Treatment must be constant within each `(g, t)` cell. Within-cell-varying treatment (fractional `d_gt` after aggregation) raises `ValueError`. Pre-aggregate your data to constant binary cell-level treatment before fitting. Fuzzy DiD is deferred to a separate dCDH 2018 paper not covered by Phase 1.
+- Multi-switch groups (those that switch treatment more than once across periods) are dropped before estimation when `drop_larger_lower=True` (the default, matching R `DIDmultiplegtDYN`). Each drop emits a warning with the count and example group IDs. See the multi-switch Note below.
+- Singleton-baseline groups — groups whose `D_{g,1}` value is unique in the post-drop dataset — are excluded from the **variance computation only** (per footnote 15 of the dynamic paper, they have no cohort peer). They are **retained** in the point-estimate sample as period-based stable controls. Each emits a warning. See the singleton-baseline Note below.
+- Never-switching groups (`S_g = 0`) participate in the variance computation when they serve as stable controls under the full influence function. The `n_groups_dropped_never_switching` results field is reported for backwards compatibility but the count no longer represents an actual exclusion.
+- **Balanced-baseline panel required (deviation from R `DIDmultiplegtDYN`).** Every group must have an observation at the **first global period** (the panel's earliest time value); groups missing this baseline raise `ValueError` with the offending group IDs. Groups with **interior period gaps** (missing observations between their first and last observed period) are dropped with a `UserWarning`. **Terminal missingness** (groups observed at the baseline but missing one or more *later* periods) is **retained**: the group contributes from its observed periods only, masked out of the missing transitions by the per-period `present = (N_mat[:, t] > 0) & (N_mat[:, t-1] > 0)` guard. See the ragged-panel deviation Note below.
+- **Period-index semantics.** The estimator operates on **sorted period indices**, not calendar dates. Per-period DIDs use `Y_{g,t} - Y_{g,t-1}` where `t-1` is the *previous observed period in the sorted panel*, not the previous calendar unit. A panel with periods `[2000, 2001, 2003]` (missing year 2002 for ALL groups) is treated as a valid 3-period panel where 2003 is the immediate successor of 2001. The estimator does NOT validate that periods are evenly spaced or that calendar gaps have been imputed. This matches the AER 2020 paper's Theorem 3, which defines transition sets by adjacent sorted periods without assuming calendar regularity, and is consistent with R `DIDmultiplegtDYN`'s behavior. If your data has calendar gaps that should be treated as missing periods rather than adjacent transitions, insert placeholder rows for the missing periods with the group's lagged treatment value and a reasonable imputed outcome (e.g., the group's last observed outcome), so the cell-aggregation step treats the gap as a stable-treatment period rather than a missing one. The validator rejects NaN in outcome and treatment columns, so placeholders must have finite values.
+- Per-period Assumption 11 violations (joiners exist but no stable-untreated controls in some period, or leavers exist but no stable-treated controls) trigger zero-retention behavior with a consolidated warning. See the A11 Note below.
+
+*Estimator equations (Theorem 3 of AER 2020 / Section 3.7.2 of the dynamic paper):*
+
+Per-period DiDs at each switching period `t >= 2`:
+
+```
+DID_{+,t} = (1/N_{1,0,t}) * sum_{g in joiners(t)} (Y_{g,t} - Y_{g,t-1})
+          - (1/N_{0,0,t}) * sum_{g in stable_0(t)} (Y_{g,t} - Y_{g,t-1})
+
+DID_{-,t} = (1/N_{1,1,t}) * sum_{g in stable_1(t)} (Y_{g,t} - Y_{g,t-1})
+          - (1/N_{0,1,t}) * sum_{g in leavers(t)} (Y_{g,t} - Y_{g,t-1})
+```
+
+where `joiners(t)` are groups switching from `D_{g,t-1}=0` to `D_{g,t}=1`, `leavers(t)` are groups switching `1->0`, `stable_0(t)` are groups with `D_{g,t-1}=D_{g,t}=0`, and `stable_1(t)` are groups with `D_{g,t-1}=D_{g,t}=1`. **`N_{a,b,t}` is the COUNT of `(g, t)` cells in each transition state — not the sum of within-cell observation counts.** Each `(g, t)` cell contributes once to its transition's count regardless of how many original observations fed into the cell mean. The cell mean `Y_{g,t}` is computed at the cell-aggregation step via `groupby([group, time]).agg(y_gt=mean)`; the per-period DIDs use these cell means directly without further sample-size weighting. This matches the AER 2020 paper's cell-level notation for `N_{a,b,t}` as a count of transition-state cells (the paper can also be read as using observation sums; the equal-cell interpretation is the one implemented here). **Note (deviation from R `DIDmultiplegtDYN`):** On individual-level inputs with uneven `(group, time)` cell sizes, Python gives each cell **equal weight** (paper-literal cell-count weighting). R `DIDmultiplegtDYN`, absent an explicit weight variable, weights estimation by the number of observations in each cell (cell-size weighting). The two agree exactly on cell-aggregated input where every cell has the same number of observations. The Python parity tests in `tests/test_chaisemartin_dhaultfoeuille_parity.py` use the `generate_reversible_did_data()` generator, which produces exactly one observation per cell, so parity holds. The regression test `test_cell_count_weighting_unbalanced_input` in `tests/test_chaisemartin_dhaultfoeuille.py` explicitly pins the equal-cell contract.
+
+Aggregate `DID_M`:
+
+```
+N_S   = sum_{t>=2} (N_{1,0,t} + N_{0,1,t})
+DID_M = (1/N_S) * sum_{t>=2} (N_{1,0,t} * DID_{+,t} + N_{0,1,t} * DID_{-,t})
+```
+
+Joiners-only and leavers-only views (each weighted by its own switcher count):
+
+```
+DID_+ = sum_{t>=2} (N_{1,0,t} / sum_{t} N_{1,0,t}) * DID_{+,t}
+DID_- = sum_{t>=2} (N_{0,1,t} / sum_{t} N_{0,1,t}) * DID_{-,t}
+```
+
+Single-lag placebo (AER 2020 placebo specification, same section as Theorem 3) — applies the same Theorem 3 logic to `Y_{g,t-1} - Y_{g,t-2}` on cells with 3-period histories:
+
+```
+DID_M^pl = (1/N_S^pl) * sum_{t>=3} (
+              N_{1,0,t} * [(Y_{g,t-1} - Y_{g,t-2})_{joiners} - ...] +
+              N_{0,1,t} * [(Y_{g,t-1} - Y_{g,t-2})_{stable_1} - ...]
+          )
+```
+
+*Standard errors (Web Appendix Section 3.7.3 of the dynamic companion paper):*
+
+Default: cohort-recentered analytical plug-in variance, evaluated at horizon `l = 1`. Cohorts are defined by the triple `(D_{g,1}, F_g, S_g)` (baseline treatment, first-switch period, switch direction). Each group's per-period role weights (joiner, stable_0, leaver, stable_1) sum to a per-group `U^G_g` value via the full `Lambda^G_{g,l=1}` weight vector from Section 3.7.2 of the dynamic paper:
+
+```
+N_S * DID_M = sum_t [
+      sum_{g in joiners(t)}  (Y_{g,t} - Y_{g,t-1})
+    - (N_{1,0,t} / N_{0,0,t}) * sum_{g in stable_0(t)} (Y_{g,t} - Y_{g,t-1})
+    + (N_{0,1,t} / N_{1,1,t}) * sum_{g in stable_1(t)} (Y_{g,t} - Y_{g,t-1})
+    - sum_{g in leavers(t)}  (Y_{g,t} - Y_{g,t-1})
+]
+```
+
+Reading off the coefficient on each `(Y_{g,t} - Y_{g,t-1})` gives the per-cell role weight, which sums across periods to:
+
+```
+U^G_g     = sum_t lambda^G_{g,t} * (Y_{g,t} - Y_{g,t-1})    # full IF
+U_bar_k   = (1/|C_k|) * sum_{g in C_k} U^G_g                # cohort-conditional mean
+sigma_hat^2 = sum_g (U^G_g - U_bar_{cohort(g)})^2 / N_l
+SE         = sqrt(sigma_hat^2 / N_l)
+```
+
+Each switching group typically contributes from MULTIPLE periods: its own switch period plus every period where it serves as a stable control for another cohort's switch. Never-switching groups can also have non-zero `U^G_g` when they serve as stable controls. Singleton-baseline groups (footnote 15 of dynamic paper) are excluded from this sum because they have no cohort peer.
+
+The cohort recentering is critical: subtracting cohort-conditional means is **not** the same as subtracting a single grand mean. The implementation has a dedicated regression test (`test_cohort_recentering_not_grand_mean`) that computes both formulas on a designed DGP and asserts they differ materially.
+
+Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` parameter. Available weight distributions: `"rademacher"` (default), `"mammen"`, `"webb"`. The bootstrap is a library extension beyond the original papers and is provided for consistency with `CallawaySantAnna` / `ImputationDiD` / `TwoStageDiD`.
+
+*Edge cases:*
+- **No switchers in data** (after filtering): raises `ValueError` with a clear message indicating which filters dropped which groups.
+- **No joiners** (only leavers in data): `joiners_available = False`, all `joiners_*` fields are `NaN`. Symmetric for `leavers_available = False`.
+- **`T < 3`**: placebo cannot be computed; `placebo_available = False` with a `UserWarning`.
+- **NaN inference**: `safe_inference()` produces NaN-consistent inference fields (t-stat, p-value, conf int) when SE is non-finite or zero. `assert_nan_inference()` is used in tests to enforce consistency.
+- **TWFE diagnostic with zero denominator**: when `sum(d_gt - d_bar)^2 == 0` (e.g., all cells have identical treatment), the diagnostic returns NaN for `beta_fe` and `sigma_fe` with a `UserWarning`. The diagnostic is non-fatal — it does not block the main estimation.
+- **`placebo=False`** (gating): the results object still exposes `placebo_*` fields, but with `NaN` values and `placebo_available = False`. This keeps the API surface stable.
+
+- **Note:** The analytical CI is **conservative** under Assumption 8 (independent groups) of the dynamic companion paper, and exact only under iid sampling. This is documented as a deliberate deviation from "default nominal coverage". The bootstrap CI uses the same conservative weighting and is provided for users who want a non-asymptotic alternative.
+
+- **Note:** Phase 1 placebo SE is intentionally `NaN` with a `UserWarning`. The dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only — not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo via the dynamic paper's machinery. Until then, the placebo point estimate is meaningful but its inference fields stay NaN-consistent **even when `n_bootstrap > 0`**: the bootstrap path computes SEs for `DID_M`, `DID_+`, and `DID_-`, but `placebo_se`, `placebo_t_stat`, `placebo_p_value`, and `placebo_conf_int` remain `NaN` because the placebo's influence function machinery is deferred to Phase 2.
+
+- **Note:** When every variance-eligible group forms its own `(D_{g,1}, F_g, S_g)` cohort (a degenerate small-panel case where the cohort framework has zero degrees of freedom), the cohort-recentered plug-in formula is unidentified: cohort recentering subtracts the cohort mean from each group's `U^G_g`, and for singleton cohorts the centered value is exactly zero, so the centered influence function vector collapses to all zeros. The estimator returns `overall_se = NaN` with a `UserWarning` rather than silently collapsing to `0.0` (which would falsely imply infinite precision). The `DID_M` point estimate remains well-defined. The bootstrap path inherits the same degeneracy on these panels — the multiplier weights act on an all-zero vector, so the bootstrap distribution is also degenerate. **Deviation from R `DIDmultiplegtDYN`:** R returns a non-zero SE on the canonical 4-group worked example via small-sample sandwich machinery that Python does not implement. Both responses are valid for a degenerate case; Python's `NaN`+warning is the safer default. To get a non-degenerate SE, include more groups so cohorts have peers (real-world panels typically have `G >> K`).
+
+- **Note (Phase 1 cluster contract):** `ChaisemartinDHaultfoeuille` always clusters at the group level. The cohort-recentered analytical SE plug-in operates on per-group influence-function values (one `U^G_g` per group); the multiplier bootstrap generates one weight per group; both inference paths cluster at the user's `group` column with no other option. The constructor accepts `cluster=None` (the default and only supported value); passing any non-`None` value raises `NotImplementedError` with a Phase 1 pointer at construction time (and the same gate fires from `set_params`). Custom clustering at a coarser or finer level than the group is reserved for a future phase. The matching test is `test_cluster_parameter_raises_not_implemented` in `tests/test_chaisemartin_dhaultfoeuille.py::TestForwardCompatGates`.
+
+- **Note (bootstrap inference surface):** When `n_bootstrap > 0`, the top-level `results.overall_p_value` / `results.overall_conf_int` (and joiners/leavers analogues) hold **percentile-based bootstrap inference** computed by the multiplier bootstrap, NOT normal-theory recomputations from the bootstrap SE. The t-stat (`overall_t_stat`, etc.) is computed from the SE via `safe_inference()[0]` to satisfy the project's anti-pattern rule (never compute `t = effect / se` inline) — bootstrap does not define an alternative t-stat semantic for percentile bootstrap, so the SE-based t-stat is the natural choice. `event_study_effects[1]`, `summary()`, `to_dataframe()`, `is_significant`, and `significance_stars` all read from these top-level fields and therefore reflect the bootstrap inference automatically. The library precedent for this propagation is `imputation.py:790-805`, `two_stage.py:778-787`, and `efficient_did.py:1009-1013`. The placebo path is unchanged: placebo bootstrap is deferred to Phase 2 (see the placebo SE Note above), so `placebo_p_value` and `placebo_conf_int` stay NaN even when `n_bootstrap > 0`. The matching test is `test_bootstrap_p_value_and_ci_propagated_to_top_level` in `tests/test_chaisemartin_dhaultfoeuille.py::TestBootstrap`.
+
+- **Note:** Placebo Assumption 11 violations (placebo joiners exist but no 3-period stable_0 controls, or symmetric for leavers/stable_1) trigger zero-retention in the placebo numerator AND emit a consolidated `Placebo (DID_M^pl) Assumption 11 violations` warning from `fit()`, mirroring the main DID path's contract documented above. The zeroed placebo periods retain their switcher counts in the placebo `N_S^pl` denominator, biasing `DID_M^pl` toward zero in the offending direction (matching the placebo paper convention).
+
+- **Note (TWFE diagnostic sample contract):** The fitted `results.twfe_weights` / `results.twfe_fraction_negative` / `results.twfe_sigma_fe` / `results.twfe_beta_fe` are computed on the **FULL pre-filter cell sample** — the data the user passed in, after `_validate_and_aggregate_to_cells()` runs but **before** the ragged-panel validation (Step 5b) and the multi-switch filter (`drop_larger_lower`, Step 6). They do NOT describe the post-filter estimation sample used by `overall_att`, `results.groups`, and the inference fields. `fit()` has three sample-shaping filters in total: (1) interior-gap drops in Step 5b, (2) multi-switch drops in Step 6, and (3) the singleton-baseline filter in Step 7. Filters (1) and (2) actually shrink the point-estimate sample, so when either fires, the fitted TWFE diagnostic and `overall_att` describe **different samples** and the estimator emits a `UserWarning` explaining the divergence with explicit counts. Filter (3) is **variance-only** — singleton-baseline groups remain in the point-estimate sample as period-based stable controls (see the singleton-baseline Note above) — so it does NOT create a fitted-vs-`overall_att` mismatch and does NOT trigger the divergence warning. Rationale for the pre-filter design: the TWFE diagnostic answers "what would the plain TWFE estimator say on the data you passed in?" — not "what would TWFE say on the data dCDH actually used after filtering?" — so users comparing TWFE vs dCDH on a fixed input can do so without an interaction effect from the dCDH-specific filters. The standalone `twowayfeweights()` function uses the same pre-filter sample, so the fitted and standalone APIs always produce identical numbers on the same input. To reproduce the dCDH estimation sample for an external TWFE comparison, pre-process your data to drop the multi-switch and interior-gap groups before fitting (the warning lists offending IDs). The matching tests are `test_twfe_pre_filter_contract_with_interior_gap_drop` and `test_twfe_pre_filter_contract_with_multi_switch_drop` in `tests/test_chaisemartin_dhaultfoeuille.py`.
+
+- **Note:** By default (`drop_larger_lower=True`), the estimator drops groups whose treatment switches more than once before estimation. This matches R `DIDmultiplegtDYN`'s default and is required for the analytical variance formula (Web Appendix Section 3.7.3 of the dynamic paper, which assumes Assumption 5 / no-crossing) to be consistent with the AER 2020 Theorem 3 point estimate. Both formulas operate on the same post-drop dataset. Setting `drop_larger_lower=False` is supported for diagnostic comparison but produces an inconsistent estimator-variance pairing for any multi-switch groups present, and emits an explicit warning.
+
+- **Note:** When Assumption 11 (existence of stable controls) is violated for some period `t` — i.e., joiners exist but no stable-untreated controls, or leavers exist but no stable-treated controls — `DID_{+,t}` (or `DID_{-,t}`) is set to zero by paper convention, and the period's switcher count is **retained** in the `N_S` denominator. This means the affected period contributes a zero to the numerator with a non-zero weight in the denominator, biasing `DID_M` toward zero in the offending direction. Users can detect this by inspecting `results.per_period_effects[t]['did_plus_t_a11_zeroed']` (or `did_minus_t_a11_zeroed`) or the consolidated `fit()` warning. This matches the AER 2020 Theorem 3 paper convention and the worked example arithmetic.
+
+- **Note:** Groups whose baseline treatment value `D_{g,1}` is unique in the post-drop panel (not shared by any other group) are excluded from the **variance computation only** per footnote 15 of the dynamic companion paper. They have no cohort peer for the cohort-recentered plug-in formula. They are **retained in the point-estimate sample** as period-based stable controls (Python's documented period-vs-cohort interpretation). The dropped count is stored on `results.n_groups_dropped_singleton_baseline`, a warning lists example group IDs, and the warning text explicitly states "VARIANCE computation only" so users know the filter does not change `DID_M`.
+
+- **Note (deviation from R DIDmultiplegtDYN):** Python uses **period-based** stable-control sets — `stable_0(t)` is any cell with `D_{g,t-1} = D_{g,t} = 0` regardless of baseline `D_{g,1}`, and similarly for `stable_1(t)`. R `DIDmultiplegtDYN` uses **cohort-based** stable-control sets that additionally require `D_{g,1}` to match the side. Python's definition matches the AER 2020 Theorem 3 cell-count notation `N_{0,0,t}` and `N_{1,1,t}` literally; R's definition matches the dynamic companion paper's cohort `(D_{g,1}, F_g, S_g)` framework. The two definitions agree exactly on (a) panels containing only joiners, (b) panels containing only leavers, (c) the hand-calculable 4-group worked example, or (d) any panel where no joiner's post-switch state overlaps a period when leavers are switching. They disagree by O(1%) on the **point estimate** when both joiners and leavers exist AND some joiners' post-switch cells could serve as leavers' controls (or vice versa). After the Round 2 fix that implemented the full `Lambda^G_{g,l=1}` influence function, the **standard error** parity gap on pure-direction scenarios narrowed from ~18% to ~3%. The R parity tests in `tests/test_chaisemartin_dhaultfoeuille_parity.py` use a tight `1e-4` tolerance for pure-direction point estimates, a 5% rtol for pure-direction SEs, and a 2.5% tolerance for mixed-direction point estimates (with the SE check skipped on mixed scenarios because the period-vs-cohort point-estimate deviation cascades into the variance).
+
+- **Note (deviation from R DIDmultiplegtDYN):** Phase 1 requires panels with a **balanced baseline** (every group observed at the first global period) and **no interior period gaps**. The Step 5b validation in `fit()` enforces this contract: groups missing the baseline raise `ValueError`; groups with interior gaps are dropped with a `UserWarning`; groups with **terminal missingness** (early exit / right-censoring — observed at the baseline but missing one or more later periods) are retained and contribute from their observed periods only. R `DIDmultiplegtDYN` accepts unbalanced panels with documented missing-treatment-before-first-switch handling. Python's restriction is a Phase 1 limitation: the cohort enumeration uses `D_{g,1}` as the canonical baseline (so the baseline observation must exist) and the first-switch detection walks adjacent observed periods (so interior gaps create ambiguous transition counts). Terminal missingness is supported because the per-period `present = (N_mat[:, t] > 0) & (N_mat[:, t-1] > 0)` guard appears at three sites in the variance computation (`_compute_per_period_dids`, `_compute_full_per_group_contributions`, `_compute_cohort_recentered_inputs`) and cleanly masks out missing transitions without propagating NaN into the arithmetic. **Workaround for unbalanced panels:** pre-process your data to back-fill the baseline (or drop late-entry groups before fitting), or use R `DIDmultiplegtDYN` until a future phase lifts the restriction. The Step 5b `ValueError` and `UserWarning` messages name the offending group IDs so you can locate them quickly.
+
+**Reference implementation(s):**
+- R: [`DIDmultiplegtDYN`](https://cran.r-project.org/package=DIDmultiplegtDYN) (CRAN, maintained by the paper authors). The Python implementation matches `did_multiplegt_dyn(..., effects=1)` at horizon `l = 1`. Parity tests live in `tests/test_chaisemartin_dhaultfoeuille_parity.py`.
+- Stata: `did_multiplegt_dyn` (SSC, also maintained by the paper authors).
+
+**Requirements checklist:**
+- [x] Single class `ChaisemartinDHaultfoeuille` (alias `DCDH`); not a family
+- [x] Forward-compat `fit()` signature with `NotImplementedError` gates for Phase 2/3 parameters (`aggregate`, `L_max`, `controls`, `trends_linear`, `trends_nonparam`, `honest_did`, `survey_design`)
+- [x] `DID_M` point estimate with cohort-recentered analytical SE
+- [x] Joiners-only `DID_+` and leavers-only `DID_-` decompositions with their own inference
+- [x] Single-lag placebo `DID_M^pl` (point estimate; SE deferred to Phase 2)
+- [x] TWFE decomposition diagnostic (Theorem 1 of AER 2020): per-cell weights, fraction negative, `sigma_fe`, `beta_fe`
+- [x] Standalone `twowayfeweights()` helper for users who only want the TWFE diagnostic
+- [x] Multiplier bootstrap with Rademacher / Mammen / Webb weights, clustered at group
+- [x] `drop_larger_lower=True` default (matches R `DIDmultiplegtDYN`); `False` opt-in with explicit inconsistency warning
+- [x] Singleton-baseline filter (footnote 15 of dynamic paper, variance computation only) with explicit warning
+- [x] Never-switching groups participate in the variance via stable-control roles after the Round 2 full-IF fix; `n_groups_dropped_never_switching` field retained as backwards-compatibility metadata only
+- [x] Balanced-baseline panel requirement: missing-baseline groups raise `ValueError`; interior-gap groups dropped with `UserWarning`; terminal missingness retained (deviation from R `DIDmultiplegtDYN` documented as a Note)
+- [x] A11 zero-retention convention with per-period boolean flags (`did_plus_t_a11_zeroed` / `did_minus_t_a11_zeroed`) and consolidated warning
+- [x] No silent failures: every drop / round / fallback emits a `warnings.warn()` or `ValueError`
+- [x] Hand-calculable 4-group worked example: `DID_M = 2.5`, `DID_+ = 2.0`, `DID_- = 3.0` exactly
+- [x] R `DIDmultiplegtDYN` parity tests at `l = 1` (fixture skips cleanly when R or `DIDmultiplegtDYN` is unavailable)
 
 ---
 

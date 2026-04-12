@@ -23,25 +23,30 @@ Start here and follow the questions:
    - **No** → Go to question 2
    - **Yes** → Use :class:`~diff_diff.ContinuousDiD`
 
-2. **Is treatment staggered?** (Different units treated at different times)
+2. **Can treatment switch on AND off?** (Reversible / non-absorbing treatment — e.g., marketing campaigns, seasonal promotions, on/off policy cycles)
 
-   - **No** → Go to question 3
+   - **No (treatment is absorbing — once treated, stays treated)** → Go to question 3
+   - **Yes** → Use :class:`~diff_diff.ChaisemartinDHaultfoeuille` — the only library estimator that handles non-absorbing treatments
+
+3. **Is treatment staggered?** (Different units treated at different times)
+
+   - **No** → Go to question 4
    - **Yes** → Use :class:`~diff_diff.CallawaySantAnna` (or :class:`~diff_diff.EfficientDiD` for tighter SEs under PT-All)
    - **Yes, and you suspect homogeneous effects** → Use :class:`~diff_diff.ImputationDiD` or :class:`~diff_diff.TwoStageDiD` for tighter CIs
    - **Yes, with nonlinear outcome (binary/count)** → Use :class:`~diff_diff.WooldridgeDiD` with ``method='logit'`` or ``method='poisson'``
    - **Want to diagnose TWFE bias?** → Use :class:`~diff_diff.BaconDecomposition` first
 
-3. **Do you have panel data?** (Multiple observations per unit over time)
+4. **Do you have panel data?** (Multiple observations per unit over time)
 
    - **No** → Use :class:`~diff_diff.DifferenceInDifferences` (basic 2x2)
-   - **Yes** → Go to question 4
+   - **Yes** → Go to question 5
 
-4. **Do you need period-specific effects?** (Event study design)
+5. **Do you need period-specific effects?** (Event study design)
 
    - **No** → Use :class:`~diff_diff.TwoWayFixedEffects`
    - **Yes** → Use :class:`~diff_diff.MultiPeriodDiD`
 
-5. **Is your treated group small?** (Few treated units, many controls)
+6. **Is your treated group small?** (Few treated units, many controls)
 
    - Consider :class:`~diff_diff.SyntheticDiD` for better pre-treatment fit
 
@@ -72,6 +77,10 @@ Quick Reference
      - Staggered adoption, heterogeneous timing
      - Conditional parallel trends
      - Group-time ATT(g,t), aggregations
+   * - ``ChaisemartinDHaultfoeuille``
+     - Reversible / non-absorbing treatments (only library option)
+     - Parallel trends + A5 (no crossing) + A11 (stable controls)
+     - DID_M, joiners/leavers split, placebo, TWFE diagnostic
    * - ``SyntheticDiD``
      - Few treated units, many controls
      - Synthetic parallel trends
@@ -216,6 +225,78 @@ This is the recommended estimator for most applied work with staggered adoption.
                time='period', first_treat='first_treat',
                covariates=['x1', 'x2'], aggregate='event_study')
    event_study_df = es.to_dataframe('event_study')
+
+Reversible (Non-Absorbing) Treatment
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use :class:`~diff_diff.ChaisemartinDHaultfoeuille` (alias :class:`~diff_diff.DCDH`) when:
+
+- Treatment can switch on **and** off over time (e.g., marketing campaigns,
+  seasonal promotions, on/off policy cycles)
+- You need separate joiners (``DID_+``) and leavers (``DID_-``) views, plus
+  the aggregate ``DID_M``
+- You want a built-in placebo and a TWFE decomposition diagnostic computed
+  on the data you pass in (pre-filter) for direct comparison against
+  ``DID_M``
+
+This is **the only library estimator that handles non-absorbing treatments**.
+All other staggered estimators
+(:class:`~diff_diff.CallawaySantAnna`, :class:`~diff_diff.SunAbraham`,
+:class:`~diff_diff.ImputationDiD`, :class:`~diff_diff.TwoStageDiD`,
+:class:`~diff_diff.EfficientDiD`, :class:`~diff_diff.WooldridgeDiD`) assume
+treatment is absorbing — once treated, stays treated.
+
+Phase 1 ships the contemporaneous-switch ``DID_M`` from de Chaisemartin &
+D'Haultfœuille (2020), which is mathematically identical to ``DID_1``
+(horizon ``l = 1``) of their dynamic companion paper. Phase 2 will add
+multi-horizon event-study output ``DID_l`` for ``l > 1``; Phase 3 will add
+covariate adjustment.
+
+.. code-block:: python
+
+   from diff_diff import ChaisemartinDHaultfoeuille
+   from diff_diff.prep import generate_reversible_did_data
+
+   data = generate_reversible_did_data(n_groups=80, n_periods=6, seed=42)
+
+   est = ChaisemartinDHaultfoeuille()
+   results = est.fit(
+       data,
+       outcome="outcome",
+       group="group",
+       time="period",
+       treatment="treatment",
+   )
+   results.print_summary()
+
+   print(f"DID_M (overall): {results.overall_att:.3f}")
+   print(f"DID_+ (joiners): {results.joiners_att:.3f}")
+   print(f"DID_- (leavers): {results.leavers_att:.3f}")
+   print(f"Placebo:         {results.placebo_effect:.3f}")
+
+.. note::
+
+   By default, the estimator drops groups whose treatment switches more
+   than once before estimation (``drop_larger_lower=True``, matching the R
+   ``DIDmultiplegtDYN`` reference). This is required for the analytical
+   variance formula to be consistent with the point estimate. Each drop
+   emits an explicit warning.
+
+.. note::
+
+   The Phase 1 placebo SE is intentionally ``NaN`` with a warning. The
+   dynamic companion paper Section 3.7.3 derives the cohort-recentered
+   analytical variance for ``DID_l`` only — not for the placebo
+   ``DID_M^pl``. Phase 2 will add multiplier-bootstrap support for the
+   placebo. Until then, the placebo point estimate is meaningful but its
+   inference fields stay NaN-consistent even when ``n_bootstrap > 0``
+   (bootstrap currently covers ``DID_M``, ``DID_+``, and ``DID_-`` only).
+
+.. note::
+
+   ``ChaisemartinDHaultfoeuille`` does not yet support ``survey_design``;
+   passing it raises ``NotImplementedError``. Survey integration is
+   deferred to a separate effort after Phases 2 and 3 ship.
 
 Synthetic DiD
 ~~~~~~~~~~~~~
@@ -648,6 +729,11 @@ estimation. The depth of support varies by estimator:
      - Full
      - Full
      - Multiplier at PSU
+   * - ``ChaisemartinDHaultfoeuille``
+     - --
+     - --
+     - --
+     - --
    * - ``TripleDifference``
      - pweight only
      - Full

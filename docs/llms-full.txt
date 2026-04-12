@@ -228,6 +228,92 @@ results.print_summary()
 plot_event_study(results)
 ```
 
+### ChaisemartinDHaultfoeuille
+
+de Chaisemartin & D'Haultfœuille (2020) `DID_M` estimator for **non-absorbing (reversible) treatments**. The only library estimator that handles treatments which can switch on AND off over time. Phase 1 ships the contemporaneous-switch case `DID_M`, equivalently `DID_1` (horizon `l = 1`) of the dynamic companion paper (NBER WP 29873). Phase 2 will add multi-horizon event-study output `DID_l` for `l > 1` on the same class.
+
+```python
+ChaisemartinDHaultfoeuille(
+    alpha: float = 0.05,
+    cluster: str | None = None,                  # Phase 1: must be None; non-None raises NotImplementedError
+    n_bootstrap: int = 0,                        # 0 = analytical SE only
+    bootstrap_weights: str = "rademacher",       # "rademacher", "mammen", or "webb"
+    seed: int | None = None,
+    placebo: bool = True,                        # Auto-compute single-lag placebo
+    twfe_diagnostic: bool = True,                # Auto-compute Theorem 1 TWFE decomposition
+    drop_larger_lower: bool = True,              # Drop multi-switch groups (matches R DIDmultiplegtDYN)
+    rank_deficient_action: str = "warn",         # Used by TWFE diagnostic OLS
+)
+```
+
+**Alias:** `DCDH`
+
+**fit() parameters:**
+
+```python
+est.fit(
+    data: pd.DataFrame,
+    outcome: str,
+    group: str,                                  # Group identifier
+    time: str,
+    treatment: str,                              # Per-observation binary treatment
+    # ---- forward-compat (Phase 2 / 3) ----
+    aggregate: str | None = None,                # Phase 2: "event_study"
+    L_max: int | None = None,                    # Phase 2: max horizon
+    controls: list[str] | None = None,           # Phase 3: DID^X covariates
+    trends_linear: bool | None = None,           # Phase 3: DID^{fd}
+    trends_nonparam: Any | None = None,          # Phase 3: DID^s
+    honest_did: bool = False,                    # Phase 3: HonestDiD integration
+    # ---- deferred (separate effort) ----
+    survey_design: Any = None,
+) -> ChaisemartinDHaultfoeuilleResults
+```
+
+All forward-compat parameters raise `NotImplementedError` with phase pointers in Phase 1.
+
+**Usage:**
+
+```python
+from diff_diff import ChaisemartinDHaultfoeuille
+from diff_diff.prep import generate_reversible_did_data
+
+data = generate_reversible_did_data(
+    n_groups=80, n_periods=6, pattern="single_switch", seed=42,
+)
+
+est = ChaisemartinDHaultfoeuille()
+results = est.fit(
+    data, outcome="outcome", group="group",
+    time="period", treatment="treatment",
+)
+results.print_summary()
+
+# Decomposition
+print(f"DID_M (overall):  {results.overall_att:.3f}")
+print(f"DID_+ (joiners):  {results.joiners_att:.3f}")
+print(f"DID_- (leavers):  {results.leavers_att:.3f}")
+print(f"Placebo (DID^pl): {results.placebo_effect:.3f}")
+```
+
+**Standalone TWFE diagnostic** (without fitting the full estimator):
+
+```python
+from diff_diff import twowayfeweights
+
+diagnostic = twowayfeweights(
+    data, outcome="outcome", group="group", time="period", treatment="treatment",
+)
+print(f"Plain TWFE coefficient: {diagnostic.beta_fe:.3f}")
+print(f"Fraction of negative weights: {diagnostic.fraction_negative:.3f}")
+print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
+```
+
+**Notes:**
+- Validated against R `DIDmultiplegtDYN` v2.3.3 at horizon `l = 1` via `tests/test_chaisemartin_dhaultfoeuille_parity.py`
+- Phase 1 placebo SE is intentionally `NaN` with a warning. The dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only — not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo. Until then, the placebo point estimate is meaningful but its inference fields stay NaN-consistent **even when `n_bootstrap > 0`** (bootstrap currently covers `DID_M`, `DID_+`, and `DID_-` only)
+- The analytical CI is conservative under Assumption 8 (independent groups) of the dynamic companion paper, exact only under iid sampling
+- Survey design (`survey_design`) is not yet supported and is deferred to a separate effort after all phases ship
+
 ### SunAbraham
 
 Sun-Abraham (2021) interaction-weighted estimator for staggered DiD.

@@ -91,6 +91,36 @@ Generate synthetic continuous treatment DiD data with known dose-response.
 
 .. autofunction:: diff_diff.generate_continuous_did_data
 
+generate_reversible_did_data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Generate synthetic **reversible-treatment** panel data — treatment can switch on
+and off over time. Use this with :class:`~diff_diff.ChaisemartinDHaultfoeuille`
+for testing the dCDH estimator on non-absorbing treatments.
+
+.. autofunction:: diff_diff.generate_reversible_did_data
+
+Example
+^^^^^^^
+
+.. code-block:: python
+
+   from diff_diff import generate_reversible_did_data, ChaisemartinDHaultfoeuille
+
+   data = generate_reversible_did_data(
+       n_groups=80,
+       n_periods=6,
+       pattern="single_switch",  # or "joiners_only", "leavers_only", "mixed_single_switch"
+       treatment_effect=2.0,
+       seed=42,
+   )
+
+   est = ChaisemartinDHaultfoeuille()
+   results = est.fit(
+       data, outcome="outcome", group="group",
+       time="period", treatment="treatment",
+   )
+
 Indicator Creation
 ------------------
 

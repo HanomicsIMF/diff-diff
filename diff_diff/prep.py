@@ -22,6 +22,7 @@ from diff_diff.prep_dgp import (  # noqa: F401
     generate_event_study_data,
     generate_factor_data,
     generate_panel_data,
+    generate_reversible_did_data,
     generate_staggered_data,
     generate_staggered_ddd_data,
     generate_survey_did_data,

@@ -116,17 +116,90 @@ Parallel track targeting data science practitioners — marketing, product, oper
 
 ---
 
+## de Chaisemartin-D'Haultfœuille (dCDH) Estimator
+
+The dCDH estimator is the only modern DiD estimator in the library that handles **non-absorbing (reversible) treatments**. All other staggered estimators (CallawaySantAnna, SunAbraham, ImputationDiD, TwoStageDiD, EfficientDiD, WooldridgeDiD) assume treatment is an absorbing state — once treated, always treated. dCDH is the natural fit for marketing campaigns, seasonal promotions, policy on/off cycles, and any setting where treatment turns on and off over time.
+
+**Implementation strategy.** A single `ChaisemartinDHaultfoeuille` (alias `DCDH`) class evolves across phases via additional `fit()` parameters and additional fields on the results object. Not an estimator family — features land as enhancements to the single class, matching the library's pattern for `CallawaySantAnna`, `ImputationDiD`, `EfficientDiD`, etc.
+
+**Methodology source of truth:** [docs/methodology/REGISTRY.md `## ChaisemartinDHaultfoeuille`](docs/methodology/REGISTRY.md) — assumption checks, estimator equations, edge cases, and all documented deviations from the R `DIDmultiplegtDYN` reference implementation. Consult REGISTRY.md before any methodology change.
+
+**Primary papers** (consulted by the implementer; not committed in-repo as they are upstream sources):
+- de Chaisemartin, C. & D'Haultfœuille, X. (2020). Two-Way Fixed Effects Estimators with Heterogeneous Treatment Effects. *American Economic Review*, 110(9), 2964-2996. — `DID_M` contemporaneous-switch estimator, TWFE decomposition diagnostics.
+- de Chaisemartin, C. & D'Haultfœuille, X. (2022, revised 2024). Difference-in-Differences Estimators of Intertemporal Treatment Effects. NBER Working Paper 29873. — Full dynamic event study `DID_l`, cohort-recentered analytical variance (Web Appendix Section 3.7.3), residualization-style covariates `DID^X`, group-specific linear trends `DID^{fd}`.
+
+The dynamic companion paper subsumes the AER 2020 paper: `DID_1 = DID_M`. The single class implements the dynamic estimator's machinery (`DID_{g,l}` building block, cohort-recentered analytical variance from Web Appendix Section 3.7.3 of the dynamic paper) at horizon `l = 1` for Phase 1, with later phases looping over multiple horizons and adding covariate / extension support.
+
+### Phase 1: Foundation (contemporaneous switch / DID_M)
+
+*Goal: Ship a `ChaisemartinDHaultfoeuille` estimator class for the contemporaneous-switch case (`l = 1`), which is `DID_M` of the AER 2020 paper. Forward-compatible API: parameters and result fields for Phase 2/3 are reserved from day one and raise `NotImplementedError` with phase pointers until they're implemented.*
+
+| Item | Priority | Status |
+|------|----------|--------|
+| **1a.** `ChaisemartinDHaultfoeuille` class with `fit()` returning per-group `DID_{g,1}` and aggregate `DID_1` / `DID_M` | HIGH | Shipped |
+| **1b.** Joiners-only (`DID_+`) and leavers-only (`DID_-`) views on the results object | HIGH | Shipped |
+| **1c.** Single-lag placebo `DID_M^pl` (AER 2020 placebo specification = `DID^{pl}_1` of dynamic paper) | HIGH | Shipped (point estimate; analytical SE deferred to Phase 2) |
+| **1d.** Analytical SE via cohort-recentered plug-in formula (Web Appendix Section 3.7.3 of dynamic paper, applied at `l = 1`) | HIGH | Shipped |
+| **1e.** Multiplier bootstrap clustered at the group level (library extension; matches CS / ImputationDiD / TwoStageDiD convention) | HIGH | Shipped |
+| **1f.** TWFE decomposition diagnostic: per-`(g, t)` weights, fraction negative, `sigma_fe` (Theorem 1 of AER 2020 + `twowayfeweights` parity) | MEDIUM | Shipped |
+| **1g.** Parity tests vs R `DIDmultiplegtDYN` at `l = 1` | HIGH | Shipped |
+| **1h.** REGISTRY.md entry, doc-deps.yaml mapping, README.md section, RST docs, CHANGELOG.md entry | HIGH | Shipped |
+| **1i.** Survey compatibility matrix in `docs/choosing_estimator.rst`: explicitly document **NO survey support** for dCDH (separate effort after all phases ship) | HIGH | Shipped |
+
+### Phase 2: Dynamic event study (multiple horizons)
+
+*Goal: Add `aggregate="event_study"` mode to the same class. Loops the Phase 1 machinery over horizons `l = 1, ..., L`. No API breakage from Phase 1. No new tutorial — the comprehensive tutorial waits for Phase 3.*
+
+| Item | Priority | Status |
+|------|----------|--------|
+| **2a.** Multi-horizon `DID_l` via the cohort framework, with horizon parameter `L_max` | HIGH | Not started |
+| **2b.** Multi-horizon analytical SE (same plug-in formula looped over horizons) | HIGH | Not started |
+| **2c.** Dynamic placebos `DID^{pl}_l` for pre-trends testing (Web Appendix Section 1.1 of dynamic paper) | HIGH | Not started |
+| **2d.** Normalized estimator `DID^n_l` (Section 3.2 of dynamic paper) | MEDIUM | Not started |
+| **2e.** Cost-benefit aggregate `delta` (Section 3.3 of dynamic paper, Lemma 4) | MEDIUM | Not started |
+| **2f.** Simultaneous (sup-t) confidence bands for event study plots | MEDIUM | Not started |
+| **2g.** `plot_event_study()` integration; `< 50%`-of-switchers warning for far horizons | MEDIUM | Not started |
+| **2h.** Parity tests vs `did_multiplegt_dyn` for multi-horizon designs | HIGH | Not started |
+
+### Phase 3: Covariates, extensions, and tutorial
+
+*Goal: Add residualization-style covariate adjustment, group-specific linear trends, non-binary treatment support, HonestDiD integration, and a single comprehensive tutorial covering all three phases. This is the phase where dCDH ships as a complete public feature.*
+
+| Item | Priority | Status |
+|------|----------|--------|
+| **3a.** Residualization-style covariate adjustment `DID^X` (Web Appendix Section 1.2 of dynamic paper). **Note:** NOT doubly-robust, NOT IPW, NOT Callaway-Sant'Anna-style. | HIGH | Not started |
+| **3b.** Group-specific linear trends `DID^{fd}` (Web Appendix Section 1.3, Lemma 6) — second-difference estimator with cumulation for level effects | MEDIUM | Not started |
+| **3c.** State-set-specific trends (`trends_nonparam` option, Web Appendix Section 1.4) | MEDIUM | Not started |
+| **3d.** Heterogeneity testing `beta^{het}_l` (Web Appendix Section 1.5) | LOW | Not started |
+| **3e.** Design-2 switch-in / switch-out separation (Web Appendix Section 1.6) | LOW | Not started |
+| **3f.** Non-binary treatment support (the formula already handles it; this row is documentation + tests) | MEDIUM | Not started |
+| **3g.** HonestDiD (Rambachan-Roth) integration on `DID^{pl}_l` placebos | MEDIUM | Not started |
+| **3h.** **Single comprehensive tutorial notebook** covering all three phases — Favara-Imbs (2015) banking deregulation replication as the headline application, with comparison plots vs LP / TWFE | HIGH | Not started |
+| **3i.** Parity tests vs `did_multiplegt_dyn` for covariate and extension specifications | HIGH | Not started |
+
+### Out of scope for the dCDH single-class evolution
+
+These are referenced by the dCDH papers but live in *separate* efforts or *separate* companion papers we don't yet have:
+
+- **Survey design integration** — deferred to a separate effort after all three phases ship. Phase 1 documents "no survey support" in the compatibility matrix; the separate effort revisits when Phase 3 is complete.
+- **Fuzzy DiD** (within-cell-varying treatment, Web Appendix Section 1.7 of dynamic paper) → de Chaisemartin & D'Haultfœuille (2018), separate paper not yet reviewed
+- **Principled anticipation handling and trimming rules** (footnote 14 of dynamic paper) → de Chaisemartin (2021), separate paper not yet reviewed
+- **2SLS DiD** (referenced in AER appendix Section 3.4) → separate paper
+
+These remain in **Future Estimators** below if/when we choose to extend.
+
+### Architectural notes (for plan and PR reviewers)
+
+- **Single `ChaisemartinDHaultfoeuille` class** (alias `DCDH`). Not a family. New features land as `fit()` parameters or fields on the results dataclass. No `DCDHDynamic`, `DCDHCovariate`, etc. Matches the library's idiomatic pattern: `CallawaySantAnna`, `ImputationDiD`, and `EfficientDiD` are all single classes that evolved across many phases.
+- **Forward-compatible API from Phase 1.** `fit(aggregate=None, controls=None, trends_linear=None, L_max=None, ...)` accepts the Phase 2/3 parameters from day one and raises `NotImplementedError` with a clear pointer to the relevant phase until they are implemented. No signature changes between phases.
+- **Conservative CI** under Assumption 8 (independent groups), exact only under iid sampling. Documented in REGISTRY.md as a `**Note:**` deviation from "default nominal coverage." Theorem 1 of the dynamic paper.
+- **Cohort recentering for variance is essential.** Cohorts are defined by the triple `(D_{g,1}, F_g, S_g)`. The plug-in variance subtracts cohort-conditional means, **NOT a single grand mean**. Test fixtures must catch this — a wrong implementation silently produces a smaller, incorrect variance.
+- **No Rust acceleration is planned for any phase.** The estimator's hot path is groupby + BLAS-accelerated matrix-vector products, where NumPy already operates near-optimally. If profiling on large panels (`G > 100K`) reveals a bottleneck post-ship, the existing `_rust_bootstrap_weights` helper can be reused for the bootstrap loop without writing new Rust code.
+- **No survey design integration in any phase.** Handled as a separate effort after all three phases ship. Phase 1 documents the absence in the compatibility matrix so survey users do not silently apply survey weights and get wrong answers.
+
+---
+
 ## Future Estimators
-
-### de Chaisemartin-D'Haultfouille Estimator
-
-Handles treatment that switches on and off (reversible treatments), unlike most other methods. Reversible treatments are common in marketing (seasonal campaigns, promotions), giving this estimator higher priority for data science practitioners.
-
-- Allows units to move into and out of treatment
-- Time-varying, heterogeneous treatment effects
-- Comparison with never-switchers or flexible control groups
-
-**Reference**: [de Chaisemartin & D'Haultfouille (2020, 2024)](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3980758). *American Economic Review*.
 
 ### Local Projections DiD
 

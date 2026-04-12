@@ -48,6 +48,10 @@ groups:
     - diff_diff/efficient_did_covariates.py
     - diff_diff/efficient_did_results.py
     - diff_diff/efficient_did_weights.py
+  chaisemartin_dhaultfoeuille:
+    - diff_diff/chaisemartin_dhaultfoeuille.py
+    - diff_diff/chaisemartin_dhaultfoeuille_bootstrap.py
+    - diff_diff/chaisemartin_dhaultfoeuille_results.py
   continuous_did:
     - diff_diff/continuous_did.py
     - diff_diff/continuous_did_bspline.py
@@ -251,6 +255,34 @@ sources:
         type: user_guide
       - path: docs/benchmarks.rst
         type: performance
+
+  # ── ChaisemartinDHaultfoeuille (chaisemartin_dhaultfoeuille group) ──
+
+  diff_diff/chaisemartin_dhaultfoeuille.py:
+    drift_risk: high
+    docs:
+      - path: docs/methodology/REGISTRY.md
+        section: "ChaisemartinDHaultfoeuille"
+        type: methodology
+        note: "Single source of truth for dCDH methodology, equations, deviations from R, and edge cases"
+      - path: docs/api/chaisemartin_dhaultfoeuille.rst
+        type: api_reference
+      - path: README.md
+        section: "ChaisemartinDHaultfoeuille"
+        type: user_guide
+      - path: docs/llms-full.txt
+        section: "ChaisemartinDHaultfoeuille"
+        type: user_guide
+      - path: docs/llms.txt
+        type: user_guide
+      - path: docs/choosing_estimator.rst
+        type: user_guide
+      - path: docs/practitioner_decision_tree.rst
+        section: "Reversible Treatment"
+        type: user_guide
+      - path: ROADMAP.md
+        section: "de Chaisemartin-D'Haultfœuille (dCDH) Estimator"
+        type: roadmap
 
   # ── ContinuousDiD (continuous_did group) ────────────────────��───────
 

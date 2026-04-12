@@ -88,6 +88,7 @@ from diff_diff.prep import (
     generate_event_study_data,
     generate_factor_data,
     generate_panel_data,
+    generate_reversible_did_data,
     generate_staggered_data,
     generate_staggered_ddd_data,
     generate_survey_did_data,
@@ -160,6 +161,16 @@ from diff_diff.efficient_did import (
     EfficientDiDResults,
     EDiDBootstrapResults,
 )
+from diff_diff.chaisemartin_dhaultfoeuille import (
+    ChaisemartinDHaultfoeuille,
+    TWFEWeightsResult,
+    chaisemartin_dhaultfoeuille,
+    twowayfeweights,
+)
+from diff_diff.chaisemartin_dhaultfoeuille_results import (
+    ChaisemartinDHaultfoeuilleResults,
+    DCDHBootstrapResults,
+)
 from diff_diff.trop import (
     TROP,
     TROPResults,
@@ -214,6 +225,7 @@ Stacked = StackedDiD
 Bacon = BaconDecomposition
 EDiD = EfficientDiD
 ETWFE = WooldridgeDiD
+DCDH = ChaisemartinDHaultfoeuille
 
 __version__ = "3.0.1"
 __all__ = [
@@ -223,6 +235,7 @@ __all__ = [
     "MultiPeriodDiD",
     "SyntheticDiD",
     "CallawaySantAnna",
+    "ChaisemartinDHaultfoeuille",
     "ContinuousDiD",
     "SunAbraham",
     "ImputationDiD",
@@ -237,6 +250,7 @@ __all__ = [
     "SDiD",
     "CS",
     "CDiD",
+    "DCDH",
     "SA",
     "BJS",
     "Gardner",
@@ -280,6 +294,12 @@ __all__ = [
     "EfficientDiDResults",
     "EDiDBootstrapResults",
     "EDiD",
+    # ChaisemartinDHaultfoeuille (dCDH)
+    "ChaisemartinDHaultfoeuilleResults",
+    "DCDHBootstrapResults",
+    "TWFEWeightsResult",
+    "chaisemartin_dhaultfoeuille",
+    "twowayfeweights",
     # WooldridgeDiD (ETWFE)
     "WooldridgeDiD",
     "WooldridgeDiDResults",
@@ -328,6 +348,7 @@ __all__ = [
     "generate_staggered_ddd_data",
     "generate_survey_did_data",
     "generate_continuous_did_data",
+    "generate_reversible_did_data",
     "create_event_time",
     "aggregate_survey",
     "aggregate_to_cohorts",

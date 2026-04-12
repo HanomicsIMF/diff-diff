@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`ChaisemartinDHaultfoeuille`** (alias `DCDH`) — Phase 1 of the de Chaisemartin-D'Haultfœuille estimator family, the only modern staggered DiD estimator in the library that handles **non-absorbing (reversible) treatments**. Treatment can switch on AND off over time (marketing campaigns, seasonal promotions, on/off policy cycles). Implements `DID_M` from de Chaisemartin & D'Haultfœuille (2020) AER, equivalently `DID_1` (horizon `l = 1`) of the dynamic companion paper (NBER WP 29873). Ships:
+  - Headline `DID_M` point estimate with cohort-recentered analytical SE from Web Appendix Section 3.7.3 of the dynamic companion paper
+  - Joiners-only (`DID_+`) and leavers-only (`DID_-`) decompositions with their own inference
+  - Single-lag placebo `DID_M^pl` point estimate (AER 2020 placebo specification). Placebo SE / inference fields are intentionally `NaN` in Phase 1: the dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only, not for the placebo. Phase 2 will add multiplier-bootstrap support for the placebo. The bootstrap path in Phase 1 covers `DID_M`, `DID_+`, and `DID_-` only.
+  - Optional multiplier bootstrap clustered at group level with Rademacher / Mammen / Webb weights for `DID_M`, `DID_+`, and `DID_-` (placebo bootstrap deferred to Phase 2)
+  - TWFE decomposition diagnostic from Theorem 1 of AER 2020 (per-cell weights, fraction negative, `sigma_fe`, `beta_fe`)
+  - Multi-switch group filtering (`drop_larger_lower=True` default, matches R `DIDmultiplegtDYN`); singleton-baseline filter (footnote 15 of dynamic paper, variance computation only); consolidated A11 zero-retention warnings — all with explicit warnings (no silent failures). Never-switching groups participate in the variance via stable-control roles after the Round 2 full-IF fix; the `n_groups_dropped_never_switching` field is retained as backwards-compatibility metadata only.
+  - Phase 1 requires balanced-baseline panels with no interior period gaps. Late-entry groups (missing the first global period) raise `ValueError`; interior-gap groups are dropped with a `UserWarning`; terminally-missing groups (early exit / right-censoring) are retained and contribute from their observed periods only. This is a documented deviation from R `DIDmultiplegtDYN`'s unbalanced-panel support — see `docs/methodology/REGISTRY.md` for rationale and workarounds.
+  - Forward-compatible `fit()` signature: Phase 2 (multi-horizon event study, `aggregate`, `L_max`) and Phase 3 (covariate adjustment via `controls`, group-specific linear trends, HonestDiD) parameters present from day one, raising `NotImplementedError` with phase pointers
+  - Validated against R `DIDmultiplegtDYN` v2.3.3 at horizon `l = 1` via `tests/test_chaisemartin_dhaultfoeuille_parity.py`
+- **`twowayfeweights()`** — standalone helper function for the TWFE decomposition diagnostic (Theorem 1 of de Chaisemartin & D'Haultfœuille 2020), available without instantiating the full estimator. Returns a `TWFEWeightsResult` with per-cell weights, fraction negative, `sigma_fe`, and `beta_fe`.
+- **`generate_reversible_did_data()`** — new generator in `diff_diff.prep` producing reversible-treatment panel data for testing and tutorials. Patterns: `single_switch` (default, A5-safe), `joiners_only`, `leavers_only`, `mixed_single_switch`, `random`, `cycles`, `marketing`. Returns columns `group`, `period`, `treatment`, `outcome`, `true_effect`, `d_lag`, `switcher_type`.
+- **REGISTRY.md `## ChaisemartinDHaultfoeuille` section** — single canonical source for dCDH methodology, equations, edge cases, and all documented deviations from the R `DIDmultiplegtDYN` reference implementation. Cites the AER 2020 paper and the dynamic companion paper (NBER WP 29873) by reference; primary papers are upstream sources, not in-repo files.
+
 ## [3.0.1] - 2026-04-07
 
 ### Added
