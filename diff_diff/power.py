@@ -1943,12 +1943,16 @@ def simulate_power(
                 f"the input treatment_effect under covariate-interaction "
                 f"heterogeneity, which would make bias/coverage/RMSE misleading."
             )
-        if "covariate_effects" in data_gen_kwargs:
-            raise ValueError(
-                "covariate_effects is not supported with survey_config. "
-                "Custom covariate effects can shift the realized population "
-                "ATT away from the input treatment_effect."
-            )
+        # Block panel=False for panel-only estimators. Only
+        # CallawaySantAnna supports repeated cross-sections.
+        if not data_gen_kwargs.get("panel", True):
+            _RCS_SUPPORTED = frozenset({"CallawaySantAnna"})
+            if estimator_name not in _RCS_SUPPORTED:
+                raise ValueError(
+                    f"panel=False (repeated cross-sections) is not supported "
+                    f"with {estimator_name} under survey_config. Only "
+                    f"{sorted(_RCS_SUPPORTED)} support repeated cross-sections."
+                )
 
     # SyntheticDiD placebo variance requires n_control > n_treated.
     # Check after merging data_generator_kwargs so overrides of n_treated

@@ -2422,17 +2422,30 @@ class TestSurveyPower:
                 **_SIM_KW,
             )
 
-    def test_survey_rejects_covariate_effects(self):
-        """covariate_effects rejected (can shift population ATT)."""
-        with pytest.raises(ValueError, match="covariate_effects"):
+    def test_survey_rejects_panel_false_for_panel_only(self):
+        """panel=False rejected for panel-only estimators (e.g., TWFE)."""
+        with pytest.raises(ValueError, match="panel=False.*not supported"):
             simulate_power(
-                CallawaySantAnna(),
-                data_generator_kwargs={"covariate_effects": (0.5, 0.3)},
+                TwoWayFixedEffects(),
+                data_generator_kwargs={"panel": False},
                 survey_config=_SURVEY_CFG,
                 n_simulations=1,
                 seed=42,
                 **_SIM_KW,
             )
+
+    def test_survey_allows_panel_false_for_cs(self):
+        """panel=False allowed for CallawaySantAnna (supports RCS)."""
+        result = simulate_power(
+            CallawaySantAnna(panel=False),
+            treatment_effect=3.0,
+            data_generator_kwargs={"panel": False},
+            survey_config=_SURVEY_CFG,
+            n_simulations=10,
+            seed=42,
+            **_SIM_KW,
+        )
+        assert 0 <= result.power <= 1
 
     # -- Closed-form deff tests --
 
