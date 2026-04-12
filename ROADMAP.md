@@ -148,18 +148,18 @@ The dynamic companion paper subsumes the AER 2020 paper: `DID_1 = DID_M`. The si
 
 ### Phase 2: Dynamic event study (multiple horizons)
 
-*Goal: Add `aggregate="event_study"` mode to the same class. Loops the Phase 1 machinery over horizons `l = 1, ..., L`. No API breakage from Phase 1. No new tutorial — the comprehensive tutorial waits for Phase 3.*
+*Goal: Add multi-horizon event study to the same class via the `L_max` parameter. Loops the Phase 1 machinery over horizons `l = 1, ..., L`. No API breakage from Phase 1. No new tutorial - the comprehensive tutorial waits for Phase 3.*
 
 | Item | Priority | Status |
 |------|----------|--------|
-| **2a.** Multi-horizon `DID_l` via the cohort framework, with horizon parameter `L_max` | HIGH | Not started |
-| **2b.** Multi-horizon analytical SE (same plug-in formula looped over horizons) | HIGH | Not started |
-| **2c.** Dynamic placebos `DID^{pl}_l` for pre-trends testing (Web Appendix Section 1.1 of dynamic paper) | HIGH | Not started |
-| **2d.** Normalized estimator `DID^n_l` (Section 3.2 of dynamic paper) | MEDIUM | Not started |
-| **2e.** Cost-benefit aggregate `delta` (Section 3.3 of dynamic paper, Lemma 4) | MEDIUM | Not started |
-| **2f.** Simultaneous (sup-t) confidence bands for event study plots | MEDIUM | Not started |
-| **2g.** `plot_event_study()` integration; `< 50%`-of-switchers warning for far horizons | MEDIUM | Not started |
-| **2h.** Parity tests vs `did_multiplegt_dyn` for multi-horizon designs | HIGH | Not started |
+| **2a.** Multi-horizon `DID_l` via per-group `DID_{g,l}` building block, with `L_max` parameter | HIGH | Shipped |
+| **2b.** Multi-horizon analytical SE (cohort-recentered plug-in per horizon) | HIGH | Shipped |
+| **2c.** Dynamic placebos `DID^{pl}_l` for pre-trends testing (Web Appendix Section 1.1 of dynamic paper) | HIGH | Shipped (point estimates; SE deferred) |
+| **2d.** Normalized estimator `DID^n_l` (Section 3.2 of dynamic paper) | MEDIUM | Shipped |
+| **2e.** Cost-benefit aggregate `delta` (Section 3.3 of dynamic paper, Lemma 4) | MEDIUM | Shipped |
+| **2f.** Simultaneous (sup-t) confidence bands for event study plots | MEDIUM | Shipped |
+| **2g.** `plot_event_study()` integration; `< 50%`-of-switchers warning for far horizons | MEDIUM | Shipped |
+| **2h.** Parity tests vs `did_multiplegt_dyn` for multi-horizon designs | HIGH | Shipped (point estimates; SE/placebo parity deferred) |
 
 ### Phase 3: Covariates, extensions, and tutorial
 

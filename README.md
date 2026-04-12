@@ -1157,7 +1157,7 @@ EfficientDiD(
 
 `ChaisemartinDHaultfoeuille` (alias `DCDH`) is the only library estimator that handles **non-absorbing (reversible) treatments** — treatment can switch on AND off over time. This is the natural fit for marketing campaigns, seasonal promotions, on/off policy cycles.
 
-Phase 1 ships the contemporaneous-switch estimator `DID_M` from the AER 2020 paper, which is mathematically identical to `DID_1` (horizon `l = 1`) of the dynamic companion paper (NBER WP 29873). Phase 2 will add multi-horizon event-study output `DID_l` for `l > 1` on the same class; Phase 3 will add covariate adjustment.
+Ships `DID_M` (= `DID_1` at horizon `l = 1`) plus the full multi-horizon event study `DID_l` for `l = 1..L_max` via the `L_max` parameter. Phase 3 will add covariate adjustment.
 
 ```python
 from diff_diff import ChaisemartinDHaultfoeuille
@@ -1205,13 +1205,39 @@ ChaisemartinDHaultfoeuille(
 
 | Field | Description |
 |-------|-------------|
-| `overall_att`, `overall_se`, `overall_conf_int` | `DID_M` and inference (cohort-recentered analytical SE by default; multiplier-bootstrap percentile inference when `n_bootstrap > 0`) |
+| `overall_att`, `overall_se`, `overall_conf_int` | `DID_M` when `L_max=None`; cost-benefit `delta` when `L_max > 1` (delta-method SE from per-horizon SEs) |
 | `joiners_att`, `leavers_att` | Decomposition into the joiners (`DID_+`) and leavers (`DID_-`) views |
 | `placebo_effect` | Single-lag placebo (`DID_M^pl`) point estimate |
 | `per_period_effects` | Per-period decomposition with explicit A11-violation flags |
 | `twfe_weights`, `twfe_fraction_negative`, `twfe_sigma_fe`, `twfe_beta_fe` | Theorem 1 decomposition diagnostic |
 | `n_groups_dropped_crossers`, `n_groups_dropped_singleton_baseline` | Filter counts (multi-switch groups dropped before estimation; singleton-baseline groups excluded from variance) |
 | `n_groups_dropped_never_switching` | Backwards-compatibility metadata. Never-switching groups participate in the variance via stable-control roles; this field is no longer a filter count. |
+
+**Multi-horizon event study** (Phase 2 - pass `L_max` to `fit()`):
+
+```python
+results = est.fit(data, outcome="outcome", group="group",
+                  time="period", treatment="treatment", L_max=5)
+
+# Per-horizon effects with analytical SE
+for horizon in sorted(results.event_study_effects):
+    e = results.event_study_effects[horizon]
+    print(f"  l={horizon}: DID_l={e['effect']:.3f} (SE={e['se']:.3f})")
+
+# Cost-benefit delta (becomes overall_att when L_max > 1)
+print(f"Cost-benefit delta: {results.cost_benefit_delta['delta']:.3f}")
+
+# Normalized effects: DID^n_l = DID_l / l (for binary treatment)
+for horizon in sorted(results.normalized_effects):
+    print(f"  DID^n_{horizon} = {results.normalized_effects[horizon]['effect']:.3f}")
+
+# Event study DataFrame (includes placebos as negative horizons)
+df = results.to_dataframe("event_study")
+
+# Plot (integrates with plot_event_study)
+from diff_diff import plot_event_study
+plot_event_study(results)
+```
 
 **Standalone TWFE decomposition diagnostic** (without fitting the full estimator):
 
@@ -1226,13 +1252,13 @@ print(f"Fraction of negative weights: {diagnostic.fraction_negative:.3f}")
 print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 ```
 
-> **Note:** The Phase 1 placebo SE is intentionally `NaN` with a warning. The dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only — not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo via the dynamic paper's machinery. Until then, the placebo point estimate is meaningful but its inference fields are NaN-consistent (and `results.placebo_se`, `results.placebo_p_value`, etc. remain `NaN` even when `n_bootstrap > 0`).
+> **Note:** Placebo SE is `NaN` for both the single-lag `DID_M^pl` and the dynamic placebos `DID^{pl}_l`. The point estimates are meaningful for visual pre-trends inspection; formal placebo inference (influence-function derivation) is deferred to a follow-up. See `REGISTRY.md` for the full contract.
 
 > **Note:** By default (`drop_larger_lower=True`), the estimator drops groups whose treatment switches more than once before estimation. This matches R `DIDmultiplegtDYN`'s default and is required for the analytical variance formula to be consistent with the point estimate. Each drop emits an explicit warning.
 
 > **Note:** Phase 1 requires panels with a **balanced baseline** (every group observed at the first global period) and **no interior period gaps**. Late-entry groups (missing the baseline) raise `ValueError`; interior-gap groups are dropped with a warning; terminally-missing groups (early exit / right-censoring) are retained and contribute from their observed periods only. This is a documented deviation from R `DIDmultiplegtDYN`, which supports unbalanced panels — see [`docs/methodology/REGISTRY.md`](docs/methodology/REGISTRY.md) for the rationale, the defensive guards that make terminal missingness safe, and workarounds for unbalanced inputs.
 
-> **Note:** Survey design (`survey_design`), event-study aggregation (`aggregate`), covariate adjustment (`controls`), and HonestDiD integration (`honest_did`) are not yet supported. They raise `NotImplementedError` with phase pointers — see [`ROADMAP.md`](ROADMAP.md) for the full multi-phase rollout.
+> **Note:** Survey design (`survey_design`), covariate adjustment (`controls`), group-specific linear trends (`trends_linear`), and HonestDiD integration (`honest_did`) are not yet supported. They raise `NotImplementedError` with phase pointers - see [`ROADMAP.md`](ROADMAP.md) for the Phase 3 rollout.
 
 ### Triple Difference (DDD)
 

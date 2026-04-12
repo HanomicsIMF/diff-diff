@@ -20,7 +20,7 @@ produce a bootstrap distribution per target.
 """
 
 import warnings
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -68,6 +68,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         joiners_inputs: Optional[Tuple[np.ndarray, int, float]] = None,
         leavers_inputs: Optional[Tuple[np.ndarray, int, float]] = None,
         placebo_inputs: Optional[Tuple[np.ndarray, int, float]] = None,
+        # --- Phase 2: multi-horizon inputs ---
+        multi_horizon_inputs: Optional[Dict[int, Tuple[np.ndarray, int, float]]] = None,
+        placebo_horizon_inputs: Optional[Dict[int, Tuple[np.ndarray, int, float]]] = None,
     ) -> DCDHBootstrapResults:
         """
         Compute multiplier-bootstrap inference for all dCDH targets.
@@ -247,6 +250,90 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                 results.placebo_se = se_pl
                 results.placebo_ci = ci_pl
                 results.placebo_p_value = p_pl
+
+        # --- Phase 2: Multi-horizon bootstrap with shared weight matrix ---
+        # Generate ONE shared (n_bootstrap, n_groups) weight matrix so all
+        # horizons use the same bootstrap draw, making the sup-t statistic
+        # a valid joint multiplier-bootstrap band.
+        if multi_horizon_inputs is not None:
+            es_ses: Dict[int, float] = {}
+            es_cis: Dict[int, Tuple[float, float]] = {}
+            es_pvals: Dict[int, float] = {}
+            es_dists: Dict[int, np.ndarray] = {}
+
+            # Shared weight matrix sized for the group set
+            n_groups_mh = n_groups_for_overall
+            shared_weights = _generate_bootstrap_weights_batch(
+                n_bootstrap=self.n_bootstrap,
+                n_units=n_groups_mh,
+                weight_type=self.bootstrap_weights,
+                rng=rng,
+            )
+
+            for l_h, (u_h, n_h, eff_h) in sorted(multi_horizon_inputs.items()):
+                if u_h.size > 0 and n_h > 0:
+                    # Use the shared weight matrix truncated to u_h length
+                    w_h = shared_weights[:, : u_h.size]
+                    deviations = (w_h @ u_h) / n_h
+                    dist_h = deviations + eff_h
+
+                    se_h, ci_h, p_h = _compute_effect_bootstrap_stats(
+                        original_effect=eff_h,
+                        boot_dist=dist_h,
+                        alpha=self.alpha,
+                    )
+                    es_ses[l_h] = se_h
+                    es_cis[l_h] = ci_h
+                    es_pvals[l_h] = p_h
+                    es_dists[l_h] = dist_h
+
+            results.event_study_ses = es_ses
+            results.event_study_cis = es_cis
+            results.event_study_p_values = es_pvals
+
+            # Sup-t simultaneous confidence bands using the shared draws.
+            valid_horizons = [
+                l_h
+                for l_h in es_dists
+                if l_h in es_ses and np.isfinite(es_ses[l_h]) and es_ses[l_h] > 0
+            ]
+            if len(valid_horizons) >= 2:
+                boot_matrix = np.array([es_dists[l_h] for l_h in valid_horizons])
+                effects_vec = np.array([multi_horizon_inputs[l_h][2] for l_h in valid_horizons])
+                ses_vec = np.array([es_ses[l_h] for l_h in valid_horizons])
+                t_stats = np.abs((boot_matrix - effects_vec[:, None]) / ses_vec[:, None])
+                sup_t_dist = np.max(t_stats, axis=0)
+                finite_mask = np.isfinite(sup_t_dist)
+                if finite_mask.sum() > 0.5 * self.n_bootstrap:
+                    cband_crit = float(np.quantile(sup_t_dist[finite_mask], 1 - self.alpha))
+                    results.cband_crit_value = cband_crit
+
+        # --- Phase 2: Placebo horizon bootstrap ---
+        if placebo_horizon_inputs is not None:
+            pl_ses: Dict[int, float] = {}
+            pl_cis: Dict[int, Tuple[float, float]] = {}
+            pl_pvals: Dict[int, float] = {}
+
+            for l_h, (u_h, n_h, eff_h) in sorted(placebo_horizon_inputs.items()):
+                if u_h.size > 0 and n_h > 0:
+                    se_h, ci_h, p_h, _ = _bootstrap_one_target(
+                        u_centered=u_h,
+                        divisor=n_h,
+                        original=eff_h,
+                        n_bootstrap=self.n_bootstrap,
+                        weight_type=self.bootstrap_weights,
+                        alpha=self.alpha,
+                        rng=rng,
+                        context=f"dCDH placebo l={l_h} bootstrap",
+                        return_distribution=False,
+                    )
+                    pl_ses[l_h] = se_h
+                    pl_cis[l_h] = ci_h
+                    pl_pvals[l_h] = p_h
+
+            results.placebo_horizon_ses = pl_ses
+            results.placebo_horizon_cis = pl_cis
+            results.placebo_horizon_p_values = pl_pvals
 
         return results
 

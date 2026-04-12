@@ -113,6 +113,15 @@ class DCDHBootstrapResults:
     placebo_p_value: Optional[float] = None
     bootstrap_distribution: Optional[np.ndarray] = field(default=None, repr=False)
 
+    # --- Phase 2: per-horizon bootstrap ---
+    event_study_ses: Optional[Dict[int, float]] = field(default=None, repr=False)
+    event_study_cis: Optional[Dict[int, Tuple[float, float]]] = field(default=None, repr=False)
+    event_study_p_values: Optional[Dict[int, float]] = field(default=None, repr=False)
+    placebo_horizon_ses: Optional[Dict[int, float]] = field(default=None, repr=False)
+    placebo_horizon_cis: Optional[Dict[int, Tuple[float, float]]] = field(default=None, repr=False)
+    placebo_horizon_p_values: Optional[Dict[int, float]] = field(default=None, repr=False)
+    cband_crit_value: Optional[float] = None
+
 
 @dataclass
 class ChaisemartinDHaultfoeuilleResults:
@@ -364,11 +373,15 @@ class ChaisemartinDHaultfoeuilleResults:
     n_groups_dropped_singleton_baseline: int
     n_groups_dropped_never_switching: int
 
-    # --- Phase 1 event-study placeholder (populated with l=1 entry) ---
-    # Stable shape across phases. In Phase 1, populated with a single
-    # entry {1: {effect, se, t_stat, p_value, conf_int, n_obs}} mirroring
-    # overall_att. Phase 2 extends with entries for l = 2, ..., L_max.
+    # --- Event study (Phase 2: multi-horizon) ---
+    # Populated with {l: {effect, se, t_stat, p_value, conf_int, n_obs}}.
+    # Phase 1 (L_max=None): single entry {1: {...}} mirroring overall_att.
+    # Phase 2 (L_max>=2): entries for l = 1, ..., L_max.
     event_study_effects: Optional[Dict[int, Dict[str, Any]]] = None
+    L_max: Optional[int] = None
+    # Dynamic placebos DID^{pl}_l with negative horizon keys.
+    # None in Phase 1; populated as {-1: {...}, -2: {...}} in Phase 2.
+    placebo_event_study: Optional[Dict[int, Dict[str, Any]]] = field(default=None, repr=False)
 
     # --- TWFE decomposition diagnostic (Theorem 1 of AER 2020) ---
     twfe_weights: Optional[pd.DataFrame] = field(default=None, repr=False)
@@ -398,9 +411,10 @@ class ChaisemartinDHaultfoeuilleResults:
     def __repr__(self) -> str:
         """Concise string representation."""
         sig = _get_significance_stars(self.overall_p_value)
+        label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
         return (
             f"ChaisemartinDHaultfoeuilleResults("
-            f"DID_M={self.overall_att:.4f}{sig}, "
+            f"{label}={self.overall_att:.4f}{sig}, "
             f"SE={self.overall_se:.4f}, "
             f"n_groups={len(self.groups)}, "
             f"n_switcher_cells={self.n_switcher_cells})"
@@ -492,16 +506,22 @@ class ChaisemartinDHaultfoeuilleResults:
                 ]
             )
 
-        # --- Overall DID_M ---
+        # --- Overall ---
+        overall_label = (
+            "Cost-Benefit Delta"
+            if self.L_max is not None and self.L_max >= 2
+            else "DID_M (Contemporaneous-Switch ATT)"
+        )
+        overall_row_label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
         lines.extend(
             [
                 thin,
-                "DID_M (Contemporaneous-Switch ATT)".center(width),
+                overall_label.center(width),
                 thin,
                 header_row,
                 thin,
                 _format_inference_row(
-                    "DID_M",
+                    overall_row_label,
                     self.overall_att,
                     self.overall_se,
                     self.overall_t_stat,
@@ -520,11 +540,24 @@ class ChaisemartinDHaultfoeuilleResults:
             lines.append(f"{'CV (SE/|DID_M|):':<25} {cv:>10.4f}")
 
         lines.append("")
-        if self.bootstrap_results is not None:
+        is_delta = (
+            self.L_max is not None and self.L_max >= 2 and self.cost_benefit_delta is not None
+        )
+        if self.bootstrap_results is not None and np.isfinite(self.overall_se) and not is_delta:
             lines.append("Note: p-value and CI are multiplier-bootstrap percentile inference")
             lines.append(
                 f"      ({self.bootstrap_results.n_bootstrap} iterations, "
                 f"{self.bootstrap_results.weight_type} weights)."
+            )
+        elif self.bootstrap_results is not None and is_delta:
+            lines.append(
+                f"Note: delta SE is delta-method (normal-theory) from per-horizon "
+                f"bootstrap SEs ({self.bootstrap_results.n_bootstrap} iterations)."
+            )
+        elif self.bootstrap_results is not None:
+            lines.append(
+                f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
+                f"used for event-study horizon inference."
             )
         else:
             lines.append(
@@ -614,6 +647,70 @@ class ChaisemartinDHaultfoeuilleResults:
                 ]
             )
 
+        # --- Phase 2: Event study table ---
+        if self.L_max is not None and self.L_max >= 2 and self.event_study_effects:
+            lines.extend(
+                [
+                    thin,
+                    f"Event Study (DID_l, l = 1..{self.L_max})".center(width),
+                    thin,
+                    header_row,
+                    thin,
+                ]
+            )
+            for l_h in sorted(self.event_study_effects.keys()):
+                entry = self.event_study_effects[l_h]
+                lines.append(
+                    _format_inference_row(
+                        f"DID_{l_h}",
+                        entry["effect"],
+                        entry["se"],
+                        entry["t_stat"],
+                        entry["p_value"],
+                    )
+                )
+            lines.extend([thin])
+
+            # Sup-t bands note
+            if self.sup_t_bands is not None:
+                crit = self.sup_t_bands["crit_value"]
+                lines.append(
+                    f"Sup-t critical value: {crit:.4f} " f"(simultaneous {conf_level}% bands)"
+                )
+
+            # Cost-benefit delta
+            if self.cost_benefit_delta is not None:
+                delta = self.cost_benefit_delta.get("delta", float("nan"))
+                lines.extend(
+                    [
+                        "",
+                        f"{'Cost-benefit delta:':<35} {_fmt_float(delta):>10}",
+                    ]
+                )
+                if self.cost_benefit_delta.get("has_leavers", False):
+                    dj = self.cost_benefit_delta.get("delta_joiners", float("nan"))
+                    dl = self.cost_benefit_delta.get("delta_leavers", float("nan"))
+                    lines.append(
+                        f"  (Assumption 7 violated: joiners={_fmt_float(dj)}, "
+                        f"leavers={_fmt_float(dl)})"
+                    )
+
+            # Dynamic placebos
+            if self.placebo_event_study:
+                lines.extend(
+                    [
+                        "",
+                        f"{'Placebos:':<15}",
+                    ]
+                )
+                for h in sorted(self.placebo_event_study.keys()):
+                    entry = self.placebo_event_study[h]
+                    eff = _fmt_float(entry["effect"])
+                    n_pl = entry["n_obs"]
+                    lines.append(f"  DID^pl_{abs(h)}: {eff:>10}  (N={n_pl})")
+
+            lines.extend([""])
+
         # --- TWFE diagnostic ---
         if self.twfe_beta_fe is not None:
             lines.extend(
@@ -678,6 +775,11 @@ class ChaisemartinDHaultfoeuilleResults:
             - ``"per_period"``: one row per time period with
               ``did_plus_t``, ``did_minus_t``, switching cell counts, and
               the A11-zeroed flags.
+            - ``"event_study"``: one row per horizon (positive and
+              negative/placebo), including a reference period at
+              horizon 0. Available when ``L_max >= 2``.
+            - ``"normalized"``: one row per horizon for the normalized
+              effects ``DID^n_l``. Available when ``L_max >= 2``.
             - ``"twfe_weights"``: per-(group, time) TWFE decomposition
               weights table. Only available when ``twfe_diagnostic=True``
               was passed to ``fit()``.
@@ -690,7 +792,9 @@ class ChaisemartinDHaultfoeuilleResults:
             return pd.DataFrame(
                 [
                     {
-                        "estimand": "DID_M",
+                        "estimand": (
+                            "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+                        ),
                         "effect": self.overall_att,
                         "se": self.overall_se,
                         "t_stat": self.overall_t_stat,
@@ -712,9 +816,10 @@ class ChaisemartinDHaultfoeuilleResults:
             # For the DID_M row, both quantities use the overall switching
             # cell set: n_cells = sum of joiner + leaver cells, and n_obs
             # is the same sum of raw observation counts.
+            overall_est_label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
             rows = [
                 {
-                    "estimand": "DID_M",
+                    "estimand": overall_est_label,
                     "effect": self.overall_att,
                     "se": self.overall_se,
                     "t_stat": self.overall_t_stat,
@@ -775,6 +880,87 @@ class ChaisemartinDHaultfoeuilleResults:
                 rows.append({"period": t, **cell})
             return pd.DataFrame(rows)
 
+        elif level == "event_study":
+            rows = []
+            # Placebo horizons (negative keys)
+            if self.placebo_event_study:
+                for h in sorted(self.placebo_event_study.keys()):
+                    entry = self.placebo_event_study[h]
+                    cband = entry.get("cband_conf_int", (np.nan, np.nan))
+                    rows.append(
+                        {
+                            "horizon": h,
+                            "estimand": f"DID^pl_{abs(h)}",
+                            "effect": entry["effect"],
+                            "se": entry["se"],
+                            "t_stat": entry["t_stat"],
+                            "p_value": entry["p_value"],
+                            "conf_int_lower": entry["conf_int"][0],
+                            "conf_int_upper": entry["conf_int"][1],
+                            "n_obs": entry["n_obs"],
+                            "cband_lower": cband[0] if cband else np.nan,
+                            "cband_upper": cband[1] if cband else np.nan,
+                        }
+                    )
+            # Reference period (horizon 0)
+            rows.append(
+                {
+                    "horizon": 0,
+                    "estimand": "ref",
+                    "effect": 0.0,
+                    "se": np.nan,
+                    "t_stat": np.nan,
+                    "p_value": np.nan,
+                    "conf_int_lower": np.nan,
+                    "conf_int_upper": np.nan,
+                    "n_obs": 0,
+                    "cband_lower": np.nan,
+                    "cband_upper": np.nan,
+                }
+            )
+            # Positive horizons
+            if self.event_study_effects:
+                for h in sorted(self.event_study_effects.keys()):
+                    entry = self.event_study_effects[h]
+                    cband = entry.get("cband_conf_int", (np.nan, np.nan))
+                    rows.append(
+                        {
+                            "horizon": h,
+                            "estimand": f"DID_{h}",
+                            "effect": entry["effect"],
+                            "se": entry["se"],
+                            "t_stat": entry["t_stat"],
+                            "p_value": entry["p_value"],
+                            "conf_int_lower": entry["conf_int"][0],
+                            "conf_int_upper": entry["conf_int"][1],
+                            "n_obs": entry["n_obs"],
+                            "cband_lower": cband[0] if cband else np.nan,
+                            "cband_upper": cband[1] if cband else np.nan,
+                        }
+                    )
+            return pd.DataFrame(rows)
+
+        elif level == "normalized":
+            if not self.normalized_effects:
+                raise ValueError("Normalized effects not computed. Pass L_max >= 2 to fit().")
+            rows = []
+            for h in sorted(self.normalized_effects.keys()):
+                entry = self.normalized_effects[h]
+                rows.append(
+                    {
+                        "horizon": h,
+                        "estimand": f"DID^n_{h}",
+                        "effect": entry["effect"],
+                        "se": entry["se"],
+                        "t_stat": entry["t_stat"],
+                        "p_value": entry["p_value"],
+                        "conf_int_lower": entry["conf_int"][0],
+                        "conf_int_upper": entry["conf_int"][1],
+                        "denominator": entry["denominator"],
+                    }
+                )
+            return pd.DataFrame(rows)
+
         elif level == "twfe_weights":
             if self.twfe_weights is None:
                 raise ValueError(
@@ -786,7 +972,7 @@ class ChaisemartinDHaultfoeuilleResults:
         else:
             raise ValueError(
                 f"Unknown level: {level!r}. Use 'overall', 'joiners_leavers', "
-                f"'per_period', or 'twfe_weights'."
+                f"'per_period', 'event_study', 'normalized', or 'twfe_weights'."
             )
 
 

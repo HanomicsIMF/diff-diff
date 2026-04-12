@@ -463,7 +463,7 @@ The multiplier bootstrap uses random weights w_i with E[w]=0 and Var(w)=1:
 - [de Chaisemartin, C. & D'Haultfœuille, X. (2020). Two-Way Fixed Effects Estimators with Heterogeneous Treatment Effects. *American Economic Review*, 110(9), 2964-2996.](https://doi.org/10.1257/aer.20181169)
 - [de Chaisemartin, C. & D'Haultfœuille, X. (2022, revised 2024). Difference-in-Differences Estimators of Intertemporal Treatment Effects. NBER Working Paper 29873.](https://www.nber.org/papers/w29873) — Web Appendix Section 3.7.3 contains the cohort-recentered plug-in variance formula implemented here.
 
-**Phase 1 scope:** Ships the contemporaneous-switch estimator `DID_M` from the AER 2020 paper, equivalently `DID_1` (horizon `l = 1`) of the dynamic companion paper. The full multi-phase rollout is in `ROADMAP.md`: Phase 2 adds dynamic horizons `DID_l` for `l > 1`, normalized estimators, cost-benefit aggregates, and sup-t bands; Phase 3 adds covariate adjustment (`DID^X`), group-specific linear trends (`DID^{fd}`), state-set-specific trends, and HonestDiD integration. Survey design support is deferred to a separate effort after all phases ship. **This is the only modern staggered estimator in the library that handles non-absorbing (reversible) treatments** — treatment can switch on AND off over time, making it the natural fit for marketing campaigns, seasonal promotions, on/off policy cycles.
+**Phase 1-2 scope:** Ships the contemporaneous-switch estimator `DID_M` (= `DID_1` at horizon `l = 1`) from the AER 2020 paper **plus** the full multi-horizon event study `DID_l` for `l = 1..L_max` from the dynamic companion paper. Phase 2 adds: per-group `DID_{g,l}` building block (Equation 3), dynamic placebos `DID^{pl}_l`, normalized estimator `DID^n_l`, cost-benefit aggregate `delta`, sup-t simultaneous confidence bands, and `plot_event_study()` integration. Phase 3 adds covariate adjustment (`DID^X`), group-specific linear trends (`DID^{fd}`), state-set-specific trends, and HonestDiD integration. Survey design support is deferred to a separate effort after all phases ship. **This is the only modern staggered estimator in the library that handles non-absorbing (reversible) treatments** - treatment can switch on AND off over time, making it the natural fit for marketing campaigns, seasonal promotions, on/off policy cycles.
 
 **Key implementation requirements:**
 
@@ -515,6 +515,36 @@ DID_M^pl = (1/N_S^pl) * sum_{t>=3} (
           )
 ```
 
+*Phase 2: Multi-horizon event study (Equation 3 and 5 of the dynamic companion paper):*
+
+When `L_max >= 2`, the estimator computes the per-group building block `DID_{g,l}` and the aggregate `DID_l` for each horizon:
+
+```
+DID_{g,l} = Y_{g, F_g-1+l} - Y_{g, F_g-1}
+            - (1/N^g_{F_g-1+l}) * sum_{g': same baseline, F_{g'}>F_g-1+l}
+                (Y_{g', F_g-1+l} - Y_{g', F_g-1})
+
+DID_l     = (1/N_l) * sum_{g: F_g-1+l <= T_g} S_g * DID_{g,l}
+```
+
+Normalized estimator `DID^n_l = DID_l / delta^D_l` where `delta^D_l = (1/N_l) * sum |delta^D_{g,l}|` and `delta^D_{g,l} = sum_{k=0}^{l-1} (D_{g,F_g+k} - D_{g,1})`. For binary treatment: `DID^n_l = DID_l / l`.
+
+Cost-benefit aggregate `delta = sum_l w_l * DID_l` (Lemma 4) where `w_l` are non-negative weights reflecting the cumulative dose at each horizon. When `L_max > 1`, `overall_att` holds this delta.
+
+Dynamic placebos `DID^{pl}_l` look backward from each group's reference period, with a dual eligibility condition: `F_g - 1 - l >= 1` AND `F_g - 1 + l <= T_g`.
+
+- **Note (Phase 2 `DID_1` vs Phase 1 `DID_M`):** When `L_max >= 2`, `event_study_effects[1]` uses the per-group `DID_{g,1}` building block (Equation 3 of the dynamic paper) with cohort-based controls, which may differ slightly from the Phase 1 `DID_M` value (Theorem 3 of AER 2020 with period-based stable-control sets). The Phase 1 `DID_M` value remains accessible via `fit(..., L_max=None).overall_att`. The difference arises because the per-group path conditions on baseline treatment `D_{g,1}` when selecting controls, while the per-period path does not. On pure-direction panels (all joiners or all leavers) the two agree; on mixed-direction panels they can differ by O(1%). This is the same period-vs-cohort control-set deviation documented in the Phase 1 Note above, extended to the `l=1` event-study entry.
+
+- **Note (Phase 2 equal-cell weighting, deviation from R `DIDmultiplegtDYN`):** The Phase 1 equal-cell weighting contract carries forward to all Phase 2 estimands (`DID_l`, `DID^{pl}_l`, `DID^n_l`, `delta`). Each `(g, t)` cell contributes equally regardless of within-cell observation count. On individual-level inputs with uneven cell sizes, this produces a different estimand than R `DIDmultiplegtDYN` which weights by cell size. The parity tests use one-observation-per-cell generators so parity holds. See the Phase 1 weighting Note above for the full rationale.
+
+- **Note (Phase 2 `<50%` switcher warning):** When fewer than 50% of the l=1 switchers contribute at a far horizon l, `fit()` emits a `UserWarning`. The paper recommends not reporting such horizons (Favara-Imbs application, footnote 14).
+
+- **Note (Phase 2 Assumption 7 and cost-benefit delta):** Assumption 7 (`D_{g,t} >= D_{g,1}`) is required for the single-sign cost-benefit interpretation. When leavers are present (binary: 1->0 groups violate Assumption 7), the estimator emits a `UserWarning` and provides `delta_joiners` / `delta_leavers` separately on `results.cost_benefit_delta`.
+
+- **Note (Phase 2 cost-benefit delta SE):** When `L_max >= 2`, `overall_att` holds the cost-benefit `delta`. Its SE is computed via the delta method from per-horizon SEs: `SE(delta) = sqrt(sum w_l^2 * SE(DID_l)^2)`, treating horizons as independent (conservative under Assumption 8). When bootstrap is enabled, per-horizon bootstrap SEs flow through the delta-method formula, so `overall_se` reflects bootstrap-derived per-horizon uncertainty but the delta aggregation itself uses normal-theory (not bootstrap percentile). This is an intentional exception to the general bootstrap-inference-surface contract: `overall_p_value` and `overall_conf_int` for `delta` use `safe_inference(delta, delta_se)`, not percentile bootstrap, because the delta is a derived aggregate rather than a directly bootstrapped estimand.
+
+- **Note (Phase 2 dynamic placebo SE):** Dynamic placebos `DID^{pl}_l` (negative horizons in `placebo_event_study`) ship as point estimates with `NaN` inference in Phase 2. The placebo influence-function derivation follows the same cohort-recentered structure as the positive horizons but requires a separate IF computation for the backward outcome differences, which is deferred. The placebo point estimates are meaningful for visual pre-trends inspection; formal placebo inference will be added in a follow-up. Bootstrap placebo inference plumbing exists in the mixin but is not wired.
+
 *Standard errors (Web Appendix Section 3.7.3 of the dynamic companion paper):*
 
 Default: cohort-recentered analytical plug-in variance, evaluated at horizon `l = 1`. Cohorts are defined by the triple `(D_{g,1}, F_g, S_g)` (baseline treatment, first-switch period, switch direction). Each group's per-period role weights (joiner, stable_0, leaver, stable_1) sum to a per-group `U^G_g` value via the full `Lambda^G_{g,l=1}` weight vector from Section 3.7.2 of the dynamic paper:
@@ -553,7 +583,7 @@ Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` param
 
 - **Note:** The analytical CI is **conservative** under Assumption 8 (independent groups) of the dynamic companion paper, and exact only under iid sampling. This is documented as a deliberate deviation from "default nominal coverage". The bootstrap CI uses the same conservative weighting and is provided for users who want a non-asymptotic alternative.
 
-- **Note:** Phase 1 placebo SE is intentionally `NaN` with a `UserWarning`. The dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only — not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo via the dynamic paper's machinery. Until then, the placebo point estimate is meaningful but its inference fields stay NaN-consistent **even when `n_bootstrap > 0`**: the bootstrap path computes SEs for `DID_M`, `DID_+`, and `DID_-`, but `placebo_se`, `placebo_t_stat`, `placebo_p_value`, and `placebo_conf_int` remain `NaN` because the placebo's influence function machinery is deferred to Phase 2.
+- **Note:** Placebo SE is intentionally `NaN` for both the single-lag `DID_M^pl` and the dynamic placebos `DID^{pl}_l`. The placebo influence-function derivation is deferred (see the Phase 2 dynamic placebo SE Note above). Placebo point estimates are meaningful for visual pre-trends inspection; inference fields stay NaN-consistent even when `n_bootstrap > 0`.
 
 - **Note:** When every variance-eligible group forms its own `(D_{g,1}, F_g, S_g)` cohort (a degenerate small-panel case where the cohort framework has zero degrees of freedom), the cohort-recentered plug-in formula is unidentified: cohort recentering subtracts the cohort mean from each group's `U^G_g`, and for singleton cohorts the centered value is exactly zero, so the centered influence function vector collapses to all zeros. The estimator returns `overall_se = NaN` with a `UserWarning` rather than silently collapsing to `0.0` (which would falsely imply infinite precision). The `DID_M` point estimate remains well-defined. The bootstrap path inherits the same degeneracy on these panels — the multiplier weights act on an all-zero vector, so the bootstrap distribution is also degenerate. **Deviation from R `DIDmultiplegtDYN`:** R returns a non-zero SE on the canonical 4-group worked example via small-sample sandwich machinery that Python does not implement. Both responses are valid for a degenerate case; Python's `NaN`+warning is the safer default. To get a non-degenerate SE, include more groups so cohorts have peers (real-world panels typically have `G >> K`).
 

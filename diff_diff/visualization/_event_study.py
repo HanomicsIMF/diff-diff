@@ -7,6 +7,9 @@ import pandas as pd
 
 if TYPE_CHECKING:
     from diff_diff.honest_did import HonestDiDResults
+    from diff_diff.chaisemartin_dhaultfoeuille_results import (
+        ChaisemartinDHaultfoeuilleResults,
+    )
     from diff_diff.imputation import ImputationDiDResults
     from diff_diff.results import MultiPeriodDiDResults
     from diff_diff.stacked_did import StackedDiDResults
@@ -22,6 +25,7 @@ PlottableResults = Union[
     "ImputationDiDResults",
     "TwoStageDiDResults",
     "StackedDiDResults",
+    "ChaisemartinDHaultfoeuilleResults",
     pd.DataFrame,
 ]
 
@@ -663,6 +667,60 @@ def _extract_plot_data(
             None,
         )
 
+    # Handle ChaisemartinDHaultfoeuilleResults (dCDH event study)
+    # Must come before the generic event_study_effects branch because
+    # dCDH results also have event_study_effects but additionally have
+    # placebo_event_study with negative horizon keys.
+    if hasattr(results, "placebo_event_study") and hasattr(results, "L_max"):
+        effects = {}
+        se_dict: Dict = {}
+        ci_lower_override = {}
+        ci_upper_override = {}
+        has_cband = False
+
+        # Merge placebo horizons (negative keys)
+        if results.placebo_event_study:
+            for h, entry in results.placebo_event_study.items():
+                effects[h] = entry["effect"]
+                se_dict[h] = entry["se"]
+                if "cband_conf_int" in entry:
+                    ci_lower_override[h] = entry["cband_conf_int"][0]
+                    ci_upper_override[h] = entry["cband_conf_int"][1]
+                    has_cband = True
+
+        # Reference period at 0
+        effects[0] = 0.0
+        se_dict[0] = float("nan")
+
+        # Positive horizons
+        if results.event_study_effects:
+            for h, entry in results.event_study_effects.items():
+                effects[h] = entry["effect"]
+                se_dict[h] = entry["se"]
+                if "cband_conf_int" in entry:
+                    ci_lower_override[h] = entry["cband_conf_int"][0]
+                    ci_upper_override[h] = entry["cband_conf_int"][1]
+                    has_cband = True
+
+        if periods is None:
+            periods = sorted(effects.keys())
+        if pre_periods is None:
+            pre_periods = [p for p in periods if p < 0]
+        if post_periods is None:
+            post_periods = [p for p in periods if p > 0]
+
+        return (
+            effects,
+            se_dict,
+            periods,
+            pre_periods,
+            post_periods,
+            0,  # reference_period is always 0 for dCDH
+            True,  # inferred
+            ci_lower_override if has_cband else None,
+            ci_upper_override if has_cband else None,
+        )
+
     # Handle CallawaySantAnnaResults (event study aggregation)
     if hasattr(results, "event_study_effects") and results.event_study_effects is not None:
         effects = {}
@@ -721,7 +779,8 @@ def _extract_plot_data(
     raise TypeError(
         f"Cannot extract plot data from {type(results).__name__}. "
         "Expected MultiPeriodDiDResults, CallawaySantAnnaResults, "
-        "SunAbrahamResults, ImputationDiDResults, or DataFrame."
+        "SunAbrahamResults, ImputationDiDResults, "
+        "ChaisemartinDHaultfoeuilleResults, or DataFrame."
     )
 
 
