@@ -1956,6 +1956,11 @@ def _build_group_time_design(
     period are dropped as the reference categories. Returns the matrix
     and a list of column names.
     """
+    if cell.empty:
+        raise ValueError(
+            "Cannot compute TWFE diagnostic on an empty cell DataFrame. "
+            "Provide a panel with at least 2 groups and 2 time periods."
+        )
     groups = sorted(cell[group_col].unique().tolist())
     times = sorted(cell[time_col].unique().tolist())
     n = len(cell)

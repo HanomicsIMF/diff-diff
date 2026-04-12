@@ -46,7 +46,8 @@ The estimator:
   explicit. See REGISTRY.md ``ChaisemartinDHaultfoeuille`` ``Note (TWFE
   diagnostic sample contract)`` for the rationale.
 - You want a Python implementation that matches R ``DIDmultiplegtDYN`` at
-  ``l = 1``
+  ``l = 1`` on cell-aggregated input (see REGISTRY.md for documented
+  deviations on individual-level inputs with uneven cell sizes)
 
 All other staggered estimators in diff-diff (:class:`~diff_diff.CallawaySantAnna`,
 :class:`~diff_diff.SunAbraham`, :class:`~diff_diff.ImputationDiD`,

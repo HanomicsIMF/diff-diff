@@ -1598,6 +1598,17 @@ class TestTwowayFeweightsHelper:
                 treatment="treatment",
             )
 
+    def test_twowayfeweights_rejects_empty_input(self):
+        df = pd.DataFrame(columns=["group", "period", "treatment", "outcome"])
+        with pytest.raises(ValueError):
+            twowayfeweights(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
     def test_twowayfeweights_rejects_within_cell_varying_treatment(self):
         # Construct a panel with two original rows per (group, period) cell
         # where the treatment values disagree within a cell. The helper
