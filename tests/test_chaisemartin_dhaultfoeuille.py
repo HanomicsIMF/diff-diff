@@ -1518,11 +1518,10 @@ class TestTwowayFeweightsHelper:
                 treatment="treatment",
             )
 
-    def test_twowayfeweights_warns_on_within_cell_rounding(self):
+    def test_twowayfeweights_rejects_within_cell_varying_treatment(self):
         # Construct a panel with two original rows per (group, period) cell
         # where the treatment values disagree within a cell. The helper
-        # should aggregate to majority and emit the within-cell rounding
-        # warning.
+        # should raise ValueError (not silently round to majority).
         rows = []
         for g in [1, 2, 3, 4]:
             for t in [0, 1, 2]:
@@ -1535,8 +1534,31 @@ class TestTwowayFeweightsHelper:
                     rows.append({"group": g, "period": t, "treatment": base_treat, "outcome": 10.0})
                     rows.append({"group": g, "period": t, "treatment": base_treat, "outcome": 10.5})
         df = pd.DataFrame(rows)
-        with pytest.warns(UserWarning, match="Within-cell-varying treatment"):
+        with pytest.raises(ValueError, match="Within-cell-varying treatment"):
             twowayfeweights(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_fit_rejects_within_cell_varying_treatment(self):
+        # Same rejection test via fit() entry point
+        rows = []
+        for g in [1, 2, 3, 4]:
+            for t in [0, 1, 2]:
+                if g == 1 and t == 2:
+                    rows.append({"group": g, "period": t, "treatment": 1, "outcome": 10.0})
+                    rows.append({"group": g, "period": t, "treatment": 0, "outcome": 11.0})
+                else:
+                    base_treat = 1 if (g <= 2 and t == 2) else 0
+                    rows.append({"group": g, "period": t, "treatment": base_treat, "outcome": 10.0})
+                    rows.append({"group": g, "period": t, "treatment": base_treat, "outcome": 10.5})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="Within-cell-varying treatment"):
+            est.fit(
                 df,
                 outcome="outcome",
                 group="group",

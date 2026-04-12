@@ -1155,7 +1155,7 @@ EfficientDiD(
 
 ### de Chaisemartin-D'Haultfœuille (dCDH) for Reversible Treatments
 
-`ChaisemartinDHaultfoeuille` (alias `DCDH`) is the only library estimator that handles **non-absorbing (reversible) treatments** — treatment can switch on AND off over time. This is the natural fit for marketing campaigns, seasonal promotions, on/off policy cycles, and binary fuzzy designs.
+`ChaisemartinDHaultfoeuille` (alias `DCDH`) is the only library estimator that handles **non-absorbing (reversible) treatments** — treatment can switch on AND off over time. This is the natural fit for marketing campaigns, seasonal promotions, on/off policy cycles.
 
 Phase 1 ships the contemporaneous-switch estimator `DID_M` from the AER 2020 paper, which is mathematically identical to `DID_1` (horizon `l = 1`) of the dynamic companion paper (NBER WP 29873). Phase 2 will add multi-horizon event-study output `DID_l` for `l > 1` on the same class; Phase 3 will add covariate adjustment.
 

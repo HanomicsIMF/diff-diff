@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **`ChaisemartinDHaultfoeuille`** (alias `DCDH`) — Phase 1 of the de Chaisemartin-D'Haultfœuille estimator family, the only modern staggered DiD estimator in the library that handles **non-absorbing (reversible) treatments**. Treatment can switch on AND off over time (marketing campaigns, seasonal promotions, on/off policy cycles, binary fuzzy designs). Implements `DID_M` from de Chaisemartin & D'Haultfœuille (2020) AER, equivalently `DID_1` (horizon `l = 1`) of the dynamic companion paper (NBER WP 29873). Ships:
+- **`ChaisemartinDHaultfoeuille`** (alias `DCDH`) — Phase 1 of the de Chaisemartin-D'Haultfœuille estimator family, the only modern staggered DiD estimator in the library that handles **non-absorbing (reversible) treatments**. Treatment can switch on AND off over time (marketing campaigns, seasonal promotions, on/off policy cycles). Implements `DID_M` from de Chaisemartin & D'Haultfœuille (2020) AER, equivalently `DID_1` (horizon `l = 1`) of the dynamic companion paper (NBER WP 29873). Ships:
   - Headline `DID_M` point estimate with cohort-recentered analytical SE from Web Appendix Section 3.7.3 of the dynamic companion paper
   - Joiners-only (`DID_+`) and leavers-only (`DID_-`) decompositions with their own inference
   - Single-lag placebo `DID_M^pl` point estimate (Theorem 4 of AER 2020). Placebo SE / inference fields are intentionally `NaN` in Phase 1: the dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only, not for the placebo. Phase 2 will add multiplier-bootstrap support for the placebo. The bootstrap path in Phase 1 covers `DID_M`, `DID_+`, and `DID_-` only.

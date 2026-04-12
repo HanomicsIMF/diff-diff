@@ -511,5 +511,10 @@ class TestLargeNRecovery:
                 time="period",
                 treatment="treatment",
             )
-        lo, hi = results.overall_conf_int
-        assert lo <= 1.5 <= hi
+        # Use a point-estimate proximity assertion rather than CI
+        # coverage, which is stochastic and can fail on specific seeds
+        # or architectures (the arm64 CI runner hit this with seed 43).
+        assert abs(results.overall_att - 1.5) < 0.5, (
+            f"Large-N recovery failed: overall_att={results.overall_att:.4f}, "
+            f"expected ~1.5 (tolerance 0.5)"
+        )

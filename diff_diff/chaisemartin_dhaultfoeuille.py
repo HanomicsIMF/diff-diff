@@ -123,9 +123,11 @@ def _validate_and_aggregate_to_cells(
        mean of ``treatment``, then majority-rounded), and ``n_gt``
        (count of original observations in the cell).
     6. **Within-cell-varying treatment** (any cell with fractional
-       ``d_gt``) emits a ``UserWarning`` listing the affected cell
-       count, then rounds to majority (``>= 0.5 -> 1``). Fuzzy DiD is
+       ``d_gt``) raises ``ValueError``. Phase 1 requires treatment to
+       be constant within each ``(group, time)`` cell; fuzzy DiD is
        deferred to a separate dCdH 2018 paper not covered by Phase 1.
+       Pre-aggregate your data to constant binary cell-level treatment
+       before calling ``fit()`` or ``twowayfeweights()``.
 
     Returns the aggregated cell DataFrame with columns
     ``[group, time, y_gt, d_gt, n_gt]``, sorted by ``[group, time]``
@@ -196,19 +198,22 @@ def _validate_and_aggregate_to_cells(
         n_gt=(treatment, "count"),
     )
 
-    # 6. Within-cell rounding warning (only fires if fractional d_gt exists)
+    # 6. Within-cell-varying treatment rejection
     non_constant_mask = (cell["d_gt"] > 0) & (cell["d_gt"] < 1)
     if non_constant_mask.any():
         n_non_constant = int(non_constant_mask.sum())
-        warnings.warn(
+        example_cells = cell.loc[non_constant_mask, [group, time, "d_gt"]].head(5)
+        raise ValueError(
             f"Within-cell-varying treatment detected in {n_non_constant} "
-            f"(group, time) cells. Rounding to majority (>= 0.5 -> 1). Fuzzy "
-            "DiD is deferred to a separate dCDH paper (see Phase 3 / "
-            "out-of-scope in ROADMAP.md).",
-            UserWarning,
-            stacklevel=3,
+            f"(group, time) cell(s). Phase 1 dCDH requires treatment to be "
+            f"constant within each (group, time) cell; fractional d_gt values "
+            f"indicate that some units in a cell are treated while others are "
+            f"not. Pre-aggregate your data to constant binary cell-level "
+            f"treatment before calling fit() or twowayfeweights(). Fuzzy DiD "
+            f"is deferred to a separate dCDH paper (see ROADMAP.md "
+            f"out-of-scope). Affected cells (first 5):\n{example_cells}"
         )
-    cell["d_gt"] = (cell["d_gt"] >= 0.5).astype(int)
+    cell["d_gt"] = cell["d_gt"].astype(int)
 
     # Sort to ensure deterministic order in downstream operations
     cell = cell.sort_values([group, time]).reset_index(drop=True)
@@ -1031,10 +1036,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 (float("nan"), float("nan")),
             )
 
-        # Placebo SE: in Phase 1 we approximate using the same plug-in formula
-        # applied to the placebo's centered IF. The dynamic paper derives the
-        # variance for DID_l only; placebo SE is a library extension and is
-        # treated as conservative. NaN if placebo unavailable.
+        # Placebo SE: intentionally NaN in Phase 1. The dynamic paper
+        # derives the cohort-recentered analytical variance for DID_l only,
+        # not for the placebo. Phase 2 will add multiplier-bootstrap
+        # support for the placebo. See REGISTRY.md placebo SE Note.
         placebo_se = float("nan")
         placebo_t = float("nan")
         placebo_p = float("nan")

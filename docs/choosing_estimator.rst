@@ -232,7 +232,7 @@ Reversible (Non-Absorbing) Treatment
 Use :class:`~diff_diff.ChaisemartinDHaultfoeuille` (alias :class:`~diff_diff.DCDH`) when:
 
 - Treatment can switch on **and** off over time (e.g., marketing campaigns,
-  seasonal promotions, on/off policy cycles, binary fuzzy designs)
+  seasonal promotions, on/off policy cycles)
 - You need separate joiners (``DID_+``) and leavers (``DID_-``) views, plus
   the aggregate ``DID_M``
 - You want a built-in placebo and a TWFE decomposition diagnostic computed
