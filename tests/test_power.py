@@ -2153,7 +2153,7 @@ class TestSurveyPower:
         assert isinstance(result, SimulationPowerResults)
 
     def test_survey_simulate_power_basic_did(self):
-        """DifferenceInDifferences with survey_config works."""
+        """DifferenceInDifferences with survey_config produces finite estimates."""
         result = simulate_power(
             DifferenceInDifferences(),
             treatment_effect=3.0,
@@ -2163,9 +2163,13 @@ class TestSurveyPower:
             **_SIM_KW,
         )
         assert 0 <= result.power <= 1
+        # Verify non-degenerate: finite mean estimate and SE (not rank-deficient)
+        assert np.isfinite(result.mean_estimate)
+        assert np.isfinite(result.mean_se)
+        assert result.mean_se > 0
 
     def test_survey_simulate_power_twfe(self):
-        """TwoWayFixedEffects with survey_config works."""
+        """TwoWayFixedEffects with survey_config produces finite estimates."""
         result = simulate_power(
             TwoWayFixedEffects(),
             treatment_effect=3.0,
@@ -2175,9 +2179,12 @@ class TestSurveyPower:
             **_SIM_KW,
         )
         assert 0 <= result.power <= 1
+        assert np.isfinite(result.mean_estimate)
+        assert np.isfinite(result.mean_se)
+        assert result.mean_se > 0
 
     def test_survey_simulate_power_multiperiod(self):
-        """MultiPeriodDiD with survey_config works."""
+        """MultiPeriodDiD with survey_config produces finite estimates."""
         result = simulate_power(
             MultiPeriodDiD(),
             treatment_effect=3.0,
@@ -2187,6 +2194,9 @@ class TestSurveyPower:
             **_SIM_KW,
         )
         assert 0 <= result.power <= 1
+        assert np.isfinite(result.mean_estimate)
+        assert np.isfinite(result.mean_se)
+        assert result.mean_se > 0
 
     @pytest.mark.parametrize(
         "estimator_cls",
@@ -2348,6 +2358,24 @@ class TestSurveyPower:
         assert isinstance(result, SimulationSampleSizeResults)
         assert result.required_n >= cfg.min_viable_n
         assert result.survey_config is not None
+
+    def test_survey_sample_size_large_effect_floor(self):
+        """Large effect early-return still respects min_viable_n."""
+        cfg = SurveyPowerConfig(n_strata=5, psu_per_stratum=8)
+        # Large effect - first probe likely achieves target power immediately
+        result = simulate_sample_size(
+            CallawaySantAnna(),
+            treatment_effect=10.0,
+            sigma=1.0,
+            n_simulations=10,
+            max_steps=3,
+            seed=42,
+            survey_config=cfg,
+            n_periods=4,
+            treatment_period=2,
+            progress=False,
+        )
+        assert result.required_n >= cfg.min_viable_n  # must be >= 80
 
     # -- Closed-form deff tests --
 

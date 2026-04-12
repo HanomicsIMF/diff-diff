@@ -367,10 +367,16 @@ def _survey_basic_fit_kwargs(
     treatment_period: int,
     survey_config: SurveyPowerConfig,
 ) -> Dict[str, Any]:
-    """Fit kwargs for DifferenceInDifferences with survey design."""
+    """Fit kwargs for DifferenceInDifferences with survey design.
+
+    Uses ``ever_treated`` (time-invariant group indicator) rather than the
+    survey DGP's ``treated`` column (which is post-only: 1{g>0, t>=g}).
+    DifferenceInDifferences internally constructs ``treatment * time``,
+    so passing the post-only flag would make that interaction rank-deficient.
+    """
     return dict(
         outcome="outcome",
-        treatment="treated",
+        treatment="ever_treated",
         time="post",
         survey_design=survey_config._build_survey_design(),
     )
@@ -386,7 +392,7 @@ def _survey_twfe_fit_kwargs(
     """Fit kwargs for TwoWayFixedEffects with survey design."""
     return dict(
         outcome="outcome",
-        treatment="treated",
+        treatment="ever_treated",
         time="post",
         unit="unit",
         survey_design=survey_config._build_survey_design(),
@@ -403,7 +409,8 @@ def _survey_multiperiod_fit_kwargs(
     """Fit kwargs for MultiPeriodDiD with survey design (1-indexed periods)."""
     return dict(
         outcome="outcome",
-        treatment="treated",
+        treatment="ever_treated",
+        unit="unit",
         time="period",
         # 1-indexed: post periods run from treatment_period+1 to n_periods
         post_periods=list(range(treatment_period + 1, n_periods + 1)),
@@ -2040,7 +2047,12 @@ def simulate_power(
                 dgp_kwargs.pop("seed", None)
                 data = _generate_survey_did_data(seed=sim_seed, **dgp_kwargs)
 
-                # Derive `post` column for basic/TWFE estimators
+                # Derive columns for non-staggered estimators.
+                # Survey DGP's `treated` is time-varying (1{g>0, t>=g}); basic/TWFE/
+                # MultiPeriod need a time-invariant group indicator (`ever_treated`).
+                if estimator_name not in _STAGGERED_ESTIMATORS:
+                    data["ever_treated"] = (data["first_treat"] > 0).astype(int)
+                # Basic/TWFE also need a `post` period indicator.
                 if estimator_name in _SURVEY_POST_ESTIMATORS:
                     data["post"] = (data["period"] >= treatment_period + 1).astype(int)
 
@@ -2789,7 +2801,7 @@ def simulate_sample_size(
                 UserWarning,
             )
     else:
-        lo = min_n
+        lo = max(min_n, abs_min)
         power_lo = _power_at_n(lo)
         if power_lo >= power:
             # Floor achieves target — search downward for true minimum
@@ -2812,15 +2824,17 @@ def simulate_sample_size(
                     (s for s in search_path if s["power"] >= power),
                     key=lambda s: s["n_units"],
                 )
+                # Clamp to abs_min (enforces survey min_viable_n contract)
+                best_n = max(int(best["n_units"]), abs_min)
                 warnings.warn(
-                    f"Power at n={int(best['n_units'])} is "
+                    f"Power at n={best_n} is "
                     f"{best['power']:.2f} >= target {power}. Could not "
                     f"find a smaller N below target power. Pass "
                     f"n_range=(lo, hi) to refine.",
                     UserWarning,
                 )
                 return SimulationSampleSizeResults(
-                    required_n=int(best["n_units"]),
+                    required_n=best_n,
                     power_at_n=best["power"],
                     target_power=power,
                     alpha=alpha,
