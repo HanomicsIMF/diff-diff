@@ -120,8 +120,8 @@ def _validate_and_aggregate_to_cells(
        and raises ``ValueError``.
     5. **Cell aggregation** via ``groupby([group, time]).agg(...)``
        producing ``y_gt`` (cell mean of ``outcome``), ``d_gt`` (cell
-       mean of ``treatment``, then majority-rounded), and ``n_gt``
-       (count of original observations in the cell).
+       mean of ``treatment``), and ``n_gt`` (count of original
+       observations in the cell).
     6. **Within-cell-varying treatment** (any cell with fractional
        ``d_gt``) raises ``ValueError``. Phase 1 requires treatment to
        be constant within each ``(group, time)`` cell; fuzzy DiD is
@@ -477,10 +477,11 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         outcome : str
             Outcome variable column name.
         group : str
-            Group identifier column name. Treatment is assumed constant
-            within each ``(group, time)`` cell after aggregation; a
-            warning is emitted and the cell-level treatment is rounded to
-            majority if any cell has fractional treatment after grouping.
+            Group identifier column name. Treatment must be constant
+            within each ``(group, time)`` cell after aggregation;
+            ``ValueError`` is raised if any cell has fractional
+            treatment after grouping (within-cell-varying treatment
+            indicates a fuzzy design not supported in Phase 1).
         time : str
             Time period column name. Must be sortable.
         treatment : str
@@ -588,6 +589,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     rank_deficient_action=self.rank_deficient_action,
                 )
             except Exception as exc:  # noqa: BLE001
+                # Honor rank_deficient_action="error": if the user
+                # explicitly requested strict failure on rank-deficient
+                # designs, re-raise instead of downgrading to a warning.
+                # Only genuinely non-fatal failures (e.g., numerical
+                # issues unrelated to rank deficiency) should be
+                # swallowed as warnings.
+                if self.rank_deficient_action == "error" and isinstance(exc, ValueError):
+                    raise
                 warnings.warn(
                     f"TWFE decomposition diagnostic failed: {exc}. "
                     "Skipping diagnostic; main estimation continues.",
