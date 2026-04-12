@@ -540,11 +540,16 @@ class ChaisemartinDHaultfoeuilleResults:
             lines.append(f"{'CV (SE/|DID_M|):':<25} {cv:>10.4f}")
 
         lines.append("")
-        if self.bootstrap_results is not None:
+        if self.bootstrap_results is not None and np.isfinite(self.overall_se):
             lines.append("Note: p-value and CI are multiplier-bootstrap percentile inference")
             lines.append(
                 f"      ({self.bootstrap_results.n_bootstrap} iterations, "
                 f"{self.bootstrap_results.weight_type} weights)."
+            )
+        elif self.bootstrap_results is not None:
+            lines.append(
+                f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
+                f"used for event-study horizon inference."
             )
         else:
             lines.append(

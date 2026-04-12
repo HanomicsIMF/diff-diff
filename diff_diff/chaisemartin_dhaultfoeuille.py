@@ -1503,14 +1503,34 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             delta_val = cost_benefit_result["delta"]
             if np.isfinite(delta_val):
                 effective_overall_att = delta_val
-                # Cost-benefit SE: use the weighted-average SE from the
-                # bootstrap when available; analytical SE for delta is not
-                # derived in the paper. For now, set to NaN (bootstrap will
-                # override if n_bootstrap > 0).
-                effective_overall_se = float("nan")
-                effective_overall_t = float("nan")
-                effective_overall_p = float("nan")
-                effective_overall_ci = (float("nan"), float("nan"))
+                # Cost-benefit delta SE: compute from per-horizon bootstrap
+                # distributions if available (delta = sum w_l * DID_l, so
+                # delta_b = sum w_l * DID_l_b for each bootstrap rep).
+                delta_se = float("nan")
+                if bootstrap_results is not None and bootstrap_results.event_study_ses is not None:
+                    # The mixin stores overall_dist for l=1; we need
+                    # per-horizon distributions which were computed but
+                    # not all stored. Use the delta-method SE as fallback:
+                    # Var(delta) = sum_l w_l^2 * Var(DID_l) for indep.
+                    weights = cost_benefit_result.get("weights", {})
+                    var_delta = 0.0
+                    for l_w, w_l in weights.items():
+                        se_l = event_study_effects.get(l_w, {}).get("se", float("nan"))
+                        if np.isfinite(se_l):
+                            var_delta += (w_l * se_l) ** 2
+                    if var_delta > 0:
+                        delta_se = float(np.sqrt(var_delta))
+
+                if np.isfinite(delta_se):
+                    effective_overall_se = delta_se
+                    effective_overall_t, effective_overall_p, effective_overall_ci = safe_inference(
+                        delta_val, delta_se, alpha=self.alpha, df=None
+                    )
+                else:
+                    effective_overall_se = float("nan")
+                    effective_overall_t = float("nan")
+                    effective_overall_p = float("nan")
+                    effective_overall_ci = (float("nan"), float("nan"))
 
         # Phase 2: build placebo_event_study with negative keys
         placebo_event_study_dict: Optional[Dict[int, Dict[str, Any]]] = None

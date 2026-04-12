@@ -537,6 +537,10 @@ Dynamic placebos `DID^{pl}_l` look backward from each group's reference period, 
 
 - **Note (Phase 2 Assumption 7 and cost-benefit delta):** Assumption 7 (`D_{g,t} >= D_{g,1}`) is required for the single-sign cost-benefit interpretation. When leavers are present (binary: 1->0 groups violate Assumption 7), the estimator emits a `UserWarning` and provides `delta_joiners` / `delta_leavers` separately on `results.cost_benefit_delta`.
 
+- **Note (Phase 2 cost-benefit delta SE):** When `L_max >= 2`, `overall_att` holds the cost-benefit `delta`. Its SE is computed via the delta method from per-horizon SEs: `SE(delta) = sqrt(sum w_l^2 * SE(DID_l)^2)`, treating horizons as independent (conservative under Assumption 8). When bootstrap is enabled, per-horizon bootstrap SEs flow through the delta-method formula.
+
+- **Note (Phase 2 dynamic placebo SE):** Dynamic placebos `DID^{pl}_l` (negative horizons in `placebo_event_study`) ship as point estimates with `NaN` inference in Phase 2. The placebo influence-function derivation follows the same cohort-recentered structure as the positive horizons but requires a separate IF computation for the backward outcome differences, which is deferred. The placebo point estimates are meaningful for visual pre-trends inspection; formal placebo inference will be added in a follow-up. Bootstrap placebo inference plumbing exists in the mixin but is not wired.
+
 *Standard errors (Web Appendix Section 3.7.3 of the dynamic companion paper):*
 
 Default: cohort-recentered analytical plug-in variance, evaluated at horizon `l = 1`. Cohorts are defined by the triple `(D_{g,1}, F_g, S_g)` (baseline treatment, first-switch period, switch direction). Each group's per-period role weights (joiner, stable_0, leaver, stable_1) sum to a per-group `U^G_g` value via the full `Lambda^G_{g,l=1}` weight vector from Section 3.7.2 of the dynamic paper:
