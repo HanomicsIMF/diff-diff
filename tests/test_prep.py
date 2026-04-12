@@ -2099,6 +2099,75 @@ class TestSurveyDGPResearchGrade:
             f"unconditional ({uncond_gap:.4f})"
         )
 
+    def test_conditional_pt_crosssection_unconditional_pt_fails(self):
+        """In cross-section mode, treated/control outcome gap should differ."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=2000,
+            n_periods=8,
+            add_covariates=True,
+            conditional_pt=2.0,
+            never_treated_frac=0.5,
+            psu_re_sd=0.1,
+            psu_period_factor=0.1,
+            noise_sd=0.2,
+            panel=False,
+            seed=42,
+        )
+        # At a later pre-treatment period, the x1-dependent trend creates a
+        # larger outcome gap between treated (high x1) and control (low x1).
+        # Regress outcome ~ treated at period 2 to detect the gap.
+        p2 = df[df["period"] == 2]
+        y = p2["outcome"].values
+        is_treated = (p2["first_treat"] > 0).values.astype(float)
+        n = len(y)
+        X = np.column_stack([np.ones(n), is_treated])
+        beta = np.linalg.lstsq(X, y, rcond=None)[0]
+        uncond_gap = abs(beta[1])
+        # With strong conditional_pt and low noise, the treated coefficient
+        # should be substantial
+        assert uncond_gap > 0.1, (
+            f"Cross-section unconditional gap too small: {uncond_gap:.4f}"
+        )
+
+    def test_conditional_pt_crosssection_conditional_pt_holds(self):
+        """In cross-section mode, controlling for x1 should reduce the trend gap."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=2000,
+            n_periods=8,
+            add_covariates=True,
+            conditional_pt=2.0,
+            never_treated_frac=0.5,
+            psu_re_sd=0.1,
+            psu_period_factor=0.1,
+            noise_sd=0.2,
+            panel=False,
+            seed=42,
+        )
+        # Use period-2 data: regress outcome ~ treated vs outcome ~ treated + x1
+        p2 = df[df["period"] == 2]
+        y = p2["outcome"].values
+        is_treated = (p2["first_treat"] > 0).values.astype(float)
+        x1_vals = p2["x1"].values
+
+        n = len(y)
+        X_uncond = np.column_stack([np.ones(n), is_treated])
+        beta_uncond = np.linalg.lstsq(X_uncond, y, rcond=None)[0]
+        uncond_gap = abs(beta_uncond[1])
+
+        X_cond = np.column_stack([np.ones(n), is_treated, x1_vals])
+        beta_cond = np.linalg.lstsq(X_cond, y, rcond=None)[0]
+        cond_gap = abs(beta_cond[1])
+
+        assert uncond_gap > 0.05, f"Unconditional gap too small: {uncond_gap:.4f}"
+        assert cond_gap < uncond_gap * 0.5, (
+            f"Cross-section conditional gap ({cond_gap:.4f}) should be much "
+            f"smaller than unconditional ({uncond_gap:.4f})"
+        )
+
     def test_conditional_pt_backward_compatible(self):
         """conditional_pt=0.0 should produce identical output to default."""
         from diff_diff.prep_dgp import generate_survey_did_data
