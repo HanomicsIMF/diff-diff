@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Phase 2: multi-horizon event study (`L_max`), dynamic placebos, normalized estimator, cost-benefit aggregate (Lemma 4), sup-t simultaneous confidence bands, `plot_event_study()` integration
 - **`twowayfeweights()`** - standalone TWFE decomposition diagnostic (Theorem 1, AER 2020)
 - **`generate_reversible_did_data()`** - reversible-treatment panel data generator with 7 switch patterns
-- **Survey-aware power analysis** - `SurveyPowerConfig` with `expected_deff` parameter for `compute_power()`, `compute_mde()`, `compute_sample_size()`. Simulation path (`simulate_power`, `simulate_mde`, `simulate_sample_size`) now accepts `survey_design` for end-to-end survey-aware power with any estimator.
-- **`aggregate_survey()` `second_stage_weights` parameter** - choose `"pweight"` (default, population weights) or `"aweight"` (precision weights). pweight output is compatible with all 16 estimators; aweight is opt-in for GLS efficiency with Full-matrix estimators only.
+- **Survey-aware power analysis** - analytical helpers (`compute_power()`, `compute_mde()`, `compute_sample_size()`) accept a `deff` parameter for design-effect adjustment. Simulation helpers (`simulate_power`, `simulate_mde`, `simulate_sample_size`) accept a `survey_config` (`SurveyPowerConfig`) that generates data with complex survey structure and injects a `SurveyDesign` into each simulated fit.
+- **`aggregate_survey()` `second_stage_weights` parameter** - choose `"pweight"` (default, population weights) or `"aweight"` (precision weights). pweight output is compatible with all survey-capable estimators; aweight is opt-in for GLS efficiency with estimators marked Full in the survey support matrix.
 - **`conditional_pt` parameter** on `generate_survey_did_data()` - simulates scenarios where unconditional parallel trends fail but conditional PT holds after covariate adjustment
 - **Tutorial 18: Geo-Experiment Analysis** (`18_geo_experiments.ipynb`) - SyntheticDiD walkthrough for marketing analytics: simulated DMA panel, 5 treated markets, fit + diagnostics + stakeholder summary
 - **Practitioner decision tree** (`docs/practitioner_decision_tree.rst`) - "which method fits my business problem?" guide
@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `aggregate_survey()` default second-stage weights changed from `aweight` (precision) to `pweight` (population). Users who need the old precision-weighting behavior can pass `second_stage_weights="aweight"`.
 - README "For Data Scientists" section with practitioner-facing links and `aggregate_survey()` documentation
-- CITATION.cff updated with author name (Isaac Gerber) and current version
+- CITATION.cff updated with version and release date
 - ROADMAP.md updated: B1a-d marked done, B2b marked done, B3d marked shipped, dCDH entry updated with correct citations
 
 ### Fixed
