@@ -2240,10 +2240,11 @@ def _compute_multi_horizon_dids(
             ctrl_pool = ctrl_indices[ctrl_mask]
 
             if ctrl_pool.size == 0:
-                # No controls available - A11-like situation. Set to 0
-                # matching the A11 zero-retention convention: the group's
-                # switcher count is still in N_l.
-                did_g_l[g] = 0.0
+                # No observed controls at this horizon (may be terminal
+                # missingness, not a true A11 violation). Exclude the
+                # group from N_l rather than zero-retaining, so the
+                # missing-data case doesn't bias DID_l toward zero.
+                eligible[g] = False
                 a11_multi_warnings.append(
                     f"horizon {l}, group_idx {g}: "
                     f"no baseline-matched controls at outcome period"
@@ -2253,6 +2254,20 @@ def _compute_multi_horizon_dids(
             ctrl_changes = Y_mat[ctrl_pool, out_idx] - Y_mat[ctrl_pool, ref_idx]
             ctrl_avg = float(ctrl_changes.mean())
             did_g_l[g] = switcher_change - ctrl_avg
+
+        # Recompute N_l after control-pool exclusions
+        N_l = int(eligible.sum())
+        if l == 1:
+            N_1 = N_l
+        if N_l == 0:
+            results[l] = {
+                "did_l": float("nan"),
+                "N_l": 0,
+                "did_g_l": did_g_l,
+                "eligible_mask": eligible,
+                "switcher_fraction": float("nan"),
+            }
+            continue
 
         # Aggregate: DID_l = (1/N_l) * sum S_g * DID_{g,l}
         S_eligible = switch_direction[eligible].astype(float)
@@ -2474,13 +2489,23 @@ def _compute_multi_horizon_placebos(
             ctrl_pool = ctrl_indices[ctrl_mask]
 
             if ctrl_pool.size == 0:
-                pl_g_l[g] = 0.0
+                eligible[g] = False
                 a11_placebo_warnings.append(f"placebo lag {l}, group_idx {g}: no controls")
                 continue
 
             ctrl_changes = Y_mat[ctrl_pool, backward_idx] - Y_mat[ctrl_pool, ref_idx]
             ctrl_avg = float(ctrl_changes.mean())
             pl_g_l[g] = switcher_change - ctrl_avg
+
+        # Recompute N_pl_l after control-pool exclusions
+        N_pl_l = int(eligible.sum())
+        if N_pl_l == 0:
+            results[l] = {
+                "placebo_l": float("nan"),
+                "N_pl_l": 0,
+                "eligible_mask": eligible,
+            }
+            continue
 
         S_eligible = switch_direction[eligible].astype(float)
         pl_g_eligible = pl_g_l[eligible]
