@@ -2091,18 +2091,30 @@ def _compute_twfe_diagnostic(
 
     # Step 6: sigma_fe per Corollary 1 of AER 2020
     #
-    # sigma_fe = |beta_fe| / sigma(w), where sigma(w) is the
-    # observation-share-weighted standard deviation of w_{g,t} across
-    # treated cells, using shares s_{g,t} = N_{g,t} / N_1 where
-    # N_1 = sum of N_{g,t} over treated cells. This matches the
-    # paper's population-expectation formula for sigma(w).
-    w_treated = w_gt[treated_mask]
+    # The paper defines w_{g,t} = eps_{g,t} / E_treated[eps], which
+    # is DIFFERENT from the contribution weights w_gt exported in the
+    # weights DataFrame (contribution_weight = s * w_paper). The paper
+    # weight has the property that sum(s * w_paper) = 1 (centered at
+    # 1 under observation-share weighting). sigma_fe uses the paper
+    # weight:
+    #
+    #   w_paper = eps / sum_treated(s * eps)
+    #   sigma(w) = sqrt(sum_treated(s * (w_paper - 1)^2))
+    #   sigma_fe = |beta_fe| / sigma(w)
+    #
+    # where s_{g,t} = N_{g,t} / N_1 are observation shares.
+    eps_treated = eps[treated_mask]
     n_treated_arr = n_arr[treated_mask]
     n1 = float(n_treated_arr.sum())  # total treated observations
     if n1 > 0:
-        shares = n_treated_arr / n1  # observation shares
-        w_bar = float((shares * w_treated).sum())
-        var_w = float((shares * (w_treated - w_bar) ** 2).sum())
+        shares = n_treated_arr / n1  # s_{g,t} = N_{g,t} / N_1
+        denom_paper = float((shares * eps_treated).sum())
+        if abs(denom_paper) > 0:
+            w_paper = eps_treated / denom_paper  # paper's w_{g,t}
+            # Weighted variance around 1 (the weighted mean of w_paper is 1 by construction)
+            var_w = float((shares * (w_paper - 1.0) ** 2).sum())
+        else:
+            var_w = 0.0
     else:
         var_w = 0.0
     if var_w > 0 and np.isfinite(beta_fe):

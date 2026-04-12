@@ -445,6 +445,58 @@ class TestTWFEDiagnostic:
         # For simplicity, just verify the weights array is not all zero
         assert (weights_df["weight"] != 0).any()
 
+    def test_twfe_diagnostic_hand_checkable_sigma_fe(self):
+        """
+        Hand-checkable TWFE diagnostic on a 4-group 3-period panel with
+        staggered treatment (g1 at t=1, g2 at t=2, g3-g4 never).
+
+        Expected values computed analytically (equal cell sizes):
+        - beta_fe = 3.5 (TWFE coefficient from OLS of y on FE + d)
+        - Treated cells: (g1,t1), (g1,t2), (g2,t2) with contribution
+          weights [0.4, 0.1, 0.5]
+        - Paper weights w_{g,t} (Corollary 1): [1.2, 0.3, 1.5]
+          (contribution_weight / share, centered at 1.0)
+        - sigma(w) = sqrt(sum(s * (w_paper - 1)^2)) = 0.5099
+        - sigma_fe = |3.5| / 0.5099 = 6.8641
+        - fraction_negative = 0.0 (all treated weights positive)
+        """
+        df = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
+                "period": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2],
+                "treatment": [0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+                "outcome": [
+                    10,
+                    14,
+                    15,
+                    10,
+                    11,
+                    16,
+                    10,
+                    11,
+                    12,
+                    10,
+                    11,
+                    12,
+                ],
+            }
+        )
+        from diff_diff import twowayfeweights
+
+        result = twowayfeweights(
+            df,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # beta_fe: the plain TWFE coefficient
+        assert result.beta_fe == pytest.approx(3.5, abs=0.01)
+        # fraction_negative: all treated weights positive
+        assert result.fraction_negative == pytest.approx(0.0)
+        # sigma_fe: the Corollary 1 sign-flip threshold
+        assert result.sigma_fe == pytest.approx(6.8641, abs=0.01)
+
     def test_twfe_disabled_means_none(self):
         data = generate_reversible_did_data(n_groups=30, n_periods=4, seed=1)
         est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
