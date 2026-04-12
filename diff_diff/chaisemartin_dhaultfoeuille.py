@@ -1093,8 +1093,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         unique_c[key] = len(unique_c)
                     cid_l[g] = unique_c[key]
 
-                U_l_elig = U_l[eligible_mask_var]
-                cid_elig = cid_l[eligible_mask_var]
+                # Combine singleton-baseline exclusion with the finalized
+                # eligible_mask from _compute_multi_horizon_dids (which
+                # excludes groups with empty control pools).
+                did_eligible = multi_horizon_dids[l_h]["eligible_mask"]
+                combined_mask = eligible_mask_var & did_eligible
+                U_l_elig = U_l[combined_mask]
+                cid_elig = cid_l[combined_mask]
                 U_centered_l = _cohort_recenter(U_l_elig, cid_elig)
                 N_l_h = multi_horizon_dids[l_h]["N_l"]
                 se_l = _plugin_se(U_centered=U_centered_l, divisor=N_l_h)
@@ -1356,7 +1361,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     if h_data is None or h_data["N_l"] == 0:
                         continue
                     U_l_full = multi_horizon_if[l_h]
-                    U_l_elig = U_l_full[eligible_mask_b]
+                    # Use same combined mask as analytical SE path
+                    did_eligible_b = h_data["eligible_mask"]
+                    combined_b = eligible_mask_b & did_eligible_b
+                    U_l_elig = U_l_full[combined_b]
                     # Use the same cohort IDs as the analytical SE path
                     cohort_keys_b = [
                         (
@@ -1369,14 +1377,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     unique_cb: Dict[Tuple[int, int, int], int] = {}
                     cid_b = np.zeros(len(all_groups), dtype=int)
                     for g in range(len(all_groups)):
-                        if not eligible_mask_b[g]:
+                        if not combined_b[g]:
                             cid_b[g] = -1
                             continue
                         key = cohort_keys_b[g]
                         if key not in unique_cb:
                             unique_cb[key] = len(unique_cb)
                         cid_b[g] = unique_cb[key]
-                    cid_elig = cid_b[eligible_mask_b]
+                    cid_elig = cid_b[combined_b]
                     U_centered_h = _cohort_recenter(U_l_elig, cid_elig)
                     mh_boot_inputs[l_h] = (
                         U_centered_h,
