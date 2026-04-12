@@ -269,12 +269,16 @@ class TestDCDHDynRParityMultiHorizon:
 
     def test_parity_mixed_single_switch_multi_horizon(self, golden_values):
         self._check_multi_horizon(
-            golden_values, "mixed_single_switch_multi_horizon",
-            L_max=5, rtol=self.MIXED_POINT_RTOL,
+            golden_values,
+            "mixed_single_switch_multi_horizon",
+            L_max=5,
+            rtol=self.MIXED_POINT_RTOL,
         )
 
     def test_parity_joiners_only_long_multi_horizon(self, golden_values):
         self._check_multi_horizon(
-            golden_values, "joiners_only_long_multi_horizon",
-            L_max=5, rtol=self.POINT_RTOL,
+            golden_values,
+            "joiners_only_long_multi_horizon",
+            L_max=5,
+            rtol=self.POINT_RTOL,
         )

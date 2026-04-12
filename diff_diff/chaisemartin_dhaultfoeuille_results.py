@@ -505,16 +505,22 @@ class ChaisemartinDHaultfoeuilleResults:
                 ]
             )
 
-        # --- Overall DID_M ---
+        # --- Overall ---
+        overall_label = (
+            "Cost-Benefit Delta"
+            if self.L_max is not None and self.L_max >= 2
+            else "DID_M (Contemporaneous-Switch ATT)"
+        )
+        overall_row_label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
         lines.extend(
             [
                 thin,
-                "DID_M (Contemporaneous-Switch ATT)".center(width),
+                overall_label.center(width),
                 thin,
                 header_row,
                 thin,
                 _format_inference_row(
-                    "DID_M",
+                    overall_row_label,
                     self.overall_att,
                     self.overall_se,
                     self.overall_t_stat,
@@ -772,7 +778,9 @@ class ChaisemartinDHaultfoeuilleResults:
             return pd.DataFrame(
                 [
                     {
-                        "estimand": "DID_M",
+                        "estimand": (
+                            "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+                        ),
                         "effect": self.overall_att,
                         "se": self.overall_se,
                         "t_stat": self.overall_t_stat,

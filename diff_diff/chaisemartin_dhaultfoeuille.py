@@ -1030,6 +1030,21 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 T_g=T_g_arr,
                 L_max=L_max,
             )
+            # Surface A11 warnings from multi-horizon computation
+            mh_a11 = multi_horizon_dids.pop("_a11_warnings", None)
+            if mh_a11:
+                warnings.warn(
+                    f"Multi-horizon control-availability violations in "
+                    f"{len(mh_a11)} (group, horizon) pair(s): affected "
+                    f"DID_{{g,l}} values are zeroed but their switcher "
+                    f"counts are retained in N_l (matching the A11 "
+                    f"zero-retention convention). Examples: "
+                    + ", ".join(mh_a11[:3])
+                    + (f" (and {len(mh_a11) - 3} more)" if len(mh_a11) > 3 else ""),
+                    UserWarning,
+                    stacklevel=2,
+                )
+
             multi_horizon_if = _compute_per_group_if_multi_horizon(
                 D_mat=D_mat,
                 Y_mat=Y_mat,
@@ -1051,7 +1066,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
             multi_horizon_se = {}
             multi_horizon_inference = {}
-            for l_h in range(2, L_max + 1):
+            # Compute inference for ALL horizons 1..L_max (including l=1)
+            # so the event_study_effects dict uses a consistent estimand
+            # (per-group DID_{g,l}) across all horizons.
+            for l_h in range(1, L_max + 1):
                 U_l = multi_horizon_if[l_h]
                 # Cohort IDs for this horizon: (D_{g,1}, F_g, S_g) triples
                 # are the same as Phase 1 (cohort identity depends on first
@@ -1315,7 +1333,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     [g not in singleton_baseline_set_b for g in all_groups], dtype=bool
                 )
                 mh_boot_inputs = {}
-                for l_h in range(2, L_max + 1):
+                # Include ALL horizons 1..L_max so the sup-t critical
+                # value is calibrated over the same set that receives
+                # cband_conf_int. For l=1, use the per-group IF (not
+                # the Phase 1 per-period IF) so the bootstrap matches
+                # the event_study_effects[1] estimand.
+                for l_h in range(1, L_max + 1):
                     h_data = multi_horizon_dids.get(l_h)
                     if h_data is None or h_data["N_l"] == 0:
                         continue
@@ -1400,22 +1423,24 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
         # ------------------------------------------------------------------
-        # event_study_effects: l=1 always mirrors the Phase 1 DID_M output.
-        # When L_max >= 2, horizons 2..L_max are populated from the Phase 2
-        # multi-horizon computation.
-        event_study_effects: Dict[int, Dict[str, Any]] = {
-            1: {
-                "effect": overall_att,
-                "se": overall_se,
-                "t_stat": overall_t,
-                "p_value": overall_p,
-                "conf_int": overall_ci,
-                "n_obs": N_S,
+        # event_study_effects: when L_max is None, l=1 mirrors Phase 1
+        # DID_M (per-period path). When L_max >= 2, ALL horizons including
+        # l=1 use the per-group DID_{g,l} path for a consistent estimand.
+        if multi_horizon_inference is not None and 1 in multi_horizon_inference:
+            # Phase 2 mode: use per-group path for all horizons
+            event_study_effects: Dict[int, Dict[str, Any]] = dict(multi_horizon_inference)
+        else:
+            # Phase 1 mode (L_max=None): l=1 from per-period path
+            event_study_effects = {
+                1: {
+                    "effect": overall_att,
+                    "se": overall_se,
+                    "t_stat": overall_t,
+                    "p_value": overall_p,
+                    "conf_int": overall_ci,
+                    "n_obs": N_S,
+                }
             }
-        }
-        if multi_horizon_inference is not None:
-            for l_h, inf_dict in multi_horizon_inference.items():
-                event_study_effects[l_h] = inf_dict
 
         # Phase 2: propagate bootstrap results to event_study_effects
         if bootstrap_results is not None and bootstrap_results.event_study_ses:
@@ -1514,7 +1539,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 denom = n_data["denominator"]
                 eff = n_data["effect"]
                 # SE via delta method: SE(DID^n_l) = SE(DID_l) / delta^D_l
-                se_did_l = multi_horizon_se.get(l_h, float("nan")) if l_h >= 2 else overall_se
+                se_did_l = multi_horizon_se.get(l_h, float("nan"))
                 se_norm = se_did_l / denom if np.isfinite(denom) and denom > 0 else float("nan")
                 t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=None)
                 normalized_effects_out[l_h] = {
@@ -2119,6 +2144,7 @@ def _compute_multi_horizon_dids(
         baseline_f[int(d)] = first_switch_idx[mask]
 
     results: Dict[int, Dict[str, Any]] = {}
+    a11_multi_warnings: List[str] = []
     N_1 = 0  # will be set at l=1 for switcher_fraction
 
     for l in range(1, L_max + 1):  # noqa: E741
@@ -2187,6 +2213,10 @@ def _compute_multi_horizon_dids(
                 # matching the A11 zero-retention convention: the group's
                 # switcher count is still in N_l.
                 did_g_l[g] = 0.0
+                a11_multi_warnings.append(
+                    f"horizon {l}, group_idx {g}: "
+                    f"no baseline-matched controls at outcome period"
+                )
                 continue
 
             ctrl_changes = Y_mat[ctrl_pool, out_idx] - Y_mat[ctrl_pool, ref_idx]
@@ -2205,6 +2235,10 @@ def _compute_multi_horizon_dids(
             "eligible_mask": eligible,
             "switcher_fraction": N_l / N_1 if N_1 > 0 else float("nan"),
         }
+
+    # Attach A11 warnings to the results for the caller to surface
+    if a11_multi_warnings:
+        results["_a11_warnings"] = a11_multi_warnings  # type: ignore[assignment]
 
     return results
 
@@ -2393,8 +2427,9 @@ def _compute_multi_horizon_placebos(
             forward_idx = ref_idx + l
             d_base = int(baselines[g])
 
-            # Switcher's backward outcome change
-            switcher_change = Y_mat[g, backward_idx] - Y_mat[g, ref_idx]
+            # Switcher's backward outcome change: reference minus pre-period
+            # (matching Phase 1 convention: Y_{ref} - Y_{earlier})
+            switcher_change = Y_mat[g, ref_idx] - Y_mat[g, backward_idx]
 
             # Control pool: same baseline, not switched by forward_idx
             ctrl_indices = baseline_groups[d_base]
@@ -2410,7 +2445,7 @@ def _compute_multi_horizon_placebos(
                 pl_g_l[g] = 0.0
                 continue
 
-            ctrl_changes = Y_mat[ctrl_pool, backward_idx] - Y_mat[ctrl_pool, ref_idx]
+            ctrl_changes = Y_mat[ctrl_pool, ref_idx] - Y_mat[ctrl_pool, backward_idx]
             ctrl_avg = float(ctrl_changes.mean())
             pl_g_l[g] = switcher_change - ctrl_avg
 
@@ -2522,9 +2557,14 @@ def _compute_cost_benefit_delta(
         dose_l = 0.0
         for g in np.where(eligible)[0]:
             f_g = first_switch_idx[g]
-            col = f_g - 1 + l
-            if col < D_mat.shape[1]:
-                dose_l += abs(float(D_mat[g, col] - baselines[g]))
+            # Cumulative dose: delta^D_{g,l} = sum_{k=0}^{l-1} |D_{g,F_g+k} - D_{g,1}|
+            # For binary treatment this equals l (each period contributes 1).
+            cum_dose = 0.0
+            for k in range(l):
+                col_k = f_g + k
+                if col_k < D_mat.shape[1]:
+                    cum_dose += abs(float(D_mat[g, col_k] - baselines[g]))
+            dose_l += cum_dose
         per_horizon_dose[l] = dose_l
         total_dose += dose_l
 
@@ -2572,9 +2612,12 @@ def _compute_cost_benefit_delta(
                     if switch_direction[g] != direction:
                         continue
                     f_g = first_switch_idx[g]
-                    col = f_g - 1 + l
-                    if col < D_mat.shape[1]:
-                        dose_l += abs(float(D_mat[g, col] - baselines[g]))
+                    cum_dose = 0.0
+                    for k in range(l):
+                        col_k = f_g + k
+                        if col_k < D_mat.shape[1]:
+                            cum_dose += abs(float(D_mat[g, col_k] - baselines[g]))
+                    dose_l += cum_dose
                 dir_horizon_dose[l] = dose_l
                 dir_dose += dose_l
 

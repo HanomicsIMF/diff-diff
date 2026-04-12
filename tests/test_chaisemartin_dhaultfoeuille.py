@@ -1836,12 +1836,12 @@ class TestMultiHorizon:
             assert "n_obs" in entry
             assert entry["n_obs"] > 0
 
-    def test_did_l_equals_did_m_at_l1(self, data):
-        """event_study_effects[1] must equal DID_M from Phase 1."""
+    def test_did_l1_uses_per_group_path_when_L_max(self, data):
+        """When L_max >= 2, event_study_effects[1] uses the per-group
+        DID_{g,1} path (consistent with horizons 2..L_max), which may
+        differ from the Phase 1 per-period DID_M. The per-period DID_M
+        is still available via the L_max=None path."""
         est = ChaisemartinDHaultfoeuille(placebo=False, twfe_diagnostic=False)
-        r_none = est.fit(
-            data, outcome="outcome", group="group", time="period", treatment="treatment"
-        )
         r_multi = est.fit(
             data,
             outcome="outcome",
@@ -1850,7 +1850,9 @@ class TestMultiHorizon:
             treatment="treatment",
             L_max=3,
         )
-        assert r_multi.event_study_effects[1]["effect"] == pytest.approx(r_none.overall_att)
+        # event_study_effects[1] is populated and finite
+        assert np.isfinite(r_multi.event_study_effects[1]["effect"])
+        assert np.isfinite(r_multi.event_study_effects[1]["se"])
 
     def test_N_l_decreases_with_horizon(self, data):
         """n_obs generally decreases for far horizons."""
