@@ -289,7 +289,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         Random seed for the multiplier bootstrap.
     placebo : bool, default=True
         If ``True`` (default), automatically compute the single-lag
-        placebo ``DID_M^pl`` (Theorem 4 of AER 2020) on the same data.
+        placebo ``DID_M^pl`` (AER 2020 placebo specification) on the same data.
         Set to ``False`` to skip the placebo computation for speed; the
         results object will still expose ``placebo_*`` fields, but with
         NaN values and ``placebo_available=False``.
@@ -929,14 +929,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             n_leaver_obs += int(n_curr[leaver_mask_t].sum())
 
         # ------------------------------------------------------------------
-        # Step 12: Placebo (DID_M^pl) — Theorem 4
+        # Step 12: Placebo (DID_M^pl)
         # ------------------------------------------------------------------
         placebo_available = False
         placebo_effect = float("nan")
         if self.placebo:
             if len(all_periods) < 3:
                 warnings.warn(
-                    f"Placebo DID_M^pl (Theorem 4) requires at least 3 time "
+                    f"Placebo DID_M^pl requires at least 3 time "
                     f"periods; the post-filter panel has only {len(all_periods)}. "
                     "Skipping the placebo computation. Pass placebo=False to "
                     "suppress this warning, or use a panel with T >= 3.",
@@ -962,14 +962,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     # mirroring the main DID path's contract. The affected
                     # per-period placebo contributions are zeroed in the
                     # numerator with their switcher counts retained in the
-                    # placebo N_S^pl denominator (Theorem 4 zero-retention).
+                    # placebo N_S^pl denominator (placebo zero-retention).
                     if placebo_a11_warnings:
                         warnings.warn(
                             f"Placebo (DID_M^pl) Assumption 11 violations in "
                             f"{len(placebo_a11_warnings)} period(s); the affected "
                             f"placebo contributions are zeroed but their switcher "
                             f"counts are retained in the placebo N_S denominator "
-                            f"(matching Theorem 4 paper convention). Affected: "
+                            f"(matching placebo paper convention). Affected: "
                             + ", ".join(placebo_a11_warnings[:3])
                             + (
                                 f" (and {len(placebo_a11_warnings) - 3} more)"
@@ -1500,7 +1500,7 @@ def _compute_placebo(
     periods: List[Any],
 ) -> Optional[Tuple[float, bool, List[str]]]:
     """
-    Compute the single-lag placebo DID_M^pl from Theorem 4 of AER 2020.
+    Compute the single-lag placebo DID_M^pl from AER 2020 placebo specification.
 
     Same logic as DID_M but evaluated on the pre-event difference
     ``Y_{g, t-1} - Y_{g, t-2}`` for cells with three-period histories.
@@ -1513,7 +1513,7 @@ def _compute_placebo(
     The caller is responsible for surfacing the consolidated warning.
     The zero-retention preserves the period's switcher count in the
     placebo ``N_S^pl`` denominator, biasing the placebo toward zero in
-    the offending direction (matching Theorem 4 paper convention).
+    the offending direction (matching placebo paper convention).
 
     Returns
     -------
@@ -1551,7 +1551,7 @@ def _compute_placebo(
         leaver_mask = (d_pre_prev == 1) & (d_prev == 1) & (d_curr == 0) & present
         stable1_mask = (d_pre_prev == 1) & (d_prev == 1) & (d_curr == 1) & present
 
-        # Theorem 4 weights are CELL counts (matching Theorem 3 convention)
+        # Placebo weights are CELL counts (matching Theorem 3 convention)
         n_10 = int(joiner_mask.sum())
         n_00 = int(stable0_mask.sum())
         n_01 = int(leaver_mask.sum())
@@ -2090,13 +2090,23 @@ def _compute_twfe_diagnostic(
     beta_fe = float(coef_fe[-1])
 
     # Step 6: sigma_fe per Corollary 1 of AER 2020
+    #
+    # sigma_fe = |beta_fe| / sigma(w), where sigma(w) is the
+    # observation-share-weighted standard deviation of w_{g,t} across
+    # treated cells, using shares s_{g,t} = N_{g,t} / N_1 where
+    # N_1 = sum of N_{g,t} over treated cells. This matches the
+    # paper's population-expectation formula for sigma(w).
     w_treated = w_gt[treated_mask]
-    sum_sq = float((w_treated**2).sum())
-    sum_w = float(w_treated.sum())
-    n_treated = int(treated_mask.sum())
-    inner = sum_sq - (sum_w**2 / n_treated) if n_treated > 0 else 0.0
-    if inner > 0 and np.isfinite(beta_fe):
-        sigma_fe = float(abs(beta_fe) / np.sqrt(inner))
+    n_treated_arr = n_arr[treated_mask]
+    n1 = float(n_treated_arr.sum())  # total treated observations
+    if n1 > 0:
+        shares = n_treated_arr / n1  # observation shares
+        w_bar = float((shares * w_treated).sum())
+        var_w = float((shares * (w_treated - w_bar) ** 2).sum())
+    else:
+        var_w = 0.0
+    if var_w > 0 and np.isfinite(beta_fe):
+        sigma_fe = float(abs(beta_fe) / np.sqrt(var_w))
     else:
         sigma_fe = float("nan")
 

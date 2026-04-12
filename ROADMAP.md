@@ -138,7 +138,7 @@ The dynamic companion paper subsumes the AER 2020 paper: `DID_1 = DID_M`. The si
 |------|----------|--------|
 | **1a.** `ChaisemartinDHaultfoeuille` class with `fit()` returning per-group `DID_{g,1}` and aggregate `DID_1` / `DID_M` | HIGH | Shipped |
 | **1b.** Joiners-only (`DID_+`) and leavers-only (`DID_-`) views on the results object | HIGH | Shipped |
-| **1c.** Single-lag placebo `DID_M^pl` (Theorem 4 of AER 2020 = `DID^{pl}_1` of dynamic paper) | HIGH | Shipped (point estimate; analytical SE deferred to Phase 2) |
+| **1c.** Single-lag placebo `DID_M^pl` (AER 2020 placebo specification = `DID^{pl}_1` of dynamic paper) | HIGH | Shipped (point estimate; analytical SE deferred to Phase 2) |
 | **1d.** Analytical SE via cohort-recentered plug-in formula (Web Appendix Section 3.7.3 of dynamic paper, applied at `l = 1`) | HIGH | Shipped |
 | **1e.** Multiplier bootstrap clustered at the group level (library extension; matches CS / ImputationDiD / TwoStageDiD convention) | HIGH | Shipped |
 | **1f.** TWFE decomposition diagnostic: per-`(g, t)` weights, fraction negative, `sigma_fe` (Theorem 1 of AER 2020 + `twowayfeweights` parity) | MEDIUM | Shipped |

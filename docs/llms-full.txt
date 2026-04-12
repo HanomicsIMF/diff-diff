@@ -239,7 +239,7 @@ ChaisemartinDHaultfoeuille(
     n_bootstrap: int = 0,                        # 0 = analytical SE only
     bootstrap_weights: str = "rademacher",       # "rademacher", "mammen", or "webb"
     seed: int | None = None,
-    placebo: bool = True,                        # Auto-compute single-lag placebo (Theorem 4)
+    placebo: bool = True,                        # Auto-compute single-lag placebo
     twfe_diagnostic: bool = True,                # Auto-compute Theorem 1 TWFE decomposition
     drop_larger_lower: bool = True,              # Drop multi-switch groups (matches R DIDmultiplegtDYN)
     rank_deficient_action: str = "warn",         # Used by TWFE diagnostic OLS

@@ -855,7 +855,7 @@ class TestA11Handling:
 
     def test_placebo_a11_violation_emits_warning(self):
         """
-        Mirror of the main A11 contract for the placebo (Theorem 4):
+        Mirror of the main A11 contract for the placebo:
         when placebo joiners exist (3-period stable D=0 history then
         switch) but no group provides a 3-period stable_0 control,
         the affected placebo period contribution is zeroed AND a

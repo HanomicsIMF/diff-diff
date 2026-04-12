@@ -588,7 +588,7 @@ class ChaisemartinDHaultfoeuilleResults:
             lines.extend(
                 [
                     thin,
-                    "Single-Lag Placebo (DID_M^pl, Theorem 4)".center(width),
+                    "Single-Lag Placebo (DID_M^pl)".center(width),
                     thin,
                     header_row,
                     thin,

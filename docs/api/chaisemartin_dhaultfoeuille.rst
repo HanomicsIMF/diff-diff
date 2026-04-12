@@ -24,7 +24,7 @@ The estimator:
    contributions via Theorem 3 of the AER 2020 paper
 5. Aggregates them into ``DID_M``, the joiners-only ``DID_+``, and the
    leavers-only ``DID_-``
-6. Computes the single-lag placebo ``DID_M^pl`` (Theorem 4)
+6. Computes the single-lag placebo ``DID_M^pl``
 7. Optionally computes the TWFE decomposition diagnostic from Theorem 1
    (per-cell weights, fraction negative, ``sigma_fe``)
 8. Inference uses the cohort-recentered analytical plug-in variance from
