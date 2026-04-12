@@ -1671,18 +1671,18 @@ class TestTwowayFeweightsHelper:
                 treatment="treatment",
             )
 
-    def test_twowayfeweights_accepts_non_binary_treatment(self):
-        """Non-binary treatment is now supported."""
+    def test_twowayfeweights_rejects_non_binary_treatment(self):
+        """TWFE diagnostic requires binary treatment."""
         data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
         data.loc[data.index[0], "treatment"] = 2  # non-binary
-        result = twowayfeweights(
-            data,
-            outcome="outcome",
-            group="group",
-            time="period",
-            treatment="treatment",
-        )
-        assert result is not None
+        with pytest.raises(ValueError, match="binary treatment"):
+            twowayfeweights(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
 
     def test_twowayfeweights_rejects_nan_group(self):
         data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
@@ -2332,6 +2332,96 @@ class TestNonBinaryTreatment:
             r = est.fit(df, outcome="outcome", group="group", time="period", treatment="treatment")
         # Group 0 (0->1->2, 2 change periods) should be dropped
         assert r.n_groups_dropped_crossers >= 1
+
+    def test_mixed_binary_nonbinary_panel_lmax1(self):
+        """Mixed panel with both 0->1 and 0->2 switches at L_max=1.
+        overall_att should use the per-group path (includes all switches),
+        not the per-period path (binary-only)."""
+        np.random.seed(88)
+        rows = []
+        # Binary switchers: 0->1
+        for g in range(10):
+            for t in range(6):
+                d = 0 if t < 3 else 1
+                y = 10 + t + d * 2 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Non-binary switchers: 0->2
+        for g in range(10, 20):
+            for t in range(6):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d * 1.5 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Controls
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        # overall_att should be from per-group path (includes both 0->1 and 0->2)
+        assert np.isfinite(r.overall_att)
+        # event_study_effects[1] and overall_att should be the same estimand
+        assert r.overall_att == r.event_study_effects[1]["effect"]
+
+    def test_nonbinary_bootstrap(self, ci_params):
+        """Non-binary panel with bootstrap should produce finite event study SEs."""
+        np.random.seed(66)
+        n_boot = ci_params.bootstrap(99)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d * 1.5 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(
+            twfe_diagnostic=False, n_bootstrap=n_boot, seed=42
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        assert r.bootstrap_results is not None
+        assert r.bootstrap_results.event_study_ses is not None
+        assert 1 in r.bootstrap_results.event_study_ses
+        assert np.isfinite(r.bootstrap_results.event_study_ses[1])
+
+    def test_twfe_diagnostic_skipped_nonbinary(self):
+        """TWFE diagnostic should be skipped (with warning) for non-binary."""
+        np.random.seed(77)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=True)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        twfe_warnings = [x for x in w if "TWFE diagnostic" in str(x.message)]
+        assert len(twfe_warnings) >= 1
+        assert r.twfe_weights is None  # diagnostic was skipped
 
     def test_normalized_effects_general_formula(self):
         """For non-binary treatment, normalized denominator uses actual dose change."""

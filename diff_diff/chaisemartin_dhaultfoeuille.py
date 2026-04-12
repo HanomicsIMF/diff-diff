@@ -608,7 +608,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         #          the same _validate_and_aggregate_to_cells() output.
         # ------------------------------------------------------------------
         twfe_diagnostic_payload = None
-        if self.twfe_diagnostic:
+        # TWFE diagnostic assumes binary treatment (d_arr == 1 for
+        # treated mask). Skip for non-binary data with a warning.
+        is_binary_pre = set(cell["d_gt"].unique()).issubset({0.0, 1.0, 0, 1})
+        if self.twfe_diagnostic and not is_binary_pre:
+            warnings.warn(
+                "TWFE diagnostic (twfe_diagnostic=True) is not supported for "
+                "non-binary treatment. The diagnostic assumes binary {0, 1} "
+                "treatment. Skipping TWFE diagnostic for this fit.",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif self.twfe_diagnostic:
             try:
                 twfe_diagnostic_payload = _compute_twfe_diagnostic(
                     cell=cell,
@@ -1576,15 +1587,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # l=1 use the per-group DID_{g,l} path for a consistent estimand.
         if multi_horizon_inference is not None and 1 in multi_horizon_inference:
             # Per-group mode: use per-group path for all horizons.
-            # Also populate overall_att from l=1 when per-period path
-            # yielded NaN (non-binary treatment or no binary switchers).
-            if np.isnan(overall_att):
-                l1_inf = multi_horizon_inference[1]
-                overall_att = l1_inf["effect"]
-                overall_se = l1_inf["se"]
-                overall_t = l1_inf["t_stat"]
-                overall_p = l1_inf["p_value"]
-                overall_ci = l1_inf["conf_int"]
+            # When L_max >= 1, the per-group DID_{g,1} is the correct
+            # estimand for overall_att (not the binary-only per-period
+            # DID_M). This handles both pure non-binary (N_S=0) and
+            # mixed binary/non-binary panels (N_S > 0 but incomplete).
+            l1_inf = multi_horizon_inference[1]
+            overall_att = l1_inf["effect"]
+            overall_se = l1_inf["se"]
+            overall_t = l1_inf["t_stat"]
+            overall_p = l1_inf["p_value"]
+            overall_ci = l1_inf["conf_int"]
             event_study_effects: Dict[int, Dict[str, Any]] = dict(multi_horizon_inference)
         else:
             # Phase 1 mode (L_max=None): l=1 from per-period path
@@ -3656,6 +3668,14 @@ def twowayfeweights(
         time=time,
         treatment=treatment,
     )
+    # TWFE diagnostic assumes binary treatment (d_arr == 1 for treated mask).
+    if not set(cell["d_gt"].unique()).issubset({0.0, 1.0, 0, 1}):
+        raise ValueError(
+            "twowayfeweights() requires binary treatment {0, 1}. "
+            "Non-binary treatment is supported by fit() with L_max >= 1 "
+            "but the TWFE diagnostic (Theorem 1 of AER 2020) assumes "
+            "binary treatment."
+        )
     return _compute_twfe_diagnostic(
         cell=cell,
         group_col=group,
