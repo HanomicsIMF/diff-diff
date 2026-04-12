@@ -2377,6 +2377,36 @@ class TestSurveyPower:
         )
         assert result.required_n >= cfg.min_viable_n  # must be >= 80
 
+    def test_survey_sample_size_large_floor_auto_bracket(self):
+        """Auto-bracketing hi respects min_viable_n > 100."""
+        cfg = SurveyPowerConfig(n_strata=10, psu_per_stratum=10)
+        # min_viable_n = 10 * 10 * 2 = 200, which exceeds default hi=100
+        result = simulate_sample_size(
+            CallawaySantAnna(),
+            treatment_effect=0.5,
+            sigma=3.0,
+            n_simulations=10,
+            max_steps=3,
+            seed=42,
+            survey_config=cfg,
+            n_periods=4,
+            treatment_period=2,
+            progress=False,
+        )
+        assert result.required_n >= cfg.min_viable_n  # must be >= 200
+
+    def test_survey_rejects_heterogeneous_te(self):
+        """heterogeneous_te_by_strata=True rejected with simulation power."""
+        cfg = SurveyPowerConfig(heterogeneous_te_by_strata=True)
+        with pytest.raises(ValueError, match="heterogeneous_te_by_strata"):
+            simulate_power(
+                CallawaySantAnna(),
+                n_simulations=1,
+                seed=42,
+                survey_config=cfg,
+                **_SIM_KW,
+            )
+
     # -- Closed-form deff tests --
 
     def test_closed_form_deff_default(self):

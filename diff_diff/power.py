@@ -1812,6 +1812,13 @@ def simulate_power(
         estimators with non-standard result schemas.
     progress : bool, default=True
         Whether to print progress updates.
+    survey_config : SurveyPowerConfig, optional
+        When provided, generates survey-structured data via
+        ``generate_survey_did_data`` and injects ``SurveyDesign`` into
+        estimator ``fit()``. Mutually exclusive with ``data_generator``.
+        Supported estimators: DiD, TWFE, MultiPeriod, CS, SA, Imputation,
+        TwoStage, Stacked, Efficient. Unsupported: TROP, SyntheticDiD,
+        TripleDifference. ``heterogeneous_te_by_strata`` must be False.
 
     Returns
     -------
@@ -1905,6 +1912,13 @@ def simulate_power(
             raise ValueError(
                 f"No survey power profile for {estimator_name}. "
                 f"Supported: {sorted(_SURVEY_FIT_BUILDERS.keys())}."
+            )
+        if survey_config.heterogeneous_te_by_strata:
+            raise ValueError(
+                "heterogeneous_te_by_strata=True is not supported with "
+                "simulation power analysis. The DGP's population ATT diverges "
+                "from the input treatment_effect under heterogeneous effects, "
+                "which would make bias/coverage/RMSE metrics misleading."
             )
 
     data_gen_kwargs = data_generator_kwargs or {}
@@ -2482,6 +2496,9 @@ def simulate_mde(
         Forwarded to ``simulate_power()``.
     progress : bool, default=True
         Whether to print progress updates.
+    survey_config : SurveyPowerConfig, optional
+        Survey-aware simulation config. Forwarded to ``simulate_power()``.
+        See :func:`simulate_power` for details and constraints.
 
     Returns
     -------
@@ -2693,6 +2710,11 @@ def simulate_sample_size(
         Forwarded to ``simulate_power()``.
     progress : bool, default=True
         Whether to print progress updates.
+    survey_config : SurveyPowerConfig, optional
+        Survey-aware simulation config. Forwarded to ``simulate_power()``.
+        When set, the bisection floor is raised to
+        ``survey_config.min_viable_n`` to ensure viable survey structure.
+        See :func:`simulate_power` for details and constraints.
 
     Returns
     -------
@@ -2847,7 +2869,7 @@ def simulate_sample_size(
                 )
             # Fall through to bisection with lo..hi bracket
         else:
-            hi = max(100, 2 * min_n)
+            hi = max(2 * lo, abs_min, 100)
             for _ in range(10):
                 if _power_at_n(hi) >= power:
                     break
