@@ -971,6 +971,83 @@ class TestBootstrap:
         if results.placebo_available:
             assert np.isfinite(results.placebo_effect)
 
+    def test_bootstrap_p_value_and_ci_propagated_to_top_level(self, data, ci_params):
+        """
+        Per the bootstrap inference surface contract: when
+        ``n_bootstrap > 0``, the top-level ``results.overall_*`` /
+        ``joiners_*`` / ``leavers_*`` p-value and CI fields hold the
+        percentile-based bootstrap inference computed by the
+        multiplier bootstrap, NOT normal-theory recomputations from
+        the bootstrap SE. The t-stat is still computed from the SE
+        (project anti-pattern rule: never compute t = effect/se
+        inline).
+
+        Pre-Round-10, the dCDH ``fit()`` body silently called
+        ``safe_inference(overall_att, br.overall_se)`` and stored its
+        normal-theory p/CI on the top-level fields, which made the
+        public inference surface a hybrid (bootstrap SE + normal-
+        theory p/CI). Library precedent for the propagation:
+        ``imputation.py:790-805``, ``two_stage.py:778-787``,
+        ``efficient_did.py:1009-1013``. This test pins the new
+        contract.
+
+        See REGISTRY.md ``ChaisemartinDHaultfoeuille`` ``Note
+        (bootstrap inference surface)``.
+        """
+        n_boot = ci_params.bootstrap(199)
+        est = ChaisemartinDHaultfoeuille(
+            n_bootstrap=n_boot,
+            bootstrap_weights="rademacher",
+            seed=42,
+        )
+        results = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        br = results.bootstrap_results
+        assert br is not None
+
+        # Overall DID_M: top-level p-value and CI come from bootstrap
+        assert results.overall_p_value == pytest.approx(br.overall_p_value)
+        assert results.overall_conf_int == pytest.approx(br.overall_ci)
+        # The t-stat is computed from the SE (effect / se), not from
+        # a percentile distribution
+        assert np.isfinite(results.overall_t_stat)
+        expected_t = results.overall_att / results.overall_se
+        assert results.overall_t_stat == pytest.approx(expected_t)
+
+        # Joiners
+        if results.joiners_available and br.joiners_p_value is not None:
+            assert results.joiners_p_value == pytest.approx(br.joiners_p_value)
+            assert results.joiners_conf_int == pytest.approx(br.joiners_ci)
+
+        # Leavers
+        if results.leavers_available and br.leavers_p_value is not None:
+            assert results.leavers_p_value == pytest.approx(br.leavers_p_value)
+            assert results.leavers_conf_int == pytest.approx(br.leavers_ci)
+
+        # event_study_effects[1] mirrors the top-level overall fields,
+        # so it should also reflect the bootstrap inference
+        assert results.event_study_effects is not None
+        assert 1 in results.event_study_effects
+        es = results.event_study_effects[1]
+        assert es["p_value"] == pytest.approx(br.overall_p_value)
+        assert es["conf_int"] == pytest.approx(br.overall_ci)
+
+        # summary() and to_dataframe() chain off the top-level fields,
+        # so they automatically reflect the bootstrap inference. Smoke
+        # test that they don't crash and that the rendered values match
+        # the bootstrap output.
+        summary_text = results.summary()
+        assert "DID_M" in summary_text
+        df_overall = results.to_dataframe(level="overall")
+        assert df_overall.iloc[0]["p_value"] == pytest.approx(br.overall_p_value)
+        assert df_overall.iloc[0]["conf_int_lower"] == pytest.approx(br.overall_ci[0])
+        assert df_overall.iloc[0]["conf_int_upper"] == pytest.approx(br.overall_ci[1])
+
     def test_bootstrap_seed_reproducibility(self, data, ci_params):
         n_boot = ci_params.bootstrap(99)
         r1 = ChaisemartinDHaultfoeuille(n_bootstrap=n_boot, seed=42).fit(

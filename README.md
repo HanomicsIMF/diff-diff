@@ -1205,7 +1205,7 @@ ChaisemartinDHaultfoeuille(
 
 | Field | Description |
 |-------|-------------|
-| `overall_att`, `overall_se`, `overall_conf_int` | `DID_M` and inference (cohort-recentered analytical SE) |
+| `overall_att`, `overall_se`, `overall_conf_int` | `DID_M` and inference (cohort-recentered analytical SE by default; multiplier-bootstrap percentile inference when `n_bootstrap > 0`) |
 | `joiners_att`, `leavers_att` | Decomposition into the joiners (`DID_+`) and leavers (`DID_-`) views |
 | `placebo_effect` | Single-lag placebo (`DID_M^pl`) point estimate |
 | `per_period_effects` | Per-period decomposition with explicit A11-violation flags |

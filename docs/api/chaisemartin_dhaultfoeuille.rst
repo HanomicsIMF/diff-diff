@@ -202,8 +202,15 @@ Multiplier bootstrap inference::
         data, outcome="outcome", group="group",
         time="period", treatment="treatment",
     )
-    print(f"Bootstrap SE: {results.bootstrap_results.overall_se:.3f}")
-    print(f"Bootstrap CI: {results.bootstrap_results.overall_ci}")
+    # When n_bootstrap > 0, the top-level overall_*/joiners_*/leavers_*
+    # p-value and conf_int fields hold percentile-based bootstrap
+    # inference (not normal-theory recomputations from the bootstrap SE).
+    # The t-stat is computed from the SE in both cases. See REGISTRY.md
+    # `Note (bootstrap inference surface)` for the full contract.
+    print(f"Top-level p-value (bootstrap): {results.overall_p_value:.4f}")
+    print(f"Top-level CI (bootstrap):     {results.overall_conf_int}")
+    print(f"bootstrap_results.overall_se: {results.bootstrap_results.overall_se:.3f}")
+    print(f"bootstrap_results.overall_ci: {results.bootstrap_results.overall_ci}")
 
 Standalone TWFE diagnostic (without fitting the full estimator)::
 

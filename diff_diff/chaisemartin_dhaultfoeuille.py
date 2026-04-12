@@ -1098,28 +1098,42 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             )
             bootstrap_results = br
 
-            # Replace analytical SE with bootstrap SE for the targets that
-            # have valid bootstrap output. The original analytical values
-            # remain available via re-running with n_bootstrap=0. After
-            # the SE replacement we recompute t-stat / p-value / CI through
-            # ``safe_inference()`` so all inference fields stay consistent
-            # with the library-wide convention (project anti-pattern rule:
-            # never compute t_stat = effect / se inline; use safe_inference).
+            # Replace the analytical SE with the bootstrap SE for the
+            # targets that have valid bootstrap output, AND propagate
+            # the bootstrap percentile p-value and CI directly to the
+            # top-level fields. The t-stat is computed from the SE via
+            # safe_inference()[0] so the project anti-pattern rule
+            # (never compute t_stat = effect / se inline) stays
+            # satisfied — bootstrap does not define an alternative
+            # t-stat semantic for percentile bootstrap, so the
+            # SE-based t-stat is the natural choice.
+            #
+            # Library precedent: imputation.py:790-805,
+            # two_stage.py:778-787, and efficient_did.py:1009-1013 all
+            # propagate bootstrap p/CI to the public surface while
+            # keeping a SE-derived t-stat. Round 10 brings dCDH in line
+            # with that pattern (the prior code silently recomputed
+            # normal-theory p/CI from the bootstrap SE, which made the
+            # public inference surface a hybrid).
+            #
+            # See REGISTRY.md ChaisemartinDHaultfoeuille `Note
+            # (bootstrap inference surface)` and the regression test
+            # ``test_bootstrap_p_value_and_ci_propagated_to_top_level``.
             if np.isfinite(br.overall_se):
                 overall_se = br.overall_se
-                overall_t, overall_p, overall_ci = safe_inference(
-                    overall_att, overall_se, alpha=self.alpha, df=None
-                )
+                overall_p = br.overall_p_value if br.overall_p_value is not None else np.nan
+                overall_ci = br.overall_ci if br.overall_ci is not None else (np.nan, np.nan)
+                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=None)[0]
             if joiners_available and br.joiners_se is not None and np.isfinite(br.joiners_se):
                 joiners_se = br.joiners_se
-                joiners_t, joiners_p, joiners_ci = safe_inference(
-                    joiners_att, joiners_se, alpha=self.alpha, df=None
-                )
+                joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
+                joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
+                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=None)[0]
             if leavers_available and br.leavers_se is not None and np.isfinite(br.leavers_se):
                 leavers_se = br.leavers_se
-                leavers_t, leavers_p, leavers_ci = safe_inference(
-                    leavers_att, leavers_se, alpha=self.alpha, df=None
-                )
+                leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
+                leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
+                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=None)[0]
 
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass

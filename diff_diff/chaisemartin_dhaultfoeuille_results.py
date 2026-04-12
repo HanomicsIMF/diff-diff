@@ -138,6 +138,25 @@ class ChaisemartinDHaultfoeuilleResults:
     ``DIDmultiplegtDYN`` reference. The number of dropped groups is
     exposed via ``n_groups_dropped_crossers``.
 
+    **Inference-method switch when bootstrap is enabled.** The
+    ``overall_p_value`` / ``overall_conf_int`` (and joiners/leavers
+    analogues) fields are populated by *normal-theory* inference from
+    the cohort-recentered analytical SE when ``n_bootstrap=0`` (the
+    default). When ``n_bootstrap > 0``, the same fields are populated
+    by *percentile-based bootstrap inference* from the multiplier
+    bootstrap distribution computed by ``_compute_dcdh_bootstrap()``.
+    The t-stat (``overall_t_stat``, etc.) is computed from the SE in
+    both cases, since percentile bootstrap does not define an
+    alternative t-stat semantic. ``event_study_effects[1]``,
+    ``summary()``, ``to_dataframe()``, ``is_significant``, and
+    ``significance_stars`` all read from these top-level fields and
+    therefore reflect the bootstrap inference automatically. The
+    placebo path is unchanged: placebo bootstrap is deferred to Phase
+    2, so ``placebo_p_value`` and ``placebo_conf_int`` stay NaN even
+    when ``n_bootstrap > 0``. See the methodology registry
+    ``Note (bootstrap inference surface)`` for the full contract and
+    library precedent.
+
     Attributes
     ----------
     overall_att : float
