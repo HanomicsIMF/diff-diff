@@ -1507,7 +1507,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         effective_overall_ci = overall_ci
         if cost_benefit_result is not None and L_max is not None and L_max >= 2:
             delta_val = cost_benefit_result["delta"]
-            if np.isfinite(delta_val):
+            if not np.isfinite(delta_val):
+                # Delta is non-estimable (e.g., no eligible switchers at
+                # any horizon). Set all overall_* to NaN rather than
+                # silently falling back to the Phase 1 DID_M values,
+                # since the results surface labels them as delta.
+                effective_overall_att = float("nan")
+                effective_overall_se = float("nan")
+                effective_overall_t = float("nan")
+                effective_overall_p = float("nan")
+                effective_overall_ci = (float("nan"), float("nan"))
+            else:
                 effective_overall_att = delta_val
                 # Cost-benefit delta SE: compute from per-horizon bootstrap
                 # distributions if available (delta = sum w_l * DID_l, so
@@ -2494,13 +2504,17 @@ def _compute_multi_horizon_placebos(
             # (paper convention: Y_{F_g-1-l} - Y_{F_g-1})
             switcher_change = Y_mat[g, backward_idx] - Y_mat[g, ref_idx]
 
-            # Control pool: same baseline, not switched by forward_idx
+            # Control pool: same baseline, not switched by forward_idx,
+            # AND observed at all three relevant periods (ref, backward,
+            # AND forward - the last ensures terminally missing controls
+            # don't leak into the placebo computation).
             ctrl_indices = baseline_groups[d_base]
             ctrl_f = baseline_f[d_base]
             ctrl_mask = (
                 ((ctrl_f > forward_idx) | (ctrl_f == -1))
                 & (N_mat[ctrl_indices, ref_idx] > 0)
                 & (N_mat[ctrl_indices, backward_idx] > 0)
+                & (N_mat[ctrl_indices, forward_idx] > 0)
             )
             ctrl_pool = ctrl_indices[ctrl_mask]
 
