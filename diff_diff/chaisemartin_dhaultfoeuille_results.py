@@ -540,11 +540,19 @@ class ChaisemartinDHaultfoeuilleResults:
             lines.append(f"{'CV (SE/|DID_M|):':<25} {cv:>10.4f}")
 
         lines.append("")
-        if self.bootstrap_results is not None and np.isfinite(self.overall_se):
+        is_delta = (
+            self.L_max is not None and self.L_max >= 2 and self.cost_benefit_delta is not None
+        )
+        if self.bootstrap_results is not None and np.isfinite(self.overall_se) and not is_delta:
             lines.append("Note: p-value and CI are multiplier-bootstrap percentile inference")
             lines.append(
                 f"      ({self.bootstrap_results.n_bootstrap} iterations, "
                 f"{self.bootstrap_results.weight_type} weights)."
+            )
+        elif self.bootstrap_results is not None and is_delta:
+            lines.append(
+                f"Note: delta SE is delta-method (normal-theory) from per-horizon "
+                f"bootstrap SEs ({self.bootstrap_results.n_bootstrap} iterations)."
             )
         elif self.bootstrap_results is not None:
             lines.append(

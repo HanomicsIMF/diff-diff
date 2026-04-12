@@ -286,13 +286,10 @@ Phase 3 will add covariate adjustment.
 
 .. note::
 
-   The Phase 1 placebo SE is intentionally ``NaN`` with a warning. The
-   dynamic companion paper Section 3.7.3 derives the cohort-recentered
-   analytical variance for ``DID_l`` only — not for the placebo
-   ``DID_M^pl``. Phase 2 will add multiplier-bootstrap support for the
-   placebo. Until then, the placebo point estimate is meaningful but its
-   inference fields stay NaN-consistent even when ``n_bootstrap > 0``
-   (bootstrap currently covers ``DID_M``, ``DID_+``, and ``DID_-`` only).
+   Placebo SE (both single-lag ``DID_M^pl`` and dynamic ``DID^{pl}_l``)
+   is intentionally ``NaN``. Placebo point estimates are meaningful for
+   visual pre-trends inspection; formal placebo inference is deferred.
+   See ``REGISTRY.md`` for the full contract.
 
 .. note::
 
