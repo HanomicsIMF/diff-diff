@@ -1470,11 +1470,12 @@ def aggregate_survey(
 
         - ``"pweight"`` (default): Population weights - the sum of
           normalized survey weights per cell, proportional to the
-          estimated population count. Produces population-representative
-          ATT estimates. Compatible with all survey-capable estimators.
+          estimated population count. Targets population-weighted
+          second-stage estimation. Compatible with all survey-capable
+          estimators.
         - ``"aweight"``: Precision weights - inverse variance
-          (``1 / V(y_bar)``). Produces efficiency-weighted estimates
-          via WLS. Compatible with estimators that accept ``aweight``
+          (``1 / V(y_bar)``). Targets precision-weighted second-stage
+          estimation via WLS. Compatible with estimators that accept ``aweight``
           (DifferenceInDifferences, TwoWayFixedEffects, MultiPeriodDiD,
           SunAbraham, ContinuousDiD, EfficientDiD); rejected by
           ``pweight``-only estimators.

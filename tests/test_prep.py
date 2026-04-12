@@ -3050,3 +3050,77 @@ class TestAggregateSurvey:
         )
         assert np.isfinite(result.overall_att), f"ATT not finite: {result.overall_att}"
         assert result.overall_se > 0, f"SE not positive: {result.overall_se}"
+
+    def test_pweight_replicate_weight_design(self):
+        """Pweight mode works correctly under replicate-weight survey designs."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        micro = generate_survey_did_data(
+            n_units=200,
+            n_periods=4,
+            cohort_periods=[3],
+            n_strata=3,
+            psu_per_stratum=6,
+            include_replicate_weights=True,
+            panel=False,
+            seed=42,
+        )
+        rep_cols = [c for c in micro.columns if c.startswith("rep_")]
+        design = SurveyDesign(
+            weights="weight",
+            replicate_weights=rep_cols,
+            replicate_method="JK1",
+        )
+        panel, stage2 = aggregate_survey(
+            micro,
+            by=["stratum", "period"],
+            outcomes="outcome",
+            survey_design=design,
+            second_stage_weights="pweight",
+        )
+        assert stage2.weight_type == "pweight"
+        assert "cell_sum_w" in panel.columns
+        assert (panel["cell_sum_w"] > 0).all()
+        # Weight column matches cell_sum_w in pweight mode
+        np.testing.assert_array_equal(
+            panel["outcome_weight"].values, panel["cell_sum_w"].values
+        )
+        # All cells should have finite SEs from replicate variance
+        assert panel["outcome_se"].notna().all()
+        assert (panel["outcome_se"] > 0).all()
+
+    def test_pweight_retains_zero_precision_geo(self):
+        """Under pweight, a geo with NaN precision is retained (not pruned)."""
+        rng = np.random.RandomState(88)
+        rows = []
+        for state in range(4):
+            for period in [0, 1]:
+                if state == 0:
+                    # 1 obs per cell -> NaN SE -> NaN precision -> weight=0 under aweight
+                    rows.append(
+                        {"state": state, "period": period, "wt": 1.0, "y": rng.normal(10, 2)}
+                    )
+                else:
+                    for _ in range(20):
+                        rows.append(
+                            {"state": state, "period": period, "wt": 1.0, "y": rng.normal(10, 2)}
+                        )
+        data = pd.DataFrame(rows)
+        design = SurveyDesign(weights="wt")
+
+        # Pweight mode: state 0 retained (cell_sum_w > 0 despite NaN precision)
+        panel_p, _ = aggregate_survey(
+            data, by=["state", "period"], outcomes="y", survey_design=design,
+            second_stage_weights="pweight",
+        )
+        assert 0 in panel_p["state"].values
+        assert len(panel_p) == 8  # 4 states x 2 periods
+
+        # Aweight mode: state 0 dropped (all precision NaN -> weight 0)
+        with pytest.warns(UserWarning, match="zero total weight"):
+            panel_a, _ = aggregate_survey(
+                data, by=["state", "period"], outcomes="y", survey_design=design,
+                second_stage_weights="aweight",
+            )
+        assert 0 not in panel_a["state"].values
+        assert len(panel_a) == 6  # 3 states x 2 periods
