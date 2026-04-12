@@ -49,6 +49,142 @@ class _EstimatorProfile:
     min_n: int = 20
 
 
+# ---------------------------------------------------------------------------
+# SurveyPowerConfig — carries DGP survey params for simulation power
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SurveyPowerConfig:
+    """Configuration for survey-aware power simulations.
+
+    When passed to :func:`simulate_power`, :func:`simulate_mde`, or
+    :func:`simulate_sample_size`, the simulation loop generates data with
+    :func:`~diff_diff.prep.generate_survey_did_data` and automatically
+    injects a ``SurveyDesign`` into the estimator's ``fit()`` call.
+
+    Parameters
+    ----------
+    n_strata : int, default=5
+        Number of geographic strata.
+    psu_per_stratum : int, default=8
+        Number of primary sampling units (PSUs) per stratum. Must be >= 2
+        for Taylor Series Linearization variance estimation.
+    fpc_per_stratum : float, default=200.0
+        Finite population correction (total PSUs per stratum).
+    weight_variation : str, default="moderate"
+        Sampling weight dispersion: ``"none"`` (all equal), ``"moderate"``
+        (range ~1-2), ``"high"`` (range ~1-4).
+    psu_re_sd : float, default=2.0
+        Standard deviation of PSU random effects. Controls intra-cluster
+        correlation and drives DEFF > 1.
+    psu_period_factor : float, default=0.5
+        Multiplier for PSU-period interaction shocks.
+    icc : float, optional
+        Target intra-class correlation (0 < icc < 1). Overrides
+        ``psu_re_sd`` via variance decomposition.
+    weight_cv : float, optional
+        Target coefficient of variation for weights. Overrides
+        ``weight_variation``.
+    informative_sampling : bool, default=False
+        If True, weights correlate with Y(0).
+    heterogeneous_te_by_strata : bool, default=False
+        If True, treatment effect varies by stratum.
+    include_replicate_weights : bool, default=False
+        If True, add JK1 delete-one-PSU replicate weight columns.
+    survey_design : SurveyDesign, optional
+        Override the auto-built SurveyDesign. When None, a default
+        ``SurveyDesign(weights="weight", strata="stratum", psu="psu",
+        fpc="fpc")`` is used, matching ``generate_survey_did_data`` output.
+
+    Examples
+    --------
+    >>> from diff_diff import CallawaySantAnna, simulate_power, SurveyPowerConfig
+    >>> config = SurveyPowerConfig(n_strata=5, psu_per_stratum=8, icc=0.05)
+    >>> results = simulate_power(
+    ...     CallawaySantAnna(),
+    ...     n_units=200,
+    ...     treatment_effect=2.0,
+    ...     survey_config=config,
+    ...     n_simulations=100,
+    ...     seed=42,
+    ... )
+    """
+
+    n_strata: int = 5
+    psu_per_stratum: int = 8
+    fpc_per_stratum: float = 200.0
+    weight_variation: str = "moderate"
+    psu_re_sd: float = 2.0
+    psu_period_factor: float = 0.5
+    icc: Optional[float] = None
+    weight_cv: Optional[float] = None
+    informative_sampling: bool = False
+    heterogeneous_te_by_strata: bool = False
+    include_replicate_weights: bool = False
+    survey_design: Optional[Any] = None
+
+    def __post_init__(self) -> None:
+        if self.n_strata < 1:
+            raise ValueError(f"n_strata must be >= 1, got {self.n_strata}")
+        if self.psu_per_stratum < 2:
+            raise ValueError(
+                f"psu_per_stratum must be >= 2 for TSL variance estimation, "
+                f"got {self.psu_per_stratum}"
+            )
+        if self.weight_variation not in ("none", "moderate", "high"):
+            raise ValueError(
+                f"weight_variation must be 'none', 'moderate', or 'high', "
+                f"got '{self.weight_variation}'"
+            )
+        if not np.isfinite(self.psu_re_sd) or self.psu_re_sd < 0:
+            raise ValueError(f"psu_re_sd must be finite and >= 0, got {self.psu_re_sd}")
+        if not np.isfinite(self.fpc_per_stratum):
+            raise ValueError(f"fpc_per_stratum must be finite, got {self.fpc_per_stratum}")
+        if self.icc is not None and not (0 < self.icc < 1):
+            raise ValueError(f"icc must be between 0 and 1 (exclusive), got {self.icc}")
+        if self.icc is not None and self.psu_re_sd != 2.0:
+            raise ValueError(
+                "Cannot specify both icc and a non-default psu_re_sd. "
+                "icc overrides psu_re_sd via the ICC formula."
+            )
+        if self.weight_cv is not None:
+            if not np.isfinite(self.weight_cv) or self.weight_cv <= 0:
+                raise ValueError(f"weight_cv must be finite and > 0, got {self.weight_cv}")
+            if self.weight_variation != "moderate":
+                raise ValueError(
+                    "Cannot specify both weight_cv and a non-default "
+                    "weight_variation. weight_cv overrides weight_variation."
+                )
+        if not np.isfinite(self.psu_period_factor) or self.psu_period_factor < 0:
+            raise ValueError(
+                f"psu_period_factor must be finite and >= 0, got {self.psu_period_factor}"
+            )
+        if self.fpc_per_stratum < self.psu_per_stratum:
+            raise ValueError(
+                f"fpc_per_stratum ({self.fpc_per_stratum}) must be >= "
+                f"psu_per_stratum ({self.psu_per_stratum})"
+            )
+
+    def _build_survey_design(self) -> Any:
+        """Return cached SurveyDesign (built once, reused across simulations)."""
+        if not hasattr(self, "_cached_survey_design"):
+            if self.survey_design is not None:
+                self._cached_survey_design = self.survey_design
+            else:
+                from diff_diff.survey import SurveyDesign
+
+                self._cached_survey_design = SurveyDesign(
+                    weights="weight", strata="stratum", psu="psu", fpc="fpc"
+                )
+        return self._cached_survey_design
+
+    @property
+    def min_viable_n(self) -> int:
+        """Minimum n_units for a viable survey design (>= 2 units per PSU)."""
+        return self.n_strata * self.psu_per_stratum * 2
+
+
 # -- DGP kwargs adapters -----------------------------------------------------
 
 
@@ -203,6 +339,121 @@ def _sdid_fit_kwargs(
     )
 
 
+# -- Survey-aware DGP kwargs adapter ------------------------------------------
+
+
+def _survey_dgp_kwargs(
+    n_units: int,
+    n_periods: int,
+    treatment_effect: float,
+    treatment_fraction: float,
+    treatment_period: int,
+    sigma: float,
+    survey_config: SurveyPowerConfig,
+) -> Dict[str, Any]:
+    """Build kwargs for generate_survey_did_data from simulate_power params."""
+    return dict(
+        n_units=n_units,
+        n_periods=n_periods,
+        treatment_effect=treatment_effect,
+        never_treated_frac=1 - treatment_fraction,
+        # 0-indexed treatment_period → 1-indexed cohort_periods
+        cohort_periods=[treatment_period + 1],
+        noise_sd=sigma,
+        dynamic_effects=False,
+        n_strata=survey_config.n_strata,
+        psu_per_stratum=survey_config.psu_per_stratum,
+        fpc_per_stratum=survey_config.fpc_per_stratum,
+        weight_variation=survey_config.weight_variation,
+        psu_re_sd=survey_config.psu_re_sd,
+        psu_period_factor=survey_config.psu_period_factor,
+        icc=survey_config.icc,
+        weight_cv=survey_config.weight_cv,
+        informative_sampling=survey_config.informative_sampling,
+        heterogeneous_te_by_strata=survey_config.heterogeneous_te_by_strata,
+        include_replicate_weights=survey_config.include_replicate_weights,
+        return_true_population_att=True,
+    )
+
+
+# -- Survey-aware fit kwargs builders -----------------------------------------
+
+
+def _survey_basic_fit_kwargs(
+    data: pd.DataFrame,
+    n_units: int,
+    n_periods: int,
+    treatment_period: int,
+    survey_config: SurveyPowerConfig,
+) -> Dict[str, Any]:
+    """Fit kwargs for DifferenceInDifferences with survey design.
+
+    Uses ``ever_treated`` (time-invariant group indicator) rather than the
+    survey DGP's ``treated`` column (which is post-only: 1{g>0, t>=g}).
+    DifferenceInDifferences internally constructs ``treatment * time``,
+    so passing the post-only flag would make that interaction rank-deficient.
+    """
+    return dict(
+        outcome="outcome",
+        treatment="ever_treated",
+        time="post",
+        survey_design=survey_config._build_survey_design(),
+    )
+
+
+def _survey_twfe_fit_kwargs(
+    data: pd.DataFrame,
+    n_units: int,
+    n_periods: int,
+    treatment_period: int,
+    survey_config: SurveyPowerConfig,
+) -> Dict[str, Any]:
+    """Fit kwargs for TwoWayFixedEffects with survey design."""
+    return dict(
+        outcome="outcome",
+        treatment="ever_treated",
+        time="post",
+        unit="unit",
+        survey_design=survey_config._build_survey_design(),
+    )
+
+
+def _survey_multiperiod_fit_kwargs(
+    data: pd.DataFrame,
+    n_units: int,
+    n_periods: int,
+    treatment_period: int,
+    survey_config: SurveyPowerConfig,
+) -> Dict[str, Any]:
+    """Fit kwargs for MultiPeriodDiD with survey design (1-indexed periods)."""
+    return dict(
+        outcome="outcome",
+        treatment="ever_treated",
+        unit="unit",
+        time="period",
+        # 1-indexed: post periods run from treatment_period+1 to n_periods
+        post_periods=list(range(treatment_period + 1, n_periods + 1)),
+        survey_design=survey_config._build_survey_design(),
+    )
+
+
+def _survey_staggered_fit_kwargs(
+    data: pd.DataFrame,
+    n_units: int,
+    n_periods: int,
+    treatment_period: int,
+    survey_config: SurveyPowerConfig,
+) -> Dict[str, Any]:
+    """Fit kwargs for staggered estimators (CS, SA, etc.) with survey design."""
+    return dict(
+        outcome="outcome",
+        unit="unit",
+        time="period",
+        first_treat="first_treat",
+        survey_design=survey_config._build_survey_design(),
+    )
+
+
 # -- Result extractors --------------------------------------------------------
 
 
@@ -252,6 +503,28 @@ _PROTECTED_DGP_KEYS = frozenset(
     }
 )
 
+# Keys managed by SurveyPowerConfig — block in data_generator_kwargs when
+# survey_config is active to prevent silent conflicts.
+_SURVEY_CONFIG_KEYS = frozenset(
+    {
+        "n_strata",
+        "psu_per_stratum",
+        "fpc_per_stratum",
+        "weight_variation",
+        "psu_re_sd",
+        "psu_period_factor",
+        "icc",
+        "weight_cv",
+        "informative_sampling",
+        "heterogeneous_te_by_strata",
+        "include_replicate_weights",
+        "return_true_population_att",
+        "dynamic_effects",
+        "cohort_periods",
+        "never_treated_frac",
+    }
+)
+
 
 # -- Staggered DGP compatibility check ----------------------------------------
 
@@ -265,6 +538,22 @@ _STAGGERED_ESTIMATORS = frozenset(
         "EfficientDiD",
     }
 )
+
+# Estimators that need a derived `post` column when using survey DGP
+# (survey DGP produces `period`/`first_treat` but not `post`).
+_SURVEY_POST_ESTIMATORS = frozenset({"DifferenceInDifferences", "TwoWayFixedEffects"})
+
+# Survey fit kwargs builder lookup — maps estimator name to builder function.
+_SURVEY_FIT_BUILDERS: Dict[str, Callable] = {
+    "DifferenceInDifferences": _survey_basic_fit_kwargs,
+    "TwoWayFixedEffects": _survey_twfe_fit_kwargs,
+    "MultiPeriodDiD": _survey_multiperiod_fit_kwargs,
+    **{name: _survey_staggered_fit_kwargs for name in _STAGGERED_ESTIMATORS},
+}
+
+# Unsupported: factor-model and triple-diff estimators (survey DGP produces
+# staggered cohort data, not factor-model or 2x2x2 data).
+_SURVEY_UNSUPPORTED = frozenset({"TROP", "SyntheticDiD", "TripleDifference"})
 
 
 def _check_staggered_dgp_compat(
@@ -567,6 +856,8 @@ class PowerResults:
         Residual standard deviation.
     rho : float
         Intra-cluster correlation (for panel data).
+    deff : float
+        Survey design effect (variance inflation factor).
     design : str
         Study design type ('basic_did', 'panel', 'staggered').
     """
@@ -583,6 +874,7 @@ class PowerResults:
     n_post: int
     sigma: float
     rho: float = 0.0
+    deff: float = 1.0
     design: str = "basic_did"
 
     def __repr__(self) -> str:
@@ -624,6 +916,7 @@ class PowerResults:
             "-" * 60,
             f"{'Residual SD (sigma):':<30} {self.sigma:>10.4f}",
             f"{'Intra-cluster correlation:':<30} {self.rho:>10.4f}",
+            *([f"{'Design effect (DEFF):':<30} {self.deff:>10.4f}"] if self.deff != 1.0 else []),
             "",
             "-" * 60,
             "Power Analysis Results".center(60),
@@ -662,6 +955,7 @@ class PowerResults:
             "n_post": self.n_post,
             "sigma": self.sigma,
             "rho": self.rho,
+            "deff": self.deff,
             "design": self.design,
         }
 
@@ -735,6 +1029,9 @@ class SimulationPowerResults:
     rmse: float = field(init=False)
     simulation_results: Optional[List[Dict[str, Any]]] = field(default=None, repr=False)
     effective_n_units: Optional[int] = None
+    survey_config: Optional[Any] = field(default=None, repr=False)
+    mean_deff: Optional[float] = None
+    mean_icc_realized: Optional[float] = None
 
     def __post_init__(self):
         """Compute derived statistics."""
@@ -789,6 +1086,21 @@ class SimulationPowerResults:
             lines.append(
                 f"{'Effective sample size:':<35} {self.effective_n_units}" f" (DDD grid-rounded)"
             )
+        if self.survey_config is not None:
+            lines.extend(
+                [
+                    "",
+                    "-" * 65,
+                    "Survey Design".center(65),
+                    "-" * 65,
+                    f"{'Strata:':<35} {self.survey_config.n_strata}",
+                    f"{'PSUs per stratum:':<35} {self.survey_config.psu_per_stratum}",
+                ]
+            )
+            if self.mean_deff is not None:
+                lines.append(f"{'Mean Kish DEFF:':<35} {self.mean_deff:.4f}")
+            if self.mean_icc_realized is not None:
+                lines.append(f"{'Mean realized ICC:':<35} {self.mean_icc_realized:.4f}")
         lines.append("=" * 65)
         return "\n".join(lines)
 
@@ -822,6 +1134,8 @@ class SimulationPowerResults:
             "alpha": self.alpha,
             "estimator_name": self.estimator_name,
             "effective_n_units": self.effective_n_units,
+            "mean_deff": self.mean_deff,
+            "mean_icc_realized": self.mean_icc_realized,
         }
         return d
 
@@ -921,6 +1235,18 @@ class PowerAnalysis:
         self.target_power = power
         self.alternative = alternative
 
+    @staticmethod
+    def _validate_deff(deff: float) -> None:
+        """Validate deff parameter and warn if < 1."""
+        if not np.isfinite(deff) or deff <= 0:
+            raise ValueError(f"deff must be finite and > 0, got {deff}")
+        if deff < 1.0:
+            warnings.warn(
+                f"deff={deff:.4f} < 1.0 implies net variance reduction "
+                f"(e.g., from stratification). This is valid but unusual.",
+                stacklevel=3,
+            )
+
     def _get_critical_values(self) -> Tuple[float, float]:
         """Get z critical values for alpha and power."""
         if self.alternative == "two-sided":
@@ -938,6 +1264,7 @@ class PowerAnalysis:
         n_post: int,
         sigma: float,
         rho: float = 0.0,
+        deff: float = 1.0,
         design: str = "basic_did",
     ) -> float:
         """
@@ -957,6 +1284,10 @@ class PowerAnalysis:
             Residual standard deviation.
         rho : float
             Intra-cluster correlation (for panel data).
+        deff : float
+            Survey design effect (variance inflation factor). Not redundant
+            with ``rho``: ``rho`` models within-unit serial correlation
+            (Moulton factor), ``deff`` models survey clustering/weighting.
         design : str
             Study design type.
 
@@ -990,6 +1321,9 @@ class PowerAnalysis:
         else:
             raise ValueError(f"Unknown design: {design}")
 
+        # Survey design effect (multiplicative variance inflation)
+        variance *= deff
+
         return variance
 
     def power(
@@ -1001,6 +1335,7 @@ class PowerAnalysis:
         n_pre: int = 1,
         n_post: int = 1,
         rho: float = 0.0,
+        deff: float = 1.0,
     ) -> PowerResults:
         """
         Calculate statistical power for given effect size and sample.
@@ -1021,6 +1356,10 @@ class PowerAnalysis:
             Number of post-treatment periods.
         rho : float, default=0.0
             Intra-cluster correlation for panel data.
+        deff : float, default=1.0
+            Survey design effect (variance inflation factor). Not redundant
+            with ``rho``: ``rho`` models within-unit serial correlation,
+            ``deff`` models survey clustering/weighting.
 
         Returns
         -------
@@ -1033,10 +1372,13 @@ class PowerAnalysis:
         >>> results = pa.power(effect_size=2.0, n_treated=50, n_control=50, sigma=5.0)
         >>> print(f"Power: {results.power:.1%}")
         """
+        self._validate_deff(deff)
         T = n_pre + n_post
         design = "panel" if T > 2 else "basic_did"
 
-        variance = self._compute_variance(n_treated, n_control, n_pre, n_post, sigma, rho, design)
+        variance = self._compute_variance(
+            n_treated, n_control, n_pre, n_post, sigma, rho, deff=deff, design=design
+        )
         se = np.sqrt(variance)
 
         # Calculate power
@@ -1058,7 +1400,14 @@ class PowerAnalysis:
         # Also compute MDE and required N for reference
         mde = self._compute_mde_from_se(se)
         required_n = self._compute_required_n(
-            effect_size, sigma, n_pre, n_post, rho, design, n_treated / (n_treated + n_control)
+            effect_size,
+            sigma,
+            n_pre,
+            n_post,
+            rho,
+            design,
+            n_treated / (n_treated + n_control),
+            deff=deff,
         )
 
         return PowerResults(
@@ -1074,6 +1423,7 @@ class PowerAnalysis:
             n_post=n_post,
             sigma=sigma,
             rho=rho,
+            deff=deff,
             design=design,
         )
 
@@ -1090,6 +1440,7 @@ class PowerAnalysis:
         n_pre: int = 1,
         n_post: int = 1,
         rho: float = 0.0,
+        deff: float = 1.0,
     ) -> PowerResults:
         """
         Calculate minimum detectable effect given sample size.
@@ -1111,6 +1462,8 @@ class PowerAnalysis:
             Number of post-treatment periods.
         rho : float, default=0.0
             Intra-cluster correlation for panel data.
+        deff : float, default=1.0
+            Survey design effect (variance inflation factor).
 
         Returns
         -------
@@ -1123,10 +1476,13 @@ class PowerAnalysis:
         >>> results = pa.mde(n_treated=100, n_control=100, sigma=10.0)
         >>> print(f"MDE: {results.mde:.2f}")
         """
+        self._validate_deff(deff)
         T = n_pre + n_post
         design = "panel" if T > 2 else "basic_did"
 
-        variance = self._compute_variance(n_treated, n_control, n_pre, n_post, sigma, rho, design)
+        variance = self._compute_variance(
+            n_treated, n_control, n_pre, n_post, sigma, rho, deff=deff, design=design
+        )
         se = np.sqrt(variance)
 
         mde = self._compute_mde_from_se(se)
@@ -1144,6 +1500,7 @@ class PowerAnalysis:
             n_post=n_post,
             sigma=sigma,
             rho=rho,
+            deff=deff,
             design=design,
         )
 
@@ -1156,8 +1513,13 @@ class PowerAnalysis:
         rho: float,
         design: str,
         treat_frac: float = 0.5,
+        deff: float = 1.0,
     ) -> int:
-        """Compute required sample size for given effect."""
+        """Compute required sample size for given effect.
+
+        Note: this method has its own formula independent of _compute_variance,
+        so deff must be applied here separately (not double-counting).
+        """
         # Handle edge case of zero effect size
         if effect_size == 0:
             return MAX_SAMPLE_SIZE  # Can't detect zero effect
@@ -1167,16 +1529,6 @@ class PowerAnalysis:
         T = n_pre + n_post
 
         if design == "basic_did":
-            # Var = sigma^2 * (1/n_t + 1/n_t + 1/n_c + 1/n_c) = sigma^2 * (2/n_t + 2/n_c)
-            # For balanced: Var = sigma^2 * 4/n where n = n_t = n_c
-            # SE = sqrt(Var), effect_size = (z_alpha + z_beta) * SE
-            # n = 4 * sigma^2 * (z_alpha + z_beta)^2 / effect_size^2
-
-            # For general allocation with treat_frac:
-            # Var = sigma^2 * 2 * (1/(N*p) + 1/(N*(1-p)))
-            #     = 2 * sigma^2 / N * (1/p + 1/(1-p))
-            #     = 2 * sigma^2 / N * (1/(p*(1-p)))
-
             n_total = (
                 2
                 * sigma**2
@@ -1186,9 +1538,6 @@ class PowerAnalysis:
         else:  # panel
             design_effect = 1 + (T - 1) * rho
 
-            # Var = sigma^2 * (1/n_t + 1/n_c) * design_effect / T
-            # For balanced: Var = 2 * sigma^2 / N * design_effect / T
-
             n_total = (
                 2
                 * sigma**2
@@ -1196,6 +1545,9 @@ class PowerAnalysis:
                 * design_effect
                 / (effect_size**2 * treat_frac * (1 - treat_frac) * T)
             )
+
+        # Survey design effect (multiplicative sample size inflation)
+        n_total *= deff
 
         # Handle infinity case (extremely small effect)
         if np.isinf(n_total):
@@ -1211,6 +1563,7 @@ class PowerAnalysis:
         n_post: int = 1,
         rho: float = 0.0,
         treat_frac: float = 0.5,
+        deff: float = 1.0,
     ) -> PowerResults:
         """
         Calculate required sample size to detect given effect.
@@ -1229,6 +1582,8 @@ class PowerAnalysis:
             Intra-cluster correlation for panel data.
         treat_frac : float, default=0.5
             Fraction of units assigned to treatment.
+        deff : float, default=1.0
+            Survey design effect (variance inflation factor).
 
         Returns
         -------
@@ -1241,11 +1596,12 @@ class PowerAnalysis:
         >>> results = pa.sample_size(effect_size=5.0, sigma=10.0)
         >>> print(f"Required N: {results.required_n}")
         """
+        self._validate_deff(deff)
         T = n_pre + n_post
         design = "panel" if T > 2 else "basic_did"
 
         n_total = self._compute_required_n(
-            effect_size, sigma, n_pre, n_post, rho, design, treat_frac
+            effect_size, sigma, n_pre, n_post, rho, design, treat_frac, deff=deff
         )
 
         n_treated = max(2, int(np.ceil(n_total * treat_frac)))
@@ -1253,7 +1609,9 @@ class PowerAnalysis:
         n_total = n_treated + n_control
 
         # Compute actual power achieved
-        variance = self._compute_variance(n_treated, n_control, n_pre, n_post, sigma, rho, design)
+        variance = self._compute_variance(
+            n_treated, n_control, n_pre, n_post, sigma, rho, deff=deff, design=design
+        )
         se = np.sqrt(variance)
         mde = self._compute_mde_from_se(se)
 
@@ -1270,6 +1628,7 @@ class PowerAnalysis:
             n_post=n_post,
             sigma=sigma,
             rho=rho,
+            deff=deff,
             design=design,
         )
 
@@ -1282,6 +1641,7 @@ class PowerAnalysis:
         n_pre: int = 1,
         n_post: int = 1,
         rho: float = 0.0,
+        deff: float = 1.0,
     ) -> pd.DataFrame:
         """
         Compute power for a range of effect sizes.
@@ -1302,6 +1662,8 @@ class PowerAnalysis:
             Number of post-treatment periods.
         rho : float, default=0.0
             Intra-cluster correlation.
+        deff : float, default=1.0
+            Survey design effect (variance inflation factor).
 
         Returns
         -------
@@ -1315,7 +1677,7 @@ class PowerAnalysis:
         >>> print(curve)
         """
         # First get MDE to determine default range
-        mde_result = self.mde(n_treated, n_control, sigma, n_pre, n_post, rho)
+        mde_result = self.mde(n_treated, n_control, sigma, n_pre, n_post, rho, deff=deff)
 
         if effect_sizes is None:
             # Generate range from 0 to 2*MDE
@@ -1331,6 +1693,7 @@ class PowerAnalysis:
                 n_pre=n_pre,
                 n_post=n_post,
                 rho=rho,
+                deff=deff,
             )
             powers.append(result.power)
 
@@ -1345,6 +1708,7 @@ class PowerAnalysis:
         n_post: int = 1,
         rho: float = 0.0,
         treat_frac: float = 0.5,
+        deff: float = 1.0,
     ) -> pd.DataFrame:
         """
         Compute power for a range of sample sizes.
@@ -1365,6 +1729,8 @@ class PowerAnalysis:
             Intra-cluster correlation.
         treat_frac : float, default=0.5
             Fraction assigned to treatment.
+        deff : float, default=1.0
+            Survey design effect (variance inflation factor).
 
         Returns
         -------
@@ -1372,7 +1738,7 @@ class PowerAnalysis:
             DataFrame with columns 'sample_size' and 'power'.
         """
         # Get required N to determine default range
-        required = self.sample_size(effect_size, sigma, n_pre, n_post, rho, treat_frac)
+        required = self.sample_size(effect_size, sigma, n_pre, n_post, rho, treat_frac, deff=deff)
 
         if sample_sizes is None:
             min_n = max(10, required.required_n // 4)
@@ -1391,6 +1757,7 @@ class PowerAnalysis:
                 n_pre=n_pre,
                 n_post=n_post,
                 rho=rho,
+                deff=deff,
             )
             powers.append(result.power)
 
@@ -1414,6 +1781,7 @@ def simulate_power(
     estimator_kwargs: Optional[Dict[str, Any]] = None,
     result_extractor: Optional[Callable] = None,
     progress: bool = True,
+    survey_config: Optional[SurveyPowerConfig] = None,
 ) -> SimulationPowerResults:
     """
     Estimate power using Monte Carlo simulation.
@@ -1463,6 +1831,13 @@ def simulate_power(
         estimators with non-standard result schemas.
     progress : bool, default=True
         Whether to print progress updates.
+    survey_config : SurveyPowerConfig, optional
+        When provided, generates survey-structured data via
+        ``generate_survey_did_data`` and injects ``SurveyDesign`` into
+        estimator ``fit()``. Mutually exclusive with ``data_generator``.
+        Supported estimators: DiD, TWFE, MultiPeriod, CS, SA, Imputation,
+        TwoStage, Stacked, Efficient. Unsupported: TROP, SyntheticDiD,
+        TripleDifference. ``heterogeneous_te_by_strata`` must be False.
 
     Returns
     -------
@@ -1530,9 +1905,114 @@ def simulate_power(
 
     # When a custom data_generator is provided, bypass registry DGP
     use_custom_dgp = data_generator is not None
+    use_survey_dgp = survey_config is not None
+
+    # --- Survey config validation ---
+    if use_survey_dgp:
+        assert survey_config is not None  # for type narrowing
+        if estimator_name in _SURVEY_UNSUPPORTED:
+            raise ValueError(
+                f"survey_config is not supported with {estimator_name}. "
+                f"generate_survey_did_data produces staggered cohort data "
+                f"incompatible with this estimator's DGP. Use the custom "
+                f"data_generator path for survey power with {estimator_name}."
+            )
+        if use_custom_dgp:
+            raise ValueError(
+                "survey_config and data_generator are mutually exclusive. "
+                "survey_config uses generate_survey_did_data internally."
+            )
+        if treatment_period < 1:
+            raise ValueError(
+                f"treatment_period must be >= 1 with survey_config "
+                f"(need at least one pre-treatment period), got {treatment_period}."
+            )
+        if estimator_name not in _SURVEY_FIT_BUILDERS:
+            raise ValueError(
+                f"No survey power profile for {estimator_name}. "
+                f"Supported: {sorted(_SURVEY_FIT_BUILDERS.keys())}."
+            )
+        if survey_config.heterogeneous_te_by_strata:
+            raise ValueError(
+                "heterogeneous_te_by_strata=True is not supported with "
+                "simulation power analysis. The DGP's population ATT diverges "
+                "from the input treatment_effect under heterogeneous effects, "
+                "which would make bias/coverage/RMSE metrics misleading."
+            )
 
     data_gen_kwargs = data_generator_kwargs or {}
     est_kwargs = estimator_kwargs or {}
+
+    # Block survey_design in estimator_kwargs when survey_config is active.
+    # Custom survey design overrides go through SurveyPowerConfig.survey_design.
+    if use_survey_dgp and "survey_design" in est_kwargs:
+        raise ValueError(
+            "estimator_kwargs cannot contain 'survey_design' when survey_config "
+            "is set. To override the auto-built SurveyDesign, pass it via "
+            "SurveyPowerConfig(survey_design=...)."
+        )
+
+    # Block survey-config-managed keys in data_generator_kwargs
+    if use_survey_dgp and data_gen_kwargs:
+        collisions = _SURVEY_CONFIG_KEYS & set(data_gen_kwargs)
+        if collisions:
+            raise ValueError(
+                f"data_generator_kwargs contains keys managed by survey_config: "
+                f"{sorted(collisions)}. Set these on SurveyPowerConfig instead."
+            )
+        # Block DGP params that make realized ATT diverge from scalar input,
+        # which would misstate bias/coverage/RMSE (same rationale as
+        # heterogeneous_te_by_strata rejection above).
+        te_interaction = data_gen_kwargs.get("te_covariate_interaction", 0.0)
+        if te_interaction != 0.0:
+            raise ValueError(
+                f"te_covariate_interaction={te_interaction} is not supported "
+                f"with survey_config. The DGP's population ATT diverges from "
+                f"the input treatment_effect under covariate-interaction "
+                f"heterogeneity, which would make bias/coverage/RMSE misleading."
+            )
+
+    # Enforce panel-mode alignment between DGP and estimator.
+    # Runs even with empty data_gen_kwargs to catch CS(panel=False) + default DGP.
+    if use_survey_dgp:
+        dgp_panel = data_gen_kwargs.get("panel", True)
+        est_panel = getattr(estimator, "panel", True)
+        if not dgp_panel:
+            if estimator_name != "CallawaySantAnna":
+                raise ValueError(
+                    f"panel=False (repeated cross-sections) is not supported "
+                    f"with {estimator_name} under survey_config. Only "
+                    f"CallawaySantAnna supports repeated cross-sections."
+                )
+            if est_panel:
+                raise ValueError(
+                    "data_generator_kwargs has panel=False but "
+                    "CallawaySantAnna.panel=True. Use "
+                    "CallawaySantAnna(panel=False) to match."
+                )
+        elif estimator_name == "CallawaySantAnna" and not est_panel:
+            raise ValueError(
+                "CallawaySantAnna(panel=False) requires "
+                "data_generator_kwargs={'panel': False} to generate "
+                "repeated cross-section data."
+            )
+        # Reject estimator settings that require a multi-cohort DGP.
+        # survey_config hard-codes a single-cohort DGP and blocks
+        # cohort_periods/never_treated_frac overrides.
+        control_group = getattr(estimator, "control_group", "never_treated")
+        clean_control = getattr(estimator, "clean_control", None)
+        if control_group in ("not_yet_treated", "last_cohort"):
+            raise ValueError(
+                f"survey_config does not support control_group='{control_group}' "
+                f"(requires multi-cohort DGP). Use the custom data_generator "
+                f"path for survey power with this control-group design."
+            )
+        if clean_control == "strict":
+            raise ValueError(
+                f"survey_config does not support clean_control='strict' "
+                f"(requires multi-cohort DGP). Use the custom data_generator "
+                f"path for survey power with strict clean controls."
+            )
 
     # SyntheticDiD placebo variance requires n_control > n_treated.
     # Check after merging data_generator_kwargs so overrides of n_treated
@@ -1618,6 +2098,16 @@ def simulate_power(
     primary_rejections: List[bool] = []
     primary_ci_contains: List[bool] = []
 
+    # Survey DGP truth accumulation (DEFF/ICC are DGP properties,
+    # independent of effect size, so averaging across all sims is correct)
+    deff_values: List[float] = []
+    icc_values: List[float] = []
+
+    # Lazy import for survey DGP (mirrors registry's lazy import pattern)
+    _generate_survey_did_data: Optional[Callable] = None
+    if use_survey_dgp:
+        from diff_diff.prep import generate_survey_did_data as _generate_survey_did_data
+
     for effect_idx, effect in enumerate(effect_sizes):
         is_primary = effect_idx == primary_idx
 
@@ -1636,7 +2126,42 @@ def simulate_power(
             sim_seed = rng.integers(0, 2**31)
 
             # --- Generate data ---
-            if use_custom_dgp:
+            if use_survey_dgp:
+                assert survey_config is not None
+                assert _generate_survey_did_data is not None
+                dgp_kwargs = _survey_dgp_kwargs(
+                    n_units=n_units,
+                    n_periods=n_periods,
+                    treatment_effect=effect,
+                    treatment_fraction=treatment_fraction,
+                    treatment_period=treatment_period,
+                    sigma=sigma,
+                    survey_config=survey_config,
+                )
+                dgp_kwargs.update(data_gen_kwargs)
+                dgp_kwargs.pop("seed", None)
+                data = _generate_survey_did_data(seed=sim_seed, **dgp_kwargs)
+
+                # Derive columns for non-staggered estimators.
+                # Survey DGP's `treated` is time-varying (1{g>0, t>=g}); basic/TWFE/
+                # MultiPeriod need a time-invariant group indicator (`ever_treated`).
+                if estimator_name not in _STAGGERED_ESTIMATORS:
+                    data["ever_treated"] = (data["first_treat"] > 0).astype(int)
+                # Basic/TWFE also need a `post` period indicator.
+                if estimator_name in _SURVEY_POST_ESTIMATORS:
+                    data["post"] = (data["period"] >= treatment_period + 1).astype(int)
+
+                # Collect DGP truth for metadata
+                dgp_truth = data.attrs.get("dgp_truth", {})
+                if dgp_truth:
+                    kish = dgp_truth.get("deff_kish")
+                    icc_r = dgp_truth.get("icc_realized")
+                    if kish is not None:
+                        deff_values.append(kish)
+                    if icc_r is not None:
+                        icc_values.append(icc_r)
+
+            elif use_custom_dgp:
                 assert data_generator is not None
                 data = data_generator(
                     n_units=n_units,
@@ -1668,7 +2193,14 @@ def simulate_power(
 
             try:
                 # --- Fit estimator ---
-                if profile is not None and not use_custom_dgp:
+                if use_survey_dgp:
+                    assert survey_config is not None
+                    fit_builder = _SURVEY_FIT_BUILDERS[estimator_name]
+                    fit_kwargs = fit_builder(
+                        data, n_units, n_periods, treatment_period, survey_config
+                    )
+                    fit_kwargs.update(est_kwargs)
+                elif profile is not None and not use_custom_dgp:
                     fit_kwargs = profile.fit_kwargs_builder(
                         data, n_units, n_periods, treatment_period
                     )
@@ -1775,6 +2307,9 @@ def simulate_power(
             )
         ],
         effective_n_units=effective_n_units,
+        survey_config=survey_config,
+        mean_deff=float(np.nanmean(deff_values)) if deff_values else None,
+        mean_icc_realized=float(np.nanmean(icc_values)) if icc_values else None,
     )
 
 
@@ -1823,6 +2358,7 @@ class SimulationMDEResults:
     search_path: List[Dict[str, float]]
     estimator_name: str
     effective_n_units: Optional[int] = None
+    survey_config: Optional[Any] = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         return (
@@ -1920,6 +2456,7 @@ class SimulationSampleSizeResults:
     search_path: List[Dict[str, float]]
     estimator_name: str
     effective_n_units: Optional[int] = None
+    survey_config: Optional[Any] = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         return (
@@ -1993,6 +2530,7 @@ def simulate_mde(
     estimator_kwargs: Optional[Dict[str, Any]] = None,
     result_extractor: Optional[Callable] = None,
     progress: bool = True,
+    survey_config: Optional[SurveyPowerConfig] = None,
 ) -> SimulationMDEResults:
     """
     Find the minimum detectable effect via simulation-based bisection search.
@@ -2039,6 +2577,9 @@ def simulate_mde(
         Forwarded to ``simulate_power()``.
     progress : bool, default=True
         Whether to print progress updates.
+    survey_config : SurveyPowerConfig, optional
+        Survey-aware simulation config. Forwarded to ``simulate_power()``.
+        See :func:`simulate_power` for details and constraints.
 
     Returns
     -------
@@ -2075,6 +2616,7 @@ def simulate_mde(
         estimator_kwargs=estimator_kwargs,
         result_extractor=result_extractor,
         progress=False,
+        survey_config=survey_config,
     )
 
     def _power_at(effect: float) -> float:
@@ -2108,6 +2650,7 @@ def simulate_mde(
                 search_path=search_path,
                 estimator_name=estimator_name,
                 effective_n_units=effective_n_units,
+                survey_config=survey_config,
             )
         if power_hi < power:
             warnings.warn(
@@ -2135,6 +2678,7 @@ def simulate_mde(
                 n_steps=len(search_path),
                 search_path=search_path,
                 estimator_name=estimator_name,
+                survey_config=survey_config,
                 effective_n_units=effective_n_units,
             )
 
@@ -2180,6 +2724,7 @@ def simulate_mde(
         search_path=search_path,
         estimator_name=estimator_name,
         effective_n_units=effective_n_units,
+        survey_config=survey_config,
     )
 
 
@@ -2201,6 +2746,7 @@ def simulate_sample_size(
     estimator_kwargs: Optional[Dict[str, Any]] = None,
     result_extractor: Optional[Callable] = None,
     progress: bool = True,
+    survey_config: Optional[SurveyPowerConfig] = None,
 ) -> SimulationSampleSizeResults:
     """
     Find the required sample size via simulation-based bisection search.
@@ -2245,6 +2791,11 @@ def simulate_sample_size(
         Forwarded to ``simulate_power()``.
     progress : bool, default=True
         Whether to print progress updates.
+    survey_config : SurveyPowerConfig, optional
+        Survey-aware simulation config. Forwarded to ``simulate_power()``.
+        When set, the bisection floor is raised to
+        ``survey_config.min_viable_n`` to ensure viable survey structure.
+        See :func:`simulate_power` for details and constraints.
 
     Returns
     -------
@@ -2283,9 +2834,9 @@ def simulate_sample_size(
         )
 
     def _snap_n(n: int, direction: str = "down", floor: Optional[int] = None) -> int:
-        if grid_step == 1:
-            return n
         actual_floor = floor if floor is not None else min_n
+        if grid_step == 1:
+            return max(actual_floor, n)
         if direction == "up":
             return max(actual_floor, ((n + grid_step - 1) // grid_step) * grid_step)
         return max(actual_floor, (n // grid_step) * grid_step)
@@ -2304,6 +2855,7 @@ def simulate_sample_size(
         estimator_kwargs=estimator_kwargs,
         result_extractor=result_extractor,
         progress=False,
+        survey_config=survey_config,
     )
 
     def _power_at_n(n: int) -> float:
@@ -2315,8 +2867,22 @@ def simulate_sample_size(
             print(f"  Sample size search: n={n}, power={pwr:.3f}")
         return pwr
 
+    # Block strata_sizes in sample-size search (same class as n_per_cell for DDD):
+    # strata_sizes requires sum(strata_sizes) == n_units, but n_units varies
+    # during bisection so a fixed strata_sizes would fail mid-search.
+    if survey_config is not None and data_generator_kwargs:
+        if "strata_sizes" in data_generator_kwargs:
+            raise ValueError(
+                "strata_sizes in data_generator_kwargs is not supported with "
+                "simulate_sample_size() because n_units varies during the "
+                "bisection search. Use simulate_power() with a fixed n_units "
+                "and strata_sizes instead."
+            )
+
     # --- Bracket ---
     abs_min = 16 if is_ddd_grid else 4
+    if survey_config is not None:
+        abs_min = max(abs_min, survey_config.min_viable_n)
     if n_range is not None:
         lo, hi = _snap_n(n_range[0], "up", floor=abs_min), _snap_n(
             n_range[1], "down", floor=abs_min
@@ -2340,6 +2906,7 @@ def simulate_sample_size(
                 n_steps=len(search_path),
                 search_path=search_path,
                 estimator_name=estimator_name,
+                survey_config=survey_config,
             )
         power_hi = _power_at_n(hi)
         if power_hi < power:
@@ -2349,7 +2916,7 @@ def simulate_sample_size(
                 UserWarning,
             )
     else:
-        lo = min_n
+        lo = max(min_n, abs_min)
         power_lo = _power_at_n(lo)
         if power_lo >= power:
             # Floor achieves target — search downward for true minimum
@@ -2372,15 +2939,17 @@ def simulate_sample_size(
                     (s for s in search_path if s["power"] >= power),
                     key=lambda s: s["n_units"],
                 )
+                # Clamp to abs_min (enforces survey min_viable_n contract)
+                best_n = max(int(best["n_units"]), abs_min)
                 warnings.warn(
-                    f"Power at n={int(best['n_units'])} is "
+                    f"Power at n={best_n} is "
                     f"{best['power']:.2f} >= target {power}. Could not "
                     f"find a smaller N below target power. Pass "
                     f"n_range=(lo, hi) to refine.",
                     UserWarning,
                 )
                 return SimulationSampleSizeResults(
-                    required_n=int(best["n_units"]),
+                    required_n=best_n,
                     power_at_n=best["power"],
                     target_power=power,
                     alpha=alpha,
@@ -2389,10 +2958,11 @@ def simulate_sample_size(
                     n_steps=len(search_path),
                     search_path=search_path,
                     estimator_name=estimator_name,
+                    survey_config=survey_config,
                 )
             # Fall through to bisection with lo..hi bracket
         else:
-            hi = max(100, 2 * min_n)
+            hi = max(2 * lo, abs_min, 100)
             for _ in range(10):
                 if _power_at_n(hi) >= power:
                     break
@@ -2444,6 +3014,7 @@ def simulate_sample_size(
         n_steps=len(search_path),
         search_path=search_path,
         estimator_name=estimator_name,
+        survey_config=survey_config,
     )
 
 
@@ -2456,6 +3027,7 @@ def compute_mde(
     n_pre: int = 1,
     n_post: int = 1,
     rho: float = 0.0,
+    deff: float = 1.0,
 ) -> float:
     """
     Convenience function to compute minimum detectable effect.
@@ -2478,6 +3050,8 @@ def compute_mde(
         Number of post-treatment periods.
     rho : float, default=0.0
         Intra-cluster correlation.
+    deff : float, default=1.0
+        Survey design effect (variance inflation factor).
 
     Returns
     -------
@@ -2490,7 +3064,7 @@ def compute_mde(
     >>> print(f"MDE: {mde:.2f}")
     """
     pa = PowerAnalysis(alpha=alpha, power=power)
-    result = pa.mde(n_treated, n_control, sigma, n_pre, n_post, rho)
+    result = pa.mde(n_treated, n_control, sigma, n_pre, n_post, rho, deff=deff)
     return result.mde
 
 
@@ -2503,6 +3077,7 @@ def compute_power(
     n_pre: int = 1,
     n_post: int = 1,
     rho: float = 0.0,
+    deff: float = 1.0,
 ) -> float:
     """
     Convenience function to compute power for given effect and sample.
@@ -2525,6 +3100,8 @@ def compute_power(
         Number of post-treatment periods.
     rho : float, default=0.0
         Intra-cluster correlation.
+    deff : float, default=1.0
+        Survey design effect (variance inflation factor).
 
     Returns
     -------
@@ -2537,7 +3114,7 @@ def compute_power(
     >>> print(f"Power: {power:.1%}")
     """
     pa = PowerAnalysis(alpha=alpha)
-    result = pa.power(effect_size, n_treated, n_control, sigma, n_pre, n_post, rho)
+    result = pa.power(effect_size, n_treated, n_control, sigma, n_pre, n_post, rho, deff=deff)
     return result.power
 
 
@@ -2550,6 +3127,7 @@ def compute_sample_size(
     n_post: int = 1,
     rho: float = 0.0,
     treat_frac: float = 0.5,
+    deff: float = 1.0,
 ) -> int:
     """
     Convenience function to compute required sample size.
@@ -2572,6 +3150,8 @@ def compute_sample_size(
         Intra-cluster correlation.
     treat_frac : float, default=0.5
         Fraction assigned to treatment.
+    deff : float, default=1.0
+        Survey design effect (variance inflation factor).
 
     Returns
     -------
@@ -2584,5 +3164,5 @@ def compute_sample_size(
     >>> print(f"Required N: {n}")
     """
     pa = PowerAnalysis(alpha=alpha, power=power)
-    result = pa.sample_size(effect_size, sigma, n_pre, n_post, rho, treat_frac)
+    result = pa.sample_size(effect_size, sigma, n_pre, n_post, rho, treat_frac, deff=deff)
     return result.required_n
