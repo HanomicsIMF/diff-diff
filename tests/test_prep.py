@@ -2919,20 +2919,29 @@ class TestAggregateSurvey:
         np.testing.assert_array_equal(panel["y_weight"].values, expected_weight)
 
     def test_pweight_values(self, micro_data, design):
-        """Pweight values equal sum of resolved survey weights per cell."""
+        """Pweight values are unit-constant: mean of cell_sum_w within geo unit."""
         panel, _ = aggregate_survey(
             micro_data,
             by=["state", "year"],
             outcomes="y",
             survey_design=design,
         )
-        # Manually compute expected cell_sum_w
+        # cell_sum_w should match raw per-cell survey weight sums
         resolved = design.resolve(micro_data)
         for _, row in panel.iterrows():
             mask = (micro_data["state"] == row["state"]) & (micro_data["year"] == row["year"])
             expected_sum_w = float(np.sum(resolved.weights[mask.values]))
-            assert row["y_weight"] == pytest.approx(expected_sum_w, rel=1e-10)
             assert row["cell_sum_w"] == pytest.approx(expected_sum_w, rel=1e-10)
+
+        # y_weight should be the mean of cell_sum_w within each state (unit-constant)
+        for state in panel["state"].unique():
+            state_rows = panel[panel["state"] == state]
+            expected_weight = state_rows["cell_sum_w"].mean()
+            np.testing.assert_allclose(
+                state_rows["y_weight"].values, expected_weight, rtol=1e-10
+            )
+            # Must be constant within unit
+            assert state_rows["y_weight"].nunique() == 1
 
     def test_cell_sum_w_column(self, micro_data, design):
         """cell_sum_w is present in both pweight and aweight modes."""
@@ -3014,39 +3023,48 @@ class TestAggregateSurvey:
             )
 
     def test_pweight_callaway_santanna_integration(self):
-        """Pweight output feeds into CallawaySantAnna without error."""
-        from diff_diff import CallawaySantAnna
-        from diff_diff.prep_dgp import generate_survey_did_data
+        """Pweight geo-period workflow feeds into CallawaySantAnna.
 
-        micro = generate_survey_did_data(
-            n_units=30,
-            n_periods=6,
-            cohort_periods=[4],
-            n_strata=3,
-            psu_per_stratum=4,
-            panel=True,
-            seed=42,
-        )
-        design = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        Builds a repeated cross-section with multiple respondents per
+        geo-period cell so that cell_sum_w varies across periods within
+        geographic units. The unit-constant averaging in pweight mode
+        must satisfy _validate_unit_constant_survey().
+        """
+        from diff_diff import CallawaySantAnna
+
+        rng = np.random.RandomState(42)
+        # 6 geographic units, 4 periods, ~20 respondents per cell
+        rows = []
+        first_treats = {0: 0, 1: 0, 2: 3, 3: 3, 4: 4, 5: 4}
+        for geo in range(6):
+            for period in range(1, 5):
+                n_resp = rng.randint(15, 25)  # varying respondents per cell
+                te = 2.0 if (first_treats[geo] > 0 and period >= first_treats[geo]) else 0.0
+                for _ in range(n_resp):
+                    rows.append({
+                        "geo": geo, "period": period,
+                        "wt": rng.uniform(0.5, 3.0),
+                        "y": rng.normal(10 + te, 2),
+                    })
+        micro = pd.DataFrame(rows)
+        design = SurveyDesign(weights="wt")
         panel, stage2 = aggregate_survey(
-            micro,
-            by=["unit", "period"],
-            outcomes="outcome",
-            survey_design=design,
+            micro, by=["geo", "period"], outcomes="y", survey_design=design,
         )
         assert stage2.weight_type == "pweight"
 
-        # first_treat is already in the micro data and constant within unit
-        unit_cohort = micro.groupby("unit")["first_treat"].first()
-        panel["first_treat"] = panel["unit"].map(unit_cohort)
+        # cell_sum_w should vary within geos (different respondent counts)
+        # but y_weight must be unit-constant
+        for geo in panel["geo"].unique():
+            geo_rows = panel[panel["geo"] == geo]
+            assert geo_rows["y_weight"].nunique() == 1, (
+                f"Geo {geo}: y_weight not constant within unit"
+            )
 
+        panel["first_treat"] = panel["geo"].map(first_treats)
         result = CallawaySantAnna().fit(
-            panel,
-            outcome="outcome_mean",
-            unit="unit",
-            time="period",
-            first_treat="first_treat",
-            survey_design=stage2,
+            panel, outcome="y_mean", unit="geo", time="period",
+            first_treat="first_treat", survey_design=stage2,
         )
         assert np.isfinite(result.overall_att), f"ATT not finite: {result.overall_att}"
         assert result.overall_se > 0, f"SE not positive: {result.overall_se}"
@@ -3081,10 +3099,10 @@ class TestAggregateSurvey:
         assert stage2.weight_type == "pweight"
         assert "cell_sum_w" in panel.columns
         assert (panel["cell_sum_w"] > 0).all()
-        # Weight column matches cell_sum_w in pweight mode
-        np.testing.assert_array_equal(
-            panel["outcome_weight"].values, panel["cell_sum_w"].values
-        )
+        # Weight column is unit-constant (mean of cell_sum_w per geo unit)
+        for geo in panel["stratum"].unique():
+            geo_rows = panel[panel["stratum"] == geo]
+            assert geo_rows["outcome_weight"].nunique() == 1
         # All cells should have finite SEs from replicate variance
         assert panel["outcome_se"].notna().all()
         assert (panel["outcome_se"] > 0).all()

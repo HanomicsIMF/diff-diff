@@ -1468,11 +1468,12 @@ def aggregate_survey(
     second_stage_weights : str, default "pweight"
         Weight type for the returned second-stage ``SurveyDesign``:
 
-        - ``"pweight"`` (default): Population weights - the sum of
-          normalized survey weights per cell, proportional to the
-          estimated population count. Targets population-weighted
-          second-stage estimation. Compatible with all survey-capable
-          estimators.
+        - ``"pweight"`` (default): Population weights - the mean of
+          per-cell survey weight sums within each geographic unit
+          (first ``by`` column), constant across periods. Targets
+          population-weighted second-stage estimation. Compatible
+          with all survey-capable estimators including those that
+          require unit-constant survey columns.
         - ``"aweight"``: Precision weights - inverse variance
           (``1 / V(y_bar)``). Targets precision-weighted second-stage
           estimation via WLS. Compatible with estimators that accept ``aweight``
@@ -1488,7 +1489,8 @@ def aggregate_survey(
         ``{outcome}_precision``, ``{outcome}_weight``,
         ``{covariate}_mean``, ``cell_n``, ``cell_n_eff``,
         ``cell_sum_w``, ``srs_fallback``. The ``_weight`` column
-        contains population weights (``cell_sum_w``) in pweight mode
+        contains unit-constant population weights (mean of
+        ``cell_sum_w`` within each geographic unit) in pweight mode,
         or cleaned precision (NaN/Inf mapped to 0.0) in aweight mode.
         ``cell_sum_w`` is always present as a diagnostic column
         containing the sum of normalized survey weights per cell
@@ -1724,11 +1726,16 @@ def aggregate_survey(
         panel_df = panel_df[~nonestimable].reset_index(drop=True)
 
     # --- Construct second-stage SurveyDesign ---
+    geo_col = by_cols[0]
     weight_col = f"{first_outcome}_weight"
     if second_stage_weights == "pweight":
-        # Population weight: sum of survey weights per cell.
-        # Always positive for surviving cells (survey weights > 0).
-        panel_df[weight_col] = panel_df["cell_sum_w"]
+        # Unit-level population weight: average cell_sum_w across periods
+        # within each geographic unit.  This produces a unit-constant
+        # weight that satisfies _validate_unit_constant_survey() for
+        # panel estimators, while representing each unit's average
+        # population share (averaging out period-to-period sampling
+        # variability in per-cell weight sums).
+        panel_df[weight_col] = panel_df.groupby(geo_col)["cell_sum_w"].transform("mean")
     else:
         # Precision weight: inverse variance, with NaN/Inf -> 0.0 so
         # downstream resolve() doesn't reject missing weights.
@@ -1741,11 +1748,10 @@ def aggregate_survey(
 
     # Drop geographic units (PSUs) with zero total weight — they would
     # inflate survey df and distort second-stage variance estimation.
-    # Under pweight mode, cell_sum_w > 0 for all surviving cells (survey
-    # weights are positive), so this block is a defensive no-op.  Under
-    # aweight, NaN precision maps to 0.0 and geographic units with
-    # all-zero precision are pruned here.
-    geo_col = by_cols[0]
+    # Under pweight mode, unit-averaged cell_sum_w > 0 for all surviving
+    # cells, so this block is a defensive no-op.  Under aweight, NaN
+    # precision maps to 0.0 and geographic units with all-zero precision
+    # are pruned here.
     geo_weight = panel_df.groupby(geo_col)[weight_col].sum()
     zero_geos = geo_weight[geo_weight == 0].index
     if len(zero_geos) > 0:

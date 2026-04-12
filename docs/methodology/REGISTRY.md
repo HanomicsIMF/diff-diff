@@ -2460,11 +2460,12 @@ DiD estimation on repeated cross-section survey data.
   full strata/PSU structure for variance estimation via `compute_survey_if_variance()`
   (TSL) or `compute_replicate_if_variance()` (replicate designs).
 - **Second-stage weights** (`second_stage_weights` parameter):
-  - `"pweight"` (default): Population weight = `Σ w_i` per cell (sum of normalized
-    survey weights). Proportional to the Horvitz-Thompson estimated population count.
-    Produces population-representative ATT. Compatible with all survey-capable
-    estimators including pweight-only estimators (CallawaySantAnna, ImputationDiD,
-    TwoStageDiD, StackedDiD, etc.).
+  - `"pweight"` (default): Population weight = mean of per-cell `Σ w_i` within each
+    geographic unit (first `by` column), constant across periods. Proportional to
+    the Horvitz-Thompson estimated population count, averaged over periods to
+    satisfy the unit-constant survey column contract required by panel estimators.
+    Compatible with all survey-capable estimators including pweight-only estimators
+    (CallawaySantAnna, ImputationDiD, TwoStageDiD, StackedDiD, etc.).
   - `"aweight"`: Precision weight = `1 / V(ȳ_g)` (inverse variance). Produces
     efficiency-weighted estimates via WLS. Compatible only with estimators that
     accept aweight (DifferenceInDifferences, TwoWayFixedEffects, MultiPeriodDiD,
