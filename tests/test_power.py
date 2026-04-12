@@ -2590,3 +2590,42 @@ class TestSurveyPower:
                 seed=42,
                 **_SIM_KW,
             )
+
+    def test_survey_rejects_not_yet_treated(self):
+        """control_group='not_yet_treated' rejected (needs multi-cohort DGP)."""
+        with pytest.raises(ValueError, match="not_yet_treated"):
+            simulate_power(
+                CallawaySantAnna(control_group="not_yet_treated"),
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
+
+    def test_survey_rejects_clean_control_strict(self):
+        """clean_control='strict' rejected (needs multi-cohort DGP)."""
+        with pytest.raises(ValueError, match="clean_control.*strict"):
+            simulate_power(
+                StackedDiD(clean_control="strict"),
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
+
+    def test_survey_sample_size_rejects_strata_sizes(self):
+        """strata_sizes in data_generator_kwargs rejected for sample_size search."""
+        with pytest.raises(ValueError, match="strata_sizes.*not supported"):
+            simulate_sample_size(
+                CallawaySantAnna(),
+                treatment_effect=3.0,
+                data_generator_kwargs={"strata_sizes": [20, 20, 20]},
+                survey_config=SurveyPowerConfig(n_strata=3, psu_per_stratum=4),
+                n_simulations=10,
+                max_steps=3,
+                seed=42,
+                n_periods=4,
+                treatment_period=2,
+                sigma=1.0,
+                progress=False,
+            )

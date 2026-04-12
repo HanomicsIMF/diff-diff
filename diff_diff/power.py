@@ -1992,6 +1992,23 @@ def simulate_power(
                 "data_generator_kwargs={'panel': False} to generate "
                 "repeated cross-section data."
             )
+        # Reject estimator settings that require a multi-cohort DGP.
+        # survey_config hard-codes a single-cohort DGP and blocks
+        # cohort_periods/never_treated_frac overrides.
+        control_group = getattr(estimator, "control_group", "never_treated")
+        clean_control = getattr(estimator, "clean_control", None)
+        if control_group == "not_yet_treated":
+            raise ValueError(
+                f"survey_config does not support control_group='not_yet_treated' "
+                f"(requires multi-cohort DGP). Use the custom data_generator "
+                f"path for survey power with not-yet-treated controls."
+            )
+        if clean_control == "strict":
+            raise ValueError(
+                f"survey_config does not support clean_control='strict' "
+                f"(requires multi-cohort DGP). Use the custom data_generator "
+                f"path for survey power with strict clean controls."
+            )
 
     # SyntheticDiD placebo variance requires n_control > n_treated.
     # Check after merging data_generator_kwargs so overrides of n_treated
@@ -2845,6 +2862,18 @@ def simulate_sample_size(
         if progress:
             print(f"  Sample size search: n={n}, power={pwr:.3f}")
         return pwr
+
+    # Block strata_sizes in sample-size search (same class as n_per_cell for DDD):
+    # strata_sizes requires sum(strata_sizes) == n_units, but n_units varies
+    # during bisection so a fixed strata_sizes would fail mid-search.
+    if survey_config is not None and data_generator_kwargs:
+        if "strata_sizes" in data_generator_kwargs:
+            raise ValueError(
+                "strata_sizes in data_generator_kwargs is not supported with "
+                "simulate_sample_size() because n_units varies during the "
+                "bisection search. Use simulate_power() with a fixed n_units "
+                "and strata_sizes instead."
+            )
 
     # --- Bracket ---
     abs_min = 16 if is_ddd_grid else 4
