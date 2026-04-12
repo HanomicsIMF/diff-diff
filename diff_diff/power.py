@@ -1932,6 +1932,23 @@ def simulate_power(
                 f"data_generator_kwargs contains keys managed by survey_config: "
                 f"{sorted(collisions)}. Set these on SurveyPowerConfig instead."
             )
+        # Block DGP params that make realized ATT diverge from scalar input,
+        # which would misstate bias/coverage/RMSE (same rationale as
+        # heterogeneous_te_by_strata rejection above).
+        te_interaction = data_gen_kwargs.get("te_covariate_interaction", 0.0)
+        if te_interaction != 0.0:
+            raise ValueError(
+                f"te_covariate_interaction={te_interaction} is not supported "
+                f"with survey_config. The DGP's population ATT diverges from "
+                f"the input treatment_effect under covariate-interaction "
+                f"heterogeneity, which would make bias/coverage/RMSE misleading."
+            )
+        if "covariate_effects" in data_gen_kwargs:
+            raise ValueError(
+                "covariate_effects is not supported with survey_config. "
+                "Custom covariate effects can shift the realized population "
+                "ATT away from the input treatment_effect."
+            )
 
     # SyntheticDiD placebo variance requires n_control > n_treated.
     # Check after merging data_generator_kwargs so overrides of n_treated

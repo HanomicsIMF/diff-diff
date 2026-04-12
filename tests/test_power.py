@@ -2407,6 +2407,33 @@ class TestSurveyPower:
                 **_SIM_KW,
             )
 
+    def test_survey_rejects_te_covariate_interaction(self):
+        """te_covariate_interaction != 0 rejected (diverges population ATT)."""
+        with pytest.raises(ValueError, match="te_covariate_interaction"):
+            simulate_power(
+                CallawaySantAnna(),
+                data_generator_kwargs={
+                    "add_covariates": True,
+                    "te_covariate_interaction": 1.0,
+                },
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
+
+    def test_survey_rejects_covariate_effects(self):
+        """covariate_effects rejected (can shift population ATT)."""
+        with pytest.raises(ValueError, match="covariate_effects"):
+            simulate_power(
+                CallawaySantAnna(),
+                data_generator_kwargs={"covariate_effects": (0.5, 0.3)},
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
+
     # -- Closed-form deff tests --
 
     def test_closed_form_deff_default(self):
