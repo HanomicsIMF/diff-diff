@@ -107,7 +107,7 @@ Files: `benchmarks/R/benchmark_realdata_*.R`, `tests/test_survey_real_data.py`,
 ### Phase 10: Survey Completeness (v2.9.0–v3.0)
 
 - **10a.** Survey theory document (`survey-theory.md`) — formal justification for design-based variance with modern DiD influence functions
-- **10b.** Research-grade survey DGP — 8 new parameters on `generate_survey_did_data()`
+- **10b.** Research-grade survey DGP — 9 parameters on `generate_survey_did_data()` (8 research-grade + `conditional_pt`)
 - **10c.** R validation expansion — 8 of 16 estimators cross-validated against R's `survey::svyglm()`
 - **10d.** Tutorial rewrite — flat-weight vs design-based comparison with known ground truth
 - **10f.** WooldridgeDiD survey support — OLS, logit, Poisson paths with `pweight` + strata/PSU/FPC + TSL variance
@@ -197,9 +197,9 @@ empirical illustration with NHANES ACA data (~3pp), software section
    DR/IPW with covariates recovers truth; no-covariate estimator is biased.
    This is the most novel claim — survey-weighted nuisance estimation
    (propensity scores, outcome regression) produces valid IFs under complex
-   sampling. **Requires DGP extension**: add a `conditional_pt` parameter
-   to `generate_survey_did_data()` that makes the time trend
-   X-dependent (e.g., `trend_i = 0.5*t + delta * x1_i * t`).
+   sampling. **Resolved:** `conditional_pt` parameter added to
+   `generate_survey_did_data()` with X-dependent time trends
+   (`y += conditional_pt * x1_i * (t/T)`) and treated x1 mean shift.
 
 **Co-authorship:** A co-author from the DiD methodology community would
 strengthen credibility — someone who can vouch that the IFs are valid

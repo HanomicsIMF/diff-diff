@@ -1290,8 +1290,9 @@ def generate_survey_did_data(
         with keys: ``population_att`` (weight-weighted average of treated
         true effects), ``deff_kish`` (1 + CV(w)^2), ``base_stratum_effects``
         (base stratum TEs before dynamic/covariate modifiers),
-        ``icc_realized`` (ANOVA-based
-        ICC computed on period-1 data).
+        ``icc_realized`` (ANOVA-based ICC computed on period-1 data),
+        and ``conditional_pt_active`` (bool, whether conditional PT
+        regime is active).
     covariate_effects : tuple of (float, float), optional
         Coefficients ``(beta1, beta2)`` for covariates x1 and x2 in the
         outcome equation ``y += beta1 * x1 + beta2 * x2``. Default uses

@@ -2088,6 +2088,47 @@ class TestSurveyDGPResearchGrade:
         )
         pd.testing.assert_frame_equal(df_default, df_explicit)
 
+    def test_conditional_pt_informative_sampling(self):
+        """conditional_pt x1 shift should survive informative-sampling ranking."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        for panel_mode in [True, False]:
+            df = generate_survey_did_data(
+                n_units=1000,
+                n_periods=4,
+                add_covariates=True,
+                conditional_pt=0.3,
+                informative_sampling=True,
+                panel=panel_mode,
+                seed=42,
+            )
+            p1 = df[df["period"] == 1]
+            x1_treated = p1.loc[p1["first_treat"] > 0, "x1"].mean()
+            x1_control = p1.loc[p1["first_treat"] == 0, "x1"].mean()
+            shift = x1_treated - x1_control
+            assert shift > 0.5, (
+                f"panel={panel_mode}: x1 shift too small after "
+                f"informative sampling ranking: {shift:.3f}"
+            )
+
+    def test_conditional_pt_dgp_truth_diagnostics(self):
+        """dgp_truth should include conditional_pt_active and valid ICC."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        df = generate_survey_did_data(
+            n_units=500,
+            n_periods=4,
+            add_covariates=True,
+            conditional_pt=0.3,
+            icc=0.15,
+            return_true_population_att=True,
+            seed=42,
+        )
+        truth = df.attrs["dgp_truth"]
+        assert truth["conditional_pt_active"] is True
+        assert np.isfinite(truth["icc_realized"])
+        assert np.isfinite(truth["population_att"])
+
     def test_conditional_pt_panel_and_crosssection(self):
         """conditional_pt should work in both panel and cross-section modes."""
         from diff_diff.prep_dgp import generate_survey_did_data
