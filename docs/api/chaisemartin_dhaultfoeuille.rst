@@ -37,8 +37,14 @@ The estimator:
   seasonal promotions, on/off policy cycles)
 - You need separate joiners (``DID_+``) and leavers (``DID_-``) views, plus
   the aggregate ``DID_M``
-- You want a built-in placebo and a TWFE decomposition diagnostic from the
-  same fit
+- You want a built-in placebo and a TWFE decomposition diagnostic computed
+  on the data you pass in (pre-filter) for direct comparison against
+  ``DID_M``. The fitted TWFE diagnostic uses the FULL pre-filter cell
+  sample (matching :func:`twowayfeweights`); when ``fit()`` drops groups
+  via the ragged-panel or ``drop_larger_lower`` filters, a ``UserWarning``
+  is emitted to make the divergence from the post-filter ``DID_M`` sample
+  explicit. See REGISTRY.md ``ChaisemartinDHaultfoeuille`` ``Note (TWFE
+  diagnostic sample contract)`` for the rationale.
 - You want a Python implementation that matches R ``DIDmultiplegtDYN`` at
   ``l = 1``
 

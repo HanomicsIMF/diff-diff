@@ -208,18 +208,34 @@ class ChaisemartinDHaultfoeuilleResults:
     twfe_weights : pd.DataFrame, optional
         Per-cell TWFE decomposition weights from Theorem 1 of de
         Chaisemartin & D'Haultfoeuille (2020). Columns: ``group``,
-        ``time``, ``weight``. Only populated when ``twfe_diagnostic=True``.
+        ``time``, ``weight``. Computed on the **FULL pre-filter cell
+        sample** passed by the user (the same input the standalone
+        :func:`twowayfeweights` function uses) — NOT the post-filter
+        estimation sample described by ``overall_att`` and
+        ``groups``. When ``fit()`` drops groups via the ragged-panel
+        or ``drop_larger_lower`` filters, ``results.twfe_*`` and
+        ``results.overall_att`` describe different samples and a
+        ``UserWarning`` is emitted; see REGISTRY.md
+        ``ChaisemartinDHaultfoeuille`` ``Note (TWFE diagnostic
+        sample contract)`` for the rationale. Only populated when
+        ``twfe_diagnostic=True``.
     twfe_fraction_negative : float, optional
-        Fraction of treated-cell weights that are negative. ``> 0`` is the
-        diagnostic for the heterogeneous-treatment-effect bias of the
-        plain TWFE estimator on the same data.
+        Fraction of treated-cell weights that are negative. ``> 0`` is
+        the diagnostic for the heterogeneous-treatment-effect bias of
+        the plain TWFE estimator on the **FULL pre-filter cell sample**
+        (NOT the post-filter estimation sample). See the
+        ``twfe_weights`` docstring above for the sample contract.
     twfe_sigma_fe : float, optional
         Smallest standard deviation of per-cell treatment effects that
         could flip the sign of the plain TWFE estimator (Corollary 1 of
-        the AER 2020 paper).
+        the AER 2020 paper). Computed on the **FULL pre-filter cell
+        sample**.
     twfe_beta_fe : float, optional
-        The plain TWFE coefficient computed on the same data, for
-        comparison with ``overall_att``.
+        The plain TWFE coefficient computed on the **FULL pre-filter
+        cell sample**, for comparison with ``overall_att``. Note that
+        the two are computed on different samples when ``fit()``
+        filters drop groups — see the ``twfe_weights`` docstring above
+        for the sample contract.
     groups : list
         Group identifiers in the post-filter sample.
     time_periods : list

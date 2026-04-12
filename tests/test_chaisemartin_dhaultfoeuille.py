@@ -1219,12 +1219,176 @@ class TestTwowayFeweightsHelper:
             time="period",
             treatment="treatment",
         )
-        # The standalone runs on the FULL pre-filter cell dataset; the fitted
-        # diagnostic also runs on the full pre-filter dataset (per the plan).
-        # On single-switch data with no crossers, both should produce identical
-        # results.
+        # Both APIs run on the FULL pre-filter cell sample per the
+        # documented TWFE diagnostic sample contract. On clean
+        # single-switch data with no crossers, no filters fire and
+        # both should produce identical results. The more interesting
+        # filter-divergence cases are pinned in
+        # test_twfe_pre_filter_contract_with_interior_gap_drop and
+        # test_twfe_pre_filter_contract_with_multi_switch_drop. See
+        # REGISTRY.md ChaisemartinDHaultfoeuille
+        # `Note (TWFE diagnostic sample contract)`.
         assert results.twfe_beta_fe == pytest.approx(standalone.beta_fe)
         assert results.twfe_fraction_negative == pytest.approx(standalone.fraction_negative)
+
+    def test_twfe_pre_filter_contract_with_interior_gap_drop(self):
+        """
+        Per the TWFE diagnostic sample contract: when fit() drops a
+        group via Step 5b's interior-gap filter, results.twfe_*
+        continues to describe the FULL pre-filter cell sample (matching
+        the standalone twowayfeweights() output), and a divergence
+        warning fires. The fitted twfe_* and overall_att now describe
+        DIFFERENT samples by design.
+
+        See REGISTRY.md ChaisemartinDHaultfoeuille `Note (TWFE
+        diagnostic sample contract)`.
+        """
+        data = generate_reversible_did_data(n_groups=10, n_periods=5, seed=1)
+        # Drop period 2 for group 3 (interior gap)
+        data = data[~((data["group"] == 3) & (data["period"] == 2))].reset_index(drop=True)
+
+        # Standalone TWFE on full input
+        standalone = twowayfeweights(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+
+        # Fitted estimator
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+        # The fitted twfe_* matches the standalone (both pre-filter)
+        assert results.twfe_beta_fe == pytest.approx(standalone.beta_fe)
+        assert results.twfe_fraction_negative == pytest.approx(standalone.fraction_negative)
+
+        # The estimation sample is smaller (group 3 was dropped)
+        assert 3 not in results.groups
+        assert len(results.groups) == 9
+
+        # The divergence warning fired with the expected counts
+        div_warnings = [
+            wi for wi in w if "TWFE diagnostic sample-contract notice" in str(wi.message)
+        ]
+        assert len(div_warnings) == 1, "exactly one divergence warning expected"
+        assert "1 interior-gap group(s)" in str(div_warnings[0].message)
+        assert "0 multi-switch group(s)" in str(div_warnings[0].message)
+
+    def test_twfe_pre_filter_contract_with_multi_switch_drop(self):
+        """
+        Per the TWFE diagnostic sample contract: when fit() drops a
+        group via Step 6's drop_larger_lower (multi-switch) filter,
+        results.twfe_* continues to describe the FULL pre-filter cell
+        sample, and a divergence warning fires.
+
+        See REGISTRY.md ChaisemartinDHaultfoeuille `Note (TWFE
+        diagnostic sample contract)`.
+        """
+        # Build a panel where one group is a clear multi-switch crosser
+        data = generate_reversible_did_data(
+            n_groups=20,
+            n_periods=4,
+            pattern="single_switch",
+            seed=1,
+        )
+        # Inject a multi-switch group: D = [0, 1, 0, 1]
+        crosser = pd.DataFrame(
+            {
+                "group": [9999] * 4,
+                "period": [0, 1, 2, 3],
+                "treatment": [0, 1, 0, 1],
+                "outcome": [10.0, 12.0, 11.0, 13.0],
+                "true_effect": [0.0, 0.0, 0.0, 0.0],
+                "d_lag": [np.nan, 0.0, 1.0, 0.0],
+                "switcher_type": ["initial", "joiner", "leaver", "joiner"],
+            }
+        )
+        data = pd.concat([data, crosser], ignore_index=True)
+
+        # Standalone TWFE on full input (including the crosser)
+        standalone = twowayfeweights(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+
+        # Fitted estimator (drop_larger_lower=True default drops the crosser)
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+        # The fitted twfe_* matches the standalone (both pre-filter,
+        # both include the crosser)
+        assert results.twfe_beta_fe == pytest.approx(standalone.beta_fe)
+        assert results.twfe_fraction_negative == pytest.approx(standalone.fraction_negative)
+
+        # The estimation sample dropped the crosser
+        assert 9999 not in results.groups
+        assert results.n_groups_dropped_crossers >= 1
+
+        # The divergence warning fired with the expected counts
+        div_warnings = [
+            wi for wi in w if "TWFE diagnostic sample-contract notice" in str(wi.message)
+        ]
+        assert len(div_warnings) == 1, "exactly one divergence warning expected"
+        assert "0 interior-gap group(s)" in str(div_warnings[0].message)
+        assert "1 multi-switch group(s)" in str(div_warnings[0].message)
+
+    def test_twfe_no_divergence_warning_on_clean_panel(self):
+        """
+        Negative test for the TWFE diagnostic sample contract: on a
+        clean panel where no filters fire, the divergence warning must
+        NOT fire. The fitted twfe_* and overall_att describe the same
+        sample, so there is no divergence to warn about.
+
+        Hard-codes ``pattern="single_switch"`` so a future change to
+        ``generate_reversible_did_data`` defaults can't silently
+        introduce multi-switch crossers and start firing the warning.
+        """
+        data = generate_reversible_did_data(
+            n_groups=20, n_periods=4, pattern="single_switch", seed=42
+        )
+        est = ChaisemartinDHaultfoeuille()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+        # No filter drops on a clean panel
+        assert results.n_groups_dropped_crossers == 0
+        assert len(results.groups) == 20
+
+        # The divergence warning did NOT fire
+        div_warnings = [
+            wi for wi in w if "TWFE diagnostic sample-contract notice" in str(wi.message)
+        ]
+        assert (
+            len(div_warnings) == 0
+        ), "Divergence warning should not fire on clean panels where filters do not drop groups"
 
     # The four tests below pin the contract that twowayfeweights() and
     # ChaisemartinDHaultfoeuille.fit() share the same validation rules

@@ -275,9 +275,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         from Theorem 1 of AER 2020: per-``(g, t)`` weights, fraction of
         treated cells with negative weights, and ``sigma_fe`` (the
         smallest cell-effect standard deviation that could flip the sign
-        of the plain TWFE coefficient). Useful for diagnosing whether
-        TWFE on the same data would have a different (potentially
-        wrong-signed) answer than ``DID_M``.
+        of the plain TWFE coefficient). The diagnostic answers "what
+        would the plain TWFE estimator say on the data you passed in?",
+        so it runs on the **FULL pre-filter cell sample** (the same
+        input as the standalone :func:`twowayfeweights` function), NOT
+        on the post-filter estimation sample used by ``DID_M``. When
+        the ragged-panel filter or ``drop_larger_lower`` drops groups,
+        the fitted ``results.twfe_*`` values describe a LARGER sample
+        (pre-filter) than ``results.overall_att`` and a ``UserWarning``
+        is emitted to make the divergence explicit. See REGISTRY.md
+        ``ChaisemartinDHaultfoeuille`` ``Note (TWFE diagnostic sample
+        contract)`` for the full rationale.
     drop_larger_lower : bool, default=True
         If ``True`` (default, matches R ``DIDmultiplegtDYN``), drops
         groups whose treatment switches more than once (multi-switch
@@ -636,6 +644,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             expected_count = g_max_idx - g_min_idx + 1
             if len(g_periods) != expected_count:
                 groups_with_interior_gaps.append(g_id)
+        n_groups_dropped_interior_gap = len(groups_with_interior_gaps)
         if groups_with_interior_gaps:
             warnings.warn(
                 f"Dropping {len(groups_with_interior_gaps)} group(s) with interior "
@@ -686,6 +695,49 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             )
 
         # ------------------------------------------------------------------
+        # Step 6b: TWFE diagnostic sample-contract notice
+        #
+        # The fitted twfe_* values (if the diagnostic succeeded in
+        # Step 5a) were computed on the FULL pre-filter cell sample,
+        # matching the standalone twowayfeweights() output. Steps 5b
+        # and 6 may have dropped groups since then. When they did, the
+        # fitted diagnostic and the dCDH point estimate describe
+        # DIFFERENT samples, so we surface that divergence as a
+        # UserWarning per the REGISTRY contract Note. Users see the
+        # warning at fit time and can decide whether to pre-process
+        # their data before re-fitting (or accept the documented
+        # divergence).
+        #
+        # The warning fires whenever the user requested the diagnostic
+        # AND filters dropped groups, even if _compute_twfe_diagnostic
+        # itself failed (rank-deficient fallback) and
+        # twfe_diagnostic_payload is None. The warning text uses "(if
+        # the diagnostic succeeded)" to remain accurate in both cases.
+        # ------------------------------------------------------------------
+        if self.twfe_diagnostic and (n_groups_dropped_interior_gap + n_groups_dropped_crossers) > 0:
+            warnings.warn(
+                f"TWFE diagnostic sample-contract notice: the dCDH point "
+                f"estimate, results.groups, and inference fields use a "
+                f"POST-FILTER sample after Step 5b dropped "
+                f"{n_groups_dropped_interior_gap} interior-gap group(s) "
+                f"and Step 6 dropped {n_groups_dropped_crossers} multi-"
+                f"switch group(s). The fitted results.twfe_* values (if "
+                f"the diagnostic succeeded) were computed on the FULL "
+                f"pre-filter cell sample, so they describe a LARGER "
+                f"sample (pre-filter) than overall_att. The standalone "
+                f"twowayfeweights() function also uses the pre-filter "
+                f"sample. This is the documented Phase 1 contract — see "
+                f"REGISTRY.md ChaisemartinDHaultfoeuille `Note (TWFE "
+                f"diagnostic sample contract)` for the rationale. To "
+                f"reproduce the dCDH estimation sample for an external "
+                f"TWFE comparison, pre-process your data to drop the "
+                f"{n_groups_dropped_interior_gap + n_groups_dropped_crossers} "
+                f"flagged groups before re-fitting.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # ------------------------------------------------------------------
         # Step 7: Singleton-baseline identification (footnote 15 of dynamic paper)
         # ------------------------------------------------------------------
         # The singleton-baseline filter identifies groups whose baseline
@@ -700,7 +752,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # variance stage only — the cell DataFrame retains these groups
         # so they can serve as stable controls.
         # Use the validated first global period as the canonical baseline.
-        # Step 5a guarantees every group has an observation at this period,
+        # Step 5b guarantees every group has an observation at this period,
         # so we can read it directly without a groupby.first() that could
         # otherwise return a later observed period for late-entry groups.
         baselines_per_group = cell.loc[cell[time] == first_global_period, [group, "d_gt"]].rename(

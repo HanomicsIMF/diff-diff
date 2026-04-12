@@ -235,8 +235,9 @@ Use :class:`~diff_diff.ChaisemartinDHaultfoeuille` (alias :class:`~diff_diff.DCD
   seasonal promotions, on/off policy cycles, binary fuzzy designs)
 - You need separate joiners (``DID_+``) and leavers (``DID_-``) views, plus
   the aggregate ``DID_M``
-- You want a built-in placebo and a TWFE decomposition diagnostic from the
-  same fit
+- You want a built-in placebo and a TWFE decomposition diagnostic computed
+  on the data you pass in (pre-filter) for direct comparison against
+  ``DID_M``
 
 This is **the only library estimator that handles non-absorbing treatments**.
 All other staggered estimators
