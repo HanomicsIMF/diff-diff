@@ -63,7 +63,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         self,
         n_groups_for_overall: int,
         u_centered_overall: np.ndarray,
-        n_groups_overall: int,
+        divisor_overall: int,
         original_overall: float,
         joiners_inputs: Optional[Tuple[np.ndarray, int, float]] = None,
         leavers_inputs: Optional[Tuple[np.ndarray, int, float]] = None,
@@ -76,8 +76,13 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
 
         - a centered influence-function vector of length equal to the
           number of groups contributing to ``T``
-        - the count of contributing groups (used as the divisor when
-          re-aggregating each bootstrap replicate)
+        - a re-aggregation **divisor**, which is the *switching-cell*
+          count from the Theorem 3 weighting formula (NOT a group
+          count). For ``DID_M`` the divisor is ``N_S = sum_t (N_{1,0,t}
+          + N_{0,1,t})``; for ``DID_+`` it is ``sum_t N_{1,0,t}``; for
+          ``DID_-`` it is ``sum_t N_{0,1,t}``. See REGISTRY.md
+          ``ChaisemartinDHaultfoeuille`` for the cell-count weighting
+          contract.
         - the original point estimate of ``T`` (used as the centering
           point for the percentile p-value)
 
@@ -85,10 +90,16 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
 
         1. Generates an ``(n_bootstrap, n_groups_target)`` matrix of
            multiplier weights via
-           :func:`~diff_diff.bootstrap_utils.generate_bootstrap_weights_batch`.
+           :func:`~diff_diff.bootstrap_utils.generate_bootstrap_weights_batch`,
+           where ``n_groups_target`` is the IF vector length (one
+           weight per contributing group).
         2. Computes the bootstrap distribution as
-           ``W @ u_centered / n_groups_target`` (one bootstrap replicate
-           per row).
+           ``W @ u_centered / divisor`` (one bootstrap replicate per
+           row), where ``divisor`` is the switching-cell count
+           described above. Note: the weight matrix has one column per
+           contributing group, but the divisor is a cell count — the
+           two are different quantities (groups can contribute to
+           multiple cells across periods).
         3. Passes the distribution + the original point estimate through
            :func:`~diff_diff.bootstrap_utils.compute_effect_bootstrap_stats`
            to obtain ``(SE, CI, p_value)``.
@@ -97,26 +108,33 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         ----------
         n_groups_for_overall : int
             Number of groups contributing to the overall ``DID_M``
-            (length of ``u_centered_overall``).
+            (length of ``u_centered_overall``). Used for shape
+            validation and weight-matrix sizing.
         u_centered_overall : np.ndarray
             Cohort-centered per-group influence-function values for
             ``DID_M``. Shape: ``(n_groups_for_overall,)``.
-        n_groups_overall : int
-            Divisor when re-aggregating each bootstrap replicate. For
-            ``DID_M`` this is typically the count of switching groups
-            ``N_S``-equivalent.
+        divisor_overall : int
+            Re-aggregation **divisor** for ``DID_M`` — the switching-
+            cell count ``N_S = sum_t (N_{1,0,t} + N_{0,1,t})`` from
+            Theorem 3 of AER 2020. NOT a group count. For Phase 1
+            this is the same value used in the analytical SE plug-in.
         original_overall : float
             The original point estimate of ``DID_M``. Used by
             :func:`compute_effect_bootstrap_stats` for the percentile
             p-value computation.
         joiners_inputs : tuple, optional
-            ``(u_centered, n_groups, original_effect)`` triple for the
-            joiners-only ``DID_+`` target. ``None`` when no joiners
-            exist.
+            ``(u_centered, divisor, original_effect)`` triple for the
+            joiners-only ``DID_+`` target. The ``divisor`` is the
+            joiner switching-cell total ``sum_t N_{1,0,t}``, NOT the
+            joiner group count. ``None`` when no joiners exist.
         leavers_inputs : tuple, optional
-            Same triple for the leavers-only ``DID_-`` target.
+            Same triple for the leavers-only ``DID_-`` target. The
+            ``divisor`` is the leaver switching-cell total
+            ``sum_t N_{0,1,t}``.
         placebo_inputs : tuple, optional
-            Same triple for the placebo ``DID_M^pl`` target.
+            Same triple for the placebo ``DID_M^pl`` target. Always
+            ``None`` in Phase 1 — see REGISTRY.md placebo-bootstrap-
+            deferred Note.
 
         Returns
         -------
@@ -139,9 +157,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                 f"u_centered_overall length ({u_centered_overall.shape[0]}) does not "
                 f"match n_groups_for_overall ({n_groups_for_overall})"
             )
-        if n_groups_overall <= 0:
+        if divisor_overall <= 0:
             warnings.warn(
-                f"_compute_dcdh_bootstrap: n_groups_overall={n_groups_overall} <= 0; "
+                f"_compute_dcdh_bootstrap: divisor_overall={divisor_overall} <= 0; "
                 "returning all-NaN bootstrap results.",
                 RuntimeWarning,
                 stacklevel=2,
@@ -153,7 +171,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         # --- Overall DID_M ---
         overall_se, overall_ci, overall_p, overall_dist = _bootstrap_one_target(
             u_centered=u_centered_overall,
-            divisor=n_groups_overall,
+            divisor=divisor_overall,
             original=original_overall,
             n_bootstrap=self.n_bootstrap,
             weight_type=self.bootstrap_weights,

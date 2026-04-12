@@ -235,7 +235,7 @@ de Chaisemartin & D'Haultfœuille (2020) `DID_M` estimator for **non-absorbing (
 ```python
 ChaisemartinDHaultfoeuille(
     alpha: float = 0.05,
-    cluster: str | None = None,                  # Reserved for future use
+    cluster: str | None = None,                  # Phase 1: must be None; non-None raises NotImplementedError
     n_bootstrap: int = 0,                        # 0 = analytical SE only
     bootstrap_weights: str = "rademacher",       # "rademacher", "mammen", or "webb"
     seed: int | None = None,

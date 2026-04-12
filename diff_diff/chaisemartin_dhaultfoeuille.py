@@ -1038,7 +1038,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
                 u_centered_overall=U_centered_overall,
-                n_groups_overall=N_S,
+                divisor_overall=N_S,
                 original_overall=overall_att,
                 joiners_inputs=joiners_inputs,
                 leavers_inputs=leavers_inputs,
