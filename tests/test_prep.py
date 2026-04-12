@@ -2099,8 +2099,13 @@ class TestSurveyDGPResearchGrade:
             f"unconditional ({uncond_gap:.4f})"
         )
 
-    def test_conditional_pt_crosssection_unconditional_pt_fails(self):
-        """In cross-section mode, treated/control outcome gap should differ."""
+    def test_conditional_pt_crosssection_trend_did(self):
+        """In cross-section mode, DID across pre-periods isolates the trend term.
+
+        Uses group-level mean DID across periods 1 and 2 (both pre-treatment).
+        This is specific to the conditional_pt * x1 * (t/T) trend - the level
+        effect _beta1 * x1 cancels in the period difference.
+        """
         from diff_diff.prep_dgp import generate_survey_did_data
 
         df = generate_survey_did_data(
@@ -2115,24 +2120,32 @@ class TestSurveyDGPResearchGrade:
             panel=False,
             seed=42,
         )
-        # At a later pre-treatment period, the x1-dependent trend creates a
-        # larger outcome gap between treated (high x1) and control (low x1).
-        # Regress outcome ~ treated at period 2 to detect the gap.
+        # Group-mean DID across pre-treatment periods 1 and 2.
+        # The conditional_pt trend creates differential growth:
+        # DID = conditional_pt * (E[x1|treated] - E[x1|control]) * (1/T)
+        # With conditional_pt=2.0, shift=1.0, T=8: DID ≈ 0.25
+        p1 = df[df["period"] == 1]
         p2 = df[df["period"] == 2]
-        y = p2["outcome"].values
-        is_treated = (p2["first_treat"] > 0).values.astype(float)
-        n = len(y)
-        X = np.column_stack([np.ones(n), is_treated])
-        beta = np.linalg.lstsq(X, y, rcond=None)[0]
-        uncond_gap = abs(beta[1])
-        # With strong conditional_pt and low noise, the treated coefficient
-        # should be substantial
-        assert uncond_gap > 0.1, (
-            f"Cross-section unconditional gap too small: {uncond_gap:.4f}"
+
+        mean_t_p1 = p1.loc[p1["first_treat"] > 0, "outcome"].mean()
+        mean_c_p1 = p1.loc[p1["first_treat"] == 0, "outcome"].mean()
+        mean_t_p2 = p2.loc[p2["first_treat"] > 0, "outcome"].mean()
+        mean_c_p2 = p2.loc[p2["first_treat"] == 0, "outcome"].mean()
+
+        did = (mean_t_p2 - mean_c_p2) - (mean_t_p1 - mean_c_p1)
+        # Expected DID ≈ 0.25; should be positive and detectable
+        assert did > 0.05, (
+            f"Cross-section DID too small: {did:.4f}. "
+            f"The conditional_pt trend term may not be active."
         )
 
-    def test_conditional_pt_crosssection_conditional_pt_holds(self):
-        """In cross-section mode, controlling for x1 should reduce the trend gap."""
+    def test_conditional_pt_crosssection_conditional_did(self):
+        """In cross-section mode, x1-adjusted DID should shrink vs unconditional.
+
+        Pools periods 1 and 2, regresses outcome on treated, post, treated*post,
+        x1, and x1*post. The treated*post coefficient should shrink when x1
+        interactions are included.
+        """
         from diff_diff.prep_dgp import generate_survey_did_data
 
         df = generate_survey_did_data(
@@ -2147,25 +2160,31 @@ class TestSurveyDGPResearchGrade:
             panel=False,
             seed=42,
         )
-        # Use period-2 data: regress outcome ~ treated vs outcome ~ treated + x1
-        p2 = df[df["period"] == 2]
-        y = p2["outcome"].values
-        is_treated = (p2["first_treat"] > 0).values.astype(float)
-        x1_vals = p2["x1"].values
-
+        pre = df[df["period"].isin([1, 2])].copy()
+        y = pre["outcome"].values
+        treated = (pre["first_treat"] > 0).values.astype(float)
+        post = (pre["period"] == 2).values.astype(float)
+        treated_post = treated * post
+        x1 = pre["x1"].values
+        x1_post = x1 * post
         n = len(y)
-        X_uncond = np.column_stack([np.ones(n), is_treated])
+
+        # Unconditional DID: outcome ~ 1 + treated + post + treated*post
+        X_uncond = np.column_stack([np.ones(n), treated, post, treated_post])
         beta_uncond = np.linalg.lstsq(X_uncond, y, rcond=None)[0]
-        uncond_gap = abs(beta_uncond[1])
+        uncond_did = abs(beta_uncond[3])
 
-        X_cond = np.column_stack([np.ones(n), is_treated, x1_vals])
+        # Conditional DID: add x1 and x1*post
+        X_cond = np.column_stack([
+            np.ones(n), treated, post, treated_post, x1, x1_post
+        ])
         beta_cond = np.linalg.lstsq(X_cond, y, rcond=None)[0]
-        cond_gap = abs(beta_cond[1])
+        cond_did = abs(beta_cond[3])
 
-        assert uncond_gap > 0.05, f"Unconditional gap too small: {uncond_gap:.4f}"
-        assert cond_gap < uncond_gap * 0.5, (
-            f"Cross-section conditional gap ({cond_gap:.4f}) should be much "
-            f"smaller than unconditional ({uncond_gap:.4f})"
+        assert uncond_did > 0.05, f"Unconditional DID too small: {uncond_did:.4f}"
+        assert cond_did < uncond_did * 0.5, (
+            f"Cross-section conditional DID ({cond_did:.4f}) should be much "
+            f"smaller than unconditional ({uncond_did:.4f})"
         )
 
     def test_conditional_pt_backward_compatible(self):
