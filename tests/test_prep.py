@@ -1968,6 +1968,16 @@ class TestSurveyDGPResearchGrade:
 
     # --- conditional_pt parameter tests ---
 
+    def test_conditional_pt_requires_never_treated(self):
+        """conditional_pt requires never_treated_frac > 0."""
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        with pytest.raises(ValueError, match="conditional_pt requires never_treated_frac"):
+            generate_survey_did_data(
+                add_covariates=True, conditional_pt=0.3,
+                never_treated_frac=0.0, seed=42,
+            )
+
     def test_conditional_pt_requires_covariates(self):
         """conditional_pt requires add_covariates=True."""
         from diff_diff.prep_dgp import generate_survey_did_data
