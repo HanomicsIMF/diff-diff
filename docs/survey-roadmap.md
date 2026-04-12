@@ -164,10 +164,10 @@ Enhanced `generate_survey_did_data()` with 8 research-grade parameters:
 `return_true_population_att`. All backward-compatible. Supports panel
 and repeated cross-section modes.
 
-**Remaining gap for 10e:** Conditional parallel trends — the DGP has
-unconditional PT by construction. A `conditional_pt` parameter is needed
-before the simulation study so that unconditional PT fails but conditional
-PT holds after covariate adjustment (DR/IPW recovers truth).
+**Resolved:** `conditional_pt` parameter added. When nonzero, shifts treated
+units' x1 mean by +1 SD and adds `conditional_pt * x1_i * (t/T)` to the
+outcome, creating X-dependent time trends. Unconditional PT fails; conditional
+PT holds after covariate adjustment. DR/IPW estimators recover truth.
 
 ### 10c. Expand R Validation Coverage (HIGH priority) ✅
 
