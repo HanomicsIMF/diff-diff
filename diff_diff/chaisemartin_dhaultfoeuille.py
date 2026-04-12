@@ -2022,12 +2022,20 @@ def _compute_twfe_diagnostic(
 
     1. Regress ``d_gt`` on group + time fixed effects via :func:`solve_ols`.
     2. Compute residuals ``eps_{g, t}`` from the regression.
-    3. Compute per-cell weights:
-       ``w_{g,t} = N_{g,t} * eps_{g,t} / sum_{g',t'} N_{g',t'} * d_{g',t'} * eps_{g',t'}``
-    4. Count negative weights among treated cells.
+    3. Compute per-cell **contribution weights** (the Theorem 1
+       decomposition object):
+       ``cw_{g,t} = N_{g,t} * eps_{g,t} / sum_{treated} N * eps``
+       These are exported in the ``weights`` column of the returned
+       ``TWFEWeightsResult``.
+    4. Count negative contribution weights among treated cells.
     5. Compute the plain TWFE coefficient as a separate regression of
        ``y_gt`` on the same FE plus the treatment indicator.
-    6. Compute ``sigma_fe = |beta_fe| / sqrt(sum_treated w^2 - mean(w_treated)^2 * n_treated)``
+    6. Compute ``sigma_fe`` from the Corollary 1 **paper weights**
+       (a distinct object from the contribution weights):
+       ``w_paper = eps / sum_treated(s * eps)`` where
+       ``s = N_{g,t} / N_1`` are observation shares. The paper weight
+       is centered at 1 under observation-share weighting. Then:
+       ``sigma_fe = |beta_fe| / sqrt(sum_treated(s * (w_paper - 1)^2))``
        which is the smallest standard deviation of cell-level treatment
        effects that could flip the sign of the plain TWFE estimator.
     """
