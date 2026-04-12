@@ -115,19 +115,20 @@ def _validate_and_aggregate_to_cells(
        without informing the user).
     3. **Outcome** must coerce to numeric and contain no ``NaN`` (same
        reasoning).
-    4. **Treatment must be binary** (only ``0`` / ``1`` raw values).
-       Non-binary treatment is reserved for Phase 3 of the dCDH rollout
-       and raises ``ValueError``.
+    4. **Treatment** must be numeric. Both binary ``{0, 1}`` and
+       non-binary (ordinal or continuous) treatment are supported.
+       Non-binary treatment requires ``L_max >= 1`` in ``fit()`` because
+       the per-period DID path uses binary joiner/leaver categorization.
     5. **Cell aggregation** via ``groupby([group, time]).agg(...)``
        producing ``y_gt`` (cell mean of ``outcome``), ``d_gt`` (cell
        mean of ``treatment``), and ``n_gt`` (count of original
        observations in the cell).
-    6. **Within-cell-varying treatment** (any cell with fractional
-       ``d_gt``) raises ``ValueError``. Phase 1 requires treatment to
-       be constant within each ``(group, time)`` cell; fuzzy DiD is
-       deferred to a separate dCdH 2018 paper not covered by Phase 1.
-       Pre-aggregate your data to constant binary cell-level treatment
-       before calling ``fit()`` or ``twowayfeweights()``.
+    6. **Within-cell-varying treatment** (any cell where ``d_min !=
+       d_max``) raises ``ValueError``. Treatment must be constant
+       within each ``(group, time)`` cell; fuzzy DiD is deferred to a
+       separate dCdH 2018 paper. Pre-aggregate your data to constant
+       cell-level treatment before calling ``fit()`` or
+       ``twowayfeweights()``.
 
     Returns the aggregated cell DataFrame with columns
     ``[group, time, y_gt, d_gt, n_gt]``, sorted by ``[group, time]``
@@ -505,9 +506,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         time : str
             Time period column name. Must be sortable.
         treatment : str
-            Per-observation binary treatment column. Must coerce to
-            ``{0, 1}``; non-binary values raise ``ValueError`` (Phase 3
-            adds non-binary support).
+            Per-observation treatment column. Must be numeric and constant
+            within each ``(group, time)`` cell. Both binary ``{0, 1}`` and
+            non-binary (ordinal or continuous) treatment are supported.
+            Non-binary treatment requires ``L_max >= 1``.
         aggregate : str, optional
             **Reserved for Phase 3.** Must be ``None``; any other value
             raises ``NotImplementedError``.
@@ -1097,7 +1099,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     )
                     for g in range(len(all_groups))
                 ]
-                unique_c: Dict[Tuple[int, int, int], int] = {}
+                unique_c: Dict[Tuple[float, int, int], int] = {}
                 cid_l = np.zeros(len(all_groups), dtype=int)
                 for g in range(len(all_groups)):
                     if not eligible_mask_var[g]:
@@ -1222,7 +1224,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         )
                         for g in range(len(all_groups))
                     ]
-                    unique_cpl: Dict[Tuple[int, int, int], int] = {}
+                    unique_cpl: Dict[Tuple[float, int, int], int] = {}
                     cid_pl = np.zeros(len(all_groups), dtype=int)
                     for g in range(len(all_groups)):
                         if not eligible_mask_pl[g]:
@@ -1436,7 +1438,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         )
                         for g in range(len(all_groups))
                     ]
-                    unique_cpl_b: Dict[Tuple[int, int, int], int] = {}
+                    unique_cpl_b: Dict[Tuple[float, int, int], int] = {}
                     cid_pl_b = np.zeros(len(all_groups), dtype=int)
                     for g in range(len(all_groups)):
                         if not eligible_mask_pl_b[g]:
@@ -1491,7 +1493,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         )
                         for g in range(len(all_groups))
                     ]
-                    unique_cb: Dict[Tuple[int, int, int], int] = {}
+                    unique_cb: Dict[Tuple[float, int, int], int] = {}
                     cid_b = np.zeros(len(all_groups), dtype=int)
                     for g in range(len(all_groups)):
                         if not eligible_mask_b[g]:
@@ -1911,17 +1913,22 @@ def _drop_crossing_cells(
     cell: pd.DataFrame, group_col: str, d_col: str
 ) -> Tuple[pd.DataFrame, int]:
     """
-    Drop multi-switch groups (matches R DIDmultiplegtDYN drop_larger_lower=TRUE).
+    Drop groups with more than one treatment-change period.
 
-    A "multi-switch" group has more than one direction change in its
-    treatment trajectory. For binary treatment, this means switching
-    more than once (e.g., 0->1->0). For non-binary treatment, it means
-    the treatment direction reverses (e.g., 0->2->1 has two direction
-    changes). A single monotone jump (e.g., 0->3->3) is NOT multi-switch.
+    The dCDH estimator uses the **first treatment change** (``F_g``) as
+    the cohort marker for both the per-group building block ``DID_{g,l}``
+    and the variance computation. Groups with a second treatment change
+    at a later period would confound the multi-horizon estimates because
+    ``DID_{g,l}`` attributes the full outcome change from ``F_g-1`` to
+    ``F_g-1+l`` to the first switch, while the second switch also
+    contributes to that outcome change.
 
-    Detection counts the number of non-zero sign changes in the
-    first-differenced treatment, which generalizes correctly to
-    non-binary treatment.
+    For binary treatment, >1 change means a reversal (e.g., 0->1->0).
+    For non-binary, >1 change includes both reversals (0->2->1) and
+    monotone multi-step paths (0->1->2). Both are dropped because the
+    dCDH framework requires a single treatment-change event per group.
+    A single jump of any magnitude (e.g., 0->3->3->3) has exactly
+    1 change period and is kept.
 
     Parameters
     ----------
@@ -3233,7 +3240,7 @@ def _compute_cohort_recentered_inputs(
         (float(baselines[g]), int(first_switch_idx[g]), int(switch_direction[g]))
         for g in range(n_groups)
     ]
-    unique_cohorts: Dict[Tuple[int, int, int], int] = {}
+    unique_cohorts: Dict[Tuple[float, int, int], int] = {}
     cohort_id = np.zeros(n_groups, dtype=int)
     for g in range(n_groups):
         if not eligible_mask[g]:

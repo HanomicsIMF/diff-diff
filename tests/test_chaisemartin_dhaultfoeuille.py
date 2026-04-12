@@ -2279,6 +2279,31 @@ class TestNonBinaryTreatment:
             r = est.fit(df, outcome="outcome", group="group", time="period", treatment="treatment")
         assert r.n_groups_dropped_crossers >= 1
 
+    def test_monotone_multi_step_dropped(self):
+        """A monotone multi-step path 0->1->2 has 2 change periods and
+        should be dropped (the second change confounds DID_{g,l})."""
+        rows = []
+        # Monotone multi-step group: 0->1->2
+        for t in range(6):
+            d = 0 if t < 2 else (1 if t < 4 else 2)
+            rows.append({"group": 0, "period": t, "treatment": d, "outcome": 10 + t})
+        # Normal single-switch groups (binary)
+        for g in range(1, 20):
+            for t in range(6):
+                d = 0 if t < 3 else 1
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": 10 + t})
+        # Controls
+        for g in range(20, 40):
+            for t in range(6):
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": 10 + t})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(df, outcome="outcome", group="group", time="period", treatment="treatment")
+        # Group 0 (0->1->2, 2 change periods) should be dropped
+        assert r.n_groups_dropped_crossers >= 1
+
     def test_normalized_effects_general_formula(self):
         """For non-binary treatment, normalized denominator uses actual dose change."""
         np.random.seed(99)
