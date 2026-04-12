@@ -690,8 +690,8 @@ estimation. The depth of support varies by estimator:
    ACS, CPS, NHANES respondent records), use :func:`~diff_diff.aggregate_survey`
    as a preprocessing step. It pools microdata into geographic-period cells and
    returns a pre-configured :class:`~diff_diff.SurveyDesign`. By default, the
-   returned design uses ``weight_type="pweight"`` (population weights - sum of
-   survey weights per cell), which is compatible with **all** survey-capable
+   returned design uses ``weight_type="pweight"`` (unit-constant population
+   weights), which is compatible with **all** survey-capable
    estimators in the matrix below. Pass ``second_stage_weights="aweight"`` for
    precision weights (inverse variance) if you prefer efficiency-weighted
    estimates - this mode is limited to estimators marked **Full**.

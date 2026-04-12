@@ -1509,7 +1509,7 @@ def aggregate_survey(
     ... )
     >>> # stage2 has weight_type="pweight" — compatible with all estimators.
     >>> # Add treatment/time indicators at the panel level, then fit:
-    >>> # panel["first_treat"] = panel["state"].map(policy_year)  # NaN = control
+    >>> # panel["first_treat"] = panel["state"].map(policy_year).fillna(0)
     >>> # result = CallawaySantAnna().fit(
     >>> #     panel, outcome="smoking_rate_mean",
     >>> #     unit="state", time="year", first_treat="first_treat",
