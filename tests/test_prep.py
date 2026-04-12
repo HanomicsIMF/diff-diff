@@ -2039,6 +2039,7 @@ class TestAggregateSurvey:
             "x_mean",
             "cell_n",
             "cell_n_eff",
+            "cell_sum_w",
             "srs_fallback",
         }
         assert expected.issubset(set(panel.columns))
@@ -2099,14 +2100,14 @@ class TestAggregateSurvey:
         assert "x_precision" not in panel.columns
 
     def test_returned_survey_design(self, micro_data, design):
-        """Returned SurveyDesign has correct aweight config and clustering."""
+        """Default returns pweight config with geographic clustering."""
         _, stage2 = aggregate_survey(
             micro_data,
             by=["state", "year"],
             outcomes="y",
             survey_design=design,
         )
-        assert stage2.weight_type == "aweight"
+        assert stage2.weight_type == "pweight"
         assert stage2.weights == "y_weight"
         assert stage2.psu == "state"
 
@@ -2609,7 +2610,11 @@ class TestAggregateSurvey:
         design = SurveyDesign(weights="wt")
         with pytest.warns(UserWarning, match="zero total weight"):
             panel, _ = aggregate_survey(
-                data, by=["state", "period"], outcomes="y", survey_design=design
+                data,
+                by=["state", "period"],
+                outcomes="y",
+                survey_design=design,
+                second_stage_weights="aweight",
             )
         # State 0 should be entirely gone
         assert 0 not in panel["state"].values
@@ -2895,3 +2900,153 @@ class TestAggregateSurvey:
 
         np.testing.assert_allclose(panel1["y_se"].values, panel2["y_se"].values, rtol=1e-10)
         np.testing.assert_allclose(panel1["y_mean"].values, panel2["y_mean"].values, rtol=1e-10)
+
+    def test_second_stage_weights_aweight(self, micro_data, design):
+        """Opt-in aweight preserves precision-based weight behavior."""
+        panel, stage2 = aggregate_survey(
+            micro_data,
+            by=["state", "year"],
+            outcomes="y",
+            survey_design=design,
+            second_stage_weights="aweight",
+        )
+        assert stage2.weight_type == "aweight"
+        assert stage2.weights == "y_weight"
+        assert stage2.psu == "state"
+        # Weight column should match cleaned precision (NaN/Inf -> 0.0)
+        precision = panel["y_precision"].values
+        expected_weight = np.where(np.isfinite(precision), precision, 0.0)
+        np.testing.assert_array_equal(panel["y_weight"].values, expected_weight)
+
+    def test_pweight_values(self, micro_data, design):
+        """Pweight values equal sum of resolved survey weights per cell."""
+        panel, _ = aggregate_survey(
+            micro_data,
+            by=["state", "year"],
+            outcomes="y",
+            survey_design=design,
+        )
+        # Manually compute expected cell_sum_w
+        resolved = design.resolve(micro_data)
+        for _, row in panel.iterrows():
+            mask = (micro_data["state"] == row["state"]) & (micro_data["year"] == row["year"])
+            expected_sum_w = float(np.sum(resolved.weights[mask.values]))
+            assert row["y_weight"] == pytest.approx(expected_sum_w, rel=1e-10)
+            assert row["cell_sum_w"] == pytest.approx(expected_sum_w, rel=1e-10)
+
+    def test_cell_sum_w_column(self, micro_data, design):
+        """cell_sum_w is present in both pweight and aweight modes."""
+        panel_p, _ = aggregate_survey(
+            micro_data,
+            by=["state", "year"],
+            outcomes="y",
+            survey_design=design,
+            second_stage_weights="pweight",
+        )
+        panel_a, _ = aggregate_survey(
+            micro_data,
+            by=["state", "year"],
+            outcomes="y",
+            survey_design=design,
+            second_stage_weights="aweight",
+        )
+        assert "cell_sum_w" in panel_p.columns
+        assert "cell_sum_w" in panel_a.columns
+        # cell_sum_w should be identical regardless of weight mode
+        np.testing.assert_array_equal(panel_p["cell_sum_w"].values, panel_a["cell_sum_w"].values)
+
+    def test_pweight_zero_variance_cell(self):
+        """Zero-variance cells retain positive pweight but get NaN aweight."""
+        data = pd.DataFrame(
+            {
+                "geo": np.repeat(["A", "B"], 20),
+                "time": np.tile(np.repeat([0, 1], 10), 2),
+                "wt": np.ones(40),
+                "y": np.concatenate(
+                    [
+                        np.full(10, 5.0),  # A-0: constant → zero variance
+                        np.random.RandomState(1).normal(5, 1, 10),  # A-1
+                        np.random.RandomState(2).normal(5, 1, 10),  # B-0
+                        np.random.RandomState(3).normal(5, 1, 10),  # B-1
+                    ]
+                ),
+            }
+        )
+        design = SurveyDesign(weights="wt")
+
+        # Pweight mode: zero-variance cell retains positive weight
+        with pytest.warns(UserWarning, match="Zero variance"):
+            panel_p, stage2_p = aggregate_survey(
+                data,
+                by=["geo", "time"],
+                outcomes="y",
+                survey_design=design,
+                second_stage_weights="pweight",
+            )
+        a0_p = panel_p[(panel_p["geo"] == "A") & (panel_p["time"] == 0)]
+        assert a0_p["y_weight"].iloc[0] > 0
+        assert np.isnan(a0_p["y_precision"].iloc[0])
+        assert stage2_p.weight_type == "pweight"
+
+        # Aweight mode: zero-variance cell gets weight 0.0
+        with pytest.warns(UserWarning, match="Zero variance"):
+            panel_a, stage2_a = aggregate_survey(
+                data,
+                by=["geo", "time"],
+                outcomes="y",
+                survey_design=design,
+                second_stage_weights="aweight",
+            )
+        a0_a = panel_a[(panel_a["geo"] == "A") & (panel_a["time"] == 0)]
+        assert a0_a["y_weight"].iloc[0] == 0.0
+        assert np.isnan(a0_a["y_precision"].iloc[0])
+        assert stage2_a.weight_type == "aweight"
+
+    def test_invalid_second_stage_weights(self, micro_data, design):
+        """Invalid second_stage_weights raises ValueError."""
+        with pytest.raises(ValueError, match="second_stage_weights"):
+            aggregate_survey(
+                micro_data,
+                by=["state", "year"],
+                outcomes="y",
+                survey_design=design,
+                second_stage_weights="invalid",
+            )
+
+    def test_pweight_callaway_santanna_integration(self):
+        """Pweight output feeds into CallawaySantAnna without error."""
+        from diff_diff import CallawaySantAnna
+        from diff_diff.prep_dgp import generate_survey_did_data
+
+        micro = generate_survey_did_data(
+            n_units=30,
+            n_periods=6,
+            cohort_periods=[4],
+            n_strata=3,
+            psu_per_stratum=4,
+            panel=True,
+            seed=42,
+        )
+        design = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        panel, stage2 = aggregate_survey(
+            micro,
+            by=["unit", "period"],
+            outcomes="outcome",
+            survey_design=design,
+        )
+        assert stage2.weight_type == "pweight"
+
+        # first_treat is already in the micro data and constant within unit
+        unit_cohort = micro.groupby("unit")["first_treat"].first()
+        panel["first_treat"] = panel["unit"].map(unit_cohort)
+
+        result = CallawaySantAnna().fit(
+            panel,
+            outcome="outcome_mean",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+            survey_design=stage2,
+        )
+        assert np.isfinite(result.overall_att), f"ATT not finite: {result.overall_att}"
+        assert result.overall_se > 0, f"SE not positive: {result.overall_se}"

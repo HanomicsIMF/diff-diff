@@ -1424,13 +1424,14 @@ def aggregate_survey(
     covariates: Optional[Union[str, List[str]]] = None,
     min_n: int = 2,
     lonely_psu: Optional[str] = None,
+    second_stage_weights: str = "pweight",
 ) -> Tuple[pd.DataFrame, SurveyDesign]:
     """Aggregate survey microdata to geographic-period cells with design-based precision.
 
     Computes design-weighted cell means and their Taylor-linearized (or
     replicate-based) standard errors for each cell defined by the ``by``
-    columns. Returns a panel-ready DataFrame with precision weights and a
-    pre-configured :class:`SurveyDesign` for second-stage DiD estimation.
+    columns. Returns a panel-ready DataFrame and a pre-configured
+    :class:`SurveyDesign` for second-stage DiD estimation.
 
     Each cell is treated as a subpopulation/domain of the full survey
     design: influence function values are zero-padded outside the cell,
@@ -1464,6 +1465,19 @@ def aggregate_survey(
     lonely_psu : str, optional
         Override the survey design's ``lonely_psu`` setting for within-cell
         computation. One of ``"remove"``, ``"certainty"``, ``"adjust"``.
+    second_stage_weights : str, default "pweight"
+        Weight type for the returned second-stage ``SurveyDesign``:
+
+        - ``"pweight"`` (default): Population weights - the sum of
+          normalized survey weights per cell, proportional to the
+          estimated population count. Produces population-representative
+          ATT estimates. Compatible with all survey-capable estimators.
+        - ``"aweight"``: Precision weights - inverse variance
+          (``1 / V(y_bar)``). Produces efficiency-weighted estimates
+          via WLS. Compatible with estimators that accept ``aweight``
+          (DifferenceInDifferences, TwoWayFixedEffects, MultiPeriodDiD,
+          SunAbraham, ContinuousDiD, EfficientDiD); rejected by
+          ``pweight``-only estimators.
 
     Returns
     -------
@@ -1472,12 +1486,16 @@ def aggregate_survey(
         ``{outcome}_mean``, ``{outcome}_se``, ``{outcome}_n``,
         ``{outcome}_precision``, ``{outcome}_weight``,
         ``{covariate}_mean``, ``cell_n``, ``cell_n_eff``,
-        ``srs_fallback``. The ``_weight`` column is a fit-ready
-        version of ``_precision`` with NaN/Inf mapped to 0.0.
+        ``cell_sum_w``, ``srs_fallback``. The ``_weight`` column
+        contains population weights (``cell_sum_w``) in pweight mode
+        or cleaned precision (NaN/Inf mapped to 0.0) in aweight mode.
+        ``cell_sum_w`` is always present as a diagnostic column
+        containing the sum of normalized survey weights per cell
+        (proportional to estimated population).
     second_stage_design : SurveyDesign
-        Pre-configured for second-stage estimation with
-        ``weight_type="aweight"``, precision weights from the first
-        outcome, and geographic clustering via ``psu``.
+        Pre-configured for second-stage estimation with the chosen
+        ``weight_type``, weights from the first outcome, and
+        geographic clustering via ``psu``.
 
     Examples
     --------
@@ -1486,12 +1504,13 @@ def aggregate_survey(
     ...     microdata, by=["state", "year"],
     ...     outcomes="smoking_rate", survey_design=design,
     ... )
+    >>> # stage2 has weight_type="pweight" — compatible with all estimators.
     >>> # Add treatment/time indicators at the panel level, then fit:
-    >>> # panel["treated"] = ...  # e.g., from policy adoption data
-    >>> # panel["post"] = (panel["year"] >= treatment_year).astype(int)
-    >>> # result = DifferenceInDifferences().fit(
+    >>> # panel["first_treat"] = panel["state"].map(policy_year)  # NaN = control
+    >>> # result = CallawaySantAnna().fit(
     >>> #     panel, outcome="smoking_rate_mean",
-    >>> #     treatment="treated", time="post", survey_design=stage2,
+    >>> #     unit="state", time="year", first_treat="first_treat",
+    >>> #     survey_design=stage2,
     >>> # )
     """
     import warnings
@@ -1522,6 +1541,13 @@ def aggregate_survey(
     if not isinstance(survey_design, SurveyDesign):
         raise TypeError(
             f"survey_design must be a SurveyDesign instance, got {type(survey_design).__name__}"
+        )
+
+    _valid_second_stage = {"pweight", "aweight"}
+    if second_stage_weights not in _valid_second_stage:
+        raise ValueError(
+            f"second_stage_weights must be one of {sorted(_valid_second_stage)}, "
+            f"got '{second_stage_weights}'."
         )
 
     if min_n < 1:
@@ -1595,6 +1621,7 @@ def aggregate_survey(
 
         row["cell_n"] = cell_n
         row["cell_n_eff"] = cell_n_eff
+        row["cell_sum_w"] = sum_w
 
         cell_srs_fallback = False
 
@@ -1696,17 +1723,27 @@ def aggregate_survey(
         panel_df = panel_df[~nonestimable].reset_index(drop=True)
 
     # --- Construct second-stage SurveyDesign ---
-    # Create a fit-ready weight column: NaN/Inf precision → 0.0 so downstream
-    # resolve() doesn't reject missing weights. Diagnostic *_precision is kept.
     weight_col = f"{first_outcome}_weight"
-    panel_df[weight_col] = np.where(
-        np.isfinite(panel_df[f"{first_outcome}_precision"]),
-        panel_df[f"{first_outcome}_precision"],
-        0.0,
-    )
+    if second_stage_weights == "pweight":
+        # Population weight: sum of survey weights per cell.
+        # Always positive for surviving cells (survey weights > 0).
+        panel_df[weight_col] = panel_df["cell_sum_w"]
+    else:
+        # Precision weight: inverse variance, with NaN/Inf -> 0.0 so
+        # downstream resolve() doesn't reject missing weights.
+        # Diagnostic *_precision column is kept unchanged.
+        panel_df[weight_col] = np.where(
+            np.isfinite(panel_df[f"{first_outcome}_precision"]),
+            panel_df[f"{first_outcome}_precision"],
+            0.0,
+        )
 
     # Drop geographic units (PSUs) with zero total weight — they would
     # inflate survey df and distort second-stage variance estimation.
+    # Under pweight mode, cell_sum_w > 0 for all surviving cells (survey
+    # weights are positive), so this block is a defensive no-op.  Under
+    # aweight, NaN precision maps to 0.0 and geographic units with
+    # all-zero precision are pruned here.
     geo_col = by_cols[0]
     geo_weight = panel_df.groupby(geo_col)[weight_col].sum()
     zero_geos = geo_weight[geo_weight == 0].index
@@ -1732,7 +1769,7 @@ def aggregate_survey(
 
     second_stage_design = SurveyDesign(
         weights=weight_col,
-        weight_type="aweight",
+        weight_type=second_stage_weights,
         psu=geo_col,
     )
 

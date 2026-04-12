@@ -688,17 +688,14 @@ estimation. The depth of support varies by estimator:
 
    If your data starts as **individual-level survey microdata** (e.g., BRFSS,
    ACS, CPS, NHANES respondent records), use :func:`~diff_diff.aggregate_survey`
-   as a preprocessing step. It pools microdata into geographic-period cells with
-   inverse-variance precision weights and returns a pre-configured
-   :class:`~diff_diff.SurveyDesign` with ``weight_type="aweight"``. This
-   second-stage design is directly compatible with estimators marked **Full** in
-   the matrix below: :class:`~diff_diff.DifferenceInDifferences`,
-   :class:`~diff_diff.TwoWayFixedEffects`, :class:`~diff_diff.MultiPeriodDiD`,
-   :class:`~diff_diff.SunAbraham`, :class:`~diff_diff.ContinuousDiD`, and
-   :class:`~diff_diff.EfficientDiD`. Estimators marked **pweight only** (CS,
-   ImputationDiD, TwoStageDiD, StackedDiD, TripleDifference, etc.) explicitly
-   reject ``aweight`` and require a manually constructed second-stage
-   ``SurveyDesign`` instead. See :doc:`api/prep` for the API reference.
+   as a preprocessing step. It pools microdata into geographic-period cells and
+   returns a pre-configured :class:`~diff_diff.SurveyDesign`. By default, the
+   returned design uses ``weight_type="pweight"`` (population weights - sum of
+   survey weights per cell), which is compatible with **all** survey-capable
+   estimators in the matrix below. Pass ``second_stage_weights="aweight"`` for
+   precision weights (inverse variance) if you prefer efficiency-weighted
+   estimates - this mode is limited to estimators marked **Full**.
+   See :doc:`api/prep` for the API reference.
 
 .. list-table::
    :header-rows: 1

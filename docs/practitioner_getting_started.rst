@@ -296,15 +296,11 @@ diff-diff handles this via :class:`~diff_diff.SurveyDesign` - pass it to any est
 If your data is **individual-level microdata** - one row per respondent, with
 sampling weights and strata/PSU columns (BRFSS, ACS, CPS, NHANES) - use
 :func:`~diff_diff.aggregate_survey` first to roll it up to a geographic-period
-panel. The helper computes design-based cell means with inverse-variance
-precision weights and returns a pre-configured ``SurveyDesign`` (with
-``weight_type="aweight"``) for the second-stage fit. This second-stage design
-works directly with estimators marked **Full** in the
-:ref:`survey-design-support` matrix - notably
-:class:`~diff_diff.DifferenceInDifferences`, :class:`~diff_diff.SunAbraham`,
-:class:`~diff_diff.MultiPeriodDiD`, and :class:`~diff_diff.EfficientDiD`.
-``pweight``-only estimators (``CallawaySantAnna``, ``ImputationDiD``, etc.)
-require a manually constructed ``SurveyDesign`` instead.
+panel. The helper computes design-based cell means and returns a pre-configured
+``SurveyDesign`` with ``weight_type="pweight"`` (population weights) for the
+second-stage fit. This second-stage design works with all survey-capable
+estimators, including staggered estimators like
+:class:`~diff_diff.CallawaySantAnna` and :class:`~diff_diff.ImputationDiD`.
 
 .. code-block:: python
 

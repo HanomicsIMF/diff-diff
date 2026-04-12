@@ -116,10 +116,13 @@ Files: `benchmarks/R/benchmark_realdata_*.R`, `tests/test_survey_real_data.py`,
 
 `aggregate_survey()` (in `diff_diff.prep`) bridges individual-level survey
 microdata (BRFSS, ACS, CPS, NHANES) to geographic-period panels for
-second-stage DiD estimation. Computes design-based cell means and precision
-weights using domain estimation (Lumley 2004 §3.4), with SRS fallback for
-small cells. Returns a panel DataFrame plus a pre-configured `SurveyDesign`
-for the second-stage fit. Supports both TSL and replicate-weight variance.
+second-stage DiD estimation. Computes design-based cell means using domain
+estimation (Lumley 2004 S3.4), with SRS fallback for small cells. Returns a
+panel DataFrame plus a pre-configured `SurveyDesign` for the second-stage
+fit. Default `second_stage_weights="pweight"` (population weights) is
+compatible with all survey-capable estimators; opt-in `"aweight"` (precision
+weights) provides efficiency-weighted estimates for estimators that accept it.
+Supports both TSL and replicate-weight variance.
 
 See `docs/api/prep.rst` for the API reference and `docs/methodology/REGISTRY.md`
 for the methodology entry.
