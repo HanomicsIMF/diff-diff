@@ -6,14 +6,12 @@ The only modern staggered DiD estimator in diff-diff that handles
 off over time.
 
 This module implements the methodology from de Chaisemartin & D'Haultfœuille
-(2020), "Two-Way Fixed Effects Estimators with Heterogeneous Treatment
-Effects", *American Economic Review*. Phase 1 ships the contemporaneous-
-switch estimator ``DID_M`` from the AER 2020 paper, which is mathematically
-identical to ``DID_1`` (horizon ``l = 1``) of the dynamic companion paper
-(de Chaisemartin & D'Haultfœuille, 2024, NBER WP 29873). The Phase 1 class
-is forward-compatible with later phases — Phase 2 will add multi-horizon
-event-study output ``DID_l`` for ``l > 1`` on the same class, and Phase 3
-will add covariate adjustment.
+(2020/2022). Phase 1 ships the contemporaneous-switch estimator ``DID_M``
+(= ``DID_1`` at horizon ``l = 1``). Phase 2 adds the full multi-horizon
+event study ``DID_l`` for ``l = 1..L_max`` via the ``L_max`` parameter,
+plus normalized estimator ``DID^n_l``, cost-benefit aggregate ``delta``,
+dynamic placebos ``DID^{pl}_l``, and sup-t simultaneous confidence bands.
+Phase 3 will add covariate adjustment.
 
 The estimator:
 
@@ -25,11 +23,15 @@ The estimator:
 5. Aggregates them into ``DID_M``, the joiners-only ``DID_+``, and the
    leavers-only ``DID_-``
 6. Computes the single-lag placebo ``DID_M^pl``
-7. Optionally computes the TWFE decomposition diagnostic from Theorem 1
+7. When ``L_max >= 2``: computes per-group ``DID_{g,l}`` building blocks,
+   multi-horizon ``DID_l``, dynamic placebos ``DID^{pl}_l``, normalized
+   ``DID^n_l``, and cost-benefit aggregate ``delta``
+8. Optionally computes the TWFE decomposition diagnostic from Theorem 1
    (per-cell weights, fraction negative, ``sigma_fe``)
-8. Inference uses the cohort-recentered analytical plug-in variance from
+9. Inference uses the cohort-recentered analytical plug-in variance from
    Web Appendix Section 3.7.3 of the dynamic paper, optionally
    complemented by a multiplier bootstrap clustered at the group level
+   (with sup-t simultaneous confidence bands when ``L_max >= 2``)
 
 **When to use ChaisemartinDHaultfoeuille:**
 

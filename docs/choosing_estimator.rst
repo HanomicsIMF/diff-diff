@@ -80,7 +80,7 @@ Quick Reference
    * - ``ChaisemartinDHaultfoeuille``
      - Reversible / non-absorbing treatments (only library option)
      - Parallel trends + A5 (no crossing) + A11 (stable controls)
-     - DID_M, joiners/leavers split, placebo, TWFE diagnostic
+     - DID_l event study (L_max), normalized DID^n_l, cost-benefit delta, placebos, sup-t bands, TWFE diagnostic
    * - ``SyntheticDiD``
      - Few treated units, many controls
      - Synthetic parallel trends
@@ -238,19 +238,21 @@ Use :class:`~diff_diff.ChaisemartinDHaultfoeuille` (alias :class:`~diff_diff.DCD
 - You want a built-in placebo and a TWFE decomposition diagnostic computed
   on the data you pass in (pre-filter) for direct comparison against
   ``DID_M``
+- You want a multi-horizon event study (pass ``L_max`` to ``fit()``) with
+  normalized effects, cost-benefit aggregation, dynamic placebos, and
+  sup-t simultaneous confidence bands
 
 This is **the only library estimator that handles non-absorbing treatments**.
 All other staggered estimators
 (:class:`~diff_diff.CallawaySantAnna`, :class:`~diff_diff.SunAbraham`,
 :class:`~diff_diff.ImputationDiD`, :class:`~diff_diff.TwoStageDiD`,
 :class:`~diff_diff.EfficientDiD`, :class:`~diff_diff.WooldridgeDiD`) assume
-treatment is absorbing — once treated, stays treated.
+treatment is absorbing - once treated, stays treated.
 
-Phase 1 ships the contemporaneous-switch ``DID_M`` from de Chaisemartin &
-D'Haultfœuille (2020), which is mathematically identical to ``DID_1``
-(horizon ``l = 1``) of their dynamic companion paper. Phase 2 will add
-multi-horizon event-study output ``DID_l`` for ``l > 1``; Phase 3 will add
-covariate adjustment.
+Ships ``DID_M`` (= ``DID_1``) from de Chaisemartin & D'Haultfœuille
+(2020) plus the full multi-horizon event study ``DID_l`` for
+``l = 1..L_max`` from the dynamic companion paper (NBER WP 29873).
+Phase 3 will add covariate adjustment.
 
 .. code-block:: python
 

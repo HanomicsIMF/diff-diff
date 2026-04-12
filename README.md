@@ -1213,6 +1213,32 @@ ChaisemartinDHaultfoeuille(
 | `n_groups_dropped_crossers`, `n_groups_dropped_singleton_baseline` | Filter counts (multi-switch groups dropped before estimation; singleton-baseline groups excluded from variance) |
 | `n_groups_dropped_never_switching` | Backwards-compatibility metadata. Never-switching groups participate in the variance via stable-control roles; this field is no longer a filter count. |
 
+**Multi-horizon event study** (Phase 2 - pass `L_max` to `fit()`):
+
+```python
+results = est.fit(data, outcome="outcome", group="group",
+                  time="period", treatment="treatment", L_max=5)
+
+# Per-horizon effects with analytical SE
+for horizon in sorted(results.event_study_effects):
+    e = results.event_study_effects[horizon]
+    print(f"  l={horizon}: DID_l={e['effect']:.3f} (SE={e['se']:.3f})")
+
+# Cost-benefit delta (becomes overall_att when L_max > 1)
+print(f"Cost-benefit delta: {results.cost_benefit_delta['delta']:.3f}")
+
+# Normalized effects: DID^n_l = DID_l / l (for binary treatment)
+for horizon in sorted(results.normalized_effects):
+    print(f"  DID^n_{horizon} = {results.normalized_effects[horizon]['effect']:.3f}")
+
+# Event study DataFrame (includes placebos as negative horizons)
+df = results.to_dataframe("event_study")
+
+# Plot (integrates with plot_event_study)
+from diff_diff import plot_event_study
+plot_event_study(results)
+```
+
 **Standalone TWFE decomposition diagnostic** (without fitting the full estimator):
 
 ```python
@@ -1232,7 +1258,7 @@ print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 
 > **Note:** Phase 1 requires panels with a **balanced baseline** (every group observed at the first global period) and **no interior period gaps**. Late-entry groups (missing the baseline) raise `ValueError`; interior-gap groups are dropped with a warning; terminally-missing groups (early exit / right-censoring) are retained and contribute from their observed periods only. This is a documented deviation from R `DIDmultiplegtDYN`, which supports unbalanced panels — see [`docs/methodology/REGISTRY.md`](docs/methodology/REGISTRY.md) for the rationale, the defensive guards that make terminal missingness safe, and workarounds for unbalanced inputs.
 
-> **Note:** Survey design (`survey_design`), event-study aggregation (`aggregate`), covariate adjustment (`controls`), and HonestDiD integration (`honest_did`) are not yet supported. They raise `NotImplementedError` with phase pointers — see [`ROADMAP.md`](ROADMAP.md) for the full multi-phase rollout.
+> **Note:** Survey design (`survey_design`), covariate adjustment (`controls`), group-specific linear trends (`trends_linear`), and HonestDiD integration (`honest_did`) are not yet supported. They raise `NotImplementedError` with phase pointers - see [`ROADMAP.md`](ROADMAP.md) for the Phase 3 rollout.
 
 ### Triple Difference (DDD)
 

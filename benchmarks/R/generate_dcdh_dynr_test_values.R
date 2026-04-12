@@ -288,6 +288,107 @@ scenarios$hand_calculable_worked_example <- list(
 )
 
 # ---------------------------------------------------------------------------
+# Phase 2: Multi-horizon scenarios (effects > 1)
+# ---------------------------------------------------------------------------
+
+# Helper: extract multi-horizon results from did_multiplegt_dyn output
+extract_dcdh_multi <- function(res, n_effects, n_placebos = 0) {
+  effects <- res$results$Effects
+  if (is.null(effects)) {
+    stop("did_multiplegt_dyn returned no Effects; check the input data")
+  }
+
+  out <- list(effects = list(), placebos = list())
+
+  for (i in seq_len(min(n_effects, nrow(effects)))) {
+    out$effects[[as.character(i)]] <- list(
+      overall_att = as.numeric(effects[i, "Estimate"]),
+      overall_se = as.numeric(effects[i, "SE"]),
+      overall_ci_lo = as.numeric(effects[i, "LB CI"]),
+      overall_ci_hi = as.numeric(effects[i, "UB CI"]),
+      n_switchers = as.numeric(effects[i, "N"])
+    )
+  }
+
+  placebos <- res$results$Placebos
+  if (!is.null(placebos) && n_placebos > 0) {
+    for (i in seq_len(min(n_placebos, nrow(placebos)))) {
+      out$placebos[[as.character(i)]] <- list(
+        effect = as.numeric(placebos[i, "Estimate"]),
+        se = as.numeric(placebos[i, "SE"]),
+        ci_lo = as.numeric(placebos[i, "LB CI"]),
+        ci_hi = as.numeric(placebos[i, "UB CI"])
+      )
+    }
+  }
+
+  out
+}
+
+# Scenario 6: joiners_only multi-horizon (L_max=3, placebo=3)
+# Uses n_periods=8 to give enough room for 3 positive + 3 placebo horizons
+cat("  Scenario 6: joiners_only_multi_horizon\n")
+d6 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 8,
+                     pattern = "joiners_only", seed = 106)
+res6 <- did_multiplegt_dyn(
+  df = d6, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 3, placebo = 3, ci_level = 95
+)
+scenarios$joiners_only_multi_horizon <- list(
+  data = export_data(d6),
+  params = list(pattern = "joiners_only", n_groups = N_GOLDEN, n_periods = 8,
+                seed = 106, effects = 3, placebo = 3, ci_level = 95),
+  results = extract_dcdh_multi(res6, n_effects = 3, n_placebos = 3)
+)
+
+# Scenario 7: leavers_only multi-horizon (L_max=3, placebo=3)
+cat("  Scenario 7: leavers_only_multi_horizon\n")
+d7 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 8,
+                     pattern = "leavers_only", seed = 107)
+res7 <- did_multiplegt_dyn(
+  df = d7, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 3, placebo = 3, ci_level = 95
+)
+scenarios$leavers_only_multi_horizon <- list(
+  data = export_data(d7),
+  params = list(pattern = "leavers_only", n_groups = N_GOLDEN, n_periods = 8,
+                seed = 107, effects = 3, placebo = 3, ci_level = 95),
+  results = extract_dcdh_multi(res7, n_effects = 3, n_placebos = 3)
+)
+
+# Scenario 8: mixed_single_switch multi-horizon (L_max=5, placebo=4)
+# Uses n_periods=10 for far horizons
+cat("  Scenario 8: mixed_single_switch_multi_horizon\n")
+d8 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 10,
+                     pattern = "mixed_single_switch", seed = 108)
+res8 <- did_multiplegt_dyn(
+  df = d8, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 5, placebo = 4, ci_level = 95
+)
+scenarios$mixed_single_switch_multi_horizon <- list(
+  data = export_data(d8),
+  params = list(pattern = "mixed_single_switch", n_groups = N_GOLDEN, n_periods = 10,
+                seed = 108, effects = 5, placebo = 4, ci_level = 95),
+  results = extract_dcdh_multi(res8, n_effects = 5, n_placebos = 4)
+)
+
+# Scenario 9: joiners_only long panel multi-horizon (L_max=5, placebo=5)
+# Uses n_periods=12 and n_groups=80 for thorough coverage
+cat("  Scenario 9: joiners_only_long_multi_horizon\n")
+d9 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 12,
+                     pattern = "joiners_only", seed = 109)
+res9 <- did_multiplegt_dyn(
+  df = d9, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 5, placebo = 5, ci_level = 95
+)
+scenarios$joiners_only_long_multi_horizon <- list(
+  data = export_data(d9),
+  params = list(pattern = "joiners_only", n_groups = N_GOLDEN, n_periods = 12,
+                seed = 109, effects = 5, placebo = 5, ci_level = 95),
+  results = extract_dcdh_multi(res9, n_effects = 5, n_placebos = 5)
+)
+
+# ---------------------------------------------------------------------------
 # Write output
 # ---------------------------------------------------------------------------
 dir.create(dirname(output_path), showWarnings = FALSE, recursive = TRUE)

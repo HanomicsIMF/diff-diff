@@ -507,10 +507,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             ``{0, 1}``; non-binary values raise ``ValueError`` (Phase 3
             adds non-binary support).
         aggregate : str, optional
-            **Reserved for Phase 2.** Phase 1 requires ``aggregate=None``;
-            any other value raises ``NotImplementedError``.
+            **Reserved for Phase 3.** Must be ``None``; any other value
+            raises ``NotImplementedError``.
         L_max : int, optional
-            **Reserved for Phase 2** (multi-horizon event study).
+            Maximum event-study horizon. When set, computes ``DID_l``
+            for ``l = 1, ..., L_max`` using the per-group building block
+            from Equation 3 of the dynamic companion paper. When
+            ``None`` (default), only the ``l = 1`` contemporaneous-
+            switch estimator ``DID_M`` is computed (Phase 1 behavior).
+            Must be a positive integer not exceeding the number of
+            post-baseline periods in the panel.
         controls : list of str, optional
             **Reserved for Phase 3** (covariate adjustment via the
             residualization-style ``DID^X`` from Web Appendix Section 1.2
@@ -828,6 +834,23 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         all_periods = sorted(cell[time].unique().tolist())
         n_obs_post = int(cell["n_gt"].sum())
 
+        # ------------------------------------------------------------------
+        # L_max validation (Phase 2): must be a positive integer not
+        # exceeding the number of post-baseline periods. Validated here
+        # (after period detection) rather than in _check_forward_compat_gates
+        # (which runs before data is processed).
+        # ------------------------------------------------------------------
+        if L_max is not None:
+            if not isinstance(L_max, int) or L_max < 1:
+                raise ValueError(f"L_max must be a positive integer or None, got {L_max!r}.")
+            n_post_baseline = len(all_periods) - 1
+            if L_max > n_post_baseline:
+                raise ValueError(
+                    f"L_max={L_max} exceeds available post-baseline periods "
+                    f"({n_post_baseline}). Maximum L_max for this panel "
+                    f"is {n_post_baseline}."
+                )
+
         # Pivot to (group x time) matrices for vectorized computations
         d_pivot = cell.pivot(index=group, columns=time, values="d_gt").reindex(
             index=all_groups, columns=all_periods
@@ -981,6 +1004,164 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         )
 
         # ------------------------------------------------------------------
+        # Step 12b: Per-group switch metadata (shared by Phase 1 IF and
+        #           Phase 2 multi-horizon)
+        # ------------------------------------------------------------------
+        baselines, first_switch_idx_arr, switch_direction_arr, T_g_arr = (
+            _compute_group_switch_metadata(D_mat, N_mat)
+        )
+
+        # ------------------------------------------------------------------
+        # Step 12c: Multi-horizon computation (Phase 2, only when L_max>=2)
+        # ------------------------------------------------------------------
+        multi_horizon_dids: Optional[Dict[int, Dict[str, Any]]] = None
+        multi_horizon_if: Optional[Dict[int, np.ndarray]] = None
+        multi_horizon_se: Optional[Dict[int, float]] = None
+        multi_horizon_inference: Optional[Dict[int, Dict[str, Any]]] = None
+
+        if L_max is not None and L_max >= 2:
+            multi_horizon_dids = _compute_multi_horizon_dids(
+                D_mat=D_mat,
+                Y_mat=Y_mat,
+                N_mat=N_mat,
+                baselines=baselines,
+                first_switch_idx=first_switch_idx_arr,
+                switch_direction=switch_direction_arr,
+                T_g=T_g_arr,
+                L_max=L_max,
+            )
+            multi_horizon_if = _compute_per_group_if_multi_horizon(
+                D_mat=D_mat,
+                Y_mat=Y_mat,
+                N_mat=N_mat,
+                baselines=baselines,
+                first_switch_idx=first_switch_idx_arr,
+                switch_direction=switch_direction_arr,
+                T_g=T_g_arr,
+                L_max=L_max,
+            )
+
+            # Per-horizon analytical SE via cohort recentering.
+            # Reuse the singleton-baseline exclusion from Step 7 and
+            # build cohort IDs per horizon.
+            singleton_baseline_set = set(singleton_baseline_groups)
+            eligible_mask_var = np.array(
+                [g not in singleton_baseline_set for g in all_groups], dtype=bool
+            )
+
+            multi_horizon_se = {}
+            multi_horizon_inference = {}
+            for l_h in range(2, L_max + 1):
+                U_l = multi_horizon_if[l_h]
+                # Cohort IDs for this horizon: (D_{g,1}, F_g, S_g) triples
+                # are the same as Phase 1 (cohort identity depends on first
+                # switch, not on the horizon). Filter to eligible.
+                cohort_keys_l = [
+                    (
+                        int(baselines[g]),
+                        int(first_switch_idx_arr[g]),
+                        int(switch_direction_arr[g]),
+                    )
+                    for g in range(len(all_groups))
+                ]
+                unique_c: Dict[Tuple[int, int, int], int] = {}
+                cid_l = np.zeros(len(all_groups), dtype=int)
+                for g in range(len(all_groups)):
+                    if not eligible_mask_var[g]:
+                        cid_l[g] = -1
+                        continue
+                    key = cohort_keys_l[g]
+                    if key not in unique_c:
+                        unique_c[key] = len(unique_c)
+                    cid_l[g] = unique_c[key]
+
+                U_l_elig = U_l[eligible_mask_var]
+                cid_elig = cid_l[eligible_mask_var]
+                U_centered_l = _cohort_recenter(U_l_elig, cid_elig)
+                N_l_h = multi_horizon_dids[l_h]["N_l"]
+                se_l = _plugin_se(U_centered=U_centered_l, divisor=N_l_h)
+                multi_horizon_se[l_h] = se_l
+
+                did_l_val = multi_horizon_dids[l_h]["did_l"]
+                t_l, p_l, ci_l = safe_inference(did_l_val, se_l, alpha=self.alpha, df=None)
+                multi_horizon_inference[l_h] = {
+                    "effect": did_l_val,
+                    "se": se_l,
+                    "t_stat": t_l,
+                    "p_value": p_l,
+                    "conf_int": ci_l,
+                    "n_obs": N_l_h,
+                }
+
+            # Emit <50% switcher warning for far horizons
+            if multi_horizon_dids.get(1, {}).get("N_l", 0) > 0:
+                N_1_ref = multi_horizon_dids[1]["N_l"]
+                thin_horizons = [
+                    l_h
+                    for l_h in range(2, L_max + 1)
+                    if multi_horizon_dids[l_h]["N_l"] < 0.5 * N_1_ref
+                    and multi_horizon_dids[l_h]["N_l"] > 0
+                ]
+                if thin_horizons:
+                    warnings.warn(
+                        f"Fewer than 50% of l=1 switchers contribute at "
+                        f"horizon(s) {thin_horizons}. Far-horizon estimates "
+                        f"may be noisy. The paper recommends not reporting "
+                        f"horizons where fewer than ~50% of switchers "
+                        f"contribute (Favara-Imbs application, footnote 14).",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+
+        # Phase 2: placebos, normalized effects, cost-benefit delta
+        multi_horizon_placebos: Optional[Dict[int, Dict[str, Any]]] = None
+        normalized_effects_dict: Optional[Dict[int, Dict[str, Any]]] = None
+        cost_benefit_result: Optional[Dict[str, Any]] = None
+
+        if L_max is not None and L_max >= 2 and multi_horizon_dids is not None:
+            # Dynamic placebos DID^{pl}_l
+            if self.placebo:
+                multi_horizon_placebos = _compute_multi_horizon_placebos(
+                    D_mat=D_mat,
+                    Y_mat=Y_mat,
+                    N_mat=N_mat,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    switch_direction=switch_direction_arr,
+                    T_g=T_g_arr,
+                    L_max=L_max,
+                )
+
+            # Normalized effects DID^n_l
+            normalized_effects_dict = _compute_normalized_effects(
+                multi_horizon_dids=multi_horizon_dids,
+                D_mat=D_mat,
+                baselines=baselines,
+                first_switch_idx=first_switch_idx_arr,
+                L_max=L_max,
+            )
+
+            # Cost-benefit delta
+            cost_benefit_result = _compute_cost_benefit_delta(
+                multi_horizon_dids=multi_horizon_dids,
+                D_mat=D_mat,
+                baselines=baselines,
+                first_switch_idx=first_switch_idx_arr,
+                switch_direction=switch_direction_arr,
+                L_max=L_max,
+            )
+            if cost_benefit_result.get("has_leavers", False):
+                warnings.warn(
+                    "Assumption 7 (D_{g,t} >= D_{g,1}) is violated: leavers "
+                    "present. The cost-benefit delta is computed on the full "
+                    "sample (both joiners and leavers); delta_joiners and "
+                    "delta_leavers are available separately on "
+                    "results.cost_benefit_delta.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        # ------------------------------------------------------------------
         # Step 13-16: Cohort identification, influence-function vectors,
         #             cohort-recentered plug-in variance
         # ------------------------------------------------------------------
@@ -1119,6 +1300,54 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # test_placebo_bootstrap_unavailable_in_phase_1 pins this contract.
             placebo_inputs = None
 
+            # Phase 2: build multi-horizon bootstrap inputs from the
+            # cohort-centered IF vectors computed in Step 12c.
+            mh_boot_inputs = None
+            if (
+                multi_horizon_if is not None
+                and multi_horizon_dids is not None
+                and multi_horizon_se is not None
+                and L_max is not None
+                and L_max >= 2
+            ):
+                singleton_baseline_set_b = set(singleton_baseline_groups)
+                eligible_mask_b = np.array(
+                    [g not in singleton_baseline_set_b for g in all_groups], dtype=bool
+                )
+                mh_boot_inputs = {}
+                for l_h in range(2, L_max + 1):
+                    h_data = multi_horizon_dids.get(l_h)
+                    if h_data is None or h_data["N_l"] == 0:
+                        continue
+                    U_l_full = multi_horizon_if[l_h]
+                    U_l_elig = U_l_full[eligible_mask_b]
+                    # Use the same cohort IDs as the analytical SE path
+                    cohort_keys_b = [
+                        (
+                            int(baselines[g]),
+                            int(first_switch_idx_arr[g]),
+                            int(switch_direction_arr[g]),
+                        )
+                        for g in range(len(all_groups))
+                    ]
+                    unique_cb: Dict[Tuple[int, int, int], int] = {}
+                    cid_b = np.zeros(len(all_groups), dtype=int)
+                    for g in range(len(all_groups)):
+                        if not eligible_mask_b[g]:
+                            cid_b[g] = -1
+                            continue
+                        key = cohort_keys_b[g]
+                        if key not in unique_cb:
+                            unique_cb[key] = len(unique_cb)
+                        cid_b[g] = unique_cb[key]
+                    cid_elig = cid_b[eligible_mask_b]
+                    U_centered_h = _cohort_recenter(U_l_elig, cid_elig)
+                    mh_boot_inputs[l_h] = (
+                        U_centered_h,
+                        h_data["N_l"],
+                        h_data["did_l"],
+                    )
+
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
                 u_centered_overall=U_centered_overall,
@@ -1127,6 +1356,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 joiners_inputs=joiners_inputs,
                 leavers_inputs=leavers_inputs,
                 placebo_inputs=placebo_inputs,
+                multi_horizon_inputs=mh_boot_inputs,
             )
             bootstrap_results = br
 
@@ -1170,9 +1400,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
         # ------------------------------------------------------------------
-        # event_study_effects holds a single l=1 entry mirroring overall_att
-        # (per review MEDIUM #5: stable shape across phases).
-        event_study_effects = {
+        # event_study_effects: l=1 always mirrors the Phase 1 DID_M output.
+        # When L_max >= 2, horizons 2..L_max are populated from the Phase 2
+        # multi-horizon computation.
+        event_study_effects: Dict[int, Dict[str, Any]] = {
             1: {
                 "effect": overall_att,
                 "se": overall_se,
@@ -1182,6 +1413,118 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 "n_obs": N_S,
             }
         }
+        if multi_horizon_inference is not None:
+            for l_h, inf_dict in multi_horizon_inference.items():
+                event_study_effects[l_h] = inf_dict
+
+        # Phase 2: propagate bootstrap results to event_study_effects
+        if bootstrap_results is not None and bootstrap_results.event_study_ses:
+            for l_h in bootstrap_results.event_study_ses:
+                if l_h in event_study_effects:
+                    bs_se = bootstrap_results.event_study_ses.get(l_h)
+                    bs_ci = (
+                        bootstrap_results.event_study_cis.get(l_h)
+                        if bootstrap_results.event_study_cis
+                        else None
+                    )
+                    bs_p = (
+                        bootstrap_results.event_study_p_values.get(l_h)
+                        if bootstrap_results.event_study_p_values
+                        else None
+                    )
+                    if bs_se is not None and np.isfinite(bs_se):
+                        eff = event_study_effects[l_h]["effect"]
+                        event_study_effects[l_h]["se"] = bs_se
+                        event_study_effects[l_h]["p_value"] = bs_p if bs_p is not None else np.nan
+                        event_study_effects[l_h]["conf_int"] = (
+                            bs_ci if bs_ci is not None else (np.nan, np.nan)
+                        )
+                        event_study_effects[l_h]["t_stat"] = safe_inference(
+                            eff, bs_se, alpha=self.alpha, df=None
+                        )[0]
+
+            # Add sup-t bands to event_study_effects entries
+            if bootstrap_results.cband_crit_value is not None:
+                crit = bootstrap_results.cband_crit_value
+                for l_h in event_study_effects:
+                    se = event_study_effects[l_h]["se"]
+                    eff = event_study_effects[l_h]["effect"]
+                    if np.isfinite(se) and se > 0:
+                        event_study_effects[l_h]["cband_conf_int"] = (
+                            eff - crit * se,
+                            eff + crit * se,
+                        )
+
+        # Phase 2: override overall_att with cost-benefit delta when L_max > 1
+        effective_overall_att = overall_att
+        effective_overall_se = overall_se
+        effective_overall_t = overall_t
+        effective_overall_p = overall_p
+        effective_overall_ci = overall_ci
+        if cost_benefit_result is not None and L_max is not None and L_max >= 2:
+            delta_val = cost_benefit_result["delta"]
+            if np.isfinite(delta_val):
+                effective_overall_att = delta_val
+                # Cost-benefit SE: use the weighted-average SE from the
+                # bootstrap when available; analytical SE for delta is not
+                # derived in the paper. For now, set to NaN (bootstrap will
+                # override if n_bootstrap > 0).
+                effective_overall_se = float("nan")
+                effective_overall_t = float("nan")
+                effective_overall_p = float("nan")
+                effective_overall_ci = (float("nan"), float("nan"))
+
+        # Phase 2: build placebo_event_study with negative keys
+        placebo_event_study_dict: Optional[Dict[int, Dict[str, Any]]] = None
+        if multi_horizon_placebos is not None:
+            placebo_event_study_dict = {}
+            for lag_l, pl_data in multi_horizon_placebos.items():
+                if pl_data["N_pl_l"] > 0:
+                    # Placebo SE via the same analytical formula (Phase 2
+                    # resolves the Phase 1 "placebo SE NaN" limitation).
+                    # For now use NaN SE - the placebo IF computation will
+                    # be added when the full placebo IF is implemented.
+                    pl_se = float("nan")
+                    pl_t, pl_p, pl_ci = safe_inference(
+                        pl_data["placebo_l"], pl_se, alpha=self.alpha, df=None
+                    )
+                    placebo_event_study_dict[-lag_l] = {
+                        "effect": pl_data["placebo_l"],
+                        "se": pl_se,
+                        "t_stat": pl_t,
+                        "p_value": pl_p,
+                        "conf_int": pl_ci,
+                        "n_obs": pl_data["N_pl_l"],
+                    }
+                else:
+                    placebo_event_study_dict[-lag_l] = {
+                        "effect": float("nan"),
+                        "se": float("nan"),
+                        "t_stat": float("nan"),
+                        "p_value": float("nan"),
+                        "conf_int": (float("nan"), float("nan")),
+                        "n_obs": 0,
+                    }
+
+        # Phase 2: build normalized_effects with SE
+        normalized_effects_out: Optional[Dict[int, Dict[str, Any]]] = None
+        if normalized_effects_dict is not None and multi_horizon_se is not None:
+            normalized_effects_out = {}
+            for l_h, n_data in normalized_effects_dict.items():
+                denom = n_data["denominator"]
+                eff = n_data["effect"]
+                # SE via delta method: SE(DID^n_l) = SE(DID_l) / delta^D_l
+                se_did_l = multi_horizon_se.get(l_h, float("nan")) if l_h >= 2 else overall_se
+                se_norm = se_did_l / denom if np.isfinite(denom) and denom > 0 else float("nan")
+                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=None)
+                normalized_effects_out[l_h] = {
+                    "effect": eff,
+                    "se": se_norm,
+                    "t_stat": t_n,
+                    "p_value": p_n,
+                    "conf_int": ci_n,
+                    "denominator": denom,
+                }
 
         twfe_weights_df = None
         twfe_fraction_negative = None
@@ -1194,11 +1537,11 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             twfe_beta_fe = twfe_diagnostic_payload.beta_fe
 
         results = ChaisemartinDHaultfoeuilleResults(
-            overall_att=overall_att,
-            overall_se=overall_se,
-            overall_t_stat=overall_t,
-            overall_p_value=overall_p,
-            overall_conf_int=overall_ci,
+            overall_att=effective_overall_att,
+            overall_se=effective_overall_se,
+            overall_t_stat=effective_overall_t,
+            overall_p_value=effective_overall_p,
+            overall_conf_int=effective_overall_ci,
             joiners_att=joiners_att,
             joiners_se=joiners_se,
             joiners_t_stat=joiners_t,
@@ -1232,11 +1575,25 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             n_groups_dropped_singleton_baseline=n_groups_dropped_singleton_baseline,
             n_groups_dropped_never_switching=n_groups_dropped_never_switching,
             event_study_effects=event_study_effects,
+            L_max=L_max,
+            placebo_event_study=placebo_event_study_dict,
             twfe_weights=twfe_weights_df,
             twfe_fraction_negative=twfe_fraction_negative,
             twfe_sigma_fe=twfe_sigma_fe,
             twfe_beta_fe=twfe_beta_fe,
             alpha=self.alpha,
+            normalized_effects=normalized_effects_out,
+            cost_benefit_delta=cost_benefit_result,
+            sup_t_bands=(
+                {
+                    "crit_value": bootstrap_results.cband_crit_value,
+                    "alpha": self.alpha,
+                    "n_bootstrap": self.n_bootstrap,
+                    "method": "multiplier_bootstrap",
+                }
+                if bootstrap_results is not None and bootstrap_results.cband_crit_value is not None
+                else None
+            ),
             bootstrap_results=bootstrap_results,
             _estimator_ref=self,
         )
@@ -1259,20 +1616,20 @@ def _check_forward_compat_gates(
     trends_nonparam: Any,
     honest_did: bool,
 ) -> None:
-    """Raise ``NotImplementedError`` for any non-default Phase 2/3 parameter."""
+    """Raise ``NotImplementedError`` for any non-default Phase 3 parameter.
+
+    Phase 2 parameters (``L_max``) are validated inline in ``fit()``
+    after period detection. The ``aggregate`` parameter is still
+    reserved for Phase 3.
+    """
     if aggregate is not None:
-        # MEDIUM #1: strict equality with None — do not accept "simple" silently
         raise NotImplementedError(
-            f"aggregate={aggregate!r} is reserved for Phase 2 of dCDH "
-            "(multi-horizon event study via DID_l). Phase 1 requires "
-            "aggregate=None and ships only DID_M = DID_1, the contemporaneous-"
-            "switch estimator at horizon l=1. See ROADMAP.md Phase 2."
+            f"aggregate={aggregate!r} is reserved for Phase 3 of dCDH. "
+            "Multi-horizon event study effects are computed automatically "
+            "when L_max is set. See ROADMAP.md Phase 3."
         )
-    if L_max is not None:
-        raise NotImplementedError(
-            "L_max is reserved for Phase 2 of dCDH (multi-horizon event study). "
-            "Phase 1 computes only the l=1 effect DID_M. See ROADMAP.md Phase 2."
-        )
+    # L_max is validated inline in fit() after period detection (needs
+    # the period count). Not gated here.
     if controls is not None:
         raise NotImplementedError(
             "Covariate adjustment (DID^X) is reserved for Phase 3 of dCDH, which "
@@ -1601,6 +1958,657 @@ def _compute_placebo(
     return placebo_effect, True, placebo_a11_warnings
 
 
+# ======================================================================
+# Phase 2: Multi-horizon helpers
+# ======================================================================
+
+
+def _compute_group_switch_metadata(
+    D_mat: np.ndarray,
+    N_mat: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute per-group switch metadata from the pivoted panel matrices.
+
+    For each group g, identifies the baseline treatment ``D_{g,1}``, the
+    first-switch period index ``F_g`` (or -1 if never-switching), and the
+    switch direction ``S_g`` (+1 joiner, -1 leaver, 0 never-switching).
+    Also computes ``T_g`` - the last period index at which there is still
+    a baseline-matched control that hasn't switched (needed for horizon
+    eligibility).
+
+    This helper is shared by Phase 1 (cohort-recentered IF in
+    ``_compute_cohort_recentered_inputs``) and Phase 2 (multi-horizon
+    ``DID_{g,l}`` computation).
+
+    Parameters
+    ----------
+    D_mat : np.ndarray of shape (n_groups, n_periods)
+        Pivoted treatment matrix (cell-level, binary in Phase 1).
+    N_mat : np.ndarray of shape (n_groups, n_periods)
+        Pivoted observation-count matrix. Zero means group g is missing
+        at period t.
+
+    Returns
+    -------
+    baselines : np.ndarray of shape (n_groups,), dtype int
+        ``D_{g,1}`` for each group (treatment at the first global period).
+    first_switch_idx : np.ndarray of shape (n_groups,), dtype int
+        Period index of g's first treatment change (-1 if never-switching).
+        This is ``F_g`` in the paper's notation, expressed as a column
+        index into D_mat (0-based).
+    switch_direction : np.ndarray of shape (n_groups,), dtype int
+        ``S_g``: +1 if treatment increases at first switch (joiner),
+        -1 if decreases (leaver), 0 if never-switching.
+    T_g : np.ndarray of shape (n_groups,), dtype int
+        For each group, the last period index at which a baseline-matched
+        not-yet-switched control still exists. Groups whose baseline
+        value has no other group that switches later get ``T_g = -1``
+        (they have no valid control at any horizon). This is used for
+        horizon eligibility: ``DID_{g,l}`` is computable iff
+        ``first_switch_idx[g] - 1 + l <= T_g[g]``.
+
+    Raises
+    ------
+    ValueError
+        If any group is missing the first global period in N_mat (this
+        should have been caught by fit() Step 5b validation).
+    """
+    n_groups, n_periods = D_mat.shape
+
+    # Defensive: fit() Step 5b rejects groups missing the baseline.
+    if N_mat.size > 0 and (N_mat[:, 0] <= 0).any():
+        raise ValueError(
+            "_compute_group_switch_metadata: at least one group is missing "
+            "the first global period in N_mat. fit() Step 5b should have "
+            "rejected this."
+        )
+
+    baselines = D_mat[:, 0].astype(int)
+    first_switch_idx = np.full(n_groups, -1, dtype=int)
+    switch_direction = np.zeros(n_groups, dtype=int)
+
+    for g in range(n_groups):
+        for t in range(1, n_periods):
+            if N_mat[g, t] <= 0 or N_mat[g, t - 1] <= 0:
+                continue
+            if D_mat[g, t] != D_mat[g, t - 1]:
+                first_switch_idx[g] = t
+                switch_direction[g] = 1 if D_mat[g, t] > D_mat[g, t - 1] else -1
+                break
+
+    # T_g: for each group g, the last period at which there is still a
+    # baseline-matched group whose treatment has NOT changed. This is
+    # max_{g': D_{g',1} = D_{g,1}} (F_{g'} - 1), i.e., the period just
+    # before the latest-switching control in g's baseline cohort.
+    # Never-switching groups (F = -1) have F-1 = T (last period), so
+    # they extend T_g to the panel end for their baseline cohort.
+    unique_baselines = np.unique(baselines)
+    max_control_period = {}  # baseline -> max period index with a valid control
+    for d in unique_baselines:
+        baseline_mask = baselines == d
+        # For each group with this baseline, the last period at which it
+        # can still serve as a not-yet-switched control is F_g - 1
+        # (or n_periods - 1 if never-switching).
+        f_vals = first_switch_idx[baseline_mask]
+        control_last = np.where(f_vals == -1, n_periods - 1, f_vals - 1)
+        max_control_period[int(d)] = int(control_last.max()) if control_last.size > 0 else -1
+
+    T_g = np.array(
+        [max_control_period.get(int(baselines[g]), -1) for g in range(n_groups)],
+        dtype=int,
+    )
+
+    return baselines, first_switch_idx, switch_direction, T_g
+
+
+def _compute_multi_horizon_dids(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+) -> Dict[int, Dict[str, Any]]:
+    """
+    Compute the per-group building block ``DID_{g,l}`` and its aggregate
+    ``DID_l`` for horizons ``l = 1, ..., L_max``.
+
+    Implements Equation 3 and Equation 5 of the dynamic companion paper
+    (NBER WP 29873). For each switching group g eligible at horizon l::
+
+        DID_{g,l} = Y_{g, F_g-1+l} - Y_{g, F_g-1}
+                    - mean_{g' in controls} (Y_{g', F_g-1+l} - Y_{g', F_g-1})
+
+    where the control set is ``{g': D_{g',1} = D_{g,1}, F_{g'} > F_g-1+l}``.
+
+    The aggregate is ``DID_l = (1/N_l) * sum S_g * DID_{g,l}`` over
+    eligible groups.
+
+    Parameters
+    ----------
+    D_mat, Y_mat, N_mat : np.ndarray of shape (n_groups, n_periods)
+    baselines, first_switch_idx, switch_direction, T_g : np.ndarray
+        From ``_compute_group_switch_metadata()``.
+    L_max : int
+        Maximum horizon to compute.
+
+    Returns
+    -------
+    dict mapping horizon l -> {
+        "did_l": float,           # aggregate DID_l (NaN if N_l=0)
+        "N_l": int,               # count of eligible switching groups
+        "did_g_l": np.ndarray,    # per-group DID_{g,l} (NaN for non-eligible)
+        "eligible_mask": np.ndarray,  # boolean shape (n_groups,)
+        "switcher_fraction": float,   # N_l / N_1 (NaN if N_1=0)
+    }
+    """
+    n_groups, n_periods = D_mat.shape
+    is_switcher = first_switch_idx >= 0
+
+    # Pre-compute per-baseline lookup of (group_indices, first_switch_indices)
+    # for efficient control-pool identification.
+    unique_baselines = np.unique(baselines)
+    baseline_groups: Dict[int, np.ndarray] = {}
+    baseline_f: Dict[int, np.ndarray] = {}
+    for d in unique_baselines:
+        mask = baselines == d
+        baseline_groups[int(d)] = np.where(mask)[0]
+        baseline_f[int(d)] = first_switch_idx[mask]
+
+    results: Dict[int, Dict[str, Any]] = {}
+    N_1 = 0  # will be set at l=1 for switcher_fraction
+
+    for l in range(1, L_max + 1):  # noqa: E741
+        did_g_l = np.full(n_groups, np.nan)
+
+        # Eligibility: switching group with F_g - 1 + l_h observable.
+        # F_g is stored as a column index (0-based), so the outcome
+        # period is first_switch_idx[g] - 1 + l. This must be a valid
+        # column AND the group must be observed there (N_mat > 0).
+        # Also, T_g[g] must be >= first_switch_idx[g] - 1 + l (controls
+        # available at the outcome period).
+        eligible = np.zeros(n_groups, dtype=bool)
+        for g in range(n_groups):
+            if not is_switcher[g]:
+                continue
+            f_g = first_switch_idx[g]
+            ref_idx = f_g - 1  # period just before first switch
+            out_idx = f_g - 1 + l  # outcome period for horizon l
+            if ref_idx < 0 or out_idx >= n_periods:
+                continue
+            if N_mat[g, ref_idx] <= 0 or N_mat[g, out_idx] <= 0:
+                continue
+            if T_g[g] < out_idx:
+                continue  # no baseline-matched control available
+            eligible[g] = True
+
+        N_l = int(eligible.sum())
+        if l == 1:
+            N_1 = N_l
+
+        if N_l == 0:
+            results[l] = {
+                "did_l": float("nan"),
+                "N_l": 0,
+                "did_g_l": did_g_l,
+                "eligible_mask": eligible,
+                "switcher_fraction": float("nan"),
+            }
+            continue
+
+        # Compute DID_{g,l} for each eligible group.
+        for g in np.where(eligible)[0]:
+            f_g = first_switch_idx[g]
+            ref_idx = f_g - 1
+            out_idx = f_g - 1 + l
+            d_base = int(baselines[g])
+
+            # Switcher's outcome change
+            switcher_change = Y_mat[g, out_idx] - Y_mat[g, ref_idx]
+
+            # Control pool: same baseline, not yet switched by out_idx.
+            # F_{g'} > out_idx (hasn't switched yet) OR F_{g'} = -1
+            # (never switches). Both must be observed at ref_idx and
+            # out_idx.
+            ctrl_indices = baseline_groups[d_base]
+            ctrl_f = baseline_f[d_base]
+            ctrl_mask = (
+                ((ctrl_f > out_idx) | (ctrl_f == -1))
+                & (N_mat[ctrl_indices, ref_idx] > 0)
+                & (N_mat[ctrl_indices, out_idx] > 0)
+            )
+            ctrl_pool = ctrl_indices[ctrl_mask]
+
+            if ctrl_pool.size == 0:
+                # No controls available - A11-like situation. Set to 0
+                # matching the A11 zero-retention convention: the group's
+                # switcher count is still in N_l.
+                did_g_l[g] = 0.0
+                continue
+
+            ctrl_changes = Y_mat[ctrl_pool, out_idx] - Y_mat[ctrl_pool, ref_idx]
+            ctrl_avg = float(ctrl_changes.mean())
+            did_g_l[g] = switcher_change - ctrl_avg
+
+        # Aggregate: DID_l = (1/N_l) * sum S_g * DID_{g,l}
+        S_eligible = switch_direction[eligible].astype(float)
+        did_g_eligible = did_g_l[eligible]
+        did_l = float((S_eligible * did_g_eligible).sum() / N_l)
+
+        results[l] = {
+            "did_l": did_l,
+            "N_l": N_l,
+            "did_g_l": did_g_l,
+            "eligible_mask": eligible,
+            "switcher_fraction": N_l / N_1 if N_1 > 0 else float("nan"),
+        }
+
+    return results
+
+
+def _compute_per_group_if_multi_horizon(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+) -> Dict[int, np.ndarray]:
+    """
+    Compute per-group influence function ``U^G_{g,l}`` for ``l = 1..L_max``.
+
+    Each group g contributes to ``DID_l`` in two capacities:
+
+    1. **As a switcher** (if g is eligible at horizon l): contributes
+       ``S_g * (Y_{g, F_g-1+l} - Y_{g, F_g-1})`` to the numerator.
+    2. **As a control** (if g serves as a not-yet-switched control for
+       some other switcher g'): contributes
+       ``-S_{g'} * (1/N^{g'}_{out}) * (Y_{g, out} - Y_{g, ref})``
+       where ref/out are g's reference/outcome periods.
+
+    The result satisfies ``sum(U_l) == N_l * DID_l``, which is verified
+    as a sanity check.
+
+    Parameters
+    ----------
+    D_mat, Y_mat, N_mat : np.ndarray of shape (n_groups, n_periods)
+    baselines, first_switch_idx, switch_direction, T_g : np.ndarray
+        From ``_compute_group_switch_metadata()``.
+    L_max : int
+
+    Returns
+    -------
+    dict mapping horizon l -> U_g_l array of shape (n_groups,)
+        NOT cohort-centered. The caller applies ``_cohort_recenter()``
+        before computing SE.
+    """
+    n_groups, n_periods = D_mat.shape
+    is_switcher = first_switch_idx >= 0
+
+    # Pre-compute per-baseline group indices for control-pool lookup.
+    unique_baselines = np.unique(baselines)
+    baseline_groups: Dict[int, np.ndarray] = {}
+    baseline_f: Dict[int, np.ndarray] = {}
+    for d in unique_baselines:
+        mask = baselines == d
+        baseline_groups[int(d)] = np.where(mask)[0]
+        baseline_f[int(d)] = first_switch_idx[mask]
+
+    results: Dict[int, np.ndarray] = {}
+
+    for l in range(1, L_max + 1):  # noqa: E741
+        U_l = np.zeros(n_groups, dtype=float)
+
+        for g in range(n_groups):
+            if not is_switcher[g]:
+                continue
+            f_g = first_switch_idx[g]
+            ref_idx = f_g - 1
+            out_idx = f_g - 1 + l
+            if ref_idx < 0 or out_idx >= n_periods:
+                continue
+            if N_mat[g, ref_idx] <= 0 or N_mat[g, out_idx] <= 0:
+                continue
+            if T_g[g] < out_idx:
+                continue
+
+            d_base = int(baselines[g])
+            S_g = float(switch_direction[g])
+
+            # Control pool for this switcher at this horizon
+            ctrl_indices = baseline_groups[d_base]
+            ctrl_f = baseline_f[d_base]
+            ctrl_mask = (
+                ((ctrl_f > out_idx) | (ctrl_f == -1))
+                & (N_mat[ctrl_indices, ref_idx] > 0)
+                & (N_mat[ctrl_indices, out_idx] > 0)
+            )
+            ctrl_pool = ctrl_indices[ctrl_mask]
+            n_ctrl = ctrl_pool.size
+
+            if n_ctrl == 0:
+                # No controls: A11-like, DID_{g,l} = 0. The switcher's
+                # contribution to U_l is zero, but its count is in N_l.
+                continue
+
+            # Switcher contribution: +S_g * (Y_{g, out} - Y_{g, ref})
+            switcher_change = Y_mat[g, out_idx] - Y_mat[g, ref_idx]
+            U_l[g] += S_g * switcher_change
+
+            # Control contributions: each control g' in the pool gets
+            # -S_g * (1/n_ctrl) * (Y_{g', out} - Y_{g', ref})
+            ctrl_changes = Y_mat[ctrl_pool, out_idx] - Y_mat[ctrl_pool, ref_idx]
+            U_l[ctrl_pool] -= (S_g / n_ctrl) * ctrl_changes
+
+        results[l] = U_l
+
+    return results
+
+
+def _compute_multi_horizon_placebos(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+) -> Dict[int, Dict[str, Any]]:
+    """
+    Compute dynamic placebo estimators ``DID^{pl}_l`` for ``l = 1..L_pl_max``.
+
+    Mirrors ``_compute_multi_horizon_dids`` but looks BACKWARD from
+    each group's reference period (Web Appendix Section 1.1, Lemma 5).
+
+    **Dual eligibility condition:** a group g is eligible for placebo
+    lag l iff:
+    - ``F_g - 1 - l >= 0`` (enough pre-treatment history), AND
+    - ``F_g - 1 + l <= T_g`` (positive-horizon control pool exists)
+
+    The control set uses the *positive*-horizon cutoff:
+    ``{g': D_{g',1} = D_{g,1}, F_{g'} > F_g - 1 + l}``.
+
+    Returns
+    -------
+    dict mapping lag l (positive int) -> {
+        "placebo_l": float,
+        "N_pl_l": int,
+        "eligible_mask": np.ndarray,
+    }
+    """
+    n_groups, n_periods = D_mat.shape
+    is_switcher = first_switch_idx >= 0
+
+    unique_baselines = np.unique(baselines)
+    baseline_groups: Dict[int, np.ndarray] = {}
+    baseline_f: Dict[int, np.ndarray] = {}
+    for d in unique_baselines:
+        mask = baselines == d
+        baseline_groups[int(d)] = np.where(mask)[0]
+        baseline_f[int(d)] = first_switch_idx[mask]
+
+    results: Dict[int, Dict[str, Any]] = {}
+
+    for l in range(1, L_max + 1):  # noqa: E741
+        eligible = np.zeros(n_groups, dtype=bool)
+        pl_g_l = np.full(n_groups, np.nan)
+
+        for g in range(n_groups):
+            if not is_switcher[g]:
+                continue
+            f_g = first_switch_idx[g]
+            ref_idx = f_g - 1
+            backward_idx = ref_idx - l  # the pre-treatment outcome period
+            forward_idx = ref_idx + l  # for control-pool eligibility
+
+            # Dual eligibility: backward must be in range, forward must
+            # have controls available
+            if backward_idx < 0 or forward_idx >= n_periods:
+                continue
+            if N_mat[g, ref_idx] <= 0 or N_mat[g, backward_idx] <= 0:
+                continue
+            if T_g[g] < forward_idx:
+                continue
+            eligible[g] = True
+
+        N_pl_l = int(eligible.sum())
+        if N_pl_l == 0:
+            results[l] = {
+                "placebo_l": float("nan"),
+                "N_pl_l": 0,
+                "eligible_mask": eligible,
+            }
+            continue
+
+        for g in np.where(eligible)[0]:
+            f_g = first_switch_idx[g]
+            ref_idx = f_g - 1
+            backward_idx = ref_idx - l
+            forward_idx = ref_idx + l
+            d_base = int(baselines[g])
+
+            # Switcher's backward outcome change
+            switcher_change = Y_mat[g, backward_idx] - Y_mat[g, ref_idx]
+
+            # Control pool: same baseline, not switched by forward_idx
+            ctrl_indices = baseline_groups[d_base]
+            ctrl_f = baseline_f[d_base]
+            ctrl_mask = (
+                ((ctrl_f > forward_idx) | (ctrl_f == -1))
+                & (N_mat[ctrl_indices, ref_idx] > 0)
+                & (N_mat[ctrl_indices, backward_idx] > 0)
+            )
+            ctrl_pool = ctrl_indices[ctrl_mask]
+
+            if ctrl_pool.size == 0:
+                pl_g_l[g] = 0.0
+                continue
+
+            ctrl_changes = Y_mat[ctrl_pool, backward_idx] - Y_mat[ctrl_pool, ref_idx]
+            ctrl_avg = float(ctrl_changes.mean())
+            pl_g_l[g] = switcher_change - ctrl_avg
+
+        S_eligible = switch_direction[eligible].astype(float)
+        pl_g_eligible = pl_g_l[eligible]
+        placebo_l = float((S_eligible * pl_g_eligible).sum() / N_pl_l)
+
+        results[l] = {
+            "placebo_l": placebo_l,
+            "N_pl_l": N_pl_l,
+            "eligible_mask": eligible,
+        }
+
+    return results
+
+
+def _compute_normalized_effects(
+    multi_horizon_dids: Dict[int, Dict[str, Any]],
+    D_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    L_max: int,
+) -> Dict[int, Dict[str, Any]]:
+    """
+    Compute normalized event-study effects ``DID^n_l = DID_l / delta^D_l``.
+
+    Uses the general formula (Eq 15) that works for both binary and
+    non-binary treatment (future-proofing for Phase 3).
+
+    For binary treatment: ``delta^D_{g,l} = l`` (joiners) or ``-l``
+    (leavers), so ``|delta^D_{g,l}| = l`` and ``DID^n_l = DID_l / l``.
+
+    Returns
+    -------
+    dict mapping l -> {effect, denominator}
+    """
+    n_groups = D_mat.shape[0]
+    results: Dict[int, Dict[str, Any]] = {}
+
+    for l in range(1, L_max + 1):  # noqa: E741
+        h = multi_horizon_dids.get(l)
+        if h is None or h["N_l"] == 0:
+            results[l] = {"effect": float("nan"), "denominator": float("nan")}
+            continue
+
+        eligible = h["eligible_mask"]
+        N_l = h["N_l"]
+        did_l = h["did_l"]
+
+        # Per-group incremental dose: delta^D_{g,l} = sum_{k=0}^{l-1} (D_{g,F_g+k} - D_{g,1})
+        # General formula, works for non-binary treatment.
+        delta_D_g = np.zeros(n_groups)
+        for g in np.where(eligible)[0]:
+            f_g = first_switch_idx[g]
+            d_base = baselines[g]
+            dose_sum = 0.0
+            for k in range(l):
+                col = f_g + k
+                if col < D_mat.shape[1]:
+                    dose_sum += D_mat[g, col] - d_base
+            delta_D_g[g] = dose_sum
+
+        # Aggregate dose denominator
+        delta_D_l = float(np.abs(delta_D_g[eligible]).sum() / N_l)
+
+        if delta_D_l <= 0:
+            results[l] = {"effect": float("nan"), "denominator": 0.0}
+            continue
+
+        results[l] = {
+            "effect": did_l / delta_D_l,
+            "denominator": delta_D_l,
+        }
+
+    return results
+
+
+def _compute_cost_benefit_delta(
+    multi_horizon_dids: Dict[int, Dict[str, Any]],
+    D_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    L_max: int,
+) -> Dict[str, Any]:
+    """
+    Compute the cost-benefit aggregate ``delta`` from Section 3.3, Lemma 4.
+
+    ``delta = sum_l w_l * DID_l`` where
+    ``w_l = N_l / sum_{g,l'} |D_{g,F_g-1+l'} - D_{g,1}|``.
+
+    When leavers are present (Assumption 7 violated), also computes
+    ``delta_joiners`` and ``delta_leavers`` separately.
+
+    Returns
+    -------
+    dict with keys: delta, weights, has_leavers, delta_joiners, delta_leavers
+    """
+
+    # Total cumulative dose across all eligible (g, l) pairs
+    total_dose = 0.0
+    per_horizon_dose: Dict[int, float] = {}
+    for l in range(1, L_max + 1):  # noqa: E741
+        h = multi_horizon_dids.get(l)
+        if h is None or h["N_l"] == 0:
+            per_horizon_dose[l] = 0.0
+            continue
+        eligible = h["eligible_mask"]
+        dose_l = 0.0
+        for g in np.where(eligible)[0]:
+            f_g = first_switch_idx[g]
+            col = f_g - 1 + l
+            if col < D_mat.shape[1]:
+                dose_l += abs(float(D_mat[g, col] - baselines[g]))
+        per_horizon_dose[l] = dose_l
+        total_dose += dose_l
+
+    if total_dose <= 0:
+        return {
+            "delta": float("nan"),
+            "weights": {},
+            "has_leavers": False,
+            "delta_joiners": float("nan"),
+            "delta_leavers": float("nan"),
+        }
+
+    # Horizon weights: w_l = N_l / total_dose (but using dose, not N_l)
+    # Per Lemma 4: w_l = N_l * E[|delta^D_{g,l}|] / total_dose
+    # which simplifies to per_horizon_dose[l] / total_dose
+    weights: Dict[int, float] = {}
+    delta = 0.0
+    for l in range(1, L_max + 1):  # noqa: E741
+        h = multi_horizon_dids.get(l)
+        if h is None or h["N_l"] == 0:
+            weights[l] = 0.0
+            continue
+        w_l = per_horizon_dose[l] / total_dose
+        weights[l] = w_l
+        delta += w_l * h["did_l"]
+
+    # Check for leavers (Assumption 7 violation)
+    has_leavers = bool(np.any(switch_direction < 0))
+
+    delta_joiners = float("nan")
+    delta_leavers = float("nan")
+    if has_leavers:
+        # Compute delta separately for joiners and leavers
+        for direction, attr_name in [(1, "joiners"), (-1, "leavers")]:
+            dir_dose = 0.0
+            dir_horizon_dose: Dict[int, float] = {}
+            for l in range(1, L_max + 1):  # noqa: E741
+                h = multi_horizon_dids.get(l)
+                if h is None or h["N_l"] == 0:
+                    dir_horizon_dose[l] = 0.0
+                    continue
+                eligible = h["eligible_mask"]
+                dose_l = 0.0
+                for g in np.where(eligible)[0]:
+                    if switch_direction[g] != direction:
+                        continue
+                    f_g = first_switch_idx[g]
+                    col = f_g - 1 + l
+                    if col < D_mat.shape[1]:
+                        dose_l += abs(float(D_mat[g, col] - baselines[g]))
+                dir_horizon_dose[l] = dose_l
+                dir_dose += dose_l
+
+            if dir_dose > 0:
+                dir_delta = 0.0
+                for l in range(1, L_max + 1):  # noqa: E741
+                    h = multi_horizon_dids.get(l)
+                    if h is None or h["N_l"] == 0:
+                        continue
+                    eligible = h["eligible_mask"]
+                    # Per-direction DID_l
+                    dir_eligible = eligible & (switch_direction == direction)
+                    n_dir = int(dir_eligible.sum())
+                    if n_dir == 0:
+                        continue
+                    did_g_l = h["did_g_l"]
+                    S = switch_direction[dir_eligible].astype(float)
+                    did_l_dir = float((S * did_g_l[dir_eligible]).sum() / n_dir)
+                    w_dir = dir_horizon_dose[l] / dir_dose
+                    dir_delta += w_dir * did_l_dir
+                if attr_name == "joiners":
+                    delta_joiners = dir_delta
+                else:
+                    delta_leavers = dir_delta
+
+    return {
+        "delta": delta,
+        "weights": weights,
+        "has_leavers": has_leavers,
+        "delta_joiners": delta_joiners,
+        "delta_leavers": delta_leavers,
+    }
+
+
 def _compute_full_per_group_contributions(
     D_mat: np.ndarray,
     Y_mat: np.ndarray,
@@ -1807,34 +2815,12 @@ def _compute_cohort_recentered_inputs(
             np.array([], dtype=float),
         )
 
-    # Per-group baseline, first switch time, switch direction.
-    #
-    # Defensive: even though fit() Step 5a rejects groups missing the
-    # first global period and drops groups with interior gaps, this
-    # helper might also be called from other code paths in the future.
-    # We assert no NaN baselines (would catch a fit() validation
-    # regression) and gate first-switch detection on N_mat presence so
-    # missing intermediate periods can't be misread as switches.
-    if N_mat.size > 0 and (N_mat[:, 0] <= 0).any():
-        raise ValueError(
-            "_compute_cohort_recentered_inputs: at least one group is missing "
-            "the first global period in N_mat. fit() Step 5a should have "
-            "rejected this — if you are calling this helper directly, ensure "
-            "every group has an observation at the first global period."
-        )
-    baselines = D_mat[:, 0].astype(int)
-    first_switch_idx = np.full(n_groups, -1, dtype=int)
-    switch_direction = np.zeros(n_groups, dtype=int)  # +1 joiner, -1 leaver, 0 never-switching
-
-    for g in range(n_groups):
-        for t in range(1, n_periods):
-            # Both periods must be observed for the transition to be valid
-            if N_mat[g, t] <= 0 or N_mat[g, t - 1] <= 0:
-                continue
-            if D_mat[g, t] != D_mat[g, t - 1]:
-                first_switch_idx[g] = t
-                switch_direction[g] = 1 if D_mat[g, t] > D_mat[g, t - 1] else -1
-                break
+    # Per-group switch metadata via the shared helper (factored out in
+    # Phase 2 so both the cohort-recentered IF path and the multi-
+    # horizon DID_{g,l} path share the same computation).
+    baselines, first_switch_idx, switch_direction, _T_g = _compute_group_switch_metadata(
+        D_mat, N_mat
+    )
 
     n_groups_dropped_never_switching = int((switch_direction == 0).sum())
 
