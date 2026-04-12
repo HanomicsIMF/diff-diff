@@ -1311,8 +1311,8 @@ def generate_survey_did_data(
         Conditional on x1, trends remain parallel (conditional PT holds).
         DR/IPW estimators with covariates recover truth; no-covariate
         estimators are biased. Uses normalized time (t/n_periods) for
-        scale independence. Requires ``add_covariates=True`` and
-        ``never_treated_frac > 0`` (the x1 mean shift only differentiates
+        scale independence. Requires ``add_covariates=True`` and at least
+        one never-treated unit (the x1 mean shift only differentiates
         ever-treated from never-treated units).
 
         .. note:: When used with ``icc``, the ICC calibration is approximate
@@ -1437,12 +1437,14 @@ def generate_survey_did_data(
         )
     if conditional_pt != 0.0 and not add_covariates:
         raise ValueError("conditional_pt requires add_covariates=True")
-    if conditional_pt != 0.0 and never_treated_frac == 0.0:
+    if conditional_pt != 0.0 and int(n_units * never_treated_frac) < 1:
         raise ValueError(
-            "conditional_pt requires never_treated_frac > 0. The x1 mean shift "
-            "applies to all ever-treated units; without a never-treated group, "
-            "treated and control units share the same x1 distribution and "
-            "unconditional parallel trends are not violated."
+            "conditional_pt requires at least one never-treated unit "
+            f"(n_units={n_units}, never_treated_frac={never_treated_frac} "
+            f"yields {int(n_units * never_treated_frac)} never-treated). "
+            "The x1 mean shift applies to all ever-treated units; without a "
+            "never-treated group, treated and control units share the same x1 "
+            "distribution and unconditional parallel trends are not violated."
         )
 
     # --- ICC -> psu_re_sd resolution ---

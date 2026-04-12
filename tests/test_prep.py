@@ -1969,13 +1969,20 @@ class TestSurveyDGPResearchGrade:
     # --- conditional_pt parameter tests ---
 
     def test_conditional_pt_requires_never_treated(self):
-        """conditional_pt requires never_treated_frac > 0."""
+        """conditional_pt requires at least one never-treated unit."""
         from diff_diff.prep_dgp import generate_survey_did_data
 
-        with pytest.raises(ValueError, match="conditional_pt requires never_treated_frac"):
+        # Exact zero fraction
+        with pytest.raises(ValueError, match="conditional_pt requires at least one"):
             generate_survey_did_data(
                 add_covariates=True, conditional_pt=0.3,
                 never_treated_frac=0.0, seed=42,
+            )
+        # Small fraction that floors to zero never-treated units
+        with pytest.raises(ValueError, match="conditional_pt requires at least one"):
+            generate_survey_did_data(
+                n_units=50, add_covariates=True, conditional_pt=0.3,
+                never_treated_frac=0.01, seed=42,
             )
 
     def test_conditional_pt_requires_covariates(self):
