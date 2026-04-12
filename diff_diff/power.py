@@ -148,12 +148,17 @@ class SurveyPowerConfig:
             )
 
     def _build_survey_design(self) -> Any:
-        """Return user-supplied SurveyDesign or auto-build from DGP column names."""
-        if self.survey_design is not None:
-            return self.survey_design
-        from diff_diff.survey import SurveyDesign
+        """Return cached SurveyDesign (built once, reused across simulations)."""
+        if not hasattr(self, "_cached_survey_design"):
+            if self.survey_design is not None:
+                self._cached_survey_design = self.survey_design
+            else:
+                from diff_diff.survey import SurveyDesign
 
-        return SurveyDesign(weights="weight", strata="stratum", psu="psu", fpc="fpc")
+                self._cached_survey_design = SurveyDesign(
+                    weights="weight", strata="stratum", psu="psu", fpc="fpc"
+                )
+        return self._cached_survey_design
 
     @property
     def min_viable_n(self) -> int:
