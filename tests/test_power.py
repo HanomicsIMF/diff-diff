@@ -20,6 +20,7 @@ from diff_diff import (
     SimulationSampleSizeResults,
     StackedDiD,
     SunAbraham,
+    SurveyPowerConfig,
     SyntheticDiD,
     TripleDifference,
     TwoStageDiD,
@@ -2121,3 +2122,308 @@ class TestSDIDPlaceboCustomDGP:
                 seed=42,
                 progress=False,
             )
+
+
+# ---------------------------------------------------------------------------
+# Survey-aware power tests
+# ---------------------------------------------------------------------------
+
+# Small survey config for fast tests
+_SURVEY_CFG = SurveyPowerConfig(n_strata=3, psu_per_stratum=4, icc=0.05)
+_SIM_KW = dict(n_units=100, n_periods=4, treatment_period=2, sigma=1.0, progress=False)
+
+
+class TestSurveyPower:
+    """Tests for survey-aware power analysis (SurveyPowerConfig + deff)."""
+
+    # -- Simulation path: smoke tests for each estimator group --
+
+    def test_survey_simulate_power_cs(self):
+        """CallawaySantAnna with survey_config runs and returns valid power."""
+        result = simulate_power(
+            CallawaySantAnna(),
+            treatment_effect=3.0,
+            n_simulations=20,
+            seed=42,
+            survey_config=_SURVEY_CFG,
+            **_SIM_KW,
+        )
+        assert 0 <= result.power <= 1
+        assert result.survey_config is not None
+        assert isinstance(result, SimulationPowerResults)
+
+    def test_survey_simulate_power_basic_did(self):
+        """DifferenceInDifferences with survey_config works."""
+        result = simulate_power(
+            DifferenceInDifferences(),
+            treatment_effect=3.0,
+            n_simulations=20,
+            seed=42,
+            survey_config=_SURVEY_CFG,
+            **_SIM_KW,
+        )
+        assert 0 <= result.power <= 1
+
+    def test_survey_simulate_power_twfe(self):
+        """TwoWayFixedEffects with survey_config works."""
+        result = simulate_power(
+            TwoWayFixedEffects(),
+            treatment_effect=3.0,
+            n_simulations=20,
+            seed=42,
+            survey_config=_SURVEY_CFG,
+            **_SIM_KW,
+        )
+        assert 0 <= result.power <= 1
+
+    def test_survey_simulate_power_multiperiod(self):
+        """MultiPeriodDiD with survey_config works."""
+        result = simulate_power(
+            MultiPeriodDiD(),
+            treatment_effect=3.0,
+            n_simulations=20,
+            seed=42,
+            survey_config=_SURVEY_CFG,
+            **_SIM_KW,
+        )
+        assert 0 <= result.power <= 1
+
+    @pytest.mark.parametrize(
+        "estimator_cls",
+        [SunAbraham, ImputationDiD, TwoStageDiD, StackedDiD, EfficientDiD],
+    )
+    def test_survey_staggered_estimators(self, estimator_cls):
+        """All staggered estimators work with survey_config."""
+        result = simulate_power(
+            estimator_cls(),
+            treatment_effect=3.0,
+            n_simulations=10,
+            seed=42,
+            survey_config=_SURVEY_CFG,
+            **_SIM_KW,
+        )
+        assert 0 <= result.power <= 1
+
+    # -- Validation: unsupported estimators --
+
+    def test_survey_rejects_trop(self):
+        with pytest.raises(ValueError, match="not supported with TROP"):
+            simulate_power(TROP(), n_simulations=1, seed=42, survey_config=_SURVEY_CFG, **_SIM_KW)
+
+    def test_survey_rejects_sdid(self):
+        with pytest.raises(ValueError, match="not supported with SyntheticDiD"):
+            simulate_power(
+                SyntheticDiD(),
+                n_simulations=1,
+                seed=42,
+                survey_config=_SURVEY_CFG,
+                **_SIM_KW,
+            )
+
+    def test_survey_rejects_ddd(self):
+        with pytest.raises(ValueError, match="not supported with TripleDifference"):
+            simulate_power(
+                TripleDifference(),
+                n_simulations=1,
+                seed=42,
+                survey_config=_SURVEY_CFG,
+                **_SIM_KW,
+            )
+
+    def test_survey_rejects_custom_dgp(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            simulate_power(
+                CallawaySantAnna(),
+                data_generator=lambda **kw: None,
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
+
+    # -- Metadata --
+
+    def test_survey_metadata(self):
+        """mean_deff and mean_icc_realized populated in results."""
+        result = simulate_power(
+            CallawaySantAnna(),
+            treatment_effect=3.0,
+            n_simulations=10,
+            seed=42,
+            survey_config=_SURVEY_CFG,
+            **_SIM_KW,
+        )
+        assert result.mean_deff is not None
+        assert result.mean_deff > 1.0
+        assert result.mean_icc_realized is not None
+        assert result.mean_icc_realized > 0
+
+    def test_survey_power_curve(self):
+        """survey_config works with effect_sizes (power curve)."""
+        result = simulate_power(
+            CallawaySantAnna(),
+            effect_sizes=[1.0, 3.0],
+            n_simulations=10,
+            seed=42,
+            survey_config=_SURVEY_CFG,
+            **_SIM_KW,
+        )
+        assert len(result.powers) == 2
+        assert result.powers[1] >= result.powers[0]
+
+    # -- Validation: data_generator_kwargs conflicts --
+
+    def test_survey_data_gen_kwargs_blocked(self):
+        """Survey-config-managed keys in data_generator_kwargs raise ValueError."""
+        with pytest.raises(ValueError, match="managed by survey_config"):
+            simulate_power(
+                CallawaySantAnna(),
+                data_generator_kwargs={"n_strata": 10},
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
+
+    def test_survey_data_gen_kwargs_passthrough(self):
+        """Allowed keys (unit_fe_sd) pass through."""
+        result = simulate_power(
+            CallawaySantAnna(),
+            treatment_effect=3.0,
+            data_generator_kwargs={"unit_fe_sd": 0.5},
+            survey_config=_SURVEY_CFG,
+            n_simulations=10,
+            seed=42,
+            **_SIM_KW,
+        )
+        assert 0 <= result.power <= 1
+
+    def test_survey_treatment_period_validation(self):
+        """treatment_period=0 raises with survey_config."""
+        with pytest.raises(ValueError, match="treatment_period must be >= 1"):
+            simulate_power(
+                CallawaySantAnna(),
+                treatment_period=0,
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                n_units=100,
+                n_periods=4,
+                sigma=1.0,
+                progress=False,
+            )
+
+    # -- simulate_mde and simulate_sample_size --
+
+    def test_survey_mde(self):
+        """simulate_mde with survey_config."""
+        result = simulate_mde(
+            CallawaySantAnna(),
+            n_simulations=10,
+            max_steps=3,
+            seed=42,
+            survey_config=_SURVEY_CFG,
+            **_SIM_KW,
+        )
+        assert isinstance(result, SimulationMDEResults)
+        assert result.mde > 0
+        assert result.survey_config is not None
+
+    def test_survey_sample_size_min_n_floor(self):
+        """simulate_sample_size with survey_config respects min_viable_n."""
+        cfg = SurveyPowerConfig(n_strata=5, psu_per_stratum=8)
+        # Use small effect so bisection needs larger N
+        result = simulate_sample_size(
+            CallawaySantAnna(),
+            treatment_effect=0.5,
+            sigma=3.0,
+            n_simulations=10,
+            max_steps=3,
+            seed=42,
+            survey_config=cfg,
+            n_periods=4,
+            treatment_period=2,
+            progress=False,
+        )
+        assert isinstance(result, SimulationSampleSizeResults)
+        assert result.required_n >= cfg.min_viable_n
+        assert result.survey_config is not None
+
+    # -- Closed-form deff tests --
+
+    def test_closed_form_deff_default(self):
+        """deff=1.0 preserves existing behavior exactly."""
+        p1 = compute_power(effect_size=5.0, n_treated=50, n_control=50, sigma=10.0)
+        p2 = compute_power(effect_size=5.0, n_treated=50, n_control=50, sigma=10.0, deff=1.0)
+        assert p1 == p2
+
+    def test_closed_form_deff_increases_mde(self):
+        """deff > 1 increases MDE."""
+        mde1 = compute_mde(n_treated=50, n_control=50, sigma=10.0)
+        mde2 = compute_mde(n_treated=50, n_control=50, sigma=10.0, deff=2.0)
+        assert mde2 > mde1
+
+    def test_closed_form_deff_increases_required_n(self):
+        """deff > 1 increases required N."""
+        n1 = compute_sample_size(effect_size=5.0, sigma=10.0)
+        n2 = compute_sample_size(effect_size=5.0, sigma=10.0, deff=2.0)
+        assert n2 > n1
+
+    def test_closed_form_deff_and_rho(self):
+        """Both deff and rho can be set simultaneously."""
+        pa = PowerAnalysis()
+        result = pa.power(
+            effect_size=5.0,
+            n_treated=50,
+            n_control=50,
+            sigma=10.0,
+            n_pre=2,
+            n_post=2,
+            rho=0.3,
+            deff=2.0,
+        )
+        assert 0 < result.power < 1
+        assert result.deff == 2.0
+        assert result.rho == 0.3
+
+    def test_closed_form_deff_in_results(self):
+        """deff appears in PowerResults.to_dict()."""
+        pa = PowerAnalysis()
+        result = pa.power(effect_size=5.0, n_treated=50, n_control=50, sigma=10.0, deff=1.5)
+        d = result.to_dict()
+        assert "deff" in d
+        assert d["deff"] == 1.5
+
+    def test_closed_form_deff_warning(self):
+        """deff < 1.0 emits warning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            compute_power(effect_size=5.0, n_treated=50, n_control=50, sigma=10.0, deff=0.8)
+            assert any("deff=0.8000 < 1.0" in str(x.message) for x in w)
+
+    def test_closed_form_deff_invalid(self):
+        """deff <= 0 raises ValueError."""
+        with pytest.raises(ValueError, match="deff must be > 0"):
+            compute_power(effect_size=5.0, n_treated=50, n_control=50, sigma=10.0, deff=0.0)
+
+    # -- SurveyPowerConfig validation --
+
+    def test_survey_config_validation_psu(self):
+        with pytest.raises(ValueError, match="psu_per_stratum"):
+            SurveyPowerConfig(psu_per_stratum=1)
+
+    def test_survey_config_validation_strata(self):
+        with pytest.raises(ValueError, match="n_strata"):
+            SurveyPowerConfig(n_strata=0)
+
+    def test_survey_config_validation_weight_variation(self):
+        with pytest.raises(ValueError, match="weight_variation"):
+            SurveyPowerConfig(weight_variation="extreme")
+
+    def test_survey_config_validation_icc(self):
+        with pytest.raises(ValueError, match="icc"):
+            SurveyPowerConfig(icc=1.5)
+
+    def test_survey_config_validation_fpc(self):
+        with pytest.raises(ValueError, match="fpc_per_stratum"):
+            SurveyPowerConfig(fpc_per_stratum=3, psu_per_stratum=8)
