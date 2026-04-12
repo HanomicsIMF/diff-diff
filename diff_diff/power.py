@@ -1943,16 +1943,31 @@ def simulate_power(
                 f"the input treatment_effect under covariate-interaction "
                 f"heterogeneity, which would make bias/coverage/RMSE misleading."
             )
-        # Block panel=False for panel-only estimators. Only
-        # CallawaySantAnna supports repeated cross-sections.
-        if not data_gen_kwargs.get("panel", True):
-            _RCS_SUPPORTED = frozenset({"CallawaySantAnna"})
-            if estimator_name not in _RCS_SUPPORTED:
+
+    # Enforce panel-mode alignment between DGP and estimator.
+    # Runs even with empty data_gen_kwargs to catch CS(panel=False) + default DGP.
+    if use_survey_dgp:
+        dgp_panel = data_gen_kwargs.get("panel", True)
+        est_panel = getattr(estimator, "panel", True)
+        if not dgp_panel:
+            if estimator_name != "CallawaySantAnna":
                 raise ValueError(
                     f"panel=False (repeated cross-sections) is not supported "
                     f"with {estimator_name} under survey_config. Only "
-                    f"{sorted(_RCS_SUPPORTED)} support repeated cross-sections."
+                    f"CallawaySantAnna supports repeated cross-sections."
                 )
+            if est_panel:
+                raise ValueError(
+                    "data_generator_kwargs has panel=False but "
+                    "CallawaySantAnna.panel=True. Use "
+                    "CallawaySantAnna(panel=False) to match."
+                )
+        elif estimator_name == "CallawaySantAnna" and not est_panel:
+            raise ValueError(
+                "CallawaySantAnna(panel=False) requires "
+                "data_generator_kwargs={'panel': False} to generate "
+                "repeated cross-section data."
+            )
 
     # SyntheticDiD placebo variance requires n_control > n_treated.
     # Check after merging data_generator_kwargs so overrides of n_treated

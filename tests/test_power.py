@@ -2435,7 +2435,7 @@ class TestSurveyPower:
             )
 
     def test_survey_allows_panel_false_for_cs(self):
-        """panel=False allowed for CallawaySantAnna (supports RCS)."""
+        """panel=False allowed for CallawaySantAnna(panel=False) (supports RCS)."""
         result = simulate_power(
             CallawaySantAnna(panel=False),
             treatment_effect=3.0,
@@ -2446,6 +2446,29 @@ class TestSurveyPower:
             **_SIM_KW,
         )
         assert 0 <= result.power <= 1
+
+    def test_survey_rejects_cs_panel_mismatch_dgp_rcs(self):
+        """CS(panel=True) + DGP panel=False rejected."""
+        with pytest.raises(ValueError, match="CallawaySantAnna.panel=True"):
+            simulate_power(
+                CallawaySantAnna(),  # panel=True by default
+                data_generator_kwargs={"panel": False},
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
+
+    def test_survey_rejects_cs_panel_mismatch_est_rcs(self):
+        """CS(panel=False) + default DGP (panel=True) rejected."""
+        with pytest.raises(ValueError, match="panel=False.*requires"):
+            simulate_power(
+                CallawaySantAnna(panel=False),
+                survey_config=_SURVEY_CFG,
+                n_simulations=1,
+                seed=42,
+                **_SIM_KW,
+            )
 
     # -- Closed-form deff tests --
 
