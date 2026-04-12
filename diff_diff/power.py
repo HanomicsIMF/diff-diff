@@ -144,12 +144,17 @@ class SurveyPowerConfig:
                 "Cannot specify both icc and a non-default psu_re_sd. "
                 "icc overrides psu_re_sd via the ICC formula."
             )
-        if self.weight_cv is not None and self.weight_cv <= 0:
-            raise ValueError(f"weight_cv must be > 0, got {self.weight_cv}")
-        if self.weight_cv is not None and self.weight_variation != "moderate":
+        if self.weight_cv is not None:
+            if not np.isfinite(self.weight_cv) or self.weight_cv <= 0:
+                raise ValueError(f"weight_cv must be finite and > 0, got {self.weight_cv}")
+            if self.weight_variation != "moderate":
+                raise ValueError(
+                    "Cannot specify both weight_cv and a non-default "
+                    "weight_variation. weight_cv overrides weight_variation."
+                )
+        if not np.isfinite(self.psu_period_factor) or self.psu_period_factor < 0:
             raise ValueError(
-                "Cannot specify both weight_cv and a non-default "
-                "weight_variation. weight_cv overrides weight_variation."
+                f"psu_period_factor must be finite and >= 0, got {self.psu_period_factor}"
             )
         if self.fpc_per_stratum < self.psu_per_stratum:
             raise ValueError(
@@ -1229,8 +1234,8 @@ class PowerAnalysis:
     @staticmethod
     def _validate_deff(deff: float) -> None:
         """Validate deff parameter and warn if < 1."""
-        if deff <= 0:
-            raise ValueError(f"deff must be > 0, got {deff}")
+        if not np.isfinite(deff) or deff <= 0:
+            raise ValueError(f"deff must be finite and > 0, got {deff}")
         if deff < 1.0:
             warnings.warn(
                 f"deff={deff:.4f} < 1.0 implies net variance reduction "

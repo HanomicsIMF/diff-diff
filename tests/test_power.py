@@ -2522,9 +2522,19 @@ class TestSurveyPower:
             compute_power(effect_size=5.0, n_treated=50, n_control=50, sigma=10.0, deff=0.8)
             assert any("deff=0.8000 < 1.0" in str(x.message) for x in w)
 
+    def test_closed_form_deff_nan(self):
+        """deff=NaN raises ValueError."""
+        with pytest.raises(ValueError, match="deff must be finite"):
+            compute_power(effect_size=5.0, n_treated=50, n_control=50, sigma=10.0, deff=np.nan)
+
+    def test_closed_form_deff_inf(self):
+        """deff=inf raises ValueError."""
+        with pytest.raises(ValueError, match="deff must be finite"):
+            compute_power(effect_size=5.0, n_treated=50, n_control=50, sigma=10.0, deff=np.inf)
+
     def test_closed_form_deff_invalid(self):
         """deff <= 0 raises ValueError."""
-        with pytest.raises(ValueError, match="deff must be > 0"):
+        with pytest.raises(ValueError, match="deff must be finite"):
             compute_power(effect_size=5.0, n_treated=50, n_control=50, sigma=10.0, deff=0.0)
 
     # -- SurveyPowerConfig validation --
@@ -2556,6 +2566,18 @@ class TestSurveyPower:
     def test_survey_config_validation_weight_cv_variation_conflict(self):
         with pytest.raises(ValueError, match="weight_cv.*weight_variation"):
             SurveyPowerConfig(weight_cv=0.5, weight_variation="high")
+
+    def test_survey_config_validation_weight_cv_nonfinite(self):
+        with pytest.raises(ValueError, match="weight_cv must be finite"):
+            SurveyPowerConfig(weight_cv=np.inf)
+
+    def test_survey_config_validation_psu_period_factor_nonfinite(self):
+        with pytest.raises(ValueError, match="psu_period_factor must be finite"):
+            SurveyPowerConfig(psu_period_factor=np.nan)
+
+    def test_survey_config_validation_psu_period_factor_negative(self):
+        with pytest.raises(ValueError, match="psu_period_factor must be finite"):
+            SurveyPowerConfig(psu_period_factor=-1.0)
 
     def test_survey_rejects_estimator_kwargs_survey_design(self):
         """estimator_kwargs cannot contain survey_design when survey_config set."""
