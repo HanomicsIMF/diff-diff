@@ -915,6 +915,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # via per-group DID_{g,l}) will compute the effects. Only raise if
         # L_max is also None (i.e., no fallback path).
         is_binary = set(np.unique(D_mat[~np.isnan(D_mat)])).issubset({0.0, 1.0})
+        if not is_binary and L_max is None:
+            raise ValueError(
+                "Non-binary treatment requires L_max >= 1. The per-period DID "
+                "path uses binary joiner/leaver categorization; set L_max to "
+                "use the per-group DID_{g,l} building block which handles "
+                "non-binary treatment."
+            )
         if N_S == 0 and (L_max is None or is_binary):
             raise ValueError(
                 "No switching cells found in the data after filtering: every "
@@ -1037,7 +1044,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         multi_horizon_se: Optional[Dict[int, float]] = None
         multi_horizon_inference: Optional[Dict[int, Dict[str, Any]]] = None
 
-        if L_max is not None and L_max >= 2:
+        if L_max is not None and L_max >= 1:
             multi_horizon_dids = _compute_multi_horizon_dids(
                 D_mat=D_mat,
                 Y_mat=Y_mat,
@@ -1161,7 +1168,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         normalized_effects_dict: Optional[Dict[int, Dict[str, Any]]] = None
         cost_benefit_result: Optional[Dict[str, Any]] = None
 
-        if L_max is not None and L_max >= 2 and multi_horizon_dids is not None:
+        if L_max is not None and L_max >= 1 and multi_horizon_dids is not None:
             # Dynamic placebos DID^{pl}_l
             if self.placebo:
                 multi_horizon_placebos = _compute_multi_horizon_placebos(
@@ -1368,7 +1375,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
         # Phase 1 per-period placebo (L_max=None): SE is NaN because the
         # per-period DID_M^pl aggregation path does not have an IF
-        # derivation. Multi-horizon placebos (L_max >= 2) use the per-group
+        # derivation. Multi-horizon placebos (L_max >= 1) use the per-group
         # placebo IF computed above and have valid SE.
         placebo_se = float("nan")
         placebo_t = float("nan")
@@ -1378,7 +1385,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             warnings.warn(
                 "Single-period placebo SE (L_max=None) is NaN. The "
                 "per-period DID_M^pl aggregation path does not have an "
-                "influence-function derivation. Use L_max >= 2 for "
+                "influence-function derivation. Use L_max >= 1 for "
                 "multi-horizon placebos with valid SE. The placebo "
                 "point estimate (results.placebo_effect) is still "
                 "meaningful.",
@@ -1416,7 +1423,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 placebo_horizon_if is not None
                 and multi_horizon_placebos is not None
                 and L_max is not None
-                and L_max >= 2
+                and L_max >= 1
             ):
                 singleton_baseline_set_pl_b = set(singleton_baseline_groups)
                 eligible_mask_pl_b = np.array(
@@ -1464,7 +1471,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 and multi_horizon_dids is not None
                 and multi_horizon_se is not None
                 and L_max is not None
-                and L_max >= 2
+                and L_max >= 1
             ):
                 singleton_baseline_set_b = set(singleton_baseline_groups)
                 eligible_mask_b = np.array(
@@ -1565,10 +1572,19 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # Step 20: Build the results dataclass
         # ------------------------------------------------------------------
         # event_study_effects: when L_max is None, l=1 mirrors Phase 1
-        # DID_M (per-period path). When L_max >= 2, ALL horizons including
+        # DID_M (per-period path). When L_max >= 1, ALL horizons including
         # l=1 use the per-group DID_{g,l} path for a consistent estimand.
         if multi_horizon_inference is not None and 1 in multi_horizon_inference:
-            # Phase 2 mode: use per-group path for all horizons
+            # Per-group mode: use per-group path for all horizons.
+            # Also populate overall_att from l=1 when per-period path
+            # yielded NaN (non-binary treatment or no binary switchers).
+            if np.isnan(overall_att):
+                l1_inf = multi_horizon_inference[1]
+                overall_att = l1_inf["effect"]
+                overall_se = l1_inf["se"]
+                overall_t = l1_inf["t_stat"]
+                overall_p = l1_inf["p_value"]
+                overall_ci = l1_inf["conf_int"]
             event_study_effects: Dict[int, Dict[str, Any]] = dict(multi_horizon_inference)
         else:
             # Phase 1 mode (L_max=None): l=1 from per-period path

@@ -53,7 +53,9 @@ class DCDHBootstrapResults:
     analytical variance for ``DID_l`` only, not for the per-period
     ``DID_M^pl``. The ``placebo_se`` / ``placebo_ci`` / ``placebo_p_value``
     fields below remain ``None`` for Phase 1. Multi-horizon placebos
-    (``L_max >= 2``) have valid SE via ``placebo_horizon_ses``.
+    (``L_max >= 1``) have valid SE via ``placebo_horizon_ses`` - this is
+    a library extension applying the same IF/variance structure to the
+    placebo estimand (see REGISTRY.md dynamic placebo SE Note).
 
     Attributes
     ----------

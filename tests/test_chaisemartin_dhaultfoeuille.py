@@ -130,8 +130,8 @@ class TestChaisemartinDHaultfoeuilleBasicAPI:
                 treatment="treatment",
             )
 
-    def test_non_binary_treatment_accepted(self):
-        """Non-binary treatment is now supported."""
+    def test_non_binary_treatment_requires_lmax(self):
+        """Non-binary treatment without L_max raises ValueError."""
         df = pd.DataFrame(
             {
                 "group": [1, 1, 2, 2],
@@ -141,6 +141,30 @@ class TestChaisemartinDHaultfoeuilleBasicAPI:
             }
         )
         est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="Non-binary treatment requires L_max"):
+            est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_non_binary_treatment_with_lmax(self):
+        """Non-binary treatment works with L_max=1."""
+        np.random.seed(77)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 2  # non-binary jump
+                y = 10 + t + d * 1.5 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             results = est.fit(
@@ -149,6 +173,7 @@ class TestChaisemartinDHaultfoeuilleBasicAPI:
                 group="group",
                 time="period",
                 treatment="treatment",
+                L_max=1,
             )
         assert np.isfinite(results.overall_att)
 
@@ -1795,23 +1820,27 @@ class TestMultiHorizon:
         assert r.sup_t_bands is None
         assert r.placebo_event_study is None
 
-    def test_L_max_1_equivalent_to_none(self, data):
-        """L_max=1 produces same DID_1 as L_max=None."""
+    def test_L_max_1_uses_per_group_path(self, data):
+        """L_max=1 uses the per-group DID_{g,1} path (same as L_max >= 2
+        uses for l=1). This is a different estimand from the per-period
+        DID_M path used by L_max=None - documented as a REGISTRY Note."""
         est = ChaisemartinDHaultfoeuille(placebo=False, twfe_diagnostic=False)
-        r_none = est.fit(
-            data, outcome="outcome", group="group", time="period", treatment="treatment"
-        )
-        r_one = est.fit(
-            data,
-            outcome="outcome",
-            group="group",
-            time="period",
-            treatment="treatment",
-            L_max=1,
-        )
-        assert r_one.event_study_effects[1]["effect"] == pytest.approx(
-            r_none.event_study_effects[1]["effect"]
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r_one = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=1,
+            )
+        # Per-group path produces finite estimate and SE
+        assert np.isfinite(r_one.event_study_effects[1]["effect"])
+        assert np.isfinite(r_one.event_study_effects[1]["se"])
+        assert np.isfinite(r_one.overall_att)
+        # L_max=1 should have exactly 1 horizon
+        assert set(r_one.event_study_effects.keys()) == {1}
 
     def test_L_max_populates_event_study_effects(self, data):
         """L_max=3 populates horizons {1, 2, 3} in event_study_effects."""
