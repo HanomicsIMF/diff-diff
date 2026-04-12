@@ -1043,6 +1043,11 @@ class TestBootstrap:
         # the bootstrap output.
         summary_text = results.summary()
         assert "DID_M" in summary_text
+        # The summary footer should mention bootstrap inference, NOT
+        # the analytical-CI conservativeness note (which only applies
+        # when n_bootstrap=0). This pins the P2 fix from Round 11.
+        assert "multiplier-bootstrap percentile inference" in summary_text
+        assert "analytical CI is conservative" not in summary_text
         df_overall = results.to_dataframe(level="overall")
         assert df_overall.iloc[0]["p_value"] == pytest.approx(br.overall_p_value)
         assert df_overall.iloc[0]["conf_int_lower"] == pytest.approx(br.overall_ci[0])
@@ -1090,6 +1095,9 @@ class TestResultsDataclass:
         assert "DID_M" in out
         assert "DID_+" in out
         assert "DID_-" in out
+        # Analytical mode (n_bootstrap=0) shows the conservative-CI note
+        assert "analytical CI is conservative" in out
+        assert "multiplier-bootstrap" not in out
 
     def test_print_summary(self, results, capsys):
         results.print_summary()

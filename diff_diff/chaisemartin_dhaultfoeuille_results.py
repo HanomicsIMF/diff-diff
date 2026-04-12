@@ -520,10 +520,18 @@ class ChaisemartinDHaultfoeuilleResults:
             lines.append(f"{'CV (SE/|DID_M|):':<25} {cv:>10.4f}")
 
         lines.append("")
-        lines.append(
-            "Note: dCDH analytical CI is conservative under Assumption 8" " (independent groups);"
-        )
-        lines.append("      exact under iid sampling.")
+        if self.bootstrap_results is not None:
+            lines.append("Note: p-value and CI are multiplier-bootstrap percentile inference")
+            lines.append(
+                f"      ({self.bootstrap_results.n_bootstrap} iterations, "
+                f"{self.bootstrap_results.weight_type} weights)."
+            )
+        else:
+            lines.append(
+                "Note: dCDH analytical CI is conservative under Assumption 8"
+                " (independent groups);"
+            )
+            lines.append("      exact under iid sampling.")
         lines.append("")
 
         # --- Joiners and leavers ---
