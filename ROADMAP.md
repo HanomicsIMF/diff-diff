@@ -154,12 +154,12 @@ The dynamic companion paper subsumes the AER 2020 paper: `DID_1 = DID_M`. The si
 |------|----------|--------|
 | **2a.** Multi-horizon `DID_l` via per-group `DID_{g,l}` building block, with `L_max` parameter | HIGH | Shipped |
 | **2b.** Multi-horizon analytical SE (cohort-recentered plug-in per horizon) | HIGH | Shipped |
-| **2c.** Dynamic placebos `DID^{pl}_l` for pre-trends testing (Web Appendix Section 1.1 of dynamic paper) | HIGH | Shipped |
+| **2c.** Dynamic placebos `DID^{pl}_l` for pre-trends testing (Web Appendix Section 1.1 of dynamic paper) | HIGH | Shipped (point estimates; SE deferred) |
 | **2d.** Normalized estimator `DID^n_l` (Section 3.2 of dynamic paper) | MEDIUM | Shipped |
 | **2e.** Cost-benefit aggregate `delta` (Section 3.3 of dynamic paper, Lemma 4) | MEDIUM | Shipped |
 | **2f.** Simultaneous (sup-t) confidence bands for event study plots | MEDIUM | Shipped |
 | **2g.** `plot_event_study()` integration; `< 50%`-of-switchers warning for far horizons | MEDIUM | Shipped |
-| **2h.** Parity tests vs `did_multiplegt_dyn` for multi-horizon designs | HIGH | In progress |
+| **2h.** Parity tests vs `did_multiplegt_dyn` for multi-horizon designs | HIGH | Shipped (point estimates; SE/placebo parity deferred) |
 
 ### Phase 3: Covariates, extensions, and tutorial
 

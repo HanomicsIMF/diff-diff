@@ -1036,9 +1036,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 warnings.warn(
                     f"Multi-horizon control-availability violations in "
                     f"{len(mh_a11)} (group, horizon) pair(s): affected "
-                    f"DID_{{g,l}} values are zeroed but their switcher "
-                    f"counts are retained in N_l (matching the A11 "
-                    f"zero-retention convention). Examples: "
+                    f"groups are excluded from N_l (no observed baseline-"
+                    f"matched controls at the outcome period). Examples: "
                     + ", ".join(mh_a11[:3])
                     + (f" (and {len(mh_a11) - 3} more)" if len(mh_a11) > 3 else ""),
                     UserWarning,
@@ -1160,8 +1159,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     warnings.warn(
                         f"Multi-horizon placebo control-availability "
                         f"violations in {len(pl_a11)} (group, lag) pair(s): "
-                        f"affected DID^{{pl}}_l values are zeroed but "
-                        f"retained in N^{{pl}}_l. Examples: "
+                        f"affected groups are excluded from N^{{pl}}_l "
+                        f"(no observed controls). Examples: "
                         + ", ".join(pl_a11[:3])
                         + (f" (and {len(pl_a11) - 3} more)" if len(pl_a11) > 3 else ""),
                         UserWarning,

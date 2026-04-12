@@ -1205,7 +1205,7 @@ ChaisemartinDHaultfoeuille(
 
 | Field | Description |
 |-------|-------------|
-| `overall_att`, `overall_se`, `overall_conf_int` | `DID_M` and inference (cohort-recentered analytical SE by default; multiplier-bootstrap percentile inference when `n_bootstrap > 0`) |
+| `overall_att`, `overall_se`, `overall_conf_int` | `DID_M` when `L_max=None`; cost-benefit `delta` when `L_max > 1` (delta-method SE from per-horizon SEs) |
 | `joiners_att`, `leavers_att` | Decomposition into the joiners (`DID_+`) and leavers (`DID_-`) views |
 | `placebo_effect` | Single-lag placebo (`DID_M^pl`) point estimate |
 | `per_period_effects` | Per-period decomposition with explicit A11-violation flags |
@@ -1252,7 +1252,7 @@ print(f"Fraction of negative weights: {diagnostic.fraction_negative:.3f}")
 print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 ```
 
-> **Note:** The Phase 1 placebo SE is intentionally `NaN` with a warning. The dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only — not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo via the dynamic paper's machinery. Until then, the placebo point estimate is meaningful but its inference fields are NaN-consistent (and `results.placebo_se`, `results.placebo_p_value`, etc. remain `NaN` even when `n_bootstrap > 0`).
+> **Note:** Placebo SE is `NaN` for both the single-lag `DID_M^pl` and the dynamic placebos `DID^{pl}_l`. The point estimates are meaningful for visual pre-trends inspection; formal placebo inference (influence-function derivation) is deferred to a follow-up. See `REGISTRY.md` for the full contract.
 
 > **Note:** By default (`drop_larger_lower=True`), the estimator drops groups whose treatment switches more than once before estimation. This matches R `DIDmultiplegtDYN`'s default and is required for the analytical variance formula to be consistent with the point estimate. Each drop emits an explicit warning.
 
