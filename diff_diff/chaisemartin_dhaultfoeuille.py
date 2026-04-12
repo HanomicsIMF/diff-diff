@@ -1649,6 +1649,21 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             eff + crit * se,
                         )
 
+        # When L_max >= 1 and the per-group path is active, sync
+        # overall_* from event_study_effects[1] AFTER bootstrap propagation
+        # so that bootstrap SE/p/CI flow to the top-level surface.
+        if (
+            L_max is not None
+            and L_max >= 1
+            and 1 in event_study_effects
+        ):
+            es1 = event_study_effects[1]
+            overall_att = es1["effect"]
+            overall_se = es1["se"]
+            overall_t = es1["t_stat"]
+            overall_p = es1["p_value"]
+            overall_ci = es1["conf_int"]
+
         # Phase 2: override overall_att with cost-benefit delta when L_max > 1
         effective_overall_att = overall_att
         effective_overall_se = overall_se

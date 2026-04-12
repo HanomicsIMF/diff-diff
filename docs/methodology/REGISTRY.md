@@ -517,7 +517,7 @@ DID_M^pl = (1/N_S^pl) * sum_{t>=3} (
 
 *Phase 2: Multi-horizon event study (Equation 3 and 5 of the dynamic companion paper):*
 
-When `L_max >= 2`, the estimator computes the per-group building block `DID_{g,l}` and the aggregate `DID_l` for each horizon:
+When `L_max >= 1`, the estimator computes the per-group building block `DID_{g,l}` and the aggregate `DID_l` for each horizon. When `L_max=1`, `overall_att` holds `DID_1` (the per-group estimand, not the per-period `DID_M`). When `L_max >= 2`, `overall_att` holds the cost-benefit delta. When `L_max=None`, the per-period `DID_M` path is used:
 
 ```
 DID_{g,l} = Y_{g, F_g-1+l} - Y_{g, F_g-1}

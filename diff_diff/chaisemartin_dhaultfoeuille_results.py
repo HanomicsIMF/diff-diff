@@ -303,9 +303,11 @@ class ChaisemartinDHaultfoeuilleResults:
         Significance level used for confidence intervals.
     event_study_effects : dict, optional
         Populated with horizon ``1`` when ``L_max=None``, or horizons
-        ``1..L_max`` when ``L_max >= 2``.
+        ``1..L_max`` when ``L_max >= 1``. When ``L_max >= 1``, uses the
+        per-group ``DID_{g,l}`` path; when ``L_max=None``, uses the
+        per-period ``DID_M`` path.
     normalized_effects : dict, optional
-        Normalized estimator ``DID^n_l``. Populated when ``L_max >= 2``.
+        Normalized estimator ``DID^n_l``. Populated when ``L_max >= 1``.
     cost_benefit_delta : dict, optional
         Cost-benefit aggregate ``delta``. Populated when ``L_max >= 2``.
     sup_t_bands : dict, optional
@@ -410,7 +412,12 @@ class ChaisemartinDHaultfoeuilleResults:
     def __repr__(self) -> str:
         """Concise string representation."""
         sig = _get_significance_stars(self.overall_p_value)
-        label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+        if self.L_max is not None and self.L_max >= 2:
+            label = "delta"
+        elif self.L_max is not None and self.L_max == 1:
+            label = "DID_1"
+        else:
+            label = "DID_M"
         return (
             f"ChaisemartinDHaultfoeuilleResults("
             f"{label}={self.overall_att:.4f}{sig}, "

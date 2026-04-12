@@ -1820,6 +1820,24 @@ class TestMultiHorizon:
         assert r.sup_t_bands is None
         assert r.placebo_event_study is None
 
+    def test_L_max_1_bootstrap_overall_matches_es1(self, data, ci_params):
+        """With L_max=1 + bootstrap, overall_* must match event_study_effects[1]."""
+        n_boot = ci_params.bootstrap(99)
+        est = ChaisemartinDHaultfoeuille(
+            placebo=False, twfe_diagnostic=False, n_bootstrap=n_boot, seed=42
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                data, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        es1 = r.event_study_effects[1]
+        assert r.overall_att == es1["effect"]
+        assert r.overall_se == es1["se"]
+        assert r.overall_p_value == es1["p_value"]
+        assert r.overall_conf_int == es1["conf_int"]
+
     def test_L_max_1_uses_per_group_path(self, data):
         """L_max=1 uses the per-group DID_{g,1} path (same as L_max >= 2
         uses for l=1). This is a different estimand from the per-period
@@ -2370,7 +2388,8 @@ class TestNonBinaryTreatment:
         assert r.overall_att == r.event_study_effects[1]["effect"]
 
     def test_nonbinary_bootstrap(self, ci_params):
-        """Non-binary panel with bootstrap should produce finite event study SEs."""
+        """Non-binary panel with bootstrap: finite event study SEs AND
+        top-level overall_* matches event_study_effects[1]."""
         np.random.seed(66)
         n_boot = ci_params.bootstrap(99)
         rows = []
@@ -2397,6 +2416,11 @@ class TestNonBinaryTreatment:
         assert r.bootstrap_results.event_study_ses is not None
         assert 1 in r.bootstrap_results.event_study_ses
         assert np.isfinite(r.bootstrap_results.event_study_ses[1])
+        # Top-level overall_* must match event_study_effects[1]
+        es1 = r.event_study_effects[1]
+        assert r.overall_att == es1["effect"]
+        assert r.overall_se == es1["se"]
+        assert r.overall_p_value == es1["p_value"]
 
     def test_twfe_diagnostic_skipped_nonbinary(self):
         """TWFE diagnostic should be skipped (with warning) for non-binary."""
