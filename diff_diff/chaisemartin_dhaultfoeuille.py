@@ -150,6 +150,24 @@ def _validate_and_aggregate_to_cells(
 
     df = data.copy()
 
+    # 1b. Group and time NaN checks (before groupby, which silently drops NaN keys)
+    n_nan_group = int(df[group].isna().sum())
+    if n_nan_group > 0:
+        raise ValueError(
+            f"Group column {group!r} contains {n_nan_group} NaN value(s). "
+            "groupby silently drops NaN keys, which would change the "
+            "estimation sample without warning. Drop or impute NaN group "
+            "values before calling fit() or twowayfeweights()."
+        )
+    n_nan_time = int(df[time].isna().sum())
+    if n_nan_time > 0:
+        raise ValueError(
+            f"Time column {time!r} contains {n_nan_time} NaN value(s). "
+            "groupby silently drops NaN keys, which would change the "
+            "estimation sample without warning. Drop or impute NaN time "
+            "values before calling fit() or twowayfeweights()."
+        )
+
     # 2. Treatment numeric coercion + NaN check
     try:
         df[treatment] = pd.to_numeric(df[treatment])

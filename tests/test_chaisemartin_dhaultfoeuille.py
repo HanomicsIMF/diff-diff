@@ -1652,6 +1652,56 @@ class TestTwowayFeweightsHelper:
                 treatment="treatment",
             )
 
+    def test_twowayfeweights_rejects_nan_group(self):
+        data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        data.loc[data.index[0], "group"] = float("nan")
+        with pytest.raises(ValueError, match="Group column.*NaN"):
+            twowayfeweights(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_twowayfeweights_rejects_nan_time(self):
+        data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        data.loc[data.index[0], "period"] = float("nan")
+        with pytest.raises(ValueError, match="Time column.*NaN"):
+            twowayfeweights(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_fit_rejects_nan_group(self):
+        data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        data.loc[data.index[0], "group"] = float("nan")
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="Group column.*NaN"):
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
+    def test_fit_rejects_nan_time(self):
+        data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        data.loc[data.index[0], "period"] = float("nan")
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="Time column.*NaN"):
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+            )
+
     def test_twowayfeweights_rejects_empty_input(self):
         df = pd.DataFrame(columns=["group", "period", "treatment", "outcome"])
         with pytest.raises(ValueError):
