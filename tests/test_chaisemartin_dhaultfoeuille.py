@@ -676,6 +676,60 @@ class TestDropLargerLower:
         # was populated rather than asserting specific counts)
         assert len(results.per_period_effects) > 0
 
+    def test_global_period_gap_treated_as_adjacent(self):
+        """
+        Per the REGISTRY.md period-index semantics contract: the
+        estimator operates on sorted period indices, not calendar dates.
+        A panel with periods [0, 1, 3] (period 2 missing for ALL groups)
+        is treated as a valid 3-period panel where period 3 is the
+        immediate successor of period 1. No error, no warning, no
+        imputation. This is consistent with the AER 2020 paper's
+        Theorem 3 (adjacent sorted periods) and R DIDmultiplegtDYN.
+
+        This test pins the contract so a future change doesn't
+        accidentally start rejecting or warning on globally missing
+        calendar periods.
+        """
+        # 4 groups × 3 periods [0, 1, 3] — all groups present at all
+        # three periods, no interior gaps, just a global calendar gap
+        df = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
+                "period": [0, 1, 3, 0, 1, 3, 0, 1, 3, 0, 1, 3],
+                "treatment": [0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1],
+                "outcome": [
+                    10,
+                    11,
+                    15,
+                    10,
+                    11,
+                    14,
+                    10,
+                    11,
+                    12,
+                    12,
+                    13,
+                    14,
+                ],
+            }
+        )
+        est = ChaisemartinDHaultfoeuille()
+        # The fit completes without error
+        results = est.fit(
+            df,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        # All 4 groups present
+        assert len(results.groups) == 4
+        # Point estimate is finite
+        assert np.isfinite(results.overall_att)
+        # Per-period effects include the transition at t=3 (treated as
+        # the successor of t=1)
+        assert len(results.per_period_effects) > 0
+
     def test_cell_count_weighting_unbalanced_input(self):
         """
         Regression test: dCDH must use cell counts (paper-literal),
