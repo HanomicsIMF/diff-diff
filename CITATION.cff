@@ -5,6 +5,7 @@ type: software
 authors:
   - given-names: Isaac
     family-names: Gerber
+    orcid: "https://orcid.org/0009-0009-3275-5591"
 license: MIT
 version: "3.0.1"
 date-released: "2026-04-07"

@@ -21,13 +21,13 @@ bibliography: paper.bib
 # Summary
 
 `diff-diff` is a Python library for Difference-in-Differences (DiD) causal inference
-analysis. It provides 16 estimators covering the full modern DiD toolkit - from classic
+analysis. It provides 17 estimators covering the full modern DiD toolkit - from classic
 two-group/two-period designs through heterogeneity-robust staggered adoption methods,
 synthetic control hybrids, and sensitivity analysis - under a consistent scikit-learn-style
-API. All estimators accept an optional `SurveyDesign` object for design-based variance
+API. Most estimators accept an optional `SurveyDesign` object for design-based variance
 estimation with complex survey data, a capability absent from existing DiD software in any
-language. Point estimates and standard errors are validated against established R packages
-to machine precision.
+language. Point estimates are validated against established R packages to machine precision,
+with standard errors matching exactly or to sub-percent relative differences.
 
 # Statement of Need
 
@@ -47,21 +47,20 @@ common in industry settings for marketing measurement, product experimentation, 
 evaluation - must either context-switch to R, reimplement methods from scratch, or rely on
 partial implementations scattered across unrelated packages.
 
-`diff-diff` fills this gap by providing a single-import library that covers 16 estimators
-with a consistent API, survey-weighted inference, and numerical validation against R to
-machine precision. It targets both applied researchers who need rigorous econometric methods
+`diff-diff` fills this gap by providing a single-import library that covers 17 estimators
+with a consistent API, survey-weighted inference, and numerical validation against R. It targets both applied researchers who need rigorous econometric methods
 and data science practitioners who need accessible causal inference tools integrated into
 Python workflows.
 
 # Key Features
 
-**Breadth of methods.** `diff-diff` implements 16 estimators organized across the modern
+**Breadth of methods.** `diff-diff` implements 17 estimators organized across the modern
 DiD taxonomy: classic DiD and TWFE; heterogeneity-robust staggered estimators including
 Callaway-Sant'Anna [@Callaway2021], Sun-Abraham [@Sun2021], imputation
 [@Borusyak2024], two-stage [@Gardner2022], stacked [@Wing2024], and efficient
 [@Chen2025] approaches; extended designs including synthetic DiD [@Arkhangelsky2021],
 triple difference [@OrtizVillavicencio2025], continuous treatment [@Callaway2024],
-nonlinear ETWFE [@Wooldridge2023], and triply robust panel estimation [@Athey2025];
+nonlinear ETWFE [@Wooldridge2025; @Wooldridge2023], and triply robust panel estimation [@Athey2025];
 reversible-treatment DiD for non-absorbing interventions [@deChaisemartin2020]; and
 diagnostics including Goodman-Bacon decomposition [@GoodmanBacon2021], Honest DiD
 sensitivity analysis [@Rambachan2023], and pre-trends power analysis [@Roth2022]. All
