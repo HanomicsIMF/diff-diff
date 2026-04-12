@@ -513,12 +513,15 @@ class ChaisemartinDHaultfoeuilleResults:
             )
 
         # --- Overall ---
-        overall_label = (
-            "Cost-Benefit Delta"
-            if self.L_max is not None and self.L_max >= 2
-            else "DID_M (Contemporaneous-Switch ATT)"
-        )
-        overall_row_label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+        if self.L_max is not None and self.L_max >= 2:
+            overall_label = "Cost-Benefit Delta"
+            overall_row_label = "delta"
+        elif self.L_max is not None and self.L_max == 1:
+            overall_label = "DID_1 (Per-Group ATT at Horizon 1)"
+            overall_row_label = "DID_1"
+        else:
+            overall_label = "DID_M (Contemporaneous-Switch ATT)"
+            overall_row_label = "DID_M"
         lines.extend(
             [
                 thin,
@@ -543,7 +546,8 @@ class ChaisemartinDHaultfoeuilleResults:
 
         cv = self.coef_var
         if np.isfinite(cv):
-            lines.append(f"{'CV (SE/|DID_M|):':<25} {cv:>10.4f}")
+            cv_label = f"CV (SE/|{overall_row_label}|):"
+            lines.append(f"{cv_label:<25} {cv:>10.4f}")
 
         lines.append("")
         is_delta = (
@@ -653,8 +657,8 @@ class ChaisemartinDHaultfoeuilleResults:
                 ]
             )
 
-        # --- Phase 2: Event study table ---
-        if self.L_max is not None and self.L_max >= 2 and self.event_study_effects:
+        # --- Event study table (L_max >= 1) ---
+        if self.L_max is not None and self.L_max >= 1 and self.event_study_effects:
             lines.extend(
                 [
                     thin,
@@ -799,7 +803,11 @@ class ChaisemartinDHaultfoeuilleResults:
                 [
                     {
                         "estimand": (
-                            "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+                            "delta"
+                            if self.L_max is not None and self.L_max >= 2
+                            else "DID_1"
+                            if self.L_max is not None and self.L_max == 1
+                            else "DID_M"
                         ),
                         "effect": self.overall_att,
                         "se": self.overall_se,
@@ -822,7 +830,12 @@ class ChaisemartinDHaultfoeuilleResults:
             # For the DID_M row, both quantities use the overall switching
             # cell set: n_cells = sum of joiner + leaver cells, and n_obs
             # is the same sum of raw observation counts.
-            overall_est_label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+            if self.L_max is not None and self.L_max >= 2:
+                overall_est_label = "delta"
+            elif self.L_max is not None and self.L_max == 1:
+                overall_est_label = "DID_1"
+            else:
+                overall_est_label = "DID_M"
             rows = [
                 {
                     "estimand": overall_est_label,
@@ -948,7 +961,7 @@ class ChaisemartinDHaultfoeuilleResults:
 
         elif level == "normalized":
             if not self.normalized_effects:
-                raise ValueError("Normalized effects not computed. Pass L_max >= 2 to fit().")
+                raise ValueError("Normalized effects not computed. Pass L_max >= 1 to fit().")
             rows = []
             for h in sorted(self.normalized_effects.keys()):
                 entry = self.normalized_effects[h]
