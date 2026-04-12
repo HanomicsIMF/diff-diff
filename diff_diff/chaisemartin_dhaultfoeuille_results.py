@@ -48,13 +48,12 @@ class DCDHBootstrapResults:
     in the underlying data (e.g., no leavers), the matching fields are
     ``None``.
 
-    **Phase 1 placebo bootstrap is intentionally NOT computed.** The
-    dynamic companion paper Section 3.7.3 derives the cohort-recentered
-    analytical variance for ``DID_l`` only, not for the placebo
+    **Phase 1 per-period placebo (L_max=None) bootstrap is NOT computed.**
+    The dynamic companion paper Section 3.7.3 derives the cohort-recentered
+    analytical variance for ``DID_l`` only, not for the per-period
     ``DID_M^pl``. The ``placebo_se`` / ``placebo_ci`` / ``placebo_p_value``
-    fields below ALWAYS remain ``None`` in Phase 1, even when
-    ``n_bootstrap > 0``. Phase 2 will add multiplier-bootstrap support
-    for the placebo via the dynamic paper's machinery.
+    fields below remain ``None`` for Phase 1. Multi-horizon placebos
+    (``L_max >= 2``) have valid SE via ``placebo_horizon_ses``.
 
     Attributes
     ----------
@@ -301,14 +300,12 @@ class ChaisemartinDHaultfoeuilleResults:
     alpha : float
         Significance level used for confidence intervals.
     event_study_effects : dict, optional
-        In Phase 1 this is populated with a single entry for horizon
-        ``1``, mirroring ``overall_att``. Keeping the field shape stable
-        avoids API churn when Phase 2 adds entries for ``l = 2, ..., L``.
+        Populated with horizon ``1`` when ``L_max=None``, or horizons
+        ``1..L_max`` when ``L_max >= 2``.
     normalized_effects : dict, optional
-        Phase 2 placeholder (``DID^n_l``). Always ``None`` in Phase 1.
+        Normalized estimator ``DID^n_l``. Populated when ``L_max >= 2``.
     cost_benefit_delta : dict, optional
-        Phase 2 placeholder (cost-benefit aggregate ``delta``). Always
-        ``None`` in Phase 1.
+        Cost-benefit aggregate ``delta``. Populated when ``L_max >= 2``.
     sup_t_bands : dict, optional
         Phase 2 placeholder (sup-t simultaneous confidence bands).
     covariate_residuals : pd.DataFrame, optional

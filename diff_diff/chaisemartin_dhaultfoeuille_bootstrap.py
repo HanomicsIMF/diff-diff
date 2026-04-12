@@ -135,9 +135,8 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
             ``divisor`` is the leaver switching-cell total
             ``sum_t N_{0,1,t}``.
         placebo_inputs : tuple, optional
-            Same triple for the placebo ``DID_M^pl`` target. Always
-            ``None`` in Phase 1 — see REGISTRY.md placebo-bootstrap-
-            deferred Note.
+            Same triple for the Phase 1 per-period placebo ``DID_M^pl``.
+            ``None`` when ``L_max=None`` (per-period placebo has no IF).
 
         Returns
         -------

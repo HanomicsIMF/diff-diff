@@ -130,24 +130,27 @@ class TestChaisemartinDHaultfoeuilleBasicAPI:
                 treatment="treatment",
             )
 
-    def test_non_binary_treatment_raises_value_error(self):
+    def test_non_binary_treatment_accepted(self):
+        """Non-binary treatment is now supported."""
         df = pd.DataFrame(
             {
                 "group": [1, 1, 2, 2],
                 "period": [0, 1, 0, 1],
                 "outcome": [10.0, 11.0, 10.0, 12.0],
-                "treatment": [0, 2, 0, 1],  # 2 is non-binary
+                "treatment": [0, 2, 0, 1],
             }
         )
         est = ChaisemartinDHaultfoeuille()
-        with pytest.raises(ValueError, match="binary treatment"):
-            est.fit(
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results = est.fit(
                 df,
                 outcome="outcome",
                 group="group",
                 time="period",
                 treatment="treatment",
             )
+        assert np.isfinite(results.overall_att)
 
     def test_alias_DCDH_identity(self):
         assert DCDH is ChaisemartinDHaultfoeuille
@@ -1064,20 +1067,12 @@ class TestBootstrap:
         assert results.bootstrap_results is not None
         assert results.bootstrap_results.weight_type == "webb"
 
-    def test_placebo_bootstrap_unavailable_in_phase_1(self, data, ci_params):
+    def test_placebo_se_nan_for_phase1_per_period(self, data, ci_params):
         """
-        Phase 1 commitment: the placebo SE is intentionally NaN even when
-        ``n_bootstrap > 0``. The dynamic companion paper Section 3.7.3
-        derives the cohort-recentered analytical variance for ``DID_l``
-        only — the placebo's influence-function machinery is deferred to
-        Phase 2. The bootstrap path covers ``DID_M``, ``DID_+``, and
-        ``DID_-`` only.
-
-        This test pins down the contract so that future contributors do
-        not silently widen the bootstrap surface to include the placebo
-        without also wiring up the documented Phase 2 derivation. If
-        Phase 2 implements the placebo bootstrap, this test should be
-        updated (not deleted) to assert finite placebo bootstrap fields.
+        Phase 1 per-period placebo (L_max=None): SE is NaN because the
+        per-period DID_M^pl aggregation does not have an IF derivation.
+        Multi-horizon placebos (L_max >= 2) have valid SE via the
+        per-group placebo IF - see ``TestMultiHorizonPlacebos``.
         """
         n_boot = ci_params.bootstrap(199)
         est = ChaisemartinDHaultfoeuille(
@@ -1651,17 +1646,18 @@ class TestTwowayFeweightsHelper:
                 treatment="treatment",
             )
 
-    def test_twowayfeweights_rejects_non_binary_treatment(self):
+    def test_twowayfeweights_accepts_non_binary_treatment(self):
+        """Non-binary treatment is now supported."""
         data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
         data.loc[data.index[0], "treatment"] = 2  # non-binary
-        with pytest.raises(ValueError, match="binary treatment"):
-            twowayfeweights(
-                data,
-                outcome="outcome",
-                group="group",
-                time="period",
-                treatment="treatment",
-            )
+        result = twowayfeweights(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+        )
+        assert result is not None
 
     def test_twowayfeweights_rejects_nan_group(self):
         data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
@@ -1965,6 +1961,55 @@ class TestMultiHorizonPlacebos:
                 assert "effect" in entry
                 assert "n_obs" in entry
 
+    def test_placebo_se_finite_multi_horizon(self, data):
+        """Multi-horizon placebos (L_max >= 2) have finite analytical SE
+        via the per-group placebo IF computation."""
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        r = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+            L_max=3,
+        )
+        assert r.placebo_event_study is not None
+        has_finite_se = False
+        for h, entry in r.placebo_event_study.items():
+            if entry["n_obs"] > 0:
+                assert np.isfinite(entry["effect"]), f"Placebo h={h}: effect not finite"
+                assert np.isfinite(entry["se"]), f"Placebo h={h}: SE not finite"
+                assert entry["se"] > 0, f"Placebo h={h}: SE not positive"
+                assert np.isfinite(entry["t_stat"]), f"Placebo h={h}: t_stat not finite"
+                assert np.isfinite(entry["p_value"]), f"Placebo h={h}: p_value not finite"
+                assert np.isfinite(entry["conf_int"][0]), f"Placebo h={h}: CI lo not finite"
+                assert np.isfinite(entry["conf_int"][1]), f"Placebo h={h}: CI hi not finite"
+                has_finite_se = True
+        assert has_finite_se, "Expected at least one placebo horizon with finite SE"
+
+    def test_placebo_bootstrap_se_multi_horizon(self, data, ci_params):
+        """Multi-horizon placebo bootstrap SE should be finite."""
+        n_boot = ci_params.bootstrap(199)
+        est = ChaisemartinDHaultfoeuille(
+            twfe_diagnostic=False, n_bootstrap=n_boot, seed=42
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+        assert r.bootstrap_results is not None
+        assert r.bootstrap_results.placebo_horizon_ses is not None
+        assert len(r.bootstrap_results.placebo_horizon_ses) > 0
+        for lag, se in r.bootstrap_results.placebo_horizon_ses.items():
+            assert np.isfinite(se), f"Bootstrap placebo SE lag={lag} not finite"
+            assert se > 0, f"Bootstrap placebo SE lag={lag} not positive"
+
 
 class TestNormalizedEffects:
     """Phase 2 normalized estimator DID^n_l."""
@@ -2141,3 +2186,123 @@ class TestMultiHorizonToDataframe:
         assert "horizon" in df.columns
         assert "denominator" in df.columns
         assert len(df) == 3
+
+
+class TestNonBinaryTreatment:
+    """Non-binary treatment support (ROADMAP item 3f)."""
+
+    def test_ordinal_treatment(self):
+        """Ordinal treatment (0, 1, 2, 3) with L_max=2."""
+        np.random.seed(42)
+        rows = []
+        for g in range(30):
+            base_d = np.random.choice([0, 1, 2, 3])
+            switch_period = np.random.randint(2, 6)
+            new_d = base_d + np.random.choice([1, 2]) if base_d < 3 else base_d - 1
+            for t in range(8):
+                d = base_d if t < switch_period else new_d
+                y = 10 + g * 0.5 + t * 0.3 + (d - base_d) * 2 + np.random.randn() * 0.5
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # Non-binary treatment requires L_max (multi-horizon path)
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=2,
+            )
+        assert np.isfinite(r.overall_att)
+
+    def test_within_cell_heterogeneity_rejected_nonbinary(self):
+        """Cells with mixed non-binary values (e.g., 1 and 2) should be rejected."""
+        df = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 1, 2, 2, 2, 2],
+                "period": [0, 0, 1, 1, 0, 0, 1, 1],
+                "outcome": [10.0, 10.5, 12.0, 12.5, 10.0, 10.5, 11.0, 11.5],
+                "treatment": [0, 0, 1, 2, 0, 0, 0, 0],  # cell (1, 1) has values 1 and 2
+            }
+        )
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="Within-cell-varying treatment"):
+            est.fit(df, outcome="outcome", group="group", time="period", treatment="treatment")
+
+    def test_single_large_dose_not_flagged_multi_switch(self):
+        """A single jump 0->3 should NOT be flagged as multi-switch."""
+        np.random.seed(55)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 3  # single jump from 0 to 3
+                y = 10 + t + (d - 0) * 2 + np.random.randn() * 0.5
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Add some never-switchers for controls
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.5
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # Non-binary treatment requires L_max >= 1 (multi-horizon path)
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        # All 20 switcher groups should be kept (0 dropped as multi-switch)
+        assert r.n_groups_dropped_crossers == 0
+
+    def test_true_multi_switch_detected_nonbinary(self):
+        """A group going 0->2->1 should be flagged as multi-switch."""
+        rows = []
+        # Multi-switch group
+        for t in range(6):
+            d = 0 if t < 2 else (2 if t < 4 else 1)  # 0->2->1
+            rows.append({"group": 0, "period": t, "treatment": d, "outcome": 10 + t})
+        # Normal groups (binary for simplicity)
+        for g in range(1, 20):
+            for t in range(6):
+                d = 0 if t < 3 else 1
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": 10 + t})
+        # Controls
+        for g in range(20, 40):
+            for t in range(6):
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": 10 + t})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # Binary groups work at L_max=None; the multi-switch group
+            # (0->2->1) should be detected and dropped.
+            r = est.fit(df, outcome="outcome", group="group", time="period", treatment="treatment")
+        assert r.n_groups_dropped_crossers >= 1
+
+    def test_normalized_effects_general_formula(self):
+        """For non-binary treatment, normalized denominator uses actual dose change."""
+        np.random.seed(99)
+        rows = []
+        # Groups switching from 0 to 2 (dose = 2 per period)
+        for g in range(20):
+            for t in range(8):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d * 1.5 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Controls at baseline 0
+        for g in range(20, 40):
+            for t in range(8):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(placebo=False, twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=3,
+            )
+        if r.normalized_effects is not None and 1 in r.normalized_effects:
+            # For dose 0->2: denominator at l=1 should be ~2 (not 1)
+            denom = r.normalized_effects[1]["denominator"]
+            assert denom > 1.5, f"Denominator should reflect dose=2, got {denom}"
