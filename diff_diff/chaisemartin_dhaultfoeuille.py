@@ -1831,28 +1831,53 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             twfe_sigma_fe = twfe_diagnostic_payload.sigma_fe
             twfe_beta_fe = twfe_diagnostic_payload.beta_fe
 
+        # When L_max >= 1 on non-binary data, the binary-only metadata
+        # (N_S, joiner/leaver counts, n_treated_obs) doesn't match the
+        # per-group DID_1 estimand. Use per-group metadata instead and
+        # suppress the joiner/leaver decomposition.
+        effective_N_S = N_S
+        effective_n_treated = n_treated_obs_post
+        effective_joiners_available = joiners_available
+        effective_leavers_available = leavers_available
+        if (
+            not is_binary
+            and L_max is not None
+            and L_max >= 1
+            and multi_horizon_dids is not None
+            and 1 in multi_horizon_dids
+        ):
+            # Use horizon-1 eligible switcher count as the effective N_S
+            effective_N_S = multi_horizon_dids[1]["N_l"]
+            # Count all observations where treatment differs from baseline
+            effective_n_treated = int(
+                N_mat[D_mat != D_mat[:, 0:1]].sum()
+            ) if D_mat.shape[1] > 1 else 0
+            # Suppress joiner/leaver decomposition for non-binary
+            effective_joiners_available = False
+            effective_leavers_available = False
+
         results = ChaisemartinDHaultfoeuilleResults(
             overall_att=effective_overall_att,
             overall_se=effective_overall_se,
             overall_t_stat=effective_overall_t,
             overall_p_value=effective_overall_p,
             overall_conf_int=effective_overall_ci,
-            joiners_att=joiners_att,
-            joiners_se=joiners_se,
-            joiners_t_stat=joiners_t,
-            joiners_p_value=joiners_p,
-            joiners_conf_int=joiners_ci,
-            n_joiner_cells=n_joiner_cells,
-            n_joiner_obs=n_joiner_obs,
-            joiners_available=joiners_available,
-            leavers_att=leavers_att,
-            leavers_se=leavers_se,
-            leavers_t_stat=leavers_t,
-            leavers_p_value=leavers_p,
-            leavers_conf_int=leavers_ci,
-            n_leaver_cells=n_leaver_cells,
-            n_leaver_obs=n_leaver_obs,
-            leavers_available=leavers_available,
+            joiners_att=joiners_att if effective_joiners_available else float("nan"),
+            joiners_se=joiners_se if effective_joiners_available else float("nan"),
+            joiners_t_stat=joiners_t if effective_joiners_available else float("nan"),
+            joiners_p_value=joiners_p if effective_joiners_available else float("nan"),
+            joiners_conf_int=joiners_ci if effective_joiners_available else (float("nan"), float("nan")),
+            n_joiner_cells=n_joiner_cells if effective_joiners_available else 0,
+            n_joiner_obs=n_joiner_obs if effective_joiners_available else 0,
+            joiners_available=effective_joiners_available,
+            leavers_att=leavers_att if effective_leavers_available else float("nan"),
+            leavers_se=leavers_se if effective_leavers_available else float("nan"),
+            leavers_t_stat=leavers_t if effective_leavers_available else float("nan"),
+            leavers_p_value=leavers_p if effective_leavers_available else float("nan"),
+            leavers_conf_int=leavers_ci if effective_leavers_available else (float("nan"), float("nan")),
+            n_leaver_cells=n_leaver_cells if effective_leavers_available else 0,
+            n_leaver_obs=n_leaver_obs if effective_leavers_available else 0,
+            leavers_available=effective_leavers_available,
             placebo_effect=placebo_effect,
             placebo_se=placebo_se,
             placebo_t_stat=placebo_t,
@@ -1863,8 +1888,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             groups=all_groups,
             time_periods=all_periods,
             n_obs=n_obs_post,
-            n_treated_obs=n_treated_obs_post,
-            n_switcher_cells=N_S,
+            n_treated_obs=effective_n_treated,
+            n_switcher_cells=effective_N_S,
             n_cohorts=n_cohorts,
             n_groups_dropped_crossers=n_groups_dropped_crossers,
             n_groups_dropped_singleton_baseline=n_groups_dropped_singleton_baseline,

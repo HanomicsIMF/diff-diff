@@ -778,10 +778,11 @@ class ChaisemartinDHaultfoeuilleResults:
         level : str, default="overall"
             One of:
 
-            - ``"overall"``: single-row table with the overall ``DID_M``
-              point estimate, SE, t-stat, p-value, CI bounds.
-            - ``"joiners_leavers"``: three rows for ``DID_M``, ``DID_+``,
-              and ``DID_-``.
+            - ``"overall"``: single-row table with the overall estimand
+              (``DID_M`` when ``L_max=None``, ``DID_1`` when ``L_max=1``,
+              ``delta`` when ``L_max >= 2``).
+            - ``"joiners_leavers"``: up to three rows for the overall,
+              ``DID_+``, and ``DID_-`` (binary panels only).
             - ``"per_period"``: one row per time period with
               ``did_plus_t``, ``did_minus_t``, switching cell counts, and
               the A11-zeroed flags.

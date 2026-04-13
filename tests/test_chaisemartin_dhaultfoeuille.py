@@ -2422,6 +2422,39 @@ class TestNonBinaryTreatment:
         assert r.overall_se == es1["se"]
         assert r.overall_p_value == es1["p_value"]
 
+    def test_nonbinary_lmax1_renderer_contract(self):
+        """Non-binary L_max=1: summary/to_dataframe use DID_1 label and
+        suppress binary-only joiner/leaver decomposition."""
+        np.random.seed(77)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        # __repr__ should say DID_1
+        assert "DID_1" in repr(r)
+        # to_dataframe("overall") should label as DID_1
+        df_overall = r.to_dataframe("overall")
+        assert df_overall.iloc[0]["estimand"] == "DID_1"
+        # n_switcher_cells should be > 0 (from per-group path)
+        assert r.n_switcher_cells > 0
+        # Joiners/leavers unavailable for non-binary
+        assert r.joiners_available is False
+        assert r.leavers_available is False
+
     def test_twfe_diagnostic_skipped_nonbinary(self):
         """TWFE diagnostic should be skipped (with warning) for non-binary."""
         np.random.seed(77)
