@@ -1672,10 +1672,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             overall_t = es1["t_stat"]
             overall_p = es1["p_value"]
             overall_ci = es1["conf_int"]
-            # Also sync the nested bootstrap_results.overall_* so the
-            # public bootstrap object matches the top-level DID_1 surface.
+            # Sync nested bootstrap_results.overall_* to DID_1 only when
+            # L_max == 1. When L_max >= 2, the cost-benefit delta overrides
+            # overall_* later, so bootstrap_results.overall_* should stay
+            # on the scalar DID_M bootstrap (or be overridden by delta logic).
             if (
-                bootstrap_results is not None
+                L_max == 1
+                and bootstrap_results is not None
                 and bootstrap_results.event_study_ses
                 and 1 in bootstrap_results.event_study_ses
             ):
@@ -1882,6 +1885,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 effective_n_treated = int(
                     N_mat[D_mat != D_mat[:, 0:1]].sum()
                 ) if D_mat.shape[1] > 1 else 0
+            if not is_binary:
+                # Suppress binary-only Phase 1 artifacts on non-binary
+                # panels: per_period_effects and single-period placebo
+                # are DID_M concepts that don't apply to non-binary data.
+                per_period_effects = {}
+                placebo_effect = float("nan")
+                placebo_se = float("nan")
+                placebo_t = float("nan")
+                placebo_p = float("nan")
+                placebo_ci = (float("nan"), float("nan"))
+                placebo_available = False
             # Suppress joiner/leaver decomposition for all L_max >= 1
             # (the decomposition is a per-period DID_M concept, not
             # applicable to the per-group DID_1 estimand)
