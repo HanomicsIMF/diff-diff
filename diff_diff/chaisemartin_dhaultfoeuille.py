@@ -631,6 +631,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # Step 4b: Covariate aggregation (DID^X, Web Appendix Section 1.2)
         # ------------------------------------------------------------------
         if controls is not None:
+            if not controls:
+                raise ValueError(
+                    "controls must be a non-empty list of column names, "
+                    "got an empty list. Pass controls=None to disable "
+                    "covariate adjustment."
+                )
             if L_max is None:
                 raise ValueError(
                     "Covariate adjustment (DID^X) requires L_max >= 1. The "
@@ -1080,6 +1086,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 raise ValueError(
                     f"trends_nonparam column {set_col!r} not found in "
                     f"data. Available columns: {list(data.columns)}"
+                )
+            # Reject NaN/missing set assignments
+            n_na_set = int(data[set_col].isna().sum())
+            if n_na_set > 0:
+                raise ValueError(
+                    f"trends_nonparam column {set_col!r} contains "
+                    f"{n_na_set} NaN/missing value(s). All groups must "
+                    f"have a valid set assignment."
                 )
             # Aggregate set membership per group (must be time-invariant)
             set_per_group = data.groupby(group)[set_col].nunique()
@@ -2361,7 +2375,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             design2_effects=(
                 _compute_design2_effects(
                     D_mat=D_mat,
-                    Y_mat=Y_mat if not _is_trends_linear else y_pivot.to_numpy(),
+                    # Design-2 always uses raw level outcomes (not residualized,
+                    # not first-differenced). Use y_pivot as the canonical raw source.
+                    Y_mat=y_pivot.to_numpy(),
                     N_mat=N_mat_orig,
                     baselines=baselines,
                     first_switch_idx=first_switch_idx_arr,

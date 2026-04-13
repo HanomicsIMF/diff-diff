@@ -580,7 +580,10 @@ class ChaisemartinDHaultfoeuilleResults:
             adj_tag = " (Trend-Adjusted)"
 
         if self.L_max is not None and self.L_max >= 2:
-            overall_label = f"Cost-Benefit Delta{adj_tag}"
+            if has_trends:
+                overall_label = f"Overall (N/A under trends_linear){adj_tag}"
+            else:
+                overall_label = f"Cost-Benefit Delta{adj_tag}"
             overall_row_label = self._estimand_label()
         elif self.L_max is not None and self.L_max == 1:
             overall_label = f"Per-Group ATT at Horizon 1{adj_tag}"
