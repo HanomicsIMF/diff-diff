@@ -115,19 +115,20 @@ def _validate_and_aggregate_to_cells(
        without informing the user).
     3. **Outcome** must coerce to numeric and contain no ``NaN`` (same
        reasoning).
-    4. **Treatment must be binary** (only ``0`` / ``1`` raw values).
-       Non-binary treatment is reserved for Phase 3 of the dCDH rollout
-       and raises ``ValueError``.
+    4. **Treatment** must be numeric. Both binary ``{0, 1}`` and
+       non-binary (ordinal or continuous) treatment are supported.
+       Non-binary treatment requires ``L_max >= 1`` in ``fit()`` because
+       the per-period DID path uses binary joiner/leaver categorization.
     5. **Cell aggregation** via ``groupby([group, time]).agg(...)``
        producing ``y_gt`` (cell mean of ``outcome``), ``d_gt`` (cell
        mean of ``treatment``), and ``n_gt`` (count of original
        observations in the cell).
-    6. **Within-cell-varying treatment** (any cell with fractional
-       ``d_gt``) raises ``ValueError``. Phase 1 requires treatment to
-       be constant within each ``(group, time)`` cell; fuzzy DiD is
-       deferred to a separate dCdH 2018 paper not covered by Phase 1.
-       Pre-aggregate your data to constant binary cell-level treatment
-       before calling ``fit()`` or ``twowayfeweights()``.
+    6. **Within-cell-varying treatment** (any cell where ``d_min !=
+       d_max``) raises ``ValueError``. Treatment must be constant
+       within each ``(group, time)`` cell; fuzzy DiD is deferred to a
+       separate dCdH 2018 paper. Pre-aggregate your data to constant
+       cell-level treatment before calling ``fit()`` or
+       ``twowayfeweights()``.
 
     Returns the aggregated cell DataFrame with columns
     ``[group, time, y_gt, d_gt, n_gt]``, sorted by ``[group, time]``
@@ -198,40 +199,42 @@ def _validate_and_aggregate_to_cells(
             "would distort per-cell means)."
         )
 
-    # 4. Binary treatment validation (raw values, before aggregation)
-    unique_treats = pd.unique(df[treatment])
-    invalid = [v for v in unique_treats if v not in (0, 1, 0.0, 1.0)]
-    if invalid:
-        raise ValueError(
-            f"ChaisemartinDHaultfoeuille / twowayfeweights requires binary treatment "
-            f"in {{0, 1}}; found values {invalid[:5]} in column {treatment!r}. "
-            "Non-binary treatment is reserved for Phase 3 of the dCDH rollout "
-            "(see ROADMAP.md Phase 3)."
-        )
+    # 4. Treatment must be numeric (binary or non-binary both accepted)
+    # No longer enforces {0, 1} - non-binary and continuous treatment supported.
 
-    # 5. Cell aggregation
+    # 5. Cell aggregation (compute min/max for within-cell check)
     cell = df.groupby([group, time], as_index=False).agg(
         y_gt=(outcome, "mean"),
         d_gt=(treatment, "mean"),
+        d_min=(treatment, "min"),
+        d_max=(treatment, "max"),
         n_gt=(treatment, "count"),
     )
 
-    # 6. Within-cell-varying treatment rejection
-    non_constant_mask = (cell["d_gt"] > 0) & (cell["d_gt"] < 1)
+    # 6. Within-cell-varying treatment rejection.
+    # All observations in a cell must have the same treatment value
+    # (for both binary and non-binary treatment). Detect by checking
+    # that cell min equals cell max.
+    non_constant_mask = cell["d_min"] != cell["d_max"]
     if non_constant_mask.any():
         n_non_constant = int(non_constant_mask.sum())
-        example_cells = cell.loc[non_constant_mask, [group, time, "d_gt"]].head(5)
+        example_cells = cell.loc[
+            non_constant_mask, [group, time, "d_gt", "d_min", "d_max"]
+        ].head(5)
         raise ValueError(
             f"Within-cell-varying treatment detected in {n_non_constant} "
-            f"(group, time) cell(s). Phase 1 dCDH requires treatment to be "
-            f"constant within each (group, time) cell; fractional d_gt values "
-            f"indicate that some units in a cell are treated while others are "
-            f"not. Pre-aggregate your data to constant binary cell-level "
-            f"treatment before calling fit() or twowayfeweights(). Fuzzy DiD "
-            f"is deferred to a separate dCDH paper (see ROADMAP.md "
-            f"out-of-scope). Affected cells (first 5):\n{example_cells}"
+            f"(group, time) cell(s). dCDH requires treatment to be "
+            f"constant within each (group, time) cell. Cells where "
+            f"d_min != d_max indicate that some units have different "
+            f"treatment values. Pre-aggregate your data to constant "
+            f"cell-level treatment before calling fit() or "
+            f"twowayfeweights(). Fuzzy DiD is deferred to a separate "
+            f"dCDH paper (see ROADMAP.md out-of-scope). Affected cells "
+            f"(first 5):\n{example_cells}"
         )
-    cell["d_gt"] = cell["d_gt"].astype(int)
+    # Drop the min/max columns; keep d_gt as float (no int cast - supports
+    # ordinal and continuous treatment).
+    cell = cell.drop(columns=["d_min", "d_max"])
 
     # Sort to ensure deterministic order in downstream operations
     cell = cell.sort_values([group, time]).reset_index(drop=True)
@@ -503,9 +506,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         time : str
             Time period column name. Must be sortable.
         treatment : str
-            Per-observation binary treatment column. Must coerce to
-            ``{0, 1}``; non-binary values raise ``ValueError`` (Phase 3
-            adds non-binary support).
+            Per-observation treatment column. Must be numeric and constant
+            within each ``(group, time)`` cell. Both binary ``{0, 1}`` and
+            non-binary (ordinal or continuous) treatment are supported.
+            Non-binary treatment requires ``L_max >= 1``.
         aggregate : str, optional
             **Reserved for Phase 3.** Must be ``None``; any other value
             raises ``NotImplementedError``.
@@ -604,7 +608,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         #          the same _validate_and_aggregate_to_cells() output.
         # ------------------------------------------------------------------
         twfe_diagnostic_payload = None
-        if self.twfe_diagnostic:
+        # TWFE diagnostic assumes binary treatment (d_arr == 1 for
+        # treated mask). Skip for non-binary data with a warning.
+        is_binary_pre = set(cell["d_gt"].unique()).issubset({0.0, 1.0, 0, 1})
+        if self.twfe_diagnostic and not is_binary_pre:
+            warnings.warn(
+                "TWFE diagnostic (twfe_diagnostic=True) is not supported for "
+                "non-binary treatment. The diagnostic assumes binary {0, 1} "
+                "treatment. Skipping TWFE diagnostic for this fit.",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif self.twfe_diagnostic:
             try:
                 twfe_diagnostic_payload = _compute_twfe_diagnostic(
                     cell=cell,
@@ -905,14 +920,35 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # Step 10: Aggregate DID_M = sum_t (n_10_t * did_plus_t + n_01_t * did_minus_t) / N_S
         # ------------------------------------------------------------------
         N_S = int(n_10_t_arr.sum() + n_01_t_arr.sum())
-        if N_S == 0:
+        # For non-binary treatment, the per-period DID path may find N_S=0
+        # because it uses binary joiner/leaver categorization. When L_max
+        # is set, the multi-horizon path (which handles non-binary correctly
+        # via per-group DID_{g,l}) will compute the effects. Only raise if
+        # L_max is also None (i.e., no fallback path).
+        is_binary = set(np.unique(D_mat[~np.isnan(D_mat)])).issubset({0.0, 1.0})
+        if not is_binary and L_max is None:
+            raise ValueError(
+                "Non-binary treatment requires L_max >= 1. The per-period DID "
+                "path uses binary joiner/leaver categorization; set L_max to "
+                "use the per-group DID_{g,l} building block which handles "
+                "non-binary treatment."
+            )
+        if N_S == 0 and (L_max is None or is_binary):
             raise ValueError(
                 "No switching cells found in the data after filtering: every "
                 "group has constant treatment for the entire panel. dCDH "
                 "requires at least one (g, t) cell where the group's treatment "
                 "differs from the previous period."
             )
-        overall_att = float((n_10_t_arr @ did_plus_t_arr + n_01_t_arr @ did_minus_t_arr) / N_S)
+        if N_S > 0:
+            overall_att = float(
+                (n_10_t_arr @ did_plus_t_arr + n_01_t_arr @ did_minus_t_arr) / N_S
+            )
+        else:
+            # Non-binary treatment with L_max: per-period DID is not
+            # applicable. The multi-horizon path will provide overall_att
+            # via the cost-benefit delta.
+            overall_att = float("nan")
 
         # ------------------------------------------------------------------
         # Step 11: Joiners and leavers views
@@ -1012,14 +1048,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         )
 
         # ------------------------------------------------------------------
-        # Step 12c: Multi-horizon computation (Phase 2, only when L_max>=2)
+        # Step 12c: Multi-horizon per-group computation (L_max >= 1)
         # ------------------------------------------------------------------
         multi_horizon_dids: Optional[Dict[int, Dict[str, Any]]] = None
         multi_horizon_if: Optional[Dict[int, np.ndarray]] = None
         multi_horizon_se: Optional[Dict[int, float]] = None
         multi_horizon_inference: Optional[Dict[int, Dict[str, Any]]] = None
 
-        if L_max is not None and L_max >= 2:
+        if L_max is not None and L_max >= 1:
             multi_horizon_dids = _compute_multi_horizon_dids(
                 D_mat=D_mat,
                 Y_mat=Y_mat,
@@ -1042,6 +1078,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     + (f" (and {len(mh_a11) - 3} more)" if len(mh_a11) > 3 else ""),
                     UserWarning,
                     stacklevel=2,
+                )
+
+            # Guard: if no eligible switchers at horizon 1 (e.g., all
+            # groups have constant treatment), raise ValueError.
+            if 1 in multi_horizon_dids and multi_horizon_dids[1]["N_l"] == 0:
+                raise ValueError(
+                    "No switching groups found at horizon 1 after filtering. "
+                    "dCDH requires at least one group whose treatment changes "
+                    "from the baseline period."
                 )
 
             multi_horizon_if = _compute_per_group_if_multi_horizon(
@@ -1075,13 +1120,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # switch, not on the horizon). Filter to eligible.
                 cohort_keys_l = [
                     (
-                        int(baselines[g]),
+                        float(baselines[g]),
                         int(first_switch_idx_arr[g]),
                         int(switch_direction_arr[g]),
                     )
                     for g in range(len(all_groups))
                 ]
-                unique_c: Dict[Tuple[int, int, int], int] = {}
+                unique_c: Dict[Tuple[float, int, int], int] = {}
                 cid_l = np.zeros(len(all_groups), dtype=int)
                 for g in range(len(all_groups)):
                     if not eligible_mask_var[g]:
@@ -1137,10 +1182,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
         # Phase 2: placebos, normalized effects, cost-benefit delta
         multi_horizon_placebos: Optional[Dict[int, Dict[str, Any]]] = None
+        placebo_horizon_if: Optional[Dict[int, np.ndarray]] = None
+        placebo_horizon_se: Optional[Dict[int, float]] = None
+        placebo_horizon_inference: Optional[Dict[int, Dict[str, Any]]] = None
         normalized_effects_dict: Optional[Dict[int, Dict[str, Any]]] = None
         cost_benefit_result: Optional[Dict[str, Any]] = None
 
-        if L_max is not None and L_max >= 2 and multi_horizon_dids is not None:
+        if L_max is not None and L_max >= 1 and multi_horizon_dids is not None:
             # Dynamic placebos DID^{pl}_l
             if self.placebo:
                 multi_horizon_placebos = _compute_multi_horizon_placebos(
@@ -1167,6 +1215,72 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         stacklevel=2,
                     )
 
+            # Placebo IF computation + analytical SE
+            if multi_horizon_placebos is not None:
+                placebo_horizon_if = _compute_per_group_if_placebo_horizon(
+                    D_mat=D_mat,
+                    Y_mat=Y_mat,
+                    N_mat=N_mat,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    switch_direction=switch_direction_arr,
+                    T_g=T_g_arr,
+                    L_max=L_max,
+                )
+                # Per-placebo-horizon analytical SE via cohort recentering
+                # (same pattern as positive-horizon SE at Step 12c).
+                placebo_horizon_se: Dict[int, float] = {}
+                placebo_horizon_inference: Dict[int, Dict[str, Any]] = {}
+                singleton_baseline_set_pl = set(singleton_baseline_groups)
+                eligible_mask_pl = np.array(
+                    [g not in singleton_baseline_set_pl for g in all_groups],
+                    dtype=bool,
+                )
+                for lag_l in range(1, L_max + 1):
+                    pl_data = multi_horizon_placebos.get(lag_l)
+                    if pl_data is None or pl_data["N_pl_l"] == 0:
+                        placebo_horizon_se[lag_l] = float("nan")
+                        continue
+                    U_pl = placebo_horizon_if[lag_l]
+                    # Cohort IDs (same as positive horizons)
+                    cohort_keys_pl = [
+                        (
+                            float(baselines[g]),
+                            int(first_switch_idx_arr[g]),
+                            int(switch_direction_arr[g]),
+                        )
+                        for g in range(len(all_groups))
+                    ]
+                    unique_cpl: Dict[Tuple[float, int, int], int] = {}
+                    cid_pl = np.zeros(len(all_groups), dtype=int)
+                    for g in range(len(all_groups)):
+                        if not eligible_mask_pl[g]:
+                            cid_pl[g] = -1
+                            continue
+                        key = cohort_keys_pl[g]
+                        if key not in unique_cpl:
+                            unique_cpl[key] = len(unique_cpl)
+                        cid_pl[g] = unique_cpl[key]
+                    U_pl_elig = U_pl[eligible_mask_pl]
+                    cid_elig_pl = cid_pl[eligible_mask_pl]
+                    U_centered_pl_l = _cohort_recenter(U_pl_elig, cid_elig_pl)
+                    se_pl_l = _plugin_se(
+                        U_centered=U_centered_pl_l, divisor=pl_data["N_pl_l"]
+                    )
+                    placebo_horizon_se[lag_l] = se_pl_l
+                    pl_val = pl_data["placebo_l"]
+                    t_pl_l, p_pl_l, ci_pl_l = safe_inference(
+                        pl_val, se_pl_l, alpha=self.alpha, df=None
+                    )
+                    placebo_horizon_inference[lag_l] = {
+                        "effect": pl_val,
+                        "se": se_pl_l,
+                        "t_stat": t_pl_l,
+                        "p_value": p_pl_l,
+                        "conf_int": ci_pl_l,
+                        "n_obs": pl_data["N_pl_l"],
+                    }
+
             # Normalized effects DID^n_l
             normalized_effects_dict = _compute_normalized_effects(
                 multi_horizon_dids=multi_horizon_dids,
@@ -1176,8 +1290,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 L_max=L_max,
             )
 
-            # Cost-benefit delta
-            cost_benefit_result = _compute_cost_benefit_delta(
+            # Cost-benefit delta (only meaningful when L_max >= 2)
+            if L_max >= 2:
+                cost_benefit_result = _compute_cost_benefit_delta(
                 multi_horizon_dids=multi_horizon_dids,
                 D_mat=D_mat,
                 baselines=baselines,
@@ -1185,16 +1300,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 switch_direction=switch_direction_arr,
                 L_max=L_max,
             )
-            if cost_benefit_result.get("has_leavers", False):
-                warnings.warn(
-                    "Assumption 7 (D_{g,t} >= D_{g,1}) is violated: leavers "
-                    "present. The cost-benefit delta is computed on the full "
-                    "sample (both joiners and leavers); delta_joiners and "
-                    "delta_leavers are available separately on "
-                    "results.cost_benefit_delta.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+                if cost_benefit_result.get("has_leavers", False):
+                    warnings.warn(
+                        "Assumption 7 (D_{g,t} >= D_{g,1}) is violated: leavers "
+                        "present. The cost-benefit delta is computed on the full "
+                        "sample (both joiners and leavers); delta_joiners and "
+                        "delta_leavers are available separately on "
+                        "results.cost_benefit_delta.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
         # ------------------------------------------------------------------
         # Step 13-16: Cohort identification, influence-function vectors,
@@ -1279,31 +1394,22 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 (float("nan"), float("nan")),
             )
 
-        # Placebo SE: intentionally NaN in Phase 1. The dynamic paper
-        # derives the cohort-recentered analytical variance for DID_l only,
-        # not for the placebo. Phase 2 will add multiplier-bootstrap
-        # support for the placebo. See REGISTRY.md placebo SE Note.
+        # Phase 1 per-period placebo (L_max=None): SE is NaN because the
+        # per-period DID_M^pl aggregation path does not have an IF
+        # derivation. Multi-horizon placebos (L_max >= 1) use the per-group
+        # placebo IF computed above and have valid SE.
         placebo_se = float("nan")
         placebo_t = float("nan")
         placebo_p = float("nan")
         placebo_ci: Tuple[float, float] = (float("nan"), float("nan"))
-        if placebo_available:
-            # Phase 1: the dynamic companion paper Section 3.7.3 derives the
-            # cohort-recentered analytical variance for DID_l only — not for
-            # the placebo DID_M^pl. The placebo bootstrap path is also
-            # deferred to Phase 2 (the bootstrap mixin currently covers
-            # DID_M, DID_+, and DID_- only). The placebo point estimate is
-            # still computed and exposed via results.placebo_effect; only
-            # its inference fields stay NaN-consistent.
+        if placebo_available and L_max is None:
             warnings.warn(
-                "Phase 1 placebo SE is intentionally NaN. The dynamic "
-                "companion paper Section 3.7.3 derives the cohort-recentered "
-                "analytical variance for DID_l only, not for the placebo "
-                "DID_M^pl. Phase 2 will add multiplier-bootstrap support for "
-                "the placebo; until then, placebo_se / placebo_t_stat / "
-                "placebo_p_value / placebo_conf_int stay NaN even when "
-                "n_bootstrap > 0. The placebo point estimate "
-                "(results.placebo_effect) is still meaningful.",
+                "Single-period placebo SE (L_max=None) is NaN. The "
+                "per-period DID_M^pl aggregation path does not have an "
+                "influence-function derivation. Use L_max >= 1 for "
+                "multi-horizon placebos with valid SE. The placebo "
+                "point estimate (results.placebo_effect) is still "
+                "meaningful.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1324,16 +1430,59 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             leavers_inputs = (
                 (U_centered_leavers, leaver_total, leavers_att) if leavers_available else None
             )
-            # Phase 1 placebo bootstrap: deliberately deferred to Phase 2.
-            # The dynamic companion paper Section 3.7.3 derives the
-            # cohort-recentered analytical variance for DID_l only, not for
-            # the placebo DID_M^pl, and we do not have an influence-function
-            # representation of the placebo to feed the multiplier bootstrap
-            # path. Implementing this from first principles is explicitly out
-            # of scope for Phase 1 — see ROADMAP.md and CHANGELOG.md.
-            # Tests/test_chaisemartin_dhaultfoeuille.py::TestBootstrap::
-            # test_placebo_bootstrap_unavailable_in_phase_1 pins this contract.
+            # Phase 1 placebo bootstrap: the Phase 1 per-period placebo
+            # DID_M^pl still uses NaN SE (no IF derivation for the
+            # per-period aggregation). The multi-horizon placebo bootstrap
+            # below handles Phase 2+ placebos when placebo_horizon_if is
+            # available.
             placebo_inputs = None
+
+            # Phase 2: build placebo-horizon bootstrap inputs from the
+            # cohort-centered placebo IF vectors.
+            pl_boot_inputs = None
+            if (
+                placebo_horizon_if is not None
+                and multi_horizon_placebos is not None
+                and L_max is not None
+                and L_max >= 1
+            ):
+                singleton_baseline_set_pl_b = set(singleton_baseline_groups)
+                eligible_mask_pl_b = np.array(
+                    [g not in singleton_baseline_set_pl_b for g in all_groups],
+                    dtype=bool,
+                )
+                pl_boot_inputs = {}
+                for lag_l in range(1, L_max + 1):
+                    pl_data = multi_horizon_placebos.get(lag_l)
+                    if pl_data is None or pl_data["N_pl_l"] == 0:
+                        continue
+                    U_pl_full = placebo_horizon_if[lag_l]
+                    U_pl_elig_b = U_pl_full[eligible_mask_pl_b]
+                    cohort_keys_pl_b = [
+                        (
+                            float(baselines[g]),
+                            int(first_switch_idx_arr[g]),
+                            int(switch_direction_arr[g]),
+                        )
+                        for g in range(len(all_groups))
+                    ]
+                    unique_cpl_b: Dict[Tuple[float, int, int], int] = {}
+                    cid_pl_b = np.zeros(len(all_groups), dtype=int)
+                    for g in range(len(all_groups)):
+                        if not eligible_mask_pl_b[g]:
+                            cid_pl_b[g] = -1
+                            continue
+                        key = cohort_keys_pl_b[g]
+                        if key not in unique_cpl_b:
+                            unique_cpl_b[key] = len(unique_cpl_b)
+                        cid_pl_b[g] = unique_cpl_b[key]
+                    cid_elig_pl_b = cid_pl_b[eligible_mask_pl_b]
+                    U_centered_pl_b = _cohort_recenter(U_pl_elig_b, cid_elig_pl_b)
+                    pl_boot_inputs[lag_l] = (
+                        U_centered_pl_b,
+                        pl_data["N_pl_l"],
+                        pl_data["placebo_l"],
+                    )
 
             # Phase 2: build multi-horizon bootstrap inputs from the
             # cohort-centered IF vectors computed in Step 12c.
@@ -1343,7 +1492,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 and multi_horizon_dids is not None
                 and multi_horizon_se is not None
                 and L_max is not None
-                and L_max >= 2
+                and L_max >= 1
             ):
                 singleton_baseline_set_b = set(singleton_baseline_groups)
                 eligible_mask_b = np.array(
@@ -1366,13 +1515,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     # Use the same cohort IDs as the analytical SE path
                     cohort_keys_b = [
                         (
-                            int(baselines[g]),
+                            float(baselines[g]),
                             int(first_switch_idx_arr[g]),
                             int(switch_direction_arr[g]),
                         )
                         for g in range(len(all_groups))
                     ]
-                    unique_cb: Dict[Tuple[int, int, int], int] = {}
+                    unique_cb: Dict[Tuple[float, int, int], int] = {}
                     cid_b = np.zeros(len(all_groups), dtype=int)
                     for g in range(len(all_groups)):
                         if not eligible_mask_b[g]:
@@ -1399,6 +1548,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 leavers_inputs=leavers_inputs,
                 placebo_inputs=placebo_inputs,
                 multi_horizon_inputs=mh_boot_inputs,
+                placebo_horizon_inputs=pl_boot_inputs,
             )
             bootstrap_results = br
 
@@ -1443,10 +1593,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # Step 20: Build the results dataclass
         # ------------------------------------------------------------------
         # event_study_effects: when L_max is None, l=1 mirrors Phase 1
-        # DID_M (per-period path). When L_max >= 2, ALL horizons including
+        # DID_M (per-period path). When L_max >= 1, ALL horizons including
         # l=1 use the per-group DID_{g,l} path for a consistent estimand.
         if multi_horizon_inference is not None and 1 in multi_horizon_inference:
-            # Phase 2 mode: use per-group path for all horizons
+            # Per-group mode: use per-group path for all horizons.
+            # When L_max >= 1, the per-group DID_{g,1} is the correct
+            # estimand for overall_att (not the binary-only per-period
+            # DID_M). This handles both pure non-binary (N_S=0) and
+            # mixed binary/non-binary panels (N_S > 0 but incomplete).
+            l1_inf = multi_horizon_inference[1]
+            overall_att = l1_inf["effect"]
+            overall_se = l1_inf["se"]
+            overall_t = l1_inf["t_stat"]
+            overall_p = l1_inf["p_value"]
+            overall_ci = l1_inf["conf_int"]
             event_study_effects: Dict[int, Dict[str, Any]] = dict(multi_horizon_inference)
         else:
             # Phase 1 mode (L_max=None): l=1 from per-period path
@@ -1498,6 +1658,47 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             eff - crit * se,
                             eff + crit * se,
                         )
+
+        # When L_max >= 1 and the per-group path is active, sync
+        # overall_* from event_study_effects[1] AFTER bootstrap propagation
+        # so that bootstrap SE/p/CI flow to the top-level surface.
+        if (
+            L_max is not None
+            and L_max >= 1
+            and 1 in event_study_effects
+        ):
+            es1 = event_study_effects[1]
+            overall_att = es1["effect"]
+            overall_se = es1["se"]
+            overall_t = es1["t_stat"]
+            overall_p = es1["p_value"]
+            overall_ci = es1["conf_int"]
+            # Sync nested bootstrap_results.overall_* to DID_1 only when
+            # L_max == 1. When L_max >= 2, the cost-benefit delta overrides
+            # overall_* later, so bootstrap_results.overall_* should stay
+            # on the scalar DID_M bootstrap (or be overridden by delta logic).
+            if (
+                L_max == 1
+                and bootstrap_results is not None
+                and bootstrap_results.event_study_ses
+                and 1 in bootstrap_results.event_study_ses
+            ):
+                bootstrap_results.overall_se = bootstrap_results.event_study_ses[1]
+                bootstrap_results.overall_ci = (
+                    bootstrap_results.event_study_cis[1]
+                    if bootstrap_results.event_study_cis and 1 in bootstrap_results.event_study_cis
+                    else (np.nan, np.nan)
+                )
+                # Clear the DID_M distribution - it doesn't match the
+                # DID_1 summary statistics. The per-horizon bootstrap
+                # stats are accessible via event_study_ses/cis/p_values.
+                bootstrap_results.bootstrap_distribution = None
+                bootstrap_results.overall_p_value = (
+                    bootstrap_results.event_study_p_values[1]
+                    if bootstrap_results.event_study_p_values
+                    and 1 in bootstrap_results.event_study_p_values
+                    else np.nan
+                )
 
         # Phase 2: override overall_att with cost-benefit delta when L_max > 1
         effective_overall_att = overall_att
@@ -1556,28 +1757,42 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     effective_overall_p = float("nan")
                     effective_overall_ci = (float("nan"), float("nan"))
 
-        # Phase 2: build placebo_event_study with negative keys
+        # Phase 2: build placebo_event_study with negative keys.
+        # Use analytical SE from placebo IF (computed above), with
+        # bootstrap override when available.
         placebo_event_study_dict: Optional[Dict[int, Dict[str, Any]]] = None
         if multi_horizon_placebos is not None:
             placebo_event_study_dict = {}
             for lag_l, pl_data in multi_horizon_placebos.items():
                 if pl_data["N_pl_l"] > 0:
-                    # Placebo SE via the same analytical formula (Phase 2
-                    # resolves the Phase 1 "placebo SE NaN" limitation).
-                    # For now use NaN SE - the placebo IF computation will
-                    # be added when the full placebo IF is implemented.
-                    pl_se = float("nan")
-                    pl_t, pl_p, pl_ci = safe_inference(
-                        pl_data["placebo_l"], pl_se, alpha=self.alpha, df=None
-                    )
-                    placebo_event_study_dict[-lag_l] = {
-                        "effect": pl_data["placebo_l"],
-                        "se": pl_se,
-                        "t_stat": pl_t,
-                        "p_value": pl_p,
-                        "conf_int": pl_ci,
-                        "n_obs": pl_data["N_pl_l"],
-                    }
+                    # Pull analytical SE from placebo IF computation
+                    if (
+                        placebo_horizon_inference is not None
+                        and lag_l in placebo_horizon_inference
+                    ):
+                        inf = placebo_horizon_inference[lag_l]
+                        placebo_event_study_dict[-lag_l] = {
+                            "effect": inf["effect"],
+                            "se": inf["se"],
+                            "t_stat": inf["t_stat"],
+                            "p_value": inf["p_value"],
+                            "conf_int": inf["conf_int"],
+                            "n_obs": inf["n_obs"],
+                        }
+                    else:
+                        # Fallback: NaN SE (Phase 1 path or missing IF)
+                        pl_se = float("nan")
+                        pl_t, pl_p, pl_ci = safe_inference(
+                            pl_data["placebo_l"], pl_se, alpha=self.alpha, df=None
+                        )
+                        placebo_event_study_dict[-lag_l] = {
+                            "effect": pl_data["placebo_l"],
+                            "se": pl_se,
+                            "t_stat": pl_t,
+                            "p_value": pl_p,
+                            "conf_int": pl_ci,
+                            "n_obs": pl_data["N_pl_l"],
+                        }
                 else:
                     placebo_event_study_dict[-lag_l] = {
                         "effect": float("nan"),
@@ -1587,6 +1802,40 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         "conf_int": (float("nan"), float("nan")),
                         "n_obs": 0,
                     }
+
+        # Propagate bootstrap results to placebo_event_study (must run
+        # after placebo_event_study_dict is assembled above).
+        if (
+            bootstrap_results is not None
+            and bootstrap_results.placebo_horizon_ses
+            and placebo_event_study_dict is not None
+        ):
+            for lag_l in bootstrap_results.placebo_horizon_ses:
+                neg_key = -lag_l
+                if neg_key in placebo_event_study_dict:
+                    bs_se = bootstrap_results.placebo_horizon_ses.get(lag_l)
+                    bs_ci = (
+                        bootstrap_results.placebo_horizon_cis.get(lag_l)
+                        if bootstrap_results.placebo_horizon_cis
+                        else None
+                    )
+                    bs_p = (
+                        bootstrap_results.placebo_horizon_p_values.get(lag_l)
+                        if bootstrap_results.placebo_horizon_p_values
+                        else None
+                    )
+                    if bs_se is not None and np.isfinite(bs_se):
+                        eff = placebo_event_study_dict[neg_key]["effect"]
+                        placebo_event_study_dict[neg_key]["se"] = bs_se
+                        placebo_event_study_dict[neg_key]["p_value"] = (
+                            bs_p if bs_p is not None else np.nan
+                        )
+                        placebo_event_study_dict[neg_key]["conf_int"] = (
+                            bs_ci if bs_ci is not None else (np.nan, np.nan)
+                        )
+                        placebo_event_study_dict[neg_key]["t_stat"] = safe_inference(
+                            eff, bs_se, alpha=self.alpha, df=None
+                        )[0]
 
         # Phase 2: build normalized_effects with SE
         normalized_effects_out: Optional[Dict[int, Dict[str, Any]]] = None
@@ -1618,28 +1867,68 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             twfe_sigma_fe = twfe_diagnostic_payload.sigma_fe
             twfe_beta_fe = twfe_diagnostic_payload.beta_fe
 
+        # When L_max >= 1, the overall estimand is per-group DID_1
+        # (not per-period DID_M). The joiner/leaver decomposition is a
+        # per-period DID_M concept and can differ from DID_1 on mixed
+        # panels, so it's suppressed for all L_max >= 1 cases. N_S and
+        # n_treated_obs are updated from the per-group path.
+        effective_N_S = N_S
+        effective_n_treated = n_treated_obs_post
+        effective_joiners_available = joiners_available
+        effective_leavers_available = leavers_available
+        if (
+            L_max is not None
+            and L_max >= 1
+            and multi_horizon_dids is not None
+            and 1 in multi_horizon_dids
+        ):
+            # Use horizon-1 eligible switcher count as the effective N_S
+            effective_N_S = multi_horizon_dids[1]["N_l"]
+            if not is_binary:
+                # For non-binary: count all observations where treatment
+                # differs from baseline
+                effective_n_treated = int(
+                    N_mat[D_mat != D_mat[:, 0:1]].sum()
+                ) if D_mat.shape[1] > 1 else 0
+            if not is_binary:
+                # Suppress binary-only Phase 1 artifacts on non-binary
+                # panels: per_period_effects and single-period placebo
+                # are DID_M concepts that don't apply to non-binary data.
+                per_period_effects = {}
+                placebo_effect = float("nan")
+                placebo_se = float("nan")
+                placebo_t = float("nan")
+                placebo_p = float("nan")
+                placebo_ci = (float("nan"), float("nan"))
+                placebo_available = False
+            # Suppress joiner/leaver decomposition for all L_max >= 1
+            # (the decomposition is a per-period DID_M concept, not
+            # applicable to the per-group DID_1 estimand)
+            effective_joiners_available = False
+            effective_leavers_available = False
+
         results = ChaisemartinDHaultfoeuilleResults(
             overall_att=effective_overall_att,
             overall_se=effective_overall_se,
             overall_t_stat=effective_overall_t,
             overall_p_value=effective_overall_p,
             overall_conf_int=effective_overall_ci,
-            joiners_att=joiners_att,
-            joiners_se=joiners_se,
-            joiners_t_stat=joiners_t,
-            joiners_p_value=joiners_p,
-            joiners_conf_int=joiners_ci,
-            n_joiner_cells=n_joiner_cells,
-            n_joiner_obs=n_joiner_obs,
-            joiners_available=joiners_available,
-            leavers_att=leavers_att,
-            leavers_se=leavers_se,
-            leavers_t_stat=leavers_t,
-            leavers_p_value=leavers_p,
-            leavers_conf_int=leavers_ci,
-            n_leaver_cells=n_leaver_cells,
-            n_leaver_obs=n_leaver_obs,
-            leavers_available=leavers_available,
+            joiners_att=joiners_att if effective_joiners_available else float("nan"),
+            joiners_se=joiners_se if effective_joiners_available else float("nan"),
+            joiners_t_stat=joiners_t if effective_joiners_available else float("nan"),
+            joiners_p_value=joiners_p if effective_joiners_available else float("nan"),
+            joiners_conf_int=joiners_ci if effective_joiners_available else (float("nan"), float("nan")),
+            n_joiner_cells=n_joiner_cells if effective_joiners_available else 0,
+            n_joiner_obs=n_joiner_obs if effective_joiners_available else 0,
+            joiners_available=effective_joiners_available,
+            leavers_att=leavers_att if effective_leavers_available else float("nan"),
+            leavers_se=leavers_se if effective_leavers_available else float("nan"),
+            leavers_t_stat=leavers_t if effective_leavers_available else float("nan"),
+            leavers_p_value=leavers_p if effective_leavers_available else float("nan"),
+            leavers_conf_int=leavers_ci if effective_leavers_available else (float("nan"), float("nan")),
+            n_leaver_cells=n_leaver_cells if effective_leavers_available else 0,
+            n_leaver_obs=n_leaver_obs if effective_leavers_available else 0,
+            leavers_available=effective_leavers_available,
             placebo_effect=placebo_effect,
             placebo_se=placebo_se,
             placebo_t_stat=placebo_t,
@@ -1650,8 +1939,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             groups=all_groups,
             time_periods=all_periods,
             n_obs=n_obs_post,
-            n_treated_obs=n_treated_obs_post,
-            n_switcher_cells=N_S,
+            n_treated_obs=effective_n_treated,
+            n_switcher_cells=effective_N_S,
             n_cohorts=n_cohorts,
             n_groups_dropped_crossers=n_groups_dropped_crossers,
             n_groups_dropped_singleton_baseline=n_groups_dropped_singleton_baseline,
@@ -1743,21 +2032,28 @@ def _drop_crossing_cells(
     cell: pd.DataFrame, group_col: str, d_col: str
 ) -> Tuple[pd.DataFrame, int]:
     """
-    Drop multi-switch groups (matches R DIDmultiplegtDYN drop_larger_lower=TRUE).
+    Drop groups with more than one treatment-change period.
 
-    For binary treatment in Phase 1, "multi-switch" means a group whose
-    treatment switches more than once across the panel. Such groups are
-    dropped entirely (not just the post-second-switch cells) so the
-    cohort identification step (which uses the first switch as the
-    cohort marker) and the variance computation operate on a consistent
-    dataset.
+    The dCDH estimator uses the **first treatment change** (``F_g``) as
+    the cohort marker for both the per-group building block ``DID_{g,l}``
+    and the variance computation. Groups with a second treatment change
+    at a later period would confound the multi-horizon estimates because
+    ``DID_{g,l}`` attributes the full outcome change from ``F_g-1`` to
+    ``F_g-1+l`` to the first switch, while the second switch also
+    contributes to that outcome change.
+
+    For binary treatment, >1 change means a reversal (e.g., 0->1->0).
+    For non-binary, >1 change includes both reversals (0->2->1) and
+    monotone multi-step paths (0->1->2). Both are dropped because the
+    dCDH framework requires a single treatment-change event per group.
+    A single jump of any magnitude (e.g., 0->3->3->3) has exactly
+    1 change period and is kept.
 
     Parameters
     ----------
     cell : pd.DataFrame
-        Cell-level dataset with columns for ``group_col``, ``time_col``,
-        ``d_col``, and possibly other metadata. Must be sorted by group
-        and time.
+        Cell-level dataset with columns for ``group_col`` and ``d_col``.
+        Must be sorted by group and time.
     group_col : str
     d_col : str
         Treatment column name.
@@ -1769,10 +2065,14 @@ def _drop_crossing_cells(
     n_dropped : int
         Number of groups dropped.
     """
-    # Count switches per group
-    diffs = cell.groupby(group_col)[d_col].diff().abs()
-    switches_per_group = diffs.fillna(0).groupby(cell[group_col]).sum()
-    multi_switch_groups = switches_per_group[switches_per_group > 1].index.tolist()
+    # Count the number of periods with non-zero treatment changes per
+    # group. A group with > 1 such period has changed treatment more
+    # than once (multi-switch). This generalizes correctly to non-binary
+    # treatment: a single jump 0->3 has 1 non-zero diff, while 0->1->0
+    # has 2 non-zero diffs.
+    diffs = cell.groupby(group_col)[d_col].diff().fillna(0)
+    n_changes = (diffs != 0).groupby(cell[group_col]).sum()
+    multi_switch_groups = n_changes[n_changes > 1].index.tolist()
     n_dropped = len(multi_switch_groups)
     if n_dropped > 0:
         warnings.warn(
@@ -2106,7 +2406,7 @@ def _compute_group_switch_metadata(
             "rejected this."
         )
 
-    baselines = D_mat[:, 0].astype(int)
+    baselines = D_mat[:, 0].astype(float)
     first_switch_idx = np.full(n_groups, -1, dtype=int)
     switch_direction = np.zeros(n_groups, dtype=int)
 
@@ -2134,10 +2434,10 @@ def _compute_group_switch_metadata(
         # (or n_periods - 1 if never-switching).
         f_vals = first_switch_idx[baseline_mask]
         control_last = np.where(f_vals == -1, n_periods - 1, f_vals - 1)
-        max_control_period[int(d)] = int(control_last.max()) if control_last.size > 0 else -1
+        max_control_period[float(d)] = int(control_last.max()) if control_last.size > 0 else -1
 
     T_g = np.array(
-        [max_control_period.get(int(baselines[g]), -1) for g in range(n_groups)],
+        [max_control_period.get(float(baselines[g]), -1) for g in range(n_groups)],
         dtype=int,
     )
 
@@ -2193,12 +2493,12 @@ def _compute_multi_horizon_dids(
     # Pre-compute per-baseline lookup of (group_indices, first_switch_indices)
     # for efficient control-pool identification.
     unique_baselines = np.unique(baselines)
-    baseline_groups: Dict[int, np.ndarray] = {}
-    baseline_f: Dict[int, np.ndarray] = {}
+    baseline_groups: Dict[float, np.ndarray] = {}
+    baseline_f: Dict[float, np.ndarray] = {}
     for d in unique_baselines:
         mask = baselines == d
-        baseline_groups[int(d)] = np.where(mask)[0]
-        baseline_f[int(d)] = first_switch_idx[mask]
+        baseline_groups[float(d)] = np.where(mask)[0]
+        baseline_f[float(d)] = first_switch_idx[mask]
 
     results: Dict[int, Dict[str, Any]] = {}
     a11_multi_warnings: List[str] = []
@@ -2247,7 +2547,7 @@ def _compute_multi_horizon_dids(
             f_g = first_switch_idx[g]
             ref_idx = f_g - 1
             out_idx = f_g - 1 + l
-            d_base = int(baselines[g])
+            d_base = float(baselines[g])
 
             # Switcher's outcome change
             switcher_change = Y_mat[g, out_idx] - Y_mat[g, ref_idx]
@@ -2358,12 +2658,12 @@ def _compute_per_group_if_multi_horizon(
 
     # Pre-compute per-baseline group indices for control-pool lookup.
     unique_baselines = np.unique(baselines)
-    baseline_groups: Dict[int, np.ndarray] = {}
-    baseline_f: Dict[int, np.ndarray] = {}
+    baseline_groups: Dict[float, np.ndarray] = {}
+    baseline_f: Dict[float, np.ndarray] = {}
     for d in unique_baselines:
         mask = baselines == d
-        baseline_groups[int(d)] = np.where(mask)[0]
-        baseline_f[int(d)] = first_switch_idx[mask]
+        baseline_groups[float(d)] = np.where(mask)[0]
+        baseline_f[float(d)] = first_switch_idx[mask]
 
     results: Dict[int, np.ndarray] = {}
 
@@ -2383,7 +2683,7 @@ def _compute_per_group_if_multi_horizon(
             if T_g[g] < out_idx:
                 continue
 
-            d_base = int(baselines[g])
+            d_base = float(baselines[g])
             S_g = float(switch_direction[g])
 
             # Control pool for this switcher at this horizon
@@ -2412,6 +2712,101 @@ def _compute_per_group_if_multi_horizon(
             U_l[ctrl_pool] -= (S_g / n_ctrl) * ctrl_changes
 
         results[l] = U_l
+
+    return results
+
+
+def _compute_per_group_if_placebo_horizon(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+) -> Dict[int, np.ndarray]:
+    """
+    Compute per-group influence function for placebo horizons.
+
+    Mirrors ``_compute_per_group_if_multi_horizon`` but for backward
+    horizons, matching ``_compute_multi_horizon_placebos`` eligibility
+    and control-pool logic exactly.
+
+    For placebo lag ``l``, switcher ``g``'s contribution uses the
+    backward outcome change ``Y_{g, F_g-1-l} - Y_{g, F_g-1}`` (paper
+    convention: pre-period minus reference). Controls are identified
+    by the **positive**-horizon cutoff ``F_{g'} > F_g - 1 + l`` AND
+    observation at ``ref_idx``, ``backward_idx``, AND ``forward_idx``
+    (the terminal-missingness guard from Phase 2 Round 9).
+
+    Returns
+    -------
+    dict mapping lag l (positive int) -> U_pl_l array of shape (n_groups,)
+        NOT cohort-centered. The caller applies ``_cohort_recenter()``
+        before computing SE.
+    """
+    n_groups, n_periods = D_mat.shape
+    is_switcher = first_switch_idx >= 0
+
+    unique_baselines = np.unique(baselines)
+    baseline_groups: Dict[float, np.ndarray] = {}
+    baseline_f: Dict[float, np.ndarray] = {}
+    for d in unique_baselines:
+        mask = baselines == d
+        baseline_groups[float(d)] = np.where(mask)[0]
+        baseline_f[float(d)] = first_switch_idx[mask]
+
+    results: Dict[int, np.ndarray] = {}
+
+    for l in range(1, L_max + 1):  # noqa: E741
+        U_pl = np.zeros(n_groups, dtype=float)
+
+        for g in range(n_groups):
+            if not is_switcher[g]:
+                continue
+            f_g = first_switch_idx[g]
+            ref_idx = f_g - 1
+            backward_idx = ref_idx - l
+            forward_idx = ref_idx + l
+
+            # Dual eligibility (matches _compute_multi_horizon_placebos)
+            if backward_idx < 0 or forward_idx >= n_periods:
+                continue
+            if N_mat[g, ref_idx] <= 0 or N_mat[g, backward_idx] <= 0:
+                continue
+            if T_g[g] < forward_idx:
+                continue
+
+            d_base = float(baselines[g])
+            S_g = float(switch_direction[g])
+
+            # Control pool: same baseline, not switched by forward_idx,
+            # observed at ref, backward, AND forward (terminal-missingness
+            # guard). Matches _compute_multi_horizon_placebos exactly.
+            ctrl_indices = baseline_groups[d_base]
+            ctrl_f = baseline_f[d_base]
+            ctrl_mask = (
+                ((ctrl_f > forward_idx) | (ctrl_f == -1))
+                & (N_mat[ctrl_indices, ref_idx] > 0)
+                & (N_mat[ctrl_indices, backward_idx] > 0)
+                & (N_mat[ctrl_indices, forward_idx] > 0)
+            )
+            ctrl_pool = ctrl_indices[ctrl_mask]
+            n_ctrl = ctrl_pool.size
+
+            if n_ctrl == 0:
+                continue
+
+            # Switcher contribution: paper convention backward - ref
+            switcher_change = Y_mat[g, backward_idx] - Y_mat[g, ref_idx]
+            U_pl[g] += S_g * switcher_change
+
+            # Control contributions
+            ctrl_changes = Y_mat[ctrl_pool, backward_idx] - Y_mat[ctrl_pool, ref_idx]
+            U_pl[ctrl_pool] -= (S_g / n_ctrl) * ctrl_changes
+
+        results[l] = U_pl
 
     return results
 
@@ -2452,12 +2847,12 @@ def _compute_multi_horizon_placebos(
     is_switcher = first_switch_idx >= 0
 
     unique_baselines = np.unique(baselines)
-    baseline_groups: Dict[int, np.ndarray] = {}
-    baseline_f: Dict[int, np.ndarray] = {}
+    baseline_groups: Dict[float, np.ndarray] = {}
+    baseline_f: Dict[float, np.ndarray] = {}
     for d in unique_baselines:
         mask = baselines == d
-        baseline_groups[int(d)] = np.where(mask)[0]
-        baseline_f[int(d)] = first_switch_idx[mask]
+        baseline_groups[float(d)] = np.where(mask)[0]
+        baseline_f[float(d)] = first_switch_idx[mask]
 
     results: Dict[int, Dict[str, Any]] = {}
     a11_placebo_warnings: List[str] = []
@@ -2498,7 +2893,7 @@ def _compute_multi_horizon_placebos(
             ref_idx = f_g - 1
             backward_idx = ref_idx - l
             forward_idx = ref_idx + l
-            d_base = int(baselines[g])
+            d_base = float(baselines[g])
 
             # Switcher's backward outcome change: pre-period minus reference
             # (paper convention: Y_{F_g-1-l} - Y_{F_g-1})
@@ -2961,10 +3356,10 @@ def _compute_cohort_recentered_inputs(
     # variance-eligible group set. Never-switching groups (S_g = 0)
     # have F_g = -1 and form cohorts indexed by baseline alone.
     cohort_keys = [
-        (int(baselines[g]), int(first_switch_idx[g]), int(switch_direction[g]))
+        (float(baselines[g]), int(first_switch_idx[g]), int(switch_direction[g]))
         for g in range(n_groups)
     ]
-    unique_cohorts: Dict[Tuple[int, int, int], int] = {}
+    unique_cohorts: Dict[Tuple[float, int, int], int] = {}
     cohort_id = np.zeros(n_groups, dtype=int)
     for g in range(n_groups):
         if not eligible_mask[g]:
@@ -3364,6 +3759,14 @@ def twowayfeweights(
         time=time,
         treatment=treatment,
     )
+    # TWFE diagnostic assumes binary treatment (d_arr == 1 for treated mask).
+    if not set(cell["d_gt"].unique()).issubset({0.0, 1.0, 0, 1}):
+        raise ValueError(
+            "twowayfeweights() requires binary treatment {0, 1}. "
+            "Non-binary treatment is supported by fit() with L_max >= 1 "
+            "but the TWFE diagnostic (Theorem 1 of AER 2020) assumes "
+            "binary treatment."
+        )
     return _compute_twfe_diagnostic(
         cell=cell,
         group_col=group,

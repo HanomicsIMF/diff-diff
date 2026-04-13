@@ -48,13 +48,14 @@ class DCDHBootstrapResults:
     in the underlying data (e.g., no leavers), the matching fields are
     ``None``.
 
-    **Phase 1 placebo bootstrap is intentionally NOT computed.** The
-    dynamic companion paper Section 3.7.3 derives the cohort-recentered
-    analytical variance for ``DID_l`` only, not for the placebo
+    **Phase 1 per-period placebo (L_max=None) bootstrap is NOT computed.**
+    The dynamic companion paper Section 3.7.3 derives the cohort-recentered
+    analytical variance for ``DID_l`` only, not for the per-period
     ``DID_M^pl``. The ``placebo_se`` / ``placebo_ci`` / ``placebo_p_value``
-    fields below ALWAYS remain ``None`` in Phase 1, even when
-    ``n_bootstrap > 0``. Phase 2 will add multiplier-bootstrap support
-    for the placebo via the dynamic paper's machinery.
+    fields below remain ``None`` for Phase 1. Multi-horizon placebos
+    (``L_max >= 1``) have valid SE via ``placebo_horizon_ses`` - this is
+    a library extension applying the same IF/variance structure to the
+    placebo estimand (see REGISTRY.md dynamic placebo SE Note).
 
     Attributes
     ----------
@@ -84,12 +85,14 @@ class DCDHBootstrapResults:
     leavers_p_value : float, optional
         Bootstrap p-value for leavers-only ``DID_-``.
     placebo_se : float, optional
-        **Always ``None`` in Phase 1** — placebo bootstrap is deferred
-        to Phase 2 (see class docstring above).
+        ``None`` for the Phase 1 single-period placebo (``L_max=None``).
+        Multi-horizon placebo bootstrap SE is on
+        ``placebo_horizon_ses``.
     placebo_ci : tuple of float, optional
-        **Always ``None`` in Phase 1** (see class docstring above).
+        ``None`` for single-period placebo. See ``placebo_horizon_cis``.
     placebo_p_value : float, optional
-        **Always ``None`` in Phase 1** (see class docstring above).
+        ``None`` for single-period placebo. See
+        ``placebo_horizon_p_values``.
     bootstrap_distribution : np.ndarray, optional
         Full bootstrap distribution of the overall ``DID_M`` estimator
         (shape: ``(n_bootstrap,)``). Stored for advanced diagnostics;
@@ -160,9 +163,10 @@ class ChaisemartinDHaultfoeuilleResults:
     ``summary()``, ``to_dataframe()``, ``is_significant``, and
     ``significance_stars`` all read from these top-level fields and
     therefore reflect the bootstrap inference automatically. The
-    placebo path is unchanged: placebo bootstrap is deferred to Phase
-    2, so ``placebo_p_value`` and ``placebo_conf_int`` stay NaN even
-    when ``n_bootstrap > 0``. See the methodology registry
+    single-period placebo (``L_max=None``) still has NaN bootstrap
+    fields; multi-horizon placebos (``L_max >= 1``) have valid
+    bootstrap SE/CI/p via ``placebo_horizon_ses/cis/p_values``.
+    See the methodology registry
     ``Note (bootstrap inference surface)`` for the full contract and
     library precedent.
 
@@ -273,8 +277,12 @@ class ChaisemartinDHaultfoeuilleResults:
     n_treated_obs : int
         Treated observations in the post-filter sample.
     n_switcher_cells : int
-        Number of switching ``(g, t)`` cells across periods. Equals
-        ``sum_t (n_10_t + n_01_t)`` where each transition cell counts
+        When ``L_max=None``: number of switching ``(g, t)`` cells
+        (``N_S = sum_t (n_10_t + n_01_t)``). When ``L_max >= 1``:
+        number of eligible switcher groups at horizon 1 (``N_1``).
+        Previously this field always held the cell count; for
+        ``L_max >= 1`` it was repurposed to hold the per-group count
+        that matches the ``DID_1`` estimand. Originally equals
         once regardless of how many original observations fed into it.
         This is the ``N_S`` denominator of ``DID_M`` per AER 2020
         Theorem 3 — cell counts, not within-cell observation counts.
@@ -301,14 +309,14 @@ class ChaisemartinDHaultfoeuilleResults:
     alpha : float
         Significance level used for confidence intervals.
     event_study_effects : dict, optional
-        In Phase 1 this is populated with a single entry for horizon
-        ``1``, mirroring ``overall_att``. Keeping the field shape stable
-        avoids API churn when Phase 2 adds entries for ``l = 2, ..., L``.
+        Populated with horizon ``1`` when ``L_max=None``, or horizons
+        ``1..L_max`` when ``L_max >= 1``. When ``L_max >= 1``, uses the
+        per-group ``DID_{g,l}`` path; when ``L_max=None``, uses the
+        per-period ``DID_M`` path.
     normalized_effects : dict, optional
-        Phase 2 placeholder (``DID^n_l``). Always ``None`` in Phase 1.
+        Normalized estimator ``DID^n_l``. Populated when ``L_max >= 1``.
     cost_benefit_delta : dict, optional
-        Phase 2 placeholder (cost-benefit aggregate ``delta``). Always
-        ``None`` in Phase 1.
+        Cost-benefit aggregate ``delta``. Populated when ``L_max >= 2``.
     sup_t_bands : dict, optional
         Phase 2 placeholder (sup-t simultaneous confidence bands).
     covariate_residuals : pd.DataFrame, optional
@@ -411,7 +419,12 @@ class ChaisemartinDHaultfoeuilleResults:
     def __repr__(self) -> str:
         """Concise string representation."""
         sig = _get_significance_stars(self.overall_p_value)
-        label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+        if self.L_max is not None and self.L_max >= 2:
+            label = "delta"
+        elif self.L_max is not None and self.L_max == 1:
+            label = "DID_1"
+        else:
+            label = "DID_M"
         return (
             f"ChaisemartinDHaultfoeuilleResults("
             f"{label}={self.overall_att:.4f}{sig}, "
@@ -477,7 +490,9 @@ class ChaisemartinDHaultfoeuilleResults:
             "",
             f"{'Total observations:':<35} {self.n_obs:>10}",
             f"{'Treated observations:':<35} {self.n_treated_obs:>10}",
-            f"{'Switcher cells (N_S):':<35} {self.n_switcher_cells:>10}",
+            f"{'Eligible switchers (N_1):':<35} {self.n_switcher_cells:>10}"
+            if self.L_max is not None and self.L_max >= 1
+            else f"{'Switcher cells (N_S):':<35} {self.n_switcher_cells:>10}",
             f"{'Groups (post-filter):':<35} {len(self.groups):>10}",
             f"{'Cohorts:':<35} {self.n_cohorts:>10}",
             f"{'Time periods:':<35} {len(self.time_periods):>10}",
@@ -507,12 +522,15 @@ class ChaisemartinDHaultfoeuilleResults:
             )
 
         # --- Overall ---
-        overall_label = (
-            "Cost-Benefit Delta"
-            if self.L_max is not None and self.L_max >= 2
-            else "DID_M (Contemporaneous-Switch ATT)"
-        )
-        overall_row_label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+        if self.L_max is not None and self.L_max >= 2:
+            overall_label = "Cost-Benefit Delta"
+            overall_row_label = "delta"
+        elif self.L_max is not None and self.L_max == 1:
+            overall_label = "DID_1 (Per-Group ATT at Horizon 1)"
+            overall_row_label = "DID_1"
+        else:
+            overall_label = "DID_M (Contemporaneous-Switch ATT)"
+            overall_row_label = "DID_M"
         lines.extend(
             [
                 thin,
@@ -537,7 +555,8 @@ class ChaisemartinDHaultfoeuilleResults:
 
         cv = self.coef_var
         if np.isfinite(cv):
-            lines.append(f"{'CV (SE/|DID_M|):':<25} {cv:>10.4f}")
+            cv_label = f"CV (SE/|{overall_row_label}|):"
+            lines.append(f"{cv_label:<25} {cv:>10.4f}")
 
         lines.append("")
         is_delta = (
@@ -647,8 +666,8 @@ class ChaisemartinDHaultfoeuilleResults:
                 ]
             )
 
-        # --- Phase 2: Event study table ---
-        if self.L_max is not None and self.L_max >= 2 and self.event_study_effects:
+        # --- Event study table (L_max >= 1) ---
+        if self.L_max is not None and self.L_max >= 1 and self.event_study_effects:
             lines.extend(
                 [
                     thin,
@@ -768,18 +787,19 @@ class ChaisemartinDHaultfoeuilleResults:
         level : str, default="overall"
             One of:
 
-            - ``"overall"``: single-row table with the overall ``DID_M``
-              point estimate, SE, t-stat, p-value, CI bounds.
-            - ``"joiners_leavers"``: three rows for ``DID_M``, ``DID_+``,
-              and ``DID_-``.
+            - ``"overall"``: single-row table with the overall estimand
+              (``DID_M`` when ``L_max=None``, ``DID_1`` when ``L_max=1``,
+              ``delta`` when ``L_max >= 2``).
+            - ``"joiners_leavers"``: up to three rows for the overall,
+              ``DID_+``, and ``DID_-`` (binary panels only).
             - ``"per_period"``: one row per time period with
               ``did_plus_t``, ``did_minus_t``, switching cell counts, and
               the A11-zeroed flags.
             - ``"event_study"``: one row per horizon (positive and
               negative/placebo), including a reference period at
-              horizon 0. Available when ``L_max >= 2``.
+              horizon 0. Available when ``L_max >= 1``.
             - ``"normalized"``: one row per horizon for the normalized
-              effects ``DID^n_l``. Available when ``L_max >= 2``.
+              effects ``DID^n_l``. Available when ``L_max >= 1``.
             - ``"twfe_weights"``: per-(group, time) TWFE decomposition
               weights table. Only available when ``twfe_diagnostic=True``
               was passed to ``fit()``.
@@ -793,7 +813,11 @@ class ChaisemartinDHaultfoeuilleResults:
                 [
                     {
                         "estimand": (
-                            "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+                            "delta"
+                            if self.L_max is not None and self.L_max >= 2
+                            else "DID_1"
+                            if self.L_max is not None and self.L_max == 1
+                            else "DID_M"
                         ),
                         "effect": self.overall_att,
                         "se": self.overall_se,
@@ -816,7 +840,12 @@ class ChaisemartinDHaultfoeuilleResults:
             # For the DID_M row, both quantities use the overall switching
             # cell set: n_cells = sum of joiner + leaver cells, and n_obs
             # is the same sum of raw observation counts.
-            overall_est_label = "delta" if self.L_max is not None and self.L_max >= 2 else "DID_M"
+            if self.L_max is not None and self.L_max >= 2:
+                overall_est_label = "delta"
+            elif self.L_max is not None and self.L_max == 1:
+                overall_est_label = "DID_1"
+            else:
+                overall_est_label = "DID_M"
             rows = [
                 {
                     "estimand": overall_est_label,
@@ -827,7 +856,11 @@ class ChaisemartinDHaultfoeuilleResults:
                     "conf_int_lower": self.overall_conf_int[0],
                     "conf_int_upper": self.overall_conf_int[1],
                     "n_cells": self.n_switcher_cells,
-                    "n_obs": self.n_joiner_obs + self.n_leaver_obs,
+                    "n_obs": (
+                        self.n_treated_obs
+                        if not self.joiners_available and not self.leavers_available
+                        else self.n_joiner_obs + self.n_leaver_obs
+                    ),
                     "available": True,
                 },
                 {
@@ -942,7 +975,7 @@ class ChaisemartinDHaultfoeuilleResults:
 
         elif level == "normalized":
             if not self.normalized_effects:
-                raise ValueError("Normalized effects not computed. Pass L_max >= 2 to fit().")
+                raise ValueError("Normalized effects not computed. Pass L_max >= 1 to fit().")
             rows = []
             for h in sorted(self.normalized_effects.keys()):
                 entry = self.normalized_effects[h]

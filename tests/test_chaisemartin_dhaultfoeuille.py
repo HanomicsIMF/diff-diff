@@ -130,17 +130,18 @@ class TestChaisemartinDHaultfoeuilleBasicAPI:
                 treatment="treatment",
             )
 
-    def test_non_binary_treatment_raises_value_error(self):
+    def test_non_binary_treatment_requires_lmax(self):
+        """Non-binary treatment without L_max raises ValueError."""
         df = pd.DataFrame(
             {
                 "group": [1, 1, 2, 2],
                 "period": [0, 1, 0, 1],
                 "outcome": [10.0, 11.0, 10.0, 12.0],
-                "treatment": [0, 2, 0, 1],  # 2 is non-binary
+                "treatment": [0, 2, 0, 1],
             }
         )
         est = ChaisemartinDHaultfoeuille()
-        with pytest.raises(ValueError, match="binary treatment"):
+        with pytest.raises(ValueError, match="Non-binary treatment requires L_max"):
             est.fit(
                 df,
                 outcome="outcome",
@@ -148,6 +149,33 @@ class TestChaisemartinDHaultfoeuilleBasicAPI:
                 time="period",
                 treatment="treatment",
             )
+
+    def test_non_binary_treatment_with_lmax(self):
+        """Non-binary treatment works with L_max=1."""
+        np.random.seed(77)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 2  # non-binary jump
+                y = 10 + t + d * 1.5 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results = est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=1,
+            )
+        assert np.isfinite(results.overall_att)
 
     def test_alias_DCDH_identity(self):
         assert DCDH is ChaisemartinDHaultfoeuille
@@ -1064,20 +1092,12 @@ class TestBootstrap:
         assert results.bootstrap_results is not None
         assert results.bootstrap_results.weight_type == "webb"
 
-    def test_placebo_bootstrap_unavailable_in_phase_1(self, data, ci_params):
+    def test_placebo_se_nan_for_phase1_per_period(self, data, ci_params):
         """
-        Phase 1 commitment: the placebo SE is intentionally NaN even when
-        ``n_bootstrap > 0``. The dynamic companion paper Section 3.7.3
-        derives the cohort-recentered analytical variance for ``DID_l``
-        only — the placebo's influence-function machinery is deferred to
-        Phase 2. The bootstrap path covers ``DID_M``, ``DID_+``, and
-        ``DID_-`` only.
-
-        This test pins down the contract so that future contributors do
-        not silently widen the bootstrap surface to include the placebo
-        without also wiring up the documented Phase 2 derivation. If
-        Phase 2 implements the placebo bootstrap, this test should be
-        updated (not deleted) to assert finite placebo bootstrap fields.
+        Phase 1 per-period placebo (L_max=None): SE is NaN because the
+        per-period DID_M^pl aggregation does not have an IF derivation.
+        Multi-horizon placebos (L_max >= 2) have valid SE via the
+        per-group placebo IF - see ``TestMultiHorizonPlacebos``.
         """
         n_boot = ci_params.bootstrap(199)
         est = ChaisemartinDHaultfoeuille(
@@ -1652,6 +1672,7 @@ class TestTwowayFeweightsHelper:
             )
 
     def test_twowayfeweights_rejects_non_binary_treatment(self):
+        """TWFE diagnostic requires binary treatment."""
         data = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
         data.loc[data.index[0], "treatment"] = 2  # non-binary
         with pytest.raises(ValueError, match="binary treatment"):
@@ -1799,23 +1820,93 @@ class TestMultiHorizon:
         assert r.sup_t_bands is None
         assert r.placebo_event_study is None
 
-    def test_L_max_1_equivalent_to_none(self, data):
-        """L_max=1 produces same DID_1 as L_max=None."""
+    def test_L_max_1_bootstrap_overall_matches_es1(self, data, ci_params):
+        """With L_max=1 + bootstrap, overall_* must match event_study_effects[1]."""
+        n_boot = ci_params.bootstrap(99)
+        est = ChaisemartinDHaultfoeuille(
+            placebo=False, twfe_diagnostic=False, n_bootstrap=n_boot, seed=42
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                data, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        es1 = r.event_study_effects[1]
+        assert r.overall_att == es1["effect"]
+        assert r.overall_se == es1["se"]
+        assert r.overall_p_value == es1["p_value"]
+        assert r.overall_conf_int == es1["conf_int"]
+
+    def test_L_max_1_suppresses_joiner_leaver_decomposition(self):
+        """L_max=1 suppresses joiner/leaver decomposition in summary()
+        and to_dataframe("joiners_leavers") since it's a DID_M concept."""
+        data = generate_reversible_did_data(
+            n_groups=50, n_periods=8, pattern="mixed_single_switch", seed=42
+        )
         est = ChaisemartinDHaultfoeuille(placebo=False, twfe_diagnostic=False)
-        r_none = est.fit(
-            data, outcome="outcome", group="group", time="period", treatment="treatment"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                data, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        # Joiners/leavers suppressed for L_max=1
+        assert r.joiners_available is False
+        assert r.leavers_available is False
+        # summary() should say DID_1, not DID_M
+        s = r.summary()
+        assert "DID_1" in s
+        # to_dataframe("joiners_leavers"): DID_+/DID_- rows not available
+        df_jl = r.to_dataframe("joiners_leavers")
+        assert df_jl[df_jl["estimand"] == "DID_1"].iloc[0]["n_obs"] > 0
+        assert not df_jl[df_jl["estimand"] == "DID_+"].iloc[0]["available"]
+        assert not df_jl[df_jl["estimand"] == "DID_-"].iloc[0]["available"]
+
+    def test_L_max_1_bootstrap_results_overall_synced(self, data, ci_params):
+        """bootstrap_results.overall_* must match event_study horizon 1,
+        and bootstrap_distribution must be cleared (DID_M distribution
+        doesn't match the DID_1 summary stats)."""
+        n_boot = ci_params.bootstrap(99)
+        est = ChaisemartinDHaultfoeuille(
+            placebo=False, twfe_diagnostic=False, n_bootstrap=n_boot, seed=42
         )
-        r_one = est.fit(
-            data,
-            outcome="outcome",
-            group="group",
-            time="period",
-            treatment="treatment",
-            L_max=1,
-        )
-        assert r_one.event_study_effects[1]["effect"] == pytest.approx(
-            r_none.event_study_effects[1]["effect"]
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                data, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        br = r.bootstrap_results
+        assert br is not None
+        # Nested bootstrap overall_* should match horizon 1
+        assert br.overall_se == br.event_study_ses[1]
+        assert br.overall_ci == br.event_study_cis[1]
+        assert br.overall_p_value == br.event_study_p_values[1]
+        # bootstrap_distribution cleared (was DID_M, not DID_1)
+        assert br.bootstrap_distribution is None
+
+    def test_L_max_1_uses_per_group_path(self, data):
+        """L_max=1 uses the per-group DID_{g,1} path (same as L_max >= 2
+        uses for l=1). This is a different estimand from the per-period
+        DID_M path used by L_max=None - documented as a REGISTRY Note."""
+        est = ChaisemartinDHaultfoeuille(placebo=False, twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r_one = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=1,
+            )
+        # Per-group path produces finite estimate and SE
+        assert np.isfinite(r_one.event_study_effects[1]["effect"])
+        assert np.isfinite(r_one.event_study_effects[1]["se"])
+        assert np.isfinite(r_one.overall_att)
+        # L_max=1 should have exactly 1 horizon
+        assert set(r_one.event_study_effects.keys()) == {1}
 
     def test_L_max_populates_event_study_effects(self, data):
         """L_max=3 populates horizons {1, 2, 3} in event_study_effects."""
@@ -1964,6 +2055,55 @@ class TestMultiHorizonPlacebos:
                 assert h < 0
                 assert "effect" in entry
                 assert "n_obs" in entry
+
+    def test_placebo_se_finite_multi_horizon(self, data):
+        """Multi-horizon placebos (L_max >= 2) have finite analytical SE
+        via the per-group placebo IF computation."""
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        r = est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+            L_max=3,
+        )
+        assert r.placebo_event_study is not None
+        has_finite_se = False
+        for h, entry in r.placebo_event_study.items():
+            if entry["n_obs"] > 0:
+                assert np.isfinite(entry["effect"]), f"Placebo h={h}: effect not finite"
+                assert np.isfinite(entry["se"]), f"Placebo h={h}: SE not finite"
+                assert entry["se"] > 0, f"Placebo h={h}: SE not positive"
+                assert np.isfinite(entry["t_stat"]), f"Placebo h={h}: t_stat not finite"
+                assert np.isfinite(entry["p_value"]), f"Placebo h={h}: p_value not finite"
+                assert np.isfinite(entry["conf_int"][0]), f"Placebo h={h}: CI lo not finite"
+                assert np.isfinite(entry["conf_int"][1]), f"Placebo h={h}: CI hi not finite"
+                has_finite_se = True
+        assert has_finite_se, "Expected at least one placebo horizon with finite SE"
+
+    def test_placebo_bootstrap_se_multi_horizon(self, data, ci_params):
+        """Multi-horizon placebo bootstrap SE should be finite."""
+        n_boot = ci_params.bootstrap(199)
+        est = ChaisemartinDHaultfoeuille(
+            twfe_diagnostic=False, n_bootstrap=n_boot, seed=42
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+        assert r.bootstrap_results is not None
+        assert r.bootstrap_results.placebo_horizon_ses is not None
+        assert len(r.bootstrap_results.placebo_horizon_ses) > 0
+        for lag, se in r.bootstrap_results.placebo_horizon_ses.items():
+            assert np.isfinite(se), f"Bootstrap placebo SE lag={lag} not finite"
+            assert se > 0, f"Bootstrap placebo SE lag={lag} not positive"
 
 
 class TestNormalizedEffects:
@@ -2141,3 +2281,304 @@ class TestMultiHorizonToDataframe:
         assert "horizon" in df.columns
         assert "denominator" in df.columns
         assert len(df) == 3
+
+
+class TestNonBinaryTreatment:
+    """Non-binary treatment support (ROADMAP item 3f)."""
+
+    def test_ordinal_treatment(self):
+        """Ordinal treatment (0, 1, 2, 3) with L_max=2."""
+        np.random.seed(42)
+        rows = []
+        for g in range(30):
+            base_d = np.random.choice([0, 1, 2, 3])
+            switch_period = np.random.randint(2, 6)
+            new_d = base_d + np.random.choice([1, 2]) if base_d < 3 else base_d - 1
+            for t in range(8):
+                d = base_d if t < switch_period else new_d
+                y = 10 + g * 0.5 + t * 0.3 + (d - base_d) * 2 + np.random.randn() * 0.5
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # Non-binary treatment requires L_max (multi-horizon path)
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=2,
+            )
+        assert np.isfinite(r.overall_att)
+
+    def test_within_cell_heterogeneity_rejected_nonbinary(self):
+        """Cells with mixed non-binary values (e.g., 1 and 2) should be rejected."""
+        df = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 1, 2, 2, 2, 2],
+                "period": [0, 0, 1, 1, 0, 0, 1, 1],
+                "outcome": [10.0, 10.5, 12.0, 12.5, 10.0, 10.5, 11.0, 11.5],
+                "treatment": [0, 0, 1, 2, 0, 0, 0, 0],  # cell (1, 1) has values 1 and 2
+            }
+        )
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="Within-cell-varying treatment"):
+            est.fit(df, outcome="outcome", group="group", time="period", treatment="treatment")
+
+    def test_single_large_dose_not_flagged_multi_switch(self):
+        """A single jump 0->3 should NOT be flagged as multi-switch."""
+        np.random.seed(55)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 3  # single jump from 0 to 3
+                y = 10 + t + (d - 0) * 2 + np.random.randn() * 0.5
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Add some never-switchers for controls
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.5
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # Non-binary treatment requires L_max >= 1 (multi-horizon path)
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        # All 20 switcher groups should be kept (0 dropped as multi-switch)
+        assert r.n_groups_dropped_crossers == 0
+
+    def test_true_multi_switch_detected_nonbinary(self):
+        """A group going 0->2->1 should be flagged as multi-switch."""
+        rows = []
+        # Multi-switch group
+        for t in range(6):
+            d = 0 if t < 2 else (2 if t < 4 else 1)  # 0->2->1
+            rows.append({"group": 0, "period": t, "treatment": d, "outcome": 10 + t})
+        # Normal groups (binary for simplicity)
+        for g in range(1, 20):
+            for t in range(6):
+                d = 0 if t < 3 else 1
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": 10 + t})
+        # Controls
+        for g in range(20, 40):
+            for t in range(6):
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": 10 + t})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # Binary groups work at L_max=None; the multi-switch group
+            # (0->2->1) should be detected and dropped.
+            r = est.fit(df, outcome="outcome", group="group", time="period", treatment="treatment")
+        assert r.n_groups_dropped_crossers >= 1
+
+    def test_monotone_multi_step_dropped(self):
+        """A monotone multi-step path 0->1->2 has 2 change periods and
+        should be dropped (the second change confounds DID_{g,l})."""
+        rows = []
+        # Monotone multi-step group: 0->1->2
+        for t in range(6):
+            d = 0 if t < 2 else (1 if t < 4 else 2)
+            rows.append({"group": 0, "period": t, "treatment": d, "outcome": 10 + t})
+        # Normal single-switch groups (binary)
+        for g in range(1, 20):
+            for t in range(6):
+                d = 0 if t < 3 else 1
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": 10 + t})
+        # Controls
+        for g in range(20, 40):
+            for t in range(6):
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": 10 + t})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(df, outcome="outcome", group="group", time="period", treatment="treatment")
+        # Group 0 (0->1->2, 2 change periods) should be dropped
+        assert r.n_groups_dropped_crossers >= 1
+
+    def test_mixed_binary_nonbinary_panel_lmax1(self):
+        """Mixed panel with both 0->1 and 0->2 switches at L_max=1.
+        overall_att should use the per-group path (includes all switches),
+        not the per-period path (binary-only)."""
+        np.random.seed(88)
+        rows = []
+        # Binary switchers: 0->1
+        for g in range(10):
+            for t in range(6):
+                d = 0 if t < 3 else 1
+                y = 10 + t + d * 2 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Non-binary switchers: 0->2
+        for g in range(10, 20):
+            for t in range(6):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d * 1.5 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Controls
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        # overall_att should be from per-group path (includes both 0->1 and 0->2)
+        assert np.isfinite(r.overall_att)
+        # event_study_effects[1] and overall_att should be the same estimand
+        assert r.overall_att == r.event_study_effects[1]["effect"]
+
+    def test_constant_nonbinary_treatment_raises(self):
+        """Constant non-binary treatment (no switchers) should raise ValueError."""
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                rows.append({"group": g, "period": t, "treatment": 2, "outcome": 10 + t})
+        for g in range(20, 40):
+            for t in range(6):
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": 10 + t})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with pytest.raises(ValueError, match="No switching groups found"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                est.fit(
+                    df, outcome="outcome", group="group", time="period",
+                    treatment="treatment", L_max=1,
+                )
+
+    def test_nonbinary_bootstrap(self, ci_params):
+        """Non-binary panel with bootstrap: finite event study SEs AND
+        top-level overall_* matches event_study_effects[1]."""
+        np.random.seed(66)
+        n_boot = ci_params.bootstrap(99)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d * 1.5 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(
+            twfe_diagnostic=False, n_bootstrap=n_boot, seed=42
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        assert r.bootstrap_results is not None
+        assert r.bootstrap_results.event_study_ses is not None
+        assert 1 in r.bootstrap_results.event_study_ses
+        assert np.isfinite(r.bootstrap_results.event_study_ses[1])
+        # Top-level overall_* must match event_study_effects[1]
+        es1 = r.event_study_effects[1]
+        assert r.overall_att == es1["effect"]
+        assert r.overall_se == es1["se"]
+        assert r.overall_p_value == es1["p_value"]
+
+    def test_nonbinary_lmax1_renderer_contract(self):
+        """Non-binary L_max=1: summary/to_dataframe use DID_1 label and
+        suppress binary-only joiner/leaver decomposition."""
+        np.random.seed(77)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        # __repr__ should say DID_1
+        assert "DID_1" in repr(r)
+        # to_dataframe("overall") should label as DID_1
+        df_overall = r.to_dataframe("overall")
+        assert df_overall.iloc[0]["estimand"] == "DID_1"
+        # n_switcher_cells should be > 0 (from per-group path)
+        assert r.n_switcher_cells > 0
+        # Joiners/leavers unavailable for non-binary
+        assert r.joiners_available is False
+        assert r.leavers_available is False
+        # to_dataframe("joiners_leavers"): overall row n_obs should be > 0
+        df_jl = r.to_dataframe("joiners_leavers")
+        overall_row = df_jl[df_jl["estimand"] == "DID_1"]
+        assert len(overall_row) == 1
+        assert overall_row.iloc[0]["n_obs"] > 0
+        # summary() should contain "DID_1" label
+        s = r.summary()
+        assert "DID_1" in s
+
+    def test_twfe_diagnostic_skipped_nonbinary(self):
+        """TWFE diagnostic should be skipped (with warning) for non-binary."""
+        np.random.seed(77)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in range(20, 40):
+            for t in range(6):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=True)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        twfe_warnings = [x for x in w if "TWFE diagnostic" in str(x.message)]
+        assert len(twfe_warnings) >= 1
+        assert r.twfe_weights is None  # diagnostic was skipped
+
+    def test_normalized_effects_general_formula(self):
+        """For non-binary treatment, normalized denominator uses actual dose change."""
+        np.random.seed(99)
+        rows = []
+        # Groups switching from 0 to 2 (dose = 2 per period)
+        for g in range(20):
+            for t in range(8):
+                d = 0 if t < 3 else 2
+                y = 10 + t + d * 1.5 + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Controls at baseline 0
+        for g in range(20, 40):
+            for t in range(8):
+                y = 10 + t + np.random.randn() * 0.3
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(placebo=False, twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                df, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=3,
+            )
+        if r.normalized_effects is not None and 1 in r.normalized_effects:
+            # For dose 0->2: denominator at l=1 should be ~2 (not 1)
+            denom = r.normalized_effects[1]["denominator"]
+            assert denom > 1.5, f"Denominator should reflect dose=2, got {denom}"

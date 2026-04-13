@@ -56,6 +56,8 @@ Deferred items from PR reviews that were not addressed before merge.
 
 | Issue | Location | PR | Priority |
 |-------|----------|----|----------|
+| dCDH: Phase 1 per-period placebo DID_M^pl has NaN SE (no IF derivation for the per-period aggregation path). Multi-horizon placebos (L_max >= 1) have valid SE. | `chaisemartin_dhaultfoeuille.py` | #294 | Low |
+| dCDH: Parity test SE/CI assertions only cover pure-direction scenarios; mixed-direction SE comparison is structurally apples-to-oranges (cell-count vs obs-count weighting). | `test_chaisemartin_dhaultfoeuille_parity.py` | #294 | Low |
 | CallawaySantAnna: consider materializing NaN entries for non-estimable (g,t) cells in group_time_effects dict (currently omitted with consolidated warning); would require updating downstream consumers (event study, balance_e, aggregation) | `staggered.py` | #256 | Low |
 | ImputationDiD dense `(A0'A0).toarray()` scales O((U+T+K)^2), OOM risk on large panels | `imputation.py` | #141 | Medium (deferred — only triggers when sparse solver fails) |
 | Multi-absorb weighted demeaning needs iterative alternating projections for N > 1 absorbed FE with survey weights; unweighted multi-absorb also uses single-pass (pre-existing, exact only for balanced panels) | `estimators.py` | #218 | Medium |

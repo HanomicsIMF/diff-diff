@@ -234,7 +234,11 @@ class TestDCDHDynRParityMultiHorizon:
 
     POINT_RTOL = 1e-4
     MIXED_POINT_RTOL = 0.025
-    SE_RTOL = 0.05
+    # SE tolerance: the cell-count vs obs-count weighting deviation
+    # (documented in REGISTRY.md) compounds across horizons and panels.
+    # 10% covers the observed gap on all pure-direction multi-horizon
+    # scenarios.
+    SE_RTOL = 0.10
 
     def _check_multi_horizon(self, golden_values, scenario_name, L_max, rtol):
         scenario = golden_values.get(scenario_name)
@@ -257,14 +261,62 @@ class TestDCDHDynRParityMultiHorizon:
                 f"R DID_{horizon}={r_eff:.6f} (rtol={rtol})"
             )
 
+    def _check_multi_horizon_se(self, golden_values, scenario_name, L_max, se_rtol):
+        """Check per-horizon SE and placebo SE against R golden values."""
+        scenario = golden_values.get(scenario_name)
+        if scenario is None:
+            pytest.skip(f"scenario '{scenario_name}' not in golden values")
+        df = _golden_to_df(scenario["data"])
+        results = _fit_dcdh_multi(df, L_max=L_max)
+
+        # Per-horizon SE
+        r_effects = scenario["results"].get("effects", {})
+        for horizon_str, r_data in r_effects.items():
+            horizon = int(horizon_str)
+            if horizon not in results.event_study_effects:
+                continue
+            py_se = results.event_study_effects[horizon]["se"]
+            r_se = r_data.get("overall_se")
+            if r_se is not None and r_se > 0:
+                assert py_se == pytest.approx(r_se, rel=se_rtol), (
+                    f"Horizon {horizon}: Python SE={py_se:.6f} vs "
+                    f"R SE={r_se:.6f} (rtol={se_rtol})"
+                )
+
+        # Placebo SE
+        r_placebos = scenario["results"].get("placebos", {})
+        if r_placebos and results.placebo_event_study:
+            for lag_str, r_pl_data in r_placebos.items():
+                lag = int(lag_str)
+                neg_key = -lag
+                if neg_key not in results.placebo_event_study:
+                    continue
+                py_pl_se = results.placebo_event_study[neg_key]["se"]
+                r_pl_se = r_pl_data.get("se")
+                if r_pl_se is not None and r_pl_se > 0:
+                    assert py_pl_se == pytest.approx(r_pl_se, rel=se_rtol), (
+                        f"Placebo lag {lag}: Python SE={py_pl_se:.6f} vs "
+                        f"R SE={r_pl_se:.6f} (rtol={se_rtol})"
+                    )
+
     def test_parity_joiners_only_multi_horizon(self, golden_values):
         self._check_multi_horizon(
             golden_values, "joiners_only_multi_horizon", L_max=3, rtol=self.POINT_RTOL
         )
 
+    def test_parity_joiners_only_multi_horizon_se(self, golden_values):
+        self._check_multi_horizon_se(
+            golden_values, "joiners_only_multi_horizon", L_max=3, se_rtol=self.SE_RTOL
+        )
+
     def test_parity_leavers_only_multi_horizon(self, golden_values):
         self._check_multi_horizon(
             golden_values, "leavers_only_multi_horizon", L_max=3, rtol=self.POINT_RTOL
+        )
+
+    def test_parity_leavers_only_multi_horizon_se(self, golden_values):
+        self._check_multi_horizon_se(
+            golden_values, "leavers_only_multi_horizon", L_max=3, se_rtol=self.SE_RTOL
         )
 
     def test_parity_mixed_single_switch_multi_horizon(self, golden_values):
@@ -281,4 +333,12 @@ class TestDCDHDynRParityMultiHorizon:
             "joiners_only_long_multi_horizon",
             L_max=5,
             rtol=self.POINT_RTOL,
+        )
+
+    def test_parity_joiners_only_long_multi_horizon_se(self, golden_values):
+        # Long panel (L_max=5): the cell-count vs obs-count weighting
+        # deviation compounds at far horizons where the panel thins.
+        # Use wider tolerance than the shorter (L_max=3) scenarios.
+        self._check_multi_horizon_se(
+            golden_values, "joiners_only_long_multi_horizon", L_max=5, se_rtol=0.15
         )

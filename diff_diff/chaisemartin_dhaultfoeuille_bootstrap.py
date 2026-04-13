@@ -19,7 +19,6 @@ multiplier weights (Rademacher / Mammen / Webb) and re-aggregates to
 produce a bootstrap distribution per target.
 """
 
-import warnings
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import numpy as np
@@ -135,9 +134,8 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
             ``divisor`` is the leaver switching-cell total
             ``sum_t N_{0,1,t}``.
         placebo_inputs : tuple, optional
-            Same triple for the placebo ``DID_M^pl`` target. Always
-            ``None`` in Phase 1 — see REGISTRY.md placebo-bootstrap-
-            deferred Note.
+            Same triple for the Phase 1 per-period placebo ``DID_M^pl``.
+            ``None`` when ``L_max=None`` (per-period placebo has no IF).
 
         Returns
         -------
@@ -160,29 +158,29 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                 f"u_centered_overall length ({u_centered_overall.shape[0]}) does not "
                 f"match n_groups_for_overall ({n_groups_for_overall})"
             )
-        if divisor_overall <= 0:
-            warnings.warn(
-                f"_compute_dcdh_bootstrap: divisor_overall={divisor_overall} <= 0; "
-                "returning all-NaN bootstrap results.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return _empty_bootstrap_results(self.n_bootstrap, self.bootstrap_weights, self.alpha)
-
         rng = np.random.default_rng(self.seed)
 
         # --- Overall DID_M ---
-        overall_se, overall_ci, overall_p, overall_dist = _bootstrap_one_target(
-            u_centered=u_centered_overall,
-            divisor=divisor_overall,
-            original=original_overall,
-            n_bootstrap=self.n_bootstrap,
-            weight_type=self.bootstrap_weights,
-            alpha=self.alpha,
-            rng=rng,
-            context="dCDH overall DID_M bootstrap",
-            return_distribution=True,
-        )
+        # Skip the scalar DID_M bootstrap when divisor_overall <= 0
+        # (e.g., pure non-binary panels where N_S=0), but continue
+        # to process multi_horizon_inputs and placebo_horizon_inputs.
+        if divisor_overall > 0:
+            overall_se, overall_ci, overall_p, overall_dist = _bootstrap_one_target(
+                u_centered=u_centered_overall,
+                divisor=divisor_overall,
+                original=original_overall,
+                n_bootstrap=self.n_bootstrap,
+                weight_type=self.bootstrap_weights,
+                alpha=self.alpha,
+                rng=rng,
+                context="dCDH overall DID_M bootstrap",
+                return_distribution=True,
+            )
+        else:
+            overall_se = np.nan
+            overall_ci = (np.nan, np.nan)
+            overall_p = np.nan
+            overall_dist = None
 
         results = DCDHBootstrapResults(
             n_bootstrap=self.n_bootstrap,
@@ -399,15 +397,3 @@ def _bootstrap_one_target(
     return se, ci, p_value, (boot_dist if return_distribution else None)
 
 
-def _empty_bootstrap_results(
-    n_bootstrap: int, weight_type: str, alpha: float
-) -> DCDHBootstrapResults:
-    """Return an all-NaN bootstrap results object as a graceful fallback."""
-    return DCDHBootstrapResults(
-        n_bootstrap=n_bootstrap,
-        weight_type=weight_type,
-        alpha=alpha,
-        overall_se=np.nan,
-        overall_ci=(np.nan, np.nan),
-        overall_p_value=np.nan,
-    )
