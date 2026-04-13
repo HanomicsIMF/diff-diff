@@ -438,6 +438,8 @@ class ChaisemartinDHaultfoeuilleResults:
         # When trends_linear + L_max>=2, overall is NaN (no aggregate).
         # Label reflects that per-horizon effects are in linear_trends_effects.
         if has_trends and self.L_max is not None and self.L_max >= 2:
+            if has_controls:
+                return "DID^{X,fd}_l (see linear_trends_effects)"
             return "DID^{fd}_l (see linear_trends_effects)"
 
         if self.L_max is not None and self.L_max >= 2:

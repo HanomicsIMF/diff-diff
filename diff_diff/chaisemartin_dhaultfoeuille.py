@@ -979,14 +979,23 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             )
             _switch_metadata_computed = True
 
-            Y_mat_residualized, covariate_diagnostics = _compute_covariate_residualization(
-                Y_mat=Y_mat,
-                X_cell=X_cell,
-                N_mat=N_mat,
-                baselines=baselines,
-                first_switch_idx=first_switch_idx_arr,
-                rank_deficient_action=self.rank_deficient_action,
+            Y_mat_residualized, covariate_diagnostics, _failed_baselines = (
+                _compute_covariate_residualization(
+                    Y_mat=Y_mat,
+                    X_cell=X_cell,
+                    N_mat=N_mat,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    rank_deficient_action=self.rank_deficient_action,
+                )
             )
+            # Zero out N_mat for failed-stratum groups so the downstream
+            # eligibility checks (N_mat[g, idx] > 0) naturally exclude
+            # them from all DID/IF/placebo computation.
+            if _failed_baselines:
+                for g_idx in range(len(baselines)):
+                    if float(baselines[g_idx]) in _failed_baselines:
+                        N_mat[g_idx, :] = 0
             # Keep raw Y_mat for the per-period DID path (which does not
             # support covariate residualization - it uses binary joiner/leaver
             # categorization). The residualized matrix is used only by the
@@ -2769,6 +2778,7 @@ def _compute_covariate_residualization(
     n_covariates = X_cell.shape[2]
     Y_resid = Y_mat.copy()
     diagnostics: Dict[str, Any] = {}
+    failed_baselines: set = set()
 
     # Pre-compute observation validity masks for first-differencing.
     # both_observed[g, t] = True iff N_mat[g, t] > 0 AND N_mat[g, t-1] > 0
@@ -2800,6 +2810,7 @@ def _compute_covariate_residualization(
             # from downstream DID computation (don't mix raw + adjusted).
             group_indices = np.where(d_mask)[0]
             Y_resid[group_indices, :] = np.nan
+            failed_baselines.add(float(d_val))
             warnings.warn(
                 f"No not-yet-treated observations for baseline treatment "
                 f"d={d_val}. Cannot estimate covariate slope theta_hat. "
@@ -2857,6 +2868,7 @@ def _compute_covariate_residualization(
             # NaN out outcomes for failed strata (don't mix raw + adjusted)
             group_indices_fail = np.where(d_mask)[0]
             Y_resid[group_indices_fail, :] = np.nan
+            failed_baselines.add(float(d_val))
             warnings.warn(
                 f"DID^X: baseline d={d_val} has {n_obs} not-yet-treated "
                 f"observations but {n_params} regressors. Groups with "
@@ -2920,7 +2932,7 @@ def _compute_covariate_residualization(
                 valid, Y_mat[group_indices] - adjustment, Y_mat[group_indices]
             )
 
-    return Y_resid, diagnostics
+    return Y_resid, diagnostics, failed_baselines
 
 
 def _compute_first_differenced_matrix(
