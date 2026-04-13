@@ -539,6 +539,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             Requires ``L_max >= 1`` and time-invariant values per group.
         honest_did : bool, default=False
             **Reserved for Phase 3** (HonestDiD integration on placebos).
+        heterogeneity : str, optional
+            Column name for a time-invariant covariate to test for
+            heterogeneous effects (Web Appendix Section 1.5, Lemma 7).
+            Partial implementation: post-treatment regressions only
+            (no placebo regressions or joint null test). Cannot be
+            combined with ``controls``. Requires ``L_max >= 1``.
+        design2 : bool, default=False
+            If ``True``, identify and report switch-in/switch-out
+            (Design-2) groups. Convenience wrapper (descriptive summary,
+            not full paper re-estimation). Requires
+            ``drop_larger_lower=False`` to retain 2-switch groups.
         survey_design : Any, optional
             **Not supported in any phase.** Survey design integration is
             handled as a separate effort after all three phases ship.
@@ -2105,20 +2116,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             linear_trends_effects = cumulated if cumulated else None
 
         # When trends_linear=True and L_max>=2, suppress cost_benefit_delta
-        # (which is computed on second-differences) and set overall_* from
-        # the cumulated level effects instead. This prevents the results
-        # surface from labeling a second-difference aggregate as delta^{fd}
-        # (a level-effect estimand).
+        # and NaN out the overall_* surface. R's did_multiplegt_dyn with
+        # trends_lin=TRUE does not compute an aggregate "average total
+        # effect" - users should access cumulated level effects via
+        # results.linear_trends_effects[l] instead.
         if _is_trends_linear and L_max is not None and L_max >= 2:
             cost_benefit_result = None
-            if linear_trends_effects:
-                max_h = max(linear_trends_effects.keys())
-                lt = linear_trends_effects[max_h]
-                effective_overall_att = lt["effect"]
-                effective_overall_se = lt["se"]
-                effective_overall_t = lt["t_stat"]
-                effective_overall_p = lt["p_value"]
-                effective_overall_ci = lt["conf_int"]
+            effective_overall_att = float("nan")
+            effective_overall_se = float("nan")
+            effective_overall_t = float("nan")
+            effective_overall_p = float("nan")
+            effective_overall_ci = (float("nan"), float("nan"))
 
         # ------------------------------------------------------------------
         # Heterogeneity testing (Web Appendix Section 1.5, Lemma 7)
@@ -2129,6 +2137,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             if het_col not in data.columns:
                 raise ValueError(
                     f"heterogeneity column {het_col!r} not found in data."
+                )
+            # R's predict_het disallows controls; our partial implementation
+            # follows this restriction to avoid inconsistent behavior.
+            if controls is not None:
+                raise ValueError(
+                    "heterogeneity cannot be combined with controls. "
+                    "R's did_multiplegt_dyn disallows predict_het with "
+                    "controls; remove one of the two options."
                 )
             # Extract per-group covariate (must be time-invariant)
             het_per_group = data.groupby(group)[het_col].nunique()

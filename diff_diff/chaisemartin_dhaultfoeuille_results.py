@@ -1054,7 +1054,8 @@ class ChaisemartinDHaultfoeuilleResults:
         else:
             raise ValueError(
                 f"Unknown level: {level!r}. Use 'overall', 'joiners_leavers', "
-                f"'per_period', 'event_study', 'normalized', or 'twfe_weights'."
+                f"'per_period', 'event_study', 'normalized', 'twfe_weights', "
+                f"'heterogeneity', or 'linear_trends'."
             )
 
 

@@ -2546,24 +2546,31 @@ class TestLinearTrends:
             df, "outcome", "group", "period", "treatment",
             controls=["X1"], L_max=2, trends_linear=True,
         )
-        assert np.isfinite(r.overall_att)
+        # overall_att is NaN for trends + L_max>=2 (no aggregate)
+        assert np.isnan(r.overall_att)
         assert r.covariate_residuals is not None
         assert r.linear_trends_effects is not None
 
     def test_trends_linear_lmax2_overall_surface(self):
-        """Overall surface under trends_linear + L_max>=2 uses cumulated level effects."""
+        """Under trends_linear + L_max>=2, overall_* is NaN (no aggregate).
+
+        R's did_multiplegt_dyn with trends_lin=TRUE does not compute an
+        aggregate average total effect. Cumulated level effects are
+        available via results.linear_trends_effects[l].
+        """
         df = self._make_panel_with_trends()
         r = ChaisemartinDHaultfoeuille(seed=1).fit(
             df, "outcome", "group", "period", "treatment",
             L_max=3, trends_linear=True,
         )
-        # overall_att should equal the cumulated level effect at max horizon
-        assert r.linear_trends_effects is not None
-        max_h = max(r.linear_trends_effects.keys())
-        cum_effect = r.linear_trends_effects[max_h]["effect"]
-        assert r.overall_att == pytest.approx(cum_effect, abs=1e-10)
-        # cost_benefit_delta should be suppressed (not computed on second-diffs)
+        # overall_* should be NaN (not computed in trends mode)
+        assert np.isnan(r.overall_att)
+        assert np.isnan(r.overall_se)
+        # cost_benefit_delta suppressed
         assert r.cost_benefit_delta is None
+        # Cumulated effects still available
+        assert r.linear_trends_effects is not None
+        assert len(r.linear_trends_effects) >= 1
 
     def test_cumulated_se_nan_propagation(self):
         """Cumulated SE is NaN when a component horizon has NaN SE."""
@@ -2753,6 +2760,16 @@ class TestHeterogeneityTesting:
             ChaisemartinDHaultfoeuille(seed=1).fit(
                 df, "outcome", "group", "period", "treatment",
                 L_max=1, heterogeneity="nonexistent",
+            )
+
+    def test_heterogeneity_rejects_controls(self):
+        """heterogeneity + controls raises ValueError (matching R predict_het)."""
+        df = self._make_panel_with_het()
+        df["X1"] = np.random.RandomState(42).normal(0, 1, len(df))
+        with pytest.raises(ValueError, match="cannot be combined with controls"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, heterogeneity="het_x", controls=["X1"],
             )
 
 
