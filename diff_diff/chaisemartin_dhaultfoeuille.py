@@ -1048,7 +1048,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         )
 
         # ------------------------------------------------------------------
-        # Step 12c: Multi-horizon computation (Phase 2, only when L_max>=2)
+        # Step 12c: Multi-horizon per-group computation (L_max >= 1)
         # ------------------------------------------------------------------
         multi_horizon_dids: Optional[Dict[int, Dict[str, Any]]] = None
         multi_horizon_if: Optional[Dict[int, np.ndarray]] = None
@@ -1078,6 +1078,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     + (f" (and {len(mh_a11) - 3} more)" if len(mh_a11) > 3 else ""),
                     UserWarning,
                     stacklevel=2,
+                )
+
+            # Guard: if no eligible switchers at horizon 1 (e.g., all
+            # groups have constant treatment), raise ValueError.
+            if 1 in multi_horizon_dids and multi_horizon_dids[1]["N_l"] == 0:
+                raise ValueError(
+                    "No switching groups found at horizon 1 after filtering. "
+                    "dCDH requires at least one group whose treatment changes "
+                    "from the baseline period."
                 )
 
             multi_horizon_if = _compute_per_group_if_multi_horizon(
@@ -1831,28 +1840,32 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             twfe_sigma_fe = twfe_diagnostic_payload.sigma_fe
             twfe_beta_fe = twfe_diagnostic_payload.beta_fe
 
-        # When L_max >= 1 on non-binary data, the binary-only metadata
-        # (N_S, joiner/leaver counts, n_treated_obs) doesn't match the
-        # per-group DID_1 estimand. Use per-group metadata instead and
-        # suppress the joiner/leaver decomposition.
+        # When L_max >= 1, the overall estimand is per-group DID_1
+        # (not per-period DID_M). The joiner/leaver decomposition is a
+        # per-period DID_M concept and can differ from DID_1 on mixed
+        # panels, so it's suppressed for all L_max >= 1 cases. N_S and
+        # n_treated_obs are updated from the per-group path.
         effective_N_S = N_S
         effective_n_treated = n_treated_obs_post
         effective_joiners_available = joiners_available
         effective_leavers_available = leavers_available
         if (
-            not is_binary
-            and L_max is not None
+            L_max is not None
             and L_max >= 1
             and multi_horizon_dids is not None
             and 1 in multi_horizon_dids
         ):
             # Use horizon-1 eligible switcher count as the effective N_S
             effective_N_S = multi_horizon_dids[1]["N_l"]
-            # Count all observations where treatment differs from baseline
-            effective_n_treated = int(
-                N_mat[D_mat != D_mat[:, 0:1]].sum()
-            ) if D_mat.shape[1] > 1 else 0
-            # Suppress joiner/leaver decomposition for non-binary
+            if not is_binary:
+                # For non-binary: count all observations where treatment
+                # differs from baseline
+                effective_n_treated = int(
+                    N_mat[D_mat != D_mat[:, 0:1]].sum()
+                ) if D_mat.shape[1] > 1 else 0
+            # Suppress joiner/leaver decomposition for all L_max >= 1
+            # (the decomposition is a per-period DID_M concept, not
+            # applicable to the per-group DID_1 estimand)
             effective_joiners_available = False
             effective_leavers_available = False
 
