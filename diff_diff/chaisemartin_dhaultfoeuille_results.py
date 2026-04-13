@@ -405,6 +405,8 @@ class ChaisemartinDHaultfoeuilleResults:
     sup_t_bands: Optional[Dict[str, Any]] = field(default=None, repr=False)
     covariate_residuals: Optional[pd.DataFrame] = field(default=None, repr=False)
     linear_trends_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None, repr=False)
+    heterogeneity_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None, repr=False)
+    design2_effects: Optional[Dict[str, Any]] = field(default=None, repr=False)
     honest_did_results: Optional[Any] = field(default=None, repr=False)
 
     # --- Repr-suppressed metadata ---
@@ -416,15 +418,41 @@ class ChaisemartinDHaultfoeuilleResults:
     # Repr / properties
     # ------------------------------------------------------------------
 
+    def _estimand_label(self) -> str:
+        """Return the estimand label based on active features."""
+        has_controls = self.covariate_residuals is not None
+        has_trends = self.linear_trends_effects is not None
+
+        if self.L_max is not None and self.L_max >= 2:
+            base = "delta"
+        elif self.L_max is not None and self.L_max == 1:
+            base = "DID_1"
+        else:
+            base = "DID_M"
+
+        if has_controls and has_trends:
+            suffix = "^{X,fd}"
+        elif has_controls:
+            suffix = "^X"
+        elif has_trends:
+            suffix = "^{fd}"
+        else:
+            suffix = ""
+
+        # For delta, suffix goes after: delta^X, delta^{fd}
+        if base == "delta" and suffix:
+            return f"delta{suffix}"
+        # For DID variants, suffix goes on DID: DID^X_1, DID^{fd}_M
+        if suffix:
+            did_part = base.split("_")[0]  # "DID"
+            sub_part = base.split("_")[1] if "_" in base else ""
+            return f"{did_part}{suffix}_{sub_part}" if sub_part else f"{did_part}{suffix}"
+        return base
+
     def __repr__(self) -> str:
         """Concise string representation."""
         sig = _get_significance_stars(self.overall_p_value)
-        if self.L_max is not None and self.L_max >= 2:
-            label = "delta"
-        elif self.L_max is not None and self.L_max == 1:
-            label = "DID_1"
-        else:
-            label = "DID_M"
+        label = self._estimand_label()
         return (
             f"ChaisemartinDHaultfoeuilleResults("
             f"{label}={self.overall_att:.4f}{sig}, "
@@ -522,15 +550,25 @@ class ChaisemartinDHaultfoeuilleResults:
             )
 
         # --- Overall ---
+        has_controls = self.covariate_residuals is not None
+        has_trends = self.linear_trends_effects is not None
+        adj_tag = ""
+        if has_controls and has_trends:
+            adj_tag = " (Covariate-and-Trend-Adjusted)"
+        elif has_controls:
+            adj_tag = " (Covariate-Adjusted)"
+        elif has_trends:
+            adj_tag = " (Trend-Adjusted)"
+
         if self.L_max is not None and self.L_max >= 2:
-            overall_label = "Cost-Benefit Delta"
-            overall_row_label = "delta"
+            overall_label = f"Cost-Benefit Delta{adj_tag}"
+            overall_row_label = self._estimand_label()
         elif self.L_max is not None and self.L_max == 1:
-            overall_label = "DID_1 (Per-Group ATT at Horizon 1)"
-            overall_row_label = "DID_1"
+            overall_label = f"Per-Group ATT at Horizon 1{adj_tag}"
+            overall_row_label = self._estimand_label()
         else:
-            overall_label = "DID_M (Contemporaneous-Switch ATT)"
-            overall_row_label = "DID_M"
+            overall_label = f"DID_M (Contemporaneous-Switch ATT){adj_tag}"
+            overall_row_label = self._estimand_label()
         lines.extend(
             [
                 thin,
@@ -812,13 +850,7 @@ class ChaisemartinDHaultfoeuilleResults:
             return pd.DataFrame(
                 [
                     {
-                        "estimand": (
-                            "delta"
-                            if self.L_max is not None and self.L_max >= 2
-                            else "DID_1"
-                            if self.L_max is not None and self.L_max == 1
-                            else "DID_M"
-                        ),
+                        "estimand": self._estimand_label(),
                         "effect": self.overall_att,
                         "se": self.overall_se,
                         "t_stat": self.overall_t_stat,
@@ -840,12 +872,7 @@ class ChaisemartinDHaultfoeuilleResults:
             # For the DID_M row, both quantities use the overall switching
             # cell set: n_cells = sum of joiner + leaver cells, and n_obs
             # is the same sum of raw observation counts.
-            if self.L_max is not None and self.L_max >= 2:
-                overall_est_label = "delta"
-            elif self.L_max is not None and self.L_max == 1:
-                overall_est_label = "DID_1"
-            else:
-                overall_est_label = "DID_M"
+            overall_est_label = self._estimand_label()
             rows = [
                 {
                     "estimand": overall_est_label,

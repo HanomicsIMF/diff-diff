@@ -342,3 +342,125 @@ class TestDCDHDynRParityMultiHorizon:
         self._check_multi_horizon_se(
             golden_values, "joiners_only_long_multi_horizon", L_max=5, se_rtol=0.15
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Covariate and trend parity tests
+# ---------------------------------------------------------------------------
+
+
+def _golden_to_df_with_covariates(data_dict: dict) -> pd.DataFrame:
+    """Reconstruct a panel DataFrame including covariate columns."""
+    cols = {
+        "group": data_dict["group"],
+        "period": data_dict["period"],
+        "treatment": data_dict["treatment"],
+        "outcome": data_dict["outcome"],
+    }
+    if "X1" in data_dict:
+        cols["X1"] = data_dict["X1"]
+    return pd.DataFrame(cols)
+
+
+class TestDCDHDynRParityPhase3:
+    """
+    Phase 3 parity tests: covariates (DID^X) and linear trends (DID^{fd}).
+
+    Tests that the Python implementation matches R ``did_multiplegt_dyn``
+    with ``controls`` and ``trends_lin`` options on identical data.
+
+    Tolerances are wider than Phase 1/2 because the covariate and trend
+    adjustments involve additional OLS steps that may amplify the
+    cell-count vs obs-count weighting deviation documented in REGISTRY.md.
+    """
+
+    # Controls-only: observed gap 0.15%-0.26% (from OLS residualization).
+    # Trends-only: exact (0.0000%) at both horizons after cumulation fix.
+    # Combined: observed gap 0.30%-0.59% (from OLS residualization only).
+    # SE: 3-5% from cell-count weighting; 12-18% for cumulated SEs.
+    POINT_RTOL = 0.01    # 1% for controls (observed: 0.26%)
+    SE_RTOL = 0.20       # 20% for SE (cell-count weighting + cumulation)
+
+    def _check_phase3_scenario(
+        self, golden_values, scenario_name, L_max, controls=None,
+        trends_linear=None, point_rtol=None, se_rtol=None,
+    ):
+        scenario = golden_values.get(scenario_name)
+        if scenario is None:
+            pytest.skip(f"scenario {scenario_name!r} not in golden values")
+
+        df = _golden_to_df_with_covariates(scenario["data"])
+        est = ChaisemartinDHaultfoeuille()
+        results = est.fit(
+            df, outcome="outcome", group="group", time="period",
+            treatment="treatment", L_max=L_max,
+            controls=controls, trends_linear=trends_linear,
+        )
+        r_results = scenario["results"]
+        rtol = point_rtol or self.POINT_RTOL
+        se_tol = se_rtol or self.SE_RTOL
+
+        # When trends_linear is active, R returns cumulated level effects
+        # (delta^{fd}_l), not second-differences (DID^{fd}_l). Compare
+        # against linear_trends_effects (cumulated) instead of
+        # event_study_effects (second-differences).
+        if trends_linear:
+            py_effects = results.linear_trends_effects
+            assert py_effects is not None, "linear_trends_effects is None"
+        else:
+            py_effects = results.event_study_effects
+
+        # Check per-horizon effects
+        for h_str, r_eff in r_results.get("effects", {}).items():
+            h = int(h_str)
+            assert h in py_effects, (
+                f"Horizon {h} missing from Python results"
+            )
+            py_eff = py_effects[h]["effect"]
+            assert py_eff == pytest.approx(
+                r_eff["overall_att"], rel=rtol
+            ), f"h={h}: Python={py_eff:.4f} vs R={r_eff['overall_att']:.4f}"
+
+            # SE comparison (wider tolerance)
+            py_se = py_effects[h]["se"]
+            r_se = r_eff["overall_se"]
+            if py_se > 0 and r_se > 0:
+                assert py_se == pytest.approx(
+                    r_se, rel=se_tol
+                ), f"h={h} SE: Python={py_se:.4f} vs R={r_se:.4f}"
+
+    def test_parity_joiners_only_controls(self, golden_values):
+        """DID^X with controls vs R did_multiplegt_dyn(..., controls='X1').
+
+        Observed gap: 0.15% at h=1, 0.26% at h=2. Deterministic on
+        identical data - the small gap is from the documented cell-count
+        vs obs-count weighting deviation in REGISTRY.md.
+        """
+        self._check_phase3_scenario(
+            golden_values, "joiners_only_controls", L_max=2,
+            controls=["X1"],
+            point_rtol=self.POINT_RTOL,
+        )
+
+    def test_parity_joiners_only_trends_lin(self, golden_values):
+        """DID^{fd} with trends_linear vs R did_multiplegt_dyn(..., trends_lin=TRUE).
+
+        Exact match (0.0000%) at both horizons after per-group cumulation fix.
+        """
+        self._check_phase3_scenario(
+            golden_values, "joiners_only_trends_lin", L_max=2,
+            trends_linear=True,
+            point_rtol=1e-4,  # exact match
+        )
+
+    def test_parity_joiners_only_controls_trends_lin(self, golden_values):
+        """DID^{X,fd} with controls + trends vs R.
+
+        Observed gap: 0.30%-0.59% (from OLS residualization step only;
+        the trends cumulation is now exact after per-group cumulation fix).
+        """
+        self._check_phase3_scenario(
+            golden_values, "joiners_only_controls_trends_lin", L_max=2,
+            controls=["X1"], trends_linear=True,
+            point_rtol=self.POINT_RTOL,
+        )

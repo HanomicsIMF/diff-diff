@@ -389,6 +389,100 @@ scenarios$joiners_only_long_multi_horizon <- list(
 )
 
 # ---------------------------------------------------------------------------
+# Phase 3: Covariate and linear-trends scenarios
+# ---------------------------------------------------------------------------
+
+# Helper: add a covariate column to a panel. The covariate is correlated with
+# switch timing (confounding) but the true effect is constant.
+add_covariate <- function(df, seed = 42, x_effect = 1.5) {
+  set.seed(seed)
+  n <- nrow(df)
+  groups <- unique(df$group)
+  # Group-level base value (correlated with which groups switch)
+  x_base <- setNames(rnorm(length(groups), 0, 1), groups)
+  # Time-varying component
+  df$X1 <- x_base[as.character(df$group)] + 0.3 * df$period + rnorm(n, 0, 0.2)
+  # Add covariate effect to outcome
+  df$outcome <- df$outcome + x_effect * df$X1
+  df
+}
+
+# Scenario 10: joiners_only with controls (L_max=2)
+cat("  Scenario 10: joiners_only_controls\n")
+d10 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 8,
+                      pattern = "joiners_only", seed = 110)
+d10 <- add_covariate(d10, seed = 210, x_effect = 1.5)
+res10 <- did_multiplegt_dyn(
+  df = d10, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 2, placebo = 1, ci_level = 95,
+  controls = "X1"
+)
+scenarios$joiners_only_controls <- list(
+  data = list(
+    group = as.numeric(d10$group),
+    period = as.numeric(d10$period),
+    treatment = as.numeric(d10$treatment),
+    outcome = as.numeric(d10$outcome),
+    X1 = as.numeric(d10$X1)
+  ),
+  params = list(pattern = "joiners_only", n_groups = N_GOLDEN, n_periods = 8,
+                seed = 110, effects = 2, placebo = 1, ci_level = 95,
+                controls = "X1"),
+  results = extract_dcdh_multi(res10, n_effects = 2, n_placebos = 1)
+)
+
+# Scenario 11: joiners_only with trends_lin (L_max=2)
+cat("  Scenario 11: joiners_only_trends_lin\n")
+d11 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 8,
+                      pattern = "joiners_only", seed = 111)
+# Add group-specific linear trends to outcome
+set.seed(311)
+groups11 <- unique(d11$group)
+g_trends <- setNames(rnorm(length(groups11), 0, 0.5), groups11)
+d11$outcome <- d11$outcome + g_trends[as.character(d11$group)] * d11$period
+res11 <- did_multiplegt_dyn(
+  df = d11, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 2, placebo = 1, ci_level = 95,
+  trends_lin = TRUE
+)
+scenarios$joiners_only_trends_lin <- list(
+  data = export_data(d11),
+  params = list(pattern = "joiners_only", n_groups = N_GOLDEN, n_periods = 8,
+                seed = 111, effects = 2, placebo = 1, ci_level = 95,
+                trends_lin = TRUE),
+  results = extract_dcdh_multi(res11, n_effects = 2, n_placebos = 1)
+)
+
+# Scenario 12: joiners_only with both controls and trends_lin (L_max=2)
+cat("  Scenario 12: joiners_only_controls_trends_lin\n")
+d12 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 8,
+                      pattern = "joiners_only", seed = 112)
+d12 <- add_covariate(d12, seed = 212, x_effect = 1.5)
+# Add group-specific linear trends
+set.seed(312)
+groups12 <- unique(d12$group)
+g_trends12 <- setNames(rnorm(length(groups12), 0, 0.5), groups12)
+d12$outcome <- d12$outcome + g_trends12[as.character(d12$group)] * d12$period
+res12 <- did_multiplegt_dyn(
+  df = d12, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 2, placebo = 1, ci_level = 95,
+  controls = "X1", trends_lin = TRUE
+)
+scenarios$joiners_only_controls_trends_lin <- list(
+  data = list(
+    group = as.numeric(d12$group),
+    period = as.numeric(d12$period),
+    treatment = as.numeric(d12$treatment),
+    outcome = as.numeric(d12$outcome),
+    X1 = as.numeric(d12$X1)
+  ),
+  params = list(pattern = "joiners_only", n_groups = N_GOLDEN, n_periods = 8,
+                seed = 112, effects = 2, placebo = 1, ci_level = 95,
+                controls = "X1", trends_lin = TRUE),
+  results = extract_dcdh_multi(res12, n_effects = 2, n_placebos = 1)
+)
+
+# ---------------------------------------------------------------------------
 # Write output
 # ---------------------------------------------------------------------------
 dir.create(dirname(output_path), showWarnings = FALSE, recursive = TRUE)

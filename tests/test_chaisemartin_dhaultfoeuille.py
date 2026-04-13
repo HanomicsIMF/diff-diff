@@ -338,19 +338,21 @@ class TestForwardCompatGates:
         )
         assert 1 in results.event_study_effects
 
-    def test_controls_raises_not_implemented(self, data):
-        with pytest.raises(NotImplementedError, match="Phase 3"):
+    def test_controls_requires_lmax(self, data):
+        """DID^X covariate adjustment requires L_max >= 1."""
+        with pytest.raises(ValueError, match="requires L_max >= 1"):
             self._est().fit(
                 data,
                 outcome="outcome",
                 group="group",
                 time="period",
                 treatment="treatment",
-                controls=["x"],
+                controls=["outcome"],  # reuse existing column as dummy covariate
             )
 
-    def test_trends_linear_raises_not_implemented(self, data):
-        with pytest.raises(NotImplementedError, match="Phase 3"):
+    def test_trends_linear_requires_lmax(self, data):
+        """DID^{fd} trend adjustment requires L_max >= 1."""
+        with pytest.raises(ValueError, match="requires L_max >= 1"):
             self._est().fit(
                 data,
                 outcome="outcome",
@@ -360,8 +362,9 @@ class TestForwardCompatGates:
                 trends_linear=True,
             )
 
-    def test_trends_nonparam_raises_not_implemented(self, data):
-        with pytest.raises(NotImplementedError, match="Phase 3"):
+    def test_trends_nonparam_requires_lmax(self, data):
+        """State-set trends requires L_max >= 1."""
+        with pytest.raises(ValueError, match="requires L_max >= 1"):
             self._est().fit(
                 data,
                 outcome="outcome",
@@ -2281,6 +2284,458 @@ class TestMultiHorizonToDataframe:
         assert "horizon" in df.columns
         assert "denominator" in df.columns
         assert len(df) == 3
+
+
+class TestCovariateAdjustment:
+    """DID^X covariate residualization (ROADMAP item 3a)."""
+
+    @staticmethod
+    def _make_panel_with_covariates(seed=42, n_groups=40, n_periods=6):
+        """Create a panel where a covariate confounds the outcome."""
+        rng = np.random.RandomState(seed)
+        rows = []
+        for g in range(n_groups):
+            group_fe = rng.normal(0, 2)
+            # Covariate: group-level value plus time variation
+            x_base = rng.normal(0, 1)
+            # Treatment: first half switch at period 3, rest never
+            switches = g < n_groups // 2
+            for t in range(n_periods):
+                d = 1 if (switches and t >= 3) else 0
+                x = x_base + 0.5 * t + rng.normal(0, 0.1)
+                # Outcome depends on group FE, time trend, covariate,
+                # and treatment effect
+                y = group_fe + 2.0 * t + 3.0 * x + 5.0 * d + rng.normal(0, 0.5)
+                rows.append(
+                    {"group": g, "period": t, "treatment": d, "outcome": y, "X1": x}
+                )
+        return pd.DataFrame(rows)
+
+    def test_controls_requires_lmax(self):
+        """controls without L_max raises ValueError."""
+        df = self._make_panel_with_covariates()
+        with pytest.raises(ValueError, match="requires L_max >= 1"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment", controls=["X1"]
+            )
+
+    def test_controls_missing_column(self):
+        """controls with nonexistent column raises ValueError."""
+        df = self._make_panel_with_covariates()
+        with pytest.raises(ValueError, match="not found in data"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                controls=["nonexistent"], L_max=1,
+            )
+
+    def test_covariate_residualization_basic(self):
+        """DID^X produces different results from unadjusted DID."""
+        df = self._make_panel_with_covariates()
+        est = ChaisemartinDHaultfoeuille(seed=1)
+
+        # Unadjusted
+        r_plain = est.fit(df, "outcome", "group", "period", "treatment", L_max=1)
+        # Covariate-adjusted
+        r_x = est.fit(
+            df, "outcome", "group", "period", "treatment",
+            controls=["X1"], L_max=1,
+        )
+
+        # Results should differ (covariate is confounding)
+        assert r_x.overall_att != r_plain.overall_att
+        # Covariate diagnostics should be populated
+        assert r_x.covariate_residuals is not None
+        assert len(r_x.covariate_residuals) > 0
+        assert "theta_hat" in r_x.covariate_residuals.columns
+        # SE should be finite
+        assert np.isfinite(r_x.overall_se)
+
+    def test_multiple_covariates(self):
+        """Multiple covariates are accepted and produce diagnostics."""
+        df = self._make_panel_with_covariates()
+        # Add a second covariate
+        df["X2"] = np.random.RandomState(99).normal(0, 1, len(df))
+        est = ChaisemartinDHaultfoeuille(seed=1)
+        r = est.fit(
+            df, "outcome", "group", "period", "treatment",
+            controls=["X1", "X2"], L_max=1,
+        )
+        assert r.covariate_residuals is not None
+        # Should have rows for each (baseline, covariate) combination
+        assert set(r.covariate_residuals["covariate"].unique()) == {"X1", "X2"}
+
+    def test_covariate_residuals_diagnostics(self):
+        """Diagnostics DataFrame has expected structure."""
+        df = self._make_panel_with_covariates()
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            controls=["X1"], L_max=2,
+        )
+        diag = r.covariate_residuals
+        assert diag is not None
+        expected_cols = {"baseline_treatment", "covariate", "theta_hat", "n_obs", "r_squared"}
+        assert expected_cols.issubset(set(diag.columns))
+        # All baselines should have positive n_obs
+        assert (diag["n_obs"] > 0).all()
+        # theta_hat should be finite (not NaN)
+        theta = diag.loc[diag["covariate"] == "X1", "theta_hat"].values[0]
+        assert np.isfinite(theta), f"theta_hat is not finite: {theta}"
+
+    def test_controls_with_nonbinary_treatment(self):
+        """Covariates work with non-binary treatment and L_max >= 1."""
+        rng = np.random.RandomState(123)
+        rows = []
+        for g in range(30):
+            x_base = rng.normal(0, 1)
+            for t in range(5):
+                # Ordinal treatment: 0 -> 2 for first 10, 0 -> 1 for next 10, never for rest
+                if g < 10:
+                    d = 2.0 if t >= 2 else 0.0
+                elif g < 20:
+                    d = 1.0 if t >= 3 else 0.0
+                else:
+                    d = 0.0
+                x = x_base + 0.1 * t
+                y = 10 + 2 * t + 1.5 * x + 3 * d + rng.normal(0, 0.5)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y, "X1": x})
+        df = pd.DataFrame(rows)
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            controls=["X1"], L_max=1,
+        )
+        assert np.isfinite(r.overall_att)
+        assert np.isfinite(r.overall_se)
+
+    def test_controls_with_multi_horizon(self):
+        """Covariates work with L_max > 1 event study."""
+        df = self._make_panel_with_covariates()
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            controls=["X1"], L_max=2,
+        )
+        assert r.event_study_effects is not None
+        assert 1 in r.event_study_effects
+        assert 2 in r.event_study_effects
+        # Both horizons should have finite effects and SEs
+        for h in [1, 2]:
+            assert np.isfinite(r.event_study_effects[h]["effect"])
+            assert np.isfinite(r.event_study_effects[h]["se"])
+
+
+class TestLinearTrends:
+    """DID^{fd} group-specific linear trends (ROADMAP item 3b)."""
+
+    @staticmethod
+    def _make_panel_with_trends(seed=42, n_groups=40, n_periods=8):
+        """Create a panel with group-specific linear trends in outcomes."""
+        rng = np.random.RandomState(seed)
+        rows = []
+        for g in range(n_groups):
+            group_fe = rng.normal(0, 2)
+            group_trend = rng.normal(0, 0.5)  # group-specific linear trend
+            switches = g < n_groups // 2
+            switch_period = 4 if switches else n_periods + 1
+            for t in range(n_periods):
+                d = 1 if t >= switch_period else 0
+                y = (
+                    group_fe
+                    + 2.0 * t
+                    + group_trend * t  # group-specific trend
+                    + 5.0 * d
+                    + rng.normal(0, 0.3)
+                )
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        return pd.DataFrame(rows)
+
+    def test_trends_linear_requires_lmax(self):
+        """trends_linear without L_max raises ValueError."""
+        df = self._make_panel_with_trends()
+        with pytest.raises(ValueError, match="requires L_max >= 1"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                trends_linear=True,
+            )
+
+    def test_trends_linear_basic(self):
+        """DID^{fd} produces different results from unadjusted DID."""
+        df = self._make_panel_with_trends()
+        est = ChaisemartinDHaultfoeuille(seed=1)
+        r_plain = est.fit(df, "outcome", "group", "period", "treatment", L_max=2)
+        r_fd = est.fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=2, trends_linear=True,
+        )
+        # Results should differ (group-specific trends confound unadjusted)
+        assert r_fd.overall_att != r_plain.overall_att
+        # Event study should have horizons
+        assert r_fd.event_study_effects is not None
+        assert 1 in r_fd.event_study_effects
+
+    def test_cumulated_level_effects(self):
+        """Cumulated delta^{fd}_l = sum DID^{fd}_{l'} for l'=1..l."""
+        df = self._make_panel_with_trends()
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=3, trends_linear=True,
+        )
+        assert r.linear_trends_effects is not None
+        # Check cumulation: delta^{fd}_1 = DID^{fd}_1
+        es = r.event_study_effects
+        lt = r.linear_trends_effects
+        assert abs(lt[1]["effect"] - es[1]["effect"]) < 1e-12
+        # delta^{fd}_2 = DID^{fd}_1 + DID^{fd}_2
+        assert abs(lt[2]["effect"] - (es[1]["effect"] + es[2]["effect"])) < 1e-12
+
+    def test_fg_less_than_3_warning(self):
+        """Groups with F_g < 3 produce a UserWarning."""
+        rng = np.random.RandomState(99)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                # Group 0-4: switch at period 1 (F_g=2, 0-indexed f_g=1 < 2)
+                if g < 5:
+                    d = 1 if t >= 1 else 0
+                elif g < 10:
+                    d = 1 if t >= 3 else 0
+                else:
+                    d = 0
+                y = 10 + 2 * t + 3 * d + rng.normal(0, 0.5)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        df = pd.DataFrame(rows)
+        with pytest.warns(UserWarning, match="F_g < 3"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, trends_linear=True,
+            )
+
+    def test_trends_with_covariates(self):
+        """Combined DID^{X,fd}: covariates + linear trends."""
+        df = self._make_panel_with_trends()
+        df["X1"] = np.random.RandomState(77).normal(0, 1, len(df))
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            controls=["X1"], L_max=2, trends_linear=True,
+        )
+        assert np.isfinite(r.overall_att)
+        assert r.covariate_residuals is not None
+        assert r.linear_trends_effects is not None
+
+
+class TestStateSetTrends:
+    """State-set-specific trends (ROADMAP item 3c)."""
+
+    @staticmethod
+    def _make_panel_with_sets(seed=42, n_groups=40, n_periods=6):
+        """Create a panel where groups belong to state sets."""
+        rng = np.random.RandomState(seed)
+        rows = []
+        for g in range(n_groups):
+            state = g % 4  # 4 states
+            group_fe = rng.normal(0, 2)
+            switches = g < n_groups // 2
+            for t in range(n_periods):
+                d = 1 if (switches and t >= 3) else 0
+                y = group_fe + 2.0 * t + 5.0 * d + rng.normal(0, 0.5)
+                rows.append({
+                    "group": g, "period": t, "treatment": d,
+                    "outcome": y, "state": state,
+                })
+        return pd.DataFrame(rows)
+
+    def test_trends_nonparam_requires_lmax(self):
+        df = self._make_panel_with_sets()
+        with pytest.raises(ValueError, match="requires L_max >= 1"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                trends_nonparam="state",
+            )
+
+    def test_trends_nonparam_basic(self):
+        """State-set restriction produces different results."""
+        df = self._make_panel_with_sets()
+        est = ChaisemartinDHaultfoeuille(seed=1)
+        r_plain = est.fit(df, "outcome", "group", "period", "treatment", L_max=1)
+        r_set = est.fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=1, trends_nonparam="state",
+        )
+        # With set-restricted controls, results may differ
+        # (both should be finite and reasonable)
+        assert np.isfinite(r_set.overall_att)
+        assert np.isfinite(r_set.overall_se)
+
+    def test_time_varying_set_raises(self):
+        """Set membership that varies over time raises ValueError."""
+        df = self._make_panel_with_sets()
+        # Make state vary over time for some groups
+        df.loc[(df["group"] == 0) & (df["period"] == 3), "state"] = 99
+        with pytest.raises(ValueError, match="time-invariant"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, trends_nonparam="state",
+            )
+
+    def test_missing_set_column_raises(self):
+        df = self._make_panel_with_sets()
+        with pytest.raises(ValueError, match="not found in data"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, trends_nonparam="nonexistent",
+            )
+
+    def test_nonparam_with_covariates(self):
+        """Combined state-set trends + covariates."""
+        df = self._make_panel_with_sets()
+        df["X1"] = np.random.RandomState(77).normal(0, 1, len(df))
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            controls=["X1"], L_max=1, trends_nonparam="state",
+        )
+        assert np.isfinite(r.overall_att)
+        assert r.covariate_residuals is not None
+
+
+class TestHeterogeneityTesting:
+    """Heterogeneity testing beta^{het}_l (ROADMAP item 3d)."""
+
+    @staticmethod
+    def _make_panel_with_het(seed=42, n_groups=40, n_periods=6):
+        """Create a panel with heterogeneous effects by covariate."""
+        rng = np.random.RandomState(seed)
+        rows = []
+        for g in range(n_groups):
+            x_g = 1 if g < n_groups // 2 else 0  # binary het covariate
+            group_fe = rng.normal(0, 2)
+            switches = g < (3 * n_groups) // 4
+            effect = 5.0 + 3.0 * x_g  # heterogeneous effect
+            for t in range(n_periods):
+                d = 1 if (switches and t >= 3) else 0
+                y = group_fe + 2.0 * t + effect * d + rng.normal(0, 0.5)
+                rows.append({
+                    "group": g, "period": t, "treatment": d,
+                    "outcome": y, "het_x": x_g,
+                })
+        return pd.DataFrame(rows)
+
+    def test_heterogeneity_basic(self):
+        """Detect heterogeneous effects with binary covariate."""
+        df = self._make_panel_with_het()
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=1, heterogeneity="het_x",
+        )
+        assert r.heterogeneity_effects is not None
+        assert 1 in r.heterogeneity_effects
+        het = r.heterogeneity_effects[1]
+        assert np.isfinite(het["beta"])
+        assert np.isfinite(het["se"])
+        # True het effect is ~3.0 (effect difference between x=1 and x=0)
+        assert het["beta"] > 0, f"Expected positive beta, got {het['beta']}"
+
+    def test_heterogeneity_null(self):
+        """No heterogeneity produces beta near zero."""
+        rng = np.random.RandomState(123)
+        rows = []
+        for g in range(40):
+            x_g = rng.normal(0, 1)  # random covariate, uncorrelated with effect
+            switches = g < 20
+            for t in range(6):
+                d = 1 if (switches and t >= 3) else 0
+                y = 10 + 2 * t + 5 * d + rng.normal(0, 0.5)
+                rows.append({
+                    "group": g, "period": t, "treatment": d,
+                    "outcome": y, "het_x": x_g,
+                })
+        df = pd.DataFrame(rows)
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=1, heterogeneity="het_x",
+        )
+        het = r.heterogeneity_effects[1]
+        # Not significantly different from zero
+        assert abs(het["beta"]) < 5.0
+
+    def test_heterogeneity_multi_horizon(self):
+        """Heterogeneity test at multiple horizons."""
+        df = self._make_panel_with_het()
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=2, heterogeneity="het_x",
+        )
+        assert 1 in r.heterogeneity_effects
+        assert 2 in r.heterogeneity_effects
+
+    def test_heterogeneity_missing_column(self):
+        df = self._make_panel_with_het()
+        with pytest.raises(ValueError, match="not found"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, heterogeneity="nonexistent",
+            )
+
+
+class TestDesign2:
+    """Design-2 switch-in/switch-out separation (ROADMAP item 3e)."""
+
+    @staticmethod
+    def _make_join_then_leave_panel(seed=42, n_groups=30, n_periods=8):
+        """Panel with join-then-leave groups."""
+        rng = np.random.RandomState(seed)
+        rows = []
+        for g in range(n_groups):
+            group_fe = rng.normal(0, 2)
+            for t in range(n_periods):
+                # Groups 0-9: join at t=2, leave at t=5 (design 2)
+                if g < 10:
+                    d = 1 if 2 <= t < 5 else 0
+                # Groups 10-19: join at t=3, never leave
+                elif g < 20:
+                    d = 1 if t >= 3 else 0
+                # Groups 20-29: never switch
+                else:
+                    d = 0
+                y = group_fe + 2.0 * t + 5.0 * d + rng.normal(0, 0.3)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        return pd.DataFrame(rows)
+
+    def test_design2_basic(self):
+        """Design-2 identifies join-then-leave groups."""
+        df = self._make_join_then_leave_panel()
+        # drop_larger_lower=False to keep the 2-switch groups
+        r = ChaisemartinDHaultfoeuille(seed=1, drop_larger_lower=False).fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=1, design2=True,
+        )
+        assert r.design2_effects is not None
+        assert r.design2_effects["n_design2_groups"] == 10
+        # Switch-in should show positive effect (joining treatment)
+        assert r.design2_effects["switch_in"]["mean_effect"] > 0
+        # Switch-out should show negative effect (leaving treatment)
+        assert r.design2_effects["switch_out"]["mean_effect"] < 0
+
+    def test_design2_no_eligible(self):
+        """No join-then-leave groups returns None."""
+        rng = np.random.RandomState(99)
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                d = 1 if (g < 10 and t >= 3) else 0
+                y = 10 + 2 * t + 5 * d + rng.normal(0, 0.5)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        df = pd.DataFrame(rows)
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=1, design2=True,
+        )
+        assert r.design2_effects is None
+
+    def test_design2_disabled_by_default(self):
+        """design2=False (default) produces no design2_effects."""
+        df = self._make_join_then_leave_panel()
+        r = ChaisemartinDHaultfoeuille(seed=1, drop_larger_lower=False).fit(
+            df, "outcome", "group", "period", "treatment", L_max=1,
+        )
+        assert r.design2_effects is None
 
 
 class TestNonBinaryTreatment:

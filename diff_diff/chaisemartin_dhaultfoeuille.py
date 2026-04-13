@@ -483,6 +483,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         trends_linear: Optional[bool] = None,
         trends_nonparam: Optional[Any] = None,
         honest_did: bool = False,
+        # ---------- Phase 3 extensions ----------
+        heterogeneity: Optional[str] = None,
+        design2: bool = False,
         # ---------- deferred (separate effort) ----------
         survey_design: Any = None,
     ) -> ChaisemartinDHaultfoeuilleResults:
@@ -597,6 +600,40 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             time=time,
             treatment=treatment,
         )
+
+        # ------------------------------------------------------------------
+        # Step 4b: Covariate aggregation (DID^X, Web Appendix Section 1.2)
+        # ------------------------------------------------------------------
+        if controls is not None:
+            if L_max is None:
+                raise ValueError(
+                    "Covariate adjustment (DID^X) requires L_max >= 1. The "
+                    "per-period DID path does not support covariate "
+                    "residualization. Set L_max to use the per-group "
+                    "DID_{g,l} path with covariate adjustment."
+                )
+            missing_controls = [c for c in controls if c not in data.columns]
+            if missing_controls:
+                raise ValueError(
+                    f"Control column(s) {missing_controls!r} not found in "
+                    f"data. Available columns: {list(data.columns)}"
+                )
+            for c in controls:
+                try:
+                    data[c] = pd.to_numeric(data[c])
+                except (ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Could not coerce control column {c!r} to numeric: {exc}"
+                    ) from exc
+                n_nan = int(data[c].isna().sum())
+                if n_nan > 0:
+                    raise ValueError(
+                        f"Control column {c!r} contains {n_nan} NaN value(s). "
+                        "Drop or impute missing covariates before fitting."
+                    )
+            # Aggregate covariates to cell means (same groupby as treatment/outcome)
+            x_cell_agg = data.groupby([group, time], as_index=False)[controls].mean()
+            cell = cell.merge(x_cell_agg, on=[group, time], how="left")
 
         # ------------------------------------------------------------------
         # Step 5a: Compute the TWFE diagnostic on the FULL pre-filter cell
@@ -884,6 +921,130 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         N_mat = n_pivot.to_numpy()
 
         # ------------------------------------------------------------------
+        # Step 7b: Covariate residualization (DID^X)
+        #
+        # When controls are specified, residualize Y_mat by partialling
+        # out covariate effects per baseline treatment group. This
+        # transforms Y_mat in-place so ALL downstream DID computations
+        # (per-period and per-group multi-horizon) automatically produce
+        # covariate-adjusted estimates. See Web Appendix Section 1.2.
+        # ------------------------------------------------------------------
+        covariate_diagnostics: Optional[Dict[str, Any]] = None
+        _switch_metadata_computed = False
+
+        if controls is not None:
+            # Pivot covariates to (n_groups, n_periods, n_covariates)
+            X_pivots = []
+            for c in controls:
+                x_piv = cell.pivot(
+                    index=group, columns=time, values=c
+                ).reindex(index=all_groups, columns=all_periods)
+                X_pivots.append(x_piv.to_numpy())
+            X_cell = np.stack(X_pivots, axis=2)
+
+            # Need switch metadata for residualization (baselines, F_g)
+            baselines, first_switch_idx_arr, switch_direction_arr, T_g_arr = (
+                _compute_group_switch_metadata(D_mat, N_mat)
+            )
+            _switch_metadata_computed = True
+
+            Y_mat, covariate_diagnostics = _compute_covariate_residualization(
+                Y_mat=Y_mat,
+                X_cell=X_cell,
+                N_mat=N_mat,
+                baselines=baselines,
+                first_switch_idx=first_switch_idx_arr,
+            )
+
+        # ------------------------------------------------------------------
+        # Step 7c: First-differencing for linear trends (DID^{fd})
+        #
+        # When trends_linear=True, replace Y_mat with Z_mat (first-
+        # differenced outcomes) so that DID_{g,l}(Z) = DID^{fd}_{g,l}.
+        # N_mat is also adjusted: N_mat_fd marks which Z values are valid.
+        # IMPORTANT: _compute_group_switch_metadata uses the ORIGINAL
+        # N_mat (treatment path metadata), not N_mat_fd.
+        # ------------------------------------------------------------------
+        _is_trends_linear = trends_linear is True
+        linear_trends_effects: Optional[Dict[int, Dict[str, Any]]] = None
+        # N_mat_orig preserves observation counts for switch-metadata and
+        # cohort-identification code that must NOT see the first-differenced
+        # N_mat_fd. When trends_linear=False, N_mat_orig == N_mat.
+        N_mat_orig = N_mat
+
+        if _is_trends_linear:
+            if L_max is None:
+                raise ValueError(
+                    "Group-specific linear trends (DID^{fd}) requires "
+                    "L_max >= 1. Set L_max to use the per-group "
+                    "DID_{g,l} path with trend adjustment."
+                )
+            if len(all_periods) < 3:
+                raise ValueError(
+                    "Group-specific linear trends (DID^{fd}) requires "
+                    "at least 3 time periods (F_g >= 3 in the paper). "
+                    f"Got {len(all_periods)} period(s)."
+                )
+            # Compute switch metadata on original N_mat if not done yet
+            if not _switch_metadata_computed:
+                baselines, first_switch_idx_arr, switch_direction_arr, T_g_arr = (
+                    _compute_group_switch_metadata(D_mat, N_mat)
+                )
+                _switch_metadata_computed = True
+            # Count and warn about excluded groups (F_g < 3 -> f_g < 2)
+            n_excluded_fd = int(
+                ((first_switch_idx_arr >= 0) & (first_switch_idx_arr < 2)).sum()
+            )
+            if n_excluded_fd > 0:
+                warnings.warn(
+                    f"DID^{{fd}} (trends_linear=True): {n_excluded_fd} "
+                    f"switching group(s) have F_g < 3 (fewer than 2 "
+                    f"pre-switch periods) and are excluded from the "
+                    f"trend-adjusted estimation.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            N_mat_orig = N_mat.copy()
+            Y_mat, N_mat = _compute_first_differenced_matrix(Y_mat, N_mat)
+
+        # ------------------------------------------------------------------
+        # Step 7d: State-set trends validation (trends_nonparam)
+        #
+        # When trends_nonparam is set (a column name), restrict the
+        # control pool for each switcher to groups in the same set.
+        # ------------------------------------------------------------------
+        set_ids_arr: Optional[np.ndarray] = None
+
+        if trends_nonparam is not None:
+            if L_max is None:
+                raise ValueError(
+                    "State-set-specific trends (trends_nonparam) requires "
+                    "L_max >= 1. Set L_max to use the per-group "
+                    "DID_{g,l} path with state-set trends."
+                )
+            set_col = str(trends_nonparam)
+            if set_col not in data.columns:
+                raise ValueError(
+                    f"trends_nonparam column {set_col!r} not found in "
+                    f"data. Available columns: {list(data.columns)}"
+                )
+            # Aggregate set membership per group (must be time-invariant)
+            set_per_group = data.groupby(group)[set_col].nunique()
+            time_varying = set_per_group[set_per_group > 1]
+            if len(time_varying) > 0:
+                raise ValueError(
+                    f"trends_nonparam column {set_col!r} must be "
+                    f"time-invariant within each group. "
+                    f"{len(time_varying)} group(s) have varying values. "
+                    f"Examples: {time_varying.index.tolist()[:5]}"
+                )
+            # Extract set membership per group aligned with all_groups
+            set_map = data.groupby(group)[set_col].first()
+            set_ids_arr = np.array(
+                [set_map.loc[g] for g in all_groups], dtype=object
+            )
+
+        # ------------------------------------------------------------------
         # Step 8-9: Switching-cell counts and per-period DIDs (Theorem 3)
         #          with explicit A11 zero-retention pseudocode
         # ------------------------------------------------------------------
@@ -1041,11 +1202,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
         # ------------------------------------------------------------------
         # Step 12b: Per-group switch metadata (shared by Phase 1 IF and
-        #           Phase 2 multi-horizon)
+        #           Phase 2 multi-horizon). May already be computed by
+        #           Step 7b (covariate residualization).
         # ------------------------------------------------------------------
-        baselines, first_switch_idx_arr, switch_direction_arr, T_g_arr = (
-            _compute_group_switch_metadata(D_mat, N_mat)
-        )
+        if not _switch_metadata_computed:
+            baselines, first_switch_idx_arr, switch_direction_arr, T_g_arr = (
+                _compute_group_switch_metadata(D_mat, N_mat_orig)
+            )
 
         # ------------------------------------------------------------------
         # Step 12c: Multi-horizon per-group computation (L_max >= 1)
@@ -1065,6 +1228,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 switch_direction=switch_direction_arr,
                 T_g=T_g_arr,
                 L_max=L_max,
+                set_ids=set_ids_arr,
             )
             # Surface A11 warnings from multi-horizon computation
             mh_a11 = multi_horizon_dids.pop("_a11_warnings", None)
@@ -1098,6 +1262,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 switch_direction=switch_direction_arr,
                 T_g=T_g_arr,
                 L_max=L_max,
+                set_ids=set_ids_arr,
             )
 
             # Per-horizon analytical SE via cohort recentering.
@@ -1325,7 +1490,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         ) = _compute_cohort_recentered_inputs(
             D_mat=D_mat,
             Y_mat=Y_mat,
-            N_mat=N_mat,
+            N_mat=N_mat_orig,
             n_10_t_arr=n_10_t_arr,
             n_00_t_arr=n_00_t_arr,
             n_01_t_arr=n_01_t_arr,
@@ -1857,6 +2022,99 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "denominator": denom,
                 }
 
+        # ------------------------------------------------------------------
+        # DID^{fd} cumulation: recover level effects from second-differences
+        #
+        # DID^{fd}_l identifies delta_{g,l} - delta_{g,l-1} (Lemma 6).
+        # Cumulate per-group: for each group eligible at horizon l,
+        # sum DID^{fd}_{g,l'} for l'=1..l, then average over that
+        # eligible set. This matches R's did_multiplegt_dyn which
+        # cumulates per-group then aggregates (NOT sum-of-aggregates,
+        # which mixes different eligible populations).
+        # ------------------------------------------------------------------
+        if _is_trends_linear and multi_horizon_dids is not None:
+            cumulated = {}
+            n_groups_total = D_mat.shape[0]
+            # Accumulate per-group running sum of DID^{fd}_{g,l'}
+            running_per_group = np.zeros(n_groups_total)
+            for l_h in range(1, (L_max or 0) + 1):
+                if l_h not in multi_horizon_dids:
+                    continue
+                mh = multi_horizon_dids[l_h]
+                did_g_l = mh["did_g_l"]         # (n_groups,) per-group DID
+                eligible = mh["eligible_mask"]   # (n_groups,) bool
+                N_l = mh["N_l"]
+                if N_l == 0:
+                    continue
+                # Add this horizon's per-group DID to running sum
+                # (NaN for ineligible groups; use 0 for accumulation)
+                increment = np.where(np.isfinite(did_g_l), did_g_l, 0.0)
+                running_per_group += increment
+                # Average the cumulated sum over groups eligible at THIS horizon
+                # Weight by S_g (switch direction) and divide by N_l
+                S_arr = switch_direction_arr.astype(float)
+                cum_effect = float(
+                    np.sum(S_arr[eligible] * running_per_group[eligible]) / N_l
+                )
+                # SE: conservative upper bound (sum of per-horizon SEs)
+                running_se_ub = sum(
+                    event_study_effects.get(ll, {}).get("se", 0.0)
+                    for ll in range(1, l_h + 1)
+                    if np.isfinite(event_study_effects.get(ll, {}).get("se", np.nan))
+                ) if event_study_effects is not None else float("nan")
+                cum_t, cum_p, cum_ci = safe_inference(
+                    cum_effect, running_se_ub, alpha=self.alpha, df=None
+                )
+                cumulated[l_h] = {
+                    "effect": cum_effect,
+                    "se": running_se_ub,
+                    "t_stat": cum_t,
+                    "p_value": cum_p,
+                    "conf_int": cum_ci,
+                }
+            linear_trends_effects = cumulated if cumulated else None
+
+        # ------------------------------------------------------------------
+        # Heterogeneity testing (Web Appendix Section 1.5, Lemma 7)
+        # ------------------------------------------------------------------
+        heterogeneity_effects: Optional[Dict[int, Dict[str, Any]]] = None
+        if heterogeneity is not None and L_max is not None and L_max >= 1:
+            het_col = str(heterogeneity)
+            if het_col not in data.columns:
+                raise ValueError(
+                    f"heterogeneity column {het_col!r} not found in data."
+                )
+            # Extract per-group covariate (must be time-invariant)
+            het_per_group = data.groupby(group)[het_col].nunique()
+            het_varying = het_per_group[het_per_group > 1]
+            if len(het_varying) > 0:
+                raise ValueError(
+                    f"heterogeneity column {het_col!r} must be "
+                    f"time-invariant within each group. "
+                    f"{len(het_varying)} group(s) have varying values."
+                )
+            het_map = data.groupby(group)[het_col].first()
+            X_het = np.array(
+                [float(het_map.loc[g]) for g in all_groups]
+            )
+            # Use original Y_mat (not first-differenced) for heterogeneity
+            # test, since it operates on level differences Y[out] - Y[ref].
+            # When trends_linear, the DID^{fd} second-differences are in
+            # event_study_effects but the het test uses level outcomes.
+            Y_het = Y_mat if not _is_trends_linear else y_pivot.to_numpy()
+            N_het = N_mat_orig
+            heterogeneity_effects = _compute_heterogeneity_test(
+                Y_mat=Y_het,
+                N_mat=N_het,
+                baselines=baselines,
+                first_switch_idx=first_switch_idx_arr,
+                switch_direction=switch_direction_arr,
+                T_g=T_g_arr,
+                X_het=X_het,
+                L_max=L_max,
+                alpha=self.alpha,
+            )
+
         twfe_weights_df = None
         twfe_fraction_negative = None
         twfe_sigma_fe = None
@@ -1966,6 +2224,27 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 else None
             ),
             bootstrap_results=bootstrap_results,
+            covariate_residuals=(
+                _build_covariate_diagnostics_df(covariate_diagnostics, controls)
+                if covariate_diagnostics is not None
+                else None
+            ),
+            linear_trends_effects=linear_trends_effects,
+            heterogeneity_effects=heterogeneity_effects,
+            design2_effects=(
+                _compute_design2_effects(
+                    D_mat=D_mat,
+                    Y_mat=Y_mat if not _is_trends_linear else y_pivot.to_numpy(),
+                    N_mat=N_mat_orig,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    switch_direction=switch_direction_arr,
+                    T_g=T_g_arr,
+                    L_max=L_max if L_max is not None else 1,
+                )
+                if design2
+                else None
+            ),
             _estimator_ref=self,
         )
 
@@ -2001,25 +2280,12 @@ def _check_forward_compat_gates(
         )
     # L_max is validated inline in fit() after period detection (needs
     # the period count). Not gated here.
-    if controls is not None:
-        raise NotImplementedError(
-            "Covariate adjustment (DID^X) is reserved for Phase 3 of dCDH, which "
-            "implements the residualization-style covariate adjustment from Web "
-            "Appendix Section 1.2 of the dynamic companion paper. Note: this is "
-            "NOT doubly-robust, NOT IPW, and NOT Callaway-Sant'Anna-style. "
-            "See ROADMAP.md Phase 3."
-        )
-    if trends_linear is not None:
-        raise NotImplementedError(
-            "Group-specific linear trends (DID^{fd}) are reserved for Phase 3 of "
-            "dCDH (Web Appendix Section 1.3, Lemma 6 of the dynamic companion "
-            "paper). See ROADMAP.md Phase 3."
-        )
-    if trends_nonparam is not None:
-        raise NotImplementedError(
-            "State-set-specific trends (trends_nonparam) are reserved for Phase 3 "
-            "of dCDH (Web Appendix Section 1.4). See ROADMAP.md Phase 3."
-        )
+    # controls gate lifted — DID^X covariate residualization implemented.
+    # Validation (L_max >= 1 required) is in fit() after L_max detection.
+    # trends_linear gate lifted - DID^{fd} linear trends implemented.
+    # Validation (L_max >= 1, n_periods >= 3 required) is in fit().
+    # trends_nonparam gate lifted - state-set trends implemented.
+    # Validation (L_max >= 1, column exists, time-invariant) is in fit().
     if honest_did:
         raise NotImplementedError(
             "HonestDiD integration for dCDH is reserved for Phase 3, applied to "
@@ -2341,6 +2607,423 @@ def _compute_placebo(
 
 
 # ======================================================================
+# Phase 3: Covariate residualization helpers
+# ======================================================================
+
+
+def _compute_covariate_residualization(
+    Y_mat: np.ndarray,
+    X_cell: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Residualize outcomes by partialling out covariates per baseline treatment.
+
+    Implements ``DID^X`` from Web Appendix Section 1.2 of de Chaisemartin &
+    D'Haultfoeuille (2024). For each baseline treatment value *d*, estimates
+    ``theta_hat_d`` via OLS of first-differenced outcomes on first-differenced
+    covariates with time FEs, restricted to not-yet-treated observations.
+    Then residualizes at levels: ``Y_tilde[g,t] = Y[g,t] - X[g,t] @ theta_hat_d``.
+
+    The level-residualization is equivalent to difference-residualization by
+    the Frisch-Waugh-Lovell theorem, so all downstream DID computations
+    (which use ``Y[g, out] - Y[g, ref]``) automatically produce the correct
+    covariate-adjusted estimates.
+
+    Parameters
+    ----------
+    Y_mat : np.ndarray, shape (n_groups, n_periods)
+        Cell-level outcome means.
+    X_cell : np.ndarray, shape (n_groups, n_periods, n_covariates)
+        Cell-level covariate means.
+    N_mat : np.ndarray, shape (n_groups, n_periods)
+        Observation counts per cell (>0 if observed).
+    baselines : np.ndarray, shape (n_groups,)
+        ``D_{g,1}`` baseline treatment values (float).
+    first_switch_idx : np.ndarray, shape (n_groups,)
+        Column index of first treatment change (-1 if never-switching).
+
+    Returns
+    -------
+    Y_residualized : np.ndarray, shape (n_groups, n_periods)
+        Outcome matrix with covariate effects removed.
+    diagnostics : dict
+        Keyed by baseline value (float). Each entry has ``theta_hat``
+        (covariate coefficients), ``n_obs`` (OLS sample size), and
+        ``r_squared`` (first-stage R-squared).
+    """
+    from diff_diff.linalg import solve_ols
+
+    n_groups, n_periods = Y_mat.shape
+    n_covariates = X_cell.shape[2]
+    Y_resid = Y_mat.copy()
+    diagnostics: Dict[str, Any] = {}
+
+    # Pre-compute observation validity masks for first-differencing.
+    # both_observed[g, t] = True iff N_mat[g, t] > 0 AND N_mat[g, t-1] > 0
+    both_observed = np.zeros((n_groups, n_periods), dtype=bool)
+    both_observed[:, 1:] = (N_mat[:, 1:] > 0) & (N_mat[:, :-1] > 0)
+
+    # not_yet_switched[g, t] = True iff group g has not switched by period t
+    # (first_switch_idx[g] == -1 means never-switcher -> always True)
+    t_indices = np.arange(n_periods)[np.newaxis, :]  # (1, n_periods)
+    f_g_col = first_switch_idx[:, np.newaxis]  # (n_groups, 1)
+    not_yet_switched = (f_g_col == -1) | (f_g_col > t_indices)
+
+    for d_val in np.unique(baselines):
+        d_mask = baselines == d_val  # (n_groups,)
+
+        # Valid OLS observations: baseline matches, not-yet-treated, both
+        # periods observed, t >= 1 (first-differencing needs t and t-1).
+        valid = d_mask[:, np.newaxis] & not_yet_switched & both_observed
+        valid_g, valid_t = np.where(valid)
+
+        n_obs = len(valid_g)
+        if n_obs == 0:
+            diagnostics[float(d_val)] = {
+                "theta_hat": np.full(n_covariates, np.nan),
+                "n_obs": 0,
+                "r_squared": np.nan,
+            }
+            warnings.warn(
+                f"No not-yet-treated observations for baseline treatment "
+                f"d={d_val}. Cannot estimate covariate slope theta_hat "
+                f"for this baseline. Outcomes for these groups are not "
+                f"residualized.",
+                UserWarning,
+                stacklevel=3,
+            )
+            continue
+
+        # First-differenced outcomes and covariates
+        dY = Y_mat[valid_g, valid_t] - Y_mat[valid_g, valid_t - 1]  # (n_obs,)
+        dX = X_cell[valid_g, valid_t] - X_cell[valid_g, valid_t - 1]  # (n_obs, K)
+
+        # Check for non-finite values (NaN from missing covariates/outcomes)
+        finite_mask = np.isfinite(dY) & np.all(np.isfinite(dX), axis=1)
+        if not finite_mask.all():
+            dY = dY[finite_mask]
+            dX = dX[finite_mask]
+            n_obs = len(dY)
+            if n_obs == 0:
+                diagnostics[float(d_val)] = {
+                    "theta_hat": np.full(n_covariates, np.nan),
+                    "n_obs": 0,
+                    "r_squared": np.nan,
+                }
+                continue
+            valid_t_finite = valid_t[finite_mask]
+        else:
+            valid_t_finite = valid_t
+
+        # Build time FE dummies (drop first unique period as reference)
+        unique_t = np.unique(valid_t_finite)
+        n_time_fe = len(unique_t) - 1
+        if n_time_fe > 0:
+            time_dummies = np.zeros((n_obs, n_time_fe))
+            for i, t_val in enumerate(unique_t[1:]):
+                time_dummies[:, i] = (valid_t_finite == t_val).astype(float)
+            design = np.hstack([dX, time_dummies])
+        else:
+            design = dX
+
+        # OLS: dY = [dX, time_FE] @ beta + epsilon
+        coefs, residuals, _vcov = solve_ols(
+            design,
+            dY,
+            return_vcov=True,
+            rank_deficient_action="warn",
+        )
+
+        # Extract covariate coefficients (first n_covariates entries)
+        theta_hat = coefs[:n_covariates]
+
+        # R-squared of first-stage regression
+        ss_res = float(np.sum(residuals**2))
+        ss_tot = float(np.sum((dY - dY.mean()) ** 2))
+        r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+        diagnostics[float(d_val)] = {
+            "theta_hat": theta_hat.copy(),
+            "n_obs": n_obs,
+            "r_squared": r_squared,
+        }
+
+        # Residualize Y at levels for all groups with this baseline.
+        # Y_tilde[g, t] = Y[g, t] - X[g, t] @ theta_hat
+        group_indices = np.where(d_mask)[0]
+        for g in group_indices:
+            for t in range(n_periods):
+                if N_mat[g, t] > 0 and np.all(np.isfinite(X_cell[g, t])):
+                    Y_resid[g, t] = Y_mat[g, t] - float(X_cell[g, t] @ theta_hat)
+
+    return Y_resid, diagnostics
+
+
+def _compute_first_differenced_matrix(
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """First-difference the outcome matrix for ``DID^{fd}`` estimation.
+
+    Transforms ``Y_mat`` into first-differences for the group-specific
+    linear trends estimator (Web Appendix Section 1.3, Lemma 6). When
+    passed to ``_compute_multi_horizon_dids()`` and the IF function,
+    the standard ``DID_{g,l}`` formula on ``Z_mat`` produces
+    ``DID^{fd}_{g,l}`` exactly.
+
+    The ``F_g >= 3`` constraint (paper, 1-indexed) maps to
+    ``first_switch_idx >= 2`` (0-indexed). This is enforced
+    automatically: ``N_mat_fd[:, 0] = 0`` causes groups with
+    ``first_switch_idx = 1`` to fail the ``N_mat > 0`` eligibility
+    check at their reference period.
+
+    Parameters
+    ----------
+    Y_mat : np.ndarray, shape (n_groups, n_periods)
+        Cell-level outcome means (possibly already residualized).
+    N_mat : np.ndarray, shape (n_groups, n_periods)
+        Observation counts per cell.
+
+    Returns
+    -------
+    Z_mat : np.ndarray, shape (n_groups, n_periods)
+        First-differenced outcomes. ``Z[:, 0] = NaN``,
+        ``Z[:, t] = Y[:, t] - Y[:, t-1]`` for ``t >= 1``.
+    N_mat_fd : np.ndarray, shape (n_groups, n_periods)
+        Adjusted observation counts. ``N_fd[:, 0] = 0``,
+        ``N_fd[:, t] = min(N[:, t], N[:, t-1])`` for ``t >= 1``.
+    """
+    n_groups, n_periods = Y_mat.shape
+    Z_mat = np.full((n_groups, n_periods), np.nan)
+    Z_mat[:, 1:] = Y_mat[:, 1:] - Y_mat[:, :-1]
+
+    N_mat_fd = np.zeros_like(N_mat)
+    N_mat_fd[:, 1:] = np.minimum(N_mat[:, 1:], N_mat[:, :-1])
+
+    return Z_mat, N_mat_fd
+
+
+def _compute_heterogeneity_test(
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    X_het: np.ndarray,
+    L_max: int,
+    alpha: float = 0.05,
+) -> Dict[int, Dict[str, Any]]:
+    """Test for heterogeneous treatment effects (Web Appendix Section 1.5).
+
+    Regresses ``S_g * (Y_{g, F_g-1+l} - Y_{g, F_g-1})`` on ``X_g`` plus
+    cohort indicator dummies ``(D_{g,1}, F_g, S_g)``. Under Assumption 15
+    (Lemma 7), the coefficient on ``X_g`` is an unbiased estimator of the
+    variance-weighted average of effect differences. Standard OLS inference
+    is valid - no need to account for DID estimation error.
+
+    Parameters
+    ----------
+    Y_mat : np.ndarray, shape (n_groups, n_periods)
+    N_mat : np.ndarray, shape (n_groups, n_periods)
+    baselines, first_switch_idx, switch_direction, T_g : np.ndarray
+    X_het : np.ndarray, shape (n_groups,)
+        Time-invariant covariate to test for heterogeneity.
+    L_max : int
+    alpha : float
+
+    Returns
+    -------
+    dict
+        ``{l: {beta, se, t_stat, p_value, conf_int, n_obs}}`` per horizon.
+    """
+    from diff_diff.linalg import solve_ols
+    from diff_diff.utils import safe_inference
+
+    n_groups, n_periods = Y_mat.shape
+    results: Dict[int, Dict[str, Any]] = {}
+
+    for l_h in range(1, L_max + 1):
+        # Eligible switchers at this horizon (same logic as multi-horizon DID)
+        eligible = []
+        dep_var = []
+        x_vals = []
+        cohort_keys = []
+
+        for g in range(n_groups):
+            f_g = first_switch_idx[g]
+            if f_g < 0:
+                continue  # never-switcher
+            ref_idx = f_g - 1
+            out_idx = f_g - 1 + l_h
+            if out_idx >= n_periods:
+                continue
+            if ref_idx < 0:
+                continue
+            if N_mat[g, ref_idx] <= 0 or N_mat[g, out_idx] <= 0:
+                continue
+            if T_g[g] < out_idx:
+                continue
+            S_g = float(switch_direction[g])
+            y_diff = Y_mat[g, out_idx] - Y_mat[g, ref_idx]
+            eligible.append(g)
+            dep_var.append(S_g * y_diff)
+            x_vals.append(X_het[g])
+            cohort_keys.append(
+                (float(baselines[g]), int(f_g), int(switch_direction[g]))
+            )
+
+        n_obs = len(eligible)
+        if n_obs < 3:
+            results[l_h] = {
+                "beta": float("nan"), "se": float("nan"),
+                "t_stat": float("nan"), "p_value": float("nan"),
+                "conf_int": (float("nan"), float("nan")),
+                "n_obs": n_obs,
+            }
+            continue
+
+        dep_arr = np.array(dep_var)
+        x_arr = np.array(x_vals).reshape(-1, 1)
+
+        # Cohort dummies (drop one as reference)
+        unique_cohorts = sorted(set(cohort_keys))
+        n_cohort_dummies = len(unique_cohorts) - 1
+        if n_cohort_dummies > 0:
+            cohort_map = {c: i for i, c in enumerate(unique_cohorts)}
+            cohort_idx = np.array([cohort_map[c] for c in cohort_keys])
+            cohort_dummies = np.zeros((n_obs, len(unique_cohorts)))
+            cohort_dummies[np.arange(n_obs), cohort_idx] = 1.0
+            # Drop first cohort as reference
+            cohort_dummies = cohort_dummies[:, 1:]
+            design = np.hstack([x_arr, cohort_dummies])
+        else:
+            design = x_arr
+
+        coefs, _residuals, vcov = solve_ols(
+            design, dep_arr,
+            return_vcov=True,
+            rank_deficient_action="warn",
+        )
+
+        beta_het = float(coefs[0])
+        se_het = float(np.sqrt(vcov[0, 0])) if vcov is not None else float("nan")
+        t_stat, p_val, ci = safe_inference(beta_het, se_het, alpha=alpha, df=None)
+
+        results[l_h] = {
+            "beta": beta_het,
+            "se": se_het,
+            "t_stat": t_stat,
+            "p_value": p_val,
+            "conf_int": ci,
+            "n_obs": n_obs,
+        }
+
+    return results
+
+
+def _compute_design2_effects(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+) -> Optional[Dict[str, Any]]:
+    """Compute Design-2 switch-in/switch-out effects (Web Appendix Section 1.6).
+
+    Identifies groups with exactly 2 treatment changes (join then leave),
+    computes the exit period E_g, and provides delta^+ (post-join) and
+    delta^- (post-leave) summaries.
+
+    This is a convenience wrapper that reports descriptive statistics about
+    the switch-in and switch-out subpopulations rather than a full
+    re-estimation (which would require specialized control pools as
+    described in the paper). See REGISTRY.md for documentation.
+
+    Returns None if no join-then-leave groups exist.
+    """
+    n_groups, n_periods = D_mat.shape
+
+    # Identify join-then-leave groups: exactly 2 treatment changes where
+    # the first is a join (D increases) and the second is a leave (D decreases)
+    design2_groups = []
+    exit_periods = []
+
+    for g in range(n_groups):
+        changes = []
+        for t in range(1, n_periods):
+            if N_mat[g, t] <= 0 or N_mat[g, t - 1] <= 0:
+                continue
+            if D_mat[g, t] != D_mat[g, t - 1]:
+                direction = 1 if D_mat[g, t] > D_mat[g, t - 1] else -1
+                changes.append((t, direction))
+        if len(changes) == 2 and changes[0][1] == 1 and changes[1][1] == -1:
+            design2_groups.append(g)
+            exit_periods.append(changes[1][0])
+
+    if len(design2_groups) == 0:
+        return None
+
+    # Compute summary statistics for the switch-in/switch-out subpopulation
+    switch_in_effects = []
+    switch_out_effects = []
+
+    for i, g in enumerate(design2_groups):
+        f_g = first_switch_idx[g]
+        e_g = exit_periods[i]
+        ref_idx = f_g - 1
+
+        # Switch-in: Y[g, f_g] - Y[g, f_g-1] (effect of joining)
+        if ref_idx >= 0 and N_mat[g, f_g] > 0 and N_mat[g, ref_idx] > 0:
+            switch_in = float(Y_mat[g, f_g] - Y_mat[g, ref_idx])
+            switch_in_effects.append(switch_in)
+
+        # Switch-out: Y[g, e_g] - Y[g, e_g-1] (effect of leaving)
+        if e_g - 1 >= 0 and N_mat[g, e_g] > 0 and N_mat[g, e_g - 1] > 0:
+            switch_out = float(Y_mat[g, e_g] - Y_mat[g, e_g - 1])
+            switch_out_effects.append(switch_out)
+
+    result: Dict[str, Any] = {
+        "n_design2_groups": len(design2_groups),
+        "switch_in": {
+            "n_groups": len(switch_in_effects),
+            "mean_effect": float(np.mean(switch_in_effects)) if switch_in_effects else np.nan,
+        },
+        "switch_out": {
+            "n_groups": len(switch_out_effects),
+            "mean_effect": float(np.mean(switch_out_effects)) if switch_out_effects else np.nan,
+        },
+    }
+    return result
+
+
+def _build_covariate_diagnostics_df(
+    diagnostics: Dict[str, Any],
+    control_names: List[str],
+) -> pd.DataFrame:
+    """Build a tidy DataFrame from the per-baseline residualization diagnostics."""
+    rows = []
+    for d_val, diag in sorted(diagnostics.items()):
+        theta = diag["theta_hat"]
+        for k, name in enumerate(control_names):
+            rows.append(
+                {
+                    "baseline_treatment": d_val,
+                    "covariate": name,
+                    "theta_hat": float(theta[k]) if np.isfinite(theta[k]) else np.nan,
+                    "n_obs": diag["n_obs"],
+                    "r_squared": diag["r_squared"],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+# ======================================================================
 # Phase 2: Multi-horizon helpers
 # ======================================================================
 
@@ -2453,6 +3136,7 @@ def _compute_multi_horizon_dids(
     switch_direction: np.ndarray,
     T_g: np.ndarray,
     L_max: int,
+    set_ids: Optional[np.ndarray] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """
     Compute the per-group building block ``DID_{g,l}`` and its aggregate
@@ -2563,6 +3247,9 @@ def _compute_multi_horizon_dids(
                 & (N_mat[ctrl_indices, ref_idx] > 0)
                 & (N_mat[ctrl_indices, out_idx] > 0)
             )
+            # State-set trends: restrict controls to same set as switcher
+            if set_ids is not None:
+                ctrl_mask &= set_ids[ctrl_indices] == set_ids[g]
             ctrl_pool = ctrl_indices[ctrl_mask]
 
             if ctrl_pool.size == 0:
@@ -2624,6 +3311,7 @@ def _compute_per_group_if_multi_horizon(
     switch_direction: np.ndarray,
     T_g: np.ndarray,
     L_max: int,
+    set_ids: Optional[np.ndarray] = None,
 ) -> Dict[int, np.ndarray]:
     """
     Compute per-group influence function ``U^G_{g,l}`` for ``l = 1..L_max``.
@@ -2694,6 +3382,9 @@ def _compute_per_group_if_multi_horizon(
                 & (N_mat[ctrl_indices, ref_idx] > 0)
                 & (N_mat[ctrl_indices, out_idx] > 0)
             )
+            # State-set trends: restrict controls to same set as switcher
+            if set_ids is not None:
+                ctrl_mask &= set_ids[ctrl_indices] == set_ids[g]
             ctrl_pool = ctrl_indices[ctrl_mask]
             n_ctrl = ctrl_pool.size
 
