@@ -85,12 +85,14 @@ class DCDHBootstrapResults:
     leavers_p_value : float, optional
         Bootstrap p-value for leavers-only ``DID_-``.
     placebo_se : float, optional
-        **Always ``None`` in Phase 1** — placebo bootstrap is deferred
-        to Phase 2 (see class docstring above).
+        ``None`` for the Phase 1 single-period placebo (``L_max=None``).
+        Multi-horizon placebo bootstrap SE is on
+        ``placebo_horizon_ses``.
     placebo_ci : tuple of float, optional
-        **Always ``None`` in Phase 1** (see class docstring above).
+        ``None`` for single-period placebo. See ``placebo_horizon_cis``.
     placebo_p_value : float, optional
-        **Always ``None`` in Phase 1** (see class docstring above).
+        ``None`` for single-period placebo. See
+        ``placebo_horizon_p_values``.
     bootstrap_distribution : np.ndarray, optional
         Full bootstrap distribution of the overall ``DID_M`` estimator
         (shape: ``(n_bootstrap,)``). Stored for advanced diagnostics;
@@ -161,9 +163,10 @@ class ChaisemartinDHaultfoeuilleResults:
     ``summary()``, ``to_dataframe()``, ``is_significant``, and
     ``significance_stars`` all read from these top-level fields and
     therefore reflect the bootstrap inference automatically. The
-    placebo path is unchanged: placebo bootstrap is deferred to Phase
-    2, so ``placebo_p_value`` and ``placebo_conf_int`` stay NaN even
-    when ``n_bootstrap > 0``. See the methodology registry
+    single-period placebo (``L_max=None``) still has NaN bootstrap
+    fields; multi-horizon placebos (``L_max >= 1``) have valid
+    bootstrap SE/CI/p via ``placebo_horizon_ses/cis/p_values``.
+    See the methodology registry
     ``Note (bootstrap inference surface)`` for the full contract and
     library precedent.
 
@@ -274,8 +277,12 @@ class ChaisemartinDHaultfoeuilleResults:
     n_treated_obs : int
         Treated observations in the post-filter sample.
     n_switcher_cells : int
-        Number of switching ``(g, t)`` cells across periods. Equals
-        ``sum_t (n_10_t + n_01_t)`` where each transition cell counts
+        When ``L_max=None``: number of switching ``(g, t)`` cells
+        (``N_S = sum_t (n_10_t + n_01_t)``). When ``L_max >= 1``:
+        number of eligible switcher groups at horizon 1 (``N_1``).
+        Previously this field always held the cell count; for
+        ``L_max >= 1`` it was repurposed to hold the per-group count
+        that matches the ``DID_1`` estimand. Originally equals
         once regardless of how many original observations fed into it.
         This is the ``N_S`` denominator of ``DID_M`` per AER 2020
         Theorem 3 — cell counts, not within-cell observation counts.

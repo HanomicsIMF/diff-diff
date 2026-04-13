@@ -1290,8 +1290,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 L_max=L_max,
             )
 
-            # Cost-benefit delta
-            cost_benefit_result = _compute_cost_benefit_delta(
+            # Cost-benefit delta (only meaningful when L_max >= 2)
+            if L_max >= 2:
+                cost_benefit_result = _compute_cost_benefit_delta(
                 multi_horizon_dids=multi_horizon_dids,
                 D_mat=D_mat,
                 baselines=baselines,
@@ -1299,16 +1300,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 switch_direction=switch_direction_arr,
                 L_max=L_max,
             )
-            if cost_benefit_result.get("has_leavers", False):
-                warnings.warn(
-                    "Assumption 7 (D_{g,t} >= D_{g,1}) is violated: leavers "
-                    "present. The cost-benefit delta is computed on the full "
-                    "sample (both joiners and leavers); delta_joiners and "
-                    "delta_leavers are available separately on "
-                    "results.cost_benefit_delta.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+                if cost_benefit_result.get("has_leavers", False):
+                    warnings.warn(
+                        "Assumption 7 (D_{g,t} >= D_{g,1}) is violated: leavers "
+                        "present. The cost-benefit delta is computed on the full "
+                        "sample (both joiners and leavers); delta_joiners and "
+                        "delta_leavers are available separately on "
+                        "results.cost_benefit_delta.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
         # ------------------------------------------------------------------
         # Step 13-16: Cohort identification, influence-function vectors,
