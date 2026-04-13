@@ -1838,6 +1838,31 @@ class TestMultiHorizon:
         assert r.overall_p_value == es1["p_value"]
         assert r.overall_conf_int == es1["conf_int"]
 
+    def test_L_max_1_suppresses_joiner_leaver_decomposition(self):
+        """L_max=1 suppresses joiner/leaver decomposition in summary()
+        and to_dataframe("joiners_leavers") since it's a DID_M concept."""
+        data = generate_reversible_did_data(
+            n_groups=50, n_periods=8, pattern="mixed_single_switch", seed=42
+        )
+        est = ChaisemartinDHaultfoeuille(placebo=False, twfe_diagnostic=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                data, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        # Joiners/leavers suppressed for L_max=1
+        assert r.joiners_available is False
+        assert r.leavers_available is False
+        # summary() should say DID_1, not DID_M
+        s = r.summary()
+        assert "DID_1" in s
+        # to_dataframe("joiners_leavers"): DID_+/DID_- rows not available
+        df_jl = r.to_dataframe("joiners_leavers")
+        assert df_jl[df_jl["estimand"] == "DID_1"].iloc[0]["n_obs"] > 0
+        assert not df_jl[df_jl["estimand"] == "DID_+"].iloc[0]["available"]
+        assert not df_jl[df_jl["estimand"] == "DID_-"].iloc[0]["available"]
+
     def test_L_max_1_uses_per_group_path(self, data):
         """L_max=1 uses the per-group DID_{g,1} path (same as L_max >= 2
         uses for l=1). This is a different estimand from the per-period
@@ -2386,6 +2411,25 @@ class TestNonBinaryTreatment:
         assert np.isfinite(r.overall_att)
         # event_study_effects[1] and overall_att should be the same estimand
         assert r.overall_att == r.event_study_effects[1]["effect"]
+
+    def test_constant_nonbinary_treatment_raises(self):
+        """Constant non-binary treatment (no switchers) should raise ValueError."""
+        rows = []
+        for g in range(20):
+            for t in range(6):
+                rows.append({"group": g, "period": t, "treatment": 2, "outcome": 10 + t})
+        for g in range(20, 40):
+            for t in range(6):
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": 10 + t})
+        df = pd.DataFrame(rows)
+        est = ChaisemartinDHaultfoeuille(twfe_diagnostic=False)
+        with pytest.raises(ValueError, match="No switching groups found"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                est.fit(
+                    df, outcome="outcome", group="group", time="period",
+                    treatment="treatment", L_max=1,
+                )
 
     def test_nonbinary_bootstrap(self, ci_params):
         """Non-binary panel with bootstrap: finite event study SEs AND
