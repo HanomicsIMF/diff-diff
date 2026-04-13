@@ -2672,6 +2672,16 @@ class TestStateSetTrends:
                 L_max=1, trends_nonparam="nonexistent",
             )
 
+    def test_group_level_set_rejected(self):
+        """Set partition at group level (not coarser) raises ValueError."""
+        df = self._make_panel_with_sets()
+        # Use group column itself as set (each group is its own set)
+        with pytest.raises(ValueError, match="coarser than group"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, trends_nonparam="group",
+            )
+
     def test_nonparam_with_covariates(self):
         """Combined state-set trends + covariates."""
         df = self._make_panel_with_sets()

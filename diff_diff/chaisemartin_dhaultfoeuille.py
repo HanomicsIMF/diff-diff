@@ -544,7 +544,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             heterogeneous effects (Web Appendix Section 1.5, Lemma 7).
             Partial implementation: post-treatment regressions only
             (no placebo regressions or joint null test). Cannot be
-            combined with ``controls``. Requires ``L_max >= 1``.
+            combined with ``controls``, ``trends_linear``, or
+            ``trends_nonparam``. Requires ``L_max >= 1``.
         design2 : bool, default=False
             If ``True``, identify and report switch-in/switch-out
             (Design-2) groups. Convenience wrapper (descriptive summary,
@@ -1074,6 +1075,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"time-invariant within each group. "
                     f"{len(time_varying)} group(s) have varying values. "
                     f"Examples: {time_varying.index.tolist()[:5]}"
+                )
+            # Set partition must be coarser than group (multiple groups
+            # per set). A group-level partition creates singleton sets
+            # with no within-set controls available.
+            set_map_check = data.groupby(group)[set_col].first()
+            n_sets = set_map_check.nunique()
+            n_groups_total = len(set_map_check)
+            if n_sets >= n_groups_total:
+                raise ValueError(
+                    f"trends_nonparam column {set_col!r} defines "
+                    f"{n_sets} distinct sets for {n_groups_total} "
+                    f"groups. The set partition must be coarser than "
+                    f"group (multiple groups per set) to provide "
+                    f"within-set controls."
                 )
             # Extract set membership per group aligned with all_groups
             set_map = data.groupby(group)[set_col].first()
@@ -2848,18 +2863,22 @@ def _compute_covariate_residualization(
             "r_squared": r_squared,
         }
 
-        # Guard: if any control coefficient is NaN (rank-deficient OLS
-        # dropped a collinear control), skip residualization for this
-        # baseline to prevent NaN propagation through Y_resid.
-        if not np.all(np.isfinite(theta_hat)):
+        # Guard: if some control coefficients are NaN (rank-deficient
+        # OLS dropped collinear controls), residualize with only the
+        # finite subset. Replace NaN coefficients with 0 so einsum
+        # only uses the identified controls.
+        nan_mask = ~np.isfinite(theta_hat)
+        if nan_mask.any():
+            n_dropped = int(nan_mask.sum())
             warnings.warn(
                 f"DID^X: rank-deficient first-stage OLS for baseline "
-                f"d={d_val} produced NaN coefficients. Outcomes for "
-                f"groups with this baseline are not residualized.",
+                f"d={d_val} dropped {n_dropped} collinear control(s). "
+                f"Residualization uses the {n_covariates - n_dropped} "
+                f"identified control(s).",
                 UserWarning,
                 stacklevel=3,
             )
-            continue
+            theta_hat = np.where(np.isfinite(theta_hat), theta_hat, 0.0)
 
         # Residualize Y at levels for all groups with this baseline.
         # Vectorized level residualization: Y_tilde[g, t] = Y[g, t] - X[g, t] @ theta_hat
