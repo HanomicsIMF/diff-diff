@@ -2454,6 +2454,14 @@ class TestNonBinaryTreatment:
         # Joiners/leavers unavailable for non-binary
         assert r.joiners_available is False
         assert r.leavers_available is False
+        # to_dataframe("joiners_leavers"): overall row n_obs should be > 0
+        df_jl = r.to_dataframe("joiners_leavers")
+        overall_row = df_jl[df_jl["estimand"] == "DID_1"]
+        assert len(overall_row) == 1
+        assert overall_row.iloc[0]["n_obs"] > 0
+        # summary() should contain "DID_1" label
+        s = r.summary()
+        assert "DID_1" in s
 
     def test_twfe_diagnostic_skipped_nonbinary(self):
         """TWFE diagnostic should be skipped (with warning) for non-binary."""

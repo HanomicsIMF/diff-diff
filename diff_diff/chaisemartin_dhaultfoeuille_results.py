@@ -788,9 +788,9 @@ class ChaisemartinDHaultfoeuilleResults:
               the A11-zeroed flags.
             - ``"event_study"``: one row per horizon (positive and
               negative/placebo), including a reference period at
-              horizon 0. Available when ``L_max >= 2``.
+              horizon 0. Available when ``L_max >= 1``.
             - ``"normalized"``: one row per horizon for the normalized
-              effects ``DID^n_l``. Available when ``L_max >= 2``.
+              effects ``DID^n_l``. Available when ``L_max >= 1``.
             - ``"twfe_weights"``: per-(group, time) TWFE decomposition
               weights table. Only available when ``twfe_diagnostic=True``
               was passed to ``fit()``.
@@ -847,7 +847,11 @@ class ChaisemartinDHaultfoeuilleResults:
                     "conf_int_lower": self.overall_conf_int[0],
                     "conf_int_upper": self.overall_conf_int[1],
                     "n_cells": self.n_switcher_cells,
-                    "n_obs": self.n_joiner_obs + self.n_leaver_obs,
+                    "n_obs": (
+                        self.n_treated_obs
+                        if not self.joiners_available and not self.leavers_available
+                        else self.n_joiner_obs + self.n_leaver_obs
+                    ),
                     "available": True,
                 },
                 {
