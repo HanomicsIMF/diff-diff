@@ -2421,6 +2421,36 @@ class TestCovariateAdjustment:
             assert np.isfinite(r.event_study_effects[h]["effect"])
             assert np.isfinite(r.event_study_effects[h]["se"])
 
+    def test_controls_lmax1_estimand_contract(self):
+        """DID^X with L_max=1: per_period_effects stay raw, overall uses DID^X_1."""
+        df = self._make_panel_with_covariates()
+        est = ChaisemartinDHaultfoeuille(seed=1)
+
+        # Fit without controls for raw per-period baseline
+        r_raw = est.fit(df, "outcome", "group", "period", "treatment")
+        # Fit with controls
+        r_x = est.fit(
+            df, "outcome", "group", "period", "treatment",
+            controls=["X1"], L_max=1,
+        )
+
+        # per_period_effects should be UNADJUSTED (raw Phase 1 DID_M)
+        # because the per-period path does not support covariate adjustment
+        for period_key in r_raw.per_period_effects:
+            if period_key in r_x.per_period_effects:
+                raw_eff = r_raw.per_period_effects[period_key]
+                x_eff = r_x.per_period_effects[period_key]
+                assert raw_eff["did_plus_t"] == pytest.approx(
+                    x_eff["did_plus_t"], abs=1e-10
+                ), f"per_period_effects should be unadjusted at period {period_key}"
+
+        # overall_att should come from event_study_effects[1] (DID^X_1)
+        assert r_x.overall_att == pytest.approx(
+            r_x.event_study_effects[1]["effect"], abs=1e-10
+        )
+        # and should differ from the raw overall_att (covariate effect)
+        assert r_x.overall_att != r_raw.overall_att
+
 
 class TestLinearTrends:
     """DID^{fd} group-specific linear trends (ROADMAP item 3b)."""

@@ -1029,6 +1029,28 @@ class ChaisemartinDHaultfoeuilleResults:
                 )
             return self.twfe_weights.copy()
 
+        elif level == "heterogeneity":
+            if self.heterogeneity_effects is None:
+                raise ValueError(
+                    "Heterogeneity test results not available. Pass "
+                    "heterogeneity='column_name' to fit()."
+                )
+            rows = []
+            for h, data in sorted(self.heterogeneity_effects.items()):
+                rows.append({"horizon": h, **data})
+            return pd.DataFrame(rows)
+
+        elif level == "linear_trends":
+            if self.linear_trends_effects is None:
+                raise ValueError(
+                    "Linear trends effects not available. Pass "
+                    "trends_linear=True to fit()."
+                )
+            rows = []
+            for h, data in sorted(self.linear_trends_effects.items()):
+                rows.append({"horizon": h, **data})
+            return pd.DataFrame(rows)
+
         else:
             raise ValueError(
                 f"Unknown level: {level!r}. Use 'overall', 'joiners_leavers', "

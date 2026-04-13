@@ -618,21 +618,26 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"Control column(s) {missing_controls!r} not found in "
                     f"data. Available columns: {list(data.columns)}"
                 )
+            # Work on a copy to avoid mutating the caller's DataFrame
+            data_controls = data[controls].copy()
             for c in controls:
                 try:
-                    data[c] = pd.to_numeric(data[c])
+                    data_controls[c] = pd.to_numeric(data_controls[c])
                 except (ValueError, TypeError) as exc:
                     raise ValueError(
                         f"Could not coerce control column {c!r} to numeric: {exc}"
                     ) from exc
-                n_nan = int(data[c].isna().sum())
+                n_nan = int(data_controls[c].isna().sum())
                 if n_nan > 0:
                     raise ValueError(
                         f"Control column {c!r} contains {n_nan} NaN value(s). "
                         "Drop or impute missing covariates before fitting."
                     )
-            # Aggregate covariates to cell means (same groupby as treatment/outcome)
-            x_cell_agg = data.groupby([group, time], as_index=False)[controls].mean()
+            # Aggregate covariates to cell means (same groupby as treatment/outcome).
+            # Use the coerced copy joined with group/time from original data.
+            x_agg_input = data[[group, time]].copy()
+            x_agg_input[controls] = data_controls[controls].values
+            x_cell_agg = x_agg_input.groupby([group, time], as_index=False)[controls].mean()
             cell = cell.merge(x_cell_agg, on=[group, time], how="left")
 
         # ------------------------------------------------------------------
@@ -948,13 +953,19 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             )
             _switch_metadata_computed = True
 
-            Y_mat, covariate_diagnostics = _compute_covariate_residualization(
+            Y_mat_residualized, covariate_diagnostics = _compute_covariate_residualization(
                 Y_mat=Y_mat,
                 X_cell=X_cell,
                 N_mat=N_mat,
                 baselines=baselines,
                 first_switch_idx=first_switch_idx_arr,
             )
+            # Keep raw Y_mat for the per-period DID path (which does not
+            # support covariate residualization - it uses binary joiner/leaver
+            # categorization). The residualized matrix is used only by the
+            # per-group multi-horizon path (L_max >= 1).
+            Y_mat_raw = Y_mat
+            Y_mat = Y_mat_residualized
 
         # ------------------------------------------------------------------
         # Step 7c: First-differencing for linear trends (DID^{fd})
@@ -1061,8 +1072,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             a11_minus_zeroed_arr,
         ) = _compute_per_period_dids(
             D_mat=D_mat,
-            Y_mat=Y_mat,
-            N_mat=N_mat,
+            # Use raw (unadjusted) outcomes for per-period DID. Covariate
+            # residualization applies only to the per-group multi-horizon
+            # path (L_max >= 1). The per-period path uses binary
+            # joiner/leaver categorization and is not part of the DID^X
+            # contract (Web Appendix Section 1.2).
+            Y_mat=Y_mat_raw if controls is not None else Y_mat,
+            N_mat=N_mat_orig,
             periods=all_periods,
         )
         if a11_warnings:
@@ -1489,7 +1505,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             U_centered_leavers,
         ) = _compute_cohort_recentered_inputs(
             D_mat=D_mat,
-            Y_mat=Y_mat,
+            # Phase 1 IF uses per-period structure: use raw outcomes
+            Y_mat=Y_mat_raw if controls is not None else Y_mat,
             N_mat=N_mat_orig,
             n_10_t_arr=n_10_t_arr,
             n_00_t_arr=n_00_t_arr,
@@ -2751,12 +2768,17 @@ def _compute_covariate_residualization(
         }
 
         # Residualize Y at levels for all groups with this baseline.
-        # Y_tilde[g, t] = Y[g, t] - X[g, t] @ theta_hat
+        # Vectorized level residualization: Y_tilde[g, t] = Y[g, t] - X[g, t] @ theta_hat
         group_indices = np.where(d_mask)[0]
-        for g in group_indices:
-            for t in range(n_periods):
-                if N_mat[g, t] > 0 and np.all(np.isfinite(X_cell[g, t])):
-                    Y_resid[g, t] = Y_mat[g, t] - float(X_cell[g, t] @ theta_hat)
+        if len(group_indices) > 0:
+            # X_sub: (n_d_groups, n_periods, n_covariates), theta: (n_covariates,)
+            X_sub = X_cell[group_indices]  # (n_d, T, K)
+            adjustment = np.einsum("gtk,k->gt", X_sub, theta_hat)  # (n_d, T)
+            # Mask: only adjust cells that are observed and have finite covariates
+            valid = (N_mat[group_indices] > 0) & np.all(np.isfinite(X_sub), axis=2)
+            Y_resid[group_indices] = np.where(
+                valid, Y_mat[group_indices] - adjustment, Y_mat[group_indices]
+            )
 
     return Y_resid, diagnostics
 
@@ -2902,6 +2924,17 @@ def _compute_heterogeneity_test(
         else:
             design = x_arr
 
+        # Guard: need more observations than parameters
+        n_params = design.shape[1]
+        if n_obs <= n_params:
+            results[l_h] = {
+                "beta": float("nan"), "se": float("nan"),
+                "t_stat": float("nan"), "p_value": float("nan"),
+                "conf_int": (float("nan"), float("nan")),
+                "n_obs": n_obs,
+            }
+            continue
+
         coefs, _residuals, vcov = solve_ols(
             design, dep_arr,
             return_vcov=True,
@@ -2909,7 +2942,11 @@ def _compute_heterogeneity_test(
         )
 
         beta_het = float(coefs[0])
-        se_het = float(np.sqrt(vcov[0, 0])) if vcov is not None else float("nan")
+        # NaN-safe: if vcov is None or target coefficient variance is NaN
+        # (rank-deficient), all inference fields are NaN.
+        se_het = float("nan")
+        if vcov is not None and np.isfinite(vcov[0, 0]) and vcov[0, 0] > 0:
+            se_het = float(np.sqrt(vcov[0, 0]))
         t_stat, p_val, ci = safe_inference(beta_het, se_het, alpha=alpha, df=None)
 
         results[l_h] = {
