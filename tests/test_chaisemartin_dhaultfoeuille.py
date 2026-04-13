@@ -2550,6 +2550,58 @@ class TestLinearTrends:
         assert r.covariate_residuals is not None
         assert r.linear_trends_effects is not None
 
+    def test_trends_linear_lmax2_overall_surface(self):
+        """Overall surface under trends_linear + L_max>=2 uses cumulated level effects."""
+        df = self._make_panel_with_trends()
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=3, trends_linear=True,
+        )
+        # overall_att should equal the cumulated level effect at max horizon
+        assert r.linear_trends_effects is not None
+        max_h = max(r.linear_trends_effects.keys())
+        cum_effect = r.linear_trends_effects[max_h]["effect"]
+        assert r.overall_att == pytest.approx(cum_effect, abs=1e-10)
+        # cost_benefit_delta should be suppressed (not computed on second-diffs)
+        assert r.cost_benefit_delta is None
+
+    def test_cumulated_se_nan_propagation(self):
+        """Cumulated SE is NaN when a component horizon has NaN SE."""
+        # Create a panel where horizon 2 has no eligible switchers (NaN SE)
+        # but horizon 1 does. The cumulated effect at h=2 should have NaN SE.
+        rng = np.random.RandomState(77)
+        rows = []
+        for g in range(30):
+            group_fe = rng.normal(0, 1)
+            # Groups 0-9: switch at period 3 (enough pre-switch for trends)
+            # Groups 10-19: never switch (controls)
+            # Groups 20-29: switch at period 4 (only 1 post-switch period)
+            if g < 10:
+                switch_t = 3
+            elif g < 20:
+                switch_t = 99
+            else:
+                switch_t = 4
+            for t in range(5):
+                d = 1 if t >= switch_t else 0
+                y = group_fe + t + 3 * d + rng.normal(0, 0.3)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        df = pd.DataFrame(rows)
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, "outcome", "group", "period", "treatment",
+            L_max=2, trends_linear=True,
+        )
+        # If SE at horizon 1 is finite but horizon 2 is NaN,
+        # cumulated h=2 SE must be NaN (not 0.0)
+        if r.linear_trends_effects is not None and 2 in r.linear_trends_effects:
+            cum_se = r.linear_trends_effects[2]["se"]
+            es = r.event_study_effects
+            if es and 2 in es and not np.isfinite(es[2]["se"]):
+                assert not np.isfinite(cum_se), (
+                    f"Cumulated SE should be NaN when component h=2 SE is NaN, "
+                    f"got {cum_se}"
+                )
+
 
 class TestStateSetTrends:
     """State-set-specific trends (ROADMAP item 3c)."""

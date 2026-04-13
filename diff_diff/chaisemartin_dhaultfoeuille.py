@@ -525,14 +525,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             Must be a positive integer not exceeding the number of
             post-baseline periods in the panel.
         controls : list of str, optional
-            **Reserved for Phase 3** (covariate adjustment via the
-            residualization-style ``DID^X`` from Web Appendix Section 1.2
-            of the dynamic paper).
+            Column names for covariate adjustment via residualization-style
+            ``DID^X`` (Web Appendix Section 1.2). Requires ``L_max >= 1``.
+            One ``theta_hat`` per baseline treatment value, estimated by
+            OLS on not-yet-treated observations. NOT doubly-robust.
         trends_linear : bool, optional
-            **Reserved for Phase 3** (group-specific linear trends via
-            ``DID^{fd}``).
-        trends_nonparam : Any, optional
-            **Reserved for Phase 3** (state-set-specific trends).
+            If ``True``, estimate group-specific linear trends via
+            ``DID^{fd}`` (Web Appendix Section 1.3, Lemma 6). Requires
+            ``L_max >= 1`` and at least 3 time periods.
+        trends_nonparam : str, optional
+            Column name for state-set membership. Restricts the control
+            pool to groups in the same set (Web Appendix Section 1.4).
+            Requires ``L_max >= 1`` and time-invariant values per group.
         honest_did : bool, default=False
             **Reserved for Phase 3** (HonestDiD integration on placebos).
         survey_design : Any, optional
@@ -959,6 +963,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 N_mat=N_mat,
                 baselines=baselines,
                 first_switch_idx=first_switch_idx_arr,
+                rank_deficient_action=self.rank_deficient_action,
             )
             # Keep raw Y_mat for the per-period DID path (which does not
             # support covariate residualization - it uses binary joiner/leaver
@@ -2073,12 +2078,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 cum_effect = float(
                     np.sum(S_arr[eligible] * running_per_group[eligible]) / N_l
                 )
-                # SE: conservative upper bound (sum of per-horizon SEs)
-                running_se_ub = sum(
-                    event_study_effects.get(ll, {}).get("se", 0.0)
-                    for ll in range(1, l_h + 1)
-                    if np.isfinite(event_study_effects.get(ll, {}).get("se", np.nan))
-                ) if event_study_effects is not None else float("nan")
+                # SE: conservative upper bound (sum of per-horizon SEs).
+                # NaN-consistency: if ANY component SE up to horizon l is
+                # non-finite, the cumulated SE is NaN (not 0.0).
+                if event_study_effects is not None:
+                    component_ses = [
+                        event_study_effects.get(ll, {}).get("se", np.nan)
+                        for ll in range(1, l_h + 1)
+                    ]
+                    if all(np.isfinite(s) for s in component_ses):
+                        running_se_ub = sum(component_ses)
+                    else:
+                        running_se_ub = float("nan")
+                else:
+                    running_se_ub = float("nan")
                 cum_t, cum_p, cum_ci = safe_inference(
                     cum_effect, running_se_ub, alpha=self.alpha, df=None
                 )
@@ -2090,6 +2103,22 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "conf_int": cum_ci,
                 }
             linear_trends_effects = cumulated if cumulated else None
+
+        # When trends_linear=True and L_max>=2, suppress cost_benefit_delta
+        # (which is computed on second-differences) and set overall_* from
+        # the cumulated level effects instead. This prevents the results
+        # surface from labeling a second-difference aggregate as delta^{fd}
+        # (a level-effect estimand).
+        if _is_trends_linear and L_max is not None and L_max >= 2:
+            cost_benefit_result = None
+            if linear_trends_effects:
+                max_h = max(linear_trends_effects.keys())
+                lt = linear_trends_effects[max_h]
+                effective_overall_att = lt["effect"]
+                effective_overall_se = lt["se"]
+                effective_overall_t = lt["t_stat"]
+                effective_overall_p = lt["p_value"]
+                effective_overall_ci = lt["conf_int"]
 
         # ------------------------------------------------------------------
         # Heterogeneity testing (Web Appendix Section 1.5, Lemma 7)
@@ -2130,6 +2159,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 X_het=X_het,
                 L_max=L_max,
                 alpha=self.alpha,
+                rank_deficient_action=self.rank_deficient_action,
             )
 
         twfe_weights_df = None
@@ -2634,6 +2664,7 @@ def _compute_covariate_residualization(
     N_mat: np.ndarray,
     baselines: np.ndarray,
     first_switch_idx: np.ndarray,
+    rank_deficient_action: str = "warn",
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Residualize outcomes by partialling out covariates per baseline treatment.
 
@@ -2750,7 +2781,7 @@ def _compute_covariate_residualization(
             design,
             dY,
             return_vcov=True,
-            rank_deficient_action="warn",
+            rank_deficient_action=rank_deficient_action,
         )
 
         # Extract covariate coefficients (first n_covariates entries)
@@ -2837,6 +2868,7 @@ def _compute_heterogeneity_test(
     X_het: np.ndarray,
     L_max: int,
     alpha: float = 0.05,
+    rank_deficient_action: str = "warn",
 ) -> Dict[int, Dict[str, Any]]:
     """Test for heterogeneous treatment effects (Web Appendix Section 1.5).
 
@@ -2938,7 +2970,7 @@ def _compute_heterogeneity_test(
         coefs, _residuals, vcov = solve_ols(
             design, dep_arr,
             return_vcov=True,
-            rank_deficient_action="warn",
+            rank_deficient_action=rank_deficient_action,
         )
 
         beta_het = float(coefs[0])
