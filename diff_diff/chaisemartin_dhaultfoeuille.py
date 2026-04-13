@@ -1147,7 +1147,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # path (L_max >= 1). The per-period path uses binary
             # joiner/leaver categorization and is not part of the DID^X
             # contract (Web Appendix Section 1.2).
-            Y_mat=Y_mat_raw if controls is not None else Y_mat,
+            # Use raw outcomes for per-period DID when controls or
+            # trends_linear is active (both transform Y_mat).
+            Y_mat=Y_mat_raw if controls is not None else (y_pivot.to_numpy() if _is_trends_linear else Y_mat),
             N_mat=N_mat_orig,
             periods=all_periods,
         )
@@ -1581,7 +1583,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         ) = _compute_cohort_recentered_inputs(
             D_mat=D_mat,
             # Phase 1 IF uses per-period structure: use raw outcomes
-            Y_mat=Y_mat_raw if controls is not None else Y_mat,
+            # when controls or trends_linear transform Y_mat.
+            Y_mat=Y_mat_raw if controls is not None else (y_pivot.to_numpy() if _is_trends_linear else Y_mat),
             N_mat=N_mat_orig,
             n_10_t_arr=n_10_t_arr,
             n_00_t_arr=n_00_t_arr,
