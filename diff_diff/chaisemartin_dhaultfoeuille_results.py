@@ -483,7 +483,9 @@ class ChaisemartinDHaultfoeuilleResults:
             "",
             f"{'Total observations:':<35} {self.n_obs:>10}",
             f"{'Treated observations:':<35} {self.n_treated_obs:>10}",
-            f"{'Switcher cells (N_S):':<35} {self.n_switcher_cells:>10}",
+            f"{'Eligible switchers (N_1):':<35} {self.n_switcher_cells:>10}"
+            if self.L_max is not None and self.L_max >= 1
+            else f"{'Switcher cells (N_S):':<35} {self.n_switcher_cells:>10}",
             f"{'Groups (post-filter):':<35} {len(self.groups):>10}",
             f"{'Cohorts:':<35} {self.n_cohorts:>10}",
             f"{'Time periods:':<35} {len(self.time_periods):>10}",

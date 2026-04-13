@@ -1863,6 +1863,25 @@ class TestMultiHorizon:
         assert not df_jl[df_jl["estimand"] == "DID_+"].iloc[0]["available"]
         assert not df_jl[df_jl["estimand"] == "DID_-"].iloc[0]["available"]
 
+    def test_L_max_1_bootstrap_results_overall_synced(self, data, ci_params):
+        """bootstrap_results.overall_* must match event_study horizon 1."""
+        n_boot = ci_params.bootstrap(99)
+        est = ChaisemartinDHaultfoeuille(
+            placebo=False, twfe_diagnostic=False, n_bootstrap=n_boot, seed=42
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = est.fit(
+                data, outcome="outcome", group="group", time="period",
+                treatment="treatment", L_max=1,
+            )
+        br = r.bootstrap_results
+        assert br is not None
+        # Nested bootstrap overall_* should match horizon 1
+        assert br.overall_se == br.event_study_ses[1]
+        assert br.overall_ci == br.event_study_cis[1]
+        assert br.overall_p_value == br.event_study_p_values[1]
+
     def test_L_max_1_uses_per_group_path(self, data):
         """L_max=1 uses the per-group DID_{g,1} path (same as L_max >= 2
         uses for l=1). This is a different estimand from the per-period

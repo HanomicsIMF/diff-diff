@@ -1672,6 +1672,25 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             overall_t = es1["t_stat"]
             overall_p = es1["p_value"]
             overall_ci = es1["conf_int"]
+            # Also sync the nested bootstrap_results.overall_* so the
+            # public bootstrap object matches the top-level DID_1 surface.
+            if (
+                bootstrap_results is not None
+                and bootstrap_results.event_study_ses
+                and 1 in bootstrap_results.event_study_ses
+            ):
+                bootstrap_results.overall_se = bootstrap_results.event_study_ses[1]
+                bootstrap_results.overall_ci = (
+                    bootstrap_results.event_study_cis[1]
+                    if bootstrap_results.event_study_cis and 1 in bootstrap_results.event_study_cis
+                    else (np.nan, np.nan)
+                )
+                bootstrap_results.overall_p_value = (
+                    bootstrap_results.event_study_p_values[1]
+                    if bootstrap_results.event_study_p_values
+                    and 1 in bootstrap_results.event_study_p_values
+                    else np.nan
+                )
 
         # Phase 2: override overall_att with cost-benefit delta when L_max > 1
         effective_overall_att = overall_att
