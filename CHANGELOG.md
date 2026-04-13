@@ -7,30 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-04-12
+
 ### Added
-- **`ChaisemartinDHaultfoeuille`** (alias `DCDH`) — Phase 1 of the de Chaisemartin-D'Haultfœuille estimator family, the only modern staggered DiD estimator in the library that handles **non-absorbing (reversible) treatments**. Treatment can switch on AND off over time (marketing campaigns, seasonal promotions, on/off policy cycles). Implements `DID_M` from de Chaisemartin & D'Haultfœuille (2020) AER, equivalently `DID_1` (horizon `l = 1`) of the dynamic companion paper (NBER WP 29873). Ships:
-  - Headline `DID_M` point estimate with cohort-recentered analytical SE from Web Appendix Section 3.7.3 of the dynamic companion paper
-  - Joiners-only (`DID_+`) and leavers-only (`DID_-`) decompositions with their own inference
-  - Single-lag placebo `DID_M^pl` point estimate (AER 2020 placebo specification). Placebo SE / inference fields are intentionally `NaN` in Phase 1: the dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only, not for the placebo. Phase 2 will add multiplier-bootstrap support for the placebo. The bootstrap path in Phase 1 covers `DID_M`, `DID_+`, and `DID_-` only.
-  - Optional multiplier bootstrap clustered at group level with Rademacher / Mammen / Webb weights for `DID_M`, `DID_+`, and `DID_-` (placebo bootstrap deferred to Phase 2)
-  - TWFE decomposition diagnostic from Theorem 1 of AER 2020 (per-cell weights, fraction negative, `sigma_fe`, `beta_fe`)
-  - Multi-switch group filtering (`drop_larger_lower=True` default, matches R `DIDmultiplegtDYN`); singleton-baseline filter (footnote 15 of dynamic paper, variance computation only); consolidated A11 zero-retention warnings — all with explicit warnings (no silent failures). Never-switching groups participate in the variance via stable-control roles after the Round 2 full-IF fix; the `n_groups_dropped_never_switching` field is retained as backwards-compatibility metadata only.
-  - Phase 1 requires balanced-baseline panels with no interior period gaps. Late-entry groups (missing the first global period) raise `ValueError`; interior-gap groups are dropped with a `UserWarning`; terminally-missing groups (early exit / right-censoring) are retained and contribute from their observed periods only. This is a documented deviation from R `DIDmultiplegtDYN`'s unbalanced-panel support — see `docs/methodology/REGISTRY.md` for rationale and workarounds.
-  - Forward-compatible `fit()` signature: Phase 2 (multi-horizon event study, `aggregate`, `L_max`) and Phase 3 (covariate adjustment via `controls`, group-specific linear trends, HonestDiD) parameters present from day one, raising `NotImplementedError` with phase pointers
-  - Validated against R `DIDmultiplegtDYN` v2.3.3 at horizon `l = 1` via `tests/test_chaisemartin_dhaultfoeuille_parity.py`
-- **`twowayfeweights()`** — standalone helper function for the TWFE decomposition diagnostic (Theorem 1 of de Chaisemartin & D'Haultfœuille 2020), available without instantiating the full estimator. Returns a `TWFEWeightsResult` with per-cell weights, fraction negative, `sigma_fe`, and `beta_fe`.
-- **`generate_reversible_did_data()`** — new generator in `diff_diff.prep` producing reversible-treatment panel data for testing and tutorials. Patterns: `single_switch` (default, A5-safe), `joiners_only`, `leavers_only`, `mixed_single_switch`, `random`, `cycles`, `marketing`. Returns columns `group`, `period`, `treatment`, `outcome`, `true_effect`, `d_lag`, `switcher_type`.
-- **REGISTRY.md `## ChaisemartinDHaultfoeuille` section** — single canonical source for dCDH methodology, equations, edge cases, and all documented deviations from the R `DIDmultiplegtDYN` reference implementation. Cites the AER 2020 paper and the dynamic companion paper (NBER WP 29873) by reference; primary papers are upstream sources, not in-repo files.
-- **Phase 2: Multi-horizon event study for `ChaisemartinDHaultfoeuille`** — adds `L_max` parameter to `fit()` for computing `DID_l` at horizons `l = 1, ..., L_max` using the per-group building block from Equation 3 of the dynamic companion paper. Ships:
-  - Per-horizon point estimates and cohort-recentered analytical SE
-  - Dynamic placebos `DID^{pl}_l` with dual eligibility condition (Web Appendix Section 1.1)
-  - Normalized estimator `DID^n_l = DID_l / delta^D_l` (Section 3.2)
-  - Cost-benefit aggregate `delta` (Section 3.3, Lemma 4) — becomes `overall_att` when `L_max > 1`
-  - Sup-t simultaneous confidence bands via multiplier bootstrap
-  - `plot_event_study()` integration with `<50%` switcher warning for far horizons
-  - `to_dataframe(level="event_study")` and `to_dataframe(level="normalized")` output
-  - Per-horizon bootstrap with bootstrap SE/CI/p-value propagation to event_study_effects
-  - `L_max=None` (default) preserves exact Phase 1 behavior
+- **`ChaisemartinDHaultfoeuille`** (alias `DCDH`) - de Chaisemartin & D'Haultfœuille estimator for **non-absorbing (reversible) treatments**. The only modern staggered DiD estimator that handles treatment switching on AND off. Implements `DID_M` from AER 2020, validated against R `DIDmultiplegtDYN` v2.3.3. Ships Phases 1 and 2:
+  - Phase 1: headline `DID_M` with analytical SE, joiners/leavers decompositions, single-lag placebo, multiplier bootstrap, TWFE decomposition diagnostic
+  - Phase 2: multi-horizon event study (`L_max`), dynamic placebos, normalized estimator, cost-benefit aggregate (Lemma 4), sup-t simultaneous confidence bands, `plot_event_study()` integration
+- **`twowayfeweights()`** - standalone TWFE decomposition diagnostic (Theorem 1, AER 2020)
+- **`generate_reversible_did_data()`** - reversible-treatment panel data generator with 7 switch patterns
+- **Survey-aware power analysis** - analytical helpers (`compute_power()`, `compute_mde()`, `compute_sample_size()`) accept a `deff` parameter for design-effect adjustment. Simulation helpers (`simulate_power`, `simulate_mde`, `simulate_sample_size`) accept a `survey_config` (`SurveyPowerConfig`) that generates data with complex survey structure and injects a `SurveyDesign` into each simulated fit.
+- **`aggregate_survey()` `second_stage_weights` parameter** - choose `"pweight"` (default, population weights) or `"aweight"` (precision weights). pweight output is compatible with all survey-capable estimators; aweight is opt-in for GLS efficiency with estimators marked Full in the survey support matrix.
+- **`conditional_pt` parameter** on `generate_survey_did_data()` - simulates scenarios where unconditional parallel trends fail but conditional PT holds after covariate adjustment
+- **Tutorial 18: Geo-Experiment Analysis** (`18_geo_experiments.ipynb`) - SyntheticDiD walkthrough for marketing analytics: simulated DMA panel, 5 treated markets, fit + diagnostics + stakeholder summary
+- **Practitioner decision tree** (`docs/practitioner_decision_tree.rst`) - "which method fits my business problem?" guide
+- **Practitioner getting started guide** (`docs/practitioner_getting_started.rst`) - end-to-end walkthrough with terminology bridge
+- **JOSS paper** (`paper.md`, `paper.bib`) - software paper for Journal of Open Source Software submission
+- **CONTRIBUTORS.md** - author and contributor credit
+- **Standalone CI Gate workflow** (`.github/workflows/ci-gate.yml`) - doc-only PRs no longer block on path-filtered test workflows
+
+### Changed
+- `aggregate_survey()` default second-stage weights changed from `aweight` (precision) to `pweight` (population). Users who need the old precision-weighting behavior can pass `second_stage_weights="aweight"`.
+- README "For Data Scientists" section with practitioner-facing links and `aggregate_survey()` documentation
+- CITATION.cff updated with version and release date
+- ROADMAP.md updated: B1a-d marked done, B2b marked done, B3d marked shipped, dCDH entry updated with correct citations
+
+### Fixed
+- Doc-only PRs no longer block indefinitely on CI Gate (standalone gate workflow runs on all PRs regardless of path filters)
+- `aggregate_survey()` docs no longer overclaim universal estimator compatibility - explicitly document aweight/pweight restrictions per the survey support matrix
 
 ## [3.0.1] - 2026-04-07
 
@@ -1275,6 +1278,7 @@ for the full feature history leading to this release.
 [2.1.2]: https://github.com/igerber/diff-diff/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/igerber/diff-diff/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/igerber/diff-diff/compare/v2.0.3...v2.1.0
+[3.0.2]: https://github.com/igerber/diff-diff/compare/v3.0.1...v3.0.2
 [2.0.3]: https://github.com/igerber/diff-diff/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/igerber/diff-diff/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/igerber/diff-diff/compare/v2.0.0...v2.0.1
