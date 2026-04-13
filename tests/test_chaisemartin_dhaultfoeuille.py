@@ -1864,7 +1864,9 @@ class TestMultiHorizon:
         assert not df_jl[df_jl["estimand"] == "DID_-"].iloc[0]["available"]
 
     def test_L_max_1_bootstrap_results_overall_synced(self, data, ci_params):
-        """bootstrap_results.overall_* must match event_study horizon 1."""
+        """bootstrap_results.overall_* must match event_study horizon 1,
+        and bootstrap_distribution must be cleared (DID_M distribution
+        doesn't match the DID_1 summary stats)."""
         n_boot = ci_params.bootstrap(99)
         est = ChaisemartinDHaultfoeuille(
             placebo=False, twfe_diagnostic=False, n_bootstrap=n_boot, seed=42
@@ -1881,6 +1883,8 @@ class TestMultiHorizon:
         assert br.overall_se == br.event_study_ses[1]
         assert br.overall_ci == br.event_study_cis[1]
         assert br.overall_p_value == br.event_study_p_values[1]
+        # bootstrap_distribution cleared (was DID_M, not DID_1)
+        assert br.bootstrap_distribution is None
 
     def test_L_max_1_uses_per_group_path(self, data):
         """L_max=1 uses the per-group DID_{g,1} path (same as L_max >= 2

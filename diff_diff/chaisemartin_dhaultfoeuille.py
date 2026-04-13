@@ -1688,6 +1688,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     if bootstrap_results.event_study_cis and 1 in bootstrap_results.event_study_cis
                     else (np.nan, np.nan)
                 )
+                # Clear the DID_M distribution - it doesn't match the
+                # DID_1 summary statistics. The per-horizon bootstrap
+                # stats are accessible via event_study_ses/cis/p_values.
+                bootstrap_results.bootstrap_distribution = None
                 bootstrap_results.overall_p_value = (
                     bootstrap_results.event_study_p_values[1]
                     if bootstrap_results.event_study_p_values
