@@ -418,7 +418,7 @@ class ChaisemartinDHaultfoeuilleResults:
     # Repr / properties
     # ------------------------------------------------------------------
 
-    def _horizon_label(self, h: int) -> str:
+    def _horizon_label(self, h) -> str:
         """Return per-horizon estimand label for event study rows."""
         has_controls = self.covariate_residuals is not None
         has_trends = self.linear_trends_effects is not None
@@ -728,7 +728,7 @@ class ChaisemartinDHaultfoeuilleResults:
             lines.extend(
                 [
                     thin,
-                    f"Event Study (DID_l, l = 1..{self.L_max})".center(width),
+                    f"Event Study ({self._horizon_label('l')}, l = 1..{self.L_max})".center(width),
                     thin,
                     header_row,
                     thin,
@@ -738,7 +738,7 @@ class ChaisemartinDHaultfoeuilleResults:
                 entry = self.event_study_effects[l_h]
                 lines.append(
                     _format_inference_row(
-                        f"DID_{l_h}",
+                        self._horizon_label(l_h),
                         entry["effect"],
                         entry["se"],
                         entry["t_stat"],

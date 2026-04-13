@@ -659,6 +659,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         f"Control column {c!r} contains {n_nan} NaN value(s). "
                         "Drop or impute missing covariates before fitting."
                     )
+                n_inf = int(np.isinf(data_controls[c].to_numpy()).sum())
+                if n_inf > 0:
+                    raise ValueError(
+                        f"Control column {c!r} contains {n_inf} Inf value(s). "
+                        "Remove or replace non-finite covariates before fitting."
+                    )
             # Aggregate covariates to cell means (same groupby as treatment/outcome).
             # Use the coerced copy joined with group/time from original data.
             x_agg_input = data[[group, time]].copy()
@@ -1514,14 +1520,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         "n_obs": pl_data["N_pl_l"],
                     }
 
-            # Normalized effects DID^n_l
-            normalized_effects_dict = _compute_normalized_effects(
-                multi_horizon_dids=multi_horizon_dids,
-                D_mat=D_mat,
-                baselines=baselines,
-                first_switch_idx=first_switch_idx_arr,
-                L_max=L_max,
-            )
+            # Normalized effects DID^n_l (suppressed under trends_linear
+            # because event_study_effects holds second-differences DID^{fd}_l,
+            # not level effects - normalizing second-differences is wrong)
+            if not _is_trends_linear:
+                normalized_effects_dict = _compute_normalized_effects(
+                    multi_horizon_dids=multi_horizon_dids,
+                    D_mat=D_mat,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    L_max=L_max,
+                )
 
             # Cost-benefit delta (only meaningful when L_max >= 2)
             if L_max >= 2:
