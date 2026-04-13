@@ -2772,6 +2772,34 @@ class TestHeterogeneityTesting:
                 L_max=1, heterogeneity="het_x", controls=["X1"],
             )
 
+    def test_heterogeneity_requires_lmax(self):
+        """heterogeneity without L_max raises ValueError."""
+        df = self._make_panel_with_het()
+        with pytest.raises(ValueError, match="requires L_max >= 1"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                heterogeneity="het_x",
+            )
+
+    def test_heterogeneity_rejects_trends_linear(self):
+        """heterogeneity + trends_linear raises ValueError."""
+        df = self._make_panel_with_het()
+        with pytest.raises(ValueError, match="cannot be combined with trends_linear"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, heterogeneity="het_x", trends_linear=True,
+            )
+
+    def test_heterogeneity_rejects_trends_nonparam(self):
+        """heterogeneity + trends_nonparam raises ValueError."""
+        df = self._make_panel_with_het()
+        df["state"] = df["group"] % 3
+        with pytest.raises(ValueError, match="cannot be combined with trends_nonparam"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, heterogeneity="het_x", trends_nonparam="state",
+            )
+
 
 class TestDesign2:
     """Design-2 switch-in/switch-out separation (ROADMAP item 3e)."""
@@ -2822,7 +2850,8 @@ class TestDesign2:
                 y = 10 + 2 * t + 5 * d + rng.normal(0, 0.5)
                 rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
         df = pd.DataFrame(rows)
-        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+        # drop_larger_lower=False required for design2=True
+        r = ChaisemartinDHaultfoeuille(seed=1, drop_larger_lower=False).fit(
             df, "outcome", "group", "period", "treatment",
             L_max=1, design2=True,
         )
@@ -2835,6 +2864,15 @@ class TestDesign2:
             df, "outcome", "group", "period", "treatment", L_max=1,
         )
         assert r.design2_effects is None
+
+    def test_design2_rejects_drop_larger_lower(self):
+        """design2=True with default drop_larger_lower=True raises ValueError."""
+        df = self._make_join_then_leave_panel()
+        with pytest.raises(ValueError, match="drop_larger_lower=False"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, design2=True,
+            )
 
 
 class TestNonBinaryTreatment:

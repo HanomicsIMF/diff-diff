@@ -601,6 +601,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 "CallawaySantAnna which supports survey_design."
             )
 
+        # Design-2 precondition: requires drop_larger_lower=False
+        if design2 and self.drop_larger_lower:
+            raise ValueError(
+                "design2=True requires drop_larger_lower=False because "
+                "Design-2 groups have exactly 2 treatment changes (join "
+                "then leave), which are dropped by the default "
+                "drop_larger_lower=True filter. Construct the estimator "
+                "with ChaisemartinDHaultfoeuille(drop_larger_lower=False)."
+            )
+
         # ------------------------------------------------------------------
         # Step 4-5: Validate input + aggregate to (g, t) cells via the
         # shared helper used by both fit() and twowayfeweights(). The
@@ -2132,7 +2142,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # Heterogeneity testing (Web Appendix Section 1.5, Lemma 7)
         # ------------------------------------------------------------------
         heterogeneity_effects: Optional[Dict[int, Dict[str, Any]]] = None
-        if heterogeneity is not None and L_max is not None and L_max >= 1:
+        if heterogeneity is not None:
+            if L_max is None:
+                raise ValueError(
+                    "heterogeneity testing requires L_max >= 1. Set L_max "
+                    "to use the per-group DID_{g,l} path."
+                )
             het_col = str(heterogeneity)
             if het_col not in data.columns:
                 raise ValueError(
@@ -2145,6 +2160,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "heterogeneity cannot be combined with controls. "
                     "R's did_multiplegt_dyn disallows predict_het with "
                     "controls; remove one of the two options."
+                )
+            if _is_trends_linear:
+                raise ValueError(
+                    "heterogeneity cannot be combined with trends_linear. "
+                    "The heterogeneity test operates on level outcome "
+                    "changes but trends_linear uses second-differenced "
+                    "outcomes; the results would be inconsistent."
+                )
+            if trends_nonparam is not None:
+                raise ValueError(
+                    "heterogeneity cannot be combined with trends_nonparam. "
+                    "The heterogeneity test does not thread state-set "
+                    "control-pool restrictions; the results would be "
+                    "inconsistent with the fitted estimator."
                 )
             # Extract per-group covariate (must be time-invariant)
             het_per_group = data.groupby(group)[het_col].nunique()

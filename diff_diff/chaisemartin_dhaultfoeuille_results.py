@@ -423,6 +423,11 @@ class ChaisemartinDHaultfoeuilleResults:
         has_controls = self.covariate_residuals is not None
         has_trends = self.linear_trends_effects is not None
 
+        # When trends_linear + L_max>=2, overall is NaN (no aggregate).
+        # Label reflects that per-horizon effects are in linear_trends_effects.
+        if has_trends and self.L_max is not None and self.L_max >= 2:
+            return "DID^{fd}_l (see linear_trends_effects)"
+
         if self.L_max is not None and self.L_max >= 2:
             base = "delta"
         elif self.L_max is not None and self.L_max == 1:
