@@ -2796,11 +2796,15 @@ def _compute_covariate_residualization(
                 "n_obs": 0,
                 "r_squared": np.nan,
             }
+            # NaN out outcomes for failed strata so they're excluded
+            # from downstream DID computation (don't mix raw + adjusted).
+            group_indices = np.where(d_mask)[0]
+            Y_resid[group_indices, :] = np.nan
             warnings.warn(
                 f"No not-yet-treated observations for baseline treatment "
-                f"d={d_val}. Cannot estimate covariate slope theta_hat "
-                f"for this baseline. Outcomes for these groups are not "
-                f"residualized.",
+                f"d={d_val}. Cannot estimate covariate slope theta_hat. "
+                f"Groups with this baseline are excluded from the "
+                f"covariate-adjusted estimation.",
                 UserWarning,
                 stacklevel=3,
             )
@@ -2850,11 +2854,14 @@ def _compute_covariate_residualization(
                 "n_obs": n_obs,
                 "r_squared": np.nan,
             }
+            # NaN out outcomes for failed strata (don't mix raw + adjusted)
+            group_indices_fail = np.where(d_mask)[0]
+            Y_resid[group_indices_fail, :] = np.nan
             warnings.warn(
                 f"DID^X: baseline d={d_val} has {n_obs} not-yet-treated "
-                f"observations but {n_params} regressors. Cannot estimate "
-                f"covariate slopes. Outcomes for these groups are not "
-                f"residualized.",
+                f"observations but {n_params} regressors. Groups with "
+                f"this baseline are excluded from covariate-adjusted "
+                f"estimation.",
                 UserWarning,
                 stacklevel=3,
             )

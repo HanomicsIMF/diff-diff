@@ -418,6 +418,18 @@ class ChaisemartinDHaultfoeuilleResults:
     # Repr / properties
     # ------------------------------------------------------------------
 
+    def _horizon_label(self, h: int) -> str:
+        """Return per-horizon estimand label for event study rows."""
+        has_controls = self.covariate_residuals is not None
+        has_trends = self.linear_trends_effects is not None
+        if has_controls and has_trends:
+            return f"DID^{{X,fd}}_{h}"
+        elif has_controls:
+            return f"DID^X_{h}"
+        elif has_trends:
+            return f"DID^{{fd}}_{h}"
+        return f"DID_{h}"
+
     def _estimand_label(self) -> str:
         """Return the estimand label based on active features."""
         has_controls = self.covariate_residuals is not None
@@ -991,7 +1003,7 @@ class ChaisemartinDHaultfoeuilleResults:
                     rows.append(
                         {
                             "horizon": h,
-                            "estimand": f"DID_{h}",
+                            "estimand": self._horizon_label(h),
                             "effect": entry["effect"],
                             "se": entry["se"],
                             "t_stat": entry["t_stat"],
