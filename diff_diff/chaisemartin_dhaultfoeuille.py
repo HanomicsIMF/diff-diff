@@ -2810,16 +2810,20 @@ def _compute_covariate_residualization(
         else:
             valid_t_finite = valid_t
 
-        # Build time FE dummies (drop first unique period as reference)
+        # Build design: [intercept, dX, time_dummies (reference dropped)]
+        # The intercept is required when dropping one time dummy as
+        # reference category; without it the omitted period's FE is
+        # forced to zero, biasing theta_hat.
+        intercept = np.ones((n_obs, 1))
         unique_t = np.unique(valid_t_finite)
         n_time_fe = len(unique_t) - 1
         if n_time_fe > 0:
             time_dummies = np.zeros((n_obs, n_time_fe))
             for i, t_val in enumerate(unique_t[1:]):
                 time_dummies[:, i] = (valid_t_finite == t_val).astype(float)
-            design = np.hstack([dX, time_dummies])
+            design = np.hstack([intercept, dX, time_dummies])
         else:
-            design = dX
+            design = np.hstack([intercept, dX])
 
         # OLS: dY = [dX, time_FE] @ beta + epsilon
         coefs, residuals, _vcov = solve_ols(
@@ -2829,8 +2833,9 @@ def _compute_covariate_residualization(
             rank_deficient_action=rank_deficient_action,
         )
 
-        # Extract covariate coefficients (first n_covariates entries)
-        theta_hat = coefs[:n_covariates]
+        # Extract covariate coefficients (indices 1..n_covariates;
+        # index 0 is the intercept)
+        theta_hat = coefs[1:1 + n_covariates]
 
         # R-squared of first-stage regression
         ss_res = float(np.sum(residuals**2))
@@ -2842,6 +2847,19 @@ def _compute_covariate_residualization(
             "n_obs": n_obs,
             "r_squared": r_squared,
         }
+
+        # Guard: if any control coefficient is NaN (rank-deficient OLS
+        # dropped a collinear control), skip residualization for this
+        # baseline to prevent NaN propagation through Y_resid.
+        if not np.all(np.isfinite(theta_hat)):
+            warnings.warn(
+                f"DID^X: rank-deficient first-stage OLS for baseline "
+                f"d={d_val} produced NaN coefficients. Outcomes for "
+                f"groups with this baseline are not residualized.",
+                UserWarning,
+                stacklevel=3,
+            )
+            continue
 
         # Residualize Y at levels for all groups with this baseline.
         # Vectorized level residualization: Y_tilde[g, t] = Y[g, t] - X[g, t] @ theta_hat
@@ -2987,7 +3005,11 @@ def _compute_heterogeneity_test(
         dep_arr = np.array(dep_var)
         x_arr = np.array(x_vals).reshape(-1, 1)
 
-        # Cohort dummies (drop one as reference)
+        # Design: [intercept, X_g, cohort_dummies (reference dropped)]
+        # The intercept is required when dropping one cohort dummy as
+        # reference; without it the omitted cohort's mean is forced to
+        # zero, which biases beta^{het}_l.
+        intercept = np.ones((n_obs, 1))
         unique_cohorts = sorted(set(cohort_keys))
         n_cohort_dummies = len(unique_cohorts) - 1
         if n_cohort_dummies > 0:
@@ -2997,9 +3019,9 @@ def _compute_heterogeneity_test(
             cohort_dummies[np.arange(n_obs), cohort_idx] = 1.0
             # Drop first cohort as reference
             cohort_dummies = cohort_dummies[:, 1:]
-            design = np.hstack([x_arr, cohort_dummies])
+            design = np.hstack([intercept, x_arr, cohort_dummies])
         else:
-            design = x_arr
+            design = np.hstack([intercept, x_arr])
 
         # Guard: need more observations than parameters
         n_params = design.shape[1]
@@ -3018,12 +3040,13 @@ def _compute_heterogeneity_test(
             rank_deficient_action=rank_deficient_action,
         )
 
-        beta_het = float(coefs[0])
+        # beta_het is at index 1 (index 0 is intercept)
+        beta_het = float(coefs[1])
         # NaN-safe: if vcov is None or target coefficient variance is NaN
         # (rank-deficient), all inference fields are NaN.
         se_het = float("nan")
-        if vcov is not None and np.isfinite(vcov[0, 0]) and vcov[0, 0] > 0:
-            se_het = float(np.sqrt(vcov[0, 0]))
+        if vcov is not None and np.isfinite(vcov[1, 1]) and vcov[1, 1] > 0:
+            se_het = float(np.sqrt(vcov[1, 1]))
         t_stat, p_val, ci = safe_inference(beta_het, se_het, alpha=alpha, df=None)
 
         results[l_h] = {
