@@ -320,11 +320,19 @@ class ChaisemartinDHaultfoeuilleResults:
     sup_t_bands : dict, optional
         Phase 2 placeholder (sup-t simultaneous confidence bands).
     covariate_residuals : pd.DataFrame, optional
-        Phase 3 placeholder (``DID^X`` residuals).
+        ``DID^X`` first-stage diagnostics: per-baseline ``theta_hat``,
+        ``n_obs``, and ``r_squared``. Populated when ``controls`` is set.
     linear_trends_effects : dict, optional
-        Phase 3 placeholder (``DID^{fd}`` group-specific linear trends).
+        Cumulated ``DID^{fd}`` level effects ``delta^{fd}_l``. Keyed by
+        horizon. Populated when ``trends_linear=True``.
+    heterogeneity_effects : dict, optional
+        Per-horizon heterogeneity test results ``beta^{het}_l``.
+        Populated when ``heterogeneity`` is set.
+    design2_effects : dict, optional
+        Design-2 switch-in/switch-out descriptive summary. Populated
+        when ``design2=True``.
     honest_did_results : Any, optional
-        Phase 3 placeholder (HonestDiD integration on placebos).
+        Reserved for HonestDiD integration on placebos.
     survey_metadata : Any, optional
         Always ``None`` in Phase 1 — survey integration is deferred to a
         separate effort after all phases ship.
@@ -863,6 +871,14 @@ class ChaisemartinDHaultfoeuilleResults:
             - ``"twfe_weights"``: per-(group, time) TWFE decomposition
               weights table. Only available when ``twfe_diagnostic=True``
               was passed to ``fit()``.
+            - ``"heterogeneity"``: one row per horizon for the
+              heterogeneity test ``beta^{het}_l``. Available when
+              ``heterogeneity`` is passed to ``fit()``.
+            - ``"linear_trends"``: one row per horizon for the
+              cumulated trend-adjusted level effects ``delta^{fd}_l``.
+              Available when ``trends_linear=True``.
+            - ``"design2"``: Design-2 switch-in/switch-out descriptive
+              summary. Available when ``design2=True``.
 
         Returns
         -------
@@ -1073,11 +1089,19 @@ class ChaisemartinDHaultfoeuilleResults:
                 rows.append({"horizon": h, **data})
             return pd.DataFrame(rows)
 
+        elif level == "design2":
+            if self.design2_effects is None:
+                raise ValueError(
+                    "Design-2 effects not available. Pass "
+                    "design2=True with drop_larger_lower=False to fit()."
+                )
+            return pd.DataFrame([self.design2_effects])
+
         else:
             raise ValueError(
                 f"Unknown level: {level!r}. Use 'overall', 'joiners_leavers', "
                 f"'per_period', 'event_study', 'normalized', 'twfe_weights', "
-                f"'heterogeneity', or 'linear_trends'."
+                f"'heterogeneity', 'linear_trends', or 'design2'."
             )
 
 

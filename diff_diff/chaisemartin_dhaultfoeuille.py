@@ -2764,7 +2764,7 @@ def _compute_covariate_residualization(
     baselines: np.ndarray,
     first_switch_idx: np.ndarray,
     rank_deficient_action: str = "warn",
-) -> Tuple[np.ndarray, Dict[str, Any]]:
+) -> Tuple[np.ndarray, Dict[str, Any], set]:
     """Residualize outcomes by partialling out covariates per baseline treatment.
 
     Implements ``DID^X`` from Web Appendix Section 1.2 of de Chaisemartin &
