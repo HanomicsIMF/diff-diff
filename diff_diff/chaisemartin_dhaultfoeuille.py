@@ -1422,6 +1422,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     switch_direction=switch_direction_arr,
                     T_g=T_g_arr,
                     L_max=L_max,
+                    set_ids=set_ids_arr,
                 )
                 # Surface placebo A11 warnings
                 pl_a11 = multi_horizon_placebos.pop("_a11_warnings", None)
@@ -1448,6 +1449,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     switch_direction=switch_direction_arr,
                     T_g=T_g_arr,
                     L_max=L_max,
+                    set_ids=set_ids_arr,
                 )
                 # Per-placebo-horizon analytical SE via cohort recentering
                 # (same pattern as positive-horizon SE at Step 12c).
@@ -2840,6 +2842,24 @@ def _compute_covariate_residualization(
         else:
             design = np.hstack([intercept, dX])
 
+        # Small-sample guard: skip if fewer obs than parameters
+        n_params = design.shape[1]
+        if n_obs < n_params:
+            diagnostics[float(d_val)] = {
+                "theta_hat": np.full(n_covariates, np.nan),
+                "n_obs": n_obs,
+                "r_squared": np.nan,
+            }
+            warnings.warn(
+                f"DID^X: baseline d={d_val} has {n_obs} not-yet-treated "
+                f"observations but {n_params} regressors. Cannot estimate "
+                f"covariate slopes. Outcomes for these groups are not "
+                f"residualized.",
+                UserWarning,
+                stacklevel=3,
+            )
+            continue
+
         # OLS: dY = [dX, time_FE] @ beta + epsilon
         coefs, residuals, _vcov = solve_ols(
             design,
@@ -3572,6 +3592,7 @@ def _compute_per_group_if_placebo_horizon(
     switch_direction: np.ndarray,
     T_g: np.ndarray,
     L_max: int,
+    set_ids: Optional[np.ndarray] = None,
 ) -> Dict[int, np.ndarray]:
     """
     Compute per-group influence function for placebo horizons.
@@ -3639,6 +3660,9 @@ def _compute_per_group_if_placebo_horizon(
                 & (N_mat[ctrl_indices, backward_idx] > 0)
                 & (N_mat[ctrl_indices, forward_idx] > 0)
             )
+            # State-set trends: restrict controls to same set
+            if set_ids is not None:
+                ctrl_mask &= set_ids[ctrl_indices] == set_ids[g]
             ctrl_pool = ctrl_indices[ctrl_mask]
             n_ctrl = ctrl_pool.size
 
@@ -3667,6 +3691,7 @@ def _compute_multi_horizon_placebos(
     switch_direction: np.ndarray,
     T_g: np.ndarray,
     L_max: int,
+    set_ids: Optional[np.ndarray] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """
     Compute dynamic placebo estimators ``DID^{pl}_l`` for ``l = 1..L_pl_max``.
@@ -3758,6 +3783,9 @@ def _compute_multi_horizon_placebos(
                 & (N_mat[ctrl_indices, backward_idx] > 0)
                 & (N_mat[ctrl_indices, forward_idx] > 0)
             )
+            # State-set trends: restrict controls to same set
+            if set_ids is not None:
+                ctrl_mask &= set_ids[ctrl_indices] == set_ids[g]
             ctrl_pool = ctrl_indices[ctrl_mask]
 
             if ctrl_pool.size == 0:
