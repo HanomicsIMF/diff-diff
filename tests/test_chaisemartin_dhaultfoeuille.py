@@ -2682,6 +2682,16 @@ class TestStateSetTrends:
                 L_max=1, trends_nonparam="group",
             )
 
+    def test_nan_set_membership_rejected(self):
+        """NaN in trends_nonparam column raises ValueError."""
+        df = self._make_panel_with_sets()
+        df.loc[df["group"] == 0, "state"] = np.nan
+        with pytest.raises(ValueError, match="NaN/missing"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, trends_nonparam="state",
+            )
+
     def test_nonparam_with_covariates(self):
         """Combined state-set trends + covariates."""
         df = self._make_panel_with_sets()
