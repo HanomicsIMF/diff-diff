@@ -3512,8 +3512,8 @@ class TestHonestDiDIntegration:
                 })
         df = pd.DataFrame(rows)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
             r = ChaisemartinDHaultfoeuille(seed=1).fit(
                 df, "outcome", "group", "period", "treatment",
                 L_max=3, trends_nonparam="state", honest_did=True,
@@ -3529,6 +3529,25 @@ class TestHonestDiDIntegration:
         assert -3 not in hd.pre_periods_used
         assert 3 not in hd.post_periods_used
         assert hd.post_periods_used == [1, 2]
+        # The placebo-based pre-period warning should have been emitted
+        placebo_warns = [
+            x for x in w if "placebo" in str(x.message).lower()
+            and "pre-period" in str(x.message).lower()
+        ]
+        assert len(placebo_warns) >= 1
+
+    def test_honest_did_with_bootstrap(self):
+        """honest_did=True works with bootstrap-fitted results."""
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1, n_bootstrap=49).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, honest_did=True,
+            )
+        assert r.honest_did_results is not None
+        assert np.isfinite(r.honest_did_results.ci_lb)
+        assert r.honest_did_results.post_periods_used == [1, 2]
 
 
 # =============================================================================
