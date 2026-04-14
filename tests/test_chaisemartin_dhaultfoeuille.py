@@ -3369,6 +3369,22 @@ class TestHonestDiDIntegration:
         # Different methods should generally give different bounds
         assert rm_bounds.ci_lb != sd_bounds.ci_lb or rm_bounds.ci_ub != sd_bounds.ci_ub
 
+    def test_honest_did_original_estimate_is_post_average(self):
+        """original_estimate targets equal-weight average over post horizons."""
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, honest_did=True,
+            )
+        hd = r.honest_did_results
+        assert hd is not None
+        # Equal-weight average = mean of event_study_effects[1..L_max]
+        es = r.event_study_effects
+        avg = np.mean([es[h]["effect"] for h in sorted(es.keys())])
+        np.testing.assert_allclose(hd.original_estimate, avg, rtol=1e-10)
+
 
 # =============================================================================
 # Summary Phase 3 Rendering

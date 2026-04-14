@@ -540,9 +540,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         honest_did : bool, default=False
             Run HonestDiD sensitivity analysis (Rambachan & Roth 2023) on
             the placebo + event study surface. Requires ``L_max >= 1``.
-            Default: relative magnitudes (DeltaRM, Mbar=1.0). Results
-            stored on ``results.honest_did_results``; ``None`` with a
-            warning if the solver fails. For custom parameters, call
+            Default: relative magnitudes (DeltaRM, Mbar=1.0), targeting
+            the equal-weight average over all post-treatment horizons
+            (``l_vec=None``). Results stored on
+            ``results.honest_did_results``; ``None`` with a warning if
+            the solver fails. For custom parameters (e.g., targeting
+            the on-impact effect only via ``l_vec``), call
             ``compute_honest_did(results, ...)`` post-hoc instead.
         heterogeneity : str, optional
             Column name for a time-invariant covariate to test for
