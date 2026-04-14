@@ -957,6 +957,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 "Set L_max to compute DID^{pl}_l placebos that HonestDiD uses as "
                 "pre-period coefficients."
             )
+        if honest_did and not self.placebo:
+            raise ValueError(
+                "honest_did=True requires placebo computation. The estimator was "
+                "constructed with placebo=False. Use "
+                "ChaisemartinDHaultfoeuille(placebo=True) (the default)."
+            )
 
         # Pivot to (group x time) matrices for vectorized computations
         d_pivot = cell.pivot(index=group, columns=time, values="d_gt").reindex(

@@ -3275,6 +3275,15 @@ class TestHonestDiDIntegration:
                 honest_did=True,
             )
 
+    def test_honest_did_rejects_placebo_false(self):
+        """honest_did=True with placebo=False raises ValueError."""
+        df = self._make_data()
+        with pytest.raises(ValueError, match="placebo=False"):
+            ChaisemartinDHaultfoeuille(seed=1, placebo=False).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, honest_did=True,
+            )
+
     def test_honest_did_standalone(self):
         """compute_honest_did() on dCDH results matches honest_did=True."""
         from diff_diff.honest_did import compute_honest_did

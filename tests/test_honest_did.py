@@ -1429,3 +1429,29 @@ class TestDCDHIntegration:
             warnings.simplefilter("ignore")
             with pytest.raises(ValueError, match="No placebo horizons with finite SEs"):
                 compute_honest_did(results)
+
+    def test_dcdh_missing_boundary_minus1_raises(self):
+        """ValueError when horizon -1 has NaN SE (boundary required)."""
+        import warnings
+
+        results = self._fit_dcdh()
+        # Corrupt only horizon -1 SE; leave -2 intact
+        results.placebo_event_study[-1]["se"] = float("nan")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ValueError, match="requires horizon -1"):
+                compute_honest_did(results)
+
+    def test_dcdh_missing_boundary_plus1_raises(self):
+        """ValueError when horizon +1 has NaN SE (boundary required)."""
+        import warnings
+
+        results = self._fit_dcdh()
+        # Corrupt only horizon +1 SE
+        results.event_study_effects[1]["se"] = float("nan")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ValueError, match="requires horizon 1"):
+                compute_honest_did(results)

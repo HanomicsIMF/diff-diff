@@ -559,7 +559,7 @@ def _extract_event_study_params(
 
     Parameters
     ----------
-    results : MultiPeriodDiDResults or CallawaySantAnnaResults
+    results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
         Estimation results with event study structure.
 
     Returns
@@ -886,8 +886,14 @@ def _extract_event_study_params(
                     if not times:
                         return []
                     if boundary_val not in times:
-                        # No boundary value - take the block closest to it
-                        return times
+                        raise ValueError(
+                            f"HonestDiD requires horizon {boundary_val} in "
+                            f"the dCDH "
+                            f"{'placebo' if boundary_val < 0 else 'event study'}"
+                            f" surface, but it was removed by finite-SE "
+                            f"filtering. Retained horizons: {times}. Ensure "
+                            f"horizon {boundary_val} has a finite SE."
+                        )
                     # Expand outward from boundary_val
                     block = [boundary_val]
                     idx = times.index(boundary_val)
@@ -2197,7 +2203,7 @@ class HonestDiD:
 
         Parameters
         ----------
-        results : MultiPeriodDiDResults or CallawaySantAnnaResults
+        results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
             Results from event study estimation.
         M : float, optional
             Override the M parameter for this fit.
@@ -2515,7 +2521,7 @@ class HonestDiD:
 
         Parameters
         ----------
-        results : MultiPeriodDiDResults or CallawaySantAnnaResults
+        results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
             Results from event study estimation.
         M_grid : list of float, optional
             Grid of M values to evaluate. If None, uses default grid
@@ -2614,7 +2620,7 @@ class HonestDiD:
 
         Parameters
         ----------
-        results : MultiPeriodDiDResults or CallawaySantAnnaResults
+        results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
             Results from event study estimation.
         tol : float
             Tolerance for binary search.
@@ -2669,7 +2675,7 @@ def compute_honest_did(
 
     Parameters
     ----------
-    results : MultiPeriodDiDResults or CallawaySantAnnaResults
+    results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
         Results from event study estimation.
     method : str
         Type of restriction ("smoothness", "relative_magnitude", "combined").
@@ -2705,7 +2711,7 @@ def sensitivity_plot(
 
     Parameters
     ----------
-    results : MultiPeriodDiDResults or CallawaySantAnnaResults
+    results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
         Results from event study estimation.
     method : str
         Type of restriction.
