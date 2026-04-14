@@ -191,6 +191,9 @@ class HonestDiDResults:
     original_se: float
     alpha: float = 0.05
     ci_method: str = "FLCI"
+    target_label: str = "Equal-weight avg over post horizons"
+    pre_periods_used: Optional[List[Any]] = field(default=None, repr=False)
+    post_periods_used: Optional[List[Any]] = field(default=None, repr=False)
     original_results: Optional[Any] = field(default=None, repr=False)
     # Event study bounds (optional)
     event_study_bounds: Optional[Dict[Any, Dict[str, float]]] = field(default=None, repr=False)
@@ -273,6 +276,7 @@ class HonestDiDResults:
             "=" * 70,
             "",
             f"{'Method:':<30} {method_display}",
+            f"{'Target:':<30} {self.target_label}",
             f"{'Restriction parameter (M):':<30} {self.M:.4f}",
             f"{'CI method:':<30} {self.ci_method}",
             "",
@@ -293,6 +297,13 @@ class HonestDiDResults:
         ]
 
         # Interpretation
+        if self.pre_periods_used is not None:
+            lines.append(f"{'Pre horizons used:':<30} {self.pre_periods_used}")
+        if self.post_periods_used is not None:
+            lines.append(f"{'Post horizons used:':<30} {self.post_periods_used}")
+        if self.pre_periods_used is not None or self.post_periods_used is not None:
+            lines.append("")
+
         lines.extend(
             [
                 "-" * 70,
@@ -340,6 +351,9 @@ class HonestDiDResults:
             "ci_ub": self.ci_ub,
             "M": self.M,
             "method": self.method,
+            "target_label": self.target_label,
+            "pre_periods_used": self.pre_periods_used,
+            "post_periods_used": self.post_periods_used,
             "original_estimate": self.original_estimate,
             "original_se": self.original_se,
             "alpha": self.alpha,
@@ -559,7 +573,7 @@ def _extract_event_study_params(
 
     Parameters
     ----------
-    results : MultiPeriodDiDResults or CallawaySantAnnaResults
+    results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
         Estimation results with event study structure.
 
     Returns
@@ -817,9 +831,158 @@ def _extract_event_study_params(
         except ImportError:
             pass
 
+        # Try ChaisemartinDHaultfoeuilleResults (dCDH estimator)
+        try:
+            from diff_diff.chaisemartin_dhaultfoeuille_results import (
+                ChaisemartinDHaultfoeuilleResults,
+            )
+
+            if isinstance(results, ChaisemartinDHaultfoeuilleResults):
+                import warnings
+
+                warnings.warn(
+                    "HonestDiD on dCDH results uses DID^{pl}_l placebo "
+                    "estimates as pre-period coefficients, not standard "
+                    "event-study pre-treatment coefficients. The Rambachan-"
+                    "Roth restrictions bound violations of the parallel "
+                    "trends assumption underlying the dCDH placebo "
+                    "estimand. This is a library extension; interpretation "
+                    "differs from canonical event-study HonestDiD.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+
+                if results.placebo_event_study is None:
+                    raise ValueError(
+                        "ChaisemartinDHaultfoeuilleResults must have placebo_event_study "
+                        "for HonestDiD. Re-run ChaisemartinDHaultfoeuille.fit() with "
+                        "L_max >= 1 to compute multi-horizon placebos."
+                    )
+                if results.event_study_effects is None:
+                    raise ValueError(
+                        "ChaisemartinDHaultfoeuilleResults must have event_study_effects "
+                        "for HonestDiD."
+                    )
+
+                # Filter for finite SEs in both surfaces
+                placebo_finite = {
+                    h: data
+                    for h, data in results.placebo_event_study.items()
+                    if np.isfinite(data.get("se", np.nan))
+                }
+                effects_finite = {
+                    h: data
+                    for h, data in results.event_study_effects.items()
+                    if np.isfinite(data.get("se", np.nan))
+                }
+
+                pre_times = sorted(placebo_finite.keys())   # -P, ..., -1
+                post_times = sorted(effects_finite.keys())   # 1, ..., L_max
+
+                if len(pre_times) == 0:
+                    raise ValueError(
+                        "No placebo horizons with finite SEs found in dCDH results. "
+                        "HonestDiD requires at least one identified pre-period "
+                        "coefficient."
+                    )
+                if len(post_times) == 0:
+                    raise ValueError(
+                        "No event study horizons with finite SEs found in dCDH results. "
+                        "HonestDiD requires at least one post-period coefficient."
+                    )
+
+                # Consecutiveness check: more permissive than CS because
+                # trends_nonparam support-trimming can create legitimate gaps.
+                # Filter to the largest consecutive block spanning the -1/+1
+                # boundary; warn about dropped horizons.
+                def _largest_consecutive_block(times, boundary_val):
+                    """Find largest consecutive block containing boundary_val."""
+                    if not times:
+                        return []
+                    if boundary_val not in times:
+                        raise ValueError(
+                            f"HonestDiD requires horizon {boundary_val} in "
+                            f"the dCDH "
+                            f"{'placebo' if boundary_val < 0 else 'event study'}"
+                            f" surface, but it was removed by finite-SE "
+                            f"filtering. Retained horizons: {times}. Ensure "
+                            f"horizon {boundary_val} has a finite SE."
+                        )
+                    # Expand outward from boundary_val
+                    block = [boundary_val]
+                    idx = times.index(boundary_val)
+                    # Expand left
+                    for i in range(idx - 1, -1, -1):
+                        if times[i] == block[0] - 1:
+                            block.insert(0, times[i])
+                        else:
+                            break
+                    # Expand right
+                    for i in range(idx + 1, len(times)):
+                        if times[i] == block[-1] + 1:
+                            block.append(times[i])
+                        else:
+                            break
+                    return block
+
+                pre_consec = _largest_consecutive_block(pre_times, -1)
+                post_consec = _largest_consecutive_block(post_times, 1)
+
+                dropped_pre = set(pre_times) - set(pre_consec)
+                dropped_post = set(post_times) - set(post_consec)
+
+                if dropped_pre or dropped_post:
+                    import warnings
+
+                    dropped = sorted(dropped_pre | dropped_post)
+                    warnings.warn(
+                        f"HonestDiD requires a consecutive event-time grid. "
+                        f"Dropping non-consecutive horizons {dropped} from dCDH "
+                        f"results. This can happen when trends_nonparam "
+                        f"support-trimming removes horizons. Retained: "
+                        f"pre={pre_consec}, post={post_consec}.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                    pre_times = pre_consec
+                    post_times = post_consec
+
+                if len(pre_times) == 0 or len(post_times) == 0:
+                    raise ValueError(
+                        "After filtering for consecutive horizons, no pre- or "
+                        "post-periods remain. Cannot compute HonestDiD bounds."
+                    )
+
+                # Build beta_hat and sigma (diagonal - no full VCV for dCDH)
+                all_times = pre_times + post_times
+                effects = []
+                ses = []
+                for h in pre_times:
+                    effects.append(placebo_finite[h]["effect"])
+                    ses.append(placebo_finite[h]["se"])
+                for h in post_times:
+                    effects.append(effects_finite[h]["effect"])
+                    ses.append(effects_finite[h]["se"])
+
+                beta_hat = np.array(effects)
+                sigma = np.diag(np.array(ses) ** 2)
+
+                return (
+                    beta_hat,
+                    sigma,
+                    len(pre_times),
+                    len(post_times),
+                    pre_times,
+                    post_times,
+                    None,  # df_survey: dCDH has no survey support
+                )
+        except ImportError:
+            pass
+
         raise TypeError(
             f"Unsupported results type: {type(results)}. "
-            "Expected MultiPeriodDiDResults or CallawaySantAnnaResults."
+            "Expected MultiPeriodDiDResults, CallawaySantAnnaResults, "
+            "or ChaisemartinDHaultfoeuilleResults."
         )
 
 
@@ -2054,7 +2217,7 @@ class HonestDiD:
 
         Parameters
         ----------
-        results : MultiPeriodDiDResults or CallawaySantAnnaResults
+        results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
             Results from event study estimation.
         M : float, optional
             Override the M parameter for this fit.
@@ -2103,13 +2266,23 @@ class HonestDiD:
                 "coefficient to compute bounds."
             )
 
-        # Set up weighting vector
+        # Set up weighting vector and target label
         if self.l_vec is None:
             l_vec = np.ones(num_post) / num_post  # Uniform weights
+            target_label = "Equal-weight avg over post horizons"
         else:
             l_vec = np.asarray(self.l_vec)
             if len(l_vec) != num_post:
                 raise ValueError(f"l_vec must have length {num_post}, got {len(l_vec)}")
+            # Detect common patterns for a human-readable label
+            basis = np.zeros(num_post)
+            basis[0] = 1.0
+            if np.allclose(l_vec, basis):
+                target_label = "First post-treatment effect (on-impact)"
+            elif np.allclose(l_vec, np.ones(num_post) / num_post):
+                target_label = "Equal-weight avg over post horizons"
+            else:
+                target_label = f"Custom l_vec ({l_vec.tolist()})"
 
         # Compute original estimate and SE
         original_estimate = np.dot(l_vec, beta_post)
@@ -2169,6 +2342,9 @@ class HonestDiD:
             original_se=original_se,
             alpha=self.alpha,
             ci_method=ci_method,
+            target_label=target_label,
+            pre_periods_used=list(pre_periods),
+            post_periods_used=list(post_periods),
             original_results=results,
             survey_metadata=survey_metadata,
             df_survey=df_survey,
@@ -2372,7 +2548,7 @@ class HonestDiD:
 
         Parameters
         ----------
-        results : MultiPeriodDiDResults or CallawaySantAnnaResults
+        results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
             Results from event study estimation.
         M_grid : list of float, optional
             Grid of M values to evaluate. If None, uses default grid
@@ -2471,7 +2647,7 @@ class HonestDiD:
 
         Parameters
         ----------
-        results : MultiPeriodDiDResults or CallawaySantAnnaResults
+        results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
             Results from event study estimation.
         tol : float
             Tolerance for binary search.
@@ -2520,13 +2696,14 @@ def compute_honest_did(
     method: str = "relative_magnitude",
     M: float = 1.0,
     alpha: float = 0.05,
+    l_vec: Optional[np.ndarray] = None,
 ) -> HonestDiDResults:
     """
     Convenience function for computing Honest DiD bounds.
 
     Parameters
     ----------
-    results : MultiPeriodDiDResults or CallawaySantAnnaResults
+    results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
         Results from event study estimation.
     method : str
         Type of restriction ("smoothness", "relative_magnitude", "combined").
@@ -2534,6 +2711,12 @@ def compute_honest_did(
         Restriction parameter.
     alpha : float
         Significance level.
+    l_vec : np.ndarray, optional
+        Weight vector defining the scalar target ``theta = l_vec' tau``
+        over post-treatment horizons. Length must equal the number of
+        post-treatment periods. ``None`` (default) uses equal weights
+        (uniform average). To target the on-impact effect only (R's
+        default), pass ``np.array([1, 0, ..., 0])``.
 
     Returns
     -------
@@ -2545,7 +2728,7 @@ def compute_honest_did(
     >>> bounds = compute_honest_did(event_study_results, method='relative_magnitude', M=1.0)
     >>> print(f"Robust CI: [{bounds.ci_lb:.3f}, {bounds.ci_ub:.3f}]")
     """
-    honest = HonestDiD(method=method, M=M, alpha=alpha)
+    honest = HonestDiD(method=method, M=M, alpha=alpha, l_vec=l_vec)
     return honest.fit(results)
 
 
@@ -2562,7 +2745,7 @@ def sensitivity_plot(
 
     Parameters
     ----------
-    results : MultiPeriodDiDResults or CallawaySantAnnaResults
+    results : MultiPeriodDiDResults, CallawaySantAnnaResults, or ChaisemartinDHaultfoeuilleResults
         Results from event study estimation.
     method : str
         Type of restriction.

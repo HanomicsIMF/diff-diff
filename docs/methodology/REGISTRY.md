@@ -617,6 +617,8 @@ Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` param
 
 - **Note (Phase 3 heterogeneity testing - partial implementation):** Partial implementation of the heterogeneity test from Web Appendix Section 1.5 (Assumption 15, Lemma 7). Computes post-treatment saturated OLS regressions of `S_g * (Y_{g, F_g-1+l} - Y_{g, F_g-1})` on a time-invariant covariate `X_g` plus cohort indicator dummies. Standard OLS inference is valid (paper shows no DID error correction needed). **Deviation from R `predict_het`:** R's full `predict_het` option additionally computes placebo regressions and a joint null test, and disallows combination with `controls`. This implementation provides only post-treatment regressions. **Rejected combinations:** `controls` (matching R), `trends_linear` (heterogeneity test uses raw level changes, incompatible with second-differenced outcomes), and `trends_nonparam` (heterogeneity test does not thread state-set control-pool restrictions). Results stored in `results.heterogeneity_effects`. Activated via `heterogeneity="covariate_column"` in `fit()`.
 
+- **Note (HonestDiD integration):** HonestDiD sensitivity analysis (Rambachan & Roth 2023) is available on the placebo + event study surface via `honest_did=True` in `fit()` or `compute_honest_did(results)` post-hoc. **Library extension:** dCDH HonestDiD uses `DID^{pl}_l` placebo estimates as pre-period coefficients rather than standard event-study pre-treatment coefficients. The Rambachan-Roth restrictions bound violations of the parallel trends assumption underlying the dCDH placebo estimand; interpretation differs from canonical event-study HonestDiD. A `UserWarning` is emitted at runtime. Uses diagonal variance (no full VCV available for dCDH). Relative magnitudes (DeltaRM) with Mbar=1.0 is the default when called from `fit()`, targeting the equal-weight average over all post-treatment horizons (`l_vec=None`). R's HonestDiD defaults to the first post/on-impact effect; use `compute_honest_did(results, ...)` with a custom `l_vec` to match that behavior. When `trends_linear=True`, bounds apply to the second-differenced estimand (parallel trends in first differences). Requires `L_max >= 1` for multi-horizon placebos. Gaps in the horizon grid from `trends_nonparam` support-trimming are handled by filtering to the largest consecutive block and warning.
+
 - **Note (Phase 3 Design-2 switch-in/switch-out):** Convenience wrapper for Web Appendix Section 1.6 (Assumption 16). Identifies groups with exactly 2 treatment changes (join then leave), reports switch-in and switch-out mean effects. This is a descriptive summary, not a full re-estimation with specialized control pools as described in the paper. **Always uses raw (unadjusted) outcomes** regardless of active `controls`, `trends_linear`, or `trends_nonparam` options - those adjustments apply to the main estimator surface but not to the Design-2 descriptive block. For full adjusted Design-2 estimation with proper control pools, the paper recommends "running the command on a restricted subsample and using `trends_nonparam` for the entry-timing grouping." Activated via `design2=True` in `fit()`, requires `drop_larger_lower=False` to retain 2-switch groups.
 
 **Reference implementation(s):**
@@ -625,7 +627,7 @@ Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` param
 
 **Requirements checklist:**
 - [x] Single class `ChaisemartinDHaultfoeuille` (alias `DCDH`); not a family
-- [x] Forward-compat `fit()` signature with `NotImplementedError` gates for remaining parameters (`aggregate`, `honest_did`, `survey_design`); Phase 3 gates lifted for `controls`, `trends_linear`, `trends_nonparam`
+- [x] Forward-compat `fit()` signature with `NotImplementedError` gates for remaining parameters (`aggregate`, `survey_design`); Phase 3 gates lifted for `controls`, `trends_linear`, `trends_nonparam`, `honest_did`
 - [x] `DID_M` point estimate with cohort-recentered analytical SE
 - [x] Joiners-only `DID_+` and leavers-only `DID_-` decompositions with their own inference
 - [x] Single-lag placebo `DID_M^pl` (point estimate; SE deferred to Phase 2)
@@ -645,6 +647,7 @@ Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` param
 - [x] State-set-specific trends via control-pool restriction (Web Appendix Section 1.4)
 - [x] Heterogeneity testing via saturated OLS (Web Appendix Section 1.5, Lemma 7)
 - [x] Design-2 switch-in/switch-out descriptive wrapper (Web Appendix Section 1.6)
+- [x] HonestDiD (Rambachan-Roth 2023) integration on placebo + event study surface
 
 ---
 

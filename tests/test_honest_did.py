@@ -1333,3 +1333,164 @@ class TestVisualizationNoMatplotlib:
 
         assert hasattr(sensitivity, "plot")
         assert callable(sensitivity.plot)
+
+
+# =============================================================================
+# dCDH Integration Tests
+# =============================================================================
+
+
+class TestDCDHIntegration:
+    """HonestDiD integration with ChaisemartinDHaultfoeuille results."""
+
+    @staticmethod
+    def _fit_dcdh(n_groups=40, n_periods=6, seed=42, L_max=2):
+        import warnings
+
+        from diff_diff import ChaisemartinDHaultfoeuille
+        from diff_diff.prep import generate_reversible_did_data
+
+        df = generate_reversible_did_data(
+            n_groups=n_groups, n_periods=n_periods, seed=seed
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=L_max,
+            )
+
+    def test_dcdh_integration(self):
+        """compute_honest_did works on dCDH results (mirrors CS pattern)."""
+        results = self._fit_dcdh()
+        bounds = compute_honest_did(results, method="relative_magnitude", M=1.0)
+        assert isinstance(bounds, HonestDiDResults)
+        assert np.isfinite(bounds.ci_lb)
+        assert np.isfinite(bounds.ci_ub)
+        assert bounds.method == "relative_magnitude"
+
+    def test_dcdh_extraction(self):
+        """_extract_event_study_params returns correct shapes for dCDH."""
+        results = self._fit_dcdh()
+        beta_hat, sigma, n_pre, n_post, pre_t, post_t, df_s = (
+            _extract_event_study_params(results)
+        )
+        assert n_pre >= 1
+        assert n_post >= 1
+        assert beta_hat.shape == (n_pre + n_post,)
+        assert sigma.shape == (n_pre + n_post, n_pre + n_post)
+        assert all(t < 0 for t in pre_t)
+        assert all(t > 0 for t in post_t)
+        assert df_s is None  # dCDH has no survey support
+
+    def test_dcdh_no_placebos_raises(self):
+        """dCDH results without placebos raise ValueError."""
+        import warnings
+
+        from diff_diff import ChaisemartinDHaultfoeuille
+        from diff_diff.prep import generate_reversible_did_data
+
+        df = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1, placebo=False).fit(
+                df, "outcome", "group", "period", "treatment",
+            )
+        with pytest.raises(ValueError, match="placebo_event_study"):
+            compute_honest_did(r)
+
+    def test_dcdh_emits_placebo_warning(self):
+        """compute_honest_did on dCDH emits warning about placebo-based pre-periods."""
+        import warnings
+
+        results = self._fit_dcdh()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            compute_honest_did(results)
+        placebo_warnings = [
+            x for x in w
+            if "placebo" in str(x.message).lower()
+            and "pre-period" in str(x.message).lower()
+        ]
+        assert len(placebo_warnings) >= 1, (
+            "Expected a UserWarning about placebo-based pre-period inputs"
+        )
+
+    def test_dcdh_empty_consecutive_block_raises(self):
+        """ValueError when all placebos have NaN SE (no valid pre-periods)."""
+        import warnings
+
+        # Fit real results, then corrupt placebo SEs to NaN
+        results = self._fit_dcdh()
+        for h in results.placebo_event_study:
+            results.placebo_event_study[h]["se"] = float("nan")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ValueError, match="No placebo horizons with finite SEs"):
+                compute_honest_did(results)
+
+    def test_dcdh_standalone_surfaces_target_metadata(self):
+        """Standalone HonestDiDResults summary/to_dict include target metadata."""
+        results = self._fit_dcdh()
+        bounds = compute_honest_did(results, l_vec=np.array([1.0, 0.0]))
+        # summary() includes target and period metadata
+        text = bounds.summary()
+        assert "on-impact" in text.lower()
+        assert "Post horizons used:" in text
+        assert "Pre horizons used:" in text
+        # to_dict() includes the fields
+        d = bounds.to_dict()
+        assert "target_label" in d
+        assert "pre_periods_used" in d
+        assert "post_periods_used" in d
+        assert d["post_periods_used"] == [1, 2]
+
+    def test_dcdh_interior_gap_triggers_trimming_warning(self):
+        """Non-consecutive horizons after SE filtering emit trimming warning."""
+        import warnings
+
+        # L_max=3 gives horizons [-3,-2,-1,1,2,3]. Corrupt h=-2 to create
+        # interior gap [-3, -1], which triggers consecutive-block trimming
+        # that drops -3 and keeps only [-1].
+        results = self._fit_dcdh(n_periods=8, L_max=3)
+        results.placebo_event_study[-2]["se"] = float("nan")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            bounds = compute_honest_did(results)
+        trim_warns = [
+            x for x in w
+            if "dropping non-consecutive" in str(x.message).lower()
+        ]
+        assert len(trim_warns) >= 1, (
+            "Expected a warning about dropping non-consecutive horizons"
+        )
+        # Retained pre should be [-1] only (h=-3 dropped due to gap at -2)
+        assert bounds.pre_periods_used == [-1]
+
+    def test_dcdh_missing_boundary_minus1_raises(self):
+        """ValueError when horizon -1 has NaN SE (boundary required)."""
+        import warnings
+
+        results = self._fit_dcdh()
+        # Corrupt only horizon -1 SE; leave -2 intact
+        results.placebo_event_study[-1]["se"] = float("nan")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ValueError, match="requires horizon -1"):
+                compute_honest_did(results)
+
+    def test_dcdh_missing_boundary_plus1_raises(self):
+        """ValueError when horizon +1 has NaN SE (boundary required)."""
+        import warnings
+
+        results = self._fit_dcdh()
+        # Corrupt only horizon +1 SE
+        results.event_study_effects[1]["se"] = float("nan")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ValueError, match="requires horizon 1"):
+                compute_honest_did(results)

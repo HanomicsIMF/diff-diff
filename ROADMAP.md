@@ -173,7 +173,7 @@ The dynamic companion paper subsumes the AER 2020 paper: `DID_1 = DID_M`. The si
 | **3d.** Heterogeneity testing `beta^{het}_l` (Web Appendix Section 1.5) | LOW | Shipped (PR B) |
 | **3e.** Design-2 switch-in / switch-out separation (Web Appendix Section 1.6) | LOW | Shipped (PR B; convenience wrapper) |
 | **3f.** Non-binary treatment support (the formula already handles it; this row is documentation + tests) | MEDIUM | Shipped (PR #300; also ships placebo SE, L_max=1 per-group path, parity SE assertions) |
-| **3g.** HonestDiD (Rambachan-Roth) integration on `DID^{pl}_l` placebos | MEDIUM | Not started |
+| **3g.** HonestDiD (Rambachan-Roth) integration on `DID^{pl}_l` placebos | MEDIUM | Shipped (PR C) |
 | **3h.** **Single comprehensive tutorial notebook** covering all three phases — Favara-Imbs (2015) banking deregulation replication as the headline application, with comparison plots vs LP / TWFE | HIGH | Not started |
 | **3i.** Parity tests vs `did_multiplegt_dyn` for covariate and extension specifications | HIGH | Shipped (PR B; controls, trends_lin, combined) |
 
