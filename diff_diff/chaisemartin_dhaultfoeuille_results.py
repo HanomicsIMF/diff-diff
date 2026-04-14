@@ -987,7 +987,7 @@ class ChaisemartinDHaultfoeuilleResults:
                 "HonestDiD Sensitivity (Rambachan-Roth 2023)".center(width),
                 thin,
                 f"{'Method:':<35} {method_label} (M={_fmt_float(m_val)})",
-                f"{'Target:':<35} {'Equal-weight avg over post horizons'}",
+                f"{'Target:':<35} {hd.target_label}",
                 f"{'Original estimate:':<35} {_fmt_float(hd.original_estimate):>10}",
                 f"{'Identified set:':<35} "
                 f"[{_fmt_float(hd.lb)}, {_fmt_float(hd.ub)}]",

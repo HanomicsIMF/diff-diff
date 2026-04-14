@@ -191,6 +191,7 @@ class HonestDiDResults:
     original_se: float
     alpha: float = 0.05
     ci_method: str = "FLCI"
+    target_label: str = "Equal-weight avg over post horizons"
     original_results: Optional[Any] = field(default=None, repr=False)
     # Event study bounds (optional)
     event_study_bounds: Optional[Dict[Any, Dict[str, float]]] = field(default=None, repr=False)
@@ -2252,13 +2253,23 @@ class HonestDiD:
                 "coefficient to compute bounds."
             )
 
-        # Set up weighting vector
+        # Set up weighting vector and target label
         if self.l_vec is None:
             l_vec = np.ones(num_post) / num_post  # Uniform weights
+            target_label = "Equal-weight avg over post horizons"
         else:
             l_vec = np.asarray(self.l_vec)
             if len(l_vec) != num_post:
                 raise ValueError(f"l_vec must have length {num_post}, got {len(l_vec)}")
+            # Detect common patterns for a human-readable label
+            basis = np.zeros(num_post)
+            basis[0] = 1.0
+            if np.allclose(l_vec, basis):
+                target_label = "First post-treatment effect (on-impact)"
+            elif np.allclose(l_vec, np.ones(num_post) / num_post):
+                target_label = "Equal-weight avg over post horizons"
+            else:
+                target_label = f"Custom l_vec ({l_vec.tolist()})"
 
         # Compute original estimate and SE
         original_estimate = np.dot(l_vec, beta_post)
@@ -2318,6 +2329,7 @@ class HonestDiD:
             original_se=original_se,
             alpha=self.alpha,
             ci_method=ci_method,
+            target_label=target_label,
             original_results=results,
             survey_metadata=survey_metadata,
             df_survey=df_survey,

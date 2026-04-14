@@ -3404,6 +3404,25 @@ class TestHonestDiDIntegration:
             rtol=1e-10,
         )
 
+    def test_honest_did_custom_l_vec_summary_label(self):
+        """summary() renders custom target label when l_vec is overridden."""
+        from diff_diff.honest_did import compute_honest_did
+
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2,
+            )
+        # Attach custom-target HonestDiD to results
+        r.honest_did_results = compute_honest_did(
+            r, l_vec=np.array([1.0, 0.0])
+        )
+        text = r.summary()
+        assert "on-impact" in text.lower()
+        assert "Equal-weight" not in text
+
     def test_honest_did_with_trends_nonparam(self):
         """End-to-end trends_nonparam + honest_did=True."""
         rng = np.random.RandomState(42)
