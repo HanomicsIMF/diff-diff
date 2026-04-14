@@ -320,11 +320,19 @@ class ChaisemartinDHaultfoeuilleResults:
     sup_t_bands : dict, optional
         Phase 2 placeholder (sup-t simultaneous confidence bands).
     covariate_residuals : pd.DataFrame, optional
-        Phase 3 placeholder (``DID^X`` residuals).
+        ``DID^X`` first-stage diagnostics: per-baseline ``theta_hat``,
+        ``n_obs``, and ``r_squared``. Populated when ``controls`` is set.
     linear_trends_effects : dict, optional
-        Phase 3 placeholder (``DID^{fd}`` group-specific linear trends).
+        Cumulated ``DID^{fd}`` level effects ``delta^{fd}_l``. Keyed by
+        horizon. Populated when ``trends_linear=True``.
+    heterogeneity_effects : dict, optional
+        Per-horizon heterogeneity test results ``beta^{het}_l``.
+        Populated when ``heterogeneity`` is set.
+    design2_effects : dict, optional
+        Design-2 switch-in/switch-out descriptive summary. Populated
+        when ``design2=True``.
     honest_did_results : Any, optional
-        Phase 3 placeholder (HonestDiD integration on placebos).
+        Reserved for HonestDiD integration on placebos.
     survey_metadata : Any, optional
         Always ``None`` in Phase 1 — survey integration is deferred to a
         separate effort after all phases ship.
@@ -405,6 +413,8 @@ class ChaisemartinDHaultfoeuilleResults:
     sup_t_bands: Optional[Dict[str, Any]] = field(default=None, repr=False)
     covariate_residuals: Optional[pd.DataFrame] = field(default=None, repr=False)
     linear_trends_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None, repr=False)
+    heterogeneity_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None, repr=False)
+    design2_effects: Optional[Dict[str, Any]] = field(default=None, repr=False)
     honest_did_results: Optional[Any] = field(default=None, repr=False)
 
     # --- Repr-suppressed metadata ---
@@ -416,15 +426,60 @@ class ChaisemartinDHaultfoeuilleResults:
     # Repr / properties
     # ------------------------------------------------------------------
 
+    def _horizon_label(self, h) -> str:
+        """Return per-horizon estimand label for event study rows."""
+        has_controls = self.covariate_residuals is not None
+        has_trends = self.linear_trends_effects is not None
+        if has_controls and has_trends:
+            return f"DID^{{X,fd}}_{h}"
+        elif has_controls:
+            return f"DID^X_{h}"
+        elif has_trends:
+            return f"DID^{{fd}}_{h}"
+        return f"DID_{h}"
+
+    def _estimand_label(self) -> str:
+        """Return the estimand label based on active features."""
+        has_controls = self.covariate_residuals is not None
+        has_trends = self.linear_trends_effects is not None
+
+        # When trends_linear + L_max>=2, overall is NaN (no aggregate).
+        # Label reflects that per-horizon effects are in linear_trends_effects.
+        if has_trends and self.L_max is not None and self.L_max >= 2:
+            if has_controls:
+                return "DID^{X,fd}_l (see linear_trends_effects)"
+            return "DID^{fd}_l (see linear_trends_effects)"
+
+        if self.L_max is not None and self.L_max >= 2:
+            base = "delta"
+        elif self.L_max is not None and self.L_max == 1:
+            base = "DID_1"
+        else:
+            base = "DID_M"
+
+        if has_controls and has_trends:
+            suffix = "^{X,fd}"
+        elif has_controls:
+            suffix = "^X"
+        elif has_trends:
+            suffix = "^{fd}"
+        else:
+            suffix = ""
+
+        # For delta, suffix goes after: delta^X, delta^{fd}
+        if base == "delta" and suffix:
+            return f"delta{suffix}"
+        # For DID variants, suffix goes on DID: DID^X_1, DID^{fd}_M
+        if suffix:
+            did_part = base.split("_")[0]  # "DID"
+            sub_part = base.split("_")[1] if "_" in base else ""
+            return f"{did_part}{suffix}_{sub_part}" if sub_part else f"{did_part}{suffix}"
+        return base
+
     def __repr__(self) -> str:
         """Concise string representation."""
         sig = _get_significance_stars(self.overall_p_value)
-        if self.L_max is not None and self.L_max >= 2:
-            label = "delta"
-        elif self.L_max is not None and self.L_max == 1:
-            label = "DID_1"
-        else:
-            label = "DID_M"
+        label = self._estimand_label()
         return (
             f"ChaisemartinDHaultfoeuilleResults("
             f"{label}={self.overall_att:.4f}{sig}, "
@@ -522,15 +577,28 @@ class ChaisemartinDHaultfoeuilleResults:
             )
 
         # --- Overall ---
+        has_controls = self.covariate_residuals is not None
+        has_trends = self.linear_trends_effects is not None
+        adj_tag = ""
+        if has_controls and has_trends:
+            adj_tag = " (Covariate-and-Trend-Adjusted)"
+        elif has_controls:
+            adj_tag = " (Covariate-Adjusted)"
+        elif has_trends:
+            adj_tag = " (Trend-Adjusted)"
+
         if self.L_max is not None and self.L_max >= 2:
-            overall_label = "Cost-Benefit Delta"
-            overall_row_label = "delta"
+            if has_trends:
+                overall_label = f"Overall (N/A under trends_linear){adj_tag}"
+            else:
+                overall_label = f"Cost-Benefit Delta{adj_tag}"
+            overall_row_label = self._estimand_label()
         elif self.L_max is not None and self.L_max == 1:
-            overall_label = "DID_1 (Per-Group ATT at Horizon 1)"
-            overall_row_label = "DID_1"
+            overall_label = f"Per-Group ATT at Horizon 1{adj_tag}"
+            overall_row_label = self._estimand_label()
         else:
-            overall_label = "DID_M (Contemporaneous-Switch ATT)"
-            overall_row_label = "DID_M"
+            overall_label = f"DID_M (Contemporaneous-Switch ATT){adj_tag}"
+            overall_row_label = self._estimand_label()
         lines.extend(
             [
                 thin,
@@ -671,7 +739,7 @@ class ChaisemartinDHaultfoeuilleResults:
             lines.extend(
                 [
                     thin,
-                    f"Event Study (DID_l, l = 1..{self.L_max})".center(width),
+                    f"Event Study ({self._horizon_label('l')}, l = 1..{self.L_max})".center(width),
                     thin,
                     header_row,
                     thin,
@@ -681,7 +749,7 @@ class ChaisemartinDHaultfoeuilleResults:
                 entry = self.event_study_effects[l_h]
                 lines.append(
                     _format_inference_row(
-                        f"DID_{l_h}",
+                        self._horizon_label(l_h),
                         entry["effect"],
                         entry["se"],
                         entry["t_stat"],
@@ -803,6 +871,14 @@ class ChaisemartinDHaultfoeuilleResults:
             - ``"twfe_weights"``: per-(group, time) TWFE decomposition
               weights table. Only available when ``twfe_diagnostic=True``
               was passed to ``fit()``.
+            - ``"heterogeneity"``: one row per horizon for the
+              heterogeneity test ``beta^{het}_l``. Available when
+              ``heterogeneity`` is passed to ``fit()``.
+            - ``"linear_trends"``: one row per horizon for the
+              cumulated trend-adjusted level effects ``delta^{fd}_l``.
+              Available when ``trends_linear=True``.
+            - ``"design2"``: Design-2 switch-in/switch-out descriptive
+              summary. Available when ``design2=True``.
 
         Returns
         -------
@@ -812,13 +888,7 @@ class ChaisemartinDHaultfoeuilleResults:
             return pd.DataFrame(
                 [
                     {
-                        "estimand": (
-                            "delta"
-                            if self.L_max is not None and self.L_max >= 2
-                            else "DID_1"
-                            if self.L_max is not None and self.L_max == 1
-                            else "DID_M"
-                        ),
+                        "estimand": self._estimand_label(),
                         "effect": self.overall_att,
                         "se": self.overall_se,
                         "t_stat": self.overall_t_stat,
@@ -840,12 +910,7 @@ class ChaisemartinDHaultfoeuilleResults:
             # For the DID_M row, both quantities use the overall switching
             # cell set: n_cells = sum of joiner + leaver cells, and n_obs
             # is the same sum of raw observation counts.
-            if self.L_max is not None and self.L_max >= 2:
-                overall_est_label = "delta"
-            elif self.L_max is not None and self.L_max == 1:
-                overall_est_label = "DID_1"
-            else:
-                overall_est_label = "DID_M"
+            overall_est_label = self._estimand_label()
             rows = [
                 {
                     "estimand": overall_est_label,
@@ -959,7 +1024,7 @@ class ChaisemartinDHaultfoeuilleResults:
                     rows.append(
                         {
                             "horizon": h,
-                            "estimand": f"DID_{h}",
+                            "estimand": self._horizon_label(h),
                             "effect": entry["effect"],
                             "se": entry["se"],
                             "t_stat": entry["t_stat"],
@@ -1002,10 +1067,41 @@ class ChaisemartinDHaultfoeuilleResults:
                 )
             return self.twfe_weights.copy()
 
+        elif level == "heterogeneity":
+            if self.heterogeneity_effects is None:
+                raise ValueError(
+                    "Heterogeneity test results not available. Pass "
+                    "heterogeneity='column_name' to fit()."
+                )
+            rows = []
+            for h, data in sorted(self.heterogeneity_effects.items()):
+                rows.append({"horizon": h, **data})
+            return pd.DataFrame(rows)
+
+        elif level == "linear_trends":
+            if self.linear_trends_effects is None:
+                raise ValueError(
+                    "Linear trends effects not available. Pass "
+                    "trends_linear=True to fit()."
+                )
+            rows = []
+            for h, data in sorted(self.linear_trends_effects.items()):
+                rows.append({"horizon": h, **data})
+            return pd.DataFrame(rows)
+
+        elif level == "design2":
+            if self.design2_effects is None:
+                raise ValueError(
+                    "Design-2 effects not available. Pass "
+                    "design2=True with drop_larger_lower=False to fit()."
+                )
+            return pd.DataFrame([self.design2_effects])
+
         else:
             raise ValueError(
                 f"Unknown level: {level!r}. Use 'overall', 'joiners_leavers', "
-                f"'per_period', 'event_study', 'normalized', or 'twfe_weights'."
+                f"'per_period', 'event_study', 'normalized', 'twfe_weights', "
+                f"'heterogeneity', 'linear_trends', or 'design2'."
             )
 
 
