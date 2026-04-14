@@ -3404,6 +3404,18 @@ class TestHonestDiDIntegration:
             rtol=1e-10,
         )
 
+    def test_honest_did_respects_alpha(self):
+        """honest_did=True propagates estimator alpha to HonestDiD."""
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1, alpha=0.10).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, honest_did=True,
+            )
+        assert r.honest_did_results is not None
+        assert r.honest_did_results.alpha == 0.10
+
     def test_honest_did_retains_period_metadata(self):
         """HonestDiDResults stores pre_periods_used and post_periods_used."""
         df = self._make_data()

@@ -2423,7 +2423,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 from diff_diff.honest_did import compute_honest_did
 
                 results.honest_did_results = compute_honest_did(
-                    results, method="relative_magnitude", M=1.0
+                    results, method="relative_magnitude", M=1.0,
+                    alpha=self.alpha,
                 )
             except (ValueError, np.linalg.LinAlgError) as exc:
                 warnings.warn(
