@@ -817,9 +817,138 @@ def _extract_event_study_params(
         except ImportError:
             pass
 
+        # Try ChaisemartinDHaultfoeuilleResults (dCDH estimator)
+        try:
+            from diff_diff.chaisemartin_dhaultfoeuille_results import (
+                ChaisemartinDHaultfoeuilleResults,
+            )
+
+            if isinstance(results, ChaisemartinDHaultfoeuilleResults):
+                if results.placebo_event_study is None:
+                    raise ValueError(
+                        "ChaisemartinDHaultfoeuilleResults must have placebo_event_study "
+                        "for HonestDiD. Re-run ChaisemartinDHaultfoeuille.fit() with "
+                        "L_max >= 1 to compute multi-horizon placebos."
+                    )
+                if results.event_study_effects is None:
+                    raise ValueError(
+                        "ChaisemartinDHaultfoeuilleResults must have event_study_effects "
+                        "for HonestDiD."
+                    )
+
+                # Filter for finite SEs in both surfaces
+                placebo_finite = {
+                    h: data
+                    for h, data in results.placebo_event_study.items()
+                    if np.isfinite(data.get("se", np.nan))
+                }
+                effects_finite = {
+                    h: data
+                    for h, data in results.event_study_effects.items()
+                    if np.isfinite(data.get("se", np.nan))
+                }
+
+                pre_times = sorted(placebo_finite.keys())   # -P, ..., -1
+                post_times = sorted(effects_finite.keys())   # 1, ..., L_max
+
+                if len(pre_times) == 0:
+                    raise ValueError(
+                        "No placebo horizons with finite SEs found in dCDH results. "
+                        "HonestDiD requires at least one identified pre-period "
+                        "coefficient."
+                    )
+                if len(post_times) == 0:
+                    raise ValueError(
+                        "No event study horizons with finite SEs found in dCDH results. "
+                        "HonestDiD requires at least one post-period coefficient."
+                    )
+
+                # Consecutiveness check: more permissive than CS because
+                # trends_nonparam support-trimming can create legitimate gaps.
+                # Filter to the largest consecutive block spanning the -1/+1
+                # boundary; warn about dropped horizons.
+                def _largest_consecutive_block(times, boundary_val):
+                    """Find largest consecutive block containing boundary_val."""
+                    if not times:
+                        return []
+                    if boundary_val not in times:
+                        # No boundary value - take the block closest to it
+                        return times
+                    # Expand outward from boundary_val
+                    block = [boundary_val]
+                    idx = times.index(boundary_val)
+                    # Expand left
+                    for i in range(idx - 1, -1, -1):
+                        if times[i] == block[0] - 1:
+                            block.insert(0, times[i])
+                        else:
+                            break
+                    # Expand right
+                    for i in range(idx + 1, len(times)):
+                        if times[i] == block[-1] + 1:
+                            block.append(times[i])
+                        else:
+                            break
+                    return block
+
+                pre_consec = _largest_consecutive_block(pre_times, -1)
+                post_consec = _largest_consecutive_block(post_times, 1)
+
+                dropped_pre = set(pre_times) - set(pre_consec)
+                dropped_post = set(post_times) - set(post_consec)
+
+                if dropped_pre or dropped_post:
+                    import warnings
+
+                    dropped = sorted(dropped_pre | dropped_post)
+                    warnings.warn(
+                        f"HonestDiD requires a consecutive event-time grid. "
+                        f"Dropping non-consecutive horizons {dropped} from dCDH "
+                        f"results. This can happen when trends_nonparam "
+                        f"support-trimming removes horizons. Retained: "
+                        f"pre={pre_consec}, post={post_consec}.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                    pre_times = pre_consec
+                    post_times = post_consec
+
+                if len(pre_times) == 0 or len(post_times) == 0:
+                    raise ValueError(
+                        "After filtering for consecutive horizons, no pre- or "
+                        "post-periods remain. Cannot compute HonestDiD bounds."
+                    )
+
+                # Build beta_hat and sigma (diagonal - no full VCV for dCDH)
+                all_times = pre_times + post_times
+                effects = []
+                ses = []
+                for h in pre_times:
+                    effects.append(placebo_finite[h]["effect"])
+                    ses.append(placebo_finite[h]["se"])
+                for h in post_times:
+                    effects.append(effects_finite[h]["effect"])
+                    ses.append(effects_finite[h]["se"])
+
+                beta_hat = np.array(effects)
+                sigma = np.diag(np.array(ses) ** 2)
+
+                return (
+                    beta_hat,
+                    sigma,
+                    len(pre_times),
+                    len(post_times),
+                    pre_times,
+                    post_times,
+                    None,  # df_survey: dCDH has no survey support
+                )
+        except ImportError:
+            pass
+
         raise TypeError(
             f"Unsupported results type: {type(results)}. "
-            "Expected MultiPeriodDiDResults or CallawaySantAnnaResults."
+            "Expected MultiPeriodDiDResults, CallawaySantAnnaResults, "
+            "or ChaisemartinDHaultfoeuilleResults."
         )
 
 

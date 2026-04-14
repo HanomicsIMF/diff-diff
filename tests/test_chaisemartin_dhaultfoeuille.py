@@ -374,8 +374,8 @@ class TestForwardCompatGates:
                 trends_nonparam="state",
             )
 
-    def test_honest_did_raises_not_implemented(self, data):
-        with pytest.raises(NotImplementedError, match="Phase 3"):
+    def test_honest_did_requires_lmax(self, data):
+        with pytest.raises(ValueError, match="honest_did=True requires L_max"):
             self._est().fit(
                 data,
                 outcome="outcome",
@@ -2703,6 +2703,46 @@ class TestStateSetTrends:
         assert np.isfinite(r.overall_att)
         assert r.covariate_residuals is not None
 
+    def test_trends_nonparam_unequal_support(self):
+        """Unequal switcher/control support across state sets.
+
+        State A: 3 switchers + 5 controls -> finite effects.
+        State B: 2 switchers + 0 controls -> empty control pool, groups
+        excluded at horizons with empty pools (Assumption 14 support-trimming).
+        """
+        rng = np.random.RandomState(99)
+        rows = []
+        n_periods = 6
+        # State A: groups 0-7 (0-2 switch at t=3, 3-7 never switch)
+        for g in range(8):
+            switches = g < 3
+            for t in range(n_periods):
+                d = 1 if (switches and t >= 3) else 0
+                y = 10 + 2.0 * t + 5.0 * d + rng.normal(0, 0.5)
+                rows.append({
+                    "group": g, "period": t, "treatment": d,
+                    "outcome": y, "state": "A",
+                })
+        # State B: groups 8-9 (both switch at t=3, NO controls in this set)
+        for g in range(8, 10):
+            for t in range(n_periods):
+                d = 1 if t >= 3 else 0
+                y = 10 + 2.0 * t + 5.0 * d + rng.normal(0, 0.5)
+                rows.append({
+                    "group": g, "period": t, "treatment": d,
+                    "outcome": y, "state": "B",
+                })
+        df = pd.DataFrame(rows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, trends_nonparam="state",
+            )
+        # Should not error; State A groups contribute, State B excluded
+        assert np.isfinite(r.overall_att)
+        assert r.event_study_effects is not None
+
 
 class TestHeterogeneityTesting:
     """Heterogeneity testing beta^{het}_l (ROADMAP item 3d)."""
@@ -3194,3 +3234,232 @@ class TestNonBinaryTreatment:
             # For dose 0->2: denominator at l=1 should be ~2 (not 1)
             denom = r.normalized_effects[1]["denominator"]
             assert denom > 1.5, f"Denominator should reflect dose=2, got {denom}"
+
+
+# =============================================================================
+# HonestDiD Integration
+# =============================================================================
+
+
+class TestHonestDiDIntegration:
+    """HonestDiD (Rambachan-Roth 2023) integration on dCDH placebos."""
+
+    @staticmethod
+    def _make_data(n_groups=40, n_periods=6, seed=42):
+        return generate_reversible_did_data(
+            n_groups=n_groups, n_periods=n_periods, seed=seed
+        )
+
+    def test_honest_did_basic(self):
+        """honest_did=True with L_max>=2 produces HonestDiDResults."""
+        from diff_diff.honest_did import HonestDiDResults
+
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, honest_did=True,
+            )
+        assert r.honest_did_results is not None
+        assert isinstance(r.honest_did_results, HonestDiDResults)
+        assert np.isfinite(r.honest_did_results.ci_lb)
+        assert np.isfinite(r.honest_did_results.ci_ub)
+
+    def test_honest_did_requires_lmax(self):
+        """honest_did=True with L_max=None raises ValueError."""
+        df = self._make_data()
+        with pytest.raises(ValueError, match="honest_did=True requires L_max"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                honest_did=True,
+            )
+
+    def test_honest_did_standalone(self):
+        """compute_honest_did() on dCDH results matches honest_did=True."""
+        from diff_diff.honest_did import compute_honest_did
+
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r_auto = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, honest_did=True,
+            )
+            r_plain = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2,
+            )
+            r_manual = compute_honest_did(
+                r_plain, method="relative_magnitude", M=1.0
+            )
+        # Deterministic - bitwise identical
+        np.testing.assert_allclose(
+            r_auto.honest_did_results.ci_lb, r_manual.ci_lb, rtol=0
+        )
+        np.testing.assert_allclose(
+            r_auto.honest_did_results.ci_ub, r_manual.ci_ub, rtol=0
+        )
+
+    def test_honest_did_with_controls(self):
+        """HonestDiD runs on DID^X placebos."""
+        df = self._make_data(n_periods=6)
+        df["X1"] = np.random.RandomState(77).normal(0, 1, len(df))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                controls=["X1"], L_max=2, honest_did=True,
+            )
+        assert r.honest_did_results is not None
+        assert np.isfinite(r.honest_did_results.ci_lb)
+
+    def test_honest_did_with_trends_linear(self):
+        """HonestDiD on second-differenced DID^{fd} estimand."""
+        df = self._make_data(n_periods=7)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                trends_linear=True, L_max=2, honest_did=True,
+            )
+        # Bounds should be computed on second-differenced estimand
+        assert r.honest_did_results is not None
+        assert np.isfinite(r.honest_did_results.ci_lb)
+
+    def test_honest_did_sensitivity(self):
+        """sensitivity_analysis() on dCDH results."""
+        from diff_diff.honest_did import HonestDiD
+
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2,
+            )
+        honest = HonestDiD(method="relative_magnitude")
+        sens = honest.sensitivity_analysis(
+            r, M_grid=list(np.linspace(0, 2, 5))
+        )
+        assert sens.breakdown_M is not None or len(sens.bounds) == 5
+
+    def test_honest_did_smoothness(self):
+        """Smoothness method gives different bounds than RM."""
+        from diff_diff.honest_did import compute_honest_did
+
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2,
+            )
+        rm_bounds = compute_honest_did(r, method="relative_magnitude", M=1.0)
+        sd_bounds = compute_honest_did(r, method="smoothness", M=0.5)
+        # Different methods should generally give different bounds
+        assert rm_bounds.ci_lb != sd_bounds.ci_lb or rm_bounds.ci_ub != sd_bounds.ci_ub
+
+
+# =============================================================================
+# Summary Phase 3 Rendering
+# =============================================================================
+
+
+class TestSummaryPhase3:
+    """Verify summary() renders Phase 3 result blocks."""
+
+    @staticmethod
+    def _make_data(n_groups=40, n_periods=6, seed=42):
+        return generate_reversible_did_data(
+            n_groups=n_groups, n_periods=n_periods, seed=seed
+        )
+
+    def test_summary_renders_covariate_diagnostics(self):
+        """Covariate Adjustment section appears in summary()."""
+        df = self._make_data()
+        df["X1"] = np.random.RandomState(77).normal(0, 1, len(df))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                controls=["X1"], L_max=1,
+            )
+        text = r.summary()
+        assert "Covariate Adjustment" in text
+
+    def test_summary_renders_linear_trends(self):
+        """Cumulated Level Effects section appears in summary()."""
+        df = self._make_data(n_periods=7)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                trends_linear=True, L_max=2,
+            )
+        text = r.summary()
+        assert "Cumulated Level Effects" in text
+
+    def test_summary_renders_heterogeneity(self):
+        """Heterogeneity Test section appears in summary()."""
+        rng = np.random.RandomState(42)
+        rows = []
+        for g in range(40):
+            x_g = 1 if g < 20 else 0
+            switches = g < 30
+            for t in range(6):
+                d = 1 if (switches and t >= 3) else 0
+                y = 10 + 2.0 * t + 5.0 * d + 3.0 * x_g * d + rng.normal(0, 0.5)
+                rows.append({
+                    "group": g, "period": t, "treatment": d,
+                    "outcome": y, "het_x": x_g,
+                })
+        df = pd.DataFrame(rows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, heterogeneity="het_x",
+            )
+        text = r.summary()
+        assert "Heterogeneity Test" in text
+
+    def test_summary_renders_design2(self):
+        """Design-2 section appears in summary()."""
+        rng = np.random.RandomState(42)
+        rows = []
+        for g in range(30):
+            for t in range(8):
+                if g < 10:
+                    d = 1 if 3 <= t < 6 else 0  # join then leave
+                elif g < 20:
+                    d = 1 if t >= 3 else 0  # join only
+                else:
+                    d = 0  # never switch
+                y = 10 + t + 5.0 * d + rng.normal(0, 0.5)
+                rows.append({
+                    "group": g, "period": t, "treatment": d, "outcome": y,
+                })
+        df = pd.DataFrame(rows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(
+                seed=1, drop_larger_lower=False
+            ).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=1, design2=True,
+            )
+        text = r.summary()
+        assert "Design-2" in text
+
+    def test_summary_renders_honest_did(self):
+        """HonestDiD Sensitivity section appears in summary()."""
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, honest_did=True,
+            )
+        text = r.summary()
+        assert "HonestDiD Sensitivity" in text

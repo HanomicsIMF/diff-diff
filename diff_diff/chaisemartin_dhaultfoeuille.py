@@ -946,6 +946,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"is {n_post_baseline}."
                 )
 
+        if honest_did and L_max is None:
+            raise ValueError(
+                "honest_did=True requires L_max >= 1 for multi-horizon placebos. "
+                "Set L_max to compute DID^{pl}_l placebos that HonestDiD uses as "
+                "pre-period coefficients."
+            )
+
         # Pivot to (group x time) matrices for vectorized computations
         d_pivot = cell.pivot(index=group, columns=time, values="d_gt").reindex(
             index=all_groups, columns=all_periods
@@ -2394,6 +2401,27 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             _estimator_ref=self,
         )
 
+        # ------------------------------------------------------------------
+        # HonestDiD integration (when honest_did=True)
+        # ------------------------------------------------------------------
+        if honest_did and results.placebo_event_study:
+            try:
+                from diff_diff.honest_did import compute_honest_did
+
+                results.honest_did_results = compute_honest_did(
+                    results, method="relative_magnitude", M=1.0
+                )
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                warnings.warn(
+                    f"HonestDiD computation failed: {exc}. "
+                    f"results.honest_did_results will be None. "
+                    f"You can retry with compute_honest_did(results, ...) "
+                    f"using different parameters.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                results.honest_did_results = None
+
         self.results_ = results
         self.is_fitted_ = True
         return results
@@ -2432,12 +2460,8 @@ def _check_forward_compat_gates(
     # Validation (L_max >= 1, n_periods >= 3 required) is in fit().
     # trends_nonparam gate lifted - state-set trends implemented.
     # Validation (L_max >= 1, column exists, time-invariant) is in fit().
-    if honest_did:
-        raise NotImplementedError(
-            "HonestDiD integration for dCDH is reserved for Phase 3, applied to "
-            "the placebo DID^{pl}_l output. Phase 1 provides only the placebo "
-            "point estimate via results.placebo_effect. See ROADMAP.md Phase 3."
-        )
+    # honest_did gate lifted - integration implemented.
+    # Validation (L_max >= 1 required) is in fit() after L_max detection.
 
 
 def _drop_crossing_cells(

@@ -1333,3 +1333,68 @@ class TestVisualizationNoMatplotlib:
 
         assert hasattr(sensitivity, "plot")
         assert callable(sensitivity.plot)
+
+
+# =============================================================================
+# dCDH Integration Tests
+# =============================================================================
+
+
+class TestDCDHIntegration:
+    """HonestDiD integration with ChaisemartinDHaultfoeuille results."""
+
+    @staticmethod
+    def _fit_dcdh(n_groups=40, n_periods=6, seed=42, L_max=2):
+        import warnings
+
+        from diff_diff import ChaisemartinDHaultfoeuille
+        from diff_diff.prep import generate_reversible_did_data
+
+        df = generate_reversible_did_data(
+            n_groups=n_groups, n_periods=n_periods, seed=seed
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=L_max,
+            )
+
+    def test_dcdh_integration(self):
+        """compute_honest_did works on dCDH results (mirrors CS pattern)."""
+        results = self._fit_dcdh()
+        bounds = compute_honest_did(results, method="relative_magnitude", M=1.0)
+        assert isinstance(bounds, HonestDiDResults)
+        assert np.isfinite(bounds.ci_lb)
+        assert np.isfinite(bounds.ci_ub)
+        assert bounds.method == "relative_magnitude"
+
+    def test_dcdh_extraction(self):
+        """_extract_event_study_params returns correct shapes for dCDH."""
+        results = self._fit_dcdh()
+        beta_hat, sigma, n_pre, n_post, pre_t, post_t, df_s = (
+            _extract_event_study_params(results)
+        )
+        assert n_pre >= 1
+        assert n_post >= 1
+        assert beta_hat.shape == (n_pre + n_post,)
+        assert sigma.shape == (n_pre + n_post, n_pre + n_post)
+        assert all(t < 0 for t in pre_t)
+        assert all(t > 0 for t in post_t)
+        assert df_s is None  # dCDH has no survey support
+
+    def test_dcdh_no_placebos_raises(self):
+        """dCDH results without placebos raise ValueError."""
+        import warnings
+
+        from diff_diff import ChaisemartinDHaultfoeuille
+        from diff_diff.prep import generate_reversible_did_data
+
+        df = generate_reversible_did_data(n_groups=20, n_periods=4, seed=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1, placebo=False).fit(
+                df, "outcome", "group", "period", "treatment",
+            )
+        with pytest.raises(ValueError, match="placebo_event_study"):
+            compute_honest_did(r)
