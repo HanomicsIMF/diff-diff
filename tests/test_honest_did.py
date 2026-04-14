@@ -1446,6 +1446,29 @@ class TestDCDHIntegration:
         assert "post_periods_used" in d
         assert d["post_periods_used"] == [1, 2]
 
+    def test_dcdh_interior_gap_triggers_trimming_warning(self):
+        """Non-consecutive horizons after SE filtering emit trimming warning."""
+        import warnings
+
+        # L_max=3 gives horizons [-3,-2,-1,1,2,3]. Corrupt h=-2 to create
+        # interior gap [-3, -1], which triggers consecutive-block trimming
+        # that drops -3 and keeps only [-1].
+        results = self._fit_dcdh(n_periods=8, L_max=3)
+        results.placebo_event_study[-2]["se"] = float("nan")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            bounds = compute_honest_did(results)
+        trim_warns = [
+            x for x in w
+            if "dropping non-consecutive" in str(x.message).lower()
+        ]
+        assert len(trim_warns) >= 1, (
+            "Expected a warning about dropping non-consecutive horizons"
+        )
+        # Retained pre should be [-1] only (h=-3 dropped due to gap at -2)
+        assert bounds.pre_periods_used == [-1]
+
     def test_dcdh_missing_boundary_minus1_raises(self):
         """ValueError when horizon -1 has NaN SE (boundary required)."""
         import warnings
