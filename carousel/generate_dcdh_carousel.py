@@ -824,14 +824,11 @@ class DCDHCarouselPDF(FPDF):
             margin, code_y, WIDTH - margin * 2, token_lines,
         )
 
-        # Subtitles — keep above footer (rule at HEIGHT-28)
-        sub_y = min(code_y + code_h + 14, HEIGHT - 62)
+        # Subtitle — keep above footer (rule at HEIGHT-28)
+        sub_y = min(code_y + code_h + 18, HEIGHT - 48)
         self.centered_text(sub_y,
-                           "Placebos, event study, HonestDiD -",
+                           "Placebos, event study, HonestDiD - all from one fit() call.",
                            size=14, bold=False, color=SLATE_400)
-        self.centered_text(sub_y + 16,
-                           "all from one fit() call.",
-                           size=14, bold=True, color=TEAL)
 
         self.add_footer()
 
