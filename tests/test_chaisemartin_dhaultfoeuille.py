@@ -3442,7 +3442,7 @@ class TestHonestDiDIntegration:
         assert "Equal-weight" not in text
 
     def test_honest_did_with_trends_nonparam(self):
-        """End-to-end trends_nonparam + honest_did=True."""
+        """End-to-end trends_nonparam + honest_did=True (balanced support)."""
         rng = np.random.RandomState(42)
         rows = []
         for g in range(40):
@@ -3464,6 +3464,59 @@ class TestHonestDiDIntegration:
             )
         assert r.honest_did_results is not None
         assert np.isfinite(r.honest_did_results.ci_lb)
+
+    def test_honest_did_trends_nonparam_trimming(self):
+        """End-to-end: trends_nonparam causes NaN at far horizons, HonestDiD trims.
+
+        State A: switches late (t=5), has never-switching controls.
+        State B: switches early (t=2), "controls" switch at t=3 so
+        control pool vanishes at h>=2. At L_max=3, h=3 and h=-3 have
+        N_l=0 (NaN SE) because State A can't reach h=3 and State B
+        has no controls there. HonestDiD extraction drops the NaN
+        horizons and retains [-2, -1, 1, 2].
+        """
+        rng = np.random.RandomState(42)
+        rows = []
+        n_periods = 7
+        # State A: 3 switch at t=5, 4 controls
+        for g in range(7):
+            switches = g < 3
+            for t in range(n_periods):
+                d = 1 if (switches and t >= 5) else 0
+                y = 10 + 2.0*t + 5.0*d + rng.normal(0, 0.3)
+                rows.append({
+                    "group": g, "period": t, "treatment": d,
+                    "outcome": y, "state": "A",
+                })
+        # State B: 4 switch at t=2, 2 "controls" switch at t=3
+        for g in range(7, 13):
+            switch_t = 2 if g < 11 else 3
+            for t in range(n_periods):
+                d = 1 if t >= switch_t else 0
+                y = 10 + 2.0*t + 5.0*d + rng.normal(0, 0.3)
+                rows.append({
+                    "group": g, "period": t, "treatment": d,
+                    "outcome": y, "state": "B",
+                })
+        df = pd.DataFrame(rows)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=3, trends_nonparam="state", honest_did=True,
+            )
+        # h=3 and h=-3 should be NaN (N_l=0 from support trimming)
+        assert r.event_study_effects[3]["n_obs"] == 0
+        assert r.placebo_event_study[-3]["n_obs"] == 0
+        # HonestDiD should still compute on the retained block
+        hd = r.honest_did_results
+        assert hd is not None
+        assert np.isfinite(hd.ci_lb)
+        # Retained horizons should exclude the NaN endpoints
+        assert -3 not in hd.pre_periods_used
+        assert 3 not in hd.post_periods_used
+        assert hd.post_periods_used == [1, 2]
 
 
 # =============================================================================
