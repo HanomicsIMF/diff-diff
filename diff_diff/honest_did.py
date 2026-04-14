@@ -192,6 +192,8 @@ class HonestDiDResults:
     alpha: float = 0.05
     ci_method: str = "FLCI"
     target_label: str = "Equal-weight avg over post horizons"
+    pre_periods_used: Optional[List[Any]] = field(default=None, repr=False)
+    post_periods_used: Optional[List[Any]] = field(default=None, repr=False)
     original_results: Optional[Any] = field(default=None, repr=False)
     # Event study bounds (optional)
     event_study_bounds: Optional[Dict[Any, Dict[str, float]]] = field(default=None, repr=False)
@@ -2330,6 +2332,8 @@ class HonestDiD:
             alpha=self.alpha,
             ci_method=ci_method,
             target_label=target_label,
+            pre_periods_used=list(pre_periods),
+            post_periods_used=list(post_periods),
             original_results=results,
             survey_metadata=survey_metadata,
             df_survey=df_survey,

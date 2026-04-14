@@ -3404,6 +3404,24 @@ class TestHonestDiDIntegration:
             rtol=1e-10,
         )
 
+    def test_honest_did_retains_period_metadata(self):
+        """HonestDiDResults stores pre_periods_used and post_periods_used."""
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, honest_did=True,
+            )
+        hd = r.honest_did_results
+        assert hd.pre_periods_used is not None
+        assert hd.post_periods_used is not None
+        assert all(p < 0 for p in hd.pre_periods_used)
+        assert all(p > 0 for p in hd.post_periods_used)
+        # Summary renders the retained horizons
+        text = r.summary()
+        assert "Post horizons used:" in text
+
     def test_honest_did_custom_l_vec_summary_label(self):
         """summary() renders custom target label when l_vec is overridden."""
         from diff_diff.honest_did import compute_honest_did

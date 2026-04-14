@@ -988,6 +988,18 @@ class ChaisemartinDHaultfoeuilleResults:
                 thin,
                 f"{'Method:':<35} {method_label} (M={_fmt_float(m_val)})",
                 f"{'Target:':<35} {hd.target_label}",
+            ]
+        )
+        if hd.post_periods_used is not None:
+            lines.append(
+                f"{'Post horizons used:':<35} {hd.post_periods_used}"
+            )
+        if hd.pre_periods_used is not None:
+            lines.append(
+                f"{'Pre horizons used:':<35} {hd.pre_periods_used}"
+            )
+        lines.extend(
+            [
                 f"{'Original estimate:':<35} {_fmt_float(hd.original_estimate):>10}",
                 f"{'Identified set:':<35} "
                 f"[{_fmt_float(hd.lb)}, {_fmt_float(hd.ub)}]",
