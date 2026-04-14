@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-04-14
+
+### Added
+- **dCDH Phase 3: Complete feature set for `ChaisemartinDHaultfoeuille`** - three sub-releases completing the estimator:
+  - **Phase 3a** (PR #300): Placebo SE via multiplier bootstrap (resolves Phase 1 deferral), non-binary treatment support with crossing-cell detection and automatic cell dropping, R parity SE assertions tightened
+  - **Phase 3b** (PR #302): Covariate adjustment via `controls` parameter (OLS residualization, Design 2 per-period path for non-binary treatment), group-specific linear trends via `trends_linear=True` (absorbs group-specific slopes before DiD), R `DIDmultiplegtDYN` parity tests for covariates and trends
+  - **Phase 3c** (PR #303): HonestDiD sensitivity analysis integration - `honest_did()` method on results with automatic event-study-to-sensitivity bridge, support trimming for non-consecutive horizons, `l_vec` target specification, Delta-RM and Delta-SD smoothness bounds
+
+### Changed
+- ROADMAP.md updated: dCDH Phase 3 items marked shipped
+
 ## [3.0.2] - 2026-04-12
 
 ### Added
@@ -1278,6 +1289,7 @@ for the full feature history leading to this release.
 [2.1.2]: https://github.com/igerber/diff-diff/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/igerber/diff-diff/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/igerber/diff-diff/compare/v2.0.3...v2.1.0
+[3.1.0]: https://github.com/igerber/diff-diff/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/igerber/diff-diff/compare/v3.0.1...v3.0.2
 [2.0.3]: https://github.com/igerber/diff-diff/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/igerber/diff-diff/compare/v2.0.1...v2.0.2
