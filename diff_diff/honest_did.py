@@ -2669,6 +2669,7 @@ def compute_honest_did(
     method: str = "relative_magnitude",
     M: float = 1.0,
     alpha: float = 0.05,
+    l_vec: Optional[np.ndarray] = None,
 ) -> HonestDiDResults:
     """
     Convenience function for computing Honest DiD bounds.
@@ -2683,6 +2684,12 @@ def compute_honest_did(
         Restriction parameter.
     alpha : float
         Significance level.
+    l_vec : np.ndarray, optional
+        Weight vector defining the scalar target ``theta = l_vec' tau``
+        over post-treatment horizons. Length must equal the number of
+        post-treatment periods. ``None`` (default) uses equal weights
+        (uniform average). To target the on-impact effect only (R's
+        default), pass ``np.array([1, 0, ..., 0])``.
 
     Returns
     -------
@@ -2694,7 +2701,7 @@ def compute_honest_did(
     >>> bounds = compute_honest_did(event_study_results, method='relative_magnitude', M=1.0)
     >>> print(f"Robust CI: [{bounds.ci_lb:.3f}, {bounds.ci_ub:.3f}]")
     """
-    honest = HonestDiD(method=method, M=M, alpha=alpha)
+    honest = HonestDiD(method=method, M=M, alpha=alpha, l_vec=l_vec)
     return honest.fit(results)
 
 

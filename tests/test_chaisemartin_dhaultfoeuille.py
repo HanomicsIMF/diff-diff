@@ -3385,6 +3385,49 @@ class TestHonestDiDIntegration:
         avg = np.mean([es[h]["effect"] for h in sorted(es.keys())])
         np.testing.assert_allclose(hd.original_estimate, avg, rtol=1e-10)
 
+    def test_honest_did_custom_l_vec_on_impact(self):
+        """compute_honest_did with l_vec=[1,0] targets on-impact effect."""
+        from diff_diff.honest_did import compute_honest_did
+
+        df = self._make_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2,
+            )
+        # l_vec=[1, 0] targets only DID_1 (on-impact, R's default)
+        bounds = compute_honest_did(r, l_vec=np.array([1.0, 0.0]))
+        np.testing.assert_allclose(
+            bounds.original_estimate,
+            r.event_study_effects[1]["effect"],
+            rtol=1e-10,
+        )
+
+    def test_honest_did_with_trends_nonparam(self):
+        """End-to-end trends_nonparam + honest_did=True."""
+        rng = np.random.RandomState(42)
+        rows = []
+        for g in range(40):
+            state = g % 4
+            switches = g < 20
+            for t in range(7):
+                d = 1 if (switches and t >= 3) else 0
+                y = 10 + 2.0 * t + 5.0 * d + rng.normal(0, 0.5)
+                rows.append({
+                    "group": g, "period": t, "treatment": d,
+                    "outcome": y, "state": state,
+                })
+        df = pd.DataFrame(rows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, "outcome", "group", "period", "treatment",
+                L_max=2, trends_nonparam="state", honest_did=True,
+            )
+        assert r.honest_did_results is not None
+        assert np.isfinite(r.honest_did_results.ci_lb)
+
 
 # =============================================================================
 # Summary Phase 3 Rendering
