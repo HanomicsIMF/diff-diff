@@ -684,7 +684,7 @@ class DCDHCarouselPDF(FPDF):
             ("Dynamic Event Study",
              "Multi-horizon DID_l\nfor l = 1..L_max"),
             ("Pre-Trend Placebos",
-             "DID^pl_l validates\nparallel trends"),
+             "DID^pl_l tests consistency\nwith parallel trends"),
             ("Covariate Adjustment",
              "DID^X residualization\nfor covariates"),
             ("Group-Specific Trends",
@@ -756,7 +756,7 @@ class DCDHCarouselPDF(FPDF):
         # Annotations below
         ann_y = plot_y + plot_h + 8
         self.centered_text(ann_y,
-                           "Placebos near zero: pre-trends validated",
+                           "Placebos near zero: consistent with parallel trends",
                            size=15, bold=False, color=SLATE_400)
         self.centered_text(ann_y + 18,
                            "Post-treatment: significant, persistent effects",
@@ -794,7 +794,8 @@ class DCDHCarouselPDF(FPDF):
             [("from", TEAL), (" diff_diff ", WHITE),
              ("import", TEAL), (" (", WHITE)],
             [("    ChaisemartinDHaultfoeuille ", WHITE),
-             ("as", TEAL), (" DCDH", WHITE)],
+             ("as", TEAL), (" DCDH,", WHITE)],
+            [("    plot_event_study", WHITE)],
             [(")", WHITE)],
             [],  # blank
             [("est", WHITE), (" = ", TEAL),
@@ -816,7 +817,7 @@ class DCDHCarouselPDF(FPDF):
             [("    ", WHITE), ("treatment", WHITE), ("=", TEAL),
              ("'targeted'", GREEN_CODE), (")", WHITE)],
             [],  # blank
-            [("results", WHITE), (".plot_event_study()", SLATE_400)],
+            [("plot_event_study", WHITE), ("(results)", SLATE_400)],
         ]
 
         code_h = self._add_code_block(
@@ -826,7 +827,7 @@ class DCDHCarouselPDF(FPDF):
         # Subtitles — keep above footer (rule at HEIGHT-28)
         sub_y = min(code_y + code_h + 14, HEIGHT - 62)
         self.centered_text(sub_y,
-                           "Joiners, leavers, placebos, event study -",
+                           "Placebos, event study, HonestDiD -",
                            size=14, bold=False, color=SLATE_400)
         self.centered_text(sub_y + 16,
                            "all from one fit() call.",
@@ -857,7 +858,7 @@ class DCDHCarouselPDF(FPDF):
 
         # Hero claim
         self.centered_text(72,
-                           "ATT and SE parity with R's DIDmultiplegtDYN.",
+                           "Point estimates match R's DIDmultiplegtDYN.",
                            size=17, bold=False, color=SLATE_300)
 
         # Validation items
@@ -871,8 +872,8 @@ class DCDHCarouselPDF(FPDF):
         items = [
             ("Point Estimate Parity",
              "ATT matches R across joiners, leavers, and controls"),
-            ("Standard Error Parity",
-             "Analytical SEs match R with covariates and trends"),
+            ("SE Parity (pure-direction)",
+             "Analytical SEs match R on joiners-only and leavers-only"),
             ("HonestDiD Integration",
              "Rambachan-Roth sensitivity on the placebo surface"),
             ("Multiplier Bootstrap",
