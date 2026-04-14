@@ -1430,6 +1430,22 @@ class TestDCDHIntegration:
             with pytest.raises(ValueError, match="No placebo horizons with finite SEs"):
                 compute_honest_did(results)
 
+    def test_dcdh_standalone_surfaces_target_metadata(self):
+        """Standalone HonestDiDResults summary/to_dict include target metadata."""
+        results = self._fit_dcdh()
+        bounds = compute_honest_did(results, l_vec=np.array([1.0, 0.0]))
+        # summary() includes target and period metadata
+        text = bounds.summary()
+        assert "on-impact" in text.lower()
+        assert "Post horizons used:" in text
+        assert "Pre horizons used:" in text
+        # to_dict() includes the fields
+        d = bounds.to_dict()
+        assert "target_label" in d
+        assert "pre_periods_used" in d
+        assert "post_periods_used" in d
+        assert d["post_periods_used"] == [1, 2]
+
     def test_dcdh_missing_boundary_minus1_raises(self):
         """ValueError when horizon -1 has NaN SE (boundary required)."""
         import warnings

@@ -276,6 +276,7 @@ class HonestDiDResults:
             "=" * 70,
             "",
             f"{'Method:':<30} {method_display}",
+            f"{'Target:':<30} {self.target_label}",
             f"{'Restriction parameter (M):':<30} {self.M:.4f}",
             f"{'CI method:':<30} {self.ci_method}",
             "",
@@ -296,6 +297,13 @@ class HonestDiDResults:
         ]
 
         # Interpretation
+        if self.pre_periods_used is not None:
+            lines.append(f"{'Pre horizons used:':<30} {self.pre_periods_used}")
+        if self.post_periods_used is not None:
+            lines.append(f"{'Post horizons used:':<30} {self.post_periods_used}")
+        if self.pre_periods_used is not None or self.post_periods_used is not None:
+            lines.append("")
+
         lines.extend(
             [
                 "-" * 70,
@@ -343,6 +351,9 @@ class HonestDiDResults:
             "ci_ub": self.ci_ub,
             "M": self.M,
             "method": self.method,
+            "target_label": self.target_label,
+            "pre_periods_used": self.pre_periods_used,
+            "post_periods_used": self.post_periods_used,
             "original_estimate": self.original_estimate,
             "original_se": self.original_se,
             "alpha": self.alpha,
