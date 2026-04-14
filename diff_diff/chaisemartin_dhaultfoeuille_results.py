@@ -806,126 +806,12 @@ class ChaisemartinDHaultfoeuilleResults:
 
             lines.extend([""])
 
-        # --- Covariate adjustment diagnostics (DID^X) ---
-        if self.covariate_residuals is not None:
-            cov_df = self.covariate_residuals
-            control_names = sorted(cov_df["covariate"].unique())
-            n_baselines = cov_df["baseline_treatment"].nunique()
-            failed = int((cov_df.groupby("baseline_treatment")["theta_hat"].first().isna()).sum())
-            lines.extend(
-                [
-                    thin,
-                    "Covariate Adjustment (DID^X) Diagnostics".center(width),
-                    thin,
-                    f"{'Controls:':<35} {', '.join(control_names):>10}",
-                    f"{'Baselines residualized:':<35} {n_baselines:>10}",
-                    f"{'Failed strata:':<35} {failed:>10}",
-                    thin,
-                    "",
-                ]
-            )
-
-        # --- Linear trends cumulated level effects ---
-        if self.linear_trends_effects is not None:
-            lines.extend(
-                [
-                    thin,
-                    "Cumulated Level Effects (DID^{fd}, trends_linear)".center(width),
-                    thin,
-                    header_row,
-                    thin,
-                ]
-            )
-            for l_h in sorted(self.linear_trends_effects.keys()):
-                entry = self.linear_trends_effects[l_h]
-                lines.append(
-                    _format_inference_row(
-                        f"Level_{l_h}",
-                        entry["effect"],
-                        entry["se"],
-                        entry["t_stat"],
-                        entry["p_value"],
-                    )
-                )
-            lines.extend([thin, ""])
-
-        # --- Heterogeneity test ---
-        if self.heterogeneity_effects is not None:
-            lines.extend(
-                [
-                    thin,
-                    "Heterogeneity Test (Section 1.5, partial)".center(width),
-                    thin,
-                    f"{'Horizon':<15} {'beta^het':>12} {'Std. Err.':>12} "
-                    f"{'t-stat':>10} {'P>|t|':>10} {'Sig.':>6}",
-                    thin,
-                ]
-            )
-            for l_h in sorted(self.heterogeneity_effects.keys()):
-                entry = self.heterogeneity_effects[l_h]
-                lines.append(
-                    _format_inference_row(
-                        f"l={l_h}",
-                        entry["beta"],
-                        entry["se"],
-                        entry["t_stat"],
-                        entry["p_value"],
-                    )
-                )
-            lines.extend(
-                [
-                    thin,
-                    "Note: Post-treatment regressions only (no placebo/joint test).",
-                    "",
-                ]
-            )
-
-        # --- Design-2 switch-in / switch-out ---
-        if self.design2_effects is not None:
-            d2 = self.design2_effects
-            si = d2.get("switch_in", {})
-            so = d2.get("switch_out", {})
-            lines.extend(
-                [
-                    thin,
-                    "Design-2: Switch-In / Switch-Out (Section 1.6)".center(width),
-                    thin,
-                    f"{'Join-then-leave groups:':<35} {d2.get('n_design2_groups', 0):>10}",
-                    f"{'Switch-in effect (mean):':<35} "
-                    f"{_fmt_float(si.get('mean_effect', float('nan'))):>10}"
-                    f"  (N={si.get('n_groups', 0)})",
-                    f"{'Switch-out effect (mean):':<35} "
-                    f"{_fmt_float(so.get('mean_effect', float('nan'))):>10}"
-                    f"  (N={so.get('n_groups', 0)})",
-                    thin,
-                    "",
-                ]
-            )
-
-        # --- HonestDiD sensitivity ---
-        if self.honest_did_results is not None:
-            hd = self.honest_did_results
-            method_label = hd.method.replace("_", " ").title()
-            m_val = hd.M
-            sig_label = "Yes" if hd.is_significant else "No"
-            conf_pct = int((1 - hd.alpha) * 100)
-            lines.extend(
-                [
-                    thin,
-                    "HonestDiD Sensitivity (Rambachan-Roth 2023)".center(width),
-                    thin,
-                    f"{'Method:':<35} {method_label} (M={_fmt_float(m_val)})",
-                    f"{'Original estimate:':<35} {_fmt_float(hd.original_estimate):>10}",
-                    f"{'Identified set:':<35} "
-                    f"[{_fmt_float(hd.lb)}, {_fmt_float(hd.ub)}]",
-                    f"{'Robust ' + str(conf_pct) + '% CI:':<35} "
-                    f"[{_fmt_float(hd.ci_lb)}, {_fmt_float(hd.ci_ub)}]",
-                    f"{'Significant at ' + str(int(hd.alpha * 100)) + '%:':<35} "
-                    f"{sig_label:>10}",
-                    thin,
-                    "",
-                ]
-            )
+        # --- Phase 3 extension blocks (factored into helpers) ---
+        self._render_covariate_section(lines, width, thin)
+        self._render_linear_trends_section(lines, width, thin, header_row)
+        self._render_heterogeneity_section(lines, width, thin)
+        self._render_design2_section(lines, width, thin)
+        self._render_honest_did_section(lines, width, thin)
 
         # --- TWFE diagnostic ---
         if self.twfe_beta_fe is not None:
@@ -970,6 +856,148 @@ class ChaisemartinDHaultfoeuilleResults:
     def print_summary(self, alpha: Optional[float] = None) -> None:
         """Print the formatted summary to stdout."""
         print(self.summary(alpha))
+
+    # ------------------------------------------------------------------
+    # Summary section helpers (Phase 3 blocks)
+    # ------------------------------------------------------------------
+
+    def _render_covariate_section(
+        self, lines: List[str], width: int, thin: str
+    ) -> None:
+        if self.covariate_residuals is None:
+            return
+        cov_df = self.covariate_residuals
+        control_names = sorted(cov_df["covariate"].unique())
+        n_baselines = cov_df["baseline_treatment"].nunique()
+        failed = int(
+            (cov_df.groupby("baseline_treatment")["theta_hat"].first().isna()).sum()
+        )
+        lines.extend(
+            [
+                thin,
+                "Covariate Adjustment (DID^X) Diagnostics".center(width),
+                thin,
+                f"{'Controls:':<35} {', '.join(control_names):>10}",
+                f"{'Baselines residualized:':<35} {n_baselines:>10}",
+                f"{'Failed strata:':<35} {failed:>10}",
+                thin,
+                "",
+            ]
+        )
+
+    def _render_linear_trends_section(
+        self, lines: List[str], width: int, thin: str, header_row: str
+    ) -> None:
+        if self.linear_trends_effects is None:
+            return
+        lines.extend(
+            [
+                thin,
+                "Cumulated Level Effects (DID^{fd}, trends_linear)".center(width),
+                thin,
+                header_row,
+                thin,
+            ]
+        )
+        for l_h in sorted(self.linear_trends_effects.keys()):
+            entry = self.linear_trends_effects[l_h]
+            lines.append(
+                _format_inference_row(
+                    f"Level_{l_h}",
+                    entry["effect"],
+                    entry["se"],
+                    entry["t_stat"],
+                    entry["p_value"],
+                )
+            )
+        lines.extend([thin, ""])
+
+    def _render_heterogeneity_section(
+        self, lines: List[str], width: int, thin: str
+    ) -> None:
+        if self.heterogeneity_effects is None:
+            return
+        lines.extend(
+            [
+                thin,
+                "Heterogeneity Test (Section 1.5, partial)".center(width),
+                thin,
+                f"{'Horizon':<15} {'beta^het':>12} {'Std. Err.':>12} "
+                f"{'t-stat':>10} {'P>|t|':>10} {'Sig.':>6}",
+                thin,
+            ]
+        )
+        for l_h in sorted(self.heterogeneity_effects.keys()):
+            entry = self.heterogeneity_effects[l_h]
+            lines.append(
+                _format_inference_row(
+                    f"l={l_h}",
+                    entry["beta"],
+                    entry["se"],
+                    entry["t_stat"],
+                    entry["p_value"],
+                )
+            )
+        lines.extend(
+            [
+                thin,
+                "Note: Post-treatment regressions only (no placebo/joint test).",
+                "",
+            ]
+        )
+
+    def _render_design2_section(
+        self, lines: List[str], width: int, thin: str
+    ) -> None:
+        if self.design2_effects is None:
+            return
+        d2 = self.design2_effects
+        si = d2.get("switch_in", {})
+        so = d2.get("switch_out", {})
+        lines.extend(
+            [
+                thin,
+                "Design-2: Switch-In / Switch-Out (Section 1.6)".center(width),
+                thin,
+                f"{'Join-then-leave groups:':<35} {d2.get('n_design2_groups', 0):>10}",
+                f"{'Switch-in effect (mean):':<35} "
+                f"{_fmt_float(si.get('mean_effect', float('nan'))):>10}"
+                f"  (N={si.get('n_groups', 0)})",
+                f"{'Switch-out effect (mean):':<35} "
+                f"{_fmt_float(so.get('mean_effect', float('nan'))):>10}"
+                f"  (N={so.get('n_groups', 0)})",
+                thin,
+                "",
+            ]
+        )
+
+    def _render_honest_did_section(
+        self, lines: List[str], width: int, thin: str
+    ) -> None:
+        if self.honest_did_results is None:
+            return
+        hd = self.honest_did_results
+        method_label = hd.method.replace("_", " ").title()
+        m_val = hd.M
+        sig_label = "Yes" if hd.is_significant else "No"
+        conf_pct = int((1 - hd.alpha) * 100)
+        lines.extend(
+            [
+                thin,
+                "HonestDiD Sensitivity (Rambachan-Roth 2023)".center(width),
+                thin,
+                f"{'Method:':<35} {method_label} (M={_fmt_float(m_val)})",
+                f"{'Original estimate:':<35} {_fmt_float(hd.original_estimate):>10}",
+                f"{'Identified set:':<35} "
+                f"[{_fmt_float(hd.lb)}, {_fmt_float(hd.ub)}]",
+                f"{'Robust ' + str(conf_pct) + '% CI:':<35} "
+                f"[{_fmt_float(hd.ci_lb)}, {_fmt_float(hd.ci_ub)}]",
+                f"{'Significant at ' + str(int(hd.alpha * 100)) + '%:':<35} "
+                f"{sig_label:>10}",
+                thin,
+                "",
+            ]
+        )
 
     # ------------------------------------------------------------------
     # to_dataframe

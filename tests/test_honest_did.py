@@ -1398,3 +1398,34 @@ class TestDCDHIntegration:
             )
         with pytest.raises(ValueError, match="placebo_event_study"):
             compute_honest_did(r)
+
+    def test_dcdh_emits_placebo_warning(self):
+        """compute_honest_did on dCDH emits warning about placebo-based pre-periods."""
+        import warnings
+
+        results = self._fit_dcdh()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            compute_honest_did(results)
+        placebo_warnings = [
+            x for x in w
+            if "placebo" in str(x.message).lower()
+            and "pre-period" in str(x.message).lower()
+        ]
+        assert len(placebo_warnings) >= 1, (
+            "Expected a UserWarning about placebo-based pre-period inputs"
+        )
+
+    def test_dcdh_empty_consecutive_block_raises(self):
+        """ValueError when all placebos have NaN SE (no valid pre-periods)."""
+        import warnings
+
+        # Fit real results, then corrupt placebo SEs to NaN
+        results = self._fit_dcdh()
+        for h in results.placebo_event_study:
+            results.placebo_event_study[h]["se"] = float("nan")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ValueError, match="No placebo horizons with finite SEs"):
+                compute_honest_did(results)

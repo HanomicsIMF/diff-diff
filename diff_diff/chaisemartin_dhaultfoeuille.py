@@ -538,7 +538,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             pool to groups in the same set (Web Appendix Section 1.4).
             Requires ``L_max >= 1`` and time-invariant values per group.
         honest_did : bool, default=False
-            **Reserved for Phase 3** (HonestDiD integration on placebos).
+            Run HonestDiD sensitivity analysis (Rambachan & Roth 2023) on
+            the placebo + event study surface. Requires ``L_max >= 1``.
+            Default: relative magnitudes (DeltaRM, Mbar=1.0). Results
+            stored on ``results.honest_did_results``; ``None`` with a
+            warning if the solver fails. For custom parameters, call
+            ``compute_honest_did(results, ...)`` post-hoc instead.
         heterogeneity : str, optional
             Column name for a time-invariant covariate to test for
             heterogeneous effects (Web Appendix Section 1.5, Lemma 7).
@@ -2413,8 +2418,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 )
             except (ValueError, np.linalg.LinAlgError) as exc:
                 warnings.warn(
-                    f"HonestDiD computation failed: {exc}. "
-                    f"results.honest_did_results will be None. "
+                    f"HonestDiD computation failed ({type(exc).__name__}): "
+                    f"{exc}. results.honest_did_results will be None. "
                     f"You can retry with compute_honest_did(results, ...) "
                     f"using different parameters.",
                     UserWarning,

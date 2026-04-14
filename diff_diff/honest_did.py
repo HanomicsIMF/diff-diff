@@ -824,6 +824,20 @@ def _extract_event_study_params(
             )
 
             if isinstance(results, ChaisemartinDHaultfoeuilleResults):
+                import warnings
+
+                warnings.warn(
+                    "HonestDiD on dCDH results uses DID^{pl}_l placebo "
+                    "estimates as pre-period coefficients, not standard "
+                    "event-study pre-treatment coefficients. The Rambachan-"
+                    "Roth restrictions bound violations of the parallel "
+                    "trends assumption underlying the dCDH placebo "
+                    "estimand. This is a library extension; interpretation "
+                    "differs from canonical event-study HonestDiD.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+
                 if results.placebo_event_study is None:
                     raise ValueError(
                         "ChaisemartinDHaultfoeuilleResults must have placebo_event_study "
