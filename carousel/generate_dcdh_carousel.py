@@ -799,12 +799,7 @@ class DCDHCarouselPDF(FPDF):
             [(")", WHITE)],
             [],  # blank
             [("est", WHITE), (" = ", TEAL),
-             ("DCDH", GREEN_CODE), ("(", WHITE)],
-            [("    ", WHITE), ("L_max", WHITE), ("=", TEAL),
-             ("3", TEAL_LIGHT), (", ", WHITE),
-             ("placebo", WHITE), ("=", TEAL),
-             ("True", TEAL_LIGHT), (")", WHITE)],
-            [],  # blank
+             ("DCDH", GREEN_CODE), ("()", WHITE)],
             [("results", WHITE), (" = ", TEAL),
              ("est.fit(", WHITE)],
             [("    data,", WHITE)],
@@ -815,7 +810,11 @@ class DCDHCarouselPDF(FPDF):
             [("    ", WHITE), ("time", WHITE), ("=", TEAL),
              ("'week'", GREEN_CODE), (",", WHITE)],
             [("    ", WHITE), ("treatment", WHITE), ("=", TEAL),
-             ("'targeted'", GREEN_CODE), (")", WHITE)],
+             ("'targeted'", GREEN_CODE), (",", WHITE)],
+            [("    ", WHITE), ("L_max", WHITE), ("=", TEAL),
+             ("3", TEAL_LIGHT), (", ", WHITE),
+             ("placebo", WHITE), ("=", TEAL),
+             ("True", TEAL_LIGHT), (")", WHITE)],
             [],  # blank
             [("plot_event_study", WHITE), ("(results)", SLATE_400)],
         ]
@@ -827,7 +826,7 @@ class DCDHCarouselPDF(FPDF):
         # Subtitle — keep above footer (rule at HEIGHT-28)
         sub_y = min(code_y + code_h + 18, HEIGHT - 48)
         self.centered_text(sub_y,
-                           "Placebos, event study, HonestDiD - all from one fit() call.",
+                           "Placebos, event study, bootstrap - all from one fit() call.",
                            size=14, bold=False, color=SLATE_400)
 
         self.add_footer()
@@ -868,7 +867,7 @@ class DCDHCarouselPDF(FPDF):
 
         items = [
             ("Point Estimate Parity",
-             "ATT matches R across joiners, leavers, and controls"),
+             "ATT validated against R reference outputs"),
             ("SE Parity (pure-direction)",
              "Analytical SEs match R on joiners-only and leavers-only"),
             ("HonestDiD Integration",
