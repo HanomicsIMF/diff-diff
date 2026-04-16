@@ -1472,6 +1472,23 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
   5. Compute SDID estimate with renormalized ω and original λ
   6. `SE = sd(bootstrap_estimates, ddof=1)`
 
+- Alternative: Jackknife variance (matching R's `synthdid::vcov(method="jackknife")`)
+  Implements Algorithm 3 from Arkhangelsky et al. (2021):
+  1. For each control unit j=1,...,N_co:
+     - Remove unit j, renormalize omega: `ω_jk = _sum_normalize(ω[remaining])`
+     - Keep λ unchanged, keep treated means unchanged
+     - Compute SDID estimate τ_{(-j)}
+  2. For each treated unit k=1,...,N_tr:
+     - Keep ω and λ unchanged
+     - Recompute treated mean from remaining N_tr-1 treated units
+     - Compute SDID estimate τ_{(-k)}
+  3. `SE = sqrt( ((n-1)/n) × Σ (τ_{(-i)} - τ̄)² )` where n = N_co + N_tr
+
+  Fixed weights: No Frank-Wolfe re-estimation (`update.omega=FALSE, update.lambda=FALSE`).
+  Returns NaN SE for single treated unit or single nonzero-weight control.
+  Deterministic: exactly N_co + N_tr iterations, no replications parameter.
+  P-value: analytical (normal distribution), not empirical.
+
 *Edge cases:*
 - **Frank-Wolfe non-convergence**: Returns current weights after max_iter iterations. No warning emitted; the convergence check `vals[t-1] - vals[t] < min_decrease²` simply does not trigger early exit, and the final iterate is returned.
 - **`_sparsify` all-zero input**: If `max(v) <= 0`, returns uniform weights `ones(len(v)) / len(v)`.
@@ -1490,7 +1507,11 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 - **Varying treatment within unit**: Raises `ValueError`. SDID requires block treatment (constant within each unit). Suggests CallawaySantAnna or ImputationDiD for staggered adoption.
 - **Unbalanced panel**: Raises `ValueError`. SDID requires all units observed in all periods. Suggests `balance_panel()`.
 - **Poor pre-treatment fit**: Warns (`UserWarning`) when `pre_fit_rmse > std(treated_pre_outcomes, ddof=1)`. Diagnostic only; estimation proceeds.
-- **Note:** Survey support: weights, strata, PSU, and FPC are all supported. Full-design surveys use Rao-Wu rescaled bootstrap (Phase 6); `variance_method="placebo"` requires weights-only (strata/PSU/FPC require bootstrap). Both sides weighted per WLS regression interpretation: treated-side means are survey-weighted (Frank-Wolfe target and ATT formula); control-side synthetic weights are composed with survey weights post-optimization (ω_eff = ω * w_co, renormalized). Frank-Wolfe optimization itself is unweighted — survey importance enters after trajectory-matching. Covariate residualization uses WLS with survey weights. Placebo and bootstrap SE preserve survey weights on both sides.
+- **Jackknife with single treated unit**: Returns NaN SE. Cannot leave-one-out with N_tr=1; R returns NA for the same condition.
+- **Jackknife with single nonzero-weight control**: Returns NaN SE. Leaving out the only effective control is not meaningful.
+- **Jackknife with non-finite LOO estimate**: Returns NaN SE. Unlike bootstrap/placebo, jackknife is deterministic and cannot skip failed iterations; NaN propagates through `var()` (matches R behavior).
+- **Jackknife with survey weights**: Guards on effective positive support (omega * w_control > 0 and w_treated > 0) after composition, not raw FW counts. Returns NaN SE if fewer than 2 effective controls or 2 positive-weight treated units. Per-iteration zero-sum guards return NaN for individual LOO iterations when remaining composed weights sum to zero.
+- **Note:** Survey support: weights, strata, PSU, and FPC are all supported. Full-design surveys use Rao-Wu rescaled bootstrap (Phase 6); non-bootstrap variance methods (`variance_method="placebo"` or `"jackknife"`) require weights-only (strata/PSU/FPC require bootstrap). Both sides weighted per WLS regression interpretation: treated-side means are survey-weighted (Frank-Wolfe target and ATT formula); control-side synthetic weights are composed with survey weights post-optimization (ω_eff = ω * w_co, renormalized). Frank-Wolfe optimization itself is unweighted — survey importance enters after trajectory-matching. Covariate residualization uses WLS with survey weights. Placebo, jackknife, and bootstrap SE preserve survey weights on both sides.
 
 **Reference implementation(s):**
 - R: `synthdid::synthdid_estimate()` (Arkhangelsky et al.'s official package)
@@ -1505,6 +1526,9 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 - [x] Placebo SE formula: sqrt((r-1)/r) * sd(placebo_estimates)
 - [x] Placebo SE: re-estimates omega and lambda per replication (matching R's update.omega=TRUE, update.lambda=TRUE)
 - [x] Bootstrap: fixed weights (original lambda unchanged, omega renormalized for resampled controls)
+- [x] Jackknife SE: fixed weights, LOO all units, formula `sqrt((n-1)/n * sum((u-ubar)^2))`
+- [x] Jackknife: NaN SE for single treated or single nonzero-weight control
+- [x] Jackknife: analytical p-value (not empirical)
 - [x] Returns both unit and time weights for interpretation
 - [x] Column centering (intercept=True) in Frank-Wolfe optimization
 

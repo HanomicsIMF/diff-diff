@@ -45,7 +45,7 @@ def parse_args():
     )
     parser.add_argument(
         "--variance-method", type=str, default="placebo",
-        choices=["bootstrap", "placebo"],
+        choices=["bootstrap", "jackknife", "placebo"],
         help="Variance estimation method (default: placebo to match R)"
     )
     parser.add_argument(

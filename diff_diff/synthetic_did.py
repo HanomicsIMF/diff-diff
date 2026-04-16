@@ -53,10 +53,15 @@ class SyntheticDiD(DifferenceInDifferences):
           Implements Algorithm 4 from Arkhangelsky et al. (2021). This is R's default.
         - "bootstrap": Bootstrap at unit level with fixed weights matching R's
           synthdid::vcov(method="bootstrap").
+        - "jackknife": Jackknife variance matching R's synthdid::vcov(method="jackknife").
+          Implements Algorithm 3 from Arkhangelsky et al. (2021). Deterministic
+          (N_control + N_treated iterations), uses fixed weights (no re-estimation).
+          The ``n_bootstrap`` parameter is ignored for this method.
     n_bootstrap : int, default=200
         Number of replications for variance estimation. Used for both:
         - Bootstrap: Number of bootstrap samples
         - Placebo: Number of random permutations (matches R's `replications` argument)
+        Ignored when ``variance_method="jackknife"``.
     seed : int, optional
         Random seed for reproducibility. If None (default), results
         will vary between runs.
@@ -163,15 +168,15 @@ class SyntheticDiD(DifferenceInDifferences):
         self.n_bootstrap = n_bootstrap
         self.seed = seed
 
-        # Validate n_bootstrap
-        if n_bootstrap < 2:
+        # Validate n_bootstrap (irrelevant for jackknife, which is deterministic)
+        if n_bootstrap < 2 and variance_method != "jackknife":
             raise ValueError(
                 f"n_bootstrap must be >= 2 (got {n_bootstrap}). At least 2 "
                 f"iterations are needed to estimate standard errors."
             )
 
         # Validate variance_method
-        valid_methods = ("bootstrap", "placebo")
+        valid_methods = ("bootstrap", "jackknife", "placebo")
         if variance_method not in valid_methods:
             raise ValueError(
                 f"variance_method must be one of {valid_methods}, " f"got '{variance_method}'"
@@ -218,8 +223,9 @@ class SyntheticDiD(DifferenceInDifferences):
         survey_design : SurveyDesign, optional
             Survey design specification. Only pweight weight_type is supported.
             Strata/PSU/FPC are supported via Rao-Wu rescaled bootstrap when
-            variance_method='bootstrap'. Placebo variance does not support
-            strata/PSU/FPC; use variance_method='bootstrap' for full designs.
+            variance_method='bootstrap'. Non-bootstrap variance methods
+            (placebo, jackknife) do not support strata/PSU/FPC; use
+            variance_method='bootstrap' for full designs.
 
         Returns
         -------
@@ -269,7 +275,7 @@ class SyntheticDiD(DifferenceInDifferences):
                 f"Got '{resolved_survey.weight_type}'."
             )
 
-        # Reject placebo + full survey design (strata/PSU/FPC are silently ignored)
+        # Reject non-bootstrap + full survey design (strata/PSU/FPC need Rao-Wu)
         if (
             resolved_survey is not None
             and (
@@ -277,10 +283,11 @@ class SyntheticDiD(DifferenceInDifferences):
                 or resolved_survey.psu is not None
                 or resolved_survey.fpc is not None
             )
-            and self.variance_method == "placebo"
+            and self.variance_method != "bootstrap"
         ):
             raise NotImplementedError(
-                "SyntheticDiD with variance_method='placebo' does not support strata/PSU/FPC. "
+                f"SyntheticDiD with variance_method='{self.variance_method}' does not "
+                "support strata/PSU/FPC. "
                 "Use variance_method='bootstrap' for full survey design support."
             )
 
@@ -510,6 +517,20 @@ class SyntheticDiD(DifferenceInDifferences):
             )
             placebo_effects = bootstrap_estimates
             inference_method = "bootstrap"
+        elif self.variance_method == "jackknife":
+            # Fixed-weight jackknife (R's synthdid Algorithm 3)
+            se, jackknife_estimates = self._jackknife_se(
+                Y_pre_control,
+                Y_post_control,
+                Y_pre_treated,
+                Y_post_treated,
+                unit_weights,
+                time_weights,
+                w_treated=w_treated,
+                w_control=w_control,
+            )
+            placebo_effects = jackknife_estimates
+            inference_method = "jackknife"
         else:
             # Use placebo-based variance (R's synthdid Algorithm 4)
             se, placebo_effects = self._placebo_variance_se(
@@ -528,7 +549,14 @@ class SyntheticDiD(DifferenceInDifferences):
 
         # Compute test statistics
         t_stat, p_value_analytical, conf_int = safe_inference(att, se, alpha=self.alpha)
-        if len(placebo_effects) > 0 and np.isfinite(t_stat):
+        # Empirical p-value for placebo/bootstrap (null-distribution draws).
+        # Jackknife pseudo-values are NOT null-distribution draws, so use
+        # analytical (normal) p-value instead.
+        if (
+            inference_method != "jackknife"
+            and len(placebo_effects) > 0
+            and np.isfinite(t_stat)
+        ):
             p_value = max(
                 np.mean(np.abs(placebo_effects) >= np.abs(att)),
                 1.0 / (len(placebo_effects) + 1),
@@ -1105,6 +1133,202 @@ class SyntheticDiD(DifferenceInDifferences):
         se = np.sqrt((n_successful - 1) / n_successful) * np.std(placebo_estimates, ddof=1)
 
         return se, placebo_estimates
+
+    def _jackknife_se(
+        self,
+        Y_pre_control: np.ndarray,
+        Y_post_control: np.ndarray,
+        Y_pre_treated: np.ndarray,
+        Y_post_treated: np.ndarray,
+        unit_weights: np.ndarray,
+        time_weights: np.ndarray,
+        w_treated=None,
+        w_control=None,
+    ) -> Tuple[float, np.ndarray]:
+        """Compute jackknife standard error matching R's synthdid Algorithm 3.
+
+        Delete-1 jackknife over all units (control + treated) with **fixed**
+        weights.  For each leave-one-out sample the original omega is subsetted
+        and renormalized; lambda stays unchanged.  No Frank-Wolfe
+        re-estimation, making this the fastest variance method.
+
+        This matches R's ``synthdid::vcov(method="jackknife")`` which sets
+        ``update.omega=FALSE, update.lambda=FALSE``.
+
+        Parameters
+        ----------
+        Y_pre_control : np.ndarray
+            Control outcomes in pre-treatment periods, shape (n_pre, n_control).
+        Y_post_control : np.ndarray
+            Control outcomes in post-treatment periods, shape (n_post, n_control).
+        Y_pre_treated : np.ndarray
+            Treated outcomes in pre-treatment periods, shape (n_pre, n_treated).
+        Y_post_treated : np.ndarray
+            Treated outcomes in post-treatment periods, shape (n_post, n_treated).
+        unit_weights : np.ndarray
+            Unit weights from Frank-Wolfe optimization, shape (n_control,).
+        time_weights : np.ndarray
+            Time weights from Frank-Wolfe optimization, shape (n_pre,).
+        w_treated : np.ndarray, optional
+            Survey probability weights for treated units.
+        w_control : np.ndarray, optional
+            Survey probability weights for control units.
+
+        Returns
+        -------
+        tuple
+            (se, jackknife_estimates) where se is the standard error and
+            jackknife_estimates is a length-N array of leave-one-out estimates
+            (first n_control entries are control-LOO, last n_treated are
+            treated-LOO).
+
+        References
+        ----------
+        Arkhangelsky, D., Athey, S., Hirshberg, D. A., Imbens, G. W., & Wager, S.
+        (2021). Synthetic Difference-in-Differences. American Economic Review,
+        111(12), 4088-4118. Algorithm 3.
+        """
+        n_control = Y_pre_control.shape[1]
+        n_treated = Y_pre_treated.shape[1]
+        n = n_control + n_treated
+
+        # --- Early-return NaN: matches R's NA conditions ---
+        if n_treated <= 1:
+            warnings.warn(
+                "Jackknife variance requires more than 1 treated unit. "
+                "Use variance_method='placebo' for single treated unit.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return np.nan, np.array([])
+
+        if np.sum(unit_weights > 0) <= 1:
+            warnings.warn(
+                "Jackknife variance requires more than 1 control unit with "
+                "nonzero weight. Consider variance_method='placebo'.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return np.nan, np.array([])
+
+        # --- Effective-support guards for survey-weighted path ---
+        if w_control is not None:
+            effective_control = unit_weights * w_control
+            if np.sum(effective_control > 0) <= 1:
+                warnings.warn(
+                    "Jackknife variance requires more than 1 control unit with "
+                    "positive effective weight (omega * survey_weight). "
+                    "Consider variance_method='placebo'.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                return np.nan, np.array([])
+
+        if w_treated is not None and np.sum(w_treated > 0) <= 1:
+            warnings.warn(
+                "Jackknife variance requires more than 1 treated unit with "
+                "positive survey weight. "
+                "Consider variance_method='placebo'.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return np.nan, np.array([])
+
+        jackknife_estimates = np.empty(n)
+
+        # --- Precompute treated means (constant across control-LOO) ---
+        if w_treated is not None:
+            treated_pre_mean = np.average(Y_pre_treated, axis=1, weights=w_treated)
+            treated_post_mean = np.average(Y_post_treated, axis=1, weights=w_treated)
+        else:
+            treated_pre_mean = np.mean(Y_pre_treated, axis=1)
+            treated_post_mean = np.mean(Y_post_treated, axis=1)
+
+        # --- Precompute omega composed with survey weights (for treated-LOO) ---
+        if w_control is not None:
+            omega_eff_full = unit_weights * w_control
+            omega_eff_full = omega_eff_full / omega_eff_full.sum()
+        else:
+            omega_eff_full = unit_weights
+
+        # --- Leave-one-out over control units ---
+        mask = np.ones(n_control, dtype=bool)
+        for j in range(n_control):
+            mask[j] = False
+
+            # Subset and renormalize omega
+            omega_jk = _sum_normalize(unit_weights[mask])
+
+            # Compose with survey weights if present
+            if w_control is not None:
+                omega_jk = omega_jk * w_control[mask]
+                if omega_jk.sum() == 0:
+                    jackknife_estimates[j] = np.nan
+                    mask[j] = True
+                    continue
+                omega_jk = omega_jk / omega_jk.sum()
+
+            jackknife_estimates[j] = compute_sdid_estimator(
+                Y_pre_control[:, mask],
+                Y_post_control[:, mask],
+                treated_pre_mean,
+                treated_post_mean,
+                omega_jk,
+                time_weights,
+            )
+
+            mask[j] = True  # restore for next iteration
+
+        # --- Leave-one-out over treated units ---
+        mask = np.ones(n_treated, dtype=bool)
+        for k in range(n_treated):
+            mask[k] = False
+
+            # Recompute treated means from remaining units
+            if w_treated is not None:
+                w_t_jk = w_treated[mask]
+                if w_t_jk.sum() == 0:
+                    jackknife_estimates[n_control + k] = np.nan
+                    mask[k] = True
+                    continue
+                t_pre_mean = np.average(
+                    Y_pre_treated[:, mask], axis=1, weights=w_t_jk
+                )
+                t_post_mean = np.average(
+                    Y_post_treated[:, mask], axis=1, weights=w_t_jk
+                )
+            else:
+                t_pre_mean = np.mean(Y_pre_treated[:, mask], axis=1)
+                t_post_mean = np.mean(Y_post_treated[:, mask], axis=1)
+
+            jackknife_estimates[n_control + k] = compute_sdid_estimator(
+                Y_pre_control,
+                Y_post_control,
+                t_pre_mean,
+                t_post_mean,
+                omega_eff_full,
+                time_weights,
+            )
+
+            mask[k] = True  # restore for next iteration
+
+        # --- Check for non-finite estimates (propagate NaN like R's var()) ---
+        if not np.all(np.isfinite(jackknife_estimates)):
+            warnings.warn(
+                "Some jackknife leave-one-out estimates are non-finite. "
+                "Standard error cannot be computed.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return np.nan, jackknife_estimates
+
+        # --- Jackknife SE formula: sqrt((n-1)/n * sum((u - ubar)^2)) ---
+        # Matches R's: sqrt(((n-1)/n) * (n-1) * var(u))
+        u_bar = np.mean(jackknife_estimates)
+        ss = np.sum((jackknife_estimates - u_bar) ** 2)
+        se = np.sqrt((n - 1) / n * ss)
+
+        return se, jackknife_estimates
 
     def get_params(self) -> Dict[str, Any]:
         """Get estimator parameters."""

@@ -483,6 +483,343 @@ class TestBootstrapSE:
 
 
 # =============================================================================
+# Jackknife SE
+# =============================================================================
+
+
+class TestJackknifeSE:
+    """Verify jackknife SE with fixed weights (Algorithm 3)."""
+
+    def test_jackknife_se_positive(self):
+        """Jackknife SE should be positive for well-specified data."""
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+        )
+        assert results.se > 0
+        assert results.variance_method == "jackknife"
+
+    def test_jackknife_deterministic(self):
+        """Jackknife should produce identical results regardless of seed."""
+        df = _make_panel(n_control=15, n_treated=3, seed=42)
+        results1 = SyntheticDiD(variance_method="jackknife", seed=1).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+        )
+        results2 = SyntheticDiD(variance_method="jackknife", seed=999).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+        )
+        # ATT should be identical (same weights, no randomness in point est)
+        assert results1.att == results2.att
+        # SE should be identical (jackknife is deterministic)
+        assert results1.se == results2.se
+
+    def test_jackknife_se_formula(self):
+        """Verify SE matches sqrt((n-1)/n * sum((u - ubar)^2))."""
+        df = _make_panel(n_control=15, n_treated=3, seed=42)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+        )
+        assert results.placebo_effects is not None
+        u = results.placebo_effects
+        n = len(u)
+        u_bar = np.mean(u)
+        expected_se = np.sqrt((n - 1) / n * np.sum((u - u_bar) ** 2))
+        assert abs(results.se - expected_se) < 1e-10
+
+    def test_jackknife_n_iterations(self):
+        """Number of jackknife estimates = n_control + n_treated."""
+        n_co, n_tr = 15, 3
+        df = _make_panel(n_control=n_co, n_treated=n_tr, seed=42)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+        )
+        assert results.placebo_effects is not None
+        assert len(results.placebo_effects) == n_co + n_tr
+
+    def test_jackknife_single_treated_nan(self):
+        """Single treated unit -> NaN SE (matches R's NA)."""
+        df = _make_panel(n_control=15, n_treated=1, seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+            results = sdid.fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=list(range(5, 7)),
+            )
+        assert np.isnan(results.se)
+        assert np.isnan(results.t_stat)
+        assert np.isnan(results.p_value)
+
+    def test_jackknife_analytical_pvalue(self):
+        """Jackknife should use analytical p-value, not empirical."""
+        from scipy.stats import norm
+
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+        )
+        if np.isfinite(results.t_stat):
+            expected_p = 2 * (1 - norm.cdf(abs(results.t_stat)))
+            assert abs(results.p_value - expected_p) < 1e-10
+
+    def test_jackknife_same_att_as_placebo(self):
+        """Jackknife should produce the same point estimate as placebo."""
+        df = _make_panel(n_control=15, n_treated=3, seed=42)
+        res_jk = SyntheticDiD(variance_method="jackknife", seed=42).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+        )
+        res_pl = SyntheticDiD(variance_method="placebo", seed=42, n_bootstrap=50).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+        )
+        assert abs(res_jk.att - res_pl.att) < 1e-10
+
+    def test_jackknife_n_bootstrap_ignored(self):
+        """n_bootstrap=1 should not raise for jackknife (it's ignored)."""
+        sdid = SyntheticDiD(variance_method="jackknife", n_bootstrap=1)
+        assert sdid.n_bootstrap == 1
+        assert sdid.variance_method == "jackknife"
+
+    def test_jackknife_n_bootstrap_none_in_results(self):
+        """Results should have n_bootstrap=None for jackknife."""
+        df = _make_panel(n_control=15, n_treated=3, seed=42)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+        )
+        assert results.n_bootstrap is None
+
+    def test_jackknife_with_pweights(self):
+        """Jackknife should produce finite SE with survey pweights."""
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=15, n_treated=3, seed=42)
+        # Add unit-constant survey weights
+        unit_weights = {u: 1.0 + u * 0.1 for u in df["unit"].unique()}
+        df["weight"] = df["unit"].map(unit_weights)
+
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+            survey_design=SurveyDesign(weights="weight"),
+        )
+        assert results.se > 0
+        assert np.isfinite(results.se)
+        assert results.variance_method == "jackknife"
+
+    def test_jackknife_zero_effective_control_nan(self):
+        """Zero-weight controls after composition -> NaN SE."""
+        from diff_diff.survey import SurveyDesign
+
+        # 3 controls, 2 treated. Set all but 1 control survey weight to 0
+        # so effective support <= 1.
+        df = _make_panel(n_control=3, n_treated=2, seed=42)
+        weights = {}
+        control_units = sorted(df.loc[df["treated"] == 0, "unit"].unique())
+        treated_units = sorted(df.loc[df["treated"] == 1, "unit"].unique())
+        # Only first control gets positive weight
+        for i, u in enumerate(control_units):
+            weights[u] = 1.0 if i == 0 else 0.0
+        for u in treated_units:
+            weights[u] = 1.0
+        df["weight"] = df["unit"].map(weights)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+            results = sdid.fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=list(range(5, 7)),
+                survey_design=SurveyDesign(weights="weight"),
+            )
+        assert np.isnan(results.se)
+
+    def test_jackknife_zero_treated_weight_nan(self):
+        """Single positive-weight treated unit with survey -> NaN SE."""
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=2, seed=42)
+        weights = {}
+        treated_units = sorted(df.loc[df["treated"] == 1, "unit"].unique())
+        control_units = sorted(df.loc[df["treated"] == 0, "unit"].unique())
+        for u in control_units:
+            weights[u] = 1.0
+        # Only first treated unit gets positive weight
+        weights[treated_units[0]] = 1.0
+        weights[treated_units[1]] = 0.0
+        df["weight"] = df["unit"].map(weights)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+            results = sdid.fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=list(range(5, 7)),
+                survey_design=SurveyDesign(weights="weight"),
+            )
+        assert np.isnan(results.se)
+
+
+# =============================================================================
+# Jackknife SE - R Golden Value Parity
+# =============================================================================
+
+
+class TestJackknifeSERParity:
+    """Verify jackknife SE matches R's synthdid::vcov(method='jackknife').
+
+    Golden values generated with R 4.5.2, synthdid package:
+
+        library(synthdid)
+        set.seed(42)
+        N0 <- 20; N1 <- 3; T0 <- 5; T1 <- 3
+        N <- N0 + N1; T <- T0 + T1
+        Y <- matrix(0, nrow=N, ncol=T)
+        for (i in 1:N) {
+          unit_fe <- rnorm(1, sd=2)
+          for (t in 1:T) {
+            Y[i,t] <- 10 + unit_fe + (t-1)*0.3 + rnorm(1, sd=0.5)
+            if (i > N0 && t > T0) Y[i,t] <- Y[i,t] + 5.0
+          }
+        }
+        tau_hat <- synthdid_estimate(Y, N0, T0)
+        se_jk <- sqrt(vcov(tau_hat, method="jackknife")[1,1])
+    """
+
+    # R's Y matrix (23 units x 8 periods), row-major
+    Y_FLAT = [
+        12.459567808595292, 13.223481099962006, 13.658348196773856,
+        13.844051055863837, 13.888854636247594, 14.997677893012806,
+        14.494587375086788, 15.851128751231856, 10.527006629006900,
+        11.317894498245712, 9.780141451338988, 10.635177418486473,
+        11.007911133698329, 11.692547000930196, 11.532445341187122,
+        10.646344091442769, 5.779122815714058, 5.265746845809725,
+        4.828411925858962, 5.933107464969151, 6.926403492435262,
+        7.566662873481445, 6.703831577045862, 7.090431451464497,
+        6.703722507026075, 6.453676391630379, 7.301398891231049,
+        7.726092498224848, 8.191225590595401, 7.669210641906834,
+        8.526151391259425, 7.715169490073769, 8.005628186152748,
+        7.523978158267692, 9.049143286687135, 9.434081283341134,
+        9.450553333966674, 10.310163601090766, 9.867729569702721,
+        9.846941461031360, 10.459939463684098, 11.887686682638062,
+        11.249912950470762, 12.093459993478538, 12.226598684379407,
+        11.973716581337246, 13.453499811673423, 13.287085704636093,
+        10.317796666844943, 10.819165701226847, 10.824437736488752,
+        9.582976251622744, 11.521962769964540, 11.495903971828724,
+        12.072136575632017, 12.570433156881965, 12.435827624848123,
+        13.750744970607428, 13.567397714461393, 14.218726703934166,
+        14.459837938730677, 14.659912736018788, 14.077914185301429,
+        14.854380461280002, 10.770274645112915, 11.275621916712160,
+        12.137534572839927, 12.531125692916383, 12.678920118269170,
+        12.304148175294246, 12.497145874675160, 14.103389828901550,
+        10.560062989643855, 10.755394606294518, 10.518678427483797,
+        11.721841324084256, 11.607272952190801, 11.924464521898100,
+        12.782516039349641, 13.026729430318186, 12.546145790341205,
+        13.409407032231695, 14.079787980063543, 13.128838312144593,
+        13.553836458429620, 13.718363411441658, 13.854625752117343,
+        14.924224028489123, 11.906891367097627, 12.128784222882244,
+        11.404804355878456, 13.130649630134753, 12.173021974919472,
+        12.859165585526416, 12.895280738363951, 13.345233593320895,
+        10.435966548001499, 10.663839793569295, 11.030422432974012,
+        11.033668451079661, 11.324277503659044, 11.045836529045589,
+        11.985219205566086, 12.220060940064094, 14.722723885094736,
+        15.772410109968900, 15.256969467031452, 15.568564129971197,
+        16.666133193788099, 16.405462433247578, 17.202870693537243,
+        17.289652559976691, 7.760317864391456, 8.460282811921017,
+        9.462415007659978, 9.956467084312777, 9.726218110324272,
+        10.272688229133685, 11.134101608790994, 11.592584658589104,
+        7.747112683063268, 8.706521663648207, 8.170907672905205,
+        8.679537720718859, 8.962718814069811, 8.861932954235140,
+        9.383430460745986, 9.891050023644237, 9.728955313568255,
+        9.231765881057163, 9.555677785583788, 10.420693590160205,
+        9.844078095298698, 10.651913064308546, 10.196489890710358,
+        11.855847076501993, 9.218785934915712, 9.133582433258733,
+        10.048827580363175, 9.952567508276010, 10.385962432276619,
+        11.596546220044132, 11.164945662130776, 11.016817405176500,
+        10.145044557120791, 10.921420538928436, 11.642624728800259,
+        10.730067509380019, 11.753738913724906, 11.868862794274008,
+        12.574196556067037, 12.311524695461632, 10.800710206252880,
+        12.817967597577915, 12.705627126180516, 12.497850142478354,
+        12.148734571851643, 13.494742486942219, 13.714835068828613,
+        13.770060323710533, 10.010857300549947, 10.787315152039971,
+        11.050238955584605, 11.063282099053561, 10.834793458278272,
+        17.153286194944865, 17.380010096861866, 16.984758489324143,
+        6.913302966281331, 6.938279687001069, 7.537129527669741,
+        7.063822443245238, 7.531238453797332, 13.853711102827464,
+        13.812711128345372, 14.204067444347162, 13.694867606609098,
+        12.929992273442151, 14.397345491024691, 15.116119455987304,
+        15.860226513457558, 19.442026093187646, 19.855029109494353,
+        20.377546194927845,
+    ]
+    N0, N1, T0, T1 = 20, 3, 5, 3
+    R_ATT = 4.980848860060929
+    R_JACKKNIFE_SE = 0.613846670319004
+
+    @pytest.fixture
+    def r_panel_df(self):
+        """Reconstruct the R panel as a pandas DataFrame."""
+        N = self.N0 + self.N1
+        T = self.T0 + self.T1
+        Y = np.array(self.Y_FLAT).reshape(N, T)
+        rows = []
+        for i in range(N):
+            for t in range(T):
+                rows.append({
+                    "unit": i,
+                    "time": t,
+                    "outcome": Y[i, t],
+                    "treated": int(i >= self.N0),
+                })
+        return pd.DataFrame(rows)
+
+    def test_att_matches_r(self, r_panel_df):
+        """ATT should match R's synthdid_estimate to machine precision."""
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            r_panel_df, outcome="outcome", treatment="treated",
+            unit="unit", time="time",
+            post_periods=[5, 6, 7],
+        )
+        assert abs(results.att - self.R_ATT) < 1e-10
+
+    def test_jackknife_se_matches_r(self, r_panel_df):
+        """Jackknife SE should match R's vcov(method='jackknife')."""
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            r_panel_df, outcome="outcome", treatment="treated",
+            unit="unit", time="time",
+            post_periods=[5, 6, 7],
+        )
+        assert abs(results.se - self.R_JACKKNIFE_SE) < 1e-10
+
+
+# =============================================================================
 # Edge Cases
 # =============================================================================
 

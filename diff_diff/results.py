@@ -662,7 +662,7 @@ class SyntheticDiDResults:
     att : float
         Average Treatment effect on the Treated (ATT).
     se : float
-        Standard error of the ATT estimate (bootstrap or placebo-based).
+        Standard error of the ATT estimate (bootstrap, jackknife, or placebo-based).
     t_stat : float
         T-statistic for the ATT estimate.
     p_value : float
@@ -684,7 +684,12 @@ class SyntheticDiDResults:
     post_periods : list
         List of post-treatment period identifiers.
     variance_method : str
-        Method used for variance estimation: "bootstrap" or "placebo".
+        Method used for variance estimation: "bootstrap", "jackknife", or "placebo".
+    placebo_effects : np.ndarray, optional
+        Method-specific per-iteration estimates: placebo treatment effects
+        (for "placebo"), bootstrap ATT estimates (for "bootstrap"), or
+        leave-one-out estimates (for "jackknife"). The ``variance_method``
+        field disambiguates the contents.
     """
 
     att: float

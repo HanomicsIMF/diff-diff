@@ -73,14 +73,21 @@ weights <- attr(tau_hat, "weights")
 unit_weights <- weights$omega
 time_weights <- weights$lambda
 
-# Compute SE via placebo (jackknife)
+# Compute SE via placebo
 message("Computing standard errors...")
 se_start <- Sys.time()
 se_matrix <- vcov(tau_hat, method = "placebo")
 se <- as.numeric(sqrt(se_matrix[1, 1]))  # Extract scalar SE
 se_time <- as.numeric(difftime(Sys.time(), se_start, units = "secs"))
 
-total_time <- estimation_time + se_time
+# Compute SE via jackknife (Algorithm 3)
+message("Computing jackknife standard errors...")
+se_jk_start <- Sys.time()
+se_jk_matrix <- vcov(tau_hat, method = "jackknife")
+se_jackknife <- as.numeric(sqrt(se_jk_matrix[1, 1]))
+se_jk_time <- as.numeric(difftime(Sys.time(), se_jk_start, units = "secs"))
+
+total_time <- estimation_time + se_time  # placebo only, matches `se` field
 
 # Compute noise level and regularization (to match Python's auto-computed values)
 N0 <- setup$N0
@@ -98,6 +105,7 @@ results <- list(
   # Point estimate and SE
   att = as.numeric(tau_hat),
   se = se,
+  se_jackknife = se_jackknife,
 
   # Weights (full precision)
   unit_weights = as.numeric(unit_weights),
@@ -111,7 +119,8 @@ results <- list(
   # Timing
   timing = list(
     estimation_seconds = estimation_time,
-    se_seconds = se_time,
+    se_placebo_seconds = se_time,
+    se_jackknife_seconds = se_jk_time,
     total_seconds = total_time
   ),
 
