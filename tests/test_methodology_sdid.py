@@ -1681,6 +1681,18 @@ class TestWeightConcentration:
         assert c["top_k"] == 3
         assert abs(c["top_k_share"] - 1.0) < 1e-10
 
+    def test_negative_top_k_raises(self):
+        from diff_diff.results import SyntheticDiDResults
+
+        res = SyntheticDiDResults(
+            att=0.0, se=0.0, t_stat=0.0, p_value=1.0, conf_int=(0.0, 0.0),
+            n_obs=30, n_treated=1, n_control=3,
+            unit_weights={"a": 0.5, "b": 0.3, "c": 0.2}, time_weights={},
+            pre_periods=[], post_periods=[],
+        )
+        with pytest.raises(ValueError, match="top_k must be non-negative"):
+            res.get_weight_concentration(top_k=-1)
+
     def test_uses_composed_weights_under_survey(self):
         """Metrics come from self.unit_weights which stores composed ω_eff
         for survey fits."""
@@ -1767,6 +1779,21 @@ class TestInTimePlacebo:
                        post_periods=list(range(6, 9)))
         with pytest.raises(ValueError, match="not found in pre_periods"):
             res.in_time_placebo(fake_treatment_periods=[999])
+
+    def test_empty_default_sweep_preserves_schema(self):
+        """When n_pre < 3, the default sweep is empty. The DataFrame must
+        still carry the documented columns."""
+        df = _make_panel(n_control=10, n_treated=2, n_pre=2, n_post=3, seed=50)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=50)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(2, 5)))
+        placebo = res.in_time_placebo()
+        assert len(placebo) == 0
+        assert list(placebo.columns) == [
+            "fake_treatment_period", "att", "pre_fit_rmse",
+            "n_pre_fake", "n_post_fake",
+        ]
 
     def test_zeta_override_changes_result(self):
         df = _make_panel(n_control=10, n_treated=2, n_pre=8, n_post=3, seed=47)

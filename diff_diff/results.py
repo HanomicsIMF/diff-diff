@@ -678,6 +678,9 @@ class _SyntheticDiDFitSnapshot:
             self.Y_post_treated,
         ):
             arr.setflags(write=False)
+        for arr in (self.w_control, self.w_treated):
+            if arr is not None:
+                arr.setflags(write=False)
 
 
 @dataclass
@@ -1142,6 +1145,16 @@ class SyntheticDiDResults:
                     )
                 fake_list.append((p, period_to_idx[p]))
 
+        columns = [
+            "fake_treatment_period",
+            "att",
+            "pre_fit_rmse",
+            "n_pre_fake",
+            "n_post_fake",
+        ]
+        if not fake_list:
+            return pd.DataFrame(columns=columns)
+
         rows: List[Dict[str, Any]] = []
         for fake_period, i in fake_list:
             n_pre_fake = i
@@ -1362,8 +1375,8 @@ class SyntheticDiDResults:
         Parameters
         ----------
         top_k : int, default 5
-            Number of largest weights to sum for ``top_k_share``. Clamped
-            to the available number of control units.
+            Number of largest weights to sum for ``top_k_share``. Must be
+            non-negative. Clamped to the available number of control units.
 
         Returns
         -------
@@ -1373,7 +1386,16 @@ class SyntheticDiDResults:
                 - ``herfindahl`` — ``sum(w**2)``
                 - ``top_k_share`` — sum of the ``top_k`` largest weights
                 - ``top_k`` — the (possibly clamped) value used
+
+        Raises
+        ------
+        ValueError
+            If ``top_k`` is negative.
         """
+        if top_k < 0:
+            raise ValueError(
+                f"top_k must be non-negative (got {top_k})."
+            )
         weights = np.asarray(list(self.unit_weights.values()), dtype=float)
         if weights.size == 0:
             return {
