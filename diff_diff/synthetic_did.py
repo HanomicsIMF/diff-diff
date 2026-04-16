@@ -223,8 +223,9 @@ class SyntheticDiD(DifferenceInDifferences):
         survey_design : SurveyDesign, optional
             Survey design specification. Only pweight weight_type is supported.
             Strata/PSU/FPC are supported via Rao-Wu rescaled bootstrap when
-            variance_method='bootstrap'. Placebo variance does not support
-            strata/PSU/FPC; use variance_method='bootstrap' for full designs.
+            variance_method='bootstrap'. Non-bootstrap variance methods
+            (placebo, jackknife) do not support strata/PSU/FPC; use
+            variance_method='bootstrap' for full designs.
 
         Returns
         -------
@@ -1210,6 +1211,29 @@ class SyntheticDiD(DifferenceInDifferences):
             )
             return np.nan, np.array([])
 
+        # --- Effective-support guards for survey-weighted path ---
+        if w_control is not None:
+            effective_control = unit_weights * w_control
+            if np.sum(effective_control > 0) <= 1:
+                warnings.warn(
+                    "Jackknife variance requires more than 1 control unit with "
+                    "positive effective weight (omega * survey_weight). "
+                    "Consider variance_method='placebo'.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                return np.nan, np.array([])
+
+        if w_treated is not None and np.sum(w_treated > 0) <= 1:
+            warnings.warn(
+                "Jackknife variance requires more than 1 treated unit with "
+                "positive survey weight. "
+                "Consider variance_method='placebo'.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return np.nan, np.array([])
+
         jackknife_estimates = np.empty(n)
 
         # --- Precompute treated means (constant across control-LOO) ---
@@ -1238,6 +1262,10 @@ class SyntheticDiD(DifferenceInDifferences):
             # Compose with survey weights if present
             if w_control is not None:
                 omega_jk = omega_jk * w_control[mask]
+                if omega_jk.sum() == 0:
+                    jackknife_estimates[j] = np.nan
+                    mask[j] = True
+                    continue
                 omega_jk = omega_jk / omega_jk.sum()
 
             jackknife_estimates[j] = compute_sdid_estimator(
@@ -1259,6 +1287,10 @@ class SyntheticDiD(DifferenceInDifferences):
             # Recompute treated means from remaining units
             if w_treated is not None:
                 w_t_jk = w_treated[mask]
+                if w_t_jk.sum() == 0:
+                    jackknife_estimates[n_control + k] = np.nan
+                    mask[k] = True
+                    continue
                 t_pre_mean = np.average(
                     Y_pre_treated[:, mask], axis=1, weights=w_t_jk
                 )

@@ -611,6 +611,80 @@ class TestJackknifeSE:
         )
         assert results.n_bootstrap is None
 
+    def test_jackknife_with_pweights(self):
+        """Jackknife should produce finite SE with survey pweights."""
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=15, n_treated=3, seed=42)
+        # Add unit-constant survey weights
+        unit_weights = {u: 1.0 + u * 0.1 for u in df["unit"].unique()}
+        df["weight"] = df["unit"].map(unit_weights)
+
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=list(range(5, 8)),
+            survey_design=SurveyDesign(weights="weight"),
+        )
+        assert results.se > 0
+        assert np.isfinite(results.se)
+        assert results.variance_method == "jackknife"
+
+    def test_jackknife_zero_effective_control_nan(self):
+        """Zero-weight controls after composition -> NaN SE."""
+        from diff_diff.survey import SurveyDesign
+
+        # 3 controls, 2 treated. Set all but 1 control survey weight to 0
+        # so effective support <= 1.
+        df = _make_panel(n_control=3, n_treated=2, seed=42)
+        weights = {}
+        control_units = sorted(df.loc[df["treated"] == 0, "unit"].unique())
+        treated_units = sorted(df.loc[df["treated"] == 1, "unit"].unique())
+        # Only first control gets positive weight
+        for i, u in enumerate(control_units):
+            weights[u] = 1.0 if i == 0 else 0.0
+        for u in treated_units:
+            weights[u] = 1.0
+        df["weight"] = df["unit"].map(weights)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+            results = sdid.fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=list(range(5, 7)),
+                survey_design=SurveyDesign(weights="weight"),
+            )
+        assert np.isnan(results.se)
+
+    def test_jackknife_zero_treated_weight_nan(self):
+        """Single positive-weight treated unit with survey -> NaN SE."""
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=2, seed=42)
+        weights = {}
+        treated_units = sorted(df.loc[df["treated"] == 1, "unit"].unique())
+        control_units = sorted(df.loc[df["treated"] == 0, "unit"].unique())
+        for u in control_units:
+            weights[u] = 1.0
+        # Only first treated unit gets positive weight
+        weights[treated_units[0]] = 1.0
+        weights[treated_units[1]] = 0.0
+        df["weight"] = df["unit"].map(weights)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+            results = sdid.fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=list(range(5, 7)),
+                survey_design=SurveyDesign(weights="weight"),
+            )
+        assert np.isnan(results.se)
+
 
 # =============================================================================
 # Jackknife SE - R Golden Value Parity

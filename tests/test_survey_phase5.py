@@ -198,7 +198,21 @@ class TestSyntheticDiDSurvey:
     def test_full_design_placebo_raises(self, sdid_survey_data, survey_design_full):
         """Placebo variance with full design raises NotImplementedError."""
         est = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
-        with pytest.raises(NotImplementedError, match="placebo.*does not support strata/PSU/FPC"):
+        with pytest.raises(NotImplementedError, match="does not support strata/PSU/FPC"):
+            est.fit(
+                sdid_survey_data,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=survey_design_full,
+            )
+
+    def test_full_design_jackknife_raises(self, sdid_survey_data, survey_design_full):
+        """Jackknife variance with full design raises NotImplementedError."""
+        est = SyntheticDiD(variance_method="jackknife", seed=42)
+        with pytest.raises(NotImplementedError, match="does not support strata/PSU/FPC"):
             est.fit(
                 sdid_survey_data,
                 outcome="outcome",

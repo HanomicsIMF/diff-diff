@@ -87,7 +87,7 @@ se_jk_matrix <- vcov(tau_hat, method = "jackknife")
 se_jackknife <- as.numeric(sqrt(se_jk_matrix[1, 1]))
 se_jk_time <- as.numeric(difftime(Sys.time(), se_jk_start, units = "secs"))
 
-total_time <- estimation_time + se_time + se_jk_time
+total_time <- estimation_time + se_time  # placebo only, matches `se` field
 
 # Compute noise level and regularization (to match Python's auto-computed values)
 N0 <- setup$N0
