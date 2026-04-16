@@ -227,6 +227,12 @@ def _validate_and_aggregate_to_cells(
         )
         cell["y_gt"] = cell["_wy_sum"] / cell["w_gt"]
         cell = cell.drop(columns=["_wy_sum"])
+        # Zero-weight cells: treat as absent so downstream presence
+        # logic (N_mat > 0) correctly excludes them.
+        zero_w_mask = cell["w_gt"] <= 0
+        if zero_w_mask.any():
+            cell.loc[zero_w_mask, "n_gt"] = 0
+            cell.loc[zero_w_mask, "y_gt"] = 0.0
         df.drop(columns=["_w_", "_wy_"], inplace=True)
     else:
         cell = df.groupby([group, time], as_index=False).agg(
@@ -4548,8 +4554,14 @@ def _compute_se(
         return _plugin_se(U_centered=U_centered, divisor=divisor)
     if eligible_groups is None:
         return _plugin_se(U_centered=U_centered, divisor=divisor)
+    if divisor <= 0:
+        return float("nan")
+    # dCDH IFs are numerator-scale (U.sum() == N_S * DID_M).
+    # compute_survey_if_variance() expects estimator-scale psi.
+    # Scale by 1/divisor to normalize before survey expansion.
+    U_scaled = U_centered / divisor
     return _survey_se_from_group_if(
-        U_centered=U_centered,
+        U_centered=U_scaled,
         eligible_groups=eligible_groups,
         obs_survey_info=obs_survey_info,
     )

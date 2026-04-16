@@ -377,3 +377,68 @@ class TestBootstrapSurveyWarning:
                 treatment="treatment",
                 survey_design=sd,
             )
+
+
+# ── Test: SE scale pinning ──────────────────────────────────────────
+
+
+class TestSEScalePinning:
+    """Survey SE with uniform weights and no strata/PSU must match plug-in SE."""
+
+    def test_uniform_survey_se_matches_plugin(self, base_data):
+        """Pins the divisor normalization: uniform survey SE with group-level
+        PSU clustering should be close to plug-in SE.
+
+        Without PSU clustering, survey treats each observation as independent
+        (N_obs observations), while plug-in treats each group as independent
+        (N_groups). Clustering at the group level aligns the two.
+        """
+        df = base_data.copy()
+        df["pw"] = 1.0
+        sd = SurveyDesign(weights="pw", psu="group")
+
+        r_plain = ChaisemartinDHaultfoeuille(seed=1).fit(
+            base_data, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+        )
+        r_survey = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        # With PSU=group and uniform weights, survey SE should be
+        # close to plug-in SE (both assume group-level independence).
+        # Small-sample corrections (n/(n-1)) cause minor differences.
+        if np.isfinite(r_plain.overall_se) and np.isfinite(r_survey.overall_se):
+            assert r_plain.overall_se == pytest.approx(
+                r_survey.overall_se, rel=0.15
+            ), (
+                f"Survey SE ({r_survey.overall_se:.6f}) should be close to "
+                f"plug-in SE ({r_plain.overall_se:.6f}) with uniform weights "
+                f"and PSU=group"
+            )
+
+
+# ── Test: Zero-weight cells ─────────────────────────────────────────
+
+
+class TestZeroWeightCells:
+
+    def test_zero_weight_cell_excluded(self, base_data):
+        """A cell with zero survey weight is treated as absent."""
+        df = base_data.copy()
+        df["pw"] = 1.0
+        # Zero out weight for one group at one period
+        target_group = df["group"].unique()[0]
+        target_period = df["period"].unique()[1]
+        mask = (df["group"] == target_group) & (df["period"] == target_period)
+        df.loc[mask, "pw"] = 0.0
+        sd = SurveyDesign(weights="pw")
+
+        # Should not raise; the zero-weight cell is just absent
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
