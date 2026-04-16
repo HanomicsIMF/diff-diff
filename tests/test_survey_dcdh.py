@@ -726,6 +726,28 @@ class TestSurveyTWFEParity:
                 survey_design=sd,
             )
 
+    def test_twfe_helper_rejects_replicate_weights(self, base_data):
+        """Replicate-weight survey designs must be rejected by the helper,
+        matching fit()'s NotImplementedError contract."""
+        from diff_diff.chaisemartin_dhaultfoeuille import twowayfeweights
+
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["rep1"] = 1.0
+        df_["rep2"] = 1.0
+        sd = SurveyDesign(
+            weights="pw",
+            replicate_weights=["rep1", "rep2"],
+            replicate_method="BRR",
+        )
+        with pytest.raises(NotImplementedError, match="Replicate"):
+            twowayfeweights(
+                df_,
+                outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd,
+            )
+
 
 # ── Test: TWFE diagnostic oracle under survey ───────────────────────
 

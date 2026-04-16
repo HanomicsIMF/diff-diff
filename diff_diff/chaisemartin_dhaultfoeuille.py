@@ -5068,6 +5068,16 @@ def twowayfeweights(
                 f"The TWFE diagnostic under survey uses survey-weighted cell "
                 f"means; other weight types are not supported."
             )
+        if (
+            resolved is not None
+            and resolved.replicate_weights is not None
+            and resolved.replicate_weights.shape[1] > 0
+        ):
+            raise NotImplementedError(
+                "Replicate weight variance for twowayfeweights() is not "
+                "supported. Use strata/PSU/FPC for design-based inference "
+                "via Taylor Series Linearization (matches the fit() path)."
+            )
 
     # Validation + cell aggregation via the same helper used by
     # ChaisemartinDHaultfoeuille.fit() — enforces NaN/binary/within-cell

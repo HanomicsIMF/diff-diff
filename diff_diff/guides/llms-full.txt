@@ -270,7 +270,7 @@ est.fit(
 ) -> ChaisemartinDHaultfoeuilleResults
 ```
 
-`L_max` controls multi-horizon computation. Phase 3 parameters raise `NotImplementedError`.
+`L_max` controls multi-horizon computation. Phase 3 parameters (`controls`, `trends_linear`, `trends_nonparam`, `honest_did`, `heterogeneity`, `design2`) and `survey_design` are implemented; only `aggregate` remains gated with `NotImplementedError`.
 
 **Usage:**
 
