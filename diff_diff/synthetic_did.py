@@ -603,6 +603,17 @@ class SyntheticDiD(DifferenceInDifferences):
             w_treated=w_treated,
         )
 
+        # Freeze the public diagnostic arrays so mutation via the results
+        # object cannot silently invalidate later diagnostic calls.
+        for _arr in (
+            synthetic_pre_trajectory,
+            synthetic_post_trajectory,
+            treated_pre_trajectory,
+            treated_post_trajectory,
+            time_weights,
+        ):
+            _arr.setflags(write=False)
+
         # Store results
         self.results_ = SyntheticDiDResults(
             att=att,

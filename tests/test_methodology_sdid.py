@@ -1548,6 +1548,51 @@ class TestTrajectories:
             atol=1e-12,
         )
 
+    def test_treated_trajectory_survey_weighted(self):
+        """Under survey weights, treated trajectories should equal the
+        survey-weighted mean per the registry; the synthetic trajectory
+        should match Y_pre_control @ omega_eff using composed weights."""
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, n_pre=5, n_post=3, seed=83)
+        w_by_unit = {u: 1.0 for u in df["unit"].unique()}
+        w_by_unit[df["unit"].iloc[-1]] = 5.0  # skew one treated unit
+        df = df.assign(weight=df["unit"].map(w_by_unit))
+        sdid = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=83)
+        res = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            survey_design=SurveyDesign(weights="weight", weight_type="pweight"),
+        )
+        snap = res._fit_snapshot
+        w_t = snap.w_treated
+        expected_pre = np.average(snap.Y_pre_treated, axis=1, weights=w_t)
+        expected_post = np.average(snap.Y_post_treated, axis=1, weights=w_t)
+        assert np.allclose(res.treated_pre_trajectory, expected_pre, atol=1e-12)
+        assert np.allclose(res.treated_post_trajectory, expected_post, atol=1e-12)
+
+        omega_eff = np.array(
+            [res.unit_weights[u] for u in snap.control_unit_ids]
+        )
+        expected_synth_pre = snap.Y_pre_control @ omega_eff
+        assert np.allclose(
+            res.synthetic_pre_trajectory, expected_synth_pre, atol=1e-12
+        )
+
+    def test_public_trajectory_arrays_are_read_only(self):
+        df = _make_panel(seed=87)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=87)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        for arr in (
+            res.synthetic_pre_trajectory,
+            res.synthetic_post_trajectory,
+            res.treated_pre_trajectory,
+            res.treated_post_trajectory,
+            res.time_weights_array,
+        ):
+            assert not arr.flags.writeable
+
     def test_pre_fit_rmse_recoverable(self):
         df = _make_panel(seed=17)
         sdid = SyntheticDiD(variance_method="jackknife", seed=17)
@@ -1837,6 +1882,17 @@ class TestSensitivityToZetaOmega:
                        unit="unit", time="period")
         sens = res.sensitivity_to_zeta_omega()
         assert len(sens) == 5
+
+    def test_default_grid_values_match_documented_multipliers(self):
+        """Assert the exact documented default grid values, not just length,
+        so the contract cannot drift unnoticed."""
+        df = _make_panel(seed=60)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=60)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        sens = res.sensitivity_to_zeta_omega()
+        expected = np.array([0.25, 0.5, 1.0, 2.0, 4.0]) * res.zeta_omega
+        assert np.allclose(sens["zeta_omega"].to_numpy(), expected, atol=1e-12)
 
     def test_explicit_grid_overrides_multipliers(self):
         df = _make_panel(seed=61)

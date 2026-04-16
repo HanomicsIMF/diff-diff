@@ -1244,12 +1244,12 @@ class SyntheticDiDResults:
         ----------
         zeta_grid : list of float, optional
             Absolute ``zeta_omega`` values to evaluate. If ``None``
-            (default), uses ``multipliers * self.zeta_omega`` (a 16x
-            log-spaced range centered on the auto-selected value, if
-            the default multipliers are kept).
+            (default), uses ``multipliers * self.zeta_omega`` — i.e. a
+            5-point grid by default, spanning 16x from the smallest to
+            the largest multiplier and symmetric in log space around 1.0.
         multipliers : tuple of float, default ``(0.25, 0.5, 1.0, 2.0, 4.0)``
-            Multipliers on ``self.zeta_omega``. Symmetric in log space
-            around 1.0. Ignored when ``zeta_grid`` is supplied.
+            Multipliers on ``self.zeta_omega``. Ignored when
+            ``zeta_grid`` is supplied.
 
         Returns
         -------
