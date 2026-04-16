@@ -505,33 +505,68 @@ def _handle_synthetic(results: Any):
     steps = [
         _step(
             baker_step=6,
-            label="Check pre-treatment fit quality",
+            label="Check pre-treatment fit and weight concentration",
             why=(
                 "Synthetic DiD relies on pre-treatment fit to construct "
-                "weights. Poor fit suggests the synthetic control may not "
-                "approximate the counterfactual well."
+                "weights. Poor fit or highly concentrated unit weights "
+                "suggest the synthetic control may not approximate the "
+                "counterfactual well."
             ),
             code=(
-                "# Check pre-treatment fit and unit weight concentration:\n"
                 "print(f'Pre-treatment fit (RMSE): {results.pre_treatment_fit:.4f}')\n"
-                "# Highly concentrated weights suggest fragile estimates"
+                "concentration = results.get_weight_concentration()\n"
+                "print(f\"Effective N: {concentration['effective_n']:.1f}\")\n"
+                "print(f\"Top-5 weight share: {concentration['top_k_share']:.2%}\")"
             ),
             step_name="sensitivity",
         ),
         _step(
             baker_step=6,
-            label="In-time or in-space placebo",
+            label="In-time placebo",
             why=(
-                "Test robustness by re-estimating on a placebo treatment "
-                "period (in-time) or excluding treated units one at a time "
-                "(leave-one-out). These are the natural falsification "
-                "checks for synthetic control methods."
+                "Re-estimate on shifted fake treatment dates in the "
+                "pre-period. A credible design yields near-zero placebo "
+                "ATTs — departures signal that something is being picked "
+                "up pre-treatment, weakening the causal interpretation."
             ),
             code=(
-                "# In-time placebo: re-estimate with a fake treatment date\n"
-                "# Leave-one-out: drop each treated unit and re-estimate"
+                "placebo_df = results.in_time_placebo()\n"
+                "print(placebo_df)"
             ),
             priority="medium",
+            step_name="sensitivity",
+        ),
+        _step(
+            baker_step=6,
+            label="Leave-one-out influence (jackknife)",
+            why=(
+                "If the estimate is driven by a single unit, robustness "
+                "is weak. Fit with variance_method='jackknife' and inspect "
+                "which units move the ATT the most."
+            ),
+            code=(
+                "if results.variance_method == 'jackknife':\n"
+                "    loo_df = results.get_loo_effects_df()\n"
+                "    print(loo_df.head(10))\n"
+                "else:\n"
+                "    print('Re-fit with variance_method=\"jackknife\" to see LOO.')"
+            ),
+            priority="medium",
+            step_name="sensitivity",
+        ),
+        _step(
+            baker_step=6,
+            label="Regularization sensitivity (zeta_omega)",
+            why=(
+                "The unit-weight regularization is auto-selected from "
+                "data. Show whether the ATT moves materially across a "
+                "grid of values to gauge robustness to this choice."
+            ),
+            code=(
+                "sens_df = results.sensitivity_to_zeta_omega()\n"
+                "print(sens_df)"
+            ),
+            priority="low",
             step_name="sensitivity",
         ),
         _step(

@@ -11,7 +11,7 @@ from numpy.linalg import LinAlgError
 
 from diff_diff.estimators import DifferenceInDifferences
 from diff_diff.linalg import solve_ols
-from diff_diff.results import SyntheticDiDResults
+from diff_diff.results import SyntheticDiDResults, _SyntheticDiDFitSnapshot
 from diff_diff.utils import (
     _compute_regularization,
     _sum_normalize,
@@ -480,9 +480,13 @@ class SyntheticDiD(DifferenceInDifferences):
             time_weights,
         )
 
-        # Compute pre-treatment fit (RMSE) using composed weights
-        synthetic_pre = Y_pre_control @ omega_eff
-        pre_fit_rmse = np.sqrt(np.mean((Y_pre_treated_mean - synthetic_pre) ** 2))
+        # Compute pre-treatment fit (RMSE) using composed weights.
+        # Retain trajectories on results for plotting / custom diagnostics.
+        synthetic_pre_trajectory = Y_pre_control @ omega_eff
+        synthetic_post_trajectory = Y_post_control @ omega_eff
+        pre_fit_rmse = np.sqrt(
+            np.mean((Y_pre_treated_mean - synthetic_pre_trajectory) ** 2)
+        )
 
         # Warn if pre-treatment fit is poor (Registry requirement).
         # Threshold: 1× SD of treated pre-treatment outcomes — a natural baseline
@@ -501,6 +505,10 @@ class SyntheticDiD(DifferenceInDifferences):
                 UserWarning,
                 stacklevel=2,
             )
+
+        # Treated-unit trajectories (the pre/post means already computed above).
+        treated_pre_trajectory = Y_pre_treated_mean
+        treated_post_trajectory = Y_post_treated_mean
 
         # Compute standard errors based on variance_method
         if self.variance_method == "bootstrap":
@@ -570,6 +578,31 @@ class SyntheticDiD(DifferenceInDifferences):
         unit_weights_dict = {unit_id: w for unit_id, w in zip(control_units, omega_eff)}
         time_weights_dict = {period: w for period, w in zip(pre_periods, time_weights)}
 
+        # Jackknife LOO ID/role arrays parallel to placebo_effects positions
+        # (first n_control entries are control-LOO, next n_treated are treated-LOO;
+        # see _jackknife_se docstring).
+        loo_unit_ids: Optional[List[Any]]
+        loo_roles: Optional[List[str]]
+        if inference_method == "jackknife" and len(placebo_effects) > 0:
+            loo_unit_ids = list(control_units) + list(treated_units)
+            loo_roles = ["control"] * len(control_units) + ["treated"] * len(treated_units)
+        else:
+            loo_unit_ids = None
+            loo_roles = None
+
+        fit_snapshot = _SyntheticDiDFitSnapshot(
+            Y_pre_control=Y_pre_control,
+            Y_post_control=Y_post_control,
+            Y_pre_treated=Y_pre_treated,
+            Y_post_treated=Y_post_treated,
+            control_unit_ids=list(control_units),
+            treated_unit_ids=list(treated_units),
+            pre_periods=list(pre_periods),
+            post_periods=list(post_periods),
+            w_control=w_control,
+            w_treated=w_treated,
+        )
+
         # Store results
         self.results_ = SyntheticDiDResults(
             att=att,
@@ -593,6 +626,14 @@ class SyntheticDiD(DifferenceInDifferences):
             placebo_effects=placebo_effects if len(placebo_effects) > 0 else None,
             n_bootstrap=self.n_bootstrap if inference_method == "bootstrap" else None,
             survey_metadata=survey_metadata,
+            synthetic_pre_trajectory=synthetic_pre_trajectory,
+            synthetic_post_trajectory=synthetic_post_trajectory,
+            treated_pre_trajectory=treated_pre_trajectory,
+            treated_post_trajectory=treated_post_trajectory,
+            time_weights_array=time_weights,
+            _loo_unit_ids=loo_unit_ids,
+            _loo_roles=loo_roles,
+            _fit_snapshot=fit_snapshot,
         )
 
         self._unit_weights = unit_weights
