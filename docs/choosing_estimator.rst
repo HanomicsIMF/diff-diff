@@ -293,9 +293,9 @@ Phase 3 will add covariate adjustment.
 
 .. note::
 
-   ``ChaisemartinDHaultfoeuille`` does not yet support ``survey_design``;
-   passing it raises ``NotImplementedError``. Survey integration is
-   deferred to a separate effort after Phases 2 and 3 ship.
+   ``ChaisemartinDHaultfoeuille`` supports ``survey_design`` with pweight
+   and strata/PSU/FPC via Taylor Series Linearization. Replicate weights
+   are not yet supported.
 
 Synthetic DiD
 ~~~~~~~~~~~~~
@@ -726,10 +726,10 @@ estimation. The depth of support varies by estimator:
      - Full
      - Multiplier at PSU
    * - ``ChaisemartinDHaultfoeuille``
+     - pweight only
+     - Full (TSL)
      - --
-     - --
-     - --
-     - --
+     - Group-level (warning)
    * - ``TripleDifference``
      - pweight only
      - Full

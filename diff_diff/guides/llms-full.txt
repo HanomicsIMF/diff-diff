@@ -265,8 +265,8 @@ est.fit(
     trends_linear: bool | None = None,           # Phase 3: DID^{fd}
     trends_nonparam: Any | None = None,          # Phase 3: DID^s
     honest_did: bool = False,                    # Phase 3: HonestDiD integration
-    # ---- deferred (separate effort) ----
-    survey_design: Any = None,
+    # ---- survey support ----
+    survey_design: SurveyDesign | None = None,    # pweight + strata/PSU/FPC (TSL)
 ) -> ChaisemartinDHaultfoeuilleResults
 ```
 
@@ -322,7 +322,7 @@ print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 - Validated against R `DIDmultiplegtDYN` v2.3.3 at horizon `l = 1` via `tests/test_chaisemartin_dhaultfoeuille_parity.py`
 - Phase 1 placebo SE is intentionally `NaN` with a warning. The dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only — not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo. Until then, the placebo point estimate is meaningful but its inference fields stay NaN-consistent **even when `n_bootstrap > 0`** (bootstrap currently covers `DID_M`, `DID_+`, and `DID_-` only)
 - The analytical CI is conservative under Assumption 8 (independent groups) of the dynamic companion paper, exact only under iid sampling
-- Survey design (`survey_design`) is not yet supported and is deferred to a separate effort after all phases ship
+- Survey design supported: pweight with strata/PSU/FPC via Taylor Series Linearization. Replicate weights and PSU-level bootstrap deferred
 
 ### SunAbraham
 

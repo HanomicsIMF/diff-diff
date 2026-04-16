@@ -627,7 +627,7 @@ Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` param
 
 **Requirements checklist:**
 - [x] Single class `ChaisemartinDHaultfoeuille` (alias `DCDH`); not a family
-- [x] Forward-compat `fit()` signature with `NotImplementedError` gates for remaining parameters (`aggregate`, `survey_design`); Phase 3 gates lifted for `controls`, `trends_linear`, `trends_nonparam`, `honest_did`
+- [x] Forward-compat `fit()` signature with `NotImplementedError` gate for `aggregate`; survey_design now supported (pweight + strata/PSU/FPC via TSL); Phase 3 gates lifted for `controls`, `trends_linear`, `trends_nonparam`, `honest_did`
 - [x] `DID_M` point estimate with cohort-recentered analytical SE
 - [x] Joiners-only `DID_+` and leavers-only `DID_-` decompositions with their own inference
 - [x] Single-lag placebo `DID_M^pl` (point estimate; SE deferred to Phase 2)
@@ -648,6 +648,8 @@ Alternative: Multiplier bootstrap clustered at group via the `n_bootstrap` param
 - [x] Heterogeneity testing via saturated OLS (Web Appendix Section 1.5, Lemma 7)
 - [x] Design-2 switch-in/switch-out descriptive wrapper (Web Appendix Section 1.6)
 - [x] HonestDiD (Rambachan-Roth 2023) integration on placebo + event study surface
+- [x] Survey design support: pweight with strata/PSU/FPC via Taylor Series Linearization. Replicate weights and PSU-level bootstrap deferred.
+- **Note:** Survey IF expansion (`psi_i = U[g] * (w_i / W_g)`) is a library extension not in the dCDH papers. The paper's plug-in variance assumes iid sampling; the TSL variance accounts for complex survey design by expanding group-level influence functions to observation level proportionally to survey weights, then applying the standard Binder (1983) stratified PSU variance formula.
 
 ---
 

@@ -181,7 +181,7 @@ The dynamic companion paper subsumes the AER 2020 paper: `DID_1 = DID_M`. The si
 
 These are referenced by the dCDH papers but live in *separate* efforts or *separate* companion papers we don't yet have:
 
-- **Survey design integration** — deferred to a separate effort after all three phases ship. Phase 1 documents "no survey support" in the compatibility matrix; the separate effort revisits when Phase 3 is complete.
+- **Survey design integration** — shipped. Supports pweight with strata/PSU/FPC via Taylor Series Linearization. Replicate weights and PSU-level bootstrap deferred.
 - **Fuzzy DiD** (within-cell-varying treatment, Web Appendix Section 1.7 of dynamic paper) → de Chaisemartin & D'Haultfœuille (2018), separate paper not yet reviewed
 - **Principled anticipation handling and trimming rules** (footnote 14 of dynamic paper) → de Chaisemartin (2021), separate paper not yet reviewed
 - **2SLS DiD** (referenced in AER appendix Section 3.4) → separate paper
@@ -195,7 +195,7 @@ These remain in **Future Estimators** below if/when we choose to extend.
 - **Conservative CI** under Assumption 8 (independent groups), exact only under iid sampling. Documented in REGISTRY.md as a `**Note:**` deviation from "default nominal coverage." Theorem 1 of the dynamic paper.
 - **Cohort recentering for variance is essential.** Cohorts are defined by the triple `(D_{g,1}, F_g, S_g)`. The plug-in variance subtracts cohort-conditional means, **NOT a single grand mean**. Test fixtures must catch this — a wrong implementation silently produces a smaller, incorrect variance.
 - **No Rust acceleration is planned for any phase.** The estimator's hot path is groupby + BLAS-accelerated matrix-vector products, where NumPy already operates near-optimally. If profiling on large panels (`G > 100K`) reveals a bottleneck post-ship, the existing `_rust_bootstrap_weights` helper can be reused for the bootstrap loop without writing new Rust code.
-- **No survey design integration in any phase.** Handled as a separate effort after all three phases ship. Phase 1 documents the absence in the compatibility matrix so survey users do not silently apply survey weights and get wrong answers.
+- **Survey design integration shipped.** Supports pweight with strata/PSU/FPC via TSL. Replicate weights and PSU-level bootstrap deferred to a follow-up.
 
 ---
 

@@ -911,6 +911,47 @@ def _validate_unit_constant_survey(data, unit_col, survey_design):
                 )
 
 
+def _validate_group_constant_survey(data, group_col, survey_design):
+    """Validate that survey design columns are constant within groups.
+
+    The dCDH estimator aggregates to ``(group, time)`` cells and then
+    works at the group level. Survey columns (weights, strata, PSU)
+    must not vary within groups for the IF expansion and survey variance
+    to be well-defined.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input data (pre-aggregation).
+    group_col : str
+        Group identifier column name.
+    survey_design : SurveyDesign
+        Survey design specification (uses attribute names, not resolved arrays).
+
+    Raises
+    ------
+    ValueError
+        If any survey column varies within groups.
+    """
+    cols_to_check = [
+        survey_design.weights,
+        survey_design.strata,
+        survey_design.psu,
+        survey_design.fpc,
+    ]
+    for col in cols_to_check:
+        if col is not None and col in data.columns:
+            n_unique = data.groupby(group_col)[col].nunique()
+            varying_groups = n_unique[n_unique > 1]
+            if len(varying_groups) > 0:
+                raise ValueError(
+                    f"Survey column '{col}' varies within groups "
+                    f"(found {len(varying_groups)} groups with multiple values). "
+                    f"dCDH survey support requires survey design columns to be "
+                    f"constant within groups."
+                )
+
+
 def _resolve_pweight_only(resolved_survey, estimator_name):
     """Guard: reject non-pweight and strata/PSU/FPC for pweight-only estimators.
 
