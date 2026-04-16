@@ -545,11 +545,15 @@ def _handle_synthetic(results: Any):
                 "which units move the ATT the most."
             ),
             code=(
-                "if results.variance_method == 'jackknife':\n"
+                "# Requires variance_method='jackknife' AND enough support for LOO\n"
+                "# (n_treated >= 2 and >= 2 effective-weight controls).\n"
+                "if getattr(results, '_loo_unit_ids', None) is not None:\n"
                 "    loo_df = results.get_loo_effects_df()\n"
                 "    print(loo_df.head(10))\n"
                 "else:\n"
-                "    print('Re-fit with variance_method=\"jackknife\" to see LOO.')"
+                "    print('LOO not available - re-fit with '\n"
+                "          'variance_method=\"jackknife\" and ensure >=2 treated units '\n"
+                "          'with positive effective support.')"
             ),
             priority="medium",
             step_name="sensitivity",

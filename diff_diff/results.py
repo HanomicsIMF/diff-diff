@@ -793,6 +793,23 @@ class SyntheticDiDResults:
             f"p={self.p_value:.4f})"
         )
 
+    def __getstate__(self) -> Dict[str, Any]:
+        """Exclude the internal fit snapshot from pickling.
+
+        The snapshot retains outcome matrices, unit IDs, and survey weights
+        to support post-hoc diagnostics (`in_time_placebo`,
+        `sensitivity_to_zeta_omega`). Serialization would otherwise carry
+        that panel state to wherever the pickle is sent, which is a privacy
+        hazard for survey-weighted or sensitive fits.
+
+        Unpickled results keep the public fields (ATT, weights, trajectories,
+        etc.); calling a diagnostic method that needs the snapshot raises a
+        ValueError directing the user to re-fit.
+        """
+        state = self.__dict__.copy()
+        state["_fit_snapshot"] = None
+        return state
+
     @property
     def coef_var(self) -> float:
         """Coefficient of variation: SE / |ATT|. NaN when ATT is 0 or SE non-finite."""

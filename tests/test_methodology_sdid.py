@@ -1994,3 +1994,85 @@ class TestPractitionerSdidReferences:
         steps, _ = _handle_synthetic(res)
         for step in steps:
             ast.parse(step["code"])
+
+    def test_jackknife_loo_snippet_handles_unavailable_loo(self):
+        """When variance_method='jackknife' but LOO is unavailable
+        (e.g., n_treated=1 returns empty jackknife array), the LOO snippet
+        should degrade gracefully instead of raising."""
+        from diff_diff.practitioner import _handle_synthetic
+
+        df = _make_panel(n_control=10, n_treated=1, n_pre=5, n_post=3, seed=97)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sdid = SyntheticDiD(variance_method="jackknife", seed=97)
+            res = sdid.fit(df, outcome="outcome", treatment="treated",
+                           unit="unit", time="period",
+                           post_periods=list(range(5, 8)))
+        assert res.variance_method == "jackknife"
+        assert res._loo_unit_ids is None  # LOO intentionally unavailable
+
+        steps, _ = _handle_synthetic(res)
+        loo_snippet = next(
+            s["code"] for s in steps if "get_loo_effects_df" in s["code"]
+        )
+        # Executing the snippet against this result must not raise.
+        import io
+        import contextlib
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            exec(loo_snippet, {"results": res})
+        assert "LOO not available" in captured.getvalue()
+
+
+class TestSyntheticDiDResultsPickle:
+    """Pickle round-trip drops the fit snapshot; diagnostic methods raise
+    with the documented recovery message."""
+
+    def _fit(self, seed=101):
+        df = _make_panel(seed=seed)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=seed)
+        return sdid.fit(df, outcome="outcome", treatment="treated",
+                        unit="unit", time="period")
+
+    def test_snapshot_dropped_on_pickle(self):
+        import pickle
+
+        res = self._fit()
+        assert res._fit_snapshot is not None  # present pre-pickle
+
+        restored = pickle.loads(pickle.dumps(res))
+        assert restored._fit_snapshot is None
+        # Public fields survive
+        assert restored.att == res.att
+        assert restored.se == res.se
+        assert np.allclose(
+            restored.synthetic_pre_trajectory, res.synthetic_pre_trajectory
+        )
+
+    def test_in_time_placebo_raises_after_pickle(self):
+        import pickle
+
+        res = self._fit(seed=103)
+        restored = pickle.loads(pickle.dumps(res))
+        with pytest.raises(ValueError, match="fit snapshot"):
+            restored.in_time_placebo()
+
+    def test_sensitivity_raises_after_pickle(self):
+        import pickle
+
+        res = self._fit(seed=105)
+        restored = pickle.loads(pickle.dumps(res))
+        with pytest.raises(ValueError, match="fit snapshot"):
+            restored.sensitivity_to_zeta_omega()
+
+    def test_live_instance_snapshot_untouched_by_getstate(self):
+        """__getstate__ must not mutate the live object's snapshot —
+        only the returned state dict carries the nulled field."""
+        res = self._fit(seed=107)
+        snap_before = res._fit_snapshot
+        assert snap_before is not None
+        _ = res.__getstate__()
+        # Live instance unchanged after __getstate__ call
+        assert res._fit_snapshot is snap_before
+        # Diagnostics still work in the live session
+        _ = res.in_time_placebo(fake_treatment_periods=[2])
