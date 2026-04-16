@@ -228,7 +228,7 @@ EDiD = EfficientDiD
 ETWFE = WooldridgeDiD
 DCDH = ChaisemartinDHaultfoeuille
 
-__version__ = "3.1.0"
+__version__ = "3.1.1"
 __all__ = [
     # Estimators
     "DifferenceInDifferences",
