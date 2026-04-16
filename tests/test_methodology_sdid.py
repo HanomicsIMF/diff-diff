@@ -1927,6 +1927,30 @@ class TestSensitivityToZetaOmega:
             "max_unit_weight", "effective_n",
         ]
 
+    def test_empty_zeta_grid_preserves_schema(self):
+        df = _make_panel(seed=91)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=91)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        sens = res.sensitivity_to_zeta_omega(zeta_grid=[])
+        assert sens.shape == (0, 5)
+        assert list(sens.columns) == [
+            "zeta_omega", "att", "pre_fit_rmse",
+            "max_unit_weight", "effective_n",
+        ]
+
+    def test_empty_multipliers_preserves_schema(self):
+        df = _make_panel(seed=93)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=93)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        sens = res.sensitivity_to_zeta_omega(multipliers=())
+        assert sens.shape == (0, 5)
+        assert list(sens.columns) == [
+            "zeta_omega", "att", "pre_fit_rmse",
+            "max_unit_weight", "effective_n",
+        ]
+
 
 class TestPractitionerSdidReferences:
     """_handle_synthetic in practitioner.py references real callables."""

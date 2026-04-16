@@ -1311,6 +1311,16 @@ class SyntheticDiDResults:
             y_pre_t_mean = np.mean(snap.Y_pre_treated, axis=1)
             y_post_t_mean = np.mean(snap.Y_post_treated, axis=1)
 
+        columns = [
+            "zeta_omega",
+            "att",
+            "pre_fit_rmse",
+            "max_unit_weight",
+            "effective_n",
+        ]
+        if not zeta_values:
+            return pd.DataFrame(columns=columns)
+
         time_weights = np.asarray(self.time_weights_array, dtype=float)
         rows: List[Dict[str, Any]] = []
         for z in zeta_values:
@@ -1358,7 +1368,7 @@ class SyntheticDiDResults:
                     "effective_n": float("nan") if herf == 0 else 1.0 / herf,
                 }
             )
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows, columns=columns)
 
     def get_weight_concentration(self, top_k: int = 5) -> Dict[str, Any]:
         """
