@@ -776,13 +776,19 @@ class SyntheticDiDResults:
     # Frank-Wolfe time weights as ndarray, needed by sensitivity_to_zeta_omega
     # which holds time weights fixed
     time_weights_array: Optional[np.ndarray] = field(default=None)
-    # Per-position unit ID / role arrays parallel to placebo_effects when
-    # variance_method == "jackknife". Private — access via get_loo_effects_df().
-    _loo_unit_ids: Optional[List[Any]] = field(default=None, repr=False)
-    _loo_roles: Optional[List[str]] = field(default=None, repr=False)
-    # Snapshot of fit() matrices and IDs for post-hoc re-estimation
-    # (in_time_placebo, sensitivity_to_zeta_omega). Private — not part of API.
-    _fit_snapshot: Optional[_SyntheticDiDFitSnapshot] = field(default=None, repr=False)
+
+    # Internal diagnostic state attached by SyntheticDiD.fit() after
+    # construction as plain instance attributes (NOT dataclass fields). Kept
+    # out of the field list deliberately so dataclass-recursive serializers
+    # (dataclasses.asdict, dataclasses.fields, dataclasses.replace) cannot
+    # reach the retained panel state or unit IDs. See __post_init__ for
+    # None-initialization; SyntheticDiD.fit() populates.
+    def __post_init__(self):
+        # Plain attributes rather than dataclass fields so asdict()-style
+        # recursion cannot serialize internal panel state.
+        self._loo_unit_ids: Optional[List[Any]] = None
+        self._loo_roles: Optional[List[str]] = None
+        self._fit_snapshot: Optional[_SyntheticDiDFitSnapshot] = None
 
     def __repr__(self) -> str:
         """Concise string representation."""

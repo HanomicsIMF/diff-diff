@@ -614,7 +614,11 @@ class SyntheticDiD(DifferenceInDifferences):
         ):
             _arr.setflags(write=False)
 
-        # Store results
+        # Store results. Internal diagnostic state (_loo_*, _fit_snapshot)
+        # is attached as plain attributes after construction so that
+        # dataclass-recursive serializers (dataclasses.asdict,
+        # dataclasses.fields, dataclasses.replace) cannot reach retained
+        # panel state or unit IDs.
         self.results_ = SyntheticDiDResults(
             att=att,
             se=se,
@@ -642,10 +646,10 @@ class SyntheticDiD(DifferenceInDifferences):
             treated_pre_trajectory=treated_pre_trajectory,
             treated_post_trajectory=treated_post_trajectory,
             time_weights_array=time_weights,
-            _loo_unit_ids=loo_unit_ids,
-            _loo_roles=loo_roles,
-            _fit_snapshot=fit_snapshot,
         )
+        self.results_._loo_unit_ids = loo_unit_ids
+        self.results_._loo_roles = loo_roles
+        self.results_._fit_snapshot = fit_snapshot
 
         self._unit_weights = unit_weights
         self._time_weights = time_weights

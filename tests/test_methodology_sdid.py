@@ -2076,3 +2076,27 @@ class TestSyntheticDiDResultsPickle:
         assert res._fit_snapshot is snap_before
         # Diagnostics still work in the live session
         _ = res.in_time_placebo(fake_treatment_periods=[2])
+
+    def test_snapshot_excluded_from_dataclass_fields(self):
+        """_fit_snapshot and _loo_* must be plain instance attributes, not
+        dataclass fields, so dataclass-recursive serializers (asdict,
+        fields, replace) cannot reach retained panel state."""
+        import dataclasses
+
+        res = self._fit(seed=109)
+        field_names = {f.name for f in dataclasses.fields(res)}
+        assert "_fit_snapshot" not in field_names
+        assert "_loo_unit_ids" not in field_names
+        assert "_loo_roles" not in field_names
+
+    def test_asdict_excludes_internal_diagnostic_state(self):
+        """dataclasses.asdict() must not recurse into the retained panel
+        snapshot or the LOO unit ID arrays."""
+        import dataclasses
+
+        res = self._fit(seed=111)
+        assert res._fit_snapshot is not None  # live instance retains it
+        d = dataclasses.asdict(res)
+        assert "_fit_snapshot" not in d
+        assert "_loo_unit_ids" not in d
+        assert "_loo_roles" not in d
