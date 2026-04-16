@@ -841,3 +841,150 @@ class TestZeroWeightSubpopulation:
             survey_design=sd,
         )
         assert np.isfinite(result.overall_att)
+
+    def test_zero_weight_row_with_nan_outcome(self, base_data):
+        """A zero-weight row with NaN outcome must not trip the outcome
+        NaN validator. SurveyDesign.subpopulation() contract."""
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        sample = df_.iloc[0].copy()
+        sample["outcome"] = np.nan
+        sample["pw"] = 0.0
+        df_ = pd.concat([df_, pd.DataFrame([sample])], ignore_index=True)
+        sd = SurveyDesign(weights="pw")
+        # Must succeed — zero-weight row with NaN outcome is out-of-sample
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+
+    def test_zero_weight_row_with_nan_heterogeneity(self, base_data):
+        """A zero-weight row with NaN in the heterogeneity column must
+        not trip the heterogeneity time-invariance validator."""
+        rng = np.random.default_rng(0)
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        groups = sorted(df_["group"].unique())
+        het_map = {g: rng.uniform(-1, 1) for g in groups}
+        df_["x_het"] = df_["group"].map(het_map)
+        # Inject a zero-weight row with NaN het value for an existing group
+        sample = df_.iloc[0].copy()
+        sample["x_het"] = np.nan
+        sample["pw"] = 0.0
+        df_ = pd.concat([df_, pd.DataFrame([sample])], ignore_index=True)
+        sd = SurveyDesign(weights="pw")
+        # Must succeed — zero-weight row with NaN het is out-of-sample
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=1, heterogeneity="x_het", survey_design=sd,
+        )
+        assert result.heterogeneity_effects is not None
+
+
+# ── Test: Survey + trends_linear ────────────────────────────────────
+
+
+class TestSurveyTrendsLinear:
+    """Survey-backed trends_linear fit must populate linear_trends_effects."""
+
+    def test_survey_trends_linear_runs(self, data_with_survey):
+        sd = SurveyDesign(weights="pw")
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            data_with_survey,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=2, trends_linear=True, survey_design=sd,
+        )
+        assert r.survey_metadata is not None
+        # linear_trends_effects populated per REGISTRY line 614 contract
+        assert r.linear_trends_effects is not None
+        # At least one horizon should be estimable with finite value
+        finite_horizons = [
+            h for h, entry in r.linear_trends_effects.items()
+            if np.isfinite(entry.get("effect", np.nan))
+        ]
+        assert len(finite_horizons) > 0, (
+            "expected at least one horizon with finite linear_trends_effect"
+        )
+
+
+# ── Test: Survey + trends_nonparam ──────────────────────────────────
+
+
+class TestSurveyTrendsNonparam:
+    """Survey-backed trends_nonparam fit must thread set-restrictions."""
+
+    def test_survey_trends_nonparam_runs(self, data_with_survey):
+        # Reuse stratum as set ID (time-invariant per group)
+        sd = SurveyDesign(weights="pw")
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            data_with_survey,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=2, trends_nonparam="stratum", survey_design=sd,
+        )
+        assert r.survey_metadata is not None
+        assert r.event_study_effects is not None
+        # Support trimming may reduce counts but at least one finite-SE
+        # horizon should remain on this fixture.
+        finite_ses = [
+            entry
+            for entry in r.event_study_effects.values()
+            if np.isfinite(entry.get("se", np.nan))
+        ]
+        assert len(finite_ses) > 0, (
+            "expected at least one event-study horizon with finite SE "
+            "under trends_nonparam + survey"
+        )
+
+
+# ── Test: Survey + design2 ──────────────────────────────────────────
+
+
+class TestSurveyDesign2:
+    """Survey-backed design2 fit must populate design2_effects."""
+
+    @staticmethod
+    def _make_join_then_leave_panel(seed=42, n_groups=30, n_periods=8):
+        """Panel with join-then-leave (Design-2) groups, matching the
+        existing design2 fixture in test_chaisemartin_dhaultfoeuille.py."""
+        rng = np.random.RandomState(seed)
+        rows = []
+        for g in range(n_groups):
+            group_fe = rng.normal(0, 2)
+            for t in range(n_periods):
+                if g < 10:
+                    d = 1 if 2 <= t < 5 else 0
+                elif g < 20:
+                    d = 1 if t >= 3 else 0
+                else:
+                    d = 0
+                y = group_fe + 2.0 * t + 5.0 * d + rng.normal(0, 0.3)
+                rows.append(
+                    {"group": g, "period": t, "treatment": d, "outcome": y, "pw": 1.0}
+                )
+        return pd.DataFrame(rows)
+
+    def test_survey_design2_runs(self):
+        df_ = self._make_join_then_leave_panel()
+        sd = SurveyDesign(weights="pw")
+        # drop_larger_lower=False keeps the 2-switch groups
+        r = ChaisemartinDHaultfoeuille(
+            seed=1, drop_larger_lower=False
+        ).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=1, design2=True, survey_design=sd,
+        )
+        assert r.survey_metadata is not None
+        assert r.design2_effects is not None
+        assert r.design2_effects["n_design2_groups"] == 10
+        # switch_in and switch_out mean effects should be finite
+        assert np.isfinite(r.design2_effects["switch_in"]["mean_effect"])
+        assert np.isfinite(r.design2_effects["switch_out"]["mean_effect"])

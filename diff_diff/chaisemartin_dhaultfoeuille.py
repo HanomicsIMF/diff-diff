@@ -157,6 +157,16 @@ def _validate_and_aggregate_to_cells(
 
     df = data.copy()
 
+    # 1a. SurveyDesign.subpopulation() contract: zero-weight rows are
+    # out-of-sample. Pre-filter them *before* any NaN/coercion validation
+    # so that invalid values in excluded rows do not abort the fit.
+    if weights is not None:
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        pos_mask = weights_arr > 0
+        if not pos_mask.all():
+            df = df.loc[pos_mask].reset_index(drop=True)
+            weights = weights_arr[pos_mask]
+
     # 1b. Group and time NaN checks (before groupby, which silently drops NaN keys)
     n_nan_group = int(df[group].isna().sum())
     if n_nan_group > 0:
@@ -210,19 +220,8 @@ def _validate_and_aggregate_to_cells(
 
     # 5. Cell aggregation (compute min/max for within-cell check)
     if weights is not None:
-        # Zero-weight rows are out-of-sample (e.g., via
-        # SurveyDesign.subpopulation()). Pre-filter them before the
-        # groupby so that d_min/d_max/n_gt reflect the effective sample
-        # and a zero-weight obs cannot trip the within-cell treatment-
-        # constancy check or inflate downstream n_gt counts.
-        weights_arr = np.asarray(weights, dtype=np.float64)
-        pos_mask = weights_arr > 0
-        if not pos_mask.all():
-            df = df.loc[pos_mask].reset_index(drop=True)
-            weights_arr = weights_arr[pos_mask]
-        weights = weights_arr
-
-        # Survey-weighted cell aggregation.
+        # Survey-weighted cell aggregation (zero-weight rows already
+        # filtered upstream at step 1a).
         # y_gt = sum(w_i * y_i) / sum(w_i) within each (g, t) cell.
         # Treatment is constant within cells (checked below), so weighted
         # and unweighted means are identical for d_gt.
@@ -730,8 +729,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"Control column(s) {missing_controls!r} not found in "
                     f"data. Available columns: {list(data.columns)}"
                 )
-            # Work on a copy to avoid mutating the caller's DataFrame
-            data_controls = data[controls].copy()
+            # SurveyDesign.subpopulation() contract: zero-weight rows are
+            # out-of-sample. Scope NaN/Inf validation to positive-weight
+            # rows so that excluded obs with missing covariates do not
+            # abort the fit. The downstream weighted aggregation
+            # (sum(w*x)/sum(w)) handles zero-weight rows correctly on
+            # its own.
+            if survey_weights is not None:
+                pos_mask_ctrl = np.asarray(survey_weights) > 0
+                data_controls = data.loc[pos_mask_ctrl, controls].copy()
+            else:
+                data_controls = data[controls].copy()
             for c in controls:
                 try:
                     data_controls[c] = pd.to_numeric(data_controls[c])
@@ -1196,8 +1204,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"trends_nonparam column {set_col!r} not found in "
                     f"data. Available columns: {list(data.columns)}"
                 )
-            # Reject NaN/missing set assignments
-            n_na_set = int(data[set_col].isna().sum())
+            # SurveyDesign.subpopulation() contract: scope NaN and
+            # time-invariance validation to positive-weight rows so
+            # excluded obs with missing set IDs do not abort the fit.
+            if survey_weights is not None:
+                pos_mask_tnp = np.asarray(survey_weights) > 0
+                data_tnp = data.loc[pos_mask_tnp]
+            else:
+                data_tnp = data
+            # Reject NaN/missing set assignments (effective sample only)
+            n_na_set = int(data_tnp[set_col].isna().sum())
             if n_na_set > 0:
                 raise ValueError(
                     f"trends_nonparam column {set_col!r} contains "
@@ -1205,7 +1221,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"have a valid set assignment."
                 )
             # Aggregate set membership per group (must be time-invariant)
-            set_per_group = data.groupby(group)[set_col].nunique()
+            set_per_group = data_tnp.groupby(group)[set_col].nunique()
             time_varying = set_per_group[set_per_group > 1]
             if len(time_varying) > 0:
                 raise ValueError(
@@ -1217,7 +1233,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # Set partition must be coarser than group (multiple groups
             # per set). A group-level partition creates singleton sets
             # with no within-set controls available.
-            set_map_check = data.groupby(group)[set_col].first()
+            set_map_check = data_tnp.groupby(group)[set_col].first()
             n_sets = set_map_check.nunique()
             n_groups_total = len(set_map_check)
             if n_sets >= n_groups_total:
@@ -1229,7 +1245,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"within-set controls."
                 )
             # Extract set membership per group aligned with all_groups
-            set_map = data.groupby(group)[set_col].first()
+            set_map = data_tnp.groupby(group)[set_col].first()
             set_ids_arr = np.array(
                 [set_map.loc[g] for g in all_groups], dtype=object
             )
@@ -2376,8 +2392,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "control-pool restrictions; the results would be "
                     "inconsistent with the fitted estimator."
                 )
-            # Extract per-group covariate (must be time-invariant)
-            het_per_group = data.groupby(group)[het_col].nunique()
+            # Extract per-group covariate (must be time-invariant).
+            # SurveyDesign.subpopulation() contract: scope time-invariance
+            # check to positive-weight rows so excluded obs with NaN/varying
+            # het values do not abort the fit.
+            if survey_weights is not None:
+                pos_mask_het = np.asarray(survey_weights) > 0
+                data_het = data.loc[pos_mask_het]
+            else:
+                data_het = data
+            het_per_group = data_het.groupby(group)[het_col].nunique()
             het_varying = het_per_group[het_per_group > 1]
             if len(het_varying) > 0:
                 raise ValueError(
@@ -2385,7 +2409,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"time-invariant within each group. "
                     f"{len(het_varying)} group(s) have varying values."
                 )
-            het_map = data.groupby(group)[het_col].first()
+            het_map = data_het.groupby(group)[het_col].first()
             X_het = np.array(
                 [float(het_map.loc[g]) for g in all_groups]
             )
