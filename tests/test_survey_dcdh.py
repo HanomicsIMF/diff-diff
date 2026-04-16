@@ -264,21 +264,58 @@ class TestValidation:
                 survey_design=sd,
             )
 
-    def test_rejects_varying_weights_within_group(self, base_data):
-        """Weights must be constant within groups."""
+    def test_varying_weights_within_group_accepted(self, base_data):
+        """Observation-level weights varying within groups are valid."""
+        # Create multi-obs cells with varying weights
+        rng = np.random.default_rng(1)
         df = base_data.copy()
-        # Assign different weights to different observations in the same group
-        df["pw"] = np.random.default_rng(1).uniform(0.5, 3.0, size=len(df))
+        df2 = base_data.copy()
+        df2["outcome"] = df2["outcome"] + rng.normal(0, 0.5, size=len(df2))
+        multi = pd.concat([df, df2], ignore_index=True)
+        # Observation-level weights (vary within group)
+        multi["pw"] = rng.uniform(0.5, 3.0, size=len(multi))
         sd = SurveyDesign(weights="pw")
-        with pytest.raises(ValueError, match="varies within groups"):
-            ChaisemartinDHaultfoeuille().fit(
-                df,
-                outcome="outcome",
-                group="group",
-                time="period",
-                treatment="treatment",
-                survey_design=sd,
-            )
+        # Should succeed - no group-constant restriction
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            multi,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+
+    def test_varying_weights_change_att(self, base_data):
+        """With multi-obs cells and varying weights, ATT differs from unweighted.
+
+        dCDH uses first differences Y_{g,t} - Y_{g,t-1}, so group-constant
+        noise cancels. The noise must vary across both group AND time for
+        weighted cell means to affect the ATT via different first differences.
+        """
+        rng = np.random.default_rng(42)
+        df = base_data.copy()
+        df2 = base_data.copy()
+        # Per-observation noise (varies by group AND time)
+        df2["outcome"] = df2["outcome"] + rng.normal(0, 3.0, size=len(df2))
+        multi = pd.concat([df, df2], ignore_index=True)
+        # Give first copy weight=1, second copy weight=10
+        multi["pw"] = np.where(np.arange(len(multi)) < len(df), 1.0, 10.0)
+        sd = SurveyDesign(weights="pw")
+        result_plain = ChaisemartinDHaultfoeuille(seed=1).fit(
+            multi, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+        )
+        result_survey = ChaisemartinDHaultfoeuille(seed=1).fit(
+            multi, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        # Weighted cell means with time-varying noise produce different
+        # first differences -> different ATT
+        assert result_plain.overall_att != pytest.approx(
+            result_survey.overall_att, abs=0.01
+        )
 
     def test_rejects_replicate_weights(self, base_data):
         """Replicate weight variance not yet supported."""

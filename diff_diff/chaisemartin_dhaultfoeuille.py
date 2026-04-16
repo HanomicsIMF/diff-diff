@@ -630,12 +630,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # ------------------------------------------------------------------
         # Step 3: Survey resolution
         # ------------------------------------------------------------------
-        from diff_diff.survey import (
-            _resolve_survey_for_fit,
-            _validate_group_constant_survey,
-        )
+        from diff_diff.survey import _resolve_survey_for_fit
 
-        resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
+        resolved_survey, survey_weights, _, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
 
@@ -653,8 +650,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "Use strata/PSU/FPC for design-based inference via Taylor "
                     "Series Linearization."
                 )
-            # Validate survey columns are constant within groups.
-            _validate_group_constant_survey(data, group, survey_design)
+            # No group-constant survey validation: the IF expansion
+            # psi_i = U[g] * (w_i / W_g) handles observation-level
+            # variation in weights, strata, and PSU within groups.
 
         # Design-2 precondition: requires drop_larger_lower=False
         if design2 and self.drop_larger_lower:
@@ -4593,27 +4591,21 @@ def _survey_se_from_group_if(
     group_ids = obs_survey_info["group_ids"]
     weights = obs_survey_info["weights"]
     resolved = obs_survey_info["resolved"]
-    n_obs = len(group_ids)
 
-    # Build group → U_centered lookup
-    group_to_u = {}
-    for idx, gid in enumerate(eligible_groups):
-        group_to_u[gid] = U_centered[idx]
+    # Build group → U_centered lookup (vectorized via factorization)
+    group_to_u = {gid: U_centered[idx] for idx, gid in enumerate(eligible_groups)}
 
-    # Compute per-group weight totals W_g
-    group_to_w_total: Dict[Any, float] = {}
-    for i in range(n_obs):
-        gid = group_ids[i]
-        group_to_w_total[gid] = group_to_w_total.get(gid, 0.0) + weights[i]
+    # Map group IFs to observation level
+    u_obs = np.array([group_to_u.get(gid, 0.0) for gid in group_ids])
+
+    # Compute per-group weight totals W_g via bincount
+    unique_gids, inverse = np.unique(group_ids, return_inverse=True)
+    w_totals_per_group = np.bincount(inverse, weights=weights)
+    w_obs_total = w_totals_per_group[inverse]
 
     # Expand to observation level: psi_i = U[g] * (w_i / W_g)
-    psi = np.zeros(n_obs)
-    for i in range(n_obs):
-        gid = group_ids[i]
-        u_val = group_to_u.get(gid, 0.0)
-        w_total = group_to_w_total.get(gid, 1.0)
-        if w_total > 0:
-            psi[i] = u_val * (weights[i] / w_total)
+    safe_w = np.where(w_obs_total > 0, w_obs_total, 1.0)
+    psi = u_obs * (weights / safe_w)
 
     variance = compute_survey_if_variance(psi, resolved)
     if not np.isfinite(variance) or variance < 0:
