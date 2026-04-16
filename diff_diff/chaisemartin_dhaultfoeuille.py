@@ -210,6 +210,18 @@ def _validate_and_aggregate_to_cells(
 
     # 5. Cell aggregation (compute min/max for within-cell check)
     if weights is not None:
+        # Zero-weight rows are out-of-sample (e.g., via
+        # SurveyDesign.subpopulation()). Pre-filter them before the
+        # groupby so that d_min/d_max/n_gt reflect the effective sample
+        # and a zero-weight obs cannot trip the within-cell treatment-
+        # constancy check or inflate downstream n_gt counts.
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        pos_mask = weights_arr > 0
+        if not pos_mask.all():
+            df = df.loc[pos_mask].reset_index(drop=True)
+            weights_arr = weights_arr[pos_mask]
+        weights = weights_arr
+
         # Survey-weighted cell aggregation.
         # y_gt = sum(w_i * y_i) / sum(w_i) within each (g, t) cell.
         # Treatment is constant within cells (checked below), so weighted
@@ -4828,7 +4840,16 @@ def _compute_twfe_diagnostic(
     """
     X, _ = _build_group_time_design(cell, group_col, time_col)
     d_arr = cell["d_gt"].to_numpy().astype(float)
-    n_arr = cell["n_gt"].to_numpy().astype(float)
+    # Cell weight for Theorem 1: under survey_design, survey-weighted
+    # cell totals (w_gt) replace raw cell counts (n_gt) so the FE
+    # regressions, normalization denominator, and Corollary 1 shares
+    # match the observation-level pweighted TWFE estimand. Without
+    # survey_design (w_gt column absent), fall back to n_gt — the
+    # non-survey path is unchanged.
+    if "w_gt" in cell.columns:
+        cell_weight = cell["w_gt"].to_numpy().astype(float)
+    else:
+        cell_weight = cell["n_gt"].to_numpy().astype(float)
     y_arr = cell["y_gt"].to_numpy().astype(float)
 
     # Step 1-2: regress d on FE
@@ -4837,13 +4858,13 @@ def _compute_twfe_diagnostic(
         d_arr,
         return_vcov=False,
         rank_deficient_action=rank_deficient_action,
-        weights=n_arr,
+        weights=cell_weight,
     )
     eps = residuals_d
 
     # Step 3: per-cell weights — normalize by sum over treated cells
     treated_mask = d_arr == 1
-    denom = float((n_arr[treated_mask] * eps[treated_mask]).sum())
+    denom = float((cell_weight[treated_mask] * eps[treated_mask]).sum())
     if denom == 0:
         # Cannot normalize: the design has zero treated mass after FE absorption.
         # Warn so the user knows the diagnostic returned NaN values rather than
@@ -4866,12 +4887,14 @@ def _compute_twfe_diagnostic(
             sigma_fe=float("nan"),
             beta_fe=float("nan"),
         )
-    w_gt = (n_arr * eps) / denom
+    contribution_weights = (cell_weight * eps) / denom
 
     weights_df = cell[[group_col, time_col]].copy()
-    weights_df["weight"] = w_gt
+    weights_df["weight"] = contribution_weights
 
-    fraction_negative = float((w_gt[treated_mask] < 0).sum() / treated_mask.sum())
+    fraction_negative = float(
+        (contribution_weights[treated_mask] < 0).sum() / treated_mask.sum()
+    )
 
     # Step 5: plain TWFE regression of y on (FE + d_gt)
     X_with_d = np.column_stack([X, d_arr.reshape(-1, 1)])
@@ -4880,7 +4903,7 @@ def _compute_twfe_diagnostic(
         y_arr,
         return_vcov=False,
         rank_deficient_action=rank_deficient_action,
-        weights=n_arr,
+        weights=cell_weight,
     )
     beta_fe = float(coef_fe[-1])
 
@@ -4897,12 +4920,14 @@ def _compute_twfe_diagnostic(
     #   sigma(w) = sqrt(sum_treated(s * (w_paper - 1)^2))
     #   sigma_fe = |beta_fe| / sigma(w)
     #
-    # where s_{g,t} = N_{g,t} / N_1 are observation shares.
+    # where s_{g,t} = N_{g,t} / N_1 are observation shares (under
+    # survey_design, cell_weight is w_gt so shares are effective-
+    # weight shares; non-survey path is byte-identical).
     eps_treated = eps[treated_mask]
-    n_treated_arr = n_arr[treated_mask]
-    n1 = float(n_treated_arr.sum())  # total treated observations
-    if n1 > 0:
-        shares = n_treated_arr / n1  # s_{g,t} = N_{g,t} / N_1
+    w_treated_arr = cell_weight[treated_mask]
+    w1 = float(w_treated_arr.sum())  # total treated weight (N_1 or W_1)
+    if w1 > 0:
+        shares = w_treated_arr / w1  # s_{g,t} = w_{g,t} / w_1
         denom_paper = float((shares * eps_treated).sum())
         if abs(denom_paper) > 0:
             w_paper = eps_treated / denom_paper  # paper's w_{g,t}

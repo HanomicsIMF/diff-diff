@@ -725,3 +725,97 @@ class TestSurveyTWFEParity:
                 time="period", treatment="treatment",
                 survey_design=sd,
             )
+
+
+# ── Test: TWFE diagnostic oracle under survey ───────────────────────
+
+
+class TestSurveyTWFEOracle:
+    """twfe_beta_fe under survey must match an observation-level pweighted
+    TWFE regression on the same data (proving w_gt is used, not n_gt)."""
+
+    def test_survey_twfe_matches_obs_level_pweighted_ols(self, data_with_survey):
+        from diff_diff.chaisemartin_dhaultfoeuille import twowayfeweights
+        from diff_diff.linalg import solve_ols
+
+        sd = SurveyDesign(weights="pw")
+        helper = twowayfeweights(
+            data_with_survey,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(helper.beta_fe)
+
+        # Build observation-level TWFE design with group and period FE
+        # (reference category dropped) and treatment indicator.
+        df_ = data_with_survey.copy()
+        groups_u = sorted(df_["group"].unique())
+        periods_u = sorted(df_["period"].unique())
+        g_map = {g: i for i, g in enumerate(groups_u)}
+        t_map = {t: i for i, t in enumerate(periods_u)}
+        g_idx = df_["group"].map(g_map).to_numpy()
+        t_idx = df_["period"].map(t_map).to_numpy()
+        n = len(df_)
+        X_g = np.zeros((n, len(groups_u) - 1))
+        X_t = np.zeros((n, len(periods_u) - 1))
+        for i in range(n):
+            if g_idx[i] > 0:
+                X_g[i, g_idx[i] - 1] = 1.0
+            if t_idx[i] > 0:
+                X_t[i, t_idx[i] - 1] = 1.0
+        intercept = np.ones((n, 1))
+        treat = df_["treatment"].to_numpy().astype(float).reshape(-1, 1)
+        X_obs = np.hstack([intercept, X_g, X_t, treat])
+        y_obs = df_["outcome"].to_numpy().astype(float)
+        w_obs = df_["pw"].to_numpy().astype(float)
+
+        coef, _, _ = solve_ols(
+            X_obs, y_obs,
+            weights=w_obs, weight_type="pweight",
+            return_vcov=False,
+        )
+        beta_oracle = float(coef[-1])
+        # Point-estimate match (one obs per cell in this fixture; so the
+        # cell-level WLS with cell_weight == w_gt equals the obs-level
+        # WLS with w_obs weights).
+        assert helper.beta_fe == pytest.approx(beta_oracle, rel=1e-6), (
+            f"helper.beta_fe={helper.beta_fe} oracle={beta_oracle} "
+            f"— TWFE diagnostic must use w_gt under survey"
+        )
+
+
+# ── Test: Zero-weight subpopulation exclusion ──────────────────────
+
+
+class TestZeroWeightSubpopulation:
+    """Zero-weight rows must not trip fuzzy-DiD guard or inflate counts."""
+
+    def test_mixed_zero_weight_row_excluded_from_validation(self, base_data):
+        """A cell with a positive-weight treated obs and a zero-weight
+        obs with a different treatment value must fit cleanly — the
+        zero-weight row is out-of-sample (SurveyDesign.subpopulation())."""
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        # Pick a treated (g, t) cell. Add a zero-weight row in the same
+        # cell with the opposite treatment value. Unweighted d_min != d_max
+        # would trip the fuzzy-DiD guard; pre-filtering zero-weight rows
+        # must bypass it.
+        treated_mask = df_["treatment"] == 1
+        if not treated_mask.any():
+            pytest.skip("no treated row in fixture")
+        sample = df_[treated_mask].iloc[0].copy()
+        # Flip treatment on the injected row, give it zero weight
+        sample["treatment"] = 0
+        sample["pw"] = 0.0
+        df_ = pd.concat([df_, pd.DataFrame([sample])], ignore_index=True)
+        sd = SurveyDesign(weights="pw")
+
+        # Must succeed (not raise fuzzy-DiD ValueError)
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
