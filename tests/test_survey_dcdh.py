@@ -442,3 +442,134 @@ class TestZeroWeightCells:
             survey_design=sd,
         )
         assert np.isfinite(result.overall_att)
+
+
+# ── Test: Delta overall surface threads survey df ───────────────────
+
+
+class TestSurveyDeltaInference:
+    """Verify the L_max>=2 cost-benefit delta surface uses survey df."""
+
+    def test_survey_delta_uses_survey_df(self, data_with_survey):
+        """Under L_max=2 with a survey design, overall_p_value must match
+        t-distribution inference with df=df_survey (not z-inference)."""
+        from scipy import stats
+
+        sd = SurveyDesign(
+            weights="pw", strata="stratum", psu="cluster", nest=True
+        )
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            data_with_survey,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=2, survey_design=sd,
+        )
+        if not (np.isfinite(r.overall_se) and r.overall_se > 0):
+            pytest.skip("delta not estimable on this fixture")
+
+        assert r.survey_metadata is not None
+        df_s = r.survey_metadata.df_survey
+        assert df_s is not None and df_s > 0, (
+            f"expected positive df_survey, got {df_s}"
+        )
+
+        t_stat = r.overall_att / r.overall_se
+        p_t = 2.0 * (1.0 - stats.t.cdf(abs(t_stat), df=df_s))
+        # Reported p-value must match t-based (proving _df_survey was threaded)
+        assert r.overall_p_value == pytest.approx(p_t, abs=1e-10)
+
+    def test_survey_delta_t_differs_from_z(self, base_data):
+        """With a small-df design (df~4), survey-t p-value must differ
+        measurably from z p-value at the delta surface."""
+        from scipy import stats
+
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        # 2 strata × 3 clusters/stratum = 6 nested PSUs → df_survey = 4
+        groups = sorted(df_["group"].unique())
+        n_g = len(groups)
+        strata_map = {g: i // (n_g // 2) for i, g in enumerate(groups)}
+        psu_map = {g: i // (n_g // 6) for i, g in enumerate(groups)}
+        df_["stratum"] = df_["group"].map(strata_map)
+        df_["cluster"] = df_["group"].map(psu_map)
+        sd = SurveyDesign(
+            weights="pw", strata="stratum", psu="cluster", nest=True
+        )
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=2, survey_design=sd,
+        )
+        if not (np.isfinite(r.overall_se) and r.overall_se > 0):
+            pytest.skip("delta not estimable on this fixture")
+        assert r.survey_metadata is not None
+        df_s = r.survey_metadata.df_survey
+        assert df_s is not None and df_s < 30, (
+            f"expected small df_survey for t-vs-z gap, got {df_s}"
+        )
+
+        t_stat = r.overall_att / r.overall_se
+        p_t = 2.0 * (1.0 - stats.t.cdf(abs(t_stat), df=df_s))
+        p_z = 2.0 * (1.0 - stats.norm.cdf(abs(t_stat)))
+        # Threaded p-value must match t, not z
+        assert r.overall_p_value == pytest.approx(p_t, abs=1e-10)
+        assert abs(r.overall_p_value - p_z) > 1e-6, (
+            "overall_p_value must differ from z-inference when df_survey is small"
+        )
+
+
+# ── Test: Survey + controls (DID^X) ─────────────────────────────────
+
+
+class TestSurveyControls:
+    """Covariate-adjusted (DID^X) path must work with survey_design."""
+
+    def test_survey_plus_controls_runs(self, data_with_survey):
+        """Covariate-adjusted dCDH with survey_design produces finite ATT."""
+        rng = np.random.default_rng(7)
+        df_ = data_with_survey.copy()
+        df_["x"] = rng.normal(0, 1.0, size=len(df_))
+        sd = SurveyDesign(
+            weights="pw", strata="stratum", psu="cluster", nest=True
+        )
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            controls=["x"], L_max=1, survey_design=sd,
+        )
+        assert np.isfinite(r.overall_att)
+        assert r.survey_metadata is not None
+
+
+# ── Test: Survey + HonestDiD ────────────────────────────────────────
+
+
+class TestSurveyHonestDiD:
+    """HonestDiD bounds on survey-backed dCDH results must carry df_survey."""
+
+    def test_survey_honest_did_propagates_df(self, data_with_survey):
+        """results.honest_did_results.df_survey must match
+        results.survey_metadata.df_survey (non-None propagation)."""
+        import warnings
+
+        sd = SurveyDesign(
+            weights="pw", strata="stratum", psu="cluster", nest=True
+        )
+        with warnings.catch_warnings():
+            # dCDH HonestDiD emits a methodology-deviation warning
+            warnings.simplefilter("ignore")
+            r = ChaisemartinDHaultfoeuille(seed=1).fit(
+                data_with_survey,
+                outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                L_max=2, honest_did=True, survey_design=sd,
+            )
+        if r.honest_did_results is None:
+            pytest.skip("HonestDiD computation returned None on this fixture")
+        assert r.survey_metadata is not None
+        df_meta = r.survey_metadata.df_survey
+        assert df_meta is not None
+        # df_survey must propagate from survey_metadata into HonestDiD result
+        assert r.honest_did_results.df_survey == df_meta

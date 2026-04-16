@@ -2146,7 +2146,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 if np.isfinite(delta_se):
                     effective_overall_se = delta_se
                     effective_overall_t, effective_overall_p, effective_overall_ci = safe_inference(
-                        delta_val, delta_se, alpha=self.alpha, df=None
+                        delta_val, delta_se, alpha=self.alpha, df=_df_survey
                     )
                 else:
                     effective_overall_se = float("nan")
@@ -2180,7 +2180,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         # Fallback: NaN SE (Phase 1 path or missing IF)
                         pl_se = float("nan")
                         pl_t, pl_p, pl_ci = safe_inference(
-                            pl_data["placebo_l"], pl_se, alpha=self.alpha, df=None
+                            pl_data["placebo_l"], pl_se, alpha=self.alpha, df=_df_survey
                         )
                         placebo_event_study_dict[-lag_l] = {
                             "effect": pl_data["placebo_l"],
