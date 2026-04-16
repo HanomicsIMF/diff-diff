@@ -227,12 +227,11 @@ def _validate_and_aggregate_to_cells(
         )
         cell["y_gt"] = cell["_wy_sum"] / cell["w_gt"]
         cell = cell.drop(columns=["_wy_sum"])
-        # Zero-weight cells: treat as absent so downstream presence
-        # logic (N_mat > 0) correctly excludes them.
+        # Zero-weight cells: drop entirely so downstream validators
+        # (ragged-panel, baseline requirement) don't see them.
         zero_w_mask = cell["w_gt"] <= 0
         if zero_w_mask.any():
-            cell.loc[zero_w_mask, "n_gt"] = 0
-            cell.loc[zero_w_mask, "y_gt"] = 0.0
+            cell = cell[~zero_w_mask].reset_index(drop=True)
         df.drop(columns=["_w_", "_wy_"], inplace=True)
     else:
         cell = df.groupby([group, time], as_index=False).agg(
@@ -744,7 +743,23 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # Use the coerced copy joined with group/time from original data.
             x_agg_input = data[[group, time]].copy()
             x_agg_input[controls] = data_controls[controls].values
-            x_cell_agg = x_agg_input.groupby([group, time], as_index=False)[controls].mean()
+            if survey_weights is not None:
+                # Survey-weighted covariate cell means: sum(w*x)/sum(w)
+                x_agg_input["_w_"] = survey_weights
+                for c in controls:
+                    x_agg_input[f"_wx_{c}"] = survey_weights * x_agg_input[c].values
+                wx_cols = [f"_wx_{c}" for c in controls]
+                g_agg = x_agg_input.groupby([group, time], as_index=False).agg(
+                    {**{wc: "sum" for wc in wx_cols}, "_w_": "sum"}
+                )
+                for c in controls:
+                    w_safe = g_agg["_w_"].replace(0, 1)
+                    g_agg[c] = g_agg[f"_wx_{c}"] / w_safe
+                x_cell_agg = g_agg[[group, time] + controls]
+            else:
+                x_cell_agg = x_agg_input.groupby(
+                    [group, time], as_index=False
+                )[controls].mean()
             cell = cell.merge(x_cell_agg, on=[group, time], how="left")
 
         # ------------------------------------------------------------------
@@ -1959,17 +1974,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 overall_se = br.overall_se
                 overall_p = br.overall_p_value if br.overall_p_value is not None else np.nan
                 overall_ci = br.overall_ci if br.overall_ci is not None else (np.nan, np.nan)
-                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=None)[0]
+                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=_df_survey)[0]
             if joiners_available and br.joiners_se is not None and np.isfinite(br.joiners_se):
                 joiners_se = br.joiners_se
                 joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
                 joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
-                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=None)[0]
+                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=_df_survey)[0]
             if leavers_available and br.leavers_se is not None and np.isfinite(br.leavers_se):
                 leavers_se = br.leavers_se
                 leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
                 leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
-                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=None)[0]
+                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=_df_survey)[0]
 
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
@@ -2216,7 +2231,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             bs_ci if bs_ci is not None else (np.nan, np.nan)
                         )
                         placebo_event_study_dict[neg_key]["t_stat"] = safe_inference(
-                            eff, bs_se, alpha=self.alpha, df=None
+                            eff, bs_se, alpha=self.alpha, df=_df_survey
                         )[0]
 
         # Phase 2: build normalized_effects with SE
@@ -2229,7 +2244,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # SE via delta method: SE(DID^n_l) = SE(DID_l) / delta^D_l
                 se_did_l = multi_horizon_se.get(l_h, float("nan"))
                 se_norm = se_did_l / denom if np.isfinite(denom) and denom > 0 else float("nan")
-                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=None)
+                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=_df_survey)
                 normalized_effects_out[l_h] = {
                     "effect": eff,
                     "se": se_norm,
@@ -2288,7 +2303,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 else:
                     running_se_ub = float("nan")
                 cum_t, cum_p, cum_ci = safe_inference(
-                    cum_effect, running_se_ub, alpha=self.alpha, df=None
+                    cum_effect, running_se_ub, alpha=self.alpha, df=_df_survey
                 )
                 cumulated[l_h] = {
                     "effect": cum_effect,
