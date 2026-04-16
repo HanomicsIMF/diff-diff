@@ -2394,6 +2394,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 L_max=L_max,
                 alpha=self.alpha,
                 rank_deficient_action=self.rank_deficient_action,
+                group_ids_order=np.array(all_groups),
+                obs_survey_info=_obs_survey_info,
             )
 
         twfe_weights_df = None
@@ -3174,6 +3176,8 @@ def _compute_heterogeneity_test(
     L_max: int,
     alpha: float = 0.05,
     rank_deficient_action: str = "warn",
+    group_ids_order: Optional[np.ndarray] = None,
+    obs_survey_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """Test for heterogeneous treatment effects (Web Appendix Section 1.5).
 
@@ -3192,6 +3196,15 @@ def _compute_heterogeneity_test(
         Time-invariant covariate to test for heterogeneity.
     L_max : int
     alpha : float
+    group_ids_order : np.ndarray, optional
+        Canonical post-filter group id list aligned to Y_mat row order.
+        Required when ``obs_survey_info`` is supplied.
+    obs_survey_info : dict, optional
+        Observation-level survey info with keys ``group_ids`` (raw per-row
+        group labels), ``weights`` (per-row survey weights), and ``resolved``
+        (ResolvedSurveyDesign). When provided, the regression uses WLS with
+        per-group weights W_g = sum of obs survey weights, and SE is computed
+        via Binder TSL IF expansion through ``compute_survey_if_variance``.
 
     Returns
     -------
@@ -3203,6 +3216,39 @@ def _compute_heterogeneity_test(
 
     n_groups, n_periods = Y_mat.shape
     results: Dict[int, Dict[str, Any]] = {}
+
+    # Survey setup (once, before horizon loop). When inactive, df_s=None and
+    # the existing plain-OLS path runs unchanged.
+    use_survey = (
+        obs_survey_info is not None and group_ids_order is not None
+    )
+    if use_survey:
+        from diff_diff.survey import compute_survey_if_variance
+
+        obs_gids_raw = np.asarray(obs_survey_info["group_ids"])
+        obs_w_raw = np.asarray(obs_survey_info["weights"], dtype=np.float64)
+        resolved = obs_survey_info["resolved"]
+        df_s = (
+            resolved.df_survey if resolved is not None else None
+        )
+        # Contract: only obs whose group is in the canonical post-filter
+        # list contribute. Groups dropped upstream (Step 5b interior gaps,
+        # Step 6 multi-switch) appear in obs_gids_raw but must be
+        # zero-weighted in the IF expansion.
+        gid_list = (
+            group_ids_order.tolist()
+            if hasattr(group_ids_order, "tolist")
+            else list(group_ids_order)
+        )
+        gid_set = set(gid_list)
+        valid = np.array([g in gid_set for g in obs_gids_raw])
+        # Per-group total weight aligned to Y_mat row order
+        W_g_all = np.zeros(n_groups, dtype=np.float64)
+        for i, gid in enumerate(gid_list):
+            mask_g = (obs_gids_raw == gid) & valid
+            W_g_all[i] = obs_w_raw[mask_g].sum()
+    else:
+        df_s = None
 
     for l_h in range(1, L_max + 1):
         # Eligible switchers at this horizon (same logic as multi-horizon DID)
@@ -3276,20 +3322,78 @@ def _compute_heterogeneity_test(
             }
             continue
 
-        coefs, _residuals, vcov = solve_ols(
-            design, dep_arr,
-            return_vcov=True,
-            rank_deficient_action=rank_deficient_action,
-        )
+        if not use_survey:
+            # Plain OLS path (unchanged): standard inference per Lemma 7.
+            coefs, _residuals, vcov = solve_ols(
+                design, dep_arr,
+                return_vcov=True,
+                rank_deficient_action=rank_deficient_action,
+            )
+            beta_het = float(coefs[1])
+            se_het = float("nan")
+            if vcov is not None and np.isfinite(vcov[1, 1]) and vcov[1, 1] > 0:
+                se_het = float(np.sqrt(vcov[1, 1]))
+            t_stat, p_val, ci = safe_inference(beta_het, se_het, alpha=alpha, df=None)
+        else:
+            # Survey-aware path: WLS with per-group weights + TSL IF variance.
+            W_elig = W_g_all[eligible]
+            # solve_ols handles sqrt-weight scaling natively when
+            # weight_type='pweight' (linalg.py). Skip vcov — we compute
+            # design-based variance ourselves below.
+            coefs, _residuals, _vcov_ignored = solve_ols(
+                design, dep_arr,
+                weights=W_elig, weight_type="pweight",
+                return_vcov=False,
+                rank_deficient_action=rank_deficient_action,
+            )
+            # Rank-deficiency short-circuit: if any coef is NaN, return NaN
+            # inference. Mixing solve_ols's R-style drop with a pinv-derived
+            # IF would describe different estimands.
+            if not np.all(np.isfinite(coefs)):
+                results[l_h] = {
+                    "beta": float("nan"), "se": float("nan"),
+                    "t_stat": float("nan"), "p_value": float("nan"),
+                    "conf_int": (float("nan"), float("nan")),
+                    "n_obs": n_obs,
+                }
+                continue
 
-        # beta_het is at index 1 (index 0 is intercept)
-        beta_het = float(coefs[1])
-        # NaN-safe: if vcov is None or target coefficient variance is NaN
-        # (rank-deficient), all inference fields are NaN.
-        se_het = float("nan")
-        if vcov is not None and np.isfinite(vcov[1, 1]) and vcov[1, 1] > 0:
-            se_het = float(np.sqrt(vcov[1, 1]))
-        t_stat, p_val, ci = safe_inference(beta_het, se_het, alpha=alpha, df=None)
+            beta_het = float(coefs[1])
+            # Original-scale residuals (solve_ols applies sqrt-weight scaling
+            # internally and back-transforms residuals, but we need them for
+            # our IF computation below).
+            r_g = dep_arr - design @ coefs
+
+            # Group-level IF for β_X: ψ_g[X] = inv(X'WX)[1,:] @ x_g * W_g * r_g.
+            # Under full rank (gated above), pinv == inv. Wrap matmuls in
+            # errstate: macOS Accelerate BLAS can emit spurious divide/overflow
+            # warnings on sparse-cohort designs even though the result is finite.
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                XtWX = design.T @ (W_elig[:, None] * design)
+                XtWX_inv = np.linalg.pinv(XtWX)
+                psi_g = (XtWX_inv[1, :] @ design.T) * W_elig * r_g  # (n_eligible,)
+
+            # Expand to obs level: ψ_i = ψ_g * (w_i / W_g) for i in group g.
+            psi_obs = np.zeros(len(obs_w_raw))
+            for e_idx, g_idx in enumerate(eligible):
+                gid = gid_list[g_idx]
+                mask_g = (obs_gids_raw == gid) & valid
+                w_sum_g = obs_w_raw[mask_g].sum()
+                if w_sum_g > 0:
+                    psi_obs[mask_g] = psi_g[e_idx] * (
+                        obs_w_raw[mask_g] / w_sum_g
+                    )
+
+            # Binder TSL variance across stratified PSUs.
+            var_s = compute_survey_if_variance(psi_obs, resolved)
+            se_het = (
+                float(np.sqrt(var_s))
+                if np.isfinite(var_s) and var_s > 0
+                else float("nan")
+            )
+            t_stat, p_val, ci = safe_inference(
+                beta_het, se_het, alpha=alpha, df=df_s
+            )
 
         results[l_h] = {
             "beta": beta_het,
@@ -4891,6 +4995,7 @@ def twowayfeweights(
     time: str,
     treatment: str,
     rank_deficient_action: str = "warn",
+    survey_design: Any = None,
 ) -> TWFEWeightsResult:
     """
     Standalone TWFE decomposition diagnostic.
@@ -4910,6 +5015,11 @@ def twowayfeweights(
     treatment : str
     rank_deficient_action : str, default="warn"
         Action when the FE design matrix is rank-deficient.
+    survey_design : SurveyDesign, optional
+        If provided, cell aggregation uses survey-weighted cell means
+        (matching ``fit(..., survey_design=sd).twfe_*``). Required to preserve
+        fit-vs-helper parity under survey-backed inputs. Only
+        ``weight_type='pweight'`` is supported; other types raise ValueError.
 
     Returns
     -------
@@ -4917,6 +5027,23 @@ def twowayfeweights(
         Object with attributes ``weights`` (DataFrame), ``fraction_negative``
         (float), ``sigma_fe`` (float), and ``beta_fe`` (float).
     """
+    # Survey resolution (optional): mirrors the fit() path so that the
+    # standalone helper produces identical numbers to fit(..., survey_design=sd).
+    survey_weights = None
+    if survey_design is not None:
+        from diff_diff.survey import _resolve_survey_for_fit
+
+        resolved, survey_weights, _, _ = _resolve_survey_for_fit(
+            survey_design, data, "analytical"
+        )
+        if resolved is not None and resolved.weight_type != "pweight":
+            raise ValueError(
+                f"twowayfeweights() survey support requires "
+                f"weight_type='pweight', got '{resolved.weight_type}'. "
+                f"The TWFE diagnostic under survey uses survey-weighted cell "
+                f"means; other weight types are not supported."
+            )
+
     # Validation + cell aggregation via the same helper used by
     # ChaisemartinDHaultfoeuille.fit() — enforces NaN/binary/within-cell
     # rules from REGISTRY.md so the standalone diagnostic does not
@@ -4927,6 +5054,7 @@ def twowayfeweights(
         group=group,
         time=time,
         treatment=treatment,
+        weights=survey_weights,
     )
     # TWFE diagnostic assumes binary treatment (d_arr == 1 for treated mask).
     if not set(cell["d_gt"].unique()).issubset({0.0, 1.0, 0, 1}):

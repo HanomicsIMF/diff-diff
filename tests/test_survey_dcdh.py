@@ -573,3 +573,155 @@ class TestSurveyHonestDiD:
         assert df_meta is not None
         # df_survey must propagate from survey_metadata into HonestDiD result
         assert r.honest_did_results.df_survey == df_meta
+
+
+# ── Test: Survey-aware heterogeneity ────────────────────────────────
+
+
+class TestSurveyHeterogeneity:
+    """Heterogeneity testing under survey_design uses WLS + TSL IF."""
+
+    def test_uniform_weights_het_matches_unweighted(self, base_data):
+        """Uniform pweights must yield identical β_het to plain OLS path."""
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        # time-invariant group-level covariate
+        rng = np.random.default_rng(0)
+        groups = sorted(df_["group"].unique())
+        het_map = {g: rng.uniform(-1, 1) for g in groups}
+        df_["x_het"] = df_["group"].map(het_map)
+
+        r_plain = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=1, heterogeneity="x_het",
+        )
+        sd = SurveyDesign(weights="pw")
+        r_survey = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=1, heterogeneity="x_het", survey_design=sd,
+        )
+        assert r_plain.heterogeneity_effects is not None
+        assert r_survey.heterogeneity_effects is not None
+        b_plain = r_plain.heterogeneity_effects[1]["beta"]
+        b_survey = r_survey.heterogeneity_effects[1]["beta"]
+        # WLS with uniform weights = OLS; β_het must match
+        if np.isfinite(b_plain) and np.isfinite(b_survey):
+            assert b_plain == pytest.approx(b_survey, abs=1e-8)
+
+    def test_nonuniform_het_changes_beta(self, base_data):
+        """Varying pweights change the WLS point estimate vs plain OLS."""
+        rng = np.random.default_rng(42)
+        df_ = base_data.copy()
+        groups = sorted(df_["group"].unique())
+        het_map = {g: rng.uniform(-1, 1) for g in groups}
+        pw_map = {g: rng.uniform(0.5, 4.0) for g in groups}
+        df_["x_het"] = df_["group"].map(het_map)
+        df_["pw"] = df_["group"].map(pw_map)
+        sd = SurveyDesign(weights="pw")
+
+        r_plain = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=1, heterogeneity="x_het",
+        )
+        r_survey = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=1, heterogeneity="x_het", survey_design=sd,
+        )
+        assert r_plain.heterogeneity_effects is not None
+        assert r_survey.heterogeneity_effects is not None
+        b_plain = r_plain.heterogeneity_effects[1]["beta"]
+        b_survey = r_survey.heterogeneity_effects[1]["beta"]
+        if np.isfinite(b_plain) and np.isfinite(b_survey):
+            # WLS with non-uniform weights differs from unweighted OLS
+            assert b_plain != pytest.approx(b_survey, abs=1e-6), (
+                f"plain={b_plain} survey={b_survey} should differ with varying weights"
+            )
+
+    def test_survey_het_uses_survey_df(self, data_with_survey):
+        """Reported p_value must match t-distribution inference with df_survey."""
+        from scipy import stats
+
+        rng = np.random.default_rng(7)
+        df_ = data_with_survey.copy()
+        groups = sorted(df_["group"].unique())
+        het_map = {g: rng.uniform(-1, 1) for g in groups}
+        df_["x_het"] = df_["group"].map(het_map)
+        sd = SurveyDesign(
+            weights="pw", strata="stratum", psu="cluster", nest=True
+        )
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=1, heterogeneity="x_het", survey_design=sd,
+        )
+        assert r.heterogeneity_effects is not None
+        entry = r.heterogeneity_effects[1]
+        if not (np.isfinite(entry["se"]) and entry["se"] > 0):
+            pytest.skip("heterogeneity SE not estimable on this fixture")
+        assert r.survey_metadata is not None
+        df_s = r.survey_metadata.df_survey
+        assert df_s is not None and df_s > 0
+
+        t_stat = entry["beta"] / entry["se"]
+        p_t = 2.0 * (1.0 - stats.t.cdf(abs(t_stat), df=df_s))
+        assert entry["p_value"] == pytest.approx(p_t, abs=1e-10)
+
+
+# ── Test: TWFE helper parity under survey ───────────────────────────
+
+
+class TestSurveyTWFEParity:
+    """twowayfeweights() with survey_design matches fit().twfe_* under survey."""
+
+    def test_twfe_helper_matches_fit_under_survey(self, data_with_survey):
+        """fit and twowayfeweights() produce identical TWFE output under survey."""
+        from diff_diff.chaisemartin_dhaultfoeuille import twowayfeweights
+
+        sd = SurveyDesign(
+            weights="pw", strata="stratum", psu="cluster", nest=True
+        )
+        r = ChaisemartinDHaultfoeuille(seed=1).fit(
+            data_with_survey,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        helper = twowayfeweights(
+            data_with_survey,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        # fit() twfe_* may be None if non-binary treatment; this fixture is binary
+        assert r.twfe_fraction_negative is not None
+        assert r.twfe_sigma_fe is not None
+        assert r.twfe_beta_fe is not None
+        assert r.twfe_fraction_negative == pytest.approx(
+            helper.fraction_negative, abs=1e-12
+        )
+        assert r.twfe_sigma_fe == pytest.approx(helper.sigma_fe, abs=1e-12)
+        assert r.twfe_beta_fe == pytest.approx(helper.beta_fe, abs=1e-12)
+
+    def test_twfe_helper_rejects_non_pweight(self, base_data):
+        """fweight/aweight must be rejected by twowayfeweights() under survey."""
+        from diff_diff.chaisemartin_dhaultfoeuille import twowayfeweights
+
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        sd = SurveyDesign(weights="pw", weight_type="fweight")
+        with pytest.raises(ValueError, match="pweight"):
+            twowayfeweights(
+                df_,
+                outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd,
+            )
