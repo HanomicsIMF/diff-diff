@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-04-16
+
+### Added
+- **Jackknife variance estimation for SyntheticDiD** - `variance_method='jackknife'` implements the delete-one-unit jackknife from Arkhangelsky et al. (2021) Section 5. Supports both standard and survey-weighted jackknife with automatic `pweight` propagation. Validated against R `synthdid` package.
+- **LinkedIn carousel** for dCDH estimator announcement (`carousel/diff-diff-dcdh-carousel.pdf`)
+
 ## [3.1.0] - 2026-04-14
 
 ### Added
@@ -1289,6 +1295,7 @@ for the full feature history leading to this release.
 [2.1.2]: https://github.com/igerber/diff-diff/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/igerber/diff-diff/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/igerber/diff-diff/compare/v2.0.3...v2.1.0
+[3.1.1]: https://github.com/igerber/diff-diff/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/igerber/diff-diff/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/igerber/diff-diff/compare/v3.0.1...v3.0.2
 [2.0.3]: https://github.com/igerber/diff-diff/compare/v2.0.2...v2.0.3
