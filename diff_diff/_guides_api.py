@@ -16,7 +16,7 @@ def get_llm_guide(variant: str = "concise") -> str:
     Parameters
     ----------
     variant : str, default "concise"
-        Which guide to load. One of:
+        Which guide to load. Names are case-sensitive. One of:
 
         - ``"concise"`` -- compact API reference (llms.txt)
         - ``"full"`` -- complete API documentation (llms-full.txt)
