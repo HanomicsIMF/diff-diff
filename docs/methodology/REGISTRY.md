@@ -2767,7 +2767,7 @@ Domain estimation preserving full design structure.
 
 # Practitioner Guide
 
-The 8-step workflow in `docs/llms-practitioner.txt` is adapted from Baker et al. (2025)
+The 8-step workflow in `diff_diff/guides/llms-practitioner.txt` is adapted from Baker et al. (2025)
 "Difference-in-Differences Designs: A Practitioner's Guide" (arXiv:2503.13323), not a
 1:1 mapping of the paper's forward-engineering framework.
 

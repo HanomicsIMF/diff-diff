@@ -24,7 +24,7 @@ Files that need updating:
 | `pyproject.toml` | `version = "X.Y.Z"` | ~7 |
 | `rust/Cargo.toml` | `version = "X.Y.Z"` | ~3 |
 | `CHANGELOG.md` | Section header + comparison link | Top + bottom |
-| `docs/llms-full.txt` | `- Version: X.Y.Z` | ~5 |
+| `diff_diff/guides/llms-full.txt` | `- Version: X.Y.Z` | ~5 |
 
 ## Instructions
 
@@ -80,7 +80,7 @@ Files that need updating:
      Replace `version = "OLD_VERSION"` (the first version line under [package]) with `version = "NEW_VERSION"`
      Note: Rust version may differ from Python version; always sync to the new version
 
-   - `docs/llms-full.txt`:
+   - `diff_diff/guides/llms-full.txt`:
      Replace `- Version: OLD_VERSION` with `- Version: NEW_VERSION`
 
 6. **Update CHANGELOG comparison links**:
@@ -101,7 +101,7 @@ Files that need updating:
    - diff_diff/__init__.py: __version__ = "NEW_VERSION"
    - pyproject.toml: version = "NEW_VERSION"
    - rust/Cargo.toml: version = "NEW_VERSION"
-   - docs/llms-full.txt: Version: NEW_VERSION
+   - diff_diff/guides/llms-full.txt: Version: NEW_VERSION
    - CHANGELOG.md: Added/verified [NEW_VERSION] entry
 
    Next steps:

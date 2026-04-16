@@ -33,7 +33,7 @@ print(f"ATT: {results.att:.3f} (SE: {results.se:.3f})")
 
 ## Practitioner Workflow (based on Baker et al. 2025)
 
-For rigorous DiD analysis, follow the 8-step framework in docs/llms-practitioner.txt.
+For rigorous DiD analysis, follow the 8-step framework (call `diff_diff.get_llm_guide("practitioner")`).
 After estimation, call:
 
 ```python
