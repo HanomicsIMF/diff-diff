@@ -2575,6 +2575,28 @@ class TestSyntheticDiD:
         assert results.se > 0
         assert results.conf_int[0] < results.att < results.conf_int[1]
 
+    def test_jackknife_inference(self, sdid_panel_data):
+        """Test jackknife-based variance estimation."""
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        results = sdid.fit(
+            sdid_panel_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="period",
+            post_periods=[4, 5, 6, 7],
+        )
+        assert results.variance_method == "jackknife"
+        assert results.se > 0
+        assert results.conf_int[0] < results.att < results.conf_int[1]
+        # n_bootstrap should be None for jackknife
+        assert results.n_bootstrap is None
+
+    def test_jackknife_valid_method(self):
+        """Test that 'jackknife' is accepted as a variance_method."""
+        sdid = SyntheticDiD(variance_method="jackknife")
+        assert sdid.variance_method == "jackknife"
+
     def test_invalid_variance_method(self):
         """Test that invalid variance_method raises ValueError."""
         with pytest.raises(ValueError, match="variance_method must be one of"):
