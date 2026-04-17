@@ -80,7 +80,7 @@ Homepage = "https://github.com/igerber/diff-diff"
 Documentation = "https://diff-diff.readthedocs.io"
 Repository = "https://github.com/igerber/diff-diff"
 Issues = "https://github.com/igerber/diff-diff/issues"
-"Practitioner Guide" = "https://github.com/igerber/diff-diff/blob/main/docs/llms-practitioner.txt"
+"Practitioner Guide" = "https://diff-diff.readthedocs.io/en/stable/llms-practitioner.txt"
 
 [tool.maturin]
 # Build the Rust extension module
@@ -93,6 +93,9 @@ module-name = "diff_diff._rust_backend"
 manifest-path = "rust/Cargo.toml"
 # Include Python packages
 python-packages = ["diff_diff"]
+# Bundle LLM guide files (auto-inclusion varies across maturin 1.4-2.0; pin explicitly).
+# Bare-string glob form includes in both sdist and wheel.
+include = ["diff_diff/guides/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

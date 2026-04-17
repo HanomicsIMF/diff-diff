@@ -139,7 +139,7 @@ category (`Methodology/Correctness`, `Performance`, or `Testing/Docs`):
 | `CONTRIBUTING.md` | Documentation requirements, test writing guidelines |
 | `.claude/commands/dev-checklists.md` | Checklists for params, methodology, warnings, reviews, bugs (run `/dev-checklists`) |
 | `.claude/memory.md` | Debugging patterns, tolerances, API conventions (git-tracked) |
-| `docs/llms-practitioner.txt` | Baker et al. (2025) 8-step practitioner workflow for AI agents |
+| `diff_diff/guides/llms-practitioner.txt` | Baker et al. (2025) 8-step practitioner workflow for AI agents (accessible at runtime via `diff_diff.get_llm_guide("practitioner")`) |
 | `docs/performance-plan.md` | Performance optimization details |
 | `docs/benchmarks.rst` | Validation results vs R |
 

@@ -33,7 +33,7 @@ print(f"ATT: {results.att:.3f} (SE: {results.se:.3f})")
 
 ## Practitioner Workflow (based on Baker et al. 2025)
 
-For rigorous DiD analysis, follow the 8-step framework in docs/llms-practitioner.txt.
+For rigorous DiD analysis, follow the 8-step framework (call `diff_diff.get_llm_guide("practitioner")`).
 After estimation, call:
 
 ```python
@@ -1028,6 +1028,12 @@ Returned by `SyntheticDiD.fit()`.
 | `pre_treatment_fit` | `float` | Pre-treatment RMSE |
 
 **Methods:** `summary()`, `print_summary()`, `to_dict()`, `to_dataframe()`, `get_unit_weights_df()`, `get_time_weights_df()`
+
+**Validation diagnostics** (call after `fit()`):
+- `get_weight_concentration(top_k=5)` - effective N and top-k weight share; flags fragile synthetic controls dominated by a few donor units
+- `get_loo_effects_df()` - per-unit leave-one-out influence from the jackknife pass (DataFrame includes both control and treated rows). Requires `variance_method="jackknife"`; raises `ValueError` if LOO is unavailable (see the method docstring for the full set of conditions, e.g. single treated unit or only one control with nonzero effective weight)
+- `in_time_placebo()` - re-estimate on shifted fake treatment dates in the pre-period; near-zero placebo ATTs indicate a credible design
+- `sensitivity_to_zeta_omega()` - re-estimate across a grid of unit-weight regularization values; checks ATT robustness to the auto-selected zeta_omega
 
 ### TripleDifferenceResults
 

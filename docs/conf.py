@@ -33,7 +33,7 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "llms.txt", "llms-full.txt"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 # -- Options for autodoc -----------------------------------------------------
 autodoc_default_options = {
@@ -71,7 +71,11 @@ _canonical_url = os.environ.get(
     "https://diff-diff.readthedocs.io/en/stable/",
 )
 html_baseurl = _canonical_url
-html_extra_path = ["llms.txt", "llms-full.txt"]
+html_extra_path = [
+    "../diff_diff/guides/llms.txt",
+    "../diff_diff/guides/llms-full.txt",
+    "../diff_diff/guides/llms-practitioner.txt",
+]
 sitemap_url_scheme = "{link}"
 
 html_theme_options = {

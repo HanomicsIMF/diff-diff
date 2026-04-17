@@ -96,10 +96,10 @@ sources:
       - path: README.md
         section: "DifferenceInDifferences"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "DifferenceInDifferences"
         type: user_guide
-      - path: docs/llms.txt
+      - path: diff_diff/guides/llms.txt
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -137,10 +137,10 @@ sources:
       - path: README.md
         section: "CallawaySantAnna"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "CallawaySantAnna"
         type: user_guide
-      - path: docs/llms.txt
+      - path: diff_diff/guides/llms.txt
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -183,7 +183,7 @@ sources:
       - path: README.md
         section: "SunAbraham"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "SunAbraham"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -206,7 +206,7 @@ sources:
       - path: README.md
         section: "ImputationDiD"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "ImputationDiD"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -227,7 +227,7 @@ sources:
       - path: README.md
         section: "TwoStageDiD"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "TwoStageDiD"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -248,7 +248,7 @@ sources:
       - path: README.md
         section: "EfficientDiD"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "EfficientDiD"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -270,10 +270,10 @@ sources:
       - path: README.md
         section: "ChaisemartinDHaultfoeuille"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "ChaisemartinDHaultfoeuille"
         type: user_guide
-      - path: docs/llms.txt
+      - path: diff_diff/guides/llms.txt
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -302,7 +302,7 @@ sources:
       - path: README.md
         section: "ContinuousDiD"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "ContinuousDiD"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -326,7 +326,7 @@ sources:
       - path: README.md
         section: "SyntheticDiD"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "SyntheticDiD"
         type: user_guide
       - path: docs/practitioner_decision_tree.rst
@@ -352,7 +352,7 @@ sources:
       - path: README.md
         section: "TripleDifference"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "TripleDifference"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -373,7 +373,7 @@ sources:
       - path: README.md
         section: "StackedDiD"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "StackedDiD"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -394,7 +394,7 @@ sources:
       - path: README.md
         section: "WooldridgeDiD"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "WooldridgeDiD"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -415,7 +415,7 @@ sources:
       - path: README.md
         section: "TROP"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "TROP"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -438,7 +438,7 @@ sources:
       - path: README.md
         section: "HonestDiD"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "HonestDiD"
         type: user_guide
 
@@ -513,7 +513,7 @@ sources:
       - path: README.md
         section: "Survey"
         type: user_guide
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "Survey"
         type: user_guide
       - path: docs/choosing_estimator.rst
@@ -561,10 +561,10 @@ sources:
     docs:
       - path: docs/api/results.rst
         type: api_reference
-      - path: docs/llms-full.txt
+      - path: diff_diff/guides/llms-full.txt
         section: "Results API"
         type: user_guide
-      - path: docs/llms.txt
+      - path: diff_diff/guides/llms.txt
         type: user_guide
       - path: docs/methodology/REGISTRY.md
         section: "SyntheticDiD"
@@ -616,7 +616,7 @@ sources:
   diff_diff/practitioner.py:
     drift_risk: low
     docs:
-      - path: docs/llms-practitioner.txt
+      - path: diff_diff/guides/llms-practitioner.txt
         type: user_guide
 
   # ── Visualization (visualization group) ────────────────────────────
@@ -632,7 +632,7 @@ sources:
   diff_diff/__init__.py:
     drift_risk: low
     docs:
-      - path: docs/llms.txt
+      - path: diff_diff/guides/llms.txt
         type: user_guide
         note: "Public API surface"
 

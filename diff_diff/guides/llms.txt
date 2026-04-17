@@ -27,13 +27,13 @@ diagnostic steps produces unreliable results.
 After estimation, call `practitioner_next_steps(results)` for context-aware
 guidance on remaining steps.
 
-Full practitioner guide: docs/llms-practitioner.txt
+Full practitioner guide: call `diff_diff.get_llm_guide("practitioner")`
 
 ## Documentation
 
 ### Getting Started
 
-- [Practitioner Guide](docs/llms-practitioner.txt): 8-step workflow for rigorous DiD analysis (Baker et al. 2025) — **start here**
+- **Practitioner Guide** (call `diff_diff.get_llm_guide("practitioner")`): 8-step workflow for rigorous DiD analysis (Baker et al. 2025) — **start here**
 - [Quickstart](https://diff-diff.readthedocs.io/en/stable/quickstart.html): Installation, basic 2x2 DiD — column-name and formula interfaces, covariates, fixed effects, cluster-robust SEs
 - [Choosing an Estimator](https://diff-diff.readthedocs.io/en/stable/choosing_estimator.html): Decision flowchart for selecting the right estimator for your research design
 - [Troubleshooting](https://diff-diff.readthedocs.io/en/stable/troubleshooting.html): Common issues and solutions

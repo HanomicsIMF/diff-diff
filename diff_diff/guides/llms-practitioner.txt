@@ -3,7 +3,21 @@
 > An 8-step workflow for rigorous Difference-in-Differences analysis, based on
 > Baker et al. (2025) "Difference-in-Differences Designs: A Practitioner's
 > Guide" and adapted for the diff-diff library. Some steps are reorganized or
-> extended relative to the paper (see docs/methodology/REGISTRY.md for details).
+> extended relative to the paper:
+>
+> - **Numbering**: diff-diff uses 1-Define, 2-Assumptions, 3-Test PT,
+>   4-Choose estimator, 5-Estimate, 6-Sensitivity, 7-Heterogeneity,
+>   8-Robustness. The paper uses 1-Define, 2-Assumptions, 3-Estimation method,
+>   4-Uncertainty, 5-Estimate, 6-Sensitivity, 7-Heterogeneity, 8-Keep learning.
+> - **Parallel trends testing** is a separate Step 3 (the paper embeds it in
+>   Step 2), to ensure AI agents execute it as a distinct action.
+> - **Sources of uncertainty** (paper's Step 4) are folded into Step 5
+>   (Estimate) with an explicit cluster-count check directive: >= 50 clusters
+>   for asymptotic SEs, otherwise wild bootstrap. The 50-cluster threshold is
+>   a diff-diff convention.
+> - **Step 8** is "Robustness & Reporting" (compare estimators, report with
+>   and without covariates). The paper's Step 8 is "Keep learning." The
+>   mandatory with/without covariate comparison is a diff-diff convention.
 
 ## Instructions for AI Agents
 
@@ -282,7 +296,8 @@ to your estimator's API. Examples:
 - **StackedDiD**: vary `clean_control` definition
 - **EfficientDiD**: compare `control_group='never_treated'` vs `'last_cohort'`
 - **ImputationDiD/TwoStageDiD**: leave-one-cohort-out, cross-estimator comparison
-- **SyntheticDiD/TROP**: in-time or in-space placebo (fake treatment date, leave-one-unit-out)
+- **SyntheticDiD**: built-in diagnostics on the results object - `results.in_time_placebo()`, `results.get_loo_effects_df()` (requires `variance_method="jackknife"` at fit time), `results.sensitivity_to_zeta_omega()`, and `results.get_weight_concentration()`
+- **TROP**: in-time or in-space placebo (fake treatment date, leave-one-unit-out)
 
 ```python
 from diff_diff import run_all_placebo_tests
