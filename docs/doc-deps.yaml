@@ -566,6 +566,10 @@ sources:
         type: user_guide
       - path: docs/llms.txt
         type: user_guide
+      - path: docs/methodology/REGISTRY.md
+        section: "SyntheticDiD"
+        type: methodology
+        note: "SyntheticDiDResults hosts validation diagnostics (LOO, weight concentration, in-time placebo, zeta sensitivity)"
 
   diff_diff/bootstrap_utils.py:
     drift_risk: medium
