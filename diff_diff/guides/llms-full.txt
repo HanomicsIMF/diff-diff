@@ -1021,7 +1021,7 @@ Returned by `SyntheticDiD.fit()`.
 | `time_weights` | `dict` | Pre-treatment time weights |
 | `pre_periods` | `list` | Pre-treatment periods |
 | `post_periods` | `list` | Post-treatment periods |
-| `variance_method` | `str` | "bootstrap" or "placebo" |
+| `variance_method` | `str` | "bootstrap", "jackknife", or "placebo" |
 | `noise_level` | `float` | Estimated noise level |
 | `zeta_omega` | `float` | Unit weight regularization |
 | `zeta_lambda` | `float` | Time weight regularization |
