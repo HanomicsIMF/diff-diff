@@ -4874,6 +4874,18 @@ def _survey_se_from_group_if(
     """
     from diff_diff.survey import compute_survey_if_variance
 
+    # Degenerate-cohort contract (mirror _plugin_se): when the centered
+    # IF is empty or every cohort is a singleton (→ recentered IF is
+    # identically zero), the variance is unidentified. Return NaN
+    # rather than sqrt(0)=0 so the fit-time warning fires and
+    # inference stays NaN-consistent across every surface routed
+    # through _compute_se (overall, joiners/leavers, multi-horizon
+    # ATT, placebos, normalized/cumulated, heterogeneity).
+    if U_centered.size == 0:
+        return float("nan")
+    if float((U_centered ** 2).sum()) <= 0:
+        return float("nan")
+
     group_ids = obs_survey_info["group_ids"]
     weights = obs_survey_info["weights"]
     resolved = obs_survey_info["resolved"]

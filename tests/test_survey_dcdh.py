@@ -1117,6 +1117,52 @@ class TestSurveyWithinGroupValidation:
             == r_explicit.survey_metadata.df_survey
         )
 
+    def test_degenerate_cohort_survey_se_is_nan(self):
+        """When every variance-eligible group is its own singleton
+        cohort (D_{g,1}, F_g, S_g), the cohort-recentered IF is
+        identically zero. The survey SE path must return NaN (not 0.0)
+        so the degenerate-cohort warning fires and inference stays
+        NaN-consistent — matching the _plugin_se contract documented
+        in REGISTRY.md."""
+        # 4 groups × 5 periods, each group switches at a unique F_g so
+        # the (D_{g,1}=0, F_g, S_g=+1) cohort key is unique per group.
+        rows = []
+        for g, f_switch in enumerate([1, 2, 3, 4]):
+            for t in range(5):
+                d = 1 if t >= f_switch else 0
+                y = float(g) + 0.5 * t + float(d)
+                rows.append({
+                    "group": g,
+                    "period": t,
+                    "treatment": d,
+                    "outcome": y,
+                    "pw": 1.0,
+                })
+        df_ = pd.DataFrame(rows)
+        sd = SurveyDesign(weights="pw")
+
+        import warnings as _warnings
+        with _warnings.catch_warnings(record=True) as w:
+            _warnings.simplefilter("always")
+            result = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df_,
+                outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd,
+            )
+
+        # overall_se must be NaN on degenerate cohorts (not 0.0)
+        assert np.isnan(result.overall_se), (
+            f"Degenerate-cohort survey overall_se must be NaN, "
+            f"got {result.overall_se}"
+        )
+        # Degenerate-cohort warning must fire
+        assert any(
+            "cohort" in str(wi.message).lower()
+            and "identically zero" in str(wi.message).lower()
+            for wi in w
+        ), "Expected degenerate-cohort warning to fire under survey path"
+
     def test_subpopulation_preserves_full_design_df_survey(self, base_data):
         """Under dCDH auto-inject, zero-weighting an entire group must not
         shrink df_survey below what the full-design PSU count would give.
