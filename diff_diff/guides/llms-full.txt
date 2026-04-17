@@ -1029,6 +1029,12 @@ Returned by `SyntheticDiD.fit()`.
 
 **Methods:** `summary()`, `print_summary()`, `to_dict()`, `to_dataframe()`, `get_unit_weights_df()`, `get_time_weights_df()`
 
+**Validation diagnostics** (call after `fit()`):
+- `get_weight_concentration(top_k=5)` - effective N and top-k weight share; flags fragile synthetic controls dominated by a few donor units
+- `get_loo_effects_df()` - leave-one-out influence per treated unit (requires `variance_method="jackknife"` at fit and >=2 treated units with positive effective support)
+- `in_time_placebo()` - re-estimate on shifted fake treatment dates in the pre-period; near-zero placebo ATTs indicate a credible design
+- `sensitivity_to_zeta_omega()` - re-estimate across a grid of unit-weight regularization values; checks ATT robustness to the auto-selected zeta_omega
+
 ### TripleDifferenceResults
 
 Returned by `TripleDifference.fit()`.
