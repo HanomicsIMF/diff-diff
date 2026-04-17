@@ -861,6 +861,26 @@ class TestZeroWeightSubpopulation:
         )
         assert np.isfinite(result.overall_att)
 
+    def test_zero_weight_row_with_nan_group_id(self, base_data):
+        """A zero-weight row with NaN group id must not crash the SE
+        factorization. SurveyDesign.subpopulation() contract."""
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        # Cast group to object to allow NaN without coercion errors
+        df_["group"] = df_["group"].astype(object)
+        sample = df_.iloc[0].copy()
+        sample["group"] = np.nan
+        sample["pw"] = 0.0
+        df_ = pd.concat([df_, pd.DataFrame([sample])], ignore_index=True)
+        sd = SurveyDesign(weights="pw")
+        # Must succeed — zero-weight row's NaN group id is out-of-sample
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+
     def test_zero_weight_row_with_nan_control(self, base_data):
         """A zero-weight row with NaN in a control column must not abort
         the DID^X path, and the covariate cell aggregation must use only
@@ -1010,3 +1030,78 @@ class TestSurveyDesign2:
         # switch_in and switch_out mean effects should be finite
         assert np.isfinite(r.design2_effects["switch_in"]["mean_effect"])
         assert np.isfinite(r.design2_effects["switch_out"]["mean_effect"])
+
+
+# ── Test: Within-group constancy of strata and PSU ──────────────────
+
+
+class TestSurveyWithinGroupValidation:
+    """Survey designs with strata or PSU varying within a single group
+    are rejected because the dCDH IF expansion treats the group as the
+    effective sampling unit."""
+
+    def test_rejects_varying_psu_within_group(self, base_data):
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["stratum"] = 0
+        # PSU varies within each group (alternates by period)
+        df_["psu"] = df_["period"] % 2
+        sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
+        with pytest.raises(ValueError, match="PSU to be constant within group"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df_, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd,
+            )
+
+    def test_rejects_varying_strata_within_group(self, base_data):
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        # Stratum varies within each group
+        df_["stratum"] = df_["period"] % 2
+        # Give each obs a unique PSU label so the SurveyDesign resolver
+        # doesn't reject on cross-stratum PSU reuse — we want our
+        # within-group strata check to fire first.
+        df_["psu"] = np.arange(len(df_))
+        sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
+        with pytest.raises(ValueError, match="strata to be constant within group"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df_, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd,
+            )
+
+    def test_accepts_varying_weights_within_group(self, base_data):
+        """Within-group-varying pweights remain supported — the expansion
+        psi_i = U[g] * (w_i / W_g) handles obs-level weight variation."""
+        df_ = base_data.copy()
+        rng = np.random.default_rng(7)
+        df_["pw"] = rng.uniform(0.5, 2.0, size=len(df_))
+        sd = SurveyDesign(weights="pw")
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+
+    def test_rejection_excludes_zero_weight_rows(self, base_data):
+        """A zero-weight row with a different PSU from its group must
+        not trigger rejection — it is out-of-sample by the
+        subpopulation contract and does not enter the variance."""
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["stratum"] = 0
+        df_["psu"] = 0
+        # Inject a zero-weight row with a different PSU
+        sample = df_.iloc[0].copy()
+        sample["psu"] = 99  # would violate constancy if counted
+        sample["pw"] = 0.0
+        df_ = pd.concat([df_, pd.DataFrame([sample])], ignore_index=True)
+        sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)

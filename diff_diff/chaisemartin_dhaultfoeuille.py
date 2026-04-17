@@ -666,9 +666,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "Use strata/PSU/FPC for design-based inference via Taylor "
                     "Series Linearization."
                 )
-            # No group-constant survey validation: the IF expansion
-            # psi_i = U[g] * (w_i / W_g) handles observation-level
-            # variation in weights, strata, and PSU within groups.
+            # Within-group-constant PSU/strata is required: the IF
+            # expansion psi_i = U[g] * (w_i / W_g) supports within-group
+            # variation in WEIGHTS (each obs contributes proportionally),
+            # but PSU and strata must be constant within group — the
+            # group is treated as the effective sampling unit for the
+            # Binder stratified-PSU variance formula.
+            _validate_group_constant_strata_psu(
+                resolved_survey, data, group, survey_weights,
+            )
 
         # Design-2 precondition: requires drop_larger_lower=False
         if design2 and self.drop_larger_lower:
@@ -4696,6 +4702,61 @@ def _plugin_se(U_centered: np.ndarray, divisor: int) -> float:
     return float(np.sqrt(sigma_hat_sq) / np.sqrt(divisor))
 
 
+def _validate_group_constant_strata_psu(
+    resolved: Any,
+    data: pd.DataFrame,
+    group_col: str,
+    survey_weights: Optional[np.ndarray],
+) -> None:
+    """Reject survey designs where strata or PSU vary within group.
+
+    The dCDH IF expansion ``psi_i = U[g] * (w_i / W_g)`` treats the
+    group as the effective sampling unit for design-based variance.
+    When strata or PSU vary within group, the expansion silently spreads
+    horizon-specific IF mass onto observations whose survey stratum or
+    PSU differs from the rest of the group, contaminating the
+    stratified-PSU variance. Reject those designs with a clear error.
+
+    Zero-weight rows are excluded from the check (subpopulation
+    contract — an excluded row with a different stratum/PSU label does
+    not actually participate in the variance).
+    """
+    if resolved is None:
+        return
+    pos_mask = np.asarray(survey_weights) > 0
+    g_eff = np.asarray(data[group_col].values)[pos_mask]
+    if resolved.strata is not None:
+        s_eff = np.asarray(resolved.strata)[pos_mask]
+        df_s = pd.DataFrame({"g": g_eff, "s": s_eff})
+        varying = df_s.groupby("g")["s"].nunique()
+        bad = varying[varying > 1]
+        if len(bad) > 0:
+            raise ValueError(
+                f"ChaisemartinDHaultfoeuille survey support requires "
+                f"strata to be constant within group, but "
+                f"{len(bad)} group(s) have multiple strata "
+                f"(examples: {bad.index.tolist()[:5]}). The IF "
+                f"expansion psi_i = U[g] * (w_i / W_g) treats the "
+                f"group as the effective sampling unit for stratified "
+                f"design-based variance."
+            )
+    if resolved.psu is not None:
+        p_eff = np.asarray(resolved.psu)[pos_mask]
+        df_p = pd.DataFrame({"g": g_eff, "p": p_eff})
+        varying = df_p.groupby("g")["p"].nunique()
+        bad = varying[varying > 1]
+        if len(bad) > 0:
+            raise ValueError(
+                f"ChaisemartinDHaultfoeuille survey support requires "
+                f"PSU to be constant within group, but "
+                f"{len(bad)} group(s) have multiple PSUs "
+                f"(examples: {bad.index.tolist()[:5]}). The IF "
+                f"expansion psi_i = U[g] * (w_i / W_g) treats the "
+                f"group as the effective sampling unit for stratified "
+                f"design-based variance."
+            )
+
+
 def _compute_se(
     U_centered: np.ndarray,
     divisor: int,
@@ -4762,20 +4823,37 @@ def _survey_se_from_group_if(
     weights = obs_survey_info["weights"]
     resolved = obs_survey_info["resolved"]
 
+    # Zero-weight rows are out-of-sample (SurveyDesign.subpopulation()).
+    # Skip them before the group-ID factorization so NaN / non-comparable
+    # group IDs on excluded rows cannot crash np.unique. psi stays full-
+    # length with zeros in excluded positions so the alignment with
+    # resolved.strata / resolved.psu inside compute_survey_if_variance
+    # is preserved.
+    weights_arr = np.asarray(weights, dtype=np.float64)
+    pos_mask = weights_arr > 0
+    n_obs = len(weights_arr)
+    psi = np.zeros(n_obs, dtype=np.float64)
+
+    if not pos_mask.any():
+        return float("nan")
+
+    gids_eff = np.asarray(group_ids)[pos_mask]
+    w_eff = weights_arr[pos_mask]
+
     # Build group → U_centered lookup (vectorized via factorization)
     group_to_u = {gid: U_centered[idx] for idx, gid in enumerate(eligible_groups)}
 
-    # Map group IFs to observation level
-    u_obs = np.array([group_to_u.get(gid, 0.0) for gid in group_ids])
+    # Map group IFs to observation level (effective sample only)
+    u_obs_eff = np.array([group_to_u.get(gid, 0.0) for gid in gids_eff])
 
-    # Compute per-group weight totals W_g via bincount
-    unique_gids, inverse = np.unique(group_ids, return_inverse=True)
-    w_totals_per_group = np.bincount(inverse, weights=weights)
-    w_obs_total = w_totals_per_group[inverse]
+    # Compute per-group weight totals W_g via bincount on effective sample
+    unique_gids, inverse = np.unique(gids_eff, return_inverse=True)
+    w_totals_per_group = np.bincount(inverse, weights=w_eff)
+    w_obs_total_eff = w_totals_per_group[inverse]
 
     # Expand to observation level: psi_i = U[g] * (w_i / W_g)
-    safe_w = np.where(w_obs_total > 0, w_obs_total, 1.0)
-    psi = u_obs * (weights / safe_w)
+    safe_w = np.where(w_obs_total_eff > 0, w_obs_total_eff, 1.0)
+    psi[pos_mask] = u_obs_eff * (w_eff / safe_w)
 
     variance = compute_survey_if_variance(psi, resolved)
     if not np.isfinite(variance) or variance < 0:
