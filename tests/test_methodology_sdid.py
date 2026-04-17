@@ -1474,3 +1474,629 @@ class TestEmptyPostGuard:
 
         with pytest.raises(ValueError, match="Y_post_control has no rows"):
             compute_time_weights(Y_pre, Y_post, zeta_lambda=0.0)
+
+
+# =============================================================================
+# Validation Diagnostics: Fit Snapshot, Trajectories, LOO, Concentration,
+#                         In-Time Placebo, Regularization Sensitivity
+# =============================================================================
+
+
+class TestFitSnapshot:
+    """Verify the private _fit_snapshot bundle carries the right state."""
+
+    def test_shapes_and_ordering(self):
+        df = _make_panel(n_control=10, n_treated=2, n_pre=5, n_post=3, seed=42)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=42)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(5, 8)))
+        snap = res._fit_snapshot
+        assert snap is not None
+        assert snap.Y_pre_control.shape == (5, 10)
+        assert snap.Y_post_control.shape == (3, 10)
+        assert snap.Y_pre_treated.shape == (5, 2)
+        assert snap.Y_post_treated.shape == (3, 2)
+        assert len(snap.control_unit_ids) == 10
+        assert len(snap.treated_unit_ids) == 2
+        assert len(snap.pre_periods) == 5
+        assert len(snap.post_periods) == 3
+        # No unit appears in both sides
+        assert set(snap.control_unit_ids).isdisjoint(set(snap.treated_unit_ids))
+
+    def test_matrices_are_read_only(self):
+        df = _make_panel(seed=7)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=7)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        snap = res._fit_snapshot
+        assert not snap.Y_pre_control.flags.writeable
+        assert not snap.Y_post_control.flags.writeable
+        assert not snap.Y_pre_treated.flags.writeable
+        assert not snap.Y_post_treated.flags.writeable
+        with pytest.raises(ValueError):
+            snap.Y_pre_control[0, 0] = -999.0
+
+
+class TestTrajectories:
+    """Synthetic and treated trajectories are exposed on results."""
+
+    def test_synthetic_pre_matches_weighted_sum(self):
+        df = _make_panel(seed=11)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=11)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        omega_eff = np.array(
+            [res.unit_weights[u] for u in res._fit_snapshot.control_unit_ids]
+        )
+        expected = res._fit_snapshot.Y_pre_control @ omega_eff
+        assert np.allclose(res.synthetic_pre_trajectory, expected, atol=1e-12)
+
+    def test_treated_trajectory_matches_mean(self):
+        df = _make_panel(seed=13)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=13)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        assert np.allclose(
+            res.treated_pre_trajectory,
+            np.mean(res._fit_snapshot.Y_pre_treated, axis=1),
+            atol=1e-12,
+        )
+        assert np.allclose(
+            res.treated_post_trajectory,
+            np.mean(res._fit_snapshot.Y_post_treated, axis=1),
+            atol=1e-12,
+        )
+
+    def test_treated_trajectory_survey_weighted(self):
+        """Under survey weights, treated trajectories should equal the
+        survey-weighted mean per the registry; the synthetic trajectory
+        should match Y_pre_control @ omega_eff using composed weights."""
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, n_pre=5, n_post=3, seed=83)
+        w_by_unit = {u: 1.0 for u in df["unit"].unique()}
+        w_by_unit[df["unit"].iloc[-1]] = 5.0  # skew one treated unit
+        df = df.assign(weight=df["unit"].map(w_by_unit))
+        sdid = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=83)
+        res = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            survey_design=SurveyDesign(weights="weight", weight_type="pweight"),
+        )
+        snap = res._fit_snapshot
+        w_t = snap.w_treated
+        expected_pre = np.average(snap.Y_pre_treated, axis=1, weights=w_t)
+        expected_post = np.average(snap.Y_post_treated, axis=1, weights=w_t)
+        assert np.allclose(res.treated_pre_trajectory, expected_pre, atol=1e-12)
+        assert np.allclose(res.treated_post_trajectory, expected_post, atol=1e-12)
+
+        omega_eff = np.array(
+            [res.unit_weights[u] for u in snap.control_unit_ids]
+        )
+        expected_synth_pre = snap.Y_pre_control @ omega_eff
+        assert np.allclose(
+            res.synthetic_pre_trajectory, expected_synth_pre, atol=1e-12
+        )
+
+    def test_public_trajectory_arrays_are_read_only(self):
+        df = _make_panel(seed=87)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=87)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        for arr in (
+            res.synthetic_pre_trajectory,
+            res.synthetic_post_trajectory,
+            res.treated_pre_trajectory,
+            res.treated_post_trajectory,
+            res.time_weights_array,
+        ):
+            assert not arr.flags.writeable
+
+    def test_pre_fit_rmse_recoverable(self):
+        df = _make_panel(seed=17)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=17)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        rmse = float(
+            np.sqrt(
+                np.mean(
+                    (res.treated_pre_trajectory - res.synthetic_pre_trajectory) ** 2
+                )
+            )
+        )
+        assert abs(rmse - res.pre_treatment_fit) < 1e-10
+
+
+class TestLooEffectsDf:
+    """get_loo_effects_df joins jackknife pseudo-values to unit identities."""
+
+    def _fit_jackknife(self, seed=42, **kwargs):
+        df = _make_panel(n_control=10, n_treated=3, n_pre=5, n_post=3,
+                         seed=seed, **kwargs)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=seed)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(5, 8)))
+        return res
+
+    def test_columns_and_roles(self):
+        res = self._fit_jackknife()
+        loo = res.get_loo_effects_df()
+        assert list(loo.columns) == ["unit", "role", "att_loo", "delta_from_full"]
+        assert set(loo["role"]) == {"control", "treated"}
+        assert (loo["role"] == "control").sum() == res.n_control
+        assert (loo["role"] == "treated").sum() == res.n_treated
+        assert set(loo["unit"]) == set(res.unit_weights) | set(
+            res._fit_snapshot.treated_unit_ids
+        )
+
+    def test_delta_from_full_matches_math(self):
+        res = self._fit_jackknife()
+        loo = res.get_loo_effects_df()
+        deltas = loo["att_loo"] - res.att
+        assert np.allclose(loo["delta_from_full"], deltas, equal_nan=True)
+
+    def test_sorted_by_absolute_delta_descending(self):
+        res = self._fit_jackknife()
+        loo = res.get_loo_effects_df().dropna(subset=["delta_from_full"])
+        abs_delta = loo["delta_from_full"].abs().to_numpy()
+        assert np.all(abs_delta[:-1] >= abs_delta[1:])
+
+    def test_placebo_raises_value_error(self):
+        df = _make_panel(seed=21)
+        sdid = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=21)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        with pytest.raises(ValueError, match="variance_method='jackknife'"):
+            res.get_loo_effects_df()
+
+    def test_bootstrap_raises_value_error(self):
+        df = _make_panel(seed=23)
+        sdid = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=23)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        with pytest.raises(ValueError, match="variance_method='jackknife'"):
+            res.get_loo_effects_df()
+
+    def test_positional_mapping_matches_placebo_effects(self):
+        """First n_control positions in placebo_effects map to control_units,
+        next n_treated map to treated_units."""
+        res = self._fit_jackknife()
+        pe = res.placebo_effects
+        ids = res._loo_unit_ids
+        roles = res._loo_roles
+        assert list(ids[: res.n_control]) == res._fit_snapshot.control_unit_ids
+        assert list(ids[res.n_control :]) == res._fit_snapshot.treated_unit_ids
+        assert roles[: res.n_control].count("control") == res.n_control
+        assert roles[res.n_control :].count("treated") == res.n_treated
+        # The DataFrame values equal placebo_effects values (up to row permutation)
+        loo = res.get_loo_effects_df()
+        assert np.allclose(
+            sorted(loo["att_loo"].dropna().to_numpy()),
+            sorted(pe[np.isfinite(pe)]),
+            atol=1e-12,
+        )
+
+
+class TestWeightConcentration:
+    """get_weight_concentration returns correct concentration metrics."""
+
+    def test_equal_weights_yield_effective_n_equal_to_count(self):
+        """With uniform weights 1/n, effective_n = n."""
+        # Manually construct a results object with uniform weights
+        from diff_diff.results import SyntheticDiDResults
+
+        uniform = {f"u{i}": 0.1 for i in range(10)}
+        res = SyntheticDiDResults(
+            att=0.0, se=0.0, t_stat=0.0, p_value=1.0, conf_int=(0.0, 0.0),
+            n_obs=100, n_treated=1, n_control=10,
+            unit_weights=uniform, time_weights={},
+            pre_periods=[], post_periods=[],
+        )
+        c = res.get_weight_concentration()
+        assert abs(c["effective_n"] - 10.0) < 1e-10
+        assert abs(c["herfindahl"] - 0.1) < 1e-10  # 10 * 0.01
+        assert c["top_k"] == 5
+        assert abs(c["top_k_share"] - 0.5) < 1e-10
+
+    def test_single_unit_yields_effective_n_one(self):
+        from diff_diff.results import SyntheticDiDResults
+
+        res = SyntheticDiDResults(
+            att=0.0, se=0.0, t_stat=0.0, p_value=1.0, conf_int=(0.0, 0.0),
+            n_obs=10, n_treated=1, n_control=1,
+            unit_weights={"only": 1.0}, time_weights={},
+            pre_periods=[], post_periods=[],
+        )
+        c = res.get_weight_concentration()
+        assert abs(c["effective_n"] - 1.0) < 1e-10
+        assert abs(c["herfindahl"] - 1.0) < 1e-10
+
+    def test_top_k_clamped_to_n(self):
+        from diff_diff.results import SyntheticDiDResults
+
+        res = SyntheticDiDResults(
+            att=0.0, se=0.0, t_stat=0.0, p_value=1.0, conf_int=(0.0, 0.0),
+            n_obs=30, n_treated=1, n_control=3,
+            unit_weights={"a": 0.5, "b": 0.3, "c": 0.2}, time_weights={},
+            pre_periods=[], post_periods=[],
+        )
+        c = res.get_weight_concentration(top_k=10)
+        assert c["top_k"] == 3
+        assert abs(c["top_k_share"] - 1.0) < 1e-10
+
+    def test_negative_top_k_raises(self):
+        from diff_diff.results import SyntheticDiDResults
+
+        res = SyntheticDiDResults(
+            att=0.0, se=0.0, t_stat=0.0, p_value=1.0, conf_int=(0.0, 0.0),
+            n_obs=30, n_treated=1, n_control=3,
+            unit_weights={"a": 0.5, "b": 0.3, "c": 0.2}, time_weights={},
+            pre_periods=[], post_periods=[],
+        )
+        with pytest.raises(ValueError, match="top_k must be non-negative"):
+            res.get_weight_concentration(top_k=-1)
+
+    def test_uses_composed_weights_under_survey(self):
+        """Metrics come from self.unit_weights which stores composed ω_eff
+        for survey fits."""
+        import pandas as pd
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=8, n_treated=2, n_pre=4, n_post=2, seed=29)
+        # Add survey weights heavily favoring one control unit
+        w_by_unit = {u: 1.0 for u in df["unit"].unique()}
+        w_by_unit[0] = 20.0  # control unit 0 gets a heavy weight
+        df = df.assign(weight=df["unit"].map(w_by_unit))
+        sdid = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=29)
+        res = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            survey_design=SurveyDesign(weights="weight", weight_type="pweight"),
+        )
+        c = res.get_weight_concentration()
+        # Composed metrics reflect unit_weights dict exactly
+        import numpy as np
+
+        weights = np.array(list(res.unit_weights.values()))
+        expected_effective_n = 1.0 / np.sum(weights ** 2)
+        assert abs(c["effective_n"] - expected_effective_n) < 1e-10
+
+
+class TestInTimePlacebo:
+    """in_time_placebo re-estimates on shifted fake dates."""
+
+    def test_default_sweep_shape(self):
+        df = _make_panel(n_control=10, n_treated=2, n_pre=8, n_post=3,
+                         att=0.0, seed=31)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=31)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(8, 11)))
+        placebo = res.in_time_placebo()
+        # Feasible positions: i in [2, n_pre - 1] = [2, 7] -> 6 rows
+        assert len(placebo) == 6
+        assert list(placebo.columns) == [
+            "fake_treatment_period", "att", "pre_fit_rmse",
+            "n_pre_fake", "n_post_fake",
+        ]
+
+    def test_no_effect_dgp_gives_small_placebo_atts(self):
+        """On a clean no-effect DGP, placebo ATTs should be small vs the
+        DGP's noise level."""
+        df = _make_panel(n_control=20, n_treated=3, n_pre=8, n_post=3,
+                         att=0.0, seed=33)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=33)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(8, 11)))
+        placebo = res.in_time_placebo()
+        median_abs = float(placebo["att"].abs().median())
+        # Noise sd in _make_panel is 0.5; ATTs should be well under that at
+        # the median. Loose threshold to stay stable under seed variation.
+        assert median_abs < 1.0
+
+    def test_explicit_list_overrides_sweep(self):
+        df = _make_panel(n_control=10, n_treated=2, n_pre=8, n_post=3, seed=37)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=37)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(8, 11)))
+        placebo = res.in_time_placebo(fake_treatment_periods=[4, 6])
+        assert len(placebo) == 2
+        assert set(placebo["fake_treatment_period"]) == {4, 6}
+
+    def test_post_period_raises(self):
+        df = _make_panel(n_control=10, n_treated=2, n_pre=6, n_post=3, seed=41)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=41)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(6, 9)))
+        with pytest.raises(ValueError, match="post_periods"):
+            res.in_time_placebo(fake_treatment_periods=[6])
+
+    def test_missing_period_raises(self):
+        df = _make_panel(n_control=10, n_treated=2, n_pre=6, n_post=3, seed=43)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=43)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(6, 9)))
+        with pytest.raises(ValueError, match="not found in pre_periods"):
+            res.in_time_placebo(fake_treatment_periods=[999])
+
+    def test_empty_default_sweep_preserves_schema(self):
+        """When n_pre < 3, the default sweep is empty. The DataFrame must
+        still carry the documented columns."""
+        df = _make_panel(n_control=10, n_treated=2, n_pre=2, n_post=3, seed=50)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=50)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(2, 5)))
+        placebo = res.in_time_placebo()
+        assert len(placebo) == 0
+        assert list(placebo.columns) == [
+            "fake_treatment_period", "att", "pre_fit_rmse",
+            "n_pre_fake", "n_post_fake",
+        ]
+
+    def test_zeta_override_changes_result(self):
+        df = _make_panel(n_control=10, n_treated=2, n_pre=8, n_post=3, seed=47)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=47)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(8, 11)))
+        default_ = res.in_time_placebo(fake_treatment_periods=[5])
+        override_ = res.in_time_placebo(
+            fake_treatment_periods=[5],
+            zeta_omega_override=res.zeta_omega * 100,
+        )
+        # Different regularization should change at least one of att/rmse
+        assert not np.isclose(
+            default_["pre_fit_rmse"].iloc[0],
+            override_["pre_fit_rmse"].iloc[0],
+            atol=1e-8,
+        )
+
+
+class TestSensitivityToZetaOmega:
+    """sensitivity_to_zeta_omega sweeps regularization values."""
+
+    def test_multiplier_one_reproduces_original_att(self):
+        df = _make_panel(n_control=12, n_treated=2, n_pre=6, n_post=3,
+                         att=2.0, seed=53)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=53)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(6, 9)))
+        sens = res.sensitivity_to_zeta_omega()
+        # Row where zeta_omega == self.zeta_omega (multiplier 1.0)
+        match = sens.loc[np.isclose(sens["zeta_omega"], res.zeta_omega)]
+        assert len(match) == 1
+        assert abs(match["att"].iloc[0] - res.att) < 1e-10
+
+    def test_grid_length_matches_default_multipliers(self):
+        df = _make_panel(seed=59)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=59)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        sens = res.sensitivity_to_zeta_omega()
+        assert len(sens) == 5
+
+    def test_default_grid_values_match_documented_multipliers(self):
+        """Assert the exact documented default grid values, not just length,
+        so the contract cannot drift unnoticed."""
+        df = _make_panel(seed=60)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=60)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        sens = res.sensitivity_to_zeta_omega()
+        expected = np.array([0.25, 0.5, 1.0, 2.0, 4.0]) * res.zeta_omega
+        assert np.allclose(sens["zeta_omega"].to_numpy(), expected, atol=1e-12)
+
+    def test_explicit_grid_overrides_multipliers(self):
+        df = _make_panel(seed=61)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=61)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        sens = res.sensitivity_to_zeta_omega(zeta_grid=[0.1, 1.0, 10.0])
+        assert len(sens) == 3
+        assert np.allclose(sens["zeta_omega"], [0.1, 1.0, 10.0])
+
+    def test_effective_n_grows_with_zeta(self):
+        """Higher regularization pushes weights toward uniform, so effective_n
+        should be monotone non-decreasing across the default grid."""
+        df = _make_panel(n_control=15, n_treated=2, n_pre=8, n_post=3, seed=67)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=67)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period",
+                       post_periods=list(range(8, 11)))
+        sens = res.sensitivity_to_zeta_omega()
+        eff_n = sens["effective_n"].to_numpy()
+        # Allow tiny wobble from solver tolerance
+        assert np.all(np.diff(eff_n) >= -1e-6)
+
+    def test_columns_shape(self):
+        df = _make_panel(seed=71)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=71)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        sens = res.sensitivity_to_zeta_omega()
+        assert list(sens.columns) == [
+            "zeta_omega", "att", "pre_fit_rmse",
+            "max_unit_weight", "effective_n",
+        ]
+
+    def test_empty_zeta_grid_preserves_schema(self):
+        df = _make_panel(seed=91)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=91)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        sens = res.sensitivity_to_zeta_omega(zeta_grid=[])
+        assert sens.shape == (0, 5)
+        assert list(sens.columns) == [
+            "zeta_omega", "att", "pre_fit_rmse",
+            "max_unit_weight", "effective_n",
+        ]
+
+    def test_empty_multipliers_preserves_schema(self):
+        df = _make_panel(seed=93)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=93)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        sens = res.sensitivity_to_zeta_omega(multipliers=())
+        assert sens.shape == (0, 5)
+        assert list(sens.columns) == [
+            "zeta_omega", "att", "pre_fit_rmse",
+            "max_unit_weight", "effective_n",
+        ]
+
+
+class TestPractitionerSdidReferences:
+    """_handle_synthetic in practitioner.py references real callables."""
+
+    def test_snippets_reference_existing_methods(self):
+        """Each code snippet in _handle_synthetic() should reference methods
+        that actually exist on SyntheticDiDResults."""
+        from diff_diff.practitioner import _handle_synthetic
+        from diff_diff.results import SyntheticDiDResults
+
+        df = _make_panel(seed=73)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=73)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        steps, _ = _handle_synthetic(res)
+        expected_methods = [
+            "get_weight_concentration",
+            "in_time_placebo",
+            "get_loo_effects_df",
+            "sensitivity_to_zeta_omega",
+        ]
+        joined_code = "\n".join(step["code"] for step in steps)
+        for method in expected_methods:
+            assert method in joined_code, (
+                f"Expected {method}() referenced in practitioner guidance"
+            )
+            assert hasattr(SyntheticDiDResults, method), (
+                f"Practitioner guidance references {method}() but it's not "
+                "on SyntheticDiDResults"
+            )
+
+    def test_snippets_parse_as_python(self):
+        """Each snippet in _handle_synthetic should be syntactically valid."""
+        import ast
+        from diff_diff.practitioner import _handle_synthetic
+
+        df = _make_panel(seed=77)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=77)
+        res = sdid.fit(df, outcome="outcome", treatment="treated",
+                       unit="unit", time="period")
+        steps, _ = _handle_synthetic(res)
+        for step in steps:
+            ast.parse(step["code"])
+
+    def test_jackknife_loo_snippet_handles_unavailable_loo(self):
+        """When variance_method='jackknife' but LOO is unavailable
+        (e.g., n_treated=1 returns empty jackknife array), the LOO snippet
+        should degrade gracefully instead of raising."""
+        from diff_diff.practitioner import _handle_synthetic
+
+        df = _make_panel(n_control=10, n_treated=1, n_pre=5, n_post=3, seed=97)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sdid = SyntheticDiD(variance_method="jackknife", seed=97)
+            res = sdid.fit(df, outcome="outcome", treatment="treated",
+                           unit="unit", time="period",
+                           post_periods=list(range(5, 8)))
+        assert res.variance_method == "jackknife"
+        assert res._loo_unit_ids is None  # LOO intentionally unavailable
+
+        steps, _ = _handle_synthetic(res)
+        loo_snippet = next(
+            s["code"] for s in steps if "get_loo_effects_df" in s["code"]
+        )
+        # Executing the snippet against this result must not raise.
+        import io
+        import contextlib
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            exec(loo_snippet, {"results": res})
+        assert "LOO not available" in captured.getvalue()
+
+
+class TestSyntheticDiDResultsPickle:
+    """Pickle round-trip drops the fit snapshot; diagnostic methods raise
+    with the documented recovery message."""
+
+    def _fit(self, seed=101):
+        df = _make_panel(seed=seed)
+        sdid = SyntheticDiD(variance_method="jackknife", seed=seed)
+        return sdid.fit(df, outcome="outcome", treatment="treated",
+                        unit="unit", time="period")
+
+    def test_snapshot_dropped_on_pickle(self):
+        import pickle
+
+        res = self._fit()
+        assert res._fit_snapshot is not None  # present pre-pickle
+
+        restored = pickle.loads(pickle.dumps(res))
+        assert restored._fit_snapshot is None
+        # Public fields survive
+        assert restored.att == res.att
+        assert restored.se == res.se
+        assert np.allclose(
+            restored.synthetic_pre_trajectory, res.synthetic_pre_trajectory
+        )
+
+    def test_in_time_placebo_raises_after_pickle(self):
+        import pickle
+
+        res = self._fit(seed=103)
+        restored = pickle.loads(pickle.dumps(res))
+        with pytest.raises(ValueError, match="fit snapshot"):
+            restored.in_time_placebo()
+
+    def test_sensitivity_raises_after_pickle(self):
+        import pickle
+
+        res = self._fit(seed=105)
+        restored = pickle.loads(pickle.dumps(res))
+        with pytest.raises(ValueError, match="fit snapshot"):
+            restored.sensitivity_to_zeta_omega()
+
+    def test_live_instance_snapshot_untouched_by_getstate(self):
+        """__getstate__ must not mutate the live object's snapshot —
+        only the returned state dict carries the nulled field."""
+        res = self._fit(seed=107)
+        snap_before = res._fit_snapshot
+        assert snap_before is not None
+        _ = res.__getstate__()
+        # Live instance unchanged after __getstate__ call
+        assert res._fit_snapshot is snap_before
+        # Diagnostics still work in the live session
+        _ = res.in_time_placebo(fake_treatment_periods=[2])
+
+    def test_snapshot_excluded_from_dataclass_fields(self):
+        """_fit_snapshot and _loo_* must be plain instance attributes, not
+        dataclass fields, so dataclass-recursive serializers (asdict,
+        fields, replace) cannot reach retained panel state."""
+        import dataclasses
+
+        res = self._fit(seed=109)
+        field_names = {f.name for f in dataclasses.fields(res)}
+        assert "_fit_snapshot" not in field_names
+        assert "_loo_unit_ids" not in field_names
+        assert "_loo_roles" not in field_names
+
+    def test_asdict_excludes_internal_diagnostic_state(self):
+        """dataclasses.asdict() must not recurse into the retained panel
+        snapshot or the LOO unit ID arrays."""
+        import dataclasses
+
+        res = self._fit(seed=111)
+        assert res._fit_snapshot is not None  # live instance retains it
+        d = dataclasses.asdict(res)
+        assert "_fit_snapshot" not in d
+        assert "_loo_unit_ids" not in d
+        assert "_loo_roles" not in d
