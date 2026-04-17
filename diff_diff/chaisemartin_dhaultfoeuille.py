@@ -652,6 +652,47 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
 
+        # dCDH contract: the group is the effective sampling unit for
+        # the TSL IF expansion psi_i = U[g] * (w_i / W_g). When the user
+        # passed a SurveyDesign without an explicit PSU,
+        # compute_survey_if_variance() would fall back to per-observation
+        # PSUs — which contradicts the per-group structure the IF
+        # expansion assumes and inflates df_survey. Auto-inject
+        # `psu=<group>` and re-resolve so downstream variance, df_survey,
+        # and HonestDiD critical values match the documented contract.
+        # Strata / FPC / weight_type / nest are preserved.
+        # Skipped for replicate-weight designs — they're rejected below.
+        if (
+            resolved_survey is not None
+            and resolved_survey.psu is None
+            and (
+                resolved_survey.replicate_weights is None
+                or resolved_survey.replicate_weights.shape[1] == 0
+            )
+        ):
+            from diff_diff.survey import SurveyDesign as _SurveyDesign
+
+            # Pre-filter zero-weight rows so NaN / invalid group IDs on
+            # excluded subpopulation rows don't block PSU resolution
+            # (group becomes the PSU column after auto-inject). Updates
+            # local bindings only; caller's DataFrame is untouched.
+            pos_mask_sv = np.asarray(survey_weights) > 0
+            if not pos_mask_sv.all():
+                data = data.loc[pos_mask_sv].reset_index(drop=True)
+
+            eff_design = _SurveyDesign(
+                weights=survey_design.weights,
+                strata=survey_design.strata,
+                psu=group,
+                fpc=getattr(survey_design, "fpc", None),
+                weight_type=getattr(survey_design, "weight_type", "pweight"),
+                nest=getattr(survey_design, "nest", False),
+                lonely_psu=getattr(survey_design, "lonely_psu", "remove"),
+            )
+            resolved_survey, survey_weights, _, survey_metadata = (
+                _resolve_survey_for_fit(eff_design, data, "analytical")
+            )
+
         if resolved_survey is not None:
             if resolved_survey.weight_type != "pweight":
                 raise ValueError(

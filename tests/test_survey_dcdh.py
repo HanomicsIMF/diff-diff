@@ -389,9 +389,11 @@ class TestSEScalePinning:
         """Pins the divisor normalization: uniform survey SE with group-level
         PSU clustering should be close to plug-in SE.
 
-        Without PSU clustering, survey treats each observation as independent
-        (N_obs observations), while plug-in treats each group as independent
-        (N_groups). Clustering at the group level aligns the two.
+        Under dCDH's auto-inject contract (see REGISTRY.md §dCDH survey),
+        SurveyDesign(weights='pw') with no explicit psu is equivalent to
+        SurveyDesign(weights='pw', psu='group'). Either form aligns the
+        effective sampling unit with the group-level IF and matches the
+        plug-in SE up to small-sample corrections.
         """
         df = base_data.copy()
         df["pw"] = 1.0
@@ -1084,6 +1086,70 @@ class TestSurveyWithinGroupValidation:
             survey_design=sd,
         )
         assert np.isfinite(result.overall_att)
+
+    def test_auto_inject_psu_matches_explicit_group_psu(self, base_data):
+        """SurveyDesign(weights='pw') (no PSU) must yield the same SE and
+        df_survey as SurveyDesign(weights='pw', psu='group') after
+        dCDH auto-injects psu=group."""
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        r_no_psu = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=SurveyDesign(weights="pw"),
+        )
+        r_explicit = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=SurveyDesign(weights="pw", psu="group"),
+        )
+        assert r_no_psu.overall_att == pytest.approx(
+            r_explicit.overall_att, abs=1e-10
+        )
+        if np.isfinite(r_no_psu.overall_se) and np.isfinite(r_explicit.overall_se):
+            assert r_no_psu.overall_se == pytest.approx(
+                r_explicit.overall_se, rel=1e-6
+            )
+        assert r_no_psu.survey_metadata is not None
+        assert r_explicit.survey_metadata is not None
+        assert (
+            r_no_psu.survey_metadata.df_survey
+            == r_explicit.survey_metadata.df_survey
+        )
+
+    def test_off_horizon_row_duplication_does_not_change_se(self, base_data):
+        """Under auto-injected psu=group, duplicating an observation
+        within a group (cell mean unchanged because the duplicate matches
+        the existing row exactly) must not change the SE. Under the old
+        per-obs-PSU fallback this invariant did not hold."""
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        sd = SurveyDesign(weights="pw")
+
+        r_base = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=2, survey_design=sd,
+        )
+
+        # Duplicate the first row: cell mean y_gt stays the same
+        # (identical y/treatment). Under per-obs PSU fallback the
+        # "extra observation" would change the variance; under
+        # auto-inject psu=group the group structure is unchanged.
+        dup = df_.iloc[0].copy()
+        df_dup = pd.concat([df_, pd.DataFrame([dup])], ignore_index=True)
+        r_dup = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_dup, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=2, survey_design=sd,
+        )
+        if np.isfinite(r_base.overall_se) and np.isfinite(r_dup.overall_se):
+            assert r_base.overall_se == pytest.approx(
+                r_dup.overall_se, rel=1e-6
+            ), (
+                f"Row duplication changed SE ({r_base.overall_se} vs "
+                f"{r_dup.overall_se}) — auto-inject psu=group is not active."
+            )
 
     def test_rejection_excludes_zero_weight_rows(self, base_data):
         """A zero-weight row with a different PSU from its group must
