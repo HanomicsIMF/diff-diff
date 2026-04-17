@@ -730,16 +730,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"data. Available columns: {list(data.columns)}"
                 )
             # SurveyDesign.subpopulation() contract: zero-weight rows are
-            # out-of-sample. Scope NaN/Inf validation to positive-weight
-            # rows so that excluded obs with missing covariates do not
-            # abort the fit. The downstream weighted aggregation
-            # (sum(w*x)/sum(w)) handles zero-weight rows correctly on
-            # its own.
+            # out-of-sample. Scope BOTH validation and aggregation to the
+            # positive-weight subset so excluded rows with missing/invalid
+            # covariates do not abort the fit and cell aggregation aligns
+            # with the effective sample used by _validate_and_aggregate_to_cells.
             if survey_weights is not None:
                 pos_mask_ctrl = np.asarray(survey_weights) > 0
-                data_controls = data.loc[pos_mask_ctrl, controls].copy()
+                data_eff = data.loc[pos_mask_ctrl]
+                survey_weights_eff = np.asarray(survey_weights)[pos_mask_ctrl]
             else:
-                data_controls = data[controls].copy()
+                data_eff = data
+                survey_weights_eff = None
+            data_controls = data_eff[controls].copy()
             for c in controls:
                 try:
                     data_controls[c] = pd.to_numeric(data_controls[c])
@@ -760,14 +762,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         "Remove or replace non-finite covariates before fitting."
                     )
             # Aggregate covariates to cell means (same groupby as treatment/outcome).
-            # Use the coerced copy joined with group/time from original data.
-            x_agg_input = data[[group, time]].copy()
+            # Build x_agg_input from the same effective-sample frame so rows
+            # align with data_controls.
+            x_agg_input = data_eff[[group, time]].copy()
             x_agg_input[controls] = data_controls[controls].values
-            if survey_weights is not None:
+            if survey_weights_eff is not None:
                 # Survey-weighted covariate cell means: sum(w*x)/sum(w)
-                x_agg_input["_w_"] = survey_weights
+                x_agg_input["_w_"] = survey_weights_eff
                 for c in controls:
-                    x_agg_input[f"_wx_{c}"] = survey_weights * x_agg_input[c].values
+                    x_agg_input[f"_wx_{c}"] = survey_weights_eff * x_agg_input[c].values
                 wx_cols = [f"_wx_{c}" for c in controls]
                 g_agg = x_agg_input.groupby([group, time], as_index=False).agg(
                     {**{wc: "sum" for wc in wx_cols}, "_w_": "sum"}

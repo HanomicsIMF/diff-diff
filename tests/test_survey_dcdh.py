@@ -861,6 +861,28 @@ class TestZeroWeightSubpopulation:
         )
         assert np.isfinite(result.overall_att)
 
+    def test_zero_weight_row_with_nan_control(self, base_data):
+        """A zero-weight row with NaN in a control column must not abort
+        the DID^X path, and the covariate cell aggregation must use only
+        positive-weight rows (no length-mismatch error)."""
+        rng = np.random.default_rng(13)
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["x"] = rng.normal(0, 1, size=len(df_))
+        # Inject a zero-weight row with NaN control value
+        sample = df_.iloc[0].copy()
+        sample["x"] = np.nan
+        sample["pw"] = 0.0
+        df_ = pd.concat([df_, pd.DataFrame([sample])], ignore_index=True)
+        sd = SurveyDesign(weights="pw")
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            L_max=1, controls=["x"], survey_design=sd,
+        )
+        assert np.isfinite(result.overall_att)
+
     def test_zero_weight_row_with_nan_heterogeneity(self, base_data):
         """A zero-weight row with NaN in the heterogeneity column must
         not trip the heterogeneity time-invariance validator."""
