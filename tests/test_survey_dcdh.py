@@ -1117,6 +1117,46 @@ class TestSurveyWithinGroupValidation:
             == r_explicit.survey_metadata.df_survey
         )
 
+    def test_subpopulation_preserves_full_design_df_survey(self, base_data):
+        """Under dCDH auto-inject, zero-weighting an entire group must not
+        shrink df_survey below what the full-design PSU count would give.
+
+        Mirrors SurveyDesign.subpopulation() semantics where excluded
+        rows keep their weights at zero but remain in the design so
+        that t critical values, p-values, CIs, and HonestDiD bounds
+        reflect the full sampling structure."""
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        # Mimic subpopulation() by zero-weighting one entire group
+        excluded_group = df_["group"].unique()[0]
+        df_.loc[df_["group"] == excluded_group, "pw"] = 0.0
+
+        sd = SurveyDesign(weights="pw")
+        r_subpop = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        # Reference: explicit psu='group' preserves the full-design
+        # PSU count because the resolver sees all groups (even those
+        # entirely zero-weighted). The auto-inject path must match this.
+        r_explicit = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=SurveyDesign(weights="pw", psu="group"),
+        )
+        assert r_subpop.survey_metadata is not None
+        assert r_explicit.survey_metadata is not None
+        assert (
+            r_subpop.survey_metadata.df_survey
+            == r_explicit.survey_metadata.df_survey
+        ), (
+            f"Auto-inject df_survey={r_subpop.survey_metadata.df_survey} "
+            f"must match explicit psu='group' df_survey="
+            f"{r_explicit.survey_metadata.df_survey} "
+            f"(full-design subpopulation contract)."
+        )
+
     def test_off_horizon_row_duplication_does_not_change_se(self, base_data):
         """Under auto-injected psu=group, duplicating an observation
         within a group (cell mean unchanged because the duplicate matches

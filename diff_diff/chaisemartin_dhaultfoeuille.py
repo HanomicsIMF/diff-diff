@@ -672,25 +672,39 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         ):
             from diff_diff.survey import SurveyDesign as _SurveyDesign
 
-            # Pre-filter zero-weight rows so NaN / invalid group IDs on
-            # excluded subpopulation rows don't block PSU resolution
-            # (group becomes the PSU column after auto-inject). Updates
-            # local bindings only; caller's DataFrame is untouched.
-            pos_mask_sv = np.asarray(survey_weights) > 0
-            if not pos_mask_sv.all():
-                data = data.loc[pos_mask_sv].reset_index(drop=True)
+            # Build a synthesized PSU column on a private copy of data
+            # so the caller's DataFrame is untouched. Valid group values
+            # flow through as their own PSU label; NaN/invalid group
+            # values on zero-weight rows (SurveyDesign.subpopulation()
+            # excluded rows) are replaced with a single shared dummy
+            # label so the PSU resolver accepts them. Zero-weight rows
+            # contribute psi_i = 0 to the variance; keeping them in the
+            # resolved design preserves the full-design df_survey
+            # contract (n_psu / n_strata reflect the full sample, not
+            # the positive-weight subset).
+            psu_col_name = "__dcdh_eff_psu__"
+            synth_data = data.copy()
+            synth_psu = synth_data[group].copy()
+            try:
+                invalid_mask = synth_psu.isna().to_numpy()
+            except (AttributeError, TypeError):
+                invalid_mask = np.zeros(len(synth_psu), dtype=bool)
+            if invalid_mask.any():
+                synth_psu = synth_psu.astype(object)
+                synth_psu.loc[invalid_mask] = "__dcdh_excluded_null_psu__"
+            synth_data[psu_col_name] = synth_psu
 
             eff_design = _SurveyDesign(
                 weights=survey_design.weights,
                 strata=survey_design.strata,
-                psu=group,
+                psu=psu_col_name,
                 fpc=getattr(survey_design, "fpc", None),
                 weight_type=getattr(survey_design, "weight_type", "pweight"),
                 nest=getattr(survey_design, "nest", False),
                 lonely_psu=getattr(survey_design, "lonely_psu", "remove"),
             )
             resolved_survey, survey_weights, _, survey_metadata = (
-                _resolve_survey_for_fit(eff_design, data, "analytical")
+                _resolve_survey_for_fit(eff_design, synth_data, "analytical")
             )
 
         if resolved_survey is not None:
