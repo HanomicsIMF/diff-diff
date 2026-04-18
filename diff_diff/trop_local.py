@@ -25,6 +25,7 @@ from diff_diff._backend import (
     _rust_unit_distance_matrix,
 )
 from diff_diff.trop_results import _PrecomputedStructures
+from diff_diff.utils import warn_if_not_converged
 
 
 def _validate_and_pivot_treatment(data, time, unit, treatment, all_periods, all_units):
@@ -677,6 +678,7 @@ class TROPLocalMixin:
 
         # Alternating minimization following Algorithm 1 (page 9)
         # Minimize: sum W_{ti}(Y_{ti} - alpha_i - beta_t - L_{ti})^2 + lambda_nn||L||_*
+        converged = False
         for _ in range(self.max_iter):
             alpha_old = alpha.copy()
             beta_old = beta.copy()
@@ -717,7 +719,11 @@ class TROPLocalMixin:
             L_diff = np.max(np.abs(L - L_old))
 
             if max(alpha_diff, beta_diff, L_diff) < self.tol:
+                converged = True
                 break
+        warn_if_not_converged(
+            converged, "TROP local alternating minimization", self.max_iter, self.tol
+        )
 
         return alpha, beta, L
 

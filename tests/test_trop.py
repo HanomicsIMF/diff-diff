@@ -3936,3 +3936,109 @@ class TestSilentWarningAudit:
         )
         with pytest.raises(ValueError, match="missing treatment values"):
             trop_est.fit(df, "outcome", "treated", "unit", "time")
+
+
+class TestTROPConvergenceWarnings:
+    """Silent-failure audit axis B: TROP alternating minimization must warn on non-convergence."""
+
+    @staticmethod
+    def _panel_matrices(simple_panel_data):
+        """Pivot simple_panel_data into (Y, D, n_units, n_periods, treated_periods)."""
+        all_units = sorted(simple_panel_data["unit"].unique())
+        all_periods = sorted(simple_panel_data["period"].unique())
+        n_units = len(all_units)
+        n_periods = len(all_periods)
+        Y = (
+            simple_panel_data.pivot(index="period", columns="unit", values="outcome")
+            .reindex(index=all_periods, columns=all_units)
+            .values
+        )
+        D = (
+            simple_panel_data.pivot(index="period", columns="unit", values="treated")
+            .reindex(index=all_periods, columns=all_units)
+            .fillna(0)
+            .astype(int)
+            .values
+        )
+        treated_periods = int(np.sum(np.any(D == 1, axis=1)))
+        return Y, D, n_units, n_periods, treated_periods
+
+    def test_global_alternating_min_warns_on_nonconvergence(self, simple_panel_data):
+        """_solve_global_with_lowrank must warn when outer alternating-min loop exhausts max_iter."""
+        Y, D, n_units, n_periods, treated_periods = self._panel_matrices(simple_panel_data)
+
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            seed=42,
+        )
+        delta = trop_est._compute_global_weights(
+            Y, D, 1.0, 1.0, treated_periods, n_units, n_periods
+        )
+
+        with pytest.warns(UserWarning, match="did not converge"):
+            trop_est._solve_global_with_lowrank(Y, delta, lambda_nn=0.1, max_iter=1, tol=1e-15)
+
+    def test_global_alternating_min_no_warning_on_convergence(self, simple_panel_data):
+        """_solve_global_with_lowrank must not warn on a well-behaved fit with generous max_iter."""
+        Y, D, n_units, n_periods, treated_periods = self._panel_matrices(simple_panel_data)
+
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            seed=42,
+        )
+        delta = trop_est._compute_global_weights(
+            Y, D, 1.0, 1.0, treated_periods, n_units, n_periods
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            trop_est._solve_global_with_lowrank(Y, delta, lambda_nn=0.1, max_iter=500, tol=1e-6)
+        assert not any("did not converge" in str(x.message) for x in w)
+
+    def test_local_alternating_min_warns_on_nonconvergence(self, simple_panel_data):
+        """TROP local _estimate_model must warn when alternating-min exhausts max_iter."""
+        Y, D, n_units, n_periods, _ = self._panel_matrices(simple_panel_data)
+        control_mask = (np.sum(D, axis=0) == 0)  # units never treated
+
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            max_iter=1,
+            tol=1e-15,
+            seed=42,
+        )
+        W = np.where(D == 0, 1.0, 0.0)
+
+        with pytest.warns(UserWarning, match="did not converge"):
+            trop_est._estimate_model(Y, control_mask, W, lambda_nn=0.1,
+                                     n_units=n_units, n_periods=n_periods)
+
+    def test_local_alternating_min_no_warning_on_convergence(self, simple_panel_data):
+        """TROP local _estimate_model must not warn on a well-behaved fit."""
+        Y, D, n_units, n_periods, _ = self._panel_matrices(simple_panel_data)
+        control_mask = (np.sum(D, axis=0) == 0)
+
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            max_iter=500,
+            tol=1e-6,
+            seed=42,
+        )
+        W = np.where(D == 0, 1.0, 0.0)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            trop_est._estimate_model(Y, control_mask, W, lambda_nn=0.1,
+                                     n_units=n_units, n_periods=n_periods)
+        assert not any("did not converge" in str(x.message) for x in w)

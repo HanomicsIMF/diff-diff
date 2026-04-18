@@ -26,7 +26,7 @@ from diff_diff._backend import (
 )
 from diff_diff.trop_local import _soft_threshold_svd, _validate_and_pivot_treatment
 from diff_diff.trop_results import TROPResults
-from diff_diff.utils import safe_inference
+from diff_diff.utils import safe_inference, warn_if_not_converged
 
 
 class TROPGlobalMixin:
@@ -445,6 +445,9 @@ class TROPGlobalMixin:
         # Initialize L = 0
         L = np.zeros((n_periods, n_units))
 
+        _FISTA_MAX_ITER = 20
+        inner_nonconverged_count = 0
+        outer_converged = False
         for iteration in range(max_iter):
             L_old = L.copy()
 
@@ -463,7 +466,8 @@ class TROPGlobalMixin:
             L_inner_prev = L_inner  # share reference initially (no copy needed)
             t_fista = 1.0
 
-            for _ in range(20):
+            inner_converged = False
+            for _ in range(_FISTA_MAX_ITER):
                 # FISTA momentum
                 t_fista_new = (1.0 + np.sqrt(1.0 + 4.0 * t_fista**2)) / 2.0
                 momentum = (t_fista - 1.0) / t_fista_new
@@ -479,13 +483,25 @@ class TROPGlobalMixin:
 
                 # Convergence check (L_inner_prev holds the pre-SVD value)
                 if np.max(np.abs(L_inner - L_inner_prev)) < tol:
+                    inner_converged = True
                     break
+            if not inner_converged:
+                inner_nonconverged_count += 1
 
             L = L_inner
 
             # Outer convergence check
             if np.max(np.abs(L - L_old)) < tol:
+                outer_converged = True
                 break
+
+        if not outer_converged:
+            detail = (
+                f"TROP global alternating minimization "
+                f"(inner FISTA non-converged in {inner_nonconverged_count}/{max_iter} "
+                f"outer iterations, FISTA max_iter={_FISTA_MAX_ITER})"
+            )
+            warn_if_not_converged(False, detail, max_iter, tol)
 
         # Final re-solve with converged L (match Rust behavior)
         Y_adj = Y_safe - L
