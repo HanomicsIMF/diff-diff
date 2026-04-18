@@ -1148,8 +1148,9 @@ EfficientDiD(
 )
 ```
 
-> **Note:** Phase 1 supports the no-covariates path only. Use CallawaySantAnna with
-> `estimation_method='dr'` if you need covariate adjustment.
+> **Note:** EfficientDiD supports covariate adjustment via a doubly-robust path
+> (sieve-based propensity score and outcome regression). See the `covariates`
+> parameter on `fit()`.
 
 **When to use Efficient DiD vs Callaway-Sant'Anna:**
 
@@ -1158,14 +1159,14 @@ EfficientDiD(
 | Approach | Optimal EIF-based weighting | Separate 2x2 DiD aggregation |
 | PT assumption | PT-All (stronger) or PT-Post | Conditional PT |
 | Efficiency | Achieves semiparametric bound | Not efficient |
-| Covariates | Not yet (Phase 2) | Supported (OR, IPW, DR) |
+| Covariates | Supported (doubly robust, sieve-based) | Supported (OR, IPW, DR) |
 | When to choose | Maximum efficiency, PT-All credible | Covariates needed, weaker PT |
 
 ### de Chaisemartin-D'Haultfœuille (dCDH) for Reversible Treatments
 
 `ChaisemartinDHaultfoeuille` (alias `DCDH`) is the only library estimator that handles **non-absorbing (reversible) treatments** — treatment can switch on AND off over time. This is the natural fit for marketing campaigns, seasonal promotions, on/off policy cycles.
 
-Ships `DID_M` (= `DID_1` at horizon `l = 1`) plus the full multi-horizon event study `DID_l` for `l = 1..L_max` via the `L_max` parameter. Phase 3 will add covariate adjustment.
+Ships `DID_M` (= `DID_1` at horizon `l = 1`), the full multi-horizon event study `DID_l` for `l = 1..L_max` via the `L_max` parameter, residualization-style covariate adjustment (`controls`), group-specific linear trends (`trends_linear`), state-set-specific trends (`trends_nonparam`), heterogeneity testing, non-binary treatment, HonestDiD sensitivity integration on placebos, and survey support via Taylor-series linearization.
 
 ```python
 from diff_diff import ChaisemartinDHaultfoeuille
@@ -1221,7 +1222,7 @@ ChaisemartinDHaultfoeuille(
 | `n_groups_dropped_crossers`, `n_groups_dropped_singleton_baseline` | Filter counts (multi-switch groups dropped before estimation; singleton-baseline groups excluded from variance) |
 | `n_groups_dropped_never_switching` | Backwards-compatibility metadata. Never-switching groups participate in the variance via stable-control roles; this field is no longer a filter count. |
 
-**Multi-horizon event study** (Phase 2 - pass `L_max` to `fit()`):
+**Multi-horizon event study** (pass `L_max` to `fit()`):
 
 ```python
 results = est.fit(data, outcome="outcome", group="group",
@@ -1264,9 +1265,9 @@ print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 
 > **Note:** By default (`drop_larger_lower=True`), the estimator drops groups whose treatment switches more than once before estimation. This matches R `DIDmultiplegtDYN`'s default and is required for the analytical variance formula to be consistent with the point estimate. Each drop emits an explicit warning.
 
-> **Note:** Phase 1 requires panels with a **balanced baseline** (every group observed at the first global period) and **no interior period gaps**. Late-entry groups (missing the baseline) raise `ValueError`; interior-gap groups are dropped with a warning; terminally-missing groups (early exit / right-censoring) are retained and contribute from their observed periods only. This is a documented deviation from R `DIDmultiplegtDYN`, which supports unbalanced panels — see [`docs/methodology/REGISTRY.md`](docs/methodology/REGISTRY.md) for the rationale, the defensive guards that make terminal missingness safe, and workarounds for unbalanced inputs.
+> **Note:** The estimator requires panels with a **balanced baseline** (every group observed at the first global period) and **no interior period gaps**. Late-entry groups (missing the baseline) raise `ValueError`; interior-gap groups are dropped with a warning; terminally-missing groups (early exit / right-censoring) are retained and contribute from their observed periods only. This is a documented deviation from R `DIDmultiplegtDYN`, which supports unbalanced panels - see [`docs/methodology/REGISTRY.md`](docs/methodology/REGISTRY.md) for the rationale, the defensive guards that make terminal missingness safe, and workarounds for unbalanced inputs.
 
-> **Note:** Survey design (`survey_design`), covariate adjustment (`controls`), group-specific linear trends (`trends_linear`), and HonestDiD integration (`honest_did`) are not yet supported. They raise `NotImplementedError` with phase pointers - see [`ROADMAP.md`](ROADMAP.md) for the Phase 3 rollout.
+> **Note:** Survey design is supported via Taylor-series linearization on `pweight` with strata / PSU / FPC. Replicate-weight variance and PSU-level bootstrap for dCDH are a planned extension. The `aggregate` parameter still raises `NotImplementedError`.
 
 ### Triple Difference (DDD)
 

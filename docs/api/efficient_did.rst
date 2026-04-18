@@ -16,8 +16,9 @@ This module implements the efficiency-bound-attaining estimator that:
 
 .. note::
 
-   Phase 1 supports the **no-covariates** path only. The with-covariates
-   path (Phase 2) will be added in a future version.
+   EfficientDiD supports a doubly-robust covariate path (sieve-based
+   propensity score and outcome regression). Pass column names to the
+   ``covariates`` parameter on ``fit()``.
 
 **When to use EfficientDiD:**
 
@@ -137,7 +138,7 @@ Comparison with Other Staggered Estimators
      - Not efficient
      - Efficient under homogeneity
    * - Covariates
-     - Not yet (Phase 2)
+     - Supported (doubly robust, sieve-based)
      - Supported (OR, IPW, DR)
      - Supported
    * - Bootstrap

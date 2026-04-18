@@ -323,64 +323,75 @@ Not the academic flowchart -- a business decision tree.
 
 ---
 
-## 7. Interaction with Existing Roadmap
+## 7. Interaction with ROADMAP.md
 
-The project has an existing ROADMAP.md covering Phase 10 (survey academic credibility), future estimators, and research directions. This strategy supplements rather than replaces it:
+`ROADMAP.md` has been refreshed to organize work as Current State / Recently Shipped / Shipping Next / Under Consideration / AI-Agent Track / Long-term. This strategy document is an internal planning artifact that sits alongside it:
 
-**Directly subsumed items:**
-- **10g. "Practitioner guidance: when does survey design matter?"** -- this becomes part of the business tutorials and Getting Started guide. No longer a standalone item.
-- **`aggregate_survey()` helper** -- shipped in v3.0.1. The microdata-to-panel workflow helper is in place for Persona A (survey data from BRFSS/ACS -> geographic panel). Practitioner-facing tutorials should reference it.
+**Subsumed into current capability:**
+- **Survey guidance for practitioners** -- now covered by the practitioner getting-started guide, practitioner decision tree, and the Brand Awareness Survey DiD tutorial (all shipped).
+- **`aggregate_survey()` helper** -- shipped; microdata-to-panel workflow is in place for Persona A (BRFSS / ACS -> geographic panel). Practitioner tutorials reference it.
+- **de Chaisemartin-D'Haultfoeuille (reversible treatments)** -- shipped end-to-end. Marketing interventions that switch on and off (seasonal campaigns, promotions) are now supported.
 
-**Reprioritized by business use cases:**
-- **de Chaisemartin-D'Haultfouille (reversible treatments)** -- marketing interventions frequently switch on/off (seasonal campaigns, promotions). This estimator becomes higher priority for business DS than for academics. Should move up in the roadmap.
-- **10e. Position paper / arXiv preprint** -- still valuable for academic credibility but not on the critical path for business DS adoption.
+**In Shipping Next on ROADMAP.md:**
+- Practitioner-ready output (`BusinessReport`, `DiagnosticReport` with context-aware `practitioner_next_steps()`).
+- Practitioner tutorials: dCDH comprehensive walkthrough, BRFSS state-policy, Marketing Campaign Lift, Pricing / Promotion Impact.
+- Survey breadth and validation: two-phase sampling + multi-stage cluster R-cross-validation.
 
-**Unchanged:**
-- Future estimators (Local Projections DiD, Causal Duration, etc.) and long-term research directions remain academic-oriented and unaffected by this strategy.
+**Deferred per ROADMAP.md:**
+- Product Launch Regional Rollout and Loyalty Program tutorials (deferred until practitioner demand).
+- Methodology-vs-alternative comparison pages (superseded by `BusinessReport` + tutorials that demonstrate capability directly).
 
 ---
 
-## 8. Prioritized Roadmap
+## 8. Current State and Sequenced Work
 
-### Phase 1: Foundation
-*Goal: Make diff-diff discoverable and approachable for business DS*
+This section mirrors the `ROADMAP.md` structure (Current State / Shipping Next / Under Consideration / AI-Agent Track) but adds internal context useful for strategic planning.
 
-1. Business "Getting Started" guide (1a)
-2. Terminology bridge as supplement within business docs, not standalone (1b)
-3. README "For Data Scientists" section (1c)
-4. Business decision tree -- "which method should I use?" (4b)
-5. Brand Awareness Survey DiD tutorial -- the lead use case (2b)
+### Shipped (foundation complete)
 
-**Why start here**: Zero code changes. Maximum positioning impact. The survey tutorial showcases our unique capability (survey design support) in the context that matters most to the user.
+Positioning and practitioner-foundation items that landed in the wave through v3.1.1:
 
-**Validation gate before Phase 2**: After Phase 1 ships, look for adoption signals -- tutorial page views, GitHub issues from business users, PyPI download trajectory. These signals determine how aggressively to invest in Phases 2-3.
+- Business "Getting Started" guide, terminology bridge, practitioner decision tree, and README "For Data Scientists" section.
+- Brand Awareness Survey DiD tutorial -- the lead survey-design use case.
+- Geo-Experiment tutorial (SyntheticDiD walkthrough for few-market marketing analytics).
+- `aggregate_survey()` helper (microdata-to-panel bridge).
+- Survey-aware power analysis (`SurveyPowerConfig`).
+- Full dCDH estimator (reversible treatment) with survey support.
+- Runtime LLM guides (`get_llm_guide(...)`) bundled in the wheel.
 
-### Phase 2: Business Content
-*Goal: Provide end-to-end examples for each major persona*
+### Shipping Next
 
-Tutorials in priority order (ship incrementally, not all at once):
+The queued work, ordered by expected leverage:
 
-6. Marketing Campaign Lift tutorial (2a) -- **highest priority after survey**
-7. Geo-Experiment tutorial (2f) -- captures GeoLift/CausalImpact search traffic
-8. Comparison page: diff-diff vs GeoLift vs CausalImpact (1d)
-9. Product Launch Rollout tutorial (2c)
-10. Pricing/Promotion Impact tutorial (2d)
-11. Loyalty Program tutorial using DDD (2e)
+1. `BusinessReport` class -- plain-English summaries from any results object. Core uses only numpy / pandas / scipy; rich export (PowerPoint, HTML) via an optional `[reporting]` extra.
+2. `DiagnosticReport` with context-aware `practitioner_next_steps()` -- unified diagnostic runner that substitutes actual column names from fitted results.
+3. dCDH comprehensive tutorial (reversible treatment walkthrough; Favara-Imbs headline replication).
+4. BRFSS repeated-cross-section tutorial -- state-policy DiD with design-based SEs and HonestDiD sensitivity.
+5. Marketing Campaign Lift tutorial (CallawaySantAnna, staggered geo rollout).
+6. Pricing / Promotion Impact tutorial (ContinuousDiD dose-response).
+7. Two-phase sampling + multi-stage cluster R-cross-validation.
 
-### Phase 3: Convenience Layer
-*Goal: Reduce time-to-insight and enable stakeholder communication*
+**Why this order**: practitioner-ready output (items 1-2) unblocks every subsequent tutorial -- each tutorial can close with a stakeholder-ready report. Items 3-6 validate the new reporting surface across the personas identified in §3.
 
-12. `BusinessReport` class (3a) -- core uses only numpy/pandas/scipy; rich export via optional `[reporting]` extra
-13. `DiagnosticReport` descriptive assessment (3b)
-14. Business data generator wrappers (3c)
-15. ~~`survey_aggregate()` helper from existing roadmap~~ -- shipped in v3.0.1 as `aggregate_survey()`; directly enables the survey tutorial workflow
+### Under Consideration
 
-### Phase 4: Platform (Longer-term)
-*Goal: Integrate into business DS workflows*
+Candidates surfaced by 2025-26 methodology research and practitioner-ecosystem scanning. Each has a commit criterion in `ROADMAP.md`:
 
-16. Integration guides (4a)
-17. Export templates (4c)
-18. AI agent integration -- position DiagnosticReport and BusinessReport as tools AI agents can invoke on behalf of business DS (leveraging existing `practitioner_next_steps()` infrastructure)
+- **New estimators** that cover use cases existing diff-diff estimators do not: DiD with no untreated group (inverse of SDiD's few-treated setup), distributional DiD for staggered timing, Local Projections DiD.
+- **Inference options** for sparse-treatment designs (few treated units).
+- **Sensitivity extensions** complementing HonestDiD (confounder-based bounds).
+- **Identification audits** on triple-difference estimators.
+- **Post-estimation and export capabilities** (standard post-estimation interface, publication-table export, survey-design object interop, pluggable regression engine).
+
+### AI-Agent Track
+
+Long-running program: position `DiagnosticReport` and `BusinessReport` as the output surface an AI agent produces on behalf of a practitioner, so the agent (using `practitioner_next_steps()`, Baker et al. guardrails, and the runtime LLM guides) can deliver a business-ready report without the practitioner seeing raw coefficients. See `ROADMAP.md` AI-Agent Track for the full vision and named milestones.
+
+### Deferred
+
+- Product Launch Regional Rollout and Loyalty Program tutorials -- defer until practitioner demand signals warrant them.
+- Business data generator wrappers (`generate_campaign_data`, etc.) -- rethink after `BusinessReport` ships; the wrappers may be moot if the reporting surface makes generic DGP naming sufficient.
+- Integration guides (Databricks, Jupyter dashboards) and explicit export templates (PowerPoint, Confluence) -- defer until `BusinessReport` defines the common output shape.
 
 ---
 
@@ -390,24 +401,24 @@ Tutorials in priority order (ship incrementally, not all at once):
 |---|---|
 | Oversimplifying may undermine credibility with academic users | Keep business layer additive -- don't change existing academic interface. Business tools translate, not replace. |
 | Business tutorials may encourage methodologically unsound analysis | Embed guardrails: DiagnosticReport flags issues, tutorials emphasize assumption checking in business language |
-| Scope creep | Phase 1 is documentation-only. Validate adoption signals before investing in code (Phase 3+). |
+| Scope creep | Practitioner-foundation work is documentation-only; validate adoption signals before investing in code (BusinessReport / DiagnosticReport and beyond). |
 | Maintaining two audiences | Shared codebase, separate entry points. Like scikit-learn serving both ML engineers and researchers. |
 
 ---
 
 ## 10. Success Metrics
 
-**Leading indicators (measurable after Phase 1):**
+**Leading indicators (measurable now that practitioner foundation is shipped):**
 - Tutorial notebook page views / nbviewer hits for business tutorials
 - GitHub issues or discussions mentioning business use cases (campaigns, surveys, geo-experiments)
 - Search console impressions for business-oriented queries ("python campaign lift", "python geo experiment", "python survey did")
 
-**Lagging indicators (Phases 2-3):**
+**Lagging indicators (measurable after BusinessReport / DiagnosticReport ship):**
 - PyPI download trajectory (month-over-month growth rate, not absolute)
 - GitHub stars from non-academic profiles
 - External blog posts or talks using diff-diff for business analysis
 
-**Phase 1 -> Phase 2 gate**: At least one of: (a) 3+ GitHub issues from business users, (b) measurable search impression growth for business queries, (c) qualitative signal that the business framing is resonating (social media, conference mentions). If none after 8 weeks, revisit the strategy before investing in code changes.
+**Adoption gate before investing further in code**: At least one of: (a) 3+ GitHub issues from business users, (b) measurable search impression growth for business queries, (c) qualitative signal that the business framing is resonating (social media, conference mentions). If none after 8 weeks of the practitioner-foundation content being live, revisit the strategy before investing further in code changes beyond `BusinessReport` / `DiagnosticReport`.
 
 ---
 
@@ -415,6 +426,6 @@ Tutorials in priority order (ship incrementally, not all at once):
 
 We have the best DiD engine in Python. What we don't have is the business packaging. The methodology is sound, the survey support is unique, the diagnostic suite is unmatched. But a marketing data scientist looking at our docs sees academic econometrics, not their problem.
 
-The fix is mostly about **framing, examples, and a thin convenience layer** -- not rebuilding the core. Phase 1 requires zero code changes. Phases 2-3 add content and lightweight APIs. The competitive window is open because no one else is targeting this intersection: comprehensive DiD + business data science + Python.
+The fix is mostly about **framing, examples, and a thin convenience layer** -- not rebuilding the core. The practitioner-foundation content (docs, positioning, lead tutorials) is now shipped. The convenience layer (`BusinessReport`, `DiagnosticReport`) is the next code-level step; platform integrations follow. The competitive window is open because no one else is targeting this intersection: comprehensive DiD + business data science + Python.
 
 The survey use case is the sharpest wedge. No other tool in any language combines complex survey design with modern heterogeneity-robust DiD estimators. Lead with that, then broaden.

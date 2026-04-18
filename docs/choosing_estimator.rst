@@ -250,9 +250,12 @@ All other staggered estimators
 treatment is absorbing - once treated, stays treated.
 
 Ships ``DID_M`` (= ``DID_1``) from de Chaisemartin & D'Haultfœuille
-(2020) plus the full multi-horizon event study ``DID_l`` for
-``l = 1..L_max`` from the dynamic companion paper (NBER WP 29873).
-Phase 3 will add covariate adjustment.
+(2020), the full multi-horizon event study ``DID_l`` for ``l = 1..L_max``
+from the dynamic companion paper (NBER WP 29873), residualization-style
+covariate adjustment (``controls``), group-specific linear trends
+(``trends_linear``), state-set-specific trends (``trends_nonparam``),
+heterogeneity testing, non-binary treatment, HonestDiD sensitivity
+integration on placebos, and survey support via Taylor-series linearization.
 
 .. code-block:: python
 
@@ -363,9 +366,9 @@ Use :class:`~diff_diff.EfficientDiD` when:
 
 .. note::
 
-   Phase 1 supports the **no-covariates** path only. If you need covariate
-   adjustment, use :class:`~diff_diff.CallawaySantAnna` with ``estimation_method='dr'``
-   or :class:`~diff_diff.ImputationDiD`.
+   EfficientDiD supports covariate adjustment via a doubly-robust path
+   (sieve-based propensity score and outcome regression). Pass a list of
+   column names to the ``covariates`` parameter on ``fit()``.
 
 .. code-block:: python
 
