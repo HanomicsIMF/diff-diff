@@ -97,6 +97,7 @@ def _validate_and_aggregate_to_cells(
     group: str,
     time: str,
     treatment: str,
+    weights: Optional[np.ndarray] = None,
 ) -> pd.DataFrame:
     """
     Validate input data and aggregate to ``(g, t)`` cells per the dCDH contract.
@@ -130,9 +131,14 @@ def _validate_and_aggregate_to_cells(
        cell-level treatment before calling ``fit()`` or
        ``twowayfeweights()``.
 
+    When ``weights`` is provided (survey pweights), cell means use weighted
+    averages: ``y_gt = sum(w_i * y_i) / sum(w_i)``.  An additional column
+    ``w_gt`` (total weight per cell) is included in the output for downstream
+    IF expansion.
+
     Returns the aggregated cell DataFrame with columns
-    ``[group, time, y_gt, d_gt, n_gt]``, sorted by ``[group, time]``
-    with a fresh index.
+    ``[group, time, y_gt, d_gt, n_gt]`` (plus ``w_gt`` when weighted),
+    sorted by ``[group, time]`` with a fresh index.
 
     Raises
     ------
@@ -150,6 +156,16 @@ def _validate_and_aggregate_to_cells(
         )
 
     df = data.copy()
+
+    # 1a. SurveyDesign.subpopulation() contract: zero-weight rows are
+    # out-of-sample. Pre-filter them *before* any NaN/coercion validation
+    # so that invalid values in excluded rows do not abort the fit.
+    if weights is not None:
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        pos_mask = weights_arr > 0
+        if not pos_mask.all():
+            df = df.loc[pos_mask].reset_index(drop=True)
+            weights = weights_arr[pos_mask]
 
     # 1b. Group and time NaN checks (before groupby, which silently drops NaN keys)
     n_nan_group = int(df[group].isna().sum())
@@ -203,13 +219,39 @@ def _validate_and_aggregate_to_cells(
     # No longer enforces {0, 1} - non-binary and continuous treatment supported.
 
     # 5. Cell aggregation (compute min/max for within-cell check)
-    cell = df.groupby([group, time], as_index=False).agg(
-        y_gt=(outcome, "mean"),
-        d_gt=(treatment, "mean"),
-        d_min=(treatment, "min"),
-        d_max=(treatment, "max"),
-        n_gt=(treatment, "count"),
-    )
+    if weights is not None:
+        # Survey-weighted cell aggregation (zero-weight rows already
+        # filtered upstream at step 1a).
+        # y_gt = sum(w_i * y_i) / sum(w_i) within each (g, t) cell.
+        # Treatment is constant within cells (checked below), so weighted
+        # and unweighted means are identical for d_gt.
+        df["_w_"] = weights
+        df["_wy_"] = weights * df[outcome].values
+        g_obj = df.groupby([group, time], as_index=False)
+        cell = g_obj.agg(
+            _wy_sum=("_wy_", "sum"),
+            w_gt=("_w_", "sum"),
+            d_gt=(treatment, "mean"),
+            d_min=(treatment, "min"),
+            d_max=(treatment, "max"),
+            n_gt=(treatment, "count"),
+        )
+        cell["y_gt"] = cell["_wy_sum"] / cell["w_gt"]
+        cell = cell.drop(columns=["_wy_sum"])
+        # Zero-weight cells: drop entirely so downstream validators
+        # (ragged-panel, baseline requirement) don't see them.
+        zero_w_mask = cell["w_gt"] <= 0
+        if zero_w_mask.any():
+            cell = cell[~zero_w_mask].reset_index(drop=True)
+        df.drop(columns=["_w_", "_wy_"], inplace=True)
+    else:
+        cell = df.groupby([group, time], as_index=False).agg(
+            y_gt=(outcome, "mean"),
+            d_gt=(treatment, "mean"),
+            d_min=(treatment, "min"),
+            d_max=(treatment, "max"),
+            n_gt=(treatment, "count"),
+        )
 
     # 6. Within-cell-varying treatment rejection.
     # All observations in a cell must have the same treatment value
@@ -233,8 +275,9 @@ def _validate_and_aggregate_to_cells(
             f"(first 5):\n{example_cells}"
         )
     # Drop the min/max columns; keep d_gt as float (no int cast - supports
-    # ordinal and continuous treatment).
-    cell = cell.drop(columns=["d_min", "d_max"])
+    # ordinal and continuous treatment). w_gt retained when weighted.
+    drop_cols = ["d_min", "d_max"]
+    cell = cell.drop(columns=drop_cols)
 
     # Sort to ensure deterministic order in downstream operations
     cell = cell.sort_values([group, time]).reset_index(drop=True)
@@ -559,10 +602,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             (Design-2) groups. Convenience wrapper (descriptive summary,
             not full paper re-estimation). Requires
             ``drop_larger_lower=False`` to retain 2-switch groups.
-        survey_design : Any, optional
-            **Not supported in any phase.** Survey design integration is
-            handled as a separate effort after all three phases ship.
-            Passing a non-``None`` value raises ``NotImplementedError``.
+        survey_design : SurveyDesign, optional
+            Survey design specification for design-based inference.
+            Supports pweight with strata/PSU/FPC via Taylor Series
+            Linearization. Survey weights produce weighted cell means
+            for the point estimate; the IF-based variance accounts for
+            the survey design structure. Replicate weights are not yet
+            supported.
 
         Returns
         -------
@@ -598,16 +644,91 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         )
 
         # ------------------------------------------------------------------
-        # Step 3: Survey gate (deferred separate effort)
+        # Step 3: Survey resolution
         # ------------------------------------------------------------------
-        if survey_design is not None:
-            raise NotImplementedError(
-                "ChaisemartinDHaultfoeuille does not support survey_design. "
-                "Survey design integration for dCDH is deferred to a separate "
-                "effort after all three implementation phases ship (see "
-                "ROADMAP.md out-of-scope section). For now, fit without "
-                "survey_design. If your treatment is absorbing, use "
-                "CallawaySantAnna which supports survey_design."
+        from diff_diff.survey import _resolve_survey_for_fit
+
+        resolved_survey, survey_weights, _, survey_metadata = (
+            _resolve_survey_for_fit(survey_design, data, "analytical")
+        )
+
+        # dCDH contract: the group is the effective sampling unit for
+        # the TSL IF expansion psi_i = U[g] * (w_i / W_g). When the user
+        # passed a SurveyDesign without an explicit PSU,
+        # compute_survey_if_variance() would fall back to per-observation
+        # PSUs — which contradicts the per-group structure the IF
+        # expansion assumes and inflates df_survey. Auto-inject
+        # `psu=<group>` and re-resolve so downstream variance, df_survey,
+        # and HonestDiD critical values match the documented contract.
+        # Strata / FPC / weight_type / nest are preserved.
+        # Skipped for replicate-weight designs — they're rejected below.
+        if (
+            resolved_survey is not None
+            and resolved_survey.psu is None
+            and (
+                resolved_survey.replicate_weights is None
+                or resolved_survey.replicate_weights.shape[1] == 0
+            )
+        ):
+            from diff_diff.survey import SurveyDesign as _SurveyDesign
+
+            # Build a synthesized PSU column on a private copy of data
+            # so the caller's DataFrame is untouched. Valid group values
+            # flow through as their own PSU label; NaN/invalid group
+            # values on zero-weight rows (SurveyDesign.subpopulation()
+            # excluded rows) are replaced with a single shared dummy
+            # label so the PSU resolver accepts them. Zero-weight rows
+            # contribute psi_i = 0 to the variance; keeping them in the
+            # resolved design preserves the full-design df_survey
+            # contract (n_psu / n_strata reflect the full sample, not
+            # the positive-weight subset).
+            psu_col_name = "__dcdh_eff_psu__"
+            synth_data = data.copy()
+            synth_psu = synth_data[group].copy()
+            try:
+                invalid_mask = synth_psu.isna().to_numpy()
+            except (AttributeError, TypeError):
+                invalid_mask = np.zeros(len(synth_psu), dtype=bool)
+            if invalid_mask.any():
+                synth_psu = synth_psu.astype(object)
+                synth_psu.loc[invalid_mask] = "__dcdh_excluded_null_psu__"
+            synth_data[psu_col_name] = synth_psu
+
+            eff_design = _SurveyDesign(
+                weights=survey_design.weights,
+                strata=survey_design.strata,
+                psu=psu_col_name,
+                fpc=getattr(survey_design, "fpc", None),
+                weight_type=getattr(survey_design, "weight_type", "pweight"),
+                nest=getattr(survey_design, "nest", False),
+                lonely_psu=getattr(survey_design, "lonely_psu", "remove"),
+            )
+            resolved_survey, survey_weights, _, survey_metadata = (
+                _resolve_survey_for_fit(eff_design, synth_data, "analytical")
+            )
+
+        if resolved_survey is not None:
+            if resolved_survey.weight_type != "pweight":
+                raise ValueError(
+                    f"ChaisemartinDHaultfoeuille survey support requires "
+                    f"weight_type='pweight', got '{resolved_survey.weight_type}'. "
+                    f"The survey IF variance math assumes probability weights."
+                )
+            if (resolved_survey.replicate_weights is not None
+                    and resolved_survey.replicate_weights.shape[1] > 0):
+                raise NotImplementedError(
+                    "Replicate weight variance for dCDH is not yet supported. "
+                    "Use strata/PSU/FPC for design-based inference via Taylor "
+                    "Series Linearization."
+                )
+            # Within-group-constant PSU/strata is required: the IF
+            # expansion psi_i = U[g] * (w_i / W_g) supports within-group
+            # variation in WEIGHTS (each obs contributes proportionally),
+            # but PSU and strata must be constant within group — the
+            # group is treated as the effective sampling unit for the
+            # Binder stratified-PSU variance formula.
+            _validate_group_constant_strata_psu(
+                resolved_survey, data, group, survey_weights,
             )
 
         # Design-2 precondition: requires drop_larger_lower=False
@@ -633,7 +754,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             group=group,
             time=time,
             treatment=treatment,
+            weights=survey_weights,
         )
+
+        # Retain observation-level survey info for IF expansion (Step 3
+        # of survey integration: group-level IF → observation-level psi).
+        _obs_survey_info = None
+        if resolved_survey is not None:
+            _obs_survey_info = {
+                "group_ids": data[group].values,
+                "weights": survey_weights,
+                "resolved": resolved_survey,
+            }
 
         # ------------------------------------------------------------------
         # Step 4b: Covariate aggregation (DID^X, Web Appendix Section 1.2)
@@ -658,8 +790,19 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"Control column(s) {missing_controls!r} not found in "
                     f"data. Available columns: {list(data.columns)}"
                 )
-            # Work on a copy to avoid mutating the caller's DataFrame
-            data_controls = data[controls].copy()
+            # SurveyDesign.subpopulation() contract: zero-weight rows are
+            # out-of-sample. Scope BOTH validation and aggregation to the
+            # positive-weight subset so excluded rows with missing/invalid
+            # covariates do not abort the fit and cell aggregation aligns
+            # with the effective sample used by _validate_and_aggregate_to_cells.
+            if survey_weights is not None:
+                pos_mask_ctrl = np.asarray(survey_weights) > 0
+                data_eff = data.loc[pos_mask_ctrl]
+                survey_weights_eff = np.asarray(survey_weights)[pos_mask_ctrl]
+            else:
+                data_eff = data
+                survey_weights_eff = None
+            data_controls = data_eff[controls].copy()
             for c in controls:
                 try:
                     data_controls[c] = pd.to_numeric(data_controls[c])
@@ -680,10 +823,27 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         "Remove or replace non-finite covariates before fitting."
                     )
             # Aggregate covariates to cell means (same groupby as treatment/outcome).
-            # Use the coerced copy joined with group/time from original data.
-            x_agg_input = data[[group, time]].copy()
+            # Build x_agg_input from the same effective-sample frame so rows
+            # align with data_controls.
+            x_agg_input = data_eff[[group, time]].copy()
             x_agg_input[controls] = data_controls[controls].values
-            x_cell_agg = x_agg_input.groupby([group, time], as_index=False)[controls].mean()
+            if survey_weights_eff is not None:
+                # Survey-weighted covariate cell means: sum(w*x)/sum(w)
+                x_agg_input["_w_"] = survey_weights_eff
+                for c in controls:
+                    x_agg_input[f"_wx_{c}"] = survey_weights_eff * x_agg_input[c].values
+                wx_cols = [f"_wx_{c}" for c in controls]
+                g_agg = x_agg_input.groupby([group, time], as_index=False).agg(
+                    {**{wc: "sum" for wc in wx_cols}, "_w_": "sum"}
+                )
+                for c in controls:
+                    w_safe = g_agg["_w_"].replace(0, 1)
+                    g_agg[c] = g_agg[f"_wx_{c}"] / w_safe
+                x_cell_agg = g_agg[[group, time] + controls]
+            else:
+                x_cell_agg = x_agg_input.groupby(
+                    [group, time], as_index=False
+                )[controls].mean()
             cell = cell.merge(x_cell_agg, on=[group, time], how="left")
 
         # ------------------------------------------------------------------
@@ -1108,8 +1268,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"trends_nonparam column {set_col!r} not found in "
                     f"data. Available columns: {list(data.columns)}"
                 )
-            # Reject NaN/missing set assignments
-            n_na_set = int(data[set_col].isna().sum())
+            # SurveyDesign.subpopulation() contract: scope NaN and
+            # time-invariance validation to positive-weight rows so
+            # excluded obs with missing set IDs do not abort the fit.
+            if survey_weights is not None:
+                pos_mask_tnp = np.asarray(survey_weights) > 0
+                data_tnp = data.loc[pos_mask_tnp]
+            else:
+                data_tnp = data
+            # Reject NaN/missing set assignments (effective sample only)
+            n_na_set = int(data_tnp[set_col].isna().sum())
             if n_na_set > 0:
                 raise ValueError(
                     f"trends_nonparam column {set_col!r} contains "
@@ -1117,7 +1285,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"have a valid set assignment."
                 )
             # Aggregate set membership per group (must be time-invariant)
-            set_per_group = data.groupby(group)[set_col].nunique()
+            set_per_group = data_tnp.groupby(group)[set_col].nunique()
             time_varying = set_per_group[set_per_group > 1]
             if len(time_varying) > 0:
                 raise ValueError(
@@ -1129,7 +1297,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # Set partition must be coarser than group (multiple groups
             # per set). A group-level partition creates singleton sets
             # with no within-set controls available.
-            set_map_check = data.groupby(group)[set_col].first()
+            set_map_check = data_tnp.groupby(group)[set_col].first()
             n_sets = set_map_check.nunique()
             n_groups_total = len(set_map_check)
             if n_sets >= n_groups_total:
@@ -1141,7 +1309,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"within-set controls."
                 )
             # Extract set membership per group aligned with all_groups
-            set_map = data.groupby(group)[set_col].first()
+            set_map = data_tnp.groupby(group)[set_col].first()
             set_ids_arr = np.array(
                 [set_map.loc[g] for g in all_groups], dtype=object
             )
@@ -1420,11 +1588,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 cid_elig = cid_l[eligible_mask_var]
                 U_centered_l = _cohort_recenter(U_l_elig, cid_elig)
                 N_l_h = multi_horizon_dids[l_h]["N_l"]
-                se_l = _plugin_se(U_centered=U_centered_l, divisor=N_l_h)
+                _elig_groups_l = [all_groups[g] for g in range(len(all_groups)) if eligible_mask_var[g]]
+                se_l = _compute_se(
+                    U_centered=U_centered_l,
+                    divisor=N_l_h,
+                    obs_survey_info=_obs_survey_info,
+                    eligible_groups=_elig_groups_l,
+                )
                 multi_horizon_se[l_h] = se_l
 
                 did_l_val = multi_horizon_dids[l_h]["did_l"]
-                t_l, p_l, ci_l = safe_inference(did_l_val, se_l, alpha=self.alpha, df=None)
+                _df_s = resolved_survey.df_survey if resolved_survey is not None else None
+                t_l, p_l, ci_l = safe_inference(did_l_val, se_l, alpha=self.alpha, df=_df_s)
                 multi_horizon_inference[l_h] = {
                     "effect": did_l_val,
                     "se": se_l,
@@ -1540,13 +1715,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     U_pl_elig = U_pl[eligible_mask_pl]
                     cid_elig_pl = cid_pl[eligible_mask_pl]
                     U_centered_pl_l = _cohort_recenter(U_pl_elig, cid_elig_pl)
-                    se_pl_l = _plugin_se(
-                        U_centered=U_centered_pl_l, divisor=pl_data["N_pl_l"]
+                    _elig_groups_pl = [all_groups[g] for g in range(len(all_groups)) if eligible_mask_pl[g]]
+                    se_pl_l = _compute_se(
+                        U_centered=U_centered_pl_l,
+                        divisor=pl_data["N_pl_l"],
+                        obs_survey_info=_obs_survey_info,
+                        eligible_groups=_elig_groups_pl,
                     )
                     placebo_horizon_se[lag_l] = se_pl_l
                     pl_val = pl_data["placebo_l"]
+                    _df_s = resolved_survey.df_survey if resolved_survey is not None else None
                     t_pl_l, p_pl_l, ci_pl_l = safe_inference(
-                        pl_val, se_pl_l, alpha=self.alpha, df=None
+                        pl_val, se_pl_l, alpha=self.alpha, df=_df_s
                     )
                     placebo_horizon_inference[lag_l] = {
                         "effect": pl_val,
@@ -1601,6 +1781,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             n_groups_dropped_never_switching,
             U_centered_joiners,
             U_centered_leavers,
+            _eligible_group_ids,
         ) = _compute_cohort_recentered_inputs(
             D_mat=D_mat,
             # Phase 1 IF uses per-period structure: use raw outcomes
@@ -1617,8 +1798,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             singleton_baseline_groups=singleton_baseline_groups,
         )
 
-        # Analytical SE for DID_M
-        overall_se = _plugin_se(U_centered=U_centered_overall, divisor=N_S)
+        # Analytical SE for DID_M (survey-aware when survey_design provided)
+        overall_se = _compute_se(
+            U_centered=U_centered_overall,
+            divisor=N_S,
+            obs_survey_info=_obs_survey_info,
+            eligible_groups=_eligible_group_ids,
+        )
         # Detect the degenerate-cohort case: every variance-eligible group
         # forms its own (D_{g,1}, F_g, S_g) cohort, so the centered
         # influence function is identically zero and `_plugin_se` returns
@@ -1643,15 +1829,23 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 UserWarning,
                 stacklevel=2,
             )
+        _df_survey = (
+            resolved_survey.df_survey if resolved_survey is not None else None
+        )
         overall_t, overall_p, overall_ci = safe_inference(
-            overall_att, overall_se, alpha=self.alpha, df=None
+            overall_att, overall_se, alpha=self.alpha, df=_df_survey
         )
 
         # Joiners SE (uses joiner-only centered IF; conservative bound)
         if joiners_available:
-            joiners_se = _plugin_se(U_centered=U_centered_joiners, divisor=joiner_total)
+            joiners_se = _compute_se(
+                U_centered=U_centered_joiners,
+                divisor=joiner_total,
+                obs_survey_info=_obs_survey_info,
+                eligible_groups=_eligible_group_ids,
+            )
             joiners_t, joiners_p, joiners_ci = safe_inference(
-                joiners_att, joiners_se, alpha=self.alpha, df=None
+                joiners_att, joiners_se, alpha=self.alpha, df=_df_survey
             )
         else:
             joiners_se, joiners_t, joiners_p, joiners_ci = (
@@ -1663,9 +1857,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
         # Leavers SE
         if leavers_available:
-            leavers_se = _plugin_se(U_centered=U_centered_leavers, divisor=leaver_total)
+            leavers_se = _compute_se(
+                U_centered=U_centered_leavers,
+                divisor=leaver_total,
+                obs_survey_info=_obs_survey_info,
+                eligible_groups=_eligible_group_ids,
+            )
             leavers_t, leavers_p, leavers_ci = safe_inference(
-                leavers_att, leavers_se, alpha=self.alpha, df=None
+                leavers_att, leavers_se, alpha=self.alpha, df=_df_survey
             )
         else:
             leavers_se, leavers_t, leavers_p, leavers_ci = (
@@ -1705,6 +1904,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # ------------------------------------------------------------------
         bootstrap_results: Optional[DCDHBootstrapResults] = None
         if self.n_bootstrap > 0:
+            if resolved_survey is not None:
+                warnings.warn(
+                    "Bootstrap with survey_design uses group-level multiplier "
+                    "weights, not PSU-level. This is conservative when groups "
+                    "are finer than PSUs. PSU-level survey bootstrap is "
+                    "deferred to a future release.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             joiners_inputs = (
                 (U_centered_joiners, joiner_total, joiners_att) if joiners_available else None
             )
@@ -1858,17 +2066,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 overall_se = br.overall_se
                 overall_p = br.overall_p_value if br.overall_p_value is not None else np.nan
                 overall_ci = br.overall_ci if br.overall_ci is not None else (np.nan, np.nan)
-                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=None)[0]
+                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=_df_survey)[0]
             if joiners_available and br.joiners_se is not None and np.isfinite(br.joiners_se):
                 joiners_se = br.joiners_se
                 joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
                 joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
-                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=None)[0]
+                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=_df_survey)[0]
             if leavers_available and br.leavers_se is not None and np.isfinite(br.leavers_se):
                 leavers_se = br.leavers_se
                 leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
                 leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
-                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=None)[0]
+                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=_df_survey)[0]
 
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
@@ -2030,7 +2238,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 if np.isfinite(delta_se):
                     effective_overall_se = delta_se
                     effective_overall_t, effective_overall_p, effective_overall_ci = safe_inference(
-                        delta_val, delta_se, alpha=self.alpha, df=None
+                        delta_val, delta_se, alpha=self.alpha, df=_df_survey
                     )
                 else:
                     effective_overall_se = float("nan")
@@ -2064,7 +2272,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         # Fallback: NaN SE (Phase 1 path or missing IF)
                         pl_se = float("nan")
                         pl_t, pl_p, pl_ci = safe_inference(
-                            pl_data["placebo_l"], pl_se, alpha=self.alpha, df=None
+                            pl_data["placebo_l"], pl_se, alpha=self.alpha, df=_df_survey
                         )
                         placebo_event_study_dict[-lag_l] = {
                             "effect": pl_data["placebo_l"],
@@ -2115,7 +2323,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             bs_ci if bs_ci is not None else (np.nan, np.nan)
                         )
                         placebo_event_study_dict[neg_key]["t_stat"] = safe_inference(
-                            eff, bs_se, alpha=self.alpha, df=None
+                            eff, bs_se, alpha=self.alpha, df=_df_survey
                         )[0]
 
         # Phase 2: build normalized_effects with SE
@@ -2128,7 +2336,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # SE via delta method: SE(DID^n_l) = SE(DID_l) / delta^D_l
                 se_did_l = multi_horizon_se.get(l_h, float("nan"))
                 se_norm = se_did_l / denom if np.isfinite(denom) and denom > 0 else float("nan")
-                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=None)
+                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=_df_survey)
                 normalized_effects_out[l_h] = {
                     "effect": eff,
                     "se": se_norm,
@@ -2187,7 +2395,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 else:
                     running_se_ub = float("nan")
                 cum_t, cum_p, cum_ci = safe_inference(
-                    cum_effect, running_se_ub, alpha=self.alpha, df=None
+                    cum_effect, running_se_ub, alpha=self.alpha, df=_df_survey
                 )
                 cumulated[l_h] = {
                     "effect": cum_effect,
@@ -2248,8 +2456,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "control-pool restrictions; the results would be "
                     "inconsistent with the fitted estimator."
                 )
-            # Extract per-group covariate (must be time-invariant)
-            het_per_group = data.groupby(group)[het_col].nunique()
+            # Extract per-group covariate (must be time-invariant).
+            # SurveyDesign.subpopulation() contract: scope time-invariance
+            # check to positive-weight rows so excluded obs with NaN/varying
+            # het values do not abort the fit.
+            if survey_weights is not None:
+                pos_mask_het = np.asarray(survey_weights) > 0
+                data_het = data.loc[pos_mask_het]
+            else:
+                data_het = data
+            het_per_group = data_het.groupby(group)[het_col].nunique()
             het_varying = het_per_group[het_per_group > 1]
             if len(het_varying) > 0:
                 raise ValueError(
@@ -2257,7 +2473,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"time-invariant within each group. "
                     f"{len(het_varying)} group(s) have varying values."
                 )
-            het_map = data.groupby(group)[het_col].first()
+            het_map = data_het.groupby(group)[het_col].first()
             X_het = np.array(
                 [float(het_map.loc[g]) for g in all_groups]
             )
@@ -2278,6 +2494,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 L_max=L_max,
                 alpha=self.alpha,
                 rank_deficient_action=self.rank_deficient_action,
+                group_ids_order=np.array(all_groups),
+                obs_survey_info=_obs_survey_info,
             )
 
         twfe_weights_df = None
@@ -2412,6 +2630,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 if design2
                 else None
             ),
+            survey_metadata=survey_metadata,
             _estimator_ref=self,
         )
 
@@ -3057,6 +3276,8 @@ def _compute_heterogeneity_test(
     L_max: int,
     alpha: float = 0.05,
     rank_deficient_action: str = "warn",
+    group_ids_order: Optional[np.ndarray] = None,
+    obs_survey_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """Test for heterogeneous treatment effects (Web Appendix Section 1.5).
 
@@ -3075,6 +3296,15 @@ def _compute_heterogeneity_test(
         Time-invariant covariate to test for heterogeneity.
     L_max : int
     alpha : float
+    group_ids_order : np.ndarray, optional
+        Canonical post-filter group id list aligned to Y_mat row order.
+        Required when ``obs_survey_info`` is supplied.
+    obs_survey_info : dict, optional
+        Observation-level survey info with keys ``group_ids`` (raw per-row
+        group labels), ``weights`` (per-row survey weights), and ``resolved``
+        (ResolvedSurveyDesign). When provided, the regression uses WLS with
+        per-group weights W_g = sum of obs survey weights, and SE is computed
+        via Binder TSL IF expansion through ``compute_survey_if_variance``.
 
     Returns
     -------
@@ -3086,6 +3316,39 @@ def _compute_heterogeneity_test(
 
     n_groups, n_periods = Y_mat.shape
     results: Dict[int, Dict[str, Any]] = {}
+
+    # Survey setup (once, before horizon loop). When inactive, df_s=None and
+    # the existing plain-OLS path runs unchanged.
+    use_survey = (
+        obs_survey_info is not None and group_ids_order is not None
+    )
+    if use_survey:
+        from diff_diff.survey import compute_survey_if_variance
+
+        obs_gids_raw = np.asarray(obs_survey_info["group_ids"])
+        obs_w_raw = np.asarray(obs_survey_info["weights"], dtype=np.float64)
+        resolved = obs_survey_info["resolved"]
+        df_s = (
+            resolved.df_survey if resolved is not None else None
+        )
+        # Contract: only obs whose group is in the canonical post-filter
+        # list contribute. Groups dropped upstream (Step 5b interior gaps,
+        # Step 6 multi-switch) appear in obs_gids_raw but must be
+        # zero-weighted in the IF expansion.
+        gid_list = (
+            group_ids_order.tolist()
+            if hasattr(group_ids_order, "tolist")
+            else list(group_ids_order)
+        )
+        gid_set = set(gid_list)
+        valid = np.array([g in gid_set for g in obs_gids_raw])
+        # Per-group total weight aligned to Y_mat row order
+        W_g_all = np.zeros(n_groups, dtype=np.float64)
+        for i, gid in enumerate(gid_list):
+            mask_g = (obs_gids_raw == gid) & valid
+            W_g_all[i] = obs_w_raw[mask_g].sum()
+    else:
+        df_s = None
 
     for l_h in range(1, L_max + 1):
         # Eligible switchers at this horizon (same logic as multi-horizon DID)
@@ -3159,20 +3422,78 @@ def _compute_heterogeneity_test(
             }
             continue
 
-        coefs, _residuals, vcov = solve_ols(
-            design, dep_arr,
-            return_vcov=True,
-            rank_deficient_action=rank_deficient_action,
-        )
+        if not use_survey:
+            # Plain OLS path (unchanged): standard inference per Lemma 7.
+            coefs, _residuals, vcov = solve_ols(
+                design, dep_arr,
+                return_vcov=True,
+                rank_deficient_action=rank_deficient_action,
+            )
+            beta_het = float(coefs[1])
+            se_het = float("nan")
+            if vcov is not None and np.isfinite(vcov[1, 1]) and vcov[1, 1] > 0:
+                se_het = float(np.sqrt(vcov[1, 1]))
+            t_stat, p_val, ci = safe_inference(beta_het, se_het, alpha=alpha, df=None)
+        else:
+            # Survey-aware path: WLS with per-group weights + TSL IF variance.
+            W_elig = W_g_all[eligible]
+            # solve_ols handles sqrt-weight scaling natively when
+            # weight_type='pweight' (linalg.py). Skip vcov — we compute
+            # design-based variance ourselves below.
+            coefs, _residuals, _vcov_ignored = solve_ols(
+                design, dep_arr,
+                weights=W_elig, weight_type="pweight",
+                return_vcov=False,
+                rank_deficient_action=rank_deficient_action,
+            )
+            # Rank-deficiency short-circuit: if any coef is NaN, return NaN
+            # inference. Mixing solve_ols's R-style drop with a pinv-derived
+            # IF would describe different estimands.
+            if not np.all(np.isfinite(coefs)):
+                results[l_h] = {
+                    "beta": float("nan"), "se": float("nan"),
+                    "t_stat": float("nan"), "p_value": float("nan"),
+                    "conf_int": (float("nan"), float("nan")),
+                    "n_obs": n_obs,
+                }
+                continue
 
-        # beta_het is at index 1 (index 0 is intercept)
-        beta_het = float(coefs[1])
-        # NaN-safe: if vcov is None or target coefficient variance is NaN
-        # (rank-deficient), all inference fields are NaN.
-        se_het = float("nan")
-        if vcov is not None and np.isfinite(vcov[1, 1]) and vcov[1, 1] > 0:
-            se_het = float(np.sqrt(vcov[1, 1]))
-        t_stat, p_val, ci = safe_inference(beta_het, se_het, alpha=alpha, df=None)
+            beta_het = float(coefs[1])
+            # Original-scale residuals (solve_ols applies sqrt-weight scaling
+            # internally and back-transforms residuals, but we need them for
+            # our IF computation below).
+            r_g = dep_arr - design @ coefs
+
+            # Group-level IF for β_X: ψ_g[X] = inv(X'WX)[1,:] @ x_g * W_g * r_g.
+            # Under full rank (gated above), pinv == inv. Wrap matmuls in
+            # errstate: macOS Accelerate BLAS can emit spurious divide/overflow
+            # warnings on sparse-cohort designs even though the result is finite.
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                XtWX = design.T @ (W_elig[:, None] * design)
+                XtWX_inv = np.linalg.pinv(XtWX)
+                psi_g = (XtWX_inv[1, :] @ design.T) * W_elig * r_g  # (n_eligible,)
+
+            # Expand to obs level: ψ_i = ψ_g * (w_i / W_g) for i in group g.
+            psi_obs = np.zeros(len(obs_w_raw))
+            for e_idx, g_idx in enumerate(eligible):
+                gid = gid_list[g_idx]
+                mask_g = (obs_gids_raw == gid) & valid
+                w_sum_g = obs_w_raw[mask_g].sum()
+                if w_sum_g > 0:
+                    psi_obs[mask_g] = psi_g[e_idx] * (
+                        obs_w_raw[mask_g] / w_sum_g
+                    )
+
+            # Binder TSL variance across stratified PSUs.
+            var_s = compute_survey_if_variance(psi_obs, resolved)
+            se_het = (
+                float(np.sqrt(var_s))
+                if np.isfinite(var_s) and var_s > 0
+                else float("nan")
+            )
+            t_stat, p_val, ci = safe_inference(
+                beta_het, se_het, alpha=alpha, df=df_s
+            )
 
         results[l_h] = {
             "beta": beta_het,
@@ -4381,6 +4702,9 @@ def _compute_cohort_recentered_inputs(
     U_centered_joiners = _cohort_recenter(U_joiners, cohort_id_eligible)
     U_centered_leavers = _cohort_recenter(U_leavers, cohort_id_eligible)
 
+    # Eligible group IDs for survey IF expansion
+    eligible_group_ids = [all_groups[g] for g in range(n_groups) if eligible_mask[g]]
+
     return (
         U_centered_overall,
         U_centered_overall.size,
@@ -4388,6 +4712,7 @@ def _compute_cohort_recentered_inputs(
         n_groups_dropped_never_switching,
         U_centered_joiners,
         U_centered_leavers,
+        eligible_group_ids,
     )
 
 
@@ -4430,6 +4755,177 @@ def _plugin_se(U_centered: np.ndarray, divisor: int) -> float:
     if not np.isfinite(sigma_hat_sq) or sigma_hat_sq < 0:
         return float("nan")
     return float(np.sqrt(sigma_hat_sq) / np.sqrt(divisor))
+
+
+def _validate_group_constant_strata_psu(
+    resolved: Any,
+    data: pd.DataFrame,
+    group_col: str,
+    survey_weights: Optional[np.ndarray],
+) -> None:
+    """Reject survey designs where strata or PSU vary within group.
+
+    The dCDH IF expansion ``psi_i = U[g] * (w_i / W_g)`` treats the
+    group as the effective sampling unit for design-based variance.
+    When strata or PSU vary within group, the expansion silently spreads
+    horizon-specific IF mass onto observations whose survey stratum or
+    PSU differs from the rest of the group, contaminating the
+    stratified-PSU variance. Reject those designs with a clear error.
+
+    Zero-weight rows are excluded from the check (subpopulation
+    contract — an excluded row with a different stratum/PSU label does
+    not actually participate in the variance).
+    """
+    if resolved is None:
+        return
+    pos_mask = np.asarray(survey_weights) > 0
+    g_eff = np.asarray(data[group_col].values)[pos_mask]
+    if resolved.strata is not None:
+        s_eff = np.asarray(resolved.strata)[pos_mask]
+        df_s = pd.DataFrame({"g": g_eff, "s": s_eff})
+        varying = df_s.groupby("g")["s"].nunique()
+        bad = varying[varying > 1]
+        if len(bad) > 0:
+            raise ValueError(
+                f"ChaisemartinDHaultfoeuille survey support requires "
+                f"strata to be constant within group, but "
+                f"{len(bad)} group(s) have multiple strata "
+                f"(examples: {bad.index.tolist()[:5]}). The IF "
+                f"expansion psi_i = U[g] * (w_i / W_g) treats the "
+                f"group as the effective sampling unit for stratified "
+                f"design-based variance."
+            )
+    if resolved.psu is not None:
+        p_eff = np.asarray(resolved.psu)[pos_mask]
+        df_p = pd.DataFrame({"g": g_eff, "p": p_eff})
+        varying = df_p.groupby("g")["p"].nunique()
+        bad = varying[varying > 1]
+        if len(bad) > 0:
+            raise ValueError(
+                f"ChaisemartinDHaultfoeuille survey support requires "
+                f"PSU to be constant within group, but "
+                f"{len(bad)} group(s) have multiple PSUs "
+                f"(examples: {bad.index.tolist()[:5]}). The IF "
+                f"expansion psi_i = U[g] * (w_i / W_g) treats the "
+                f"group as the effective sampling unit for stratified "
+                f"design-based variance."
+            )
+
+
+def _compute_se(
+    U_centered: np.ndarray,
+    divisor: int,
+    obs_survey_info: Optional[dict],
+    eligible_groups: Optional[list] = None,
+) -> float:
+    """Dispatch to plug-in SE or survey-design-aware SE.
+
+    When ``obs_survey_info`` is ``None``, falls back to the simple
+    plug-in formula.  Otherwise, expands group-level IFs and delegates
+    to TSL variance.
+    """
+    if obs_survey_info is None:
+        return _plugin_se(U_centered=U_centered, divisor=divisor)
+    if eligible_groups is None:
+        return _plugin_se(U_centered=U_centered, divisor=divisor)
+    if divisor <= 0:
+        return float("nan")
+    # dCDH IFs are numerator-scale (U.sum() == N_S * DID_M).
+    # compute_survey_if_variance() expects estimator-scale psi.
+    # Scale by 1/divisor to normalize before survey expansion.
+    U_scaled = U_centered / divisor
+    return _survey_se_from_group_if(
+        U_centered=U_scaled,
+        eligible_groups=eligible_groups,
+        obs_survey_info=obs_survey_info,
+    )
+
+
+def _survey_se_from_group_if(
+    U_centered: np.ndarray,
+    eligible_groups: list,
+    obs_survey_info: dict,
+) -> float:
+    """Compute survey-design-aware SE from group-level centered IFs.
+
+    Expands group-level influence function values to observation level
+    using the proportional-weight allocation ``psi_i = U[g] * (w_i / W_g)``
+    so that ``sum(psi_i for i in g) = U[g]``, then delegates to
+    ``compute_survey_if_variance()`` for the TSL design-based variance.
+
+    This is a library extension not in the dCDH papers (the paper's
+    plug-in variance assumes iid sampling).
+
+    Parameters
+    ----------
+    U_centered : np.ndarray
+        Cohort-recentered per-group IF values (one per eligible group).
+    eligible_groups : list
+        Group IDs corresponding to entries of ``U_centered``
+        (variance-eligible groups after singleton-baseline exclusion).
+    obs_survey_info : dict
+        Observation-level survey data retained from ``fit()`` setup:
+        ``{"group_ids": ..., "weights": ..., "resolved": ...}``.
+
+    Returns
+    -------
+    float
+        Survey-design-aware SE, or NaN if degenerate.
+    """
+    from diff_diff.survey import compute_survey_if_variance
+
+    # Degenerate-cohort contract (mirror _plugin_se): when the centered
+    # IF is empty or every cohort is a singleton (→ recentered IF is
+    # identically zero), the variance is unidentified. Return NaN
+    # rather than sqrt(0)=0 so the fit-time warning fires and
+    # inference stays NaN-consistent across every surface routed
+    # through _compute_se (overall, joiners/leavers, multi-horizon
+    # ATT, placebos, normalized/cumulated, heterogeneity).
+    if U_centered.size == 0:
+        return float("nan")
+    if float((U_centered ** 2).sum()) <= 0:
+        return float("nan")
+
+    group_ids = obs_survey_info["group_ids"]
+    weights = obs_survey_info["weights"]
+    resolved = obs_survey_info["resolved"]
+
+    # Zero-weight rows are out-of-sample (SurveyDesign.subpopulation()).
+    # Skip them before the group-ID factorization so NaN / non-comparable
+    # group IDs on excluded rows cannot crash np.unique. psi stays full-
+    # length with zeros in excluded positions so the alignment with
+    # resolved.strata / resolved.psu inside compute_survey_if_variance
+    # is preserved.
+    weights_arr = np.asarray(weights, dtype=np.float64)
+    pos_mask = weights_arr > 0
+    n_obs = len(weights_arr)
+    psi = np.zeros(n_obs, dtype=np.float64)
+
+    if not pos_mask.any():
+        return float("nan")
+
+    gids_eff = np.asarray(group_ids)[pos_mask]
+    w_eff = weights_arr[pos_mask]
+
+    # Build group → U_centered lookup (vectorized via factorization)
+    group_to_u = {gid: U_centered[idx] for idx, gid in enumerate(eligible_groups)}
+
+    # Map group IFs to observation level (effective sample only)
+    u_obs_eff = np.array([group_to_u.get(gid, 0.0) for gid in gids_eff])
+
+    # Compute per-group weight totals W_g via bincount on effective sample
+    unique_gids, inverse = np.unique(gids_eff, return_inverse=True)
+    w_totals_per_group = np.bincount(inverse, weights=w_eff)
+    w_obs_total_eff = w_totals_per_group[inverse]
+
+    # Expand to observation level: psi_i = U[g] * (w_i / W_g)
+    safe_w = np.where(w_obs_total_eff > 0, w_obs_total_eff, 1.0)
+    psi[pos_mask] = u_obs_eff * (w_eff / safe_w)
+
+    variance = compute_survey_if_variance(psi, resolved)
+    if not np.isfinite(variance) or variance < 0:
+        return float("nan")
+    return float(np.sqrt(variance))
 
 
 def _build_group_time_design(
@@ -4516,7 +5012,16 @@ def _compute_twfe_diagnostic(
     """
     X, _ = _build_group_time_design(cell, group_col, time_col)
     d_arr = cell["d_gt"].to_numpy().astype(float)
-    n_arr = cell["n_gt"].to_numpy().astype(float)
+    # Cell weight for Theorem 1: under survey_design, survey-weighted
+    # cell totals (w_gt) replace raw cell counts (n_gt) so the FE
+    # regressions, normalization denominator, and Corollary 1 shares
+    # match the observation-level pweighted TWFE estimand. Without
+    # survey_design (w_gt column absent), fall back to n_gt — the
+    # non-survey path is unchanged.
+    if "w_gt" in cell.columns:
+        cell_weight = cell["w_gt"].to_numpy().astype(float)
+    else:
+        cell_weight = cell["n_gt"].to_numpy().astype(float)
     y_arr = cell["y_gt"].to_numpy().astype(float)
 
     # Step 1-2: regress d on FE
@@ -4525,13 +5030,13 @@ def _compute_twfe_diagnostic(
         d_arr,
         return_vcov=False,
         rank_deficient_action=rank_deficient_action,
-        weights=n_arr,
+        weights=cell_weight,
     )
     eps = residuals_d
 
     # Step 3: per-cell weights — normalize by sum over treated cells
     treated_mask = d_arr == 1
-    denom = float((n_arr[treated_mask] * eps[treated_mask]).sum())
+    denom = float((cell_weight[treated_mask] * eps[treated_mask]).sum())
     if denom == 0:
         # Cannot normalize: the design has zero treated mass after FE absorption.
         # Warn so the user knows the diagnostic returned NaN values rather than
@@ -4554,12 +5059,14 @@ def _compute_twfe_diagnostic(
             sigma_fe=float("nan"),
             beta_fe=float("nan"),
         )
-    w_gt = (n_arr * eps) / denom
+    contribution_weights = (cell_weight * eps) / denom
 
     weights_df = cell[[group_col, time_col]].copy()
-    weights_df["weight"] = w_gt
+    weights_df["weight"] = contribution_weights
 
-    fraction_negative = float((w_gt[treated_mask] < 0).sum() / treated_mask.sum())
+    fraction_negative = float(
+        (contribution_weights[treated_mask] < 0).sum() / treated_mask.sum()
+    )
 
     # Step 5: plain TWFE regression of y on (FE + d_gt)
     X_with_d = np.column_stack([X, d_arr.reshape(-1, 1)])
@@ -4568,7 +5075,7 @@ def _compute_twfe_diagnostic(
         y_arr,
         return_vcov=False,
         rank_deficient_action=rank_deficient_action,
-        weights=n_arr,
+        weights=cell_weight,
     )
     beta_fe = float(coef_fe[-1])
 
@@ -4585,12 +5092,14 @@ def _compute_twfe_diagnostic(
     #   sigma(w) = sqrt(sum_treated(s * (w_paper - 1)^2))
     #   sigma_fe = |beta_fe| / sigma(w)
     #
-    # where s_{g,t} = N_{g,t} / N_1 are observation shares.
+    # where s_{g,t} = N_{g,t} / N_1 are observation shares (under
+    # survey_design, cell_weight is w_gt so shares are effective-
+    # weight shares; non-survey path is byte-identical).
     eps_treated = eps[treated_mask]
-    n_treated_arr = n_arr[treated_mask]
-    n1 = float(n_treated_arr.sum())  # total treated observations
-    if n1 > 0:
-        shares = n_treated_arr / n1  # s_{g,t} = N_{g,t} / N_1
+    w_treated_arr = cell_weight[treated_mask]
+    w1 = float(w_treated_arr.sum())  # total treated weight (N_1 or W_1)
+    if w1 > 0:
+        shares = w_treated_arr / w1  # s_{g,t} = w_{g,t} / w_1
         denom_paper = float((shares * eps_treated).sum())
         if abs(denom_paper) > 0:
             w_paper = eps_treated / denom_paper  # paper's w_{g,t}
@@ -4683,6 +5192,7 @@ def twowayfeweights(
     time: str,
     treatment: str,
     rank_deficient_action: str = "warn",
+    survey_design: Any = None,
 ) -> TWFEWeightsResult:
     """
     Standalone TWFE decomposition diagnostic.
@@ -4702,6 +5212,11 @@ def twowayfeweights(
     treatment : str
     rank_deficient_action : str, default="warn"
         Action when the FE design matrix is rank-deficient.
+    survey_design : SurveyDesign, optional
+        If provided, cell aggregation uses survey-weighted cell means
+        (matching ``fit(..., survey_design=sd).twfe_*``). Required to preserve
+        fit-vs-helper parity under survey-backed inputs. Only
+        ``weight_type='pweight'`` is supported; other types raise ValueError.
 
     Returns
     -------
@@ -4709,6 +5224,33 @@ def twowayfeweights(
         Object with attributes ``weights`` (DataFrame), ``fraction_negative``
         (float), ``sigma_fe`` (float), and ``beta_fe`` (float).
     """
+    # Survey resolution (optional): mirrors the fit() path so that the
+    # standalone helper produces identical numbers to fit(..., survey_design=sd).
+    survey_weights = None
+    if survey_design is not None:
+        from diff_diff.survey import _resolve_survey_for_fit
+
+        resolved, survey_weights, _, _ = _resolve_survey_for_fit(
+            survey_design, data, "analytical"
+        )
+        if resolved is not None and resolved.weight_type != "pweight":
+            raise ValueError(
+                f"twowayfeweights() survey support requires "
+                f"weight_type='pweight', got '{resolved.weight_type}'. "
+                f"The TWFE diagnostic under survey uses survey-weighted cell "
+                f"means; other weight types are not supported."
+            )
+        if (
+            resolved is not None
+            and resolved.replicate_weights is not None
+            and resolved.replicate_weights.shape[1] > 0
+        ):
+            raise NotImplementedError(
+                "Replicate weight variance for twowayfeweights() is not "
+                "supported. Use strata/PSU/FPC for design-based inference "
+                "via Taylor Series Linearization (matches the fit() path)."
+            )
+
     # Validation + cell aggregation via the same helper used by
     # ChaisemartinDHaultfoeuille.fit() — enforces NaN/binary/within-cell
     # rules from REGISTRY.md so the standalone diagnostic does not
@@ -4719,6 +5261,7 @@ def twowayfeweights(
         group=group,
         time=time,
         treatment=treatment,
+        weights=survey_weights,
     )
     # TWFE diagnostic assumes binary treatment (d_arr == 1 for treated mask).
     if not set(cell["d_gt"].unique()).issubset({0.0, 1.0, 0, 1}):

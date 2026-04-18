@@ -181,7 +181,7 @@ The dynamic companion paper subsumes the AER 2020 paper: `DID_1 = DID_M`. The si
 
 These are referenced by the dCDH papers but live in *separate* efforts or *separate* companion papers we don't yet have:
 
-- **Survey design integration** — deferred to a separate effort after all three phases ship. Phase 1 documents "no survey support" in the compatibility matrix; the separate effort revisits when Phase 3 is complete.
+- **Survey design integration** — shipped. Supports pweight with strata/PSU/FPC via Taylor Series Linearization. Replicate weights and PSU-level bootstrap deferred.
 - **Fuzzy DiD** (within-cell-varying treatment, Web Appendix Section 1.7 of dynamic paper) → de Chaisemartin & D'Haultfœuille (2018), separate paper not yet reviewed
 - **Principled anticipation handling and trimming rules** (footnote 14 of dynamic paper) → de Chaisemartin (2021), separate paper not yet reviewed
 - **2SLS DiD** (referenced in AER appendix Section 3.4) → separate paper
@@ -191,11 +191,11 @@ These remain in **Future Estimators** below if/when we choose to extend.
 ### Architectural notes (for plan and PR reviewers)
 
 - **Single `ChaisemartinDHaultfoeuille` class** (alias `DCDH`). Not a family. New features land as `fit()` parameters or fields on the results dataclass. No `DCDHDynamic`, `DCDHCovariate`, etc. Matches the library's idiomatic pattern: `CallawaySantAnna`, `ImputationDiD`, and `EfficientDiD` are all single classes that evolved across many phases.
-- **Forward-compatible API from Phase 1.** `fit(aggregate=None, controls=None, trends_linear=None, L_max=None, ...)` accepts the Phase 2/3 parameters from day one and raises `NotImplementedError` with a clear pointer to the relevant phase until they are implemented. No signature changes between phases.
+- **Forward-compatible API from Phase 1.** `fit(aggregate=None, controls=None, trends_linear=None, L_max=None, ...)` accepts the Phase 2/3 parameters from day one and raised `NotImplementedError` with a clear pointer to the relevant phase until they were implemented. As of the dCDH work, Phase 2, Phase 3, and `survey_design` are all live; only `aggregate` remains gated with `NotImplementedError`. No signature changes between phases.
 - **Conservative CI** under Assumption 8 (independent groups), exact only under iid sampling. Documented in REGISTRY.md as a `**Note:**` deviation from "default nominal coverage." Theorem 1 of the dynamic paper.
 - **Cohort recentering for variance is essential.** Cohorts are defined by the triple `(D_{g,1}, F_g, S_g)`. The plug-in variance subtracts cohort-conditional means, **NOT a single grand mean**. Test fixtures must catch this — a wrong implementation silently produces a smaller, incorrect variance.
 - **No Rust acceleration is planned for any phase.** The estimator's hot path is groupby + BLAS-accelerated matrix-vector products, where NumPy already operates near-optimally. If profiling on large panels (`G > 100K`) reveals a bottleneck post-ship, the existing `_rust_bootstrap_weights` helper can be reused for the bootstrap loop without writing new Rust code.
-- **No survey design integration in any phase.** Handled as a separate effort after all three phases ship. Phase 1 documents the absence in the compatibility matrix so survey users do not silently apply survey weights and get wrong answers.
+- **Survey design integration shipped.** Supports pweight with strata/PSU/FPC via TSL. Replicate weights and PSU-level bootstrap deferred to a follow-up.
 
 ---
 

@@ -967,6 +967,16 @@ def _extract_event_study_params(
                 beta_hat = np.array(effects)
                 sigma = np.diag(np.array(ses) ** 2)
 
+                # Extract survey df. For replicate designs with undefined df
+                # (rank <= 1), use sentinel df=0 so _get_critical_value returns
+                # NaN, matching the safe_inference contract.
+                df_survey = None
+                if hasattr(results, "survey_metadata") and results.survey_metadata is not None:
+                    sm = results.survey_metadata
+                    df_survey = getattr(sm, "df_survey", None)
+                    if df_survey is None and getattr(sm, "replicate_method", None) is not None:
+                        df_survey = 0  # undefined replicate df → NaN inference
+
                 return (
                     beta_hat,
                     sigma,
@@ -974,7 +984,7 @@ def _extract_event_study_params(
                     len(post_times),
                     pre_times,
                     post_times,
-                    None,  # df_survey: dCDH has no survey support
+                    df_survey,
                 )
         except ImportError:
             pass

@@ -173,6 +173,12 @@ Is treatment adoption staggered (multiple cohorts, different timing)?
 |-- NO, simple 2x2 design:
 |   \-- DifferenceInDifferences (DiD)
 |
+|-- Treatment switches ON and OFF (reversible / non-absorbing)?
+|   \-- ChaisemartinDHaultfoeuille (dCDH / alias `DCDH`)
+|       -- Only library estimator for non-absorbing treatments; supports
+|          L_max multi-horizon, dynamic placebos, cost-benefit delta,
+|          HonestDiD, and `survey_design=` (pweight + strata/PSU/FPC via TSL)
+|
 |-- Few treated units (< 20)?
 |   \-- SyntheticDiD (SDiD)    -- synthetic control + DiD hybrid
 |
@@ -257,6 +263,27 @@ from diff_diff import MultiPeriodDiD
 es = MultiPeriodDiD(cluster='unit_id')
 results = es.fit(data, outcome='y', unit='unit_id', time='period',
                  treatment='treated')
+print(results.summary())
+```
+
+### Reversible (non-absorbing) treatment with survey design
+Use `ChaisemartinDHaultfoeuille` (dCDH) when treatment switches ON and OFF.
+Pass `survey_design=SurveyDesign(...)` for design-based inference via Taylor
+Series Linearization. Only `weight_type='pweight'` is supported; replicate
+weights are deferred. When combined with `n_bootstrap > 0`, dCDH emits a
+`UserWarning` and falls back to group-level multiplier bootstrap — prefer
+the analytical TSL path for survey-aware inference.
+
+```python
+from diff_diff import ChaisemartinDHaultfoeuille, SurveyDesign
+
+sd = SurveyDesign(weights='pw', strata='stratum', psu='cluster', nest=True)
+results = ChaisemartinDHaultfoeuille().fit(
+    data, outcome='y', group='unit_id', time='period',
+    treatment='treated',
+    L_max=3,                  # multi-horizon event study
+    survey_design=sd,         # survey-aware analytical SE (TSL)
+)
 print(results.summary())
 ```
 

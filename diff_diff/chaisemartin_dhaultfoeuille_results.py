@@ -342,8 +342,13 @@ class ChaisemartinDHaultfoeuilleResults:
         ``compute_honest_did(results)`` post-hoc. Contains identified
         set bounds, robust confidence intervals, and breakdown analysis.
     survey_metadata : Any, optional
-        Always ``None`` in Phase 1 — survey integration is deferred to a
-        separate effort after all phases ship.
+        Populated when ``fit(..., survey_design=sd)`` is called; ``None``
+        otherwise. Carries the resolved survey design summary
+        (``weight_type``, strata/PSU counts, ``df_survey``, weight range,
+        and replicate-method info when applicable). ``df_survey`` is
+        threaded into survey-aware inference (t-distribution at all
+        analytical surfaces) and consumed by ``compute_honest_did()`` to
+        produce survey-aware critical values.
     bootstrap_results : DCDHBootstrapResults, optional
         Bootstrap inference results when ``n_bootstrap > 0``.
     """

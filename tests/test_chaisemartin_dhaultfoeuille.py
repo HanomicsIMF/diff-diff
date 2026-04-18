@@ -385,15 +385,21 @@ class TestForwardCompatGates:
                 honest_did=True,
             )
 
-    def test_survey_design_raises_not_implemented(self, data):
-        with pytest.raises(NotImplementedError, match="separate effort"):
+    def test_survey_design_rejects_fweight(self, data):
+        """Survey support requires pweight; fweight rejected."""
+        from diff_diff import SurveyDesign
+
+        data = data.copy()
+        data["pw"] = 1.0
+        sd = SurveyDesign(weights="pw", weight_type="fweight")
+        with pytest.raises(ValueError, match="pweight"):
             self._est().fit(
                 data,
                 outcome="outcome",
                 group="group",
                 time="period",
                 treatment="treatment",
-                survey_design=object(),
+                survey_design=sd,
             )
 
     def test_cluster_parameter_raises_not_implemented(self, data):

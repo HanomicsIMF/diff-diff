@@ -1381,7 +1381,7 @@ class TestDCDHIntegration:
         assert sigma.shape == (n_pre + n_post, n_pre + n_post)
         assert all(t < 0 for t in pre_t)
         assert all(t > 0 for t in post_t)
-        assert df_s is None  # dCDH has no survey support
+        assert df_s is None  # non-survey fixture → df_survey is None
 
     def test_dcdh_no_placebos_raises(self):
         """dCDH results without placebos raise ValueError."""
