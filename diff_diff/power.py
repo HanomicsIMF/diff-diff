@@ -1138,6 +1138,7 @@ class SimulationPowerResults:
             "mean_se": self.mean_se,
             "coverage": self.coverage,
             "n_simulations": self.n_simulations,
+            "n_simulation_failures": self.n_simulation_failures,
             "true_effect": self.true_effect,
             "alpha": self.alpha,
             "estimator_name": self.estimator_name,

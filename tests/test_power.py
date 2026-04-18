@@ -626,6 +626,40 @@ class TestSimulatePower:
                 data_generator=generate_did_data,
             )
 
+    def test_simulation_failure_counter_survives_serialization(self):
+        """`n_simulation_failures` round-trips through to_dict/to_dataframe."""
+        from diff_diff.prep import generate_did_data
+
+        class AlternatingFailingEstimator:
+            def __init__(self):
+                self.call_count = 0
+
+            def fit(self, data, **kwargs):
+                self.call_count += 1
+                if self.call_count % 2 == 0:
+                    raise ValueError("forced simulated failure")
+
+                class Result:
+                    att = 5.0
+                    se = 1.0
+                    p_value = 0.01
+                    conf_int = (3.0, 7.0)
+
+                return Result()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            results = simulate_power(
+                estimator=AlternatingFailingEstimator(),
+                n_simulations=20,
+                progress=False,
+                data_generator=generate_did_data,
+            )
+
+        serialized = results.to_dict()
+        assert "n_simulation_failures" in serialized
+        assert serialized["n_simulation_failures"] == results.n_simulation_failures == 10
+
     def test_simulation_failure_rate_warning_above_threshold(self):
         """10% threshold: >10% failure still warns with the per-effect-size message."""
         from diff_diff.prep import generate_did_data
