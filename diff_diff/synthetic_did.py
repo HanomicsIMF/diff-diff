@@ -141,26 +141,7 @@ class SyntheticDiD(DifferenceInDifferences):
         variance_method: str = "placebo",
         n_bootstrap: int = 200,
         seed: Optional[int] = None,
-        # Deprecated — accepted for backward compat, ignored with warning
-        lambda_reg: Optional[float] = None,
-        zeta: Optional[float] = None,
     ):
-        if lambda_reg is not None:
-            warnings.warn(
-                "lambda_reg is deprecated and ignored. Regularization is now "
-                "auto-computed from data. Use zeta_omega to override unit weight "
-                "regularization. Will be removed in v3.1.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if zeta is not None:
-            warnings.warn(
-                "zeta is deprecated and ignored. Use zeta_lambda to override "
-                "time weight regularization. Will be removed in v3.1.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         super().__init__(robust=True, cluster=None, alpha=alpha)
         self.zeta_omega = zeta_omega
         self.zeta_lambda = zeta_lambda
@@ -1465,17 +1446,8 @@ class SyntheticDiD(DifferenceInDifferences):
 
     def set_params(self, **params) -> "SyntheticDiD":
         """Set estimator parameters."""
-        # Deprecated parameter names — emit warning and ignore
-        _deprecated = {"lambda_reg", "zeta"}
         for key, value in params.items():
-            if key in _deprecated:
-                warnings.warn(
-                    f"{key} is deprecated and ignored. Use zeta_omega/zeta_lambda "
-                    f"instead. Will be removed in v3.1.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-            elif hasattr(self, key):
+            if hasattr(self, key):
                 setattr(self, key, value)
             else:
                 raise ValueError(f"Unknown parameter: {key}")
