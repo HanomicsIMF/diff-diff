@@ -3703,6 +3703,347 @@ class TestTROPBootstrapNaNSE:
         assert len(dist) == 0
 
 
+class TestTROPBootstrapFailureRateGuard:
+    """Proportional failure-rate guard for TROP bootstrap replicate loops.
+
+    Before PR #5, all four TROP bootstrap sites warned only when
+    ``len(bootstrap_estimates) < 10``. A run with n_bootstrap=200 and 11
+    successes (94.5% failure rate) passed silently. After PR #5, any
+    run with failure rate > 5% warns via
+    ``bootstrap_utils.warn_bootstrap_failure_rate``.
+    """
+
+    @staticmethod
+    def _make_failing_fit(n_total, n_success, success_value=0.1):
+        """Return a side_effect callable that succeeds exactly ``n_success``
+        times out of ``n_total`` calls, raising ValueError otherwise."""
+        state = {"calls": 0}
+
+        def _fit(*args, **kwargs):
+            state["calls"] += 1
+            if state["calls"] <= n_success:
+                return success_value
+            raise ValueError("forced bootstrap failure")
+
+        return _fit
+
+    def test_local_bootstrap_warns_above_5pct_failure(self):
+        """Local unit-resample bootstrap: 4/20 successes (80% fail) → warn."""
+        from unittest.mock import patch
+
+        df = TestTROPNValidTreated._make_panel()
+
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=20,
+            seed=42,
+        )
+
+        with patch.object(
+            TROP,
+            "_fit_with_fixed_lambda",
+            side_effect=self._make_failing_fit(20, 4),
+        ):
+            with pytest.warns(
+                UserWarning,
+                match=r"4/20 bootstrap iterations succeeded in TROP local bootstrap",
+            ):
+                se, dist = trop_est._bootstrap_variance(
+                    df, "outcome", "treated", "unit", "time", (1.0, 1.0, 1e10)
+                )
+
+        assert np.isfinite(se)
+        assert len(dist) == 4
+
+    def test_global_bootstrap_warns_above_5pct_failure(self):
+        """Global unit-resample bootstrap (Python path): high failure rate → warn."""
+        import sys
+        from unittest.mock import patch
+
+        df = TestTROPNValidTreated._make_panel()
+
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=20,
+            seed=42,
+        )
+
+        trop_global_module = sys.modules["diff_diff.trop_global"]
+        with (
+            patch.object(trop_global_module, "HAS_RUST_BACKEND", False),
+            patch.object(trop_global_module, "_rust_bootstrap_trop_variance_global", None),
+            patch.object(
+                TROP,
+                "_fit_global_with_fixed_lambda",
+                side_effect=self._make_failing_fit(20, 3),
+            ),
+        ):
+            with pytest.warns(
+                UserWarning,
+                match=r"3/20 bootstrap iterations succeeded in TROP global bootstrap",
+            ):
+                se, dist = trop_est._bootstrap_variance_global(
+                    df, "outcome", "treated", "unit", "time", (1.0, 1.0, 1e10), 3
+                )
+
+        assert np.isfinite(se)
+        assert len(dist) == 3
+
+    def test_local_bootstrap_silent_on_full_success(self):
+        """No proportional warning when every replicate succeeds."""
+        from unittest.mock import patch
+
+        df = TestTROPNValidTreated._make_panel()
+
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=20,
+            seed=42,
+        )
+
+        with patch.object(
+            TROP,
+            "_fit_with_fixed_lambda",
+            side_effect=self._make_failing_fit(20, 20),
+        ):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                se, dist = trop_est._bootstrap_variance(
+                    df, "outcome", "treated", "unit", "time", (1.0, 1.0, 1e10)
+                )
+
+        failure_warnings = [x for x in w if "bootstrap iterations succeeded" in str(x.message)]
+        assert (
+            failure_warnings == []
+        ), f"No failure-rate warning expected on full success, got {failure_warnings}"
+        assert np.isfinite(se)
+        assert len(dist) == 20
+
+    def test_local_rust_bootstrap_warns_above_5pct_failure(self):
+        """Rust-local path previously returned silently whenever `len >= 10`.
+
+        Now the same proportional guard fires: Rust returning 11 successful
+        draws out of n_bootstrap=200 (94.5% failure rate) must warn.
+        """
+        import sys
+        from unittest.mock import patch
+
+        df = TestTROPNValidTreated._make_panel()
+
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=200,
+            seed=42,
+        )
+
+        n_units = df["unit"].nunique()
+        n_periods = df["time"].nunique()
+        Y = np.zeros((n_periods, n_units), dtype=np.float64)
+        D = np.zeros((n_periods, n_units), dtype=np.float64)
+        trop_est._precomputed = {
+            "control_mask": np.ones((n_periods, n_units), dtype=bool),
+            "time_dist_matrix": np.abs(
+                np.arange(n_periods)[:, None] - np.arange(n_periods)[None, :]
+            ).astype(np.int64),
+        }
+
+        trop_local_module = sys.modules["diff_diff.trop_local"]
+        rng = np.random.default_rng(0)
+        fake_boot = rng.normal(size=11)
+
+        def _fake_rust_boot(*args, **kwargs):
+            return fake_boot, float(np.std(fake_boot, ddof=1))
+
+        with (
+            patch.object(trop_local_module, "HAS_RUST_BACKEND", True),
+            patch.object(
+                trop_local_module,
+                "_rust_bootstrap_trop_variance",
+                side_effect=_fake_rust_boot,
+            ),
+        ):
+            with pytest.warns(
+                UserWarning,
+                match=r"11/200 bootstrap iterations succeeded in TROP local bootstrap \(Rust\)",
+            ):
+                se, dist = trop_est._bootstrap_variance(
+                    df,
+                    "outcome",
+                    "treated",
+                    "unit",
+                    "time",
+                    (1.0, 1.0, 1e10),
+                    Y=Y,
+                    D=D,
+                )
+
+        assert np.isfinite(se)
+        assert len(dist) == 11
+
+    def test_global_rust_bootstrap_warns_above_5pct_failure(self):
+        """Global Rust happy path: 3/20 Rust successes (85% fail) warns."""
+        import sys
+        from unittest.mock import patch
+
+        df = TestTROPNValidTreated._make_panel()
+
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=20,
+            seed=42,
+        )
+
+        trop_global_module = sys.modules["diff_diff.trop_global"]
+        rng = np.random.default_rng(0)
+        fake_boot = rng.normal(size=3)
+
+        def _fake_rust_boot_global(*args, **kwargs):
+            return fake_boot, float(np.std(fake_boot, ddof=1))
+
+        with (
+            patch.object(trop_global_module, "HAS_RUST_BACKEND", True),
+            patch.object(
+                trop_global_module,
+                "_rust_bootstrap_trop_variance_global",
+                side_effect=_fake_rust_boot_global,
+            ),
+        ):
+            with pytest.warns(
+                UserWarning,
+                match=r"3/20 bootstrap iterations succeeded in TROP global bootstrap \(Rust\)",
+            ):
+                se, dist = trop_est._bootstrap_variance_global(
+                    df, "outcome", "treated", "unit", "time", (1.0, 1.0, 1e10), 3
+                )
+
+        assert np.isfinite(se)
+        assert len(dist) == 3
+
+    @staticmethod
+    def _make_survey_panel_and_design():
+        """Build a panel with per-unit PSU + weight columns and the matching
+        SurveyDesign/ResolvedSurveyDesign needed to reach the Rao-Wu path."""
+        from diff_diff import SurveyDesign
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        df = TestTROPNValidTreated._make_panel().copy()
+        all_units = sorted(df["unit"].unique())
+        unit_to_psu = {u: i for i, u in enumerate(all_units)}
+        df["psu"] = df["unit"].map(unit_to_psu).astype(np.int64)
+        df["weight"] = 1.0
+        n_obs = len(df)
+
+        survey_design = SurveyDesign(weights="weight", psu="psu")
+        resolved_survey = ResolvedSurveyDesign(
+            weights=np.ones(n_obs, dtype=np.float64),
+            weight_type="pweight",
+            strata=None,
+            psu=df["psu"].values.astype(np.int64),
+            fpc=None,
+            n_strata=0,
+            n_psu=len(all_units),
+            lonely_psu="remove",
+        )
+        return df, survey_design, resolved_survey
+
+    def test_local_rao_wu_bootstrap_warns_above_5pct_failure(self):
+        """Local Rao-Wu survey bootstrap: forced failures → proportional warn."""
+        from unittest.mock import patch
+
+        df, survey_design, resolved_survey = self._make_survey_panel_and_design()
+
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=20,
+            seed=42,
+        )
+
+        with patch.object(
+            TROP,
+            "_fit_with_fixed_lambda",
+            side_effect=self._make_failing_fit(20, 4),
+        ):
+            with pytest.warns(
+                UserWarning,
+                match=r"4/20 bootstrap iterations succeeded in TROP local Rao-Wu bootstrap",
+            ):
+                se, dist = trop_est._bootstrap_rao_wu_local(
+                    df,
+                    "outcome",
+                    "treated",
+                    "unit",
+                    "time",
+                    (1.0, 1.0, 1e10),
+                    resolved_survey,
+                    survey_design,
+                )
+
+        assert np.isfinite(se)
+        assert len(dist) == 4
+
+    def test_global_rao_wu_bootstrap_warns_above_5pct_failure(self):
+        """Global Rao-Wu survey bootstrap: forced failures → proportional warn."""
+        from unittest.mock import patch
+
+        df, survey_design, resolved_survey = self._make_survey_panel_and_design()
+
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=20,
+            seed=42,
+        )
+
+        n_calls = {"count": 0}
+
+        def _flaky_solve(*args, **kwargs):
+            n_calls["count"] += 1
+            if n_calls["count"] <= 3:
+                n_periods, n_units = args[0].shape
+                return 0.0, np.zeros(n_units), np.zeros(n_periods), np.zeros((n_periods, n_units))
+            raise ValueError("forced Rao-Wu failure")
+
+        with patch.object(TROP, "_solve_global_model", side_effect=_flaky_solve):
+            with pytest.warns(
+                UserWarning,
+                match=r"3/20 bootstrap iterations succeeded in TROP global Rao-Wu bootstrap",
+            ):
+                se, dist = trop_est._bootstrap_rao_wu_global(
+                    df,
+                    "outcome",
+                    "treated",
+                    "unit",
+                    "time",
+                    (1.0, 1.0, 1e10),
+                    3,
+                    resolved_survey,
+                    survey_design,
+                )
+
+        assert np.isfinite(se) or np.isnan(se)
+        assert len(dist) == 3
+
+
 class TestTROPModuleSplit:
     """Regression tests for the trop.py -> trop_global.py / trop_local.py split."""
 
@@ -4023,8 +4364,9 @@ class TestTROPConvergenceWarnings:
         W = np.where(D == 0, 1.0, 0.0)
 
         with pytest.warns(UserWarning, match="did not converge"):
-            trop_est._estimate_model(Y, control_mask, W, lambda_nn=0.1,
-                                     n_units=n_units, n_periods=n_periods)
+            trop_est._estimate_model(
+                Y, control_mask, W, lambda_nn=0.1, n_units=n_units, n_periods=n_periods
+            )
 
     def test_local_alternating_min_no_warning_on_convergence(self, simple_panel_data):
         """TROP local _estimate_model must not warn on a well-behaved fit."""
@@ -4044,8 +4386,9 @@ class TestTROPConvergenceWarnings:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            trop_est._estimate_model(Y, control_mask, W, lambda_nn=0.1,
-                                     n_units=n_units, n_periods=n_periods)
+            trop_est._estimate_model(
+                Y, control_mask, W, lambda_nn=0.1, n_units=n_units, n_periods=n_periods
+            )
         assert not any("did not converge" in str(x.message) for x in w)
 
     def test_local_fit_emits_single_aggregate_warning(self, simple_panel_data):
@@ -4075,8 +4418,10 @@ class TestTROPConvergenceWarnings:
 
         trop_mod = sys.modules["diff_diff.trop"]
         trop_local_mod = sys.modules["diff_diff.trop_local"]
-        with patch.object(trop_mod, "HAS_RUST_BACKEND", False), \
-             patch.object(trop_local_mod, "HAS_RUST_BACKEND", False):
+        with (
+            patch.object(trop_mod, "HAS_RUST_BACKEND", False),
+            patch.object(trop_local_mod, "HAS_RUST_BACKEND", False),
+        ):
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
                 trop_est.fit(
@@ -4104,9 +4449,9 @@ class TestTROPConvergenceWarnings:
         loocv = matching("local LOOCV")
         assert len(loocv) >= 1, "expected at least one LOOCV aggregate warning"
         for msg in loocv:
-            assert "of" in msg and "per-observation fits" in msg, (
-                f"LOOCV warning is not in aggregate format (fan-out not reduced): {msg}"
-            )
+            assert (
+                "of" in msg and "per-observation fits" in msg
+            ), f"LOOCV warning is not in aggregate format (fan-out not reduced): {msg}"
 
     def test_global_fit_emits_single_aggregate_warning(self, simple_panel_data):
         """Global-method fit-level warning aggregation: mirrors the local test.
@@ -4127,8 +4472,10 @@ class TestTROPConvergenceWarnings:
 
         trop_mod = sys.modules["diff_diff.trop"]
         trop_global_mod = sys.modules["diff_diff.trop_global"]
-        with patch.object(trop_mod, "HAS_RUST_BACKEND", False), \
-             patch.object(trop_global_mod, "HAS_RUST_BACKEND", False):
+        with (
+            patch.object(trop_mod, "HAS_RUST_BACKEND", False),
+            patch.object(trop_global_mod, "HAS_RUST_BACKEND", False),
+        ):
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
                 trop_est.fit(
@@ -4148,6 +4495,6 @@ class TestTROPConvergenceWarnings:
         loocv = matching("global LOOCV")
         assert len(loocv) >= 1, "expected at least one LOOCV aggregate warning"
         for msg in loocv:
-            assert "of" in msg and "per-observation fits" in msg, (
-                f"LOOCV warning is not in aggregate format (fan-out not reduced): {msg}"
-            )
+            assert (
+                "of" in msg and "per-observation fits" in msg
+            ), f"LOOCV warning is not in aggregate format (fan-out not reduced): {msg}"

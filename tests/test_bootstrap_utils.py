@@ -8,6 +8,7 @@ import pytest
 from diff_diff.bootstrap_utils import (
     compute_effect_bootstrap_stats,
     compute_effect_bootstrap_stats_batch,
+    warn_bootstrap_failure_rate,
 )
 
 
@@ -76,9 +77,7 @@ class TestBootstrapStatsNaNPropagation:
     def test_bootstrap_stats_normal_case(self):
         """Normal case with varied values: all fields finite."""
         boot_dist = np.arange(100.0)
-        se, ci, p_value = compute_effect_bootstrap_stats(
-            original_effect=50.0, boot_dist=boot_dist
-        )
+        se, ci, p_value = compute_effect_bootstrap_stats(original_effect=50.0, boot_dist=boot_dist)
         assert np.isfinite(se)
         assert se > 0
         assert np.isfinite(ci[0])
@@ -102,9 +101,7 @@ class TestBatchBootstrapStatsWarnings:
 
         effects = np.array([1.0, 2.0, 3.0])
         with pytest.warns(RuntimeWarning, match="too few valid"):
-            ses, ci_lo, ci_hi, pvals = compute_effect_bootstrap_stats_batch(
-                effects, matrix
-            )
+            ses, ci_lo, ci_hi, pvals = compute_effect_bootstrap_stats_batch(effects, matrix)
         # Effect 1 (index 1) should be NaN
         assert np.isnan(ses[1])
         # Other effects should be finite
@@ -119,9 +116,7 @@ class TestBatchBootstrapStatsWarnings:
 
         effects = np.array([5.0, 5.0])
         with pytest.warns(RuntimeWarning, match="non-finite or zero"):
-            ses, ci_lo, ci_hi, pvals = compute_effect_bootstrap_stats_batch(
-                effects, matrix
-            )
+            ses, ci_lo, ci_hi, pvals = compute_effect_bootstrap_stats_batch(effects, matrix)
         assert np.isnan(ses[0])
         assert np.isnan(ses[1])
 
@@ -135,6 +130,66 @@ class TestBatchBootstrapStatsWarnings:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
-            ses, ci_lo, ci_hi, pvals = compute_effect_bootstrap_stats_batch(
-                effects, matrix
+            ses, ci_lo, ci_hi, pvals = compute_effect_bootstrap_stats_batch(effects, matrix)
+
+
+class TestWarnBootstrapFailureRate:
+    """Proportional failure-rate guard for replicate loops (axis-D)."""
+
+    def test_warns_above_threshold(self):
+        """11/200 successes = 94.5% failure rate — must warn."""
+        with pytest.warns(UserWarning, match=r"11/200 bootstrap iterations"):
+            warn_bootstrap_failure_rate(n_success=11, n_attempted=200, context="test case")
+
+    def test_warning_message_includes_context(self):
+        """Context label must appear verbatim in the warning."""
+        with pytest.warns(UserWarning, match="TROP global bootstrap") as rec:
+            warn_bootstrap_failure_rate(
+                n_success=50,
+                n_attempted=200,
+                context="TROP global bootstrap",
             )
+        assert len(rec) == 1
+        assert "75.0% failure rate" in str(rec[0].message)
+
+    def test_silent_below_threshold(self):
+        """Default threshold=0.05 — 4% failure is below and must not warn."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            warn_bootstrap_failure_rate(n_success=960, n_attempted=1000, context="test case")
+
+    def test_silent_on_full_success(self):
+        """No warning when every replicate succeeded."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            warn_bootstrap_failure_rate(n_success=200, n_attempted=200, context="test case")
+
+    def test_silent_when_n_attempted_zero(self):
+        """Degenerate empty call must not divide by zero."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            warn_bootstrap_failure_rate(n_success=0, n_attempted=0, context="test case")
+
+    def test_custom_threshold(self):
+        """Higher threshold suppresses the 50% case."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            warn_bootstrap_failure_rate(
+                n_success=100,
+                n_attempted=200,
+                context="test case",
+                threshold=0.75,
+            )
+
+        with pytest.warns(UserWarning, match="50.0% failure rate"):
+            warn_bootstrap_failure_rate(
+                n_success=100,
+                n_attempted=200,
+                context="test case",
+                threshold=0.25,
+            )
+
+    def test_all_failed_warns(self):
+        """0/N replicates succeeded — caller handles NaN return, but the warning fires."""
+        with pytest.warns(UserWarning, match=r"0/50 bootstrap iterations"):
+            warn_bootstrap_failure_rate(n_success=0, n_attempted=50, context="test case")
