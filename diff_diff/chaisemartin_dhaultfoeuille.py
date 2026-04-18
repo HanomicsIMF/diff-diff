@@ -2776,6 +2776,19 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         _info_r2["t_stat"] = _t_r2
                         _info_r2["p_value"] = _p_r2
                         _info_r2["conf_int"] = _ci_r2
+            # Normalized effects: another public surface built with the
+            # pre-heterogeneity `_df_survey`. Recompute inference with
+            # the final df so t/p/CI match the other surfaces (and the
+            # NaN contract when the final df becomes undefined).
+            if normalized_effects_out is not None:
+                for _lag_r2, _info_r2 in list(normalized_effects_out.items()):
+                    _t_r2, _p_r2, _ci_r2 = safe_inference(
+                        _info_r2["effect"], _info_r2["se"],
+                        alpha=self.alpha, df=_final_inf_df,
+                    )
+                    _info_r2["t_stat"] = _t_r2
+                    _info_r2["p_value"] = _p_r2
+                    _info_r2["conf_int"] = _ci_r2
 
         # Persist the final effective df_survey into survey_metadata so
         # downstream consumers — HonestDiD bounds (honest_did.py:973

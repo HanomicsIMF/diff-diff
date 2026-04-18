@@ -1055,3 +1055,112 @@ class TestInvariants:
                 assert het_info["p_value"] == pytest.approx(
                     expected_het_p, rel=1e-6,
                 )
+
+        # Normalized effects surface. This is a DERIVED dict built
+        # pre-heterogeneity (delta-method SE from per-horizon SE) —
+        # same class of "copy" bug as placebo_event_study. R4 P0
+        # regression: without the recompute, normalized_effects would
+        # silently ship p_value/conf_int computed with the
+        # pre-heterogeneity df.
+        if res.normalized_effects:
+            for _lag, norm_info in res.normalized_effects.items():
+                if np.isfinite(norm_info["se"]) and norm_info["se"] > 0:
+                    norm_t = norm_info["effect"] / norm_info["se"]
+                    expected_norm_p = 2 * _stats.t.sf(
+                        abs(norm_t), df=expected_df,
+                    )
+                    assert norm_info["p_value"] == pytest.approx(
+                        expected_norm_p, rel=1e-6,
+                    ), (
+                        f"normalized_effects[{_lag}] p-value must "
+                        f"reflect the reduced df ({expected_df}); got "
+                        f"{norm_info['p_value']} vs expected "
+                        f"{expected_norm_p}"
+                    )
+
+    def test_late_nvalid_below_two_forces_all_surfaces_nan(
+        self, base_panel, monkeypatch,
+    ):
+        """Regression for R4 P2 follow-up: when heterogeneity's late
+        replicate failures drive the final `n_valid` to 1 (reduced df
+        = 0), every public inference surface must flip to NaN — not
+        silently keep the finite values that were computed with a
+        larger intermediate df.
+
+        `_inference_df` coerces df=0 under replicate → safe_inference
+        NaN branch. Exercises the all-NaN contract end to end.
+        """
+        from diff_diff import survey as _survey_mod
+
+        R = 15
+        df = _attach_replicate_weights(base_panel, R=R, method="JK1", seed=5)
+        sd = _build_replicate_design(R, "JK1")
+        resolved = sd.resolve(df)
+        assert resolved.df_survey == R - 1
+
+        original = _survey_mod.compute_replicate_if_variance
+
+        # Count main-only calls.
+        main_counter = {"n": 0}
+
+        def count_only(psi, resolved_arg):
+            main_counter["n"] += 1
+            return original(psi, resolved_arg)
+
+        monkeypatch.setattr(
+            _survey_mod, "compute_replicate_if_variance", count_only
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd, L_max=1,
+            )
+        main_call_count = main_counter["n"]
+        monkeypatch.undo()
+
+        # Return n_valid=1 on heterogeneity's call → reduced df = 0
+        # → _inference_df coerces to NaN.
+        tracker = {"count": 0}
+
+        def reduce_to_one(psi, resolved_arg):
+            tracker["count"] += 1
+            var, n_valid = original(psi, resolved_arg)
+            if tracker["count"] > main_call_count:
+                return var, 1
+            return var, n_valid
+
+        monkeypatch.setattr(
+            _survey_mod, "compute_replicate_if_variance", reduce_to_one
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            res = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd, L_max=1,
+                heterogeneity="x_het",
+            )
+        # Final effective df is None (reduced_df = 0 < 1 guard).
+        assert res.survey_metadata.df_survey is None
+        # Every public inference surface must be NaN.
+        assert np.isnan(res.overall_t_stat)
+        assert np.isnan(res.overall_p_value)
+        assert not np.all(np.isfinite(res.overall_conf_int))
+        if res.event_study_effects:
+            for info in res.event_study_effects.values():
+                assert np.isnan(info["t_stat"])
+                assert np.isnan(info["p_value"])
+        if res.placebo_event_study:
+            for info in res.placebo_event_study.values():
+                assert np.isnan(info["t_stat"])
+                assert np.isnan(info["p_value"])
+        if res.heterogeneity_effects:
+            for info in res.heterogeneity_effects.values():
+                assert np.isnan(info["t_stat"])
+                assert np.isnan(info["p_value"])
+        if res.normalized_effects:
+            for info in res.normalized_effects.values():
+                assert np.isnan(info["t_stat"])
+                assert np.isnan(info["p_value"])
