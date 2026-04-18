@@ -4002,9 +4002,12 @@ class TestTROPConvergenceWarnings:
         assert not any("did not converge" in str(x.message) for x in w)
 
     def test_local_alternating_min_warns_on_nonconvergence(self, simple_panel_data):
-        """TROP local _estimate_model must warn when alternating-min exhausts max_iter."""
+        """TROP local _estimate_model must warn when alternating-min exhausts max_iter.
+
+        Uses observation-level control_mask matching the production call contract.
+        """
         Y, D, n_units, n_periods, _ = self._panel_matrices(simple_panel_data)
-        control_mask = (np.sum(D, axis=0) == 0)  # units never treated
+        control_mask = D == 0  # observation-level, matching trop.py/trop_local.py usage
 
         trop_est = TROP(
             method="local",
@@ -4024,7 +4027,7 @@ class TestTROPConvergenceWarnings:
     def test_local_alternating_min_no_warning_on_convergence(self, simple_panel_data):
         """TROP local _estimate_model must not warn on a well-behaved fit."""
         Y, D, n_units, n_periods, _ = self._panel_matrices(simple_panel_data)
-        control_mask = (np.sum(D, axis=0) == 0)
+        control_mask = D == 0  # observation-level, matching production
 
         trop_est = TROP(
             method="local",
@@ -4042,3 +4045,41 @@ class TestTROPConvergenceWarnings:
             trop_est._estimate_model(Y, control_mask, W, lambda_nn=0.1,
                                      n_units=n_units, n_periods=n_periods)
         assert not any("did not converge" in str(x.message) for x in w)
+
+    def test_local_fit_emits_single_aggregate_warning(self, simple_panel_data):
+        """Fit-level warning aggregation: per-treated-observation non-convergence must
+        surface as at most one aggregate warning per call, not one per observation.
+
+        Pins the P2 fan-out fix: warnings are accumulated via the
+        `_nonconvergence_tracker` kwarg and emitted once at the top-level fit."""
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            max_iter=1,
+            tol=1e-15,
+            n_bootstrap=2,
+            seed=42,
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            trop_est.fit(
+                simple_panel_data,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="period",
+            )
+
+        # The per-treated-observation fit loop must emit exactly one aggregate
+        # warning of the form "TROP local per-treated-observation fit: N of M fits
+        # did not converge", not N separate warnings.
+        per_obs_warnings = [
+            x for x in w if "per-treated-observation" in str(x.message)
+        ]
+        assert len(per_obs_warnings) <= 1, (
+            f"Expected at most one aggregated per-treated-observation warning, "
+            f"got {len(per_obs_warnings)}: {[str(x.message) for x in per_obs_warnings]}"
+        )

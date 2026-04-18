@@ -37,7 +37,7 @@ from diff_diff.trop_results import (
     _PrecomputedStructures,
     TROPResults,
 )
-from diff_diff.utils import safe_inference
+from diff_diff.utils import safe_inference, warn_if_not_converged
 
 
 class TROP(TROPLocalMixin, TROPGlobalMixin):
@@ -748,6 +748,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
 
         # Use pre-computed treated observations
         treated_observations = self._precomputed["treated_observations"]
+        nonconverg_tracker: list = []
 
         for t, i in treated_observations:
             unit_id = idx_to_unit[i]
@@ -766,7 +767,8 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
 
             # Fit model with these weights
             alpha_hat, beta_hat, L_hat = self._estimate_model(
-                Y, control_mask, weight_matrix, lambda_nn, n_units, n_periods
+                Y, control_mask, weight_matrix, lambda_nn, n_units, n_periods,
+                _nonconvergence_tracker=nonconverg_tracker,
             )
 
             # Compute treatment effect: tau_{it} = Y_{it} - alpha_i - beta_t - L_{it}
@@ -781,6 +783,16 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
             alpha_estimates.append(alpha_hat)
             beta_estimates.append(beta_hat)
             L_estimates.append(L_hat)
+
+        if nonconverg_tracker:
+            warn_if_not_converged(
+                False,
+                f"TROP local per-treated-observation fit: "
+                f"{len(nonconverg_tracker)} of {len(treated_observations)} "
+                f"fits did not converge",
+                self.max_iter,
+                self.tol,
+            )
 
         # Count valid treated observations
         n_valid_treated = len(tau_values)

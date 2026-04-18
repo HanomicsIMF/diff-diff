@@ -12,7 +12,7 @@ main TROP class definition.
 
 import logging
 import warnings
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -610,6 +610,7 @@ class TROPLocalMixin:
         n_units: int,
         n_periods: int,
         exclude_obs: Optional[Tuple[int, int]] = None,
+        _nonconvergence_tracker: Optional[List[int]] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Estimate the model: Y = alpha + beta + L + tau*D + eps with nuclear norm penalty on L.
@@ -721,9 +722,14 @@ class TROPLocalMixin:
             if max(alpha_diff, beta_diff, L_diff) < self.tol:
                 converged = True
                 break
-        warn_if_not_converged(
-            converged, "TROP local alternating minimization", self.max_iter, self.tol
-        )
+        if not converged:
+            if _nonconvergence_tracker is not None:
+                _nonconvergence_tracker.append(1)
+            else:
+                warn_if_not_converged(
+                    converged, "TROP local alternating minimization",
+                    self.max_iter, self.tol,
+                )
 
         return alpha, beta, L
 
@@ -802,6 +808,7 @@ class TROPLocalMixin:
 
         tau_squared_sum = 0.0
         n_valid = 0
+        nonconverg_tracker: List[int] = []
 
         for t, i in control_obs:
             try:
@@ -820,6 +827,7 @@ class TROPLocalMixin:
                     n_units,
                     n_periods,
                     exclude_obs=(t, i),
+                    _nonconvergence_tracker=nonconverg_tracker,
                 )
 
                 # Pseudo treatment effect
@@ -837,6 +845,16 @@ class TROPLocalMixin:
                     UserWarning,
                 )
                 return np.inf
+
+        if nonconverg_tracker:
+            warn_if_not_converged(
+                False,
+                f"TROP local LOOCV: {len(nonconverg_tracker)} of "
+                f"{len(control_obs)} per-observation fits did not converge "
+                f"(\u03bb=({lambda_time}, {lambda_unit}, {lambda_nn}))",
+                self.max_iter,
+                self.tol,
+            )
 
         # Return SUM of squared pseudo-treatment effects per Equation 5 (page 8):
         # Q(lambda) = sum_{j,s: D_js=0} [tau_js^loocv(lambda)]^2
@@ -995,6 +1013,7 @@ class TROPLocalMixin:
         n_control_units = len(control_units)
 
         bootstrap_estimates_list = []
+        nonconverg_tracker: List[int] = []
 
         for _ in range(self.n_bootstrap):
             # Stratified sampling: sample control and treated units separately
@@ -1031,6 +1050,7 @@ class TROPLocalMixin:
                     time,
                     optimal_lambda,
                     survey_design=survey_design,
+                    _nonconvergence_tracker=nonconverg_tracker,
                 )
                 if np.isfinite(att):
                     bootstrap_estimates_list.append(att)
@@ -1038,6 +1058,15 @@ class TROPLocalMixin:
                 continue
 
         bootstrap_estimates = np.array(bootstrap_estimates_list)
+
+        if nonconverg_tracker:
+            warn_if_not_converged(
+                False,
+                f"TROP local bootstrap: {len(nonconverg_tracker)} non-converged "
+                f"per-observation fits across {self.n_bootstrap} bootstrap replicates",
+                self.max_iter,
+                self.tol,
+            )
 
         if len(bootstrap_estimates) < 10:
             warnings.warn(
@@ -1167,6 +1196,7 @@ class TROPLocalMixin:
         # weights, mirroring the physical-resampling bootstrap but using weight
         # perturbation instead of unit resampling.
         bootstrap_estimates_list = []
+        nonconverg_tracker: List[int] = []
 
         for _ in range(self.n_bootstrap):
             try:
@@ -1187,6 +1217,7 @@ class TROPLocalMixin:
                     optimal_lambda,
                     survey_design=survey_design,
                     unit_weight_arr=boot_weights,
+                    _nonconvergence_tracker=nonconverg_tracker,
                 )
 
                 if np.isfinite(att):
@@ -1195,6 +1226,15 @@ class TROPLocalMixin:
                 continue
 
         bootstrap_estimates = np.array(bootstrap_estimates_list)
+
+        if nonconverg_tracker:
+            warn_if_not_converged(
+                False,
+                f"TROP local Rao-Wu bootstrap: {len(nonconverg_tracker)} non-converged "
+                f"per-observation fits across {self.n_bootstrap} bootstrap replicates",
+                self.max_iter,
+                self.tol,
+            )
 
         if len(bootstrap_estimates) < 10:
             warnings.warn(
@@ -1218,6 +1258,7 @@ class TROPLocalMixin:
         fixed_lambda: Tuple[float, float, float],
         survey_design=None,
         unit_weight_arr: Optional[np.ndarray] = None,
+        _nonconvergence_tracker: Optional[List[int]] = None,
     ) -> float:
         """
         Fit model with fixed tuning parameters (for bootstrap).
@@ -1297,7 +1338,8 @@ class TROPLocalMixin:
 
             # Fit model with these weights
             alpha, beta, L = self._estimate_model(
-                Y, control_mask, weight_matrix, lambda_nn, n_units, n_periods
+                Y, control_mask, weight_matrix, lambda_nn, n_units, n_periods,
+                _nonconvergence_tracker=_nonconvergence_tracker,
             )
 
             # Compute treatment effect: tau_{it} = Y_{it} - alpha_i - beta_t - L_{it}
