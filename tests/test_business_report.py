@@ -520,6 +520,92 @@ class TestAlphaKnob:
         assert h90["ci_level"] == 90
 
 
+class TestAlphaOverrideBootstrapAndFiniteDF:
+    """Regression for the P0 finding that ``safe_inference(att, se, alpha)``
+    silently discards bootstrap / finite-df inference contracts on results
+    that use them (TROP, ContinuousDiD, dCDH-bootstrap, survey fits).
+
+    Rule: when the caller's alpha differs from the fit's alpha AND the
+    result's inference contract is bootstrap-backed or uses finite df,
+    BR preserves the fitted CI at the fit's native level rather than
+    recomputing with a normal approximation. The override is recorded as
+    an informational caveat.
+    """
+
+    class _BootstrapResultStub:
+        """Minimal stub shaped like a bootstrap-inferred result."""
+
+        def __init__(self):
+            self.att = 1.0
+            self.se = 0.5
+            self.p_value = 0.04
+            # Original 95% CI from the bootstrap distribution.
+            self.conf_int = (0.05, 1.95)
+            self.alpha = 0.05
+            self.n_obs = 100
+            self.n_treated = 40
+            self.n_control = 60
+            self.inference_method = "bootstrap"
+            self.survey_metadata = None
+            # Presence of a bootstrap distribution triggers the preserve path.
+            import numpy as np
+
+            self.bootstrap_distribution = np.random.default_rng(0).normal(1.0, 0.5, 200)
+
+    def test_bootstrap_fit_preserves_fitted_ci_on_alpha_mismatch(self):
+        stub = self._BootstrapResultStub()
+        br = BusinessReport(stub, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        # Native fit was at 95%; requested 90% should NOT be reflected in the label.
+        assert h["ci_level"] == 95, (
+            "Bootstrap fit must preserve fitted CI level (95) when caller "
+            f"requests a different alpha; got {h['ci_level']}"
+        )
+        # Bounds should match the stored bootstrap interval, not a normal-z
+        # recomputation at 90%.
+        assert h["ci_lower"] == pytest.approx(0.05)
+        assert h["ci_upper"] == pytest.approx(1.95)
+        # A caveat records the override.
+        caveat_topics = {c.get("topic") for c in br.caveats()}
+        assert "alpha_override_preserved" in caveat_topics
+
+    class _FiniteDfSurveyStub:
+        def __init__(self):
+            from types import SimpleNamespace
+
+            self.att = 2.0
+            self.se = 0.4
+            self.p_value = 0.001
+            self.conf_int = (1.22, 2.78)  # 95% via survey t-quantile
+            self.alpha = 0.05
+            self.n_obs = 120
+            self.n_treated = 50
+            self.n_control = 70
+            self.inference_method = "analytical"
+            # Finite survey d.f. triggers the preserve path — normal approx
+            # would widen / narrow incorrectly.
+            self.survey_metadata = SimpleNamespace(
+                weight_type="pweight",
+                effective_n=110.0,
+                design_effect=1.2,
+                sum_weights=120.0,
+                n_strata=4,
+                n_psu=12,
+                df_survey=8,
+                replicate_method=None,
+            )
+
+    def test_finite_df_fit_preserves_fitted_ci_on_alpha_mismatch(self):
+        stub = self._FiniteDfSurveyStub()
+        br = BusinessReport(stub, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        assert h["ci_level"] == 95
+        assert h["ci_lower"] == pytest.approx(1.22)
+        assert h["ci_upper"] == pytest.approx(2.78)
+        caveat_topics = {c.get("topic") for c in br.caveats()}
+        assert "alpha_override_preserved" in caveat_topics
+
+
 class TestFullReportSingleM:
     """Regression: ``full_report()`` must not claim full-grid robustness for a
     single-M HonestDiDResults passthrough. The summary path was fixed earlier;

@@ -331,13 +331,24 @@ class BusinessReport:
             _name, att, se, p, ci, result_alpha = extracted
 
         # If the caller asked for a different alpha than the result was fit
-        # at, recompute the CI from (att, se) using ``safe_inference`` so the
-        # labeled CI level matches the interval actually shown. Without this
-        # the stored interval (e.g. 95%) would be relabeled to the caller's
-        # level (e.g. 90%) — the documented single-knob contract requires
-        # them to agree. SE is a scale parameter independent of alpha, so
-        # recomputation is safe; the result's original t-stat / p-value do
-        # not change either.
+        # at, the displayed CI needs to match the label. Naive recomputation
+        # via ``safe_inference(att, se, alpha=alpha)`` would use a normal
+        # distribution with no df, which silently discards finite-df /
+        # bootstrap / percentile inference contracts used by TROP,
+        # ContinuousDiD, dCDH-bootstrap, survey fits, etc. Rules:
+        #   1. If the result has an analytic inference contract we can
+        #      reproduce (no bootstrap distribution, no finite df we don't
+        #      know about), recompute via ``safe_inference`` — this covers
+        #      the common case of normal-approximation CIs.
+        #   2. Otherwise (bootstrap / percentile / finite-df / survey d.f.),
+        #      preserve the fitted CI and its native level so the displayed
+        #      interval keeps matching the stored p-value and inference
+        #      contract. The ``ci_level`` field will reflect the result's
+        #      own alpha, and a caveat is appended below noting that the
+        #      caller's alpha drives phrasing but the native interval is
+        #      shown.
+        alpha_was_honored = True
+        alpha_override_caveat: Optional[str] = None
         if (
             result_alpha is not None
             and not np.isclose(alpha, result_alpha)
@@ -346,13 +357,40 @@ class BusinessReport:
             and np.isfinite(att)
             and np.isfinite(se)
         ):
-            from diff_diff.utils import safe_inference
+            inference_method = getattr(r, "inference_method", "analytical")
+            has_bootstrap_dist = getattr(r, "bootstrap_distribution", None) is not None
+            df_survey = getattr(
+                r, "df_survey", getattr(getattr(r, "survey_metadata", None), "df_survey", None)
+            )
+            variance_method = getattr(r, "variance_method", None)
 
-            _t, _p, recomputed_ci = safe_inference(att, se, alpha=alpha)
-            if recomputed_ci is not None and all(
-                x is not None and np.isfinite(x) for x in recomputed_ci
-            ):
-                ci = [float(recomputed_ci[0]), float(recomputed_ci[1])]
+            bootstrap_like = (
+                inference_method == "bootstrap"
+                or has_bootstrap_dist
+                or variance_method in {"bootstrap", "jackknife", "placebo"}
+            )
+            finite_df = isinstance(df_survey, (int, float)) and df_survey > 0
+
+            if bootstrap_like or finite_df:
+                # Preserve the fitted CI at its native level.
+                alpha_was_honored = False
+                alpha = float(result_alpha)
+                alpha_override_caveat = (
+                    f"Requested alpha was not honored for the confidence "
+                    f"interval because this fit uses "
+                    f"{'bootstrap' if bootstrap_like else 'finite-df'} "
+                    f"inference; the displayed CI remains at the fit's "
+                    f"native level ({int(round((1.0 - result_alpha) * 100))}%). "
+                    f"The significance phrasing still uses the requested alpha."
+                )
+            else:
+                from diff_diff.utils import safe_inference
+
+                _t, _p, recomputed_ci = safe_inference(att, se, alpha=alpha)
+                if recomputed_ci is not None and all(
+                    x is not None and np.isfinite(x) for x in recomputed_ci
+                ):
+                    ci = [float(recomputed_ci[0]), float(recomputed_ci[1])]
 
         unit = self._context.outcome_unit
         unit_kind = _UNIT_KINDS.get(unit.lower() if unit else "", "unknown")
@@ -382,6 +420,8 @@ class BusinessReport:
             "se": se,
             "ci_lower": ci[0] if ci else None,
             "ci_upper": ci[1] if ci else None,
+            "alpha_was_honored": alpha_was_honored,
+            "alpha_override_caveat": alpha_override_caveat,
             "ci_level": ci_level,
             "p_value": p,
             "is_significant": is_significant,
@@ -620,6 +660,17 @@ def _build_caveats(
                     "Estimation produced a non-finite effect. Inspect data "
                     "preparation and model specification before interpreting."
                 ),
+            }
+        )
+
+    # Alpha override could not be honored (bootstrap / finite-df inference).
+    alpha_override_msg = headline.get("alpha_override_caveat")
+    if isinstance(alpha_override_msg, str) and alpha_override_msg:
+        caveats.append(
+            {
+                "severity": "info",
+                "topic": "alpha_override_preserved",
+                "message": alpha_override_msg,
             }
         )
 

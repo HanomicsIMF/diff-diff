@@ -69,6 +69,18 @@ _CHECK_NAMES: Tuple[str, ...] = (
 # requires updating both this table and ``_PT_METHOD`` below; the
 # applicability-matrix test parametrized over all result types serves as the
 # regression guard.
+# ``pretrends_power`` is restricted to the result families for which
+# ``compute_pretrends_power`` has an explicit adapter — see
+# ``diff_diff/pretrends.py`` around the result-type dispatch. Expanding
+# beyond this set (Imputation / Stacked / TwoStage / EfficientDiD /
+# StaggeredTripleDiff / Wooldridge / dCDH) would cause the helper to
+# raise ``TypeError("Unsupported results type ...")`` and mark the check
+# as ``error``, so the narrower set is the right contract.
+#
+# ``sensitivity`` is restricted to families with a ``HonestDiD``
+# adapter: MultiPeriod, CS, dCDH (via ``placebo_event_study``). SDiD
+# and TROP use their own native paths (``estimator_native``) instead
+# of HonestDiD.
 _APPLICABILITY: Dict[str, FrozenSet[str]] = {
     "DiDResults": frozenset({"parallel_trends", "design_effect"}),
     "MultiPeriodDiDResults": frozenset(
@@ -89,7 +101,6 @@ _APPLICABILITY: Dict[str, FrozenSet[str]] = {
         {
             "parallel_trends",
             "pretrends_power",
-            "sensitivity",
             "bacon",
             "design_effect",
             "heterogeneity",
@@ -98,8 +109,6 @@ _APPLICABILITY: Dict[str, FrozenSet[str]] = {
     "ImputationDiDResults": frozenset(
         {
             "parallel_trends",
-            "pretrends_power",
-            "sensitivity",
             "bacon",
             "design_effect",
             "heterogeneity",
@@ -108,7 +117,6 @@ _APPLICABILITY: Dict[str, FrozenSet[str]] = {
     "TwoStageDiDResults": frozenset(
         {
             "parallel_trends",
-            "pretrends_power",
             "bacon",
             "design_effect",
             "heterogeneity",
@@ -117,8 +125,6 @@ _APPLICABILITY: Dict[str, FrozenSet[str]] = {
     "StackedDiDResults": frozenset(
         {
             "parallel_trends",
-            "pretrends_power",
-            "sensitivity",
             "bacon",
             "design_effect",
             "heterogeneity",
@@ -139,8 +145,6 @@ _APPLICABILITY: Dict[str, FrozenSet[str]] = {
     "EfficientDiDResults": frozenset(
         {
             "parallel_trends",
-            "pretrends_power",
-            "sensitivity",
             "bacon",
             "design_effect",
             "heterogeneity",
@@ -149,14 +153,10 @@ _APPLICABILITY: Dict[str, FrozenSet[str]] = {
     ),
     "ContinuousDiDResults": frozenset({"design_effect", "heterogeneity"}),
     "TripleDifferenceResults": frozenset({"design_effect", "epv"}),
-    "StaggeredTripleDiffResults": frozenset(
-        {"parallel_trends", "pretrends_power", "sensitivity", "design_effect"}
-    ),
+    "StaggeredTripleDiffResults": frozenset({"parallel_trends", "design_effect"}),
     "WooldridgeDiDResults": frozenset(
         {
             "parallel_trends",
-            "pretrends_power",
-            "sensitivity",
             "bacon",
             "design_effect",
             "heterogeneity",
@@ -165,7 +165,6 @@ _APPLICABILITY: Dict[str, FrozenSet[str]] = {
     "ChaisemartinDHaultfoeuilleResults": frozenset(
         {
             "parallel_trends",
-            "pretrends_power",
             "sensitivity",
             "bacon",
             "design_effect",
@@ -432,13 +431,15 @@ class DiagnosticReport:
                 continue
             applicable.add(check)
 
-        # Placebo is always skipped in MVP (opt-in path deferred)
-        if "placebo" in type_level and "placebo" not in applicable:
-            skipped.setdefault(
-                "placebo",
-                "Placebo battery runs on opt-in only; not yet implemented in MVP. "
-                "Reserved in the schema for forward compatibility.",
-            )
+        # Placebo is reserved for every result type in MVP so the schema
+        # shape is stable: ``schema["placebo"]["status"] == "skipped"``
+        # always holds regardless of estimator. The opt-in execution path
+        # is deferred to a follow-up; ``REPORTING.md`` documents this.
+        skipped.setdefault(
+            "placebo",
+            "Placebo battery runs on opt-in only; not yet implemented in MVP. "
+            "Reserved in the schema for forward compatibility.",
+        )
 
         return applicable, skipped
 
@@ -499,11 +500,22 @@ class DiagnosticReport:
             # Precomputed sensitivity always unlocks this check.
             if "sensitivity" in self._precomputed:
                 return None
-            # ``HonestDiD.sensitivity_analysis`` handles CS / SA /
-            # ImputationDiD internally via ``event_study_effects`` +
-            # ``event_study_vcov`` (or per-SE diagonal fallback), so we
-            # accept any of: top-level vcov, event_study_vcov, or a
-            # populated event_study_effects surface.
+            # dCDH uses ``placebo_event_study`` as its pre-period surface,
+            # which HonestDiD consumes via a dedicated branch. Accept the
+            # fit when that attribute is populated.
+            if name == "ChaisemartinDHaultfoeuilleResults":
+                pes = getattr(r, "placebo_event_study", None)
+                if pes is None:
+                    return (
+                        "HonestDiD on dCDH requires results.placebo_event_study "
+                        "(re-fit with a placebo-producing configuration)."
+                    )
+                return None
+            # MultiPeriod / CS path: ``HonestDiD.sensitivity_analysis``
+            # consumes ``event_study_effects`` plus either ``vcov`` +
+            # ``interaction_indices`` (MultiPeriod) or ``event_study_vcov``
+            # + ``event_study_vcov_index`` (CS), with a per-SE diagonal
+            # fallback otherwise.
             has_vcov = getattr(r, "vcov", None) is not None
             has_event_vcov = getattr(r, "event_study_vcov", None) is not None
             has_event_es = getattr(r, "event_study_effects", None) is not None
@@ -1728,12 +1740,14 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
                 continue
             if not isinstance(entry, dict):
                 continue
-            # Drop universal-base reference markers. See
-            # ``staggered_aggregation.py`` around the reference-period
-            # injection: ``n_groups == 0`` flags the synthetic marker row
-            # with NaN SE and p-value.
-            n_groups = entry.get("n_groups")
-            if n_groups is not None and n_groups == 0:
+            # Drop universal-base reference markers. Different estimator
+            # aggregations use different flags for the synthetic marker row
+            # (all of which carry NaN SE and p-value):
+            #   * CS / SA: ``n_groups == 0``
+            #   * Stacked / TwoStage / Imputation: ``n_obs == 0``
+            # Treat either as a disqualifier so the Bonferroni denominator
+            # and joint-Wald index are not inflated by non-informative rows.
+            if entry.get("n_groups") == 0 or entry.get("n_obs") == 0:
                 continue
             eff = entry.get("effect")
             se = entry.get("se")

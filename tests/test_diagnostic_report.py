@@ -415,6 +415,85 @@ class TestJointWaldAlignment:
         assert pt["method"] == "bonferroni"
 
 
+class TestNarrowedApplicabilityAndPlaceboSchema:
+    """Regressions for the round-3 CI-review findings.
+
+    * ``pretrends_power`` and ``sensitivity`` are now restricted to the
+      result families that their backing helpers actually support, so
+      default reports no longer land in ``error`` for SA / Imputation /
+      Stacked / EfficientDiD / StaggeredTripleDiff / Wooldridge.
+    * ``placebo`` is always ``status="skipped"`` in MVP regardless of
+      estimator, matching the ``REPORTING.md`` contract.
+    """
+
+    def test_placebo_is_always_skipped_not_not_applicable(self, did_fit):
+        fit, df = did_fit
+        dr = DiagnosticReport(fit, data=df, outcome="outcome", treatment="treated", time="post")
+        placebo = dr.to_dict()["placebo"]
+        assert placebo["status"] == "skipped", (
+            f"placebo must always be status='skipped' per REPORTING.md; "
+            f"got {placebo['status']!r}"
+        )
+
+    def test_placebo_skipped_for_multiperiod_fit(self, multi_period_fit):
+        fit, _ = multi_period_fit
+        placebo = DiagnosticReport(fit).to_dict()["placebo"]
+        assert placebo["status"] == "skipped"
+
+    def test_placebo_skipped_for_sdid_fit(self, sdid_fit):
+        fit, _ = sdid_fit
+        placebo = DiagnosticReport(fit).to_dict()["placebo"]
+        assert placebo["status"] == "skipped"
+
+    def test_sun_abraham_sensitivity_not_applicable(self):
+        """SA is not in HonestDiD's adapter list; DR must not try to run it."""
+        import warnings
+
+        import pandas as pd
+
+        from diff_diff import SunAbraham, generate_staggered_data
+
+        warnings.filterwarnings("ignore")
+        sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
+        fit = SunAbraham().fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        dr = DiagnosticReport(fit)
+        applicable = set(dr.applicable_checks)
+        sensitivity = dr.to_dict()["sensitivity"]
+        assert "sensitivity" not in applicable, (
+            "SunAbrahamResults has no HonestDiD adapter; sensitivity must not "
+            "be marked applicable"
+        )
+        assert sensitivity["status"] == "not_applicable"
+
+    def test_n_obs_zero_reference_marker_filtered(self):
+        """Stacked / TwoStage / Imputation reference markers use n_obs=0
+        (not n_groups=0). ``_collect_pre_period_coefs`` must filter both."""
+        import numpy as np
+
+        from diff_diff.diagnostic_report import _collect_pre_period_coefs
+
+        class StackedDiDResults:
+            pass
+
+        obj = StackedDiDResults()
+        obj.event_study_effects = {
+            -2: {"effect": 0.1, "se": 0.3, "p_value": 0.74, "n_obs": 50},
+            -1: {
+                "effect": 0.0,
+                "se": np.nan,
+                "p_value": np.nan,
+                "n_obs": 0,  # synthetic reference marker
+            },
+            0: {"effect": 1.5, "se": 0.2, "p_value": 0.0001, "n_obs": 50},
+        }
+        coefs = _collect_pre_period_coefs(obj)
+        keys = [k for (k, _, _, _) in coefs]
+        assert -1 not in keys, "n_obs==0 row must be filtered out"
+        assert -2 in keys
+
+
 class TestReferenceMarkerAndNaNFiltering:
     """Regression for the P0 finding that reference markers + NaN pre-periods
     were being swept into Bonferroni / Wald PT as real evidence.
