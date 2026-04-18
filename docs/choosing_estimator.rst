@@ -362,16 +362,22 @@ Efficient DiD
 
 Use :class:`~diff_diff.EfficientDiD` when:
 
-- You have staggered adoption and want **maximum statistical efficiency**
+- You have staggered adoption and want **maximum statistical efficiency** on the no-covariate path
 - You believe parallel trends holds across all pre-treatment periods (PT-All)
 - You want tighter confidence intervals than Callaway-Sant'Anna
 - You need a formal efficiency benchmark for comparing estimators
 
 .. note::
 
-   EfficientDiD supports covariate adjustment via a doubly-robust path
-   (sieve-based propensity score and outcome regression). Pass a list of
-   column names to the ``covariates`` parameter on ``fit()``.
+   EfficientDiD supports covariate adjustment via a doubly-robust path:
+   sieve-based propensity score ratios combined with a linear OLS outcome
+   regression. The DR property gives consistency if either the OR or the
+   PS is correctly specified, but the linear OLS outcome regression does
+   not generically attain the semiparametric efficiency bound unless the
+   conditional mean is linear in the covariates. The unqualified efficiency
+   claim applies to the no-covariate path only. Pass column names to the
+   ``covariates`` parameter on ``fit()``. See
+   ``docs/methodology/REGISTRY.md`` for the full contract.
 
 .. code-block:: python
 

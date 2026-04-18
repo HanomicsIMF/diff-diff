@@ -15,7 +15,7 @@ diff-diff is a production Python library for difference-in-differences causal in
 - **Core**: Basic DiD, TWFE, MultiPeriod event study
 - **Heterogeneity-robust**: Callaway-Sant'Anna (2021), Sun-Abraham (2021), Borusyak-Jaravel-Spiess Imputation (2024), Two-Stage DiD (Gardner 2022), Stacked DiD (Wing et al. 2024)
 - **Specialized**: Synthetic DiD (Arkhangelsky et al. 2021), Triple Difference, Staggered Triple Difference (Ortiz-Villavicencio & Sant'Anna 2025), Continuous DiD (Callaway, Goodman-Bacon & Sant'Anna 2024), TROP
-- **Efficient**: EfficientDiD (Chen, Sant'Anna & Xie 2025) - semiparametrically efficient with doubly robust covariates
+- **Efficient**: EfficientDiD (Chen, Sant'Anna & Xie 2025) - attains the semiparametric efficiency bound on the no-covariate path; offers an optional doubly-robust covariate path (sieve-based propensity ratios plus linear OLS outcome regression) that is DR-consistent but does not generically attain the bound
 - **Nonlinear**: WooldridgeDiD / ETWFE (Wooldridge 2023, 2025) - saturated OLS, logit, Poisson QMLE with ASF-based ATT
 - **Reversible treatment**: ChaisemartinDHaultfoeuille (de Chaisemartin & D'Haultfœuille AER 2020 + NBER WP 29873) - the only estimator in the library for non-absorbing (on/off) treatments, with full dynamic event study, covariates, group-specific trends, non-binary treatment, HonestDiD integration, and survey support
 
