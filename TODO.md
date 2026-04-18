@@ -16,8 +16,8 @@ Current limitations that may affect users:
 | `predict()` raises NotImplementedError | `estimators.py:567-588` | Low | Rarely needed |
 
 For survey-specific limitations (NotImplementedError paths), see the
-[consolidated deferred list](docs/survey-roadmap.md#deferred-work-consolidated)
-in survey-roadmap.md.
+[Current Limitations](docs/survey-roadmap.md#current-limitations) section
+of survey-roadmap.md.
 
 ## Code Quality
 

@@ -6,12 +6,16 @@ The only modern staggered DiD estimator in diff-diff that handles
 off over time.
 
 This module implements the methodology from de Chaisemartin & D'Haultfœuille
-(2020/2022). Phase 1 ships the contemporaneous-switch estimator ``DID_M``
-(= ``DID_1`` at horizon ``l = 1``). Phase 2 adds the full multi-horizon
-event study ``DID_l`` for ``l = 1..L_max`` via the ``L_max`` parameter,
-plus normalized estimator ``DID^n_l``, cost-benefit aggregate ``delta``,
-dynamic placebos ``DID^{pl}_l``, and sup-t simultaneous confidence bands.
-Phase 3 will add covariate adjustment.
+(2020/2022). The estimator ships the contemporaneous-switch path ``DID_M``
+(= ``DID_1`` at horizon ``l = 1``); the full multi-horizon event study
+``DID_l`` for ``l = 1..L_max`` via the ``L_max`` parameter, with normalized
+estimator ``DID^n_l``, cost-benefit aggregate ``delta``, dynamic placebos
+``DID^{pl}_l``, and sup-t simultaneous confidence bands; residualization-style
+covariate adjustment (``controls``); group-specific linear trends
+(``trends_linear``); state-set-specific trends (``trends_nonparam``);
+heterogeneity testing; non-binary treatment; HonestDiD sensitivity
+integration on placebos; and survey support via Taylor-series linearization
+(pweight + strata/PSU/FPC).
 
 The estimator:
 
@@ -58,7 +62,7 @@ All other staggered estimators in diff-diff (:class:`~diff_diff.CallawaySantAnna
 once treated, stays treated. ``ChaisemartinDHaultfoeuille`` is the only
 library option for non-absorbing treatments.
 
-**Phase 1 panel requirements (deviation from R DIDmultiplegtDYN):**
+**Panel requirements (deviation from R DIDmultiplegtDYN):**
 
 - Every group must have an observation at the **first global period**
   (the panel's earliest time value). Groups missing this baseline raise
@@ -67,15 +71,15 @@ library option for non-absorbing treatments.
   their first and last observed period) are dropped with a
   ``UserWarning``.
 - **Terminal missingness** (groups observed at the baseline but missing
-  one or more later periods — early exit / right-censoring) is supported.
+  one or more later periods - early exit / right-censoring) is supported.
   The group contributes from its observed periods only, masked out of
   the missing transitions by the per-period ``present`` guard in the
   variance computation.
-- This is a Phase 1 limitation relative to R ``DIDmultiplegtDYN``, which
-  supports unbalanced panels with documented missing-treatment-before-
-  first-switch handling. **Workaround:** pre-process your panel to
-  back-fill the baseline (or drop late-entry groups before fitting), or
-  use R until a future phase lifts the restriction. See the
+- This is a documented deviation from R ``DIDmultiplegtDYN``, which
+  supports unbalanced panels with missing-treatment-before-first-switch
+  handling. **Workaround:** pre-process your panel to back-fill the
+  baseline (or drop late-entry groups before fitting), or use R until
+  this restriction is lifted. See the
   ``Note (deviation from R DIDmultiplegtDYN)`` block in
   ``docs/methodology/REGISTRY.md`` for the rationale and the exact
   defensive guards that make terminal missingness safe.

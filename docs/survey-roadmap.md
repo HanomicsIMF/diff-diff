@@ -1,8 +1,10 @@
-# Survey Data Support Roadmap
+# Survey Data Support: History and Current State
 
-This document captures the survey data support roadmap for diff-diff.
-Phases 1-9 are complete. Phase 10 covers the credibility and announcement
-readiness work still ahead.
+This document is the technical reference for survey-design support in
+diff-diff. It records the build history (Phases 1-10) as shipped and
+documents current limitations. Forward-looking roadmap items live in
+[ROADMAP.md](../ROADMAP.md); this file is the historical and technical
+companion.
 
 ---
 
@@ -129,12 +131,14 @@ for the methodology entry.
 
 ---
 
-## Phase 10: Remaining Items
+## Phase 10: Academic Grounding (History)
 
-The items below establish further credibility with
-practitioners and methodologists.
+The Phase 10 items established the theoretical and empirical foundation
+for survey-design variance estimation on modern DiD influence functions.
+All items below are shipped; this section documents what was done and
+why.
 
-### 10a. Theory Document (HIGH priority) ✅
+### 10a. Theory Document ✅
 
 `docs/methodology/survey-theory.md` lays out the formal argument for
 design-based variance estimation with modern DiD influence functions:
@@ -159,7 +163,7 @@ immediately.
   Survey Data." *JASA* 83(401).
 - Shao, J. (1996). "Resampling Methods in Sample Surveys." *Statistics* 27.
 
-### 10b. Survey Simulation DGP (HIGH priority) ✅
+### 10b. Survey Simulation DGP ✅
 
 Enhanced `generate_survey_did_data()` with 8 research-grade parameters:
 `icc`, `weight_cv`, `informative_sampling`, `heterogeneous_te_by_strata`,
@@ -172,45 +176,19 @@ units' x1 mean by +1 SD and adds `conditional_pt * x1_i * (t/T)` to the
 outcome, creating X-dependent time trends. Unconditional PT fails; conditional
 PT holds after covariate adjustment. DR/IPW estimators recover truth.
 
-### 10c. Expand R Validation Coverage (HIGH priority) ✅
+### 10c. Expand R Validation Coverage ✅
 
 8 of 16 estimators now cross-validated against R's `survey::svyglm()`:
 DifferenceInDifferences, TWFE, CallawaySantAnna, SyntheticDiD,
 ImputationDiD, StackedDiD, SunAbraham, TripleDifference.
 
-### 10d. Tutorial: Show the Pain (HIGH priority) ✅
+### 10d. Tutorial: Show the Pain ✅
 
 Survey tutorial rewritten with side-by-side flat-weight vs design-based
 comparison using the research-grade DGP from 10b, showing known ground
 truth, coverage simulation, and false pre-trend detection rates.
 
-### 10e. Position Paper / arXiv Preprint (MEDIUM priority, long-term)
-
-A 15-25 page methodology note targeting JSSAM, simultaneously posted to
-arXiv. Theory (~5pp), simulation study using DGP from 10b (~8pp),
-empirical illustration with NHANES ACA data (~3pp), software section
-(~2pp).
-
-**Simulation study scenarios** (minimum):
-1. Unconditional PT with complex survey — coverage of TSL vs flat-weight SEs
-2. Informative sampling + heterogeneous TE — weighted ATT bias correction
-3. Panel vs repeated cross-section — both design types
-4. **Conditional PT** — unconditional PT fails (differential pre-trends
-   correlated with X), conditional PT holds after covariate adjustment.
-   DR/IPW with covariates recovers truth; no-covariate estimator is biased.
-   This is the most novel claim — survey-weighted nuisance estimation
-   (propensity scores, outcome regression) produces valid IFs under complex
-   sampling. **Resolved:** `conditional_pt` parameter added to
-   `generate_survey_did_data()` with X-dependent time trends
-   (`y += conditional_pt * x1_i * (t/T)`) and treated x1 mean shift.
-
-**Co-authorship:** A co-author from the DiD methodology community would
-strengthen credibility — someone who can vouch that the IFs are valid
-under survey weighting. The survey statistics side (Binder 1983, Rao &
-Wu 1988) is established and doesn't need a survey methodologist to
-co-sign.
-
-### 10f. WooldridgeDiD Survey Support — SHIPPED
+### 10f. WooldridgeDiD Survey Support ✅
 
 WooldridgeDiD (ETWFE) now supports `survey_design` for all three methods
 (OLS, logit, Poisson) with `pweight` only (`fweight`/`aweight` rejected).
@@ -219,12 +197,15 @@ Logit/Poisson use survey-weighted IRLS + X_tilde linearization for TSL
 vcov. Replicate-weight designs raise `NotImplementedError`; bootstrap +
 survey is rejected.
 
-### 10g. Practitioner Guidance (LOW priority)
+### 10g. Practitioner Guidance ✅
 
-A decision flowchart helping practitioners decide whether they need full
-survey design or whether flat weights suffice. Key factors: ICC, number
-of PSUs, stratification gain, DEFF magnitude. DEFF diagnostics provide
-the empirical answer, but practitioners need guidance on interpretation.
+Subsumed by the practitioner decision tree
+(`docs/practitioner_decision_tree.rst`) and the practitioner
+getting-started guide (`docs/practitioner_getting_started.rst`).
+The Brand Awareness Survey DiD tutorial
+(`docs/tutorials/17_brand_awareness_survey.ipynb`) demonstrates the
+full workflow end-to-end; DEFF diagnostics provide the empirical signal
+for whether survey design matters on a given dataset.
 
 ---
 

@@ -291,45 +291,68 @@ def _validate_and_aggregate_to_cells(
 
 class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
     """
-    de Chaisemartin-D'Haultfoeuille (dCDH) estimator — Phase 1.
+    de Chaisemartin-D'Haultfoeuille (dCDH) estimator.
 
-    Computes the contemporaneous-switch DiD ``DID_M`` from the AER 2020
-    paper, equivalently ``DID_1`` (horizon ``l = 1``) of the dynamic
-    companion paper (NBER WP 29873). The estimator is the only modern
-    DiD in the library that handles **reversible (non-absorbing)
-    treatments** — treatment may switch on AND off over time.
+    The only modern DiD estimator in the library that handles **reversible
+    (non-absorbing) treatments** - treatment may switch on AND off over
+    time. Computes the contemporaneous-switch DiD ``DID_M`` from the
+    AER 2020 paper (equivalently ``DID_1`` at horizon ``l = 1`` of the
+    dynamic companion paper, NBER WP 29873) plus the full multi-horizon
+    event study ``DID_l`` for ``l = 1..L_max`` via the ``L_max`` parameter
+    on :meth:`fit`.
 
-    Phase 1 deliverables:
+    Supported:
 
-    - The headline ``DID_M`` point estimate
+    - Headline ``DID_M`` plus multi-horizon ``DID_l`` event study
     - Joiners-only ``DID_+`` and leavers-only ``DID_-`` decompositions
-    - The single-lag placebo ``DID_M^pl`` (computed automatically by
-      default; gate via ``placebo=False``)
-    - Analytical SE via the cohort-recentered plug-in formula from
-      Web Appendix Section 3.7.3 of the dynamic paper
-    - Optional multiplier bootstrap, clustered at the group level by
-      default; under ``survey_design`` with a strictly-coarser PSU, the
-      bootstrap switches to PSU-level Hall-Mammen wild clustering (see
-      REGISTRY.md ChaisemartinDHaultfoeuille Note on survey + bootstrap)
-    - Optional TWFE decomposition diagnostic from Theorem 1 of AER 2020
-      (per-cell weights, fraction negative, ``sigma_fe``)
+    - Single-lag placebo ``DID_M^pl`` and dynamic placebos ``DID^{pl}_l``
+      (computed automatically by default; gate via ``placebo=False``)
+    - Analytical SE via the cohort-recentered plug-in formula from Web
+      Appendix Section 3.7.3; multiplier bootstrap clustered at the group
+      level by default via ``n_bootstrap``; under ``survey_design`` with
+      strictly-coarser PSUs the bootstrap automatically upgrades to
+      PSU-level Hall-Mammen wild clustering (see REGISTRY.md
+      ``ChaisemartinDHaultfoeuille`` Note on survey + bootstrap)
+    - Normalized estimator ``DID^n_l``, cost-benefit aggregate ``delta``,
+      and sup-t simultaneous confidence bands
+    - Residualization-style covariate adjustment (``DID^X``) via
+      ``controls=``, group-specific linear trends (``DID^{fd}``) via
+      ``trends_linear=True``, state-set-specific trends via
+      ``trends_nonparam=``, heterogeneity testing, non-binary treatment,
+      HonestDiD sensitivity integration on placebos via ``honest_did=True``
+    - Survey support via ``survey_design=``: pweight with strata/PSU/FPC
+      via Taylor Series Linearization (analytical) or replicate-weight
+      variance (BRR/Fay/JK1/JKn/SDR)
+    - TWFE decomposition diagnostic from Theorem 1 of AER 2020
+
+    Only ``aggregate`` on :meth:`fit` still raises ``NotImplementedError``.
 
     Parameters
     ----------
     alpha : float, default=0.05
         Significance level for confidence intervals.
     cluster : str, optional, default=None
-        **Cluster contract:** ``cluster`` must be ``None`` (the default).
-        dCDH clusters at the group level by default via the cohort-
-        recentered influence-function plug-in (analytical SEs) and the
-        multiplier bootstrap. Passing any non-``None`` value raises
-        ``NotImplementedError`` — user-specified custom clustering is
-        reserved for a future phase. When ``survey_design`` is provided
-        with strictly-coarser PSUs, the multiplier bootstrap
-        automatically upgrades to PSU-level Hall-Mammen wild clustering
-        (see REGISTRY.md ``ChaisemartinDHaultfoeuille`` Note on survey +
-        bootstrap). Under the default auto-inject ``psu=group``, the
-        group-level and PSU-level paths are bit-identical.
+        Must be ``None`` (the default). User-specified clustering via
+        this kwarg is not supported — passing any non-``None`` value
+        raises ``NotImplementedError`` at construction time (and the
+        same gate fires from ``set_params``). The effective clustering
+        depends on how you call ``fit()``:
+
+        - **Default (no survey_design)**: clustered at the group level
+          via the cohort-recentered influence-function plug-in
+          (analytical SEs) and the multiplier bootstrap.
+        - **Under ``survey_design`` with auto-inject or explicit
+          ``psu=group``**: PSU coincides with the group and the
+          group-level and PSU-level paths are bit-identical.
+        - **Under ``survey_design`` with strictly-coarser PSUs**: the
+          multiplier bootstrap automatically upgrades to PSU-level
+          Hall-Mammen wild clustering.
+
+        So dCDH does NOT always cluster at the group level — see
+        REGISTRY.md ``ChaisemartinDHaultfoeuille`` Notes on cluster
+        contract and survey + bootstrap for the full matrix. Custom
+        user-specified clustering at a coarser or finer level than the
+        group is a planned extension.
     n_bootstrap : int, default=0
         Number of multiplier-bootstrap iterations. ``0`` (default) uses
         only the analytical SE. Set to ``999`` or higher for stable

@@ -1083,6 +1083,7 @@ where `W_it(h) = 1[K_it = h]` are lead indicators, estimated on `Omega_0` only.
 - **Note:** Survey weights enter ImputationDiD via weighted iterative FE (Step 1), survey-weighted ATT aggregation (Step 3), and design-based variance via `compute_survey_if_variance()`. PSU clustering, stratification, and FPC are fully supported in the Theorem 3 variance path. When `resolved_survey` is present, the observation-level influence function (`v_it * epsilon_tilde_it`) is passed to `compute_survey_if_variance()` which applies the stratified PSU-level sandwich with FPC correction. Strata also enters survey df (n_PSU - n_strata) for t-distribution inference. Bootstrap + survey supported (Phase 6) via PSU-level multiplier weights.
 - **Bootstrap inference:** Uses multiplier bootstrap on the Theorem 3 influence function: `psi_i = sum_t v_it * epsilon_tilde_it`. Cluster-level psi sums are pre-computed for each aggregation target (overall, per-horizon, per-group), then perturbed with multiplier weights (Rademacher by default; configurable via `bootstrap_weights` parameter to use Mammen or Webb weights, matching CallawaySantAnna). This is a library extension (not in the paper) consistent with CallawaySantAnna/SunAbraham bootstrap patterns.
 - **Auxiliary residuals (Equation 8):** Uses v_it-weighted tau_tilde_g formula: `tau_tilde_g = sum(v_it * tau_hat_it) / sum(v_it)` within each partition group. Zero-weight groups (common in event-study SE computation) fall back to unweighted mean.
+- **Note:** Both the iterative FE solver (`_iterative_fe`, Step 1) and the iterative alternating-projection demeaning helper (`_iterative_demean`, used in covariate residualization and the pre-trend test) emit `UserWarning` when `max_iter` exhausts without reaching `tol`, via `diff_diff.utils.warn_if_not_converged`. Silent return of the current iterate was classified as a silent failure under the Phase 2 audit and replaced with an explicit signal to match the logistic/Poisson IRLS pattern in `linalg.py`.
 
 **Reference implementation(s):**
 - Stata: `did_imputation` (Borusyak, Jaravel, Spiess; available from SSC)
@@ -1160,6 +1161,7 @@ Our implementation uses multiplier bootstrap on the GMM influence function: clus
 - **Zero-observation horizons after filtering:** When `balance_e` or NaN `y_tilde` filtering results in zero observations for some non-Prop-5 event study horizons, those horizons produce NaN for all inference fields (effect, SE, t-stat, p-value, CI) with n_obs=0.
 - **Zero-observation cohorts in group effects:** If all treated observations for a cohort have NaN `y_tilde` (excluded from estimation), that cohort's group effect is NaN with n_obs=0.
 - **Note:** Survey weights in TwoStageDiD GMM sandwich via weighted cross-products: bread uses (X'_2 W X_2)^{-1}, gamma_hat uses (X'_{10} W X_{10})^{-1}(X'_1 W X_2), per-cluster scores multiply by survey weights. PSU clustering, stratification, and FPC are fully supported in the meat matrix via `_compute_stratified_meat_from_psu_scores()`. When strata or FPC are present, the meat computation replaces `S' S` with the stratified formula `sum_h (1 - f_h) * (n_h/(n_h-1)) * centered_h' centered_h`. Strata also enters survey df (n_PSU - n_strata) for t-distribution inference. Bootstrap + survey supported (Phase 6) via PSU-level multiplier weights.
+- **Note:** Both the iterative FE solver (`_iterative_fe`, Stage 1) and the iterative alternating-projection demeaning helper (`_iterative_demean`, used in covariate residualization) emit `UserWarning` when `max_iter` exhausts without reaching `tol`, via `diff_diff.utils.warn_if_not_converged`. Silent return of the current iterate was classified as a silent failure under the Phase 2 audit and replaced with an explicit signal to match the logistic/Poisson IRLS pattern in `linalg.py`.
 
 **Reference implementation(s):**
 - R: `did2s::did2s()` (Kyle Butts & John Gardner)
@@ -1299,6 +1301,7 @@ The saturated ETWFE regression includes:
 
 The interaction coefficient `δ_{g,t}` identifies `ATT(g, t)` under parallel trends.
 - **Note:** OLS path uses iterative alternating-projection within-transformation (uniform weights) for exact FE absorption on both balanced and unbalanced panels. One-pass demeaning (`y - ȳ_i - ȳ_t + ȳ`) is only exact for balanced panels.
+- **Note:** The weighted within-transformation (`utils.within_transform` with `weights`) is invoked on every WooldridgeDiD fit (survey weights when provided, `np.ones` otherwise) and emits a `UserWarning` on non-convergence per the shared convention documented under *Absorbed Fixed Effects with Survey Weights*.
 
 *Nonlinear extensions (Wooldridge 2023):*
 
@@ -1515,6 +1518,7 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 - **Jackknife with non-finite LOO estimate**: Returns NaN SE. Unlike bootstrap/placebo, jackknife is deterministic and cannot skip failed iterations; NaN propagates through `var()` (matches R behavior).
 - **Jackknife with survey weights**: Guards on effective positive support (omega * w_control > 0 and w_treated > 0) after composition, not raw FW counts. Returns NaN SE if fewer than 2 effective controls or 2 positive-weight treated units. Per-iteration zero-sum guards return NaN for individual LOO iterations when remaining composed weights sum to zero.
 - **Note:** Survey support: weights, strata, PSU, and FPC are all supported. Full-design surveys use Rao-Wu rescaled bootstrap (Phase 6); non-bootstrap variance methods (`variance_method="placebo"` or `"jackknife"`) require weights-only (strata/PSU/FPC require bootstrap). Both sides weighted per WLS regression interpretation: treated-side means are survey-weighted (Frank-Wolfe target and ATT formula); control-side synthetic weights are composed with survey weights post-optimization (ω_eff = ω * w_co, renormalized). Frank-Wolfe optimization itself is unweighted — survey importance enters after trajectory-matching. Covariate residualization uses WLS with survey weights. Placebo, jackknife, and bootstrap SE preserve survey weights on both sides.
+- **Note:** Internal Y normalization. Before weight optimization, the estimator, and variance procedures, `fit()` centers Y by `mean(Y_pre_control)` and scales by `std(Y_pre_control)`; `Y_scale` falls back to `1.0` when std is non-finite or below `1e-12 * max(|mean|, 1)`. Auto-regularization and `noise_level` are computed on normalized Y; user-supplied `zeta_omega` / `zeta_lambda` are divided by `Y_scale` internally for Frank-Wolfe. τ, SE, CI, the placebo/bootstrap/jackknife effect vectors, `results_.noise_level`, and `results_.zeta_omega` / `results_.zeta_lambda` are all reported on the user's original outcome scale (user-supplied zetas are echoed back exactly to avoid float roundoff). Mathematically a no-op — τ is location-invariant and scale-equivariant, and FW weights are invariant under `(Y, ζ) → (Y/s, ζ/s)` — but prevents catastrophic cancellation in the SDID double-difference when outcomes span millions-to-billions (see synth-inference/synthdid#71 for the R-package version of this issue). Normalization constants are derived from controls' pre-period only so the reference is unaffected by treatment. Scope: `in_time_placebo()` and `sensitivity_to_zeta_omega()` continue to run on the stored original-scale snapshot with original-scale zetas (preserving pre-fix behavior); extending normalization into those diagnostic paths is tracked separately.
 
 *Validation diagnostics (post-fit methods on `SyntheticDiDResults`):*
 
@@ -2519,6 +2523,15 @@ unequal selection probabilities).
   are rejected (single-pass sequential demeaning is not the correct weighted
   FWL projection for N > 1 dimensions; iterative alternating projections are
   needed but not yet implemented).
+- **Note:** The shared weighted within-transformation path
+  (`diff_diff.utils.within_transform`, hit whenever `weights is not None`) emits
+  a `UserWarning` per call when any transformed variable exits the
+  alternating-projection loop without reaching `tol` within `max_iter`.
+  Defaults: `max_iter=100`, `tol=1e-8`. This signal applies uniformly across
+  TwoWayFixedEffects, SunAbraham, BaconDecomposition, and WooldridgeDiD whenever
+  they route through this helper (survey-weighted or otherwise). Silent return
+  of the current iterate was classified as a silent failure under the Phase 2
+  audit and replaced with this explicit signal.
 
 ### Survey Degrees of Freedom
 

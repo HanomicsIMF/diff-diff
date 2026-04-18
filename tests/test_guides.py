@@ -43,9 +43,10 @@ def test_wheel_content_matches_package_resource():
 
 
 def test_utf8_encoding_preserved():
-    # llms-full.txt contains the em-dash '\u2014'; verify it roundtrips.
+    # llms-full.txt contains the non-ASCII ligature '\u0153' (oe, from
+    # "D'Haultfoeuille"); verify UTF-8 roundtrips through the packaged guide.
     text = get_llm_guide("full")
-    assert "\u2014" in text
+    assert "\u0153" in text
 
 
 @pytest.mark.parametrize("bad", ["bogus", "", "CONCISE", None, 0, True, ["x"]])
