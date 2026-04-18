@@ -75,8 +75,18 @@ result or computed by an existing diff-diff utility
 
 - **Note:** Power-aware phrasing for `no_detected_violation`. DR calls
   `compute_pretrends_power(results, violation_type='linear',
-  alpha=alpha, target_power=0.80)` whenever the result has an
-  event-study surface with a `vcov`. BusinessReport then reads
+  alpha=alpha, target_power=0.80)` for the estimator families that
+  ship a `compute_pretrends_power` adapter: `MultiPeriodDiDResults`,
+  `CallawaySantAnnaResults`, and `SunAbrahamResults` (see
+  `_APPLICABILITY["pretrends_power"]` in
+  `diff_diff/diagnostic_report.py`). Other staggered families with
+  event-study output (`ImputationDiDResults`, `TwoStageDiDResults`,
+  `StackedDiDResults`, `EfficientDiDResults`,
+  `StaggeredTripleDiffResults`, `WooldridgeDiDResults`,
+  `ChaisemartinDHaultfoeuilleResults`) do not yet have a power
+  adapter and therefore render the `no_detected_violation` tier as
+  `underpowered` with the fallback reason recorded in
+  `schema["pre_trends"]["power_status"]`. BusinessReport then reads
   `mdv_share_of_att = mdv / abs(att)` and selects a tier:
 
   - `< 0.25` &rarr; `well_powered` &mdash; "the test has 80% power to

@@ -28,8 +28,8 @@ import pytest
 
 import diff_diff as dd
 from diff_diff import (
-    BusinessReport,
     BusinessContext,
+    BusinessReport,
     CallawaySantAnna,
     DiagnosticReport,
     DifferenceInDifferences,

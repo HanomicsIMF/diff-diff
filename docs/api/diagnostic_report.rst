@@ -22,7 +22,7 @@ Example
 
    from diff_diff import CallawaySantAnna, DiagnosticReport
 
-   cs = CallawaySantAnna().fit(
+   cs = CallawaySantAnna(base_period="universal").fit(
        df, outcome="outcome", unit="unit", time="period",
        first_treat="first_treat", aggregate="event_study",
    )

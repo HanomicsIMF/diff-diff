@@ -1037,6 +1037,168 @@ class TestDiagnosticReportResults:
         assert a is b  # cached
 
 
+class TestDCDHParallelTrendsViaPlaceboEventStudy:
+    """Regression for the round-6 P1 finding that dCDH was advertised as
+    PT-applicable but ``_collect_pre_period_coefs`` never read
+    ``placebo_event_study``, so the PT check was silently skipped even
+    on fits with valid placebo horizons.
+    """
+
+    def _stub(self, with_placebo: bool):
+        class ChaisemartinDHaultfoeuilleResults:
+            pass
+
+        stub = ChaisemartinDHaultfoeuilleResults()
+        stub.att = 1.0
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        if with_placebo:
+            stub.placebo_event_study = {
+                -3: {
+                    "effect": 0.05,
+                    "se": 0.1,
+                    "p_value": 0.62,
+                    "conf_int": (-0.15, 0.25),
+                    "n_obs": 40,
+                },
+                -2: {
+                    "effect": -0.08,
+                    "se": 0.09,
+                    "p_value": 0.38,
+                    "conf_int": (-0.26, 0.10),
+                    "n_obs": 45,
+                },
+                -1: {
+                    "effect": 0.04,
+                    "se": 0.10,
+                    "p_value": 0.69,
+                    "conf_int": (-0.16, 0.24),
+                    "n_obs": 50,
+                },
+            }
+        else:
+            stub.placebo_event_study = None
+        return stub
+
+    def test_pt_check_reads_placebo_event_study(self):
+        stub = self._stub(with_placebo=True)
+        dr = DiagnosticReport(stub).run_all()
+        pt = dr.schema["parallel_trends"]
+        assert (
+            pt["status"] == "ran"
+        ), f"dCDH PT check must run on a fit with placebo_event_study; got {pt}"
+        # Per-period rows should come from the placebo keys (negative horizons).
+        per_period = pt.get("per_period") or pt.get("periods") or []
+        assert per_period, "PT output must include per-period rows"
+        periods = [row.get("period") for row in per_period]
+        assert all(
+            isinstance(p, int) and p < 0 for p in periods
+        ), f"dCDH PT must use negative placebo horizons; got {periods}"
+
+    def test_pt_check_skips_when_no_placebo_event_study(self):
+        stub = self._stub(with_placebo=False)
+        dr = DiagnosticReport(stub).run_all()
+        pt = dr.schema["parallel_trends"]
+        assert (
+            pt["status"] == "skipped"
+        ), f"dCDH PT must skip when placebo_event_study is missing; got {pt}"
+
+
+class TestHeterogeneityPostTreatmentOnly:
+    """Regression for the round-6 P1 finding that ``_check_heterogeneity``
+    was mixing pre- and post-treatment coefficients into the CV / range /
+    sign-consistency summary.
+    """
+
+    def test_collector_prefers_post_period_effects_over_period_effects(self):
+        """On a MultiPeriod-shaped stub, ``_collect_effect_scalars`` must read
+        ``post_period_effects`` (post-treatment only), not ``period_effects``
+        (which mixes pre- and post-treatment coefficients). If the pre-period
+        value leaked in, sign_consistency would flip and the range would span
+        a much larger interval."""
+        from diff_diff.diagnostic_report import DiagnosticReport
+
+        class MultiPeriodDiDResults:
+            pass
+
+        stub = MultiPeriodDiDResults()
+        pe_pre = type("PeriodEffect", (), {"effect": -1.0, "se": 0.2})()
+        pe_post_1 = type("PeriodEffect", (), {"effect": 1.0, "se": 0.2})()
+        pe_post_2 = type("PeriodEffect", (), {"effect": 3.0, "se": 0.2})()
+        stub.period_effects = {-1: pe_pre, 0: pe_post_1, 1: pe_post_2}
+        stub.post_period_effects = {0: pe_post_1, 1: pe_post_2}
+        stub.pre_period_effects = {-1: pe_pre}
+        stub.avg_att = 2.0
+        stub.avg_se = 0.1
+        stub.avg_p_value = 0.001
+        stub.avg_conf_int = (1.8, 2.2)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+
+        # Bypass the applicability-matrix gate by constructing the report
+        # object and calling the extractor directly: the fix is in the
+        # extractor, and MultiPeriod's applicability matrix may or may
+        # not include heterogeneity at any given release.
+        dr = DiagnosticReport(stub)
+        effects = sorted(dr._collect_effect_scalars())
+        assert effects == [1.0, 3.0], (
+            f"Extractor must return only post-treatment effects "
+            f"(no pre-period -1.0); got {effects}"
+        )
+        assert dr._heterogeneity_source() == "post_period_effects"
+
+    def test_event_study_filters_pre_period_and_reference_markers(self):
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        # Event study: pre horizons (rel<0), reference marker (n_groups=0),
+        # non-finite row, and two valid post rows.
+        stub.event_study_effects = {
+            -2: {"effect": -3.0, "se": 0.2, "n_groups": 15},
+            -1: {"effect": 0.0, "se": float("nan"), "n_groups": 0},  # reference marker
+            0: {"effect": 1.0, "se": 0.2, "n_groups": 15},
+            1: {"effect": 2.0, "se": 0.2, "n_groups": 12},
+            2: {"effect": float("nan"), "se": 0.2, "n_groups": 5},  # non-finite
+        }
+        stub.overall_att = 1.5
+        stub.overall_se = 0.1
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (1.3, 1.7)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.base_period = "universal"
+
+        dr = DiagnosticReport(
+            stub,
+            run_parallel_trends=False,
+            run_sensitivity=False,
+            run_bacon=False,
+        ).run_all()
+        het = dr.schema["heterogeneity"]
+        assert het["status"] == "ran"
+        assert het["source"] == "event_study_effects_post"
+        # Only rel>=0, finite, non-reference rows: {1.0, 2.0}.
+        assert het["n_effects"] == 2
+        assert het["min"] == pytest.approx(1.0)
+        assert het["max"] == pytest.approx(2.0)
+        assert het["sign_consistent"] is True
+
+
 # ---------------------------------------------------------------------------
 # Public API exposure
 # ---------------------------------------------------------------------------

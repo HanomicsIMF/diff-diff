@@ -1419,32 +1419,106 @@ class DiagnosticReport:
     # -- Heterogeneity helpers --------------------------------------------
 
     def _collect_effect_scalars(self) -> List[float]:
-        """Collect scalar effect values across group / event-study / TROP sources.
+        """Collect scalar **post-treatment** effect values across group / event-
+        study / TROP sources.
 
-        Returns an empty list if no recognized effect container is present.
-        Never raises on unexpected shapes; unrecognized entries are skipped.
+        Pre-period coefficients (placebos and normalization constraints)
+        and synthetic reference-marker rows are explicitly excluded —
+        mixing them into the heterogeneity dispersion / sign-consistency
+        summary silently redefines the estimand, which the round-6 CI
+        review flagged on PR #318.
+
+        Returns an empty list if no recognized effect container yields
+        any post-treatment entries.
         """
         r = self._results
-        # 1. group_effects: dict keyed by cohort -> dict with 'effect' or float
+        # 1. group_effects: per-cohort post-treatment ATT(g) by construction.
         ge = getattr(r, "group_effects", None)
         if ge is not None:
             return self._scalars_from_mapping(ge)
-        # 2. event_study_effects: dict keyed by relative time -> dict with 'effect'
+        # 2. MultiPeriodDiDResults: use the ``post_period_effects`` property
+        # (post-treatment only) instead of ``period_effects`` (which mixes
+        # pre- and post-treatment coefficients).
+        ppe = getattr(r, "post_period_effects", None)
+        if ppe is not None:
+            return self._scalars_from_mapping(ppe)
+        # 3. event_study_effects: dict keyed by relative time -> dict with
+        # 'effect'. Filter to **post-treatment** horizons (rel_time >= 0),
+        # exclude reference markers (``n_groups == 0`` on CS/SA;
+        # ``n_obs == 0`` on Stacked/TwoStage/Imputation/EfficientDiD), and
+        # exclude entries with non-finite effect.
         es = getattr(r, "event_study_effects", None)
         if es is not None:
-            return self._scalars_from_mapping(es)
-        # 3. TROP: treatment_effects dict keyed by (unit, time) -> float
+            post_only: List[float] = []
+            try:
+                items = list(es.items())
+            except Exception:  # noqa: BLE001
+                items = []
+            for key, entry in items:
+                try:
+                    rel = int(key)
+                except (TypeError, ValueError):
+                    # Non-integer keys — unknown shape; skip conservatively
+                    # rather than mixing into the dispersion summary.
+                    continue
+                if rel < 0:
+                    continue
+                if isinstance(entry, dict):
+                    if entry.get("n_groups") == 0 or entry.get("n_obs") == 0:
+                        continue
+                eff = _extract_scalar_effect(entry)
+                if eff is None or not np.isfinite(eff):
+                    continue
+                post_only.append(eff)
+            return post_only
+        # 4. TROP: treatment_effects dict keyed by (unit, time) -> float.
+        # TROP produces counterfactual deltas only at observed points for
+        # treated units (the factor-model construction), so these are
+        # post-treatment by design.
         te = getattr(r, "treatment_effects", None)
         if te is not None:
             return self._scalars_from_mapping(te)
-        # 4. CS default: group_time_effects dict keyed by (g, t) -> dict
+        # 5. CS default aggregation: group_time_effects dict keyed by
+        # (g, t) -> dict. Filter to t >= g (post-treatment cells); the
+        # pre-treatment cells (t < g) are identification-deviation
+        # placebos, not effect heterogeneity.
         gte = getattr(r, "group_time_effects", None)
         if gte is not None:
-            return self._scalars_from_mapping(gte)
-        # 5. MultiPeriod: period_effects dict keyed by period -> PeriodEffect
-        pe = getattr(r, "period_effects", None)
-        if pe is not None:
-            return self._scalars_from_mapping(pe)
+            post_cells: List[float] = []
+            try:
+                items = list(gte.items())
+            except Exception:  # noqa: BLE001
+                items = []
+            for key, entry in items:
+                g_t = None
+                if isinstance(key, tuple) and len(key) == 2:
+                    g_t = key
+                else:
+                    g_val = (
+                        getattr(entry, "group", None)
+                        if not isinstance(entry, dict)
+                        else entry.get("group")
+                    )
+                    t_val = (
+                        getattr(entry, "time", None)
+                        if not isinstance(entry, dict)
+                        else entry.get("time")
+                    )
+                    if g_val is not None and t_val is not None:
+                        g_t = (g_val, t_val)
+                if g_t is not None:
+                    try:
+                        g_num = float(g_t[0])
+                        t_num = float(g_t[1])
+                        if t_num < g_num:
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                eff = _extract_scalar_effect(entry)
+                if eff is None or not np.isfinite(eff):
+                    continue
+                post_cells.append(eff)
+            return post_cells
         return []
 
     @staticmethod
@@ -1470,16 +1544,25 @@ class DiagnosticReport:
         return out
 
     def _heterogeneity_source(self) -> str:
-        """Name the attribute that produced the scalars (for the schema)."""
-        for attr in (
-            "group_effects",
-            "event_study_effects",
-            "treatment_effects",
-            "group_time_effects",
-            "period_effects",
-        ):
-            if getattr(self._results, attr, None) is not None:
-                return attr
+        """Name the attribute that produced the scalars (for the schema).
+
+        Mirrors the dispatch order in ``_collect_effect_scalars`` and
+        reports the actual post-treatment surface consumed (e.g.,
+        ``post_period_effects`` rather than ``period_effects`` on
+        ``MultiPeriodDiDResults``, and ``event_study_effects_post`` to
+        make it clear pre-period / reference-marker rows were filtered).
+        """
+        r = self._results
+        if getattr(r, "group_effects", None) is not None:
+            return "group_effects"
+        if getattr(r, "post_period_effects", None) is not None:
+            return "post_period_effects"
+        if getattr(r, "event_study_effects", None) is not None:
+            return "event_study_effects_post"
+        if getattr(r, "treatment_effects", None) is not None:
+            return "treatment_effects"
+        if getattr(r, "group_time_effects", None) is not None:
+            return "group_time_effects_post"
         return "unknown"
 
     def _pt_hausman(self) -> Dict[str, Any]:
@@ -1745,11 +1828,17 @@ def _power_tier(ratio: Optional[float]) -> str:
 def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Optional[float]]]:
     """Return a sorted list of ``(key, effect, se, p_value)`` for pre-period coefficients.
 
-    Handles two shapes:
+    Handles three shapes:
       * ``pre_period_effects``: dict-of-``PeriodEffect`` on ``MultiPeriodDiDResults``.
       * ``event_study_effects``: dict-of-dict (with ``effect`` / ``se`` / ``p_value`` keys)
         on the staggered estimators (CS / SA / ImputationDiD / Stacked / EDiD / etc.).
         Pre-period entries are those with negative relative-time keys.
+      * ``placebo_event_study``: dict-of-dict on
+        ``ChaisemartinDHaultfoeuilleResults`` — dCDH's dynamic placebos
+        ``DID^{pl}_l`` are the estimator's pre-period analogue (the
+        Rambachan-Roth machinery in ``honest_did.py`` consumes them via a
+        dedicated branch, and this diagnostic must match). Keys are
+        negative horizons; entries share the event-study dict shape.
 
     Filtering rules (critical for methodology-safe PT tests):
 
@@ -1762,15 +1851,39 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
       excluded. A NaN SE means inference is undefined — feeding it into
       Bonferroni or Wald would produce a false-clean PT verdict.
 
-    Returns an empty list when neither source provides valid pre-period entries.
+    Returns an empty list when none of the three sources provides valid
+    pre-period entries.
     """
     results_list: List[Tuple[Any, float, float, Optional[float]]] = []
     pre = getattr(results, "pre_period_effects", None)
+    # dCDH exposes pre-period placebos via ``placebo_event_study``; the
+    # round-6 CI review flagged that routing dCDH through the generic
+    # ``event_study_effects`` path produced empty pre-coef lists and
+    # silently skipped the PT check.
+    dcdh_placebo = getattr(results, "placebo_event_study", None)
     if pre:
         for k, pe in pre.items():
             eff = getattr(pe, "effect", None)
             se = getattr(pe, "se", None)
             p = getattr(pe, "p_value", None)
+            if eff is None or se is None:
+                continue
+            try:
+                eff_f = float(eff)
+                se_f = float(se)
+            except (TypeError, ValueError):
+                continue
+            if not (np.isfinite(eff_f) and np.isfinite(se_f)):
+                continue
+            results_list.append((k, eff_f, se_f, _to_python_float(p)))
+    elif dcdh_placebo:
+        # dCDH placebo horizons are the pre-period surface.
+        for k, entry in dcdh_placebo.items():
+            if not isinstance(entry, dict):
+                continue
+            eff = entry.get("effect")
+            se = entry.get("se")
+            p = entry.get("p_value")
             if eff is None or se is None:
                 continue
             try:
