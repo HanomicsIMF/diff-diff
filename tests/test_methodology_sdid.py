@@ -2100,3 +2100,146 @@ class TestSyntheticDiDResultsPickle:
         assert "_fit_snapshot" not in d
         assert "_loo_unit_ids" not in d
         assert "_loo_roles" not in d
+
+
+# =============================================================================
+# Scale equivariance — internal Y normalization prevents catastrophic
+# cancellation when outcomes are on extreme scales (millions-to-billions).
+# τ is location-invariant and scale-equivariant, so fitting on ``a*Y + b``
+# should produce τ/SE that scale exactly with ``a`` and leave p-values
+# unchanged. On normally-scaled data the fix must be a numerical no-op.
+# =============================================================================
+
+
+class TestScaleEquivariance:
+    """SDID is location-invariant and scale-equivariant in Y."""
+
+    # Hard-coded baselines captured pre-fix on a well-scaled panel. If these
+    # drift the fix is not a true no-op on normal data and review is warranted.
+    _BASELINE = {
+        "placebo":   (4.603349837478791,   0.29385822261006445, 0.004975124378109453,   200),
+        "bootstrap": (4.603349837478791,   0.1589472532935243,  0.4869109947643979,     191),
+        "jackknife": (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,  23),
+    }
+
+    # (a, b) pairs. Includes extreme scales where pre-fix SDID loses
+    # ~6 mantissa digits in the double-difference subtraction.
+    _SCALES = [(1e-6, 0.0), (1.0, 0.0), (1e6, 1e9), (1e9, -1e6), (1.0, 1e9)]
+
+    @staticmethod
+    def _rescale(df, a, b):
+        out = df.copy()
+        out["outcome"] = a * out["outcome"] + b
+        return out
+
+    @staticmethod
+    def _fit(data, variance_method, *, seed=1, n_bootstrap=200):
+        return SyntheticDiD(
+            variance_method=variance_method, n_bootstrap=n_bootstrap, seed=seed
+        ).fit(
+            data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="period",
+            post_periods=[5, 6, 7],
+        )
+
+    @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
+    def test_baseline_parity_small_scale(self, variance_method):
+        """Existing-fixture results match pre-fix literals — guards against
+        drift; a true no-op should hit float epsilon relative to baseline."""
+        att0, se0, p0, n0 = self._BASELINE[variance_method]
+        data = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = self._fit(data, variance_method)
+        assert r.att == pytest.approx(att0, rel=1e-8)
+        assert r.se == pytest.approx(se0, rel=1e-8)
+        assert r.p_value == pytest.approx(p0, rel=1e-8)
+        assert len(r.placebo_effects) == n0
+
+    @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
+    def test_scale_equivariance(self, variance_method):
+        """τ/a, SE/|a|, p-value, and n_successful must be invariant under
+        (Y → a*Y + b) across ~15 orders of magnitude."""
+        data = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r0 = self._fit(data, variance_method)
+        att0, se0, p0 = r0.att, r0.se, r0.p_value
+        n0 = len(r0.placebo_effects)
+        noise0 = r0.noise_level
+        zeta_omega0 = r0.zeta_omega
+
+        for a, b in self._SCALES:
+            scaled = self._rescale(data, a, b)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                r = self._fit(scaled, variance_method)
+            # Variance-method success count must be identical; divergence
+            # would shift the empirical p-value floor 1/(n+1).
+            assert len(r.placebo_effects) == n0, (
+                f"(a={a}, b={b}) yielded {len(r.placebo_effects)} effects, "
+                f"baseline had {n0}"
+            )
+            assert r.att / a == pytest.approx(att0, rel=1e-8), f"att failed at a={a}, b={b}"
+            assert r.se / abs(a) == pytest.approx(se0, rel=1e-6), f"se failed at a={a}, b={b}"
+            assert r.p_value == pytest.approx(p0, rel=1e-6), f"p failed at a={a}, b={b}"
+            # Reported diagnostics scale with Y just like SE (noise_level,
+            # zeta_omega are both in outcome units).
+            assert r.noise_level / abs(a) == pytest.approx(noise0, rel=1e-8)
+            assert r.zeta_omega / abs(a) == pytest.approx(zeta_omega0, rel=1e-8)
+
+    @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
+    def test_detects_true_effect_at_extreme_scale(self, variance_method):
+        """Pre-fix regression: catastrophic cancellation at Y~1e9 degraded
+        SEs so p-values clustered near 0.5 regardless of true effect. Here
+        the true ATT is 0.5% of baseline — below the pre-fix precision
+        floor — and must still produce a detectable, correctly-scaled τ."""
+        rng = np.random.default_rng(0)
+        n_control, n_treated, n_pre, n_post = 25, 3, 6, 4
+        baseline_level = 1e9  # deliberately extreme
+        true_att = 5e6  # 0.5% of baseline — lost in 6-digit cancellation pre-fix
+        rows = []
+        for unit in range(n_control + n_treated):
+            is_treated = unit >= n_control
+            unit_fe = rng.normal(0, 2e6)
+            for t in range(n_pre + n_post):
+                y = baseline_level + unit_fe + t * 3e5 + rng.normal(0, 5e5)
+                if is_treated and t >= n_pre:
+                    y += true_att
+                rows.append({
+                    "unit": unit, "period": t,
+                    "treated": int(is_treated), "outcome": y,
+                })
+        data = pd.DataFrame(rows)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = SyntheticDiD(
+                variance_method=variance_method, n_bootstrap=200, seed=7
+            ).fit(
+                data, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=list(range(n_pre, n_pre + n_post)),
+            )
+
+        # τ must land near the true effect (within ~3 SE); SE must be
+        # positive, finite, and small enough that the effect is significant
+        # by z-statistic. For placebo/jackknife the empirical p-value is a
+        # proper null-distribution test; for bootstrap the empirical p is
+        # not a null test (draws center on τ̂), so check z directly.
+        assert np.isfinite(r.att) and np.isfinite(r.se)
+        assert r.se > 0
+        assert abs(r.att - true_att) < max(3 * r.se, 0.1 * true_att)
+        z = abs(r.att / r.se)
+        assert z > 3, (
+            f"Effect at Y~1e9 must be detectable by z-stat; att={r.att}, "
+            f"se={r.se}, z={z} (variance_method={variance_method})"
+        )
+        if variance_method != "bootstrap":
+            assert r.p_value < 0.05, (
+                f"Effect at Y~1e9 must reject null; p_value={r.p_value} "
+                f"(variance_method={variance_method})"
+            )

@@ -416,43 +416,92 @@ class SyntheticDiD(DifferenceInDifferences):
             )
         )
 
-        # Compute auto-regularization (or use user overrides)
-        auto_zeta_omega, auto_zeta_lambda = _compute_regularization(
-            Y_pre_control, len(treated_units), len(post_periods)
+        # --- Y normalization ---------------------------------------------
+        # τ is location-invariant and scale-equivariant in Y. Normalizing Y
+        # once before weight optimization, the estimator, and the variance
+        # procedures (and rescaling τ/SE/CI/effects by Y_scale at the end)
+        # is mathematically a no-op but prevents ~6-digit precision loss in
+        # the SDID double-difference when outcomes span millions-to-billions.
+        # Normalization constants come from controls' pre-period only so the
+        # reference is unaffected by treatment. See REGISTRY.md §SyntheticDiD
+        # edge cases and synth-inference/synthdid#71 for R's version.
+        Y_shift = float(np.mean(Y_pre_control))
+        Y_scale_raw = float(np.std(Y_pre_control))
+        # Relative floor: avoid amplifying roundoff when std is tiny but
+        # nonzero (near-constant Y_pre_control). Fall back to 1.0 in that
+        # case and on non-finite std.
+        _scale_floor = 1e-12 * max(abs(Y_shift), 1.0)
+        Y_scale = (
+            Y_scale_raw
+            if np.isfinite(Y_scale_raw) and Y_scale_raw > _scale_floor
+            else 1.0
         )
-        zeta_omega = self.zeta_omega if self.zeta_omega is not None else auto_zeta_omega
-        zeta_lambda = self.zeta_lambda if self.zeta_lambda is not None else auto_zeta_lambda
+        Y_pre_control_n = (Y_pre_control - Y_shift) / Y_scale
+        Y_post_control_n = (Y_post_control - Y_shift) / Y_scale
+        Y_pre_treated_n = (Y_pre_treated - Y_shift) / Y_scale
+        Y_post_treated_n = (Y_post_treated - Y_shift) / Y_scale
 
-        # Store noise level for diagnostics
+        # Auto-regularization on normalized Y. FW's argmin is invariant under
+        # (Y, ζ) -> (Y/s, ζ/s); auto-zetas computed on Y_n are already on the
+        # normalized scale. User-supplied zetas are in original-Y units and
+        # are divided by Y_scale for internal FW use. Original-scale values
+        # are stored on results_ / self so diagnostic methods (in_time_placebo,
+        # sensitivity_to_zeta_omega) — which operate on the stored original-
+        # scale fit snapshot — see the same zeta the user specified.
+        auto_zeta_omega_n, auto_zeta_lambda_n = _compute_regularization(
+            Y_pre_control_n, len(treated_units), len(post_periods)
+        )
+        zeta_omega_n = (
+            self.zeta_omega / Y_scale
+            if self.zeta_omega is not None
+            else auto_zeta_omega_n
+        )
+        zeta_lambda_n = (
+            self.zeta_lambda / Y_scale
+            if self.zeta_lambda is not None
+            else auto_zeta_lambda_n
+        )
+        # Report the user-supplied value exactly (no roundoff from /*Y_scale
+        # roundtrip); report auto-zeta rescaled to original Y units.
+        zeta_omega = (
+            self.zeta_omega if self.zeta_omega is not None else auto_zeta_omega_n * Y_scale
+        )
+        zeta_lambda = (
+            self.zeta_lambda if self.zeta_lambda is not None else auto_zeta_lambda_n * Y_scale
+        )
+
+        # Store noise level for diagnostics (reported on original Y scale).
         from diff_diff.utils import _compute_noise_level
 
-        noise_level = _compute_noise_level(Y_pre_control)
+        noise_level_n = _compute_noise_level(Y_pre_control_n)
+        noise_level = noise_level_n * Y_scale
 
-        # Data-dependent convergence threshold (matches R's 1e-5 * noise.level).
-        # Floor of 1e-5 when noise_level == 0: R would use 0.0, causing FW to
-        # run all max_iter iterations.  The result is equivalent (zero-noise
-        # data has no variation to optimize), but the floor enables early stop.
-        min_decrease = 1e-5 * noise_level if noise_level > 0 else 1e-5
+        # Data-dependent convergence threshold (matches R's 1e-5 * noise.level),
+        # evaluated on normalized Y since FW operates on normalized Y. Floor of
+        # 1e-5 when noise is zero: R would use 0.0, causing FW to run all
+        # max_iter iterations; the floor enables early stop on zero-variation
+        # inputs without changing the optimum.
+        min_decrease = 1e-5 * noise_level_n if noise_level_n > 0 else 1e-5
 
-        # Compute unit weights (Frank-Wolfe with sparsification)
-        # Survey weights enter via the treated mean target
+        # Compute unit weights (Frank-Wolfe with sparsification) on normalized Y.
+        # Survey weights enter via the treated mean target.
         if w_treated is not None:
-            Y_pre_treated_mean = np.average(Y_pre_treated, axis=1, weights=w_treated)
+            Y_pre_treated_mean_n = np.average(Y_pre_treated_n, axis=1, weights=w_treated)
         else:
-            Y_pre_treated_mean = np.mean(Y_pre_treated, axis=1)
+            Y_pre_treated_mean_n = np.mean(Y_pre_treated_n, axis=1)
 
         unit_weights = compute_sdid_unit_weights(
-            Y_pre_control,
-            Y_pre_treated_mean,
-            zeta_omega=zeta_omega,
+            Y_pre_control_n,
+            Y_pre_treated_mean_n,
+            zeta_omega=zeta_omega_n,
             min_decrease=min_decrease,
         )
 
-        # Compute time weights (Frank-Wolfe on collapsed form)
+        # Compute time weights (Frank-Wolfe on collapsed form) on normalized Y.
         time_weights = compute_time_weights(
-            Y_pre_control,
-            Y_post_control,
-            zeta_lambda=zeta_lambda,
+            Y_pre_control_n,
+            Y_post_control_n,
+            zeta_lambda=zeta_lambda_n,
             min_decrease=min_decrease,
         )
 
@@ -465,23 +514,32 @@ class SyntheticDiD(DifferenceInDifferences):
         else:
             omega_eff = unit_weights
 
-        # Compute SDID estimate
+        # Compute SDID estimate on normalized Y, then rescale to original units.
         if w_treated is not None:
-            Y_post_treated_mean = np.average(Y_post_treated, axis=1, weights=w_treated)
+            Y_post_treated_mean_n = np.average(
+                Y_post_treated_n, axis=1, weights=w_treated
+            )
         else:
-            Y_post_treated_mean = np.mean(Y_post_treated, axis=1)
+            Y_post_treated_mean_n = np.mean(Y_post_treated_n, axis=1)
 
-        att = compute_sdid_estimator(
-            Y_pre_control,
-            Y_post_control,
-            Y_pre_treated_mean,
-            Y_post_treated_mean,
+        att_n = compute_sdid_estimator(
+            Y_pre_control_n,
+            Y_post_control_n,
+            Y_pre_treated_mean_n,
+            Y_post_treated_mean_n,
             omega_eff,
             time_weights,
         )
+        att = att_n * Y_scale
 
-        # Compute pre-treatment fit (RMSE) using composed weights.
-        # Retain trajectories on results for plotting / custom diagnostics.
+        # Recover original-scale treated means for diagnostics / trajectories.
+        Y_pre_treated_mean = Y_pre_treated_mean_n * Y_scale + Y_shift
+        Y_post_treated_mean = Y_post_treated_mean_n * Y_scale + Y_shift
+
+        # Compute pre-treatment fit (RMSE) using composed weights on the
+        # original Y (user-visible scale). omega_eff is a simplex — applies
+        # cleanly to any linear rescale of Y — so trajectories live on the
+        # original outcome scale for plotting and the poor-fit warning.
         synthetic_pre_trajectory = Y_pre_control @ omega_eff
         synthetic_post_trajectory = Y_post_control @ omega_eff
         pre_fit_rmse = np.sqrt(
@@ -510,49 +568,57 @@ class SyntheticDiD(DifferenceInDifferences):
         treated_pre_trajectory = Y_pre_treated_mean
         treated_post_trajectory = Y_post_treated_mean
 
-        # Compute standard errors based on variance_method
+        # Compute standard errors on normalized Y, rescale to original units.
+        # Variance procedures resample / permute indices (independent of Y
+        # values) so RNG streams stay aligned across scales.
         if self.variance_method == "bootstrap":
-            se, bootstrap_estimates = self._bootstrap_se(
-                Y_pre_control,
-                Y_post_control,
-                Y_pre_treated,
-                Y_post_treated,
+            se_n, bootstrap_estimates_n = self._bootstrap_se(
+                Y_pre_control_n,
+                Y_post_control_n,
+                Y_pre_treated_n,
+                Y_post_treated_n,
                 unit_weights,
                 time_weights,
                 w_treated=w_treated,
                 w_control=w_control,
                 resolved_survey=_unit_resolved_survey,
             )
-            placebo_effects = bootstrap_estimates
+            se = se_n * Y_scale
+            placebo_effects = np.asarray(bootstrap_estimates_n) * Y_scale
             inference_method = "bootstrap"
         elif self.variance_method == "jackknife":
             # Fixed-weight jackknife (R's synthdid Algorithm 3)
-            se, jackknife_estimates = self._jackknife_se(
-                Y_pre_control,
-                Y_post_control,
-                Y_pre_treated,
-                Y_post_treated,
+            se_n, jackknife_estimates_n = self._jackknife_se(
+                Y_pre_control_n,
+                Y_post_control_n,
+                Y_pre_treated_n,
+                Y_post_treated_n,
                 unit_weights,
                 time_weights,
                 w_treated=w_treated,
                 w_control=w_control,
             )
-            placebo_effects = jackknife_estimates
+            se = se_n * Y_scale
+            placebo_effects = np.asarray(jackknife_estimates_n) * Y_scale
             inference_method = "jackknife"
         else:
-            # Use placebo-based variance (R's synthdid Algorithm 4)
-            se, placebo_effects = self._placebo_variance_se(
-                Y_pre_control,
-                Y_post_control,
-                Y_pre_treated_mean,
-                Y_post_treated_mean,
+            # Use placebo-based variance (R's synthdid Algorithm 4).
+            # Placebo re-estimates ω, λ inside the loop; it must receive the
+            # normalized zetas and operate on normalized Y.
+            se_n, placebo_effects_n = self._placebo_variance_se(
+                Y_pre_control_n,
+                Y_post_control_n,
+                Y_pre_treated_mean_n,
+                Y_post_treated_mean_n,
                 n_treated=len(treated_units),
-                zeta_omega=zeta_omega,
-                zeta_lambda=zeta_lambda,
+                zeta_omega=zeta_omega_n,
+                zeta_lambda=zeta_lambda_n,
                 min_decrease=min_decrease,
                 replications=self.n_bootstrap,
                 w_control=w_control,
             )
+            se = se_n * Y_scale
+            placebo_effects = np.asarray(placebo_effects_n) * Y_scale
             inference_method = "placebo"
 
         # Compute test statistics
