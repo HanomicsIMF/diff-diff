@@ -808,12 +808,19 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
         # Retain observation-level survey info for IF expansion (Step 3
         # of survey integration: group-level IF → observation-level psi).
+        # `time_ids` is per-row; `periods` (the sorted column index used
+        # by the pivoted U_per_period matrices) is populated below once
+        # it's known. Together they enable cell-level IF expansion
+        # psi_i = U[g_i, t_i] * (w_i / W_{g_i, t_i}) under the cell-
+        # period allocator (REGISTRY.md survey IF expansion contract).
         _obs_survey_info = None
         if resolved_survey is not None:
             _obs_survey_info = {
                 "group_ids": data[group].values,
+                "time_ids": data[time].values,
                 "weights": survey_weights,
                 "resolved": resolved_survey,
+                "periods": None,
             }
 
         # Replicate-weight variance tracker: each _compute_se call under
@@ -1202,6 +1209,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         D_mat = d_pivot.to_numpy()
         Y_mat = y_pivot.to_numpy()
         N_mat = n_pivot.to_numpy()
+
+        # Finalize survey obs-info with the pivot's column index so that
+        # cell-level IF expansion can map per-row time values to matrix
+        # column indices in _survey_se_from_group_if.
+        if _obs_survey_info is not None:
+            _obs_survey_info["periods"] = np.asarray(all_periods)
 
         # ------------------------------------------------------------------
         # Step 7b: Covariate residualization (DID^X)
@@ -1615,7 +1628,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # so the event_study_effects dict uses a consistent estimand
             # (per-group DID_{g,l}) across all horizons.
             for l_h in range(1, L_max + 1):
-                U_l = multi_horizon_if[l_h]
+                U_l, U_pp_l = multi_horizon_if[l_h]
                 # Cohort IDs for this horizon: (D_{g,1}, F_g, S_g) triples
                 # are the same as Phase 1 (cohort identity depends on first
                 # switch, not on the horizon). Filter to eligible.
@@ -1646,6 +1659,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 U_l_elig = U_l[eligible_mask_var]
                 cid_elig = cid_l[eligible_mask_var]
                 U_centered_l = _cohort_recenter(U_l_elig, cid_elig)
+                U_centered_pp_l = _cohort_recenter_per_period(
+                    U_pp_l[eligible_mask_var], cid_elig
+                )
                 N_l_h = multi_horizon_dids[l_h]["N_l"]
                 _elig_groups_l = [all_groups[g] for g in range(len(all_groups)) if eligible_mask_var[g]]
                 se_l, n_valid_l = _compute_se(
@@ -1653,6 +1669,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     divisor=N_l_h,
                     obs_survey_info=_obs_survey_info,
                     eligible_groups=_elig_groups_l,
+                    U_centered_per_period=U_centered_pp_l,
                 )
                 if n_valid_l is not None:
                     _replicate_n_valid_list.append(n_valid_l)
@@ -1753,7 +1770,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     if pl_data is None or pl_data["N_pl_l"] == 0:
                         placebo_horizon_se[lag_l] = float("nan")
                         continue
-                    U_pl = placebo_horizon_if[lag_l]
+                    U_pl, U_pp_pl = placebo_horizon_if[lag_l]
                     # Cohort IDs (same as positive horizons)
                     cohort_keys_pl = [
                         (
@@ -1776,12 +1793,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     U_pl_elig = U_pl[eligible_mask_pl]
                     cid_elig_pl = cid_pl[eligible_mask_pl]
                     U_centered_pl_l = _cohort_recenter(U_pl_elig, cid_elig_pl)
+                    U_centered_pp_pl_l = _cohort_recenter_per_period(
+                        U_pp_pl[eligible_mask_pl], cid_elig_pl
+                    )
                     _elig_groups_pl = [all_groups[g] for g in range(len(all_groups)) if eligible_mask_pl[g]]
                     se_pl_l, n_valid_pl_l = _compute_se(
                         U_centered=U_centered_pl_l,
                         divisor=pl_data["N_pl_l"],
                         obs_survey_info=_obs_survey_info,
                         eligible_groups=_elig_groups_pl,
+                        U_centered_per_period=U_centered_pp_pl_l,
                     )
                     if n_valid_pl_l is not None:
                         _replicate_n_valid_list.append(n_valid_pl_l)
@@ -1846,6 +1867,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             U_centered_joiners,
             U_centered_leavers,
             _eligible_group_ids,
+            U_centered_pp_overall,
+            U_centered_pp_joiners,
+            U_centered_pp_leavers,
         ) = _compute_cohort_recentered_inputs(
             D_mat=D_mat,
             # Phase 1 IF uses per-period structure: use raw outcomes
@@ -1868,6 +1892,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             divisor=N_S,
             obs_survey_info=_obs_survey_info,
             eligible_groups=_eligible_group_ids,
+            U_centered_per_period=U_centered_pp_overall,
         )
         if n_valid_overall is not None:
             _replicate_n_valid_list.append(n_valid_overall)
@@ -1908,6 +1933,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 divisor=joiner_total,
                 obs_survey_info=_obs_survey_info,
                 eligible_groups=_eligible_group_ids,
+                U_centered_per_period=U_centered_pp_joiners,
             )
             if n_valid_joiners is not None:
                 _replicate_n_valid_list.append(n_valid_joiners)
@@ -1931,6 +1957,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 divisor=leaver_total,
                 obs_survey_info=_obs_survey_info,
                 eligible_groups=_eligible_group_ids,
+                U_centered_per_period=U_centered_pp_leavers,
             )
             if n_valid_leavers is not None:
                 _replicate_n_valid_list.append(n_valid_leavers)
@@ -2085,7 +2112,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     pl_data = multi_horizon_placebos.get(lag_l)
                     if pl_data is None or pl_data["N_pl_l"] == 0:
                         continue
-                    U_pl_full = placebo_horizon_if[lag_l]
+                    U_pl_full, _ = placebo_horizon_if[lag_l]
                     U_pl_elig_b = U_pl_full[eligible_mask_pl_b]
                     cohort_keys_pl_b = [
                         (
@@ -2137,7 +2164,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     h_data = multi_horizon_dids.get(l_h)
                     if h_data is None or h_data["N_l"] == 0:
                         continue
-                    U_l_full = multi_horizon_if[l_h]
+                    U_l_full, _ = multi_horizon_if[l_h]
                     # Full variance-eligible group set (matching
                     # analytical SE path: singleton-baseline only)
                     U_l_elig = U_l_full[eligible_mask_b]
@@ -4250,7 +4277,7 @@ def _compute_per_group_if_multi_horizon(
     T_g: np.ndarray,
     L_max: int,
     set_ids: Optional[np.ndarray] = None,
-) -> Dict[int, np.ndarray]:
+) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
     """
     Compute per-group influence function ``U^G_{g,l}`` for ``l = 1..L_max``.
 
@@ -4275,9 +4302,15 @@ def _compute_per_group_if_multi_horizon(
 
     Returns
     -------
-    dict mapping horizon l -> U_g_l array of shape (n_groups,)
-        NOT cohort-centered. The caller applies ``_cohort_recenter()``
-        before computing SE.
+    dict mapping horizon l -> (U_g_l, U_per_period_l) tuple
+        - ``U_g_l``: np.ndarray of shape (n_groups,). NOT cohort-centered;
+          the caller applies ``_cohort_recenter()`` before computing SE.
+        - ``U_per_period_l``: np.ndarray of shape (n_groups, n_periods).
+          Per-``(g, t)``-cell contributions attributed to the outcome
+          period ``t = F_g - 1 + l`` (same column for switcher and its
+          controls, since they share the outcome period). Satisfies
+          ``U_per_period_l.sum(axis=1) == U_g_l``. Consumed by the cell-
+          period IF allocator for within-group-varying PSU designs.
     """
     n_groups, n_periods = D_mat.shape
     is_switcher = first_switch_idx >= 0
@@ -4291,10 +4324,11 @@ def _compute_per_group_if_multi_horizon(
         baseline_groups[float(d)] = np.where(mask)[0]
         baseline_f[float(d)] = first_switch_idx[mask]
 
-    results: Dict[int, np.ndarray] = {}
+    results: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
 
     for l in range(1, L_max + 1):  # noqa: E741
         U_l = np.zeros(n_groups, dtype=float)
+        U_per_period_l = np.zeros((n_groups, n_periods), dtype=float)
 
         for g in range(n_groups):
             if not is_switcher[g]:
@@ -4334,13 +4368,16 @@ def _compute_per_group_if_multi_horizon(
             # Switcher contribution: +S_g * (Y_{g, out} - Y_{g, ref})
             switcher_change = Y_mat[g, out_idx] - Y_mat[g, ref_idx]
             U_l[g] += S_g * switcher_change
+            U_per_period_l[g, out_idx] += S_g * switcher_change
 
             # Control contributions: each control g' in the pool gets
             # -S_g * (1/n_ctrl) * (Y_{g', out} - Y_{g', ref})
             ctrl_changes = Y_mat[ctrl_pool, out_idx] - Y_mat[ctrl_pool, ref_idx]
-            U_l[ctrl_pool] -= (S_g / n_ctrl) * ctrl_changes
+            ctrl_contrib = (S_g / n_ctrl) * ctrl_changes
+            U_l[ctrl_pool] -= ctrl_contrib
+            U_per_period_l[ctrl_pool, out_idx] -= ctrl_contrib
 
-        results[l] = U_l
+        results[l] = (U_l, U_per_period_l)
 
     return results
 
@@ -4355,7 +4392,7 @@ def _compute_per_group_if_placebo_horizon(
     T_g: np.ndarray,
     L_max: int,
     set_ids: Optional[np.ndarray] = None,
-) -> Dict[int, np.ndarray]:
+) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
     """
     Compute per-group influence function for placebo horizons.
 
@@ -4372,9 +4409,13 @@ def _compute_per_group_if_placebo_horizon(
 
     Returns
     -------
-    dict mapping lag l (positive int) -> U_pl_l array of shape (n_groups,)
-        NOT cohort-centered. The caller applies ``_cohort_recenter()``
-        before computing SE.
+    dict mapping lag l (positive int) -> (U_pl_l, U_per_period_pl_l) tuple
+        - ``U_pl_l``: np.ndarray of shape (n_groups,). NOT cohort-
+          centered; the caller applies ``_cohort_recenter()``.
+        - ``U_per_period_pl_l``: np.ndarray of shape (n_groups, n_periods).
+          Per-``(g, t)`` contributions attributed to ``t = backward_idx``
+          (the pre-period observation that supports the contrast).
+          Satisfies ``U_per_period_pl_l.sum(axis=1) == U_pl_l``.
     """
     n_groups, n_periods = D_mat.shape
     is_switcher = first_switch_idx >= 0
@@ -4387,10 +4428,11 @@ def _compute_per_group_if_placebo_horizon(
         baseline_groups[float(d)] = np.where(mask)[0]
         baseline_f[float(d)] = first_switch_idx[mask]
 
-    results: Dict[int, np.ndarray] = {}
+    results: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
 
     for l in range(1, L_max + 1):  # noqa: E741
         U_pl = np.zeros(n_groups, dtype=float)
+        U_per_period_pl = np.zeros((n_groups, n_periods), dtype=float)
 
         for g in range(n_groups):
             if not is_switcher[g]:
@@ -4434,12 +4476,15 @@ def _compute_per_group_if_placebo_horizon(
             # Switcher contribution: paper convention backward - ref
             switcher_change = Y_mat[g, backward_idx] - Y_mat[g, ref_idx]
             U_pl[g] += S_g * switcher_change
+            U_per_period_pl[g, backward_idx] += S_g * switcher_change
 
             # Control contributions
             ctrl_changes = Y_mat[ctrl_pool, backward_idx] - Y_mat[ctrl_pool, ref_idx]
-            U_pl[ctrl_pool] -= (S_g / n_ctrl) * ctrl_changes
+            ctrl_contrib = (S_g / n_ctrl) * ctrl_changes
+            U_pl[ctrl_pool] -= ctrl_contrib
+            U_per_period_pl[ctrl_pool, backward_idx] -= ctrl_contrib
 
-        results[l] = U_pl
+        results[l] = (U_pl, U_per_period_pl)
 
     return results
 
@@ -4780,7 +4825,7 @@ def _compute_full_per_group_contributions(
     a11_plus_zeroed_arr: np.ndarray,
     a11_minus_zeroed_arr: np.ndarray,
     side: str = "overall",
-) -> np.ndarray:
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute the per-group influence function ``U^G_g`` for ``DID_M``,
     ``DID_+``, or ``DID_-`` by summing role-weighted outcome differences
@@ -4830,12 +4875,20 @@ def _compute_full_per_group_contributions(
     U : np.ndarray of shape (n_groups,)
         Per-group contributions. NOT cohort-centered; the caller is
         responsible for centering before computing the SE.
+    U_per_period : np.ndarray of shape (n_groups, n_periods)
+        Per-``(g, t)``-cell contributions, attributed to the post-
+        period ``t`` of each transition pair. Satisfies
+        ``U_per_period.sum(axis=1) == U`` exactly. NOT cohort-centered.
+        Used by the cell-period IF allocator in
+        ``_survey_se_from_group_if`` so that PSU/strata that vary
+        across the cells of g can be honored by design-based variance.
     """
     if side not in ("overall", "joiners", "leavers"):
         raise ValueError(f"side must be one of overall/joiners/leavers, got {side!r}")
 
     n_groups, n_periods = D_mat.shape
     U = np.zeros(n_groups, dtype=float)
+    U_per_period = np.zeros((n_groups, n_periods), dtype=float)
 
     include_joiners_side = side in ("overall", "joiners")
     include_leavers_side = side in ("overall", "leavers")
@@ -4867,6 +4920,8 @@ def _compute_full_per_group_contributions(
         ):
             U[joiner_mask] += y_diff[joiner_mask]
             U[stable0_mask] -= (n_10_t / n_00_t) * y_diff[stable0_mask]
+            U_per_period[joiner_mask, t_idx] += y_diff[joiner_mask]
+            U_per_period[stable0_mask, t_idx] -= (n_10_t / n_00_t) * y_diff[stable0_mask]
 
         # Leavers side (-y_diff for leavers; +(n_01/n_11)*y_diff for stable_1)
         if (
@@ -4877,8 +4932,10 @@ def _compute_full_per_group_contributions(
         ):
             U[leaver_mask] -= y_diff[leaver_mask]
             U[stable1_mask] += (n_01_t / n_11_t) * y_diff[stable1_mask]
+            U_per_period[leaver_mask, t_idx] -= y_diff[leaver_mask]
+            U_per_period[stable1_mask, t_idx] += (n_01_t / n_11_t) * y_diff[stable1_mask]
 
-    return U
+    return U, U_per_period
 
 
 def _cohort_recenter(
@@ -4906,6 +4963,41 @@ def _cohort_recenter(
     return U_centered
 
 
+def _cohort_recenter_per_period(
+    U_per_period: np.ndarray,
+    cohort_ids: np.ndarray,
+) -> np.ndarray:
+    """
+    Column-wise cohort recentering of a per-(g, t) IF attribution.
+
+    For each period column t, subtract the cohort-conditional mean of
+    that column: ``U_centered[g, t] = U[g, t] - mean_{g' in cohort(g)}
+    U[g', t]``. The row sum identity is preserved:
+
+        sum_t U_centered[g, t]
+            = sum_t U[g, t] - sum_t cohort_mean[cohort(g), t]
+            = U[g] - cohort_mean_of_U[cohort(g)]
+            = U_centered[g]
+
+    Hence the cell-level Binder TSL aggregation telescopes to the same
+    group-level sum produced by ``_cohort_recenter`` on ``U``, giving
+    byte-identical variance under within-group-constant PSU (old
+    validator's accepted input set) and a methodologically correct
+    per-cell attribution under within-group-varying PSU.
+    """
+    U_centered = U_per_period.astype(float).copy()
+    if U_per_period.size == 0:
+        return U_centered
+    unique_cohorts = np.unique(cohort_ids)
+    for k in unique_cohorts:
+        in_cohort = cohort_ids == k
+        if in_cohort.any():
+            # Per-period mean across groups in this cohort
+            col_means = U_per_period[in_cohort].mean(axis=0)
+            U_centered[in_cohort] = U_per_period[in_cohort] - col_means[np.newaxis, :]
+    return U_centered
+
+
 def _compute_cohort_recentered_inputs(
     D_mat: np.ndarray,
     Y_mat: np.ndarray,
@@ -4918,7 +5010,18 @@ def _compute_cohort_recentered_inputs(
     a11_minus_zeroed_arr: np.ndarray,
     all_groups: List[Any],
     singleton_baseline_groups: List[Any],
-) -> Tuple[np.ndarray, int, int, int, np.ndarray, np.ndarray]:
+) -> Tuple[
+    np.ndarray,   # U_centered_overall (n_eligible,)
+    int,           # n_groups_for_overall
+    int,           # n_cohorts
+    int,           # n_groups_dropped_never_switching
+    np.ndarray,   # U_centered_joiners
+    np.ndarray,   # U_centered_leavers
+    List[Any],    # eligible_group_ids
+    np.ndarray,   # U_centered_per_period_overall (n_eligible, n_periods)
+    np.ndarray,   # U_centered_per_period_joiners
+    np.ndarray,   # U_centered_per_period_leavers
+]:
     """
     Compute the cohort-centered influence-function vectors for variance.
 
@@ -4973,6 +5076,10 @@ def _compute_cohort_recentered_inputs(
             0,
             np.array([], dtype=float),
             np.array([], dtype=float),
+            [],
+            np.zeros((0, 0), dtype=float),
+            np.zeros((0, 0), dtype=float),
+            np.zeros((0, 0), dtype=float),
         )
 
     # Per-group switch metadata via the shared helper (factored out in
@@ -5008,8 +5115,8 @@ def _compute_cohort_recentered_inputs(
         cohort_id[g] = unique_cohorts[key]
     n_cohorts = len(unique_cohorts)
 
-    # Compute the full IF vectors via the new helper
-    U_overall_full = _compute_full_per_group_contributions(
+    # Compute the full IF vectors + per-period attributions via the helper
+    U_overall_full, U_per_period_overall_full = _compute_full_per_group_contributions(
         D_mat=D_mat,
         Y_mat=Y_mat,
         N_mat=N_mat,
@@ -5021,7 +5128,7 @@ def _compute_cohort_recentered_inputs(
         a11_minus_zeroed_arr=a11_minus_zeroed_arr,
         side="overall",
     )
-    U_joiners_full = _compute_full_per_group_contributions(
+    U_joiners_full, U_per_period_joiners_full = _compute_full_per_group_contributions(
         D_mat=D_mat,
         Y_mat=Y_mat,
         N_mat=N_mat,
@@ -5033,7 +5140,7 @@ def _compute_cohort_recentered_inputs(
         a11_minus_zeroed_arr=a11_minus_zeroed_arr,
         side="joiners",
     )
-    U_leavers_full = _compute_full_per_group_contributions(
+    U_leavers_full, U_per_period_leavers_full = _compute_full_per_group_contributions(
         D_mat=D_mat,
         Y_mat=Y_mat,
         N_mat=N_mat,
@@ -5050,12 +5157,31 @@ def _compute_cohort_recentered_inputs(
     U_overall = U_overall_full[eligible_mask]
     U_joiners = U_joiners_full[eligible_mask]
     U_leavers = U_leavers_full[eligible_mask]
+    U_per_period_overall = U_per_period_overall_full[eligible_mask]
+    U_per_period_joiners = U_per_period_joiners_full[eligible_mask]
+    U_per_period_leavers = U_per_period_leavers_full[eligible_mask]
     cohort_id_eligible = cohort_id[eligible_mask]
 
-    # Cohort-recenter each IF vector
+    # Cohort-recenter each IF vector (group level for plug-in path)
     U_centered_overall = _cohort_recenter(U_overall, cohort_id_eligible)
     U_centered_joiners = _cohort_recenter(U_joiners, cohort_id_eligible)
     U_centered_leavers = _cohort_recenter(U_leavers, cohort_id_eligible)
+
+    # Per-period cohort recentering for the cell-period survey allocator.
+    # Column-wise centering preserves sum_t U_centered_pp[g, t] =
+    # U_centered[g], so Binder TSL PSU-level aggregation telescopes to
+    # the same group-level sum under within-group-constant PSU (byte-
+    # identical to the old allocator) and gives a valid per-cell
+    # attribution under within-group-varying PSU.
+    U_centered_pp_overall = _cohort_recenter_per_period(
+        U_per_period_overall, cohort_id_eligible
+    )
+    U_centered_pp_joiners = _cohort_recenter_per_period(
+        U_per_period_joiners, cohort_id_eligible
+    )
+    U_centered_pp_leavers = _cohort_recenter_per_period(
+        U_per_period_leavers, cohort_id_eligible
+    )
 
     # Eligible group IDs for survey IF expansion
     eligible_group_ids = [all_groups[g] for g in range(n_groups) if eligible_mask[g]]
@@ -5068,6 +5194,9 @@ def _compute_cohort_recentered_inputs(
         U_centered_joiners,
         U_centered_leavers,
         eligible_group_ids,
+        U_centered_pp_overall,
+        U_centered_pp_joiners,
+        U_centered_pp_leavers,
     )
 
 
@@ -5236,6 +5365,7 @@ def _compute_se(
     divisor: int,
     obs_survey_info: Optional[dict],
     eligible_groups: Optional[list] = None,
+    U_centered_per_period: Optional[np.ndarray] = None,
 ) -> Tuple[float, Optional[int]]:
     """Dispatch to plug-in SE or survey-design-aware SE.
 
@@ -5243,6 +5373,17 @@ def _compute_se(
     plug-in formula.  Otherwise, expands group-level IFs and delegates
     to TSL variance (or replicate-weight variance when the resolved
     design carries replicate weights).
+
+    ``U_centered_per_period`` is the cell-period attribution of
+    ``U_centered``. Each row ``g`` satisfies
+    ``U_centered_per_period[g, :].sum() == U_centered[g]``. When
+    supplied, the survey-aware path expands influence to observations
+    using the cell-level allocator
+    ``psi_i = U_centered_per_period[g_i, t_i] * (w_i / W_{g_i, t_i})``;
+    when ``None`` the path falls back to the group-level allocator
+    ``psi_i = U_centered[g_i] * (w_i / W_{g_i})``. Byte-identical
+    under within-group-constant PSU since both allocators telescope to
+    the same PSU-level sum (REGISTRY.md survey IF expansion Note).
 
     Returns ``(se, n_valid_replicates)``. ``n_valid_replicates`` is
     ``None`` under the plug-in / TSL paths, and the number of valid
@@ -5258,10 +5399,16 @@ def _compute_se(
     # compute_survey_if_variance() expects estimator-scale psi.
     # Scale by 1/divisor to normalize before survey expansion.
     U_scaled = U_centered / divisor
+    U_pp_scaled = (
+        U_centered_per_period / divisor
+        if U_centered_per_period is not None
+        else None
+    )
     return _survey_se_from_group_if(
         U_centered=U_scaled,
         eligible_groups=eligible_groups,
         obs_survey_info=obs_survey_info,
+        U_centered_per_period=U_pp_scaled,
     )
 
 
@@ -5269,31 +5416,45 @@ def _survey_se_from_group_if(
     U_centered: np.ndarray,
     eligible_groups: list,
     obs_survey_info: dict,
+    U_centered_per_period: Optional[np.ndarray] = None,
 ) -> Tuple[float, Optional[int]]:
-    """Compute survey-design-aware SE from group-level centered IFs.
+    """Compute survey-design-aware SE from per-group / per-cell centered IFs.
 
-    Expands group-level influence function values to observation level
-    using the proportional-weight allocation ``psi_i = U[g] * (w_i / W_g)``
-    so that ``sum(psi_i for i in g) = U[g]``, then delegates to either
-    ``compute_survey_if_variance()`` (TSL / analytical path) or
-    ``compute_replicate_if_variance()`` (BRR/Fay/JK1/JKn/SDR) depending
-    on whether the resolved design carries replicate weights.
-
-    This is a library extension not in the dCDH papers (the paper's
-    plug-in variance assumes iid sampling). The replicate path uses
-    Rao-Wu weight-ratio rescaling; see REGISTRY.md
-    ``ChaisemartinDHaultfoeuille`` Note on survey expansion.
+    Expands influence-function mass to observation level using the
+    **cell-period allocator**
+    ``psi_i = U_centered_per_period[g_i, t_i] * (w_i / W_{g_i, t_i})``
+    when ``U_centered_per_period`` is supplied, or the legacy group-
+    level allocator ``psi_i = U_centered[g_i] * (w_i / W_{g_i})``
+    otherwise. Both allocators are equivalent at the PSU-level sum
+    under within-group-constant PSU (per-cell sums telescope to
+    ``U_centered[g]``), so Binder TSL variance is byte-identical on
+    inputs the old within-group-constant validator accepted. The cell-
+    period allocator additionally supports PSU/strata that vary across
+    cells of g — the lift the allocator buys for Stage 2. Dispatches
+    to ``compute_survey_if_variance()`` (TSL) or
+    ``compute_replicate_if_variance()`` (BRR/Fay/JK1/JKn/SDR) based on
+    the resolved design. See REGISTRY.md ``ChaisemartinDHaultfoeuille``
+    Note on survey IF expansion for the contract.
 
     Parameters
     ----------
     U_centered : np.ndarray
         Cohort-recentered per-group IF values (one per eligible group).
+        Used for degenerate-cohort detection and fallback expansion.
     eligible_groups : list
-        Group IDs corresponding to entries of ``U_centered``
-        (variance-eligible groups after singleton-baseline exclusion).
+        Group IDs corresponding to entries of ``U_centered`` /
+        ``U_centered_per_period`` (variance-eligible groups after
+        singleton-baseline exclusion).
     obs_survey_info : dict
         Observation-level survey data retained from ``fit()`` setup:
-        ``{"group_ids": ..., "weights": ..., "resolved": ...}``.
+        ``{"group_ids", "time_ids", "weights", "resolved", "periods"}``.
+        ``time_ids`` and ``periods`` are required for the cell-level
+        allocator; when either is absent, the group-level allocator is
+        used.
+    U_centered_per_period : np.ndarray of shape (n_eligible, n_periods), optional
+        Cohort-recentered per-``(g, t)``-cell IF attributions, with
+        ``U_centered_per_period.sum(axis=1) == U_centered``. When
+        supplied, the cell allocator is used.
 
     Returns
     -------
@@ -5301,9 +5462,7 @@ def _survey_se_from_group_if(
         ``(se, n_valid_replicates)``. ``se`` is the survey-design-aware
         SE, or NaN if degenerate. ``n_valid_replicates`` is the number
         of valid replicate columns used for variance under the replicate
-        path, or ``None`` under the TSL (analytical) path. Callers
-        track the min across sites to set an effective ``df_survey``
-        for replicate designs.
+        path, or ``None`` under the TSL (analytical) path.
     """
     from diff_diff.survey import (
         compute_replicate_if_variance,
@@ -5325,6 +5484,8 @@ def _survey_se_from_group_if(
     group_ids = obs_survey_info["group_ids"]
     weights = obs_survey_info["weights"]
     resolved = obs_survey_info["resolved"]
+    time_ids = obs_survey_info.get("time_ids")
+    periods = obs_survey_info.get("periods")
 
     # Zero-weight rows are out-of-sample (SurveyDesign.subpopulation()).
     # Skip them before the group-ID factorization so NaN / non-comparable
@@ -5343,20 +5504,65 @@ def _survey_se_from_group_if(
     gids_eff = np.asarray(group_ids)[pos_mask]
     w_eff = weights_arr[pos_mask]
 
-    # Build group → U_centered lookup (vectorized via factorization)
-    group_to_u = {gid: U_centered[idx] for idx, gid in enumerate(eligible_groups)}
+    use_cell_allocator = (
+        U_centered_per_period is not None
+        and time_ids is not None
+        and periods is not None
+        and U_centered_per_period.size > 0
+    )
 
-    # Map group IFs to observation level (effective sample only)
-    u_obs_eff = np.array([group_to_u.get(gid, 0.0) for gid in gids_eff])
-
-    # Compute per-group weight totals W_g via bincount on effective sample
-    unique_gids, inverse = np.unique(gids_eff, return_inverse=True)
-    w_totals_per_group = np.bincount(inverse, weights=w_eff)
-    w_obs_total_eff = w_totals_per_group[inverse]
-
-    # Expand to observation level: psi_i = U[g] * (w_i / W_g)
-    safe_w = np.where(w_obs_total_eff > 0, w_obs_total_eff, 1.0)
-    psi[pos_mask] = u_obs_eff * (w_eff / safe_w)
+    if use_cell_allocator:
+        tids_eff = np.asarray(time_ids)[pos_mask]
+        # Map row's group to an index in eligible_groups (−1 when the
+        # group is ineligible — singleton-baseline exclusion drops it).
+        eligible_idx_by_gid = {gid: i for i, gid in enumerate(eligible_groups)}
+        elig_idx_eff = np.array(
+            [eligible_idx_by_gid.get(gid, -1) for gid in gids_eff],
+            dtype=np.int64,
+        )
+        # Map row's time to a column index in U_centered_per_period.
+        # get_indexer returns −1 for values absent from `periods`
+        # (should be rare in practice — positive-weight rows almost
+        # always survive cell aggregation; if one slips through we
+        # treat it like an ineligible row rather than crash).
+        col_idx_eff = np.asarray(
+            pd.Index(periods).get_indexer(tids_eff), dtype=np.int64
+        )
+        valid_cell = (elig_idx_eff >= 0) & (col_idx_eff >= 0)
+        n_eligible = len(eligible_groups)
+        n_periods_pp = U_centered_per_period.shape[1]
+        # Per-(g, t) weight totals W_{g,t} over the effective sample.
+        W_cell = np.zeros((n_eligible, n_periods_pp), dtype=np.float64)
+        np.add.at(
+            W_cell,
+            (elig_idx_eff[valid_cell], col_idx_eff[valid_cell]),
+            w_eff[valid_cell],
+        )
+        # Lookup U_centered_per_period and W_cell per row.
+        u_obs_cell = np.zeros(w_eff.shape[0], dtype=np.float64)
+        u_obs_cell[valid_cell] = U_centered_per_period[
+            elig_idx_eff[valid_cell], col_idx_eff[valid_cell]
+        ]
+        w_cell_at_row = np.zeros(w_eff.shape[0], dtype=np.float64)
+        w_cell_at_row[valid_cell] = W_cell[
+            elig_idx_eff[valid_cell], col_idx_eff[valid_cell]
+        ]
+        safe_w = np.where(w_cell_at_row > 0, w_cell_at_row, 1.0)
+        psi[pos_mask] = u_obs_cell * (w_eff / safe_w)
+    else:
+        # Legacy group-level allocator (no per-period attribution
+        # provided, or time/period info unavailable). Preserved for
+        # paths that haven't threaded per-period attribution through
+        # yet (e.g., the heterogeneity psi_obs construction in
+        # _compute_heterogeneity_test — gated to within-group-constant
+        # PSU in Stage 2 per PR 2 scope).
+        group_to_u = {gid: U_centered[idx] for idx, gid in enumerate(eligible_groups)}
+        u_obs_eff = np.array([group_to_u.get(gid, 0.0) for gid in gids_eff])
+        unique_gids, inverse = np.unique(gids_eff, return_inverse=True)
+        w_totals_per_group = np.bincount(inverse, weights=w_eff)
+        w_obs_total_eff = w_totals_per_group[inverse]
+        safe_w = np.where(w_obs_total_eff > 0, w_obs_total_eff, 1.0)
+        psi[pos_mask] = u_obs_eff * (w_eff / safe_w)
 
     # Dispatch: replicate variance (BRR/Fay/JK1/JKn/SDR) vs TSL.
     # Mirrors the inline branch in TripleDifference:1206-1238 and
