@@ -1301,6 +1301,7 @@ The saturated ETWFE regression includes:
 
 The interaction coefficient `δ_{g,t}` identifies `ATT(g, t)` under parallel trends.
 - **Note:** OLS path uses iterative alternating-projection within-transformation (uniform weights) for exact FE absorption on both balanced and unbalanced panels. One-pass demeaning (`y - ȳ_i - ȳ_t + ȳ`) is only exact for balanced panels.
+- **Note:** The weighted within-transformation (`utils.within_transform` with `weights`) is invoked on every WooldridgeDiD fit (survey weights when provided, `np.ones` otherwise) and emits a `UserWarning` on non-convergence per the shared convention documented under *Absorbed Fixed Effects with Survey Weights*.
 
 *Nonlinear extensions (Wooldridge 2023):*
 
@@ -2521,6 +2522,15 @@ unequal selection probabilities).
   are rejected (single-pass sequential demeaning is not the correct weighted
   FWL projection for N > 1 dimensions; iterative alternating projections are
   needed but not yet implemented).
+- **Note:** The shared weighted within-transformation path
+  (`diff_diff.utils.within_transform`, hit whenever `weights is not None`) emits
+  a `UserWarning` per call when any transformed variable exits the
+  alternating-projection loop without reaching `tol` within `max_iter`.
+  Defaults: `max_iter=100`, `tol=1e-8`. This signal applies uniformly across
+  TwoWayFixedEffects, SunAbraham, BaconDecomposition, and WooldridgeDiD whenever
+  they route through this helper (survey-weighted or otherwise). Silent return
+  of the current iterate was classified as a silent failure under the Phase 2
+  audit and replaced with this explicit signal.
 
 ### Survey Degrees of Freedom
 
