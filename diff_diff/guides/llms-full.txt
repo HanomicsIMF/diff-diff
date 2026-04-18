@@ -643,7 +643,7 @@ Efficient DiD estimator (Chen, Sant'Anna & Xie 2025). Achieves the semiparametri
 EfficientDiD(
     pt_assumption: str = "all",              # "all" (overidentified) or "post" (just-identified)
     alpha: float = 0.05,
-    cluster: str | None = None,              # Not yet implemented
+    cluster: str | None = None,              # Column name for cluster-robust SEs (Liang-Zeger on EIF values); cluster-level multiplier bootstrap when n_bootstrap > 0
     n_bootstrap: int = 0,                    # Multiplier bootstrap iterations
     bootstrap_weights: str = "rademacher",   # "rademacher", "mammen", or "webb"
     seed: int | None = None,

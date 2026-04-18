@@ -145,11 +145,11 @@ Comparison with Other Staggered Estimators
      - Conditional PT
      - Strict exogeneity
    * - Efficiency
-     - Achieves semiparametric bound
+     - Achieves semiparametric bound on the no-covariate path; DR covariate path is consistent but does not generically attain the bound under a linear OLS outcome regression
      - Not efficient
      - Efficient under homogeneity
    * - Covariates
-     - Supported (doubly robust, sieve-based)
+     - Supported (doubly robust, sieve-based PS + linear OLS OR)
      - Supported (OR, IPW, DR)
      - Supported
    * - Bootstrap
