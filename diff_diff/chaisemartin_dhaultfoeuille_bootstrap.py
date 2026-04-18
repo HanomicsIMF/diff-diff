@@ -4,11 +4,18 @@ estimator.
 
 The dCDH papers prescribe only the analytical cohort-recentered plug-in
 variance from Web Appendix Section 3.7.3 of the dynamic companion paper.
-This module adds an opt-in multiplier bootstrap clustered at the group
-level, matching the inference convention used by ``CallawaySantAnna``,
-``ImputationDiD``, and ``TwoStageDiD``. The bootstrap is a library
-extension, not a paper requirement, and is documented as such in
-``REGISTRY.md``.
+This module adds an opt-in multiplier bootstrap, clustered at the group
+level by default (matching the inference convention used by
+``CallawaySantAnna``, ``ImputationDiD``, and ``TwoStageDiD``). Under
+``survey_design`` with an explicitly-coarser PSU, the bootstrap switches
+to PSU-level Hall-Mammen wild clustering: each PSU draws a single
+multiplier and all groups within that PSU share it
+(see ``_generate_psu_or_group_weights`` and ``_map_for_target`` below,
+plus the REGISTRY.md ``ChaisemartinDHaultfoeuille`` Note on survey +
+bootstrap). Under the default auto-inject ``psu=group`` each group is
+its own PSU and the identity-map fast path reproduces the original
+group-level behavior bit-for-bit. The bootstrap is a library extension,
+not a paper requirement, and is documented as such in ``REGISTRY.md``.
 
 The mixin operates on **pre-computed cohort-centered influence-function
 values**: the main estimator class computes per-group ``U^G_g`` values

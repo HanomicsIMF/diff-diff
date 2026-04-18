@@ -307,7 +307,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
       default; gate via ``placebo=False``)
     - Analytical SE via the cohort-recentered plug-in formula from
       Web Appendix Section 3.7.3 of the dynamic paper
-    - Optional multiplier bootstrap clustered at the group level
+    - Optional multiplier bootstrap, clustered at the group level by
+      default; under ``survey_design`` with a strictly-coarser PSU, the
+      bootstrap switches to PSU-level Hall-Mammen wild clustering (see
+      REGISTRY.md ChaisemartinDHaultfoeuille Note on survey + bootstrap)
     - Optional TWFE decomposition diagnostic from Theorem 1 of AER 2020
       (per-cell weights, fraction negative, ``sigma_fe``)
 
@@ -1970,23 +1973,40 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # psu=<group_col>), groups and PSUs coincide so
                 # Hall-Mammen wild PSU bootstrap equals group-level
                 # multiplier bootstrap — no need to warn.
+                # Count groups/PSUs on the POST-FILTER eligible set
+                # (`_eligible_group_ids`) — the same set the bootstrap
+                # map is built from below. Using raw positive-weight
+                # groups here would emit a misleading warning on
+                # panels where upstream dCDH filtering drops groups
+                # that happen to share PSUs with kept groups.
                 psu_arr_warn = getattr(resolved_survey, "psu", None)
                 if psu_arr_warn is None or _obs_survey_info is None:
                     # No PSU info — can't compare to group count.
                     n_psu_eff_warn, n_groups_eff_warn = -1, -1
                 else:
-                    pos_mask_warn = (
-                        np.asarray(
-                            _obs_survey_info["weights"], dtype=np.float64
-                        )
-                        > 0
+                    obs_gids_warn = np.asarray(_obs_survey_info["group_ids"])
+                    obs_ws_warn = np.asarray(
+                        _obs_survey_info["weights"], dtype=np.float64
                     )
-                    psu_eff = np.asarray(psu_arr_warn)[pos_mask_warn]
-                    gids_eff_warn = np.asarray(
-                        _obs_survey_info["group_ids"]
-                    )[pos_mask_warn]
-                    n_psu_eff_warn = int(len(np.unique(psu_eff)))
-                    n_groups_eff_warn = int(len(np.unique(gids_eff_warn)))
+                    pos_mask_warn = obs_ws_warn > 0
+                    psu_codes_warn = np.asarray(psu_arr_warn)
+                    # Collect the PSU label for each variance-eligible
+                    # group (within-group-constant PSU is validated
+                    # upstream, so the first positive-weight label
+                    # represents the whole group).
+                    eligible_psu_labels: List[Any] = []
+                    for gid in _eligible_group_ids:
+                        mask_g = (obs_gids_warn == gid) & pos_mask_warn
+                        if mask_g.any():
+                            eligible_psu_labels.append(
+                                psu_codes_warn[mask_g][0]
+                            )
+                    n_groups_eff_warn = len(eligible_psu_labels)
+                    n_psu_eff_warn = (
+                        int(len(np.unique(np.asarray(eligible_psu_labels))))
+                        if eligible_psu_labels
+                        else -1
+                    )
                 if 0 <= n_psu_eff_warn < n_groups_eff_warn:
                     warnings.warn(
                         f"Bootstrap with survey_design uses Hall-Mammen "
