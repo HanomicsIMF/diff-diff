@@ -1460,12 +1460,15 @@ def _sc_weight_fw_numpy(
         lam = np.ones(T0) / T0
 
     vals = np.full(max_iter, np.nan)
+    converged = False
     for t in range(max_iter):
         lam = _fw_step(A, lam, b, eta)
         err = Y @ np.append(lam, -1.0)
         vals[t] = zeta**2 * np.sum(lam**2) + np.sum(err**2) / N
         if t >= 1 and vals[t - 1] - vals[t] < min_decrease**2:
+            converged = True
             break
+    warn_if_not_converged(converged, "Frank-Wolfe SC weight solver", max_iter, min_decrease)
 
     return lam
 
