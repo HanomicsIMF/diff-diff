@@ -1172,6 +1172,46 @@ class TestSurveyWithinGroupValidation:
                 survey_design=sd,
             )
 
+    def test_auto_inject_with_varying_strata_nest_true_succeeds(self, base_data):
+        """When strata varies across cells of a group and the user
+        passes ``nest=True`` with no explicit ``psu``, the auto-inject
+        path is valid: ``SurveyDesign.resolve()`` combines
+        ``(stratum, psu)`` into globally-unique labels via the
+        nest=True path (``diff_diff/survey.py:299-302``), so the
+        cross-stratum PSU uniqueness check is satisfied. Byte-check
+        against the explicit ``SurveyDesign(..., psu="group",
+        nest=True)`` baseline — both paths resolve to the same design.
+        """
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["stratum"] = df_["period"] % 2
+        sd_auto = SurveyDesign(weights="pw", strata="stratum", nest=True)
+        sd_explicit = SurveyDesign(
+            weights="pw", strata="stratum", psu="group", nest=True,
+        )
+        r_auto = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd_auto, L_max=2,
+        )
+        r_explicit = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd_explicit, L_max=2,
+        )
+        assert np.isfinite(r_auto.overall_att)
+        assert np.isfinite(r_auto.overall_se)
+        if np.isfinite(r_auto.overall_se) and np.isfinite(r_explicit.overall_se):
+            assert r_auto.overall_se == pytest.approx(
+                r_explicit.overall_se, rel=1e-6
+            )
+        assert r_auto.survey_metadata is not None
+        assert r_explicit.survey_metadata is not None
+        assert (
+            r_auto.survey_metadata.df_survey
+            == r_explicit.survey_metadata.df_survey
+        )
+
     def test_auto_inject_with_varying_strata_raises(self, base_data):
         """Auto-injected `psu=<group>` with nest=False cannot honor
         strata that vary across cells of a group — the synthesized PSU

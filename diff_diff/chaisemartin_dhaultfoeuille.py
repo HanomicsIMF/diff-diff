@@ -650,7 +650,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             **Strata and PSU may vary across cells of a group** but
             must be constant within each ``(g, t)`` cell (trivially
             true in one-obs-per-cell panels; enforced otherwise with
-            ``ValueError``). When ``n_bootstrap > 0`` and a survey
+            ``ValueError``). Three supported combinations under the
+            auto-injected ``psu=<group_col>``:
+            (1) strata constant within group (any ``nest`` flag works);
+            (2) strata vary within group **and** ``nest=True`` — the
+            resolver re-labels the synthesized ``psu`` uniquely within
+            strata; (3) strata vary within group **and** ``nest=False``
+            — rejected up front with a targeted ``ValueError``; pass
+            ``SurveyDesign(..., nest=True)`` or an explicit
+            ``psu=<col>`` with globally-unique labels instead. When ``n_bootstrap > 0`` and a survey
             design is supplied, the multiplier bootstrap operates at
             the PSU level (Hall-Mammen wild PSU bootstrap) — under the
             default auto-inject this collapses to a group-level
@@ -726,17 +734,22 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 or resolved_survey.replicate_weights.shape[1] == 0
             )
         ):
-            # Pre-auto-inject contract check: the auto-injected PSU
-            # column reuses group labels with nest=False, but the
-            # survey resolver enforces globally-unique PSU labels when
-            # nest=False and strata are present (see
-            # ``diff_diff/survey.py``). If strata varies within group,
-            # the synthesized PSU column collides across strata and
-            # resolution fails downstream with an opaque error. Flag
-            # that configuration up front with an actionable message
-            # pointing users to the explicit ``psu=<col>, nest=True``
-            # path (REGISTRY.md survey IF expansion Note).
-            if resolved_survey.strata is not None:
+            # Pre-auto-inject contract check: the auto-inject path
+            # synthesizes ``psu=<group>`` and preserves the user's
+            # ``nest`` flag. Under ``nest=False`` (the default), the
+            # survey resolver requires globally-unique PSU labels when
+            # strata are present; if strata varies within group, the
+            # synthesized PSU column reuses group labels across strata
+            # and trips the cross-stratum PSU uniqueness check at
+            # resolution time. Under ``nest=True`` the resolver
+            # re-labels ``(stratum, psu)`` uniquely within strata
+            # (``diff_diff/survey.py:299-302``), so varying strata is
+            # fine — let the auto-inject proceed. Only the
+            # ``nest=False`` + varying-strata + omitted-psu triple
+            # warrants an up-front targeted error.
+            if resolved_survey.strata is not None and not getattr(
+                survey_design, "nest", False
+            ):
                 _strata_varies_pre, _ = _strata_psu_vary_within_group(
                     resolved_survey, data, group, survey_weights,
                 )
@@ -744,18 +757,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     raise ValueError(
                         "ChaisemartinDHaultfoeuille survey support: "
                         "strata that vary across cells of the same "
-                        "group require an explicit `psu=<col>` with "
-                        "`nest=True` so that `(stratum, psu)` pairs "
-                        "are globally unique. The default auto-"
-                        "injected `psu=<group>` path does NOT support "
-                        "this because the synthesized PSU column "
-                        "reuses group labels across strata and trips "
-                        "the cross-stratum PSU uniqueness check in "
-                        "survey resolution. Either (a) set strata "
-                        "constant within each group, or (b) pass "
-                        "`SurveyDesign(..., psu=<col>, nest=True)` "
-                        "with PSU labels that are unique within "
-                        "strata."
+                        "group require either an explicit "
+                        "`psu=<col>` (any column whose labels are "
+                        "globally unique within strata) or the "
+                        "original `SurveyDesign(..., nest=True)` "
+                        "flag so the auto-injected `psu=<group>` is "
+                        "re-labeled uniquely within strata by the "
+                        "resolver. The default `nest=False` auto-"
+                        "inject path reuses group labels across "
+                        "strata and trips the cross-stratum PSU "
+                        "uniqueness check in survey resolution. "
+                        "Either (a) set strata constant within each "
+                        "group, (b) pass `SurveyDesign(..., "
+                        "nest=True)`, or (c) pass an explicit "
+                        "`psu=<col>` with globally-unique labels."
                     )
 
             from diff_diff.survey import SurveyDesign as _SurveyDesign
