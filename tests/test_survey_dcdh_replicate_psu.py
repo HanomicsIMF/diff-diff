@@ -501,6 +501,32 @@ class TestPSUBootstrap:
         assert np.isfinite(info["effect"])
         assert np.isfinite(info["se"]) and info["se"] > 0
 
+    def test_multi_horizon_shared_draw_under_coarser_psu(self):
+        """End-to-end test of the shared-draw multi-horizon bootstrap
+        under a strictly coarser PSU with L_max >= 2. Exercises the
+        per-horizon invariant assertion + sup-t band computation
+        through the Hall-Mammen wild PSU path."""
+        df = _make_strictly_coarser_psu_panel(n_periods=7)
+        sd = SurveyDesign(weights="pw", psu="psu")
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            res = ChaisemartinDHaultfoeuille(n_bootstrap=500, seed=1).fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                survey_design=sd,
+                L_max=2,
+            )
+        # Both horizons should produce finite bootstrap SEs via the
+        # shared-draw path projected through the PSU map.
+        for lag in (1, 2):
+            info = res.event_study_effects[lag]
+            if info["n_obs"] > 0:
+                assert np.isfinite(info["effect"])
+                assert np.isfinite(info["se"]) and info["se"] > 0
+
     def test_sup_t_under_coarser_psu(self):
         """Sup-t critical value is computable under coarser PSU."""
         df = _make_strictly_coarser_psu_panel(n_periods=6)

@@ -302,8 +302,29 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
 
             for l_h, (u_h, n_h, eff_h) in sorted(multi_horizon_inputs.items()):
                 if u_h.size > 0 and n_h > 0:
-                    # Use the shared weight matrix truncated to u_h length
-                    w_h = shared_weights[:, : u_h.size]
+                    # Under the current contract every horizon's IF
+                    # vector uses the variance-eligible group ordering
+                    # from `eligible_group_ids`, so the shared weight
+                    # matrix is already at the right shape. Assert
+                    # this invariant so any future refactor that
+                    # introduces horizon-specific masking fails loudly
+                    # rather than silently misaligning PSU clusters via
+                    # positional truncation.
+                    if u_h.size != n_groups_mh:
+                        raise ValueError(
+                            f"Multi-horizon bootstrap: horizon {l_h} "
+                            f"IF vector has {u_h.size} entries but "
+                            f"shared weight matrix has {n_groups_mh} "
+                            f"columns. dCDH's contract requires every "
+                            f"horizon to use the variance-eligible "
+                            f"group ordering; to support a horizon "
+                            f"with a different ordering, thread "
+                            f"target-specific group IDs through "
+                            f"`multi_horizon_inputs` and project the "
+                            f"shared PSU draws onto the horizon's own "
+                            f"ordering via `_map_for_target`."
+                        )
+                    w_h = shared_weights
                     deviations = (w_h @ u_h) / n_h
                     dist_h = deviations + eff_h
 
