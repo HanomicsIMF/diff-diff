@@ -1843,6 +1843,14 @@ def within_transform(
         Suffix for new column names when inplace=False.
     weights : np.ndarray, optional
         Observation weights for weighted group means.
+    max_iter : int, default 100
+        Maximum number of alternating-projection iterations. Used only when
+        ``weights`` is not ``None``; the unweighted path is a single pass and
+        ignores this argument. Emits a ``UserWarning`` per call when any
+        variable fails to converge within this budget.
+    tol : float, default 1e-8
+        Convergence tolerance on the max absolute change across the iterate.
+        Used only when ``weights`` is not ``None``.
 
     Returns
     -------
