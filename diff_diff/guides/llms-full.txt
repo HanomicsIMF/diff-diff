@@ -235,7 +235,7 @@ de Chaisemartin & D'Haultfœuille (2020/2022) estimator for **non-absorbing (rev
 ```python
 ChaisemartinDHaultfoeuille(
     alpha: float = 0.05,
-    cluster: str | None = None,                  # Phase 1: must be None; non-None raises NotImplementedError
+    cluster: str | None = None,                  # Must be None; non-None raises NotImplementedError
     n_bootstrap: int = 0,                        # 0 = analytical SE only
     bootstrap_weights: str = "rademacher",       # "rademacher", "mammen", or "webb"
     seed: int | None = None,
@@ -256,21 +256,21 @@ est.fit(
     outcome: str,
     group: str,                                  # Group identifier
     time: str,
-    treatment: str,                              # Per-observation binary treatment
-    # ---- Phase 2: multi-horizon ----
+    treatment: str,                              # Per-observation binary treatment or non-binary intensity
+    # ---- multi-horizon ----
     L_max: int | None = None,                    # Max horizon; None = l=1 only
-    # ---- forward-compat (Phase 3) ----
-    aggregate: str | None = None,                # Phase 3: reserved
-    controls: list[str] | None = None,           # Phase 3: DID^X covariates
-    trends_linear: bool | None = None,           # Phase 3: DID^{fd}
-    trends_nonparam: Any | None = None,          # Phase 3: DID^s
-    honest_did: bool = False,                    # Phase 3: HonestDiD integration
+    # ---- covariates and extensions ----
+    aggregate: str | None = None,                # Reserved; raises NotImplementedError
+    controls: list[str] | None = None,           # DID^X residualization-style covariates
+    trends_linear: bool | None = None,           # DID^{fd} group-specific linear trends
+    trends_nonparam: Any | None = None,          # DID^s state-set-specific trends
+    honest_did: bool = False,                    # HonestDiD sensitivity on placebos
     # ---- survey support ----
-    survey_design: SurveyDesign | None = None,    # pweight + strata/PSU/FPC (TSL)
+    survey_design: SurveyDesign | None = None,   # pweight + strata/PSU/FPC (TSL)
 ) -> ChaisemartinDHaultfoeuilleResults
 ```
 
-`L_max` controls multi-horizon computation. Phase 3 parameters (`controls`, `trends_linear`, `trends_nonparam`, `honest_did`, `heterogeneity`, `design2`) and `survey_design` are implemented; only `aggregate` remains gated with `NotImplementedError`.
+`L_max` controls multi-horizon computation. `controls`, `trends_linear`, `trends_nonparam`, `honest_did`, `heterogeneity`, `design2`, and `survey_design` are all supported; only `aggregate` still raises `NotImplementedError`.
 
 **Usage:**
 
@@ -295,7 +295,7 @@ print(f"DID_+ (joiners):  {results.joiners_att:.3f}")
 print(f"DID_- (leavers):  {results.leavers_att:.3f}")
 print(f"Placebo (DID^pl): {results.placebo_effect:.3f}")
 
-# Multi-horizon event study (Phase 2)
+# Multi-horizon event study
 results = est.fit(data, outcome="outcome", group="group",
                   time="period", treatment="treatment", L_max=3)
 for h in sorted(results.event_study_effects):
@@ -320,7 +320,7 @@ print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 
 **Notes:**
 - Validated against R `DIDmultiplegtDYN` v2.3.3 at horizon `l = 1` via `tests/test_chaisemartin_dhaultfoeuille_parity.py`
-- Phase 1 placebo SE is intentionally `NaN` with a warning. The dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only — not for the placebo `DID_M^pl`. Phase 2 will add multiplier-bootstrap support for the placebo. Until then, the placebo point estimate is meaningful but its inference fields stay NaN-consistent **even when `n_bootstrap > 0`** (bootstrap currently covers `DID_M`, `DID_+`, and `DID_-` only)
+- Placebo SE contract: single-period placebo `DID_M^pl` (`L_max=None`) has `NaN` SE because the per-period aggregation path has no influence-function derivation; inference fields stay NaN-consistent **even when `n_bootstrap > 0`** for the single-period path (bootstrap covers `DID_M`, `DID_+`, and `DID_-` only). Multi-horizon dynamic placebos `DID^{pl}_l` (`L_max >= 1`) have valid analytical SE via the placebo influence function (same cohort-recentered structure as positive horizons, applied to backward outcome differences), with bootstrap SE override when `n_bootstrap > 0`. This is a library extension beyond the dynamic companion paper, which states Theorem 1 variance for `DID_l` only.
 - The analytical CI is conservative under Assumption 8 (independent groups) of the dynamic companion paper, exact only under iid sampling
 - Survey design supported: pweight with strata/PSU/FPC via Taylor Series Linearization. Replicate weights and PSU-level bootstrap deferred
 
@@ -637,13 +637,13 @@ plot_event_study(results)
 
 ### EfficientDiD
 
-Efficient DiD estimator (Chen, Sant'Anna & Xie 2025). Achieves the semiparametric efficiency bound for ATT(g,t). Phase 1: no-covariates path only.
+Efficient DiD estimator (Chen, Sant'Anna & Xie 2025). Achieves the semiparametric efficiency bound for ATT(g,t) on the **no-covariate path**. Also supports an optional doubly-robust covariate path (sieve-based propensity score ratios + linear OLS outcome regression): the DR property gives consistency if either the OR or the PS is correctly specified, but the linear OLS outcome regression does not generically attain the efficiency bound unless the conditional mean is linear in the covariates. Pass column names to the `covariates` parameter on `fit()`.
 
 ```python
 EfficientDiD(
     pt_assumption: str = "all",              # "all" (overidentified) or "post" (just-identified)
     alpha: float = 0.05,
-    cluster: str | None = None,              # Not yet implemented
+    cluster: str | None = None,              # Column name for cluster-robust SEs (Liang-Zeger on EIF values); cluster-level multiplier bootstrap when n_bootstrap > 0
     n_bootstrap: int = 0,                    # Multiplier bootstrap iterations
     bootstrap_weights: str = "rademacher",   # "rademacher", "mammen", or "webb"
     seed: int | None = None,
@@ -662,7 +662,7 @@ edid.fit(
     unit: str,
     time: str,
     first_treat: str,
-    covariates: list[str] = None,  # Not yet implemented (Phase 2)
+    covariates: list[str] = None,  # Time-invariant unit-level covariates; uses doubly-robust sieve path when non-None
     aggregate: str = None,         # None, "simple", "event_study", "group", or "all"
     balance_e: int = None,
 ) -> EfficientDiDResults

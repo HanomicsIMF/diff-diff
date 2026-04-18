@@ -250,9 +250,12 @@ All other staggered estimators
 treatment is absorbing - once treated, stays treated.
 
 Ships ``DID_M`` (= ``DID_1``) from de Chaisemartin & D'Haultfœuille
-(2020) plus the full multi-horizon event study ``DID_l`` for
-``l = 1..L_max`` from the dynamic companion paper (NBER WP 29873).
-Phase 3 will add covariate adjustment.
+(2020), the full multi-horizon event study ``DID_l`` for ``l = 1..L_max``
+from the dynamic companion paper (NBER WP 29873), residualization-style
+covariate adjustment (``controls``), group-specific linear trends
+(``trends_linear``), state-set-specific trends (``trends_nonparam``),
+heterogeneity testing, non-binary treatment, HonestDiD sensitivity
+integration on placebos, and survey support via Taylor-series linearization.
 
 .. code-block:: python
 
@@ -286,10 +289,13 @@ Phase 3 will add covariate adjustment.
 
 .. note::
 
-   Placebo SE (both single-lag ``DID_M^pl`` and dynamic ``DID^{pl}_l``)
-   is intentionally ``NaN``. Placebo point estimates are meaningful for
-   visual pre-trends inspection; formal placebo inference is deferred.
-   See ``REGISTRY.md`` for the full contract.
+   Single-period placebo ``DID_M^pl`` (``L_max=None``) has ``NaN`` SE -
+   the per-period aggregation path has no influence-function derivation,
+   so inference fields stay ``NaN`` even when ``n_bootstrap > 0``. The
+   point estimate is meaningful for visual pre-trends inspection.
+   Multi-horizon dynamic placebos ``DID^{pl}_l`` (``L_max >= 1``) have
+   valid analytical SE and bootstrap SE via the placebo IF. See
+   ``docs/methodology/REGISTRY.md`` for the full contract.
 
 .. note::
 
@@ -356,16 +362,22 @@ Efficient DiD
 
 Use :class:`~diff_diff.EfficientDiD` when:
 
-- You have staggered adoption and want **maximum statistical efficiency**
+- You have staggered adoption and want **maximum statistical efficiency** on the no-covariate path
 - You believe parallel trends holds across all pre-treatment periods (PT-All)
 - You want tighter confidence intervals than Callaway-Sant'Anna
 - You need a formal efficiency benchmark for comparing estimators
 
 .. note::
 
-   Phase 1 supports the **no-covariates** path only. If you need covariate
-   adjustment, use :class:`~diff_diff.CallawaySantAnna` with ``estimation_method='dr'``
-   or :class:`~diff_diff.ImputationDiD`.
+   EfficientDiD supports covariate adjustment via a doubly-robust path:
+   sieve-based propensity score ratios combined with a linear OLS outcome
+   regression. The DR property gives consistency if either the OR or the
+   PS is correctly specified, but the linear OLS outcome regression does
+   not generically attain the semiparametric efficiency bound unless the
+   conditional mean is linear in the covariates. The unqualified efficiency
+   claim applies to the no-covariate path only. Pass column names to the
+   ``covariates`` parameter on ``fit()``. See
+   ``docs/methodology/REGISTRY.md`` for the full contract.
 
 .. code-block:: python
 

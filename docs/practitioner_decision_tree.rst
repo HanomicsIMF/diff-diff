@@ -192,18 +192,18 @@ a joiners-only view `DID_+`, and a leavers-only view `DID_-`.
    By default, the estimator drops markets whose treatment switches more than
    once before estimation (``drop_larger_lower=True``, matching the R reference).
    Each drop emits a warning. If your design has many multi-switch markets and
-   you need them all, raise this with the diff-diff maintainers — Phase 2 of the
-   estimator will add explicit multi-switch handling via the dynamic event-study
-   path.
+   you need them all, raise this with the diff-diff maintainers - explicit
+   multi-switch handling is a planned extension.
 
 .. note::
 
-   Single-lag placebo (`DID_M^pl`) is computed automatically and exposed via
+   Single-lag placebo (``DID_M^pl``) is computed automatically and exposed via
    ``results.placebo_effect``. The placebo inference fields (SE, p-value, CI)
-   are intentionally ``NaN`` in Phase 1 — and stay ``NaN`` even when
-   ``n_bootstrap > 0``. The dynamic companion paper Section 3.7.3 derives
-   the cohort-recentered analytical variance for ``DID_l`` only;
-   placebo-bootstrap support is deferred to Phase 2.
+   are intentionally ``NaN`` for the single-lag path and stay ``NaN`` even
+   when ``n_bootstrap > 0``. The dynamic companion paper Section 3.7.3 derives
+   the cohort-recentered analytical variance for ``DID_l`` only; an
+   influence-function derivation for the single-lag placebo is a planned
+   extension. Dynamic placebos (``L_max >= 1``) do have valid analytical SE.
 
 
 .. _section-dose:
