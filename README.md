@@ -3080,6 +3080,8 @@ The DOI above is the Zenodo concept DOI — it always resolves to the latest rel
 
 See [`CITATION.cff`](CITATION.cff) for the full citation metadata.
 
+**Note on authorship**: academic citation (`CITATION.cff`, the BibTeX above) lists individual authors with ORCIDs per scholarly convention. Package metadata surfaces (`pyproject.toml`, Sphinx docs) list "diff-diff contributors" to acknowledge the collective — see [`CONTRIBUTORS.md`](CONTRIBUTORS.md) for the full list.
+
 ## License
 
 MIT License
