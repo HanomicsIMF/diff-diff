@@ -26,7 +26,7 @@ from diff_diff._backend import (
 )
 from diff_diff.trop_local import _soft_threshold_svd, _validate_and_pivot_treatment
 from diff_diff.trop_results import TROPResults
-from diff_diff.utils import safe_inference
+from diff_diff.utils import safe_inference, warn_if_not_converged
 
 
 class TROPGlobalMixin:
@@ -156,6 +156,7 @@ class TROPGlobalMixin:
         Y: np.ndarray,
         delta: np.ndarray,
         lambda_nn: float,
+        _nonconvergence_tracker: Optional[List[int]] = None,
     ) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray]:
         """
         Dispatch to no-lowrank or with-lowrank solver based on lambda_nn.
@@ -168,7 +169,8 @@ class TROPGlobalMixin:
             L = np.zeros((n_periods, n_units))
         else:
             mu, alpha, beta, L = self._solve_global_with_lowrank(
-                Y, delta, lambda_nn, self.max_iter, self.tol
+                Y, delta, lambda_nn, self.max_iter, self.tol,
+                _nonconvergence_tracker=_nonconvergence_tracker,
             )
         return mu, alpha, beta, L
 
@@ -273,6 +275,7 @@ class TROPGlobalMixin:
 
         tau_sq_sum = 0.0
         n_valid = 0
+        nonconverg_tracker: List[int] = []
 
         for t_ex, i_ex in control_obs:
             # Create modified delta with excluded observation zeroed out
@@ -280,7 +283,10 @@ class TROPGlobalMixin:
             delta_ex[t_ex, i_ex] = 0.0
 
             try:
-                mu, alpha, beta, L = self._solve_global_model(Y, delta_ex, lambda_nn)
+                mu, alpha, beta, L = self._solve_global_model(
+                    Y, delta_ex, lambda_nn,
+                    _nonconvergence_tracker=nonconverg_tracker,
+                )
 
                 # Pseudo treatment effect: tau = Y - mu - alpha - beta - L
                 if np.isfinite(Y[t_ex, i_ex]):
@@ -291,6 +297,16 @@ class TROPGlobalMixin:
             except (np.linalg.LinAlgError, ValueError):
                 # Any failure means this lambda combination is invalid per Equation 5
                 return np.inf
+
+        if nonconverg_tracker:
+            warn_if_not_converged(
+                False,
+                f"TROP global LOOCV: {len(nonconverg_tracker)} of {len(control_obs)} "
+                f"per-observation fits did not converge "
+                f"(\u03bb=({lambda_time}, {lambda_unit}, {lambda_nn}))",
+                self.max_iter,
+                self.tol,
+            )
 
         if n_valid == 0:
             return np.inf
@@ -395,6 +411,7 @@ class TROPGlobalMixin:
         lambda_nn: float,
         max_iter: int = 100,
         tol: float = 1e-6,
+        _nonconvergence_tracker: Optional[List[int]] = None,
     ) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray]:
         """
         Solve TWFE + low-rank on control data via alternating minimization.
@@ -445,6 +462,9 @@ class TROPGlobalMixin:
         # Initialize L = 0
         L = np.zeros((n_periods, n_units))
 
+        _FISTA_MAX_ITER = 20
+        inner_nonconverged_count = 0
+        outer_converged = False
         for iteration in range(max_iter):
             L_old = L.copy()
 
@@ -463,7 +483,8 @@ class TROPGlobalMixin:
             L_inner_prev = L_inner  # share reference initially (no copy needed)
             t_fista = 1.0
 
-            for _ in range(20):
+            inner_converged = False
+            for _ in range(_FISTA_MAX_ITER):
                 # FISTA momentum
                 t_fista_new = (1.0 + np.sqrt(1.0 + 4.0 * t_fista**2)) / 2.0
                 momentum = (t_fista - 1.0) / t_fista_new
@@ -479,13 +500,28 @@ class TROPGlobalMixin:
 
                 # Convergence check (L_inner_prev holds the pre-SVD value)
                 if np.max(np.abs(L_inner - L_inner_prev)) < tol:
+                    inner_converged = True
                     break
+            if not inner_converged:
+                inner_nonconverged_count += 1
 
             L = L_inner
 
             # Outer convergence check
             if np.max(np.abs(L - L_old)) < tol:
+                outer_converged = True
                 break
+
+        if not outer_converged:
+            if _nonconvergence_tracker is not None:
+                _nonconvergence_tracker.append(inner_nonconverged_count)
+            else:
+                detail = (
+                    f"TROP global alternating minimization "
+                    f"(inner FISTA non-converged in {inner_nonconverged_count}/{max_iter} "
+                    f"outer iterations, FISTA max_iter={_FISTA_MAX_ITER})"
+                )
+                warn_if_not_converged(False, detail, max_iter, tol)
 
         # Final re-solve with converged L (match Rust behavior)
         Y_adj = Y_safe - L
@@ -984,6 +1020,7 @@ class TROPGlobalMixin:
         n_control_units = len(control_units)
 
         bootstrap_estimates_list: List[float] = []
+        nonconverg_tracker: List[int] = []
 
         for _ in range(self.n_bootstrap):
             # Stratified sampling
@@ -1018,6 +1055,7 @@ class TROPGlobalMixin:
                     optimal_lambda,
                     treated_periods,
                     survey_design=survey_design,
+                    _nonconvergence_tracker=nonconverg_tracker,
                 )
                 if np.isfinite(tau):
                     bootstrap_estimates_list.append(tau)
@@ -1025,6 +1063,15 @@ class TROPGlobalMixin:
                 continue
 
         bootstrap_estimates = np.array(bootstrap_estimates_list)
+
+        if nonconverg_tracker:
+            warn_if_not_converged(
+                False,
+                f"TROP global bootstrap: {len(nonconverg_tracker)} of "
+                f"{self.n_bootstrap} replicate fits did not converge",
+                self.max_iter,
+                self.tol,
+            )
 
         if len(bootstrap_estimates) < 10:
             warnings.warn(
@@ -1169,6 +1216,7 @@ class TROPGlobalMixin:
         )
 
         bootstrap_estimates_list: List[float] = []
+        nonconverg_tracker: List[int] = []
 
         for _ in range(self.n_bootstrap):
             try:
@@ -1187,7 +1235,10 @@ class TROPGlobalMixin:
                 delta = self._compute_global_weights(
                     Y, D, lambda_time, lambda_unit, treated_periods, n_units, n_periods
                 )
-                mu, alpha, beta, L = self._solve_global_model(Y, delta, lambda_nn)
+                mu, alpha, beta, L = self._solve_global_model(
+                    Y, delta, lambda_nn,
+                    _nonconvergence_tracker=nonconverg_tracker,
+                )
 
                 # Extract weighted ATT using Rao-Wu rescaled weights
                 att, _, _ = self._extract_posthoc_tau(
@@ -1200,6 +1251,15 @@ class TROPGlobalMixin:
                 continue
 
         bootstrap_estimates = np.array(bootstrap_estimates_list)
+
+        if nonconverg_tracker:
+            warn_if_not_converged(
+                False,
+                f"TROP global Rao-Wu bootstrap: {len(nonconverg_tracker)} of "
+                f"{self.n_bootstrap} replicate fits did not converge",
+                self.max_iter,
+                self.tol,
+            )
 
         if len(bootstrap_estimates) < 10:
             warnings.warn(
@@ -1222,6 +1282,7 @@ class TROPGlobalMixin:
         fixed_lambda: Tuple[float, float, float],
         treated_periods: int,
         survey_design=None,
+        _nonconvergence_tracker: Optional[List[int]] = None,
     ) -> float:
         """
         Fit global model with fixed tuning parameters.
@@ -1263,7 +1324,10 @@ class TROPGlobalMixin:
         )
 
         # Fit model on control data and extract post-hoc tau
-        mu, alpha, beta, L = self._solve_global_model(Y, delta, lambda_nn)
+        mu, alpha, beta, L = self._solve_global_model(
+            Y, delta, lambda_nn,
+            _nonconvergence_tracker=_nonconvergence_tracker,
+        )
         att, _, _ = self._extract_posthoc_tau(
             Y, D, mu, alpha, beta, L, unit_weights=local_weight_arr
         )
