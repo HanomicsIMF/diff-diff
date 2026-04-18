@@ -319,14 +319,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
     alpha : float, default=0.05
         Significance level for confidence intervals.
     cluster : str, optional, default=None
-        **Phase 1 contract:** ``cluster`` must be ``None`` (the default).
-        dCDH always clusters at the group level via the cohort-recentered
-        influence-function plug-in (analytical SEs) and the multiplier
-        bootstrap (also grouped at the ``group`` column). Passing any
-        non-``None`` value raises ``NotImplementedError`` with a Phase 1
-        pointer. Custom clustering at a coarser or finer level than the
-        group is reserved for a future phase. See REGISTRY.md
-        ``ChaisemartinDHaultfoeuille`` section for the full contract.
+        **Cluster contract:** ``cluster`` must be ``None`` (the default).
+        dCDH clusters at the group level by default via the cohort-
+        recentered influence-function plug-in (analytical SEs) and the
+        multiplier bootstrap. Passing any non-``None`` value raises
+        ``NotImplementedError`` — user-specified custom clustering is
+        reserved for a future phase. When ``survey_design`` is provided
+        with strictly-coarser PSUs, the multiplier bootstrap
+        automatically upgrades to PSU-level Hall-Mammen wild clustering
+        (see REGISTRY.md ``ChaisemartinDHaultfoeuille`` Note on survey +
+        bootstrap). Under the default auto-inject ``psu=group``, the
+        group-level and PSU-level paths are bit-identical.
     n_bootstrap : int, default=0
         Number of multiplier-bootstrap iterations. ``0`` (default) uses
         only the analytical SE. Set to ``999`` or higher for stable
@@ -431,12 +434,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             raise ValueError(f"n_bootstrap must be non-negative, got {n_bootstrap}")
         if cluster is not None:
             raise NotImplementedError(
-                f"cluster={cluster!r}: custom clustering is not supported in "
-                f"Phase 1 of ChaisemartinDHaultfoeuille. dCDH always clusters "
-                f"at the group level via the cohort-recentered influence-"
-                f"function plug-in (analytical SEs) and the multiplier "
-                f"bootstrap (also grouped at the group column). To use the "
-                f"supported group-level clustering, pass cluster=None (the "
+                f"cluster={cluster!r}: user-specified clustering is not "
+                f"supported in ChaisemartinDHaultfoeuille. dCDH clusters at "
+                f"the group level by default via the cohort-recentered "
+                f"influence-function plug-in (analytical SEs) and the "
+                f"multiplier bootstrap. Under survey_design with strictly-"
+                f"coarser PSUs, bootstrap clustering automatically upgrades "
+                f"to PSU-level Hall-Mammen wild. To use the default path, "
+                f"pass cluster=None (the "
                 f"default). Custom clustering is reserved for a future "
                 f"phase. See REGISTRY.md ChaisemartinDHaultfoeuille section "
                 f"for the full contract."
@@ -502,11 +507,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             raise ValueError(f"n_bootstrap must be non-negative, got {self.n_bootstrap}")
         if self.cluster is not None:
             raise NotImplementedError(
-                f"cluster={self.cluster!r}: custom clustering is not supported "
-                f"in Phase 1 of ChaisemartinDHaultfoeuille. dCDH always clusters "
-                f"at the group level. To use the supported group-level "
-                f"clustering, pass cluster=None (the default). Custom clustering "
-                f"is reserved for a future phase. See REGISTRY.md "
+                f"cluster={self.cluster!r}: user-specified clustering is "
+                f"not supported in ChaisemartinDHaultfoeuille. dCDH clusters "
+                f"at the group level by default; under survey_design with "
+                f"strictly-coarser PSUs the bootstrap automatically upgrades "
+                f"to PSU-level Hall-Mammen wild clustering. Pass cluster=None "
+                f"(the default) to use this path. User-specified custom "
+                f"clustering is reserved for a future phase. See REGISTRY.md "
                 f"ChaisemartinDHaultfoeuille section for the full contract."
             )
         return self
