@@ -439,6 +439,42 @@ Your analysis report MUST include all of the following:
 - [ ] Comparison across at least 2-3 estimators
 - [ ] Estimates with and without covariates (REQUIRED)
 
+### One-call reporting via BusinessReport + DiagnosticReport
+
+The `DiagnosticReport` class orchestrates Steps 3 (parallel trends), 6
+(sensitivity), and 7 (heterogeneity) in a single call and produces
+plain-English output. Pair with `BusinessReport` for a
+stakeholder-ready narrative:
+
+```python
+from diff_diff import BusinessReport, DiagnosticReport
+
+# Optional: run diagnostics explicitly so you can inspect the structure.
+dr = DiagnosticReport(cs_result, data=data, outcome='y', unit='id',
+                      time='t', first_treat='g')
+dr.run_all()
+print(dr.summary())           # overall interpretation paragraph
+dr.to_dict()                  # AI-legible structured schema
+
+# Or let BusinessReport auto-construct a DiagnosticReport and render the
+# full stakeholder narrative in one call:
+br = BusinessReport(
+    cs_result,
+    outcome_label='Revenue per user',
+    outcome_unit='$',
+    business_question='Did the campaign lift revenue?',
+    treatment_label='the campaign',
+)
+print(br.summary())           # short paragraph block
+print(br.full_report())       # structured markdown
+```
+
+`DiagnosticReport` uses power-aware phrasing: when a pre-trends test
+does not reject, the summary reflects whether the test is well-powered
+(via `compute_pretrends_power`), rather than defaulting to "parallel
+trends hold". See `docs/methodology/REPORTING.md` for the full verdict
+and tier rules.
+
 ### Runtime guidance
 ```python
 from diff_diff import practitioner_next_steps

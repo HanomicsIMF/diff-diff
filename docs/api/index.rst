@@ -253,6 +253,15 @@ Diagnostics & Inference
    power
    pretrends
 
+Reporting
+~~~~~~~~~
+
+.. toctree::
+   :maxdepth: 2
+
+   business_report
+   diagnostic_report
+
 Results & Visualization
 ~~~~~~~~~~~~~~~~~~~~~~~
 

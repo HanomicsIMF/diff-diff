@@ -92,6 +92,35 @@ Measuring campaign lift? Evaluating a product launch? diff-diff handles the caus
 - **[Brand awareness survey tutorial](docs/tutorials/17_brand_awareness_survey.ipynb)** - Full example with complex survey design, brand funnel analysis, and staggered rollouts
 - **Have BRFSS/ACS/CPS individual records?** Use [`aggregate_survey()`](docs/api/prep.rst) to roll respondent-level microdata into a geographic-period panel with inverse-variance precision weights. The returned second-stage design uses analytic weights (`aweight`), so it works directly with `DifferenceInDifferences`, `TwoWayFixedEffects`, `MultiPeriodDiD`, `SunAbraham`, `ContinuousDiD`, and `EfficientDiD` (estimators marked **Full** in the [survey support matrix](docs/choosing_estimator.rst))
 
+### Stakeholder-ready report from any fit
+
+Wrap any fitted result in `BusinessReport` for a plain-English stakeholder summary; pair with `DiagnosticReport` for a validity check:
+
+```python
+from diff_diff import CallawaySantAnna, BusinessReport
+
+cs = CallawaySantAnna().fit(
+    df, outcome="revenue", unit="store", time="month",
+    first_treat="first_treat", aggregate="event_study",
+)
+report = BusinessReport(
+    cs,
+    outcome_label="Revenue per store",
+    outcome_unit="$",
+    business_question="Did the loyalty program lift revenue?",
+    treatment_label="the loyalty program",
+)
+print(report.summary())
+# "The loyalty program increased Revenue per store by $1.78 (95% CI: $1.56 to $2.00).
+#  Statistically, the direction of the effect is strongly supported by the data.
+#  Pre-treatment data do not reject parallel trends, but the test has limited
+#  power — a non-rejection does not prove the assumption. See the sensitivity
+#  analysis below for a more reliable signal.
+#  Sample: 600 observations (70 treated, 30 control)."
+```
+
+`BusinessReport` auto-constructs a `DiagnosticReport` by default so the summary mentions pre-trends, robustness, and design-effect findings in one call. `.to_dict()` returns the same content as a stable AI-legible schema (single source of truth; prose is rendered from the dict). See [docs/methodology/REPORTING.md](docs/methodology/REPORTING.md) for the phrasing rules, verdict thresholds, and schema stability policy. **Schema is experimental in this release.**
+
 Already know DiD? The [academic quickstart](docs/quickstart.rst) and [estimator guide](docs/choosing_estimator.rst) cover the full technical details.
 
 ## Features

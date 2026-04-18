@@ -1741,3 +1741,115 @@ DIFF_DIFF_BACKEND=rust pytest     # Force Rust (fail if unavailable)
 | Efficiency-optimal estimation | `EfficientDiD` |
 | Corrective weighting for stacked regressions | `StackedDiD` |
 | Robustness to parallel trends violations | `HonestDiD` |
+
+## BusinessReport
+
+Plain-English stakeholder narrative from any of the 16 fitted result types.
+Renders `summary()` (short paragraph), `full_report()` (multi-section
+markdown), and `to_dict()` (stable AI-legible schema — single source of
+truth; prose renders from the dict).
+
+```python
+from diff_diff import BusinessReport
+
+report = BusinessReport(
+    results,
+    outcome_label="Revenue per user",
+    outcome_unit="$",  # "$" / "%" / "pp" / "log_points" / "count" recognized
+    outcome_direction="higher_is_better",
+    business_question="Did the campaign lift revenue?",
+    treatment_label="the campaign",
+    alpha=0.05,  # single knob: drives both CI level and phrasing threshold
+    auto_diagnostics=True,  # default; auto-constructs DiagnosticReport
+)
+
+print(report.summary())       # 6-10 sentence paragraph
+print(report.full_report())   # structured markdown
+report.to_dict()              # AI-legible schema; stable top-level keys
+```
+
+Constructor rejects `BaconDecompositionResults` with a helpful TypeError
+(Bacon is a diagnostic, not an estimator; wrap the underlying estimator
+and pass the Bacon object to `DiagnosticReport(precomputed={'bacon': ...})`).
+
+Schema top-level keys (all always present; missing content uses a
+`{"status": "skipped", "reason": "..."}` shape rather than being absent):
+
+- `schema_version`, `estimator`, `context`
+- `headline`, `assumption`, `pre_trends`, `sensitivity`
+- `sample`, `heterogeneity`, `robustness`, `diagnostics`
+- `next_steps`, `caveats`, `references`
+
+Status enum values: `ran | skipped | error | not_applicable | not_run | computed`.
+
+## DiagnosticReport
+
+Unified diagnostic runner orchestrating `check_parallel_trends`,
+`compute_pretrends_power`, `HonestDiD.sensitivity`, `bacon_decompose`,
+`compute_deff_diagnostics`, `results.epv_diagnostics`, plus
+estimator-native surfaces for SyntheticDiD (`pre_treatment_fit`,
+`get_weight_concentration`, `in_time_placebo`, `sensitivity_to_zeta_omega`)
+and TROP (factor-model metrics). EfficientDiD PT uses the native
+`hausman_pretest`.
+
+```python
+from diff_diff import DiagnosticReport
+
+dr = DiagnosticReport(
+    results,
+    data=df,  # optional; needed for 2x2 PT, Bacon-from-scratch
+    outcome="outcome",
+    unit="unit",
+    time="period",
+    first_treat="first_treat",
+    alpha=0.05,
+    # Opt-outs (all default True except placebo)
+    run_parallel_trends=True,
+    run_sensitivity=True,
+    run_placebo=False,          # opt-in; not implemented in MVP
+    run_bacon=True,
+    run_design_effect=True,
+    run_heterogeneity=True,
+    run_epv=True,
+    run_pretrends_power=True,   # drives power-aware PT phrasing
+    sensitivity_M_grid=(0.5, 1.0, 1.5, 2.0),
+    sensitivity_method="relative_magnitude",
+    # Escape hatch for users who ran a diagnostic with custom args:
+    precomputed={"sensitivity": my_honest_did_results},
+)
+
+dr.run_all()             # triggers compute, caches
+print(dr.summary())      # overall-interpretation paragraph
+dr.to_dict()             # AI-legible schema
+dr.to_dataframe()        # one row per check
+dr.applicable_checks     # tuple of checks that will run for this estimator
+dr.skipped_checks        # dict of {check: plain-English reason}
+```
+
+Schema top-level keys: `schema_version, estimator, headline_metric,
+parallel_trends, pretrends_power, sensitivity, placebo, bacon,
+design_effect, heterogeneity, epv, estimator_native_diagnostics,
+skipped, warnings, overall_interpretation, next_steps`.
+
+### Verdicts and tiers
+
+Pre-trends verdict (three bins, documented in `docs/methodology/REPORTING.md`):
+
+- `joint_p >= 0.30` -> `no_detected_violation`
+- `0.05 <= joint_p < 0.30` -> `some_evidence_against`
+- `joint_p < 0.05` -> `clear_violation`
+
+Power tier (drives BR phrasing for the `no_detected_violation` verdict):
+
+- `mdv / |att| < 0.25` -> `well_powered`
+- `0.25 <= mdv / |att| < 1.0` -> `moderately_powered`
+- `mdv / |att| >= 1.0` -> `underpowered`
+- power not runnable -> `unknown` (BR falls back to underpowered phrasing)
+
+### Methodology notes
+
+BR and DR perform no new statistical computation — every reported number
+is read from the fitted result or computed by an existing diff-diff
+utility. Both schemas are experimental in the current release; see
+`docs/methodology/REPORTING.md` for phrasing rules, the no-traffic-light
+decision, unit-translation policy, and schema stability policy.

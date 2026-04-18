@@ -2842,6 +2842,19 @@ The 8-step workflow in `diff_diff/guides/llms-practitioner.txt` is adapted from 
 
 ---
 
+# Reporting
+
+BusinessReport and DiagnosticReport are the practitioner-ready output
+layer. Their methodology (phrasing rules, pre-trends verdict
+thresholds, power-aware phrasing, unit-translation policy, schema
+stability, no-traffic-light-gates decision, estimator-native diagnostic
+routing) is recorded in a dedicated file to keep this registry
+estimator-focused:
+
+- See [`REPORTING.md`](./REPORTING.md).
+
+---
+
 # Version History
 
 - **v1.3** (2026-03-26): Added Replicate Weight Variance, DEFF Diagnostics,

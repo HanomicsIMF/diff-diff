@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`BusinessReport` and `DiagnosticReport` (experimental preview)** - practitioner-ready output layer. `BusinessReport(results, ...)` produces plain-English narrative summaries (`.summary()`, `.full_report()`, `.export_markdown()`, `.to_dict()`) from any of the 16 fitted result types. `DiagnosticReport(results, ...)` orchestrates the existing diagnostic battery (parallel trends, pre-trends power, HonestDiD sensitivity, Goodman-Bacon, heterogeneity, design-effect, EPV) plus estimator-native diagnostics for SyntheticDiD (`pre_treatment_fit`, weight concentration, in-time placebo, zeta sensitivity) and TROP (factor-model fit metrics). Both classes expose an AI-legible `to_dict()` schema (single source of truth; prose renders from the dict). BR auto-constructs DR by default so summaries mention pre-trends, robustness, and design-effect findings in one call. See `docs/methodology/REPORTING.md` for methodology deviations including the no-traffic-light-gates decision, pre-trends verdict thresholds (0.05 / 0.30), and power-aware phrasing driven by `compute_pretrends_power`. **Both schemas are marked experimental in this release** - wording, verdict thresholds, and schema shape will change; do not anchor downstream tooling on them yet.
+
 ## [3.1.2] - 2026-04-18
 
 ### Fixed
