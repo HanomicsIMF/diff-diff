@@ -1,6 +1,8 @@
 """Tests for Triply Robust Panel (TROP) estimator."""
 
+import sys
 import warnings
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -4047,9 +4049,19 @@ class TestTROPConvergenceWarnings:
         assert not any("did not converge" in str(x.message) for x in w)
 
     def test_local_fit_emits_single_aggregate_warning(self, simple_panel_data):
-        """Fit-level warning aggregation: per-treated-observation, LOOCV, and
-        bootstrap non-convergence each surface as at most one aggregate warning
-        per wrapping call, not one per inner fit. Pins the P2 fan-out fix."""
+        """Fit-level warning aggregation: when routed through the Python
+        backend, every aggregation wrapper (per-treated-observation, LOOCV,
+        bootstrap) emits exactly one aggregate warning per call, not per
+        inner fit.
+
+        Forces HAS_RUST_BACKEND=False so the new Python aggregation paths are
+        actually exercised; without this the LOOCV and bootstrap paths would
+        dispatch to Rust in wheel-built environments and skip the changed code.
+
+        LOOCV count is >= 1 (not == 1) because fit() calls it multiple times
+        during coordinate-descent refinement of the lambda grid; the contract
+        this test pins is *per-call* single emission, asserted via message
+        format rather than global occurrence count."""
         trop_est = TROP(
             method="local",
             lambda_time_grid=[1.0],
@@ -4061,31 +4073,47 @@ class TestTROPConvergenceWarnings:
             seed=42,
         )
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            trop_est.fit(
-                simple_panel_data,
-                outcome="outcome",
-                treatment="treated",
-                unit="unit",
-                time="period",
+        trop_mod = sys.modules["diff_diff.trop"]
+        trop_local_mod = sys.modules["diff_diff.trop_local"]
+        with patch.object(trop_mod, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_local_mod, "HAS_RUST_BACKEND", False):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                trop_est.fit(
+                    simple_panel_data,
+                    outcome="outcome",
+                    treatment="treated",
+                    unit="unit",
+                    time="period",
+                )
+
+        def matching(needle: str):
+            return [str(x.message) for x in w if needle in str(x.message)]
+
+        # Per-treated-observation aggregation (called exactly once per .fit()).
+        per_obs = matching("per-treated-observation")
+        assert len(per_obs) == 1, f"expected 1 per-obs aggregate, got {len(per_obs)}"
+
+        # Bootstrap aggregation (called exactly once per .fit()).
+        boot = matching("local bootstrap")
+        assert len(boot) == 1, f"expected 1 bootstrap aggregate, got {len(boot)}"
+
+        # LOOCV: at least one aggregate fired (Python path exercised), and each
+        # fired message is itself an aggregate (has the "N of M" fan-out-reduced
+        # format), not one warning per inner observation.
+        loocv = matching("local LOOCV")
+        assert len(loocv) >= 1, "expected at least one LOOCV aggregate warning"
+        for msg in loocv:
+            assert "of" in msg and "per-observation fits" in msg, (
+                f"LOOCV warning is not in aggregate format (fan-out not reduced): {msg}"
             )
 
-        def count_matching(needle: str) -> int:
-            return sum(1 for x in w if needle in str(x.message))
-
-        # Per-treated-observation aggregation (called once per .fit()).
-        assert count_matching("per-treated-observation") <= 1
-        # LOOCV aggregation (called once per (lambda_time, lambda_unit, lambda_nn) combo;
-        # grid has exactly 1 combo).
-        assert count_matching("local LOOCV") <= 1
-        # Bootstrap aggregation (called once per .fit()).
-        assert count_matching("local bootstrap") <= 1
-
     def test_global_fit_emits_single_aggregate_warning(self, simple_panel_data):
-        """Global-method fit-level warning aggregation: LOOCV and bootstrap
-        non-convergence each surface as at most one aggregate warning per
-        wrapping call, mirroring the local test above."""
+        """Global-method fit-level warning aggregation: mirrors the local test.
+
+        Forces HAS_RUST_BACKEND=False to exercise the Python aggregation path.
+        LOOCV count is >= 1 by the same grid-refinement reasoning; each fired
+        message must be in the aggregate format."""
         trop_est = TROP(
             method="global",
             lambda_time_grid=[1.0],
@@ -4097,18 +4125,29 @@ class TestTROPConvergenceWarnings:
             seed=42,
         )
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            trop_est.fit(
-                simple_panel_data,
-                outcome="outcome",
-                treatment="treated",
-                unit="unit",
-                time="period",
+        trop_mod = sys.modules["diff_diff.trop"]
+        trop_global_mod = sys.modules["diff_diff.trop_global"]
+        with patch.object(trop_mod, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_global_mod, "HAS_RUST_BACKEND", False):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                trop_est.fit(
+                    simple_panel_data,
+                    outcome="outcome",
+                    treatment="treated",
+                    unit="unit",
+                    time="period",
+                )
+
+        def matching(needle: str):
+            return [str(x.message) for x in w if needle in str(x.message)]
+
+        boot = matching("global bootstrap")
+        assert len(boot) == 1, f"expected 1 bootstrap aggregate, got {len(boot)}"
+
+        loocv = matching("global LOOCV")
+        assert len(loocv) >= 1, "expected at least one LOOCV aggregate warning"
+        for msg in loocv:
+            assert "of" in msg and "per-observation fits" in msg, (
+                f"LOOCV warning is not in aggregate format (fan-out not reduced): {msg}"
             )
-
-        def count_matching(needle: str) -> int:
-            return sum(1 for x in w if needle in str(x.message))
-
-        assert count_matching("global LOOCV") <= 1
-        assert count_matching("global bootstrap") <= 1
