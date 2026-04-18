@@ -348,7 +348,7 @@ class TestCohortRecenteringCritical:
             a11_minus_zeroed_arr,
         ) = _compute_per_period_dids(D_mat=D_mat, Y_mat=Y_mat, N_mat=N_mat, periods=periods)
 
-        U_overall = _compute_full_per_group_contributions(
+        U_overall, _ = _compute_full_per_group_contributions(
             D_mat=D_mat,
             Y_mat=Y_mat,
             N_mat=N_mat,
