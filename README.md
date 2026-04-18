@@ -99,7 +99,7 @@ diff-diff ships two preview classes, `BusinessReport` and `DiagnosticReport`, th
 ```python
 from diff_diff import CallawaySantAnna, BusinessReport
 
-cs = CallawaySantAnna().fit(
+cs = CallawaySantAnna(base_period="universal").fit(
     df, outcome="revenue", unit="store", time="month",
     first_treat="first_treat", aggregate="event_study",
 )

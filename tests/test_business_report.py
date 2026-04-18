@@ -89,7 +89,10 @@ def event_study_fit():
 @pytest.fixture(scope="module")
 def cs_fit():
     sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
-    cs = CallawaySantAnna().fit(
+    # base_period='universal' so DR's sensitivity check can run without
+    # hitting the round-5 methodology-critical skip (Rambachan-Roth bounds
+    # are not interpretable on consecutive-comparison pre-periods).
+    cs = CallawaySantAnna(base_period="universal").fit(
         sdf,
         outcome="outcome",
         unit="unit",
@@ -797,3 +800,182 @@ def test_business_context_is_frozen_dataclass():
     )
     with pytest.raises((AttributeError, Exception)):
         ctx.alpha = 0.10  # type: ignore[misc]
+
+
+class TestBootstrapResultsAndNBootstrapDetection:
+    """Regression for the round-5 P0 finding that ``_extract_headline``
+    only preserved native CI surfaces when a result advertised
+    ``inference_method`` / ``bootstrap_distribution`` / ``variance_method``
+    / ``df_survey``.
+
+    Several staggered / continuous / dCDH result classes copy bootstrap-
+    derived se/p/conf_int into their top-level fields at fit time and
+    expose the bootstrap only via a ``bootstrap_results`` sub-object or
+    an ``n_bootstrap > 0`` attribute. An ``alpha`` override on such a
+    fit would silently swap a percentile/multiplier bootstrap CI for a
+    normal-approximation one. BR must now detect either marker and
+    preserve the fitted CI at its native level.
+    """
+
+    def _base_stub(self):
+        stub = type("Stub", (), {})()
+        stub.att = 1.0
+        stub.se = 0.5
+        stub.p_value = 0.04
+        stub.conf_int = (0.05, 1.95)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        # Crucially NOT exposing inference_method / bootstrap_distribution
+        # / variance_method / df_survey: exactly the surface the reviewer
+        # flagged as silently falling through.
+        return stub
+
+    def test_bootstrap_results_object_alone_preserves_fit_ci(self):
+        stub = self._base_stub()
+        stub.bootstrap_results = type("BootSub", (), {"n_bootstrap": 199})()
+        br = BusinessReport(stub, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        assert h["ci_level"] == 95, (
+            "Result carrying bootstrap_results must preserve fitted CI "
+            "level on alpha mismatch; got " + str(h["ci_level"])
+        )
+        assert h["ci_lower"] == pytest.approx(0.05)
+        assert h["ci_upper"] == pytest.approx(1.95)
+        topics = {c.get("topic") for c in br.caveats()}
+        assert "alpha_override_preserved" in topics
+
+    def test_n_bootstrap_positive_alone_preserves_fit_ci(self):
+        """ContinuousDiDResults-style: ``n_bootstrap`` field, no bootstrap_results."""
+        stub = self._base_stub()
+        stub.n_bootstrap = 499
+        br = BusinessReport(stub, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        assert h["ci_level"] == 95
+        assert h["ci_lower"] == pytest.approx(0.05)
+        assert h["ci_upper"] == pytest.approx(1.95)
+        topics = {c.get("topic") for c in br.caveats()}
+        assert "alpha_override_preserved" in topics
+
+    def test_n_bootstrap_zero_does_not_trigger_preserve_path(self):
+        """Analytic fits with ``n_bootstrap = 0`` must still honor alpha."""
+        stub = self._base_stub()
+        stub.n_bootstrap = 0
+        br = BusinessReport(stub, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        # Analytic — alpha honored, CI recomputed to 90%.
+        assert h["ci_level"] == 90
+
+    def test_dcdh_shaped_bootstrap_stub_preserves_fit_ci(self):
+        """dCDH copies bootstrap se/p/conf_int into top-level fields without
+        ``inference_method``. The reviewer called this out specifically."""
+
+        class ChaisemartinDHaultfoeuilleResults:  # name-keyed dispatch
+            pass
+
+        stub = ChaisemartinDHaultfoeuilleResults()
+        stub.att = 1.5
+        stub.se = 0.4
+        stub.p_value = 0.02
+        stub.conf_int = (0.72, 2.28)
+        stub.alpha = 0.05
+        stub.n_obs = 200
+        stub.n_treated = 80
+        stub.n_control = 120
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.placebo_event_study = None
+        # dCDH carries bootstrap via a sub-object; top-level fields are
+        # the bootstrap-derived values, not analytic.
+        stub.bootstrap_results = type("DCDHBoot", (), {"n_bootstrap": 499})()
+
+        br = BusinessReport(stub, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        assert h["ci_level"] == 95
+        assert h["ci_lower"] == pytest.approx(0.72)
+        assert h["ci_upper"] == pytest.approx(2.28)
+
+
+class TestDCDHAssumptionTransitionBased:
+    """Regression for the round-5 P1 finding that
+    ``ChaisemartinDHaultfoeuilleResults`` was narrated with generic group-
+    time PT text instead of source-backed transition-based identification.
+    """
+
+    def test_dcdh_uses_transition_based_language(self):
+        class ChaisemartinDHaultfoeuilleResults:
+            pass
+
+        obj = ChaisemartinDHaultfoeuilleResults()
+        obj.att = 1.0
+        obj.se = 0.1
+        obj.p_value = 0.001
+        obj.conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 40
+        obj.n_control = 60
+        obj.survey_metadata = None
+        obj.event_study_effects = None
+        obj.placebo_event_study = None
+        obj.inference_method = "analytical"
+
+        br = BusinessReport(obj, auto_diagnostics=False)
+        assumption = br.to_dict()["assumption"]
+        assert assumption["parallel_trends_variant"] == "transition_based"
+        desc = assumption["description"]
+        # Source-faithful: joiners/leavers/stable-control, dCDH paper attribution.
+        assert "joiner" in desc.lower()
+        assert "leaver" in desc.lower()
+        assert "Chaisemartin" in desc or "D'Haultfoeuille" in desc
+        # Must NOT open with the generic group-time PT framing. The text
+        # may reference it inside a contrast clause ("not a single
+        # group-time ATT PT"), which is fine and intended.
+        assert not desc.startswith("Identification relies on parallel trends")
+
+
+class TestCSVaryingBaseSensitivitySkipped:
+    """Regression for the round-5 P1 finding that DR would narrate HonestDiD
+    bounds as robust sensitivity for a CallawaySantAnna fit with
+    ``base_period='varying'`` (the CS default). The HonestDiD helper
+    explicitly warns that those bounds are not valid for interpretation;
+    DR must preemptively skip and surface the reason."""
+
+    def test_cs_varying_base_skips_sensitivity_with_reason(self):
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.3
+        stub.overall_p_value = 0.01
+        stub.overall_conf_int = (0.4, 1.6)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.event_study_vcov = None
+        stub.event_study_vcov_index = None
+        stub.vcov = None
+        stub.interaction_indices = None
+        stub.base_period = "varying"
+        stub.inference_method = "analytical"
+
+        from diff_diff import DiagnosticReport
+
+        dr = DiagnosticReport(stub).run_all()
+        sens = dr.schema["sensitivity"]
+        assert sens["status"] == "skipped"
+        reason = sens["reason"]
+        assert "base_period" in reason and "universal" in reason
+        # And BR must surface this as a warning-severity caveat.
+        br = BusinessReport(stub, diagnostics=dr)
+        caveats = br.caveats()
+        topics = {c.get("topic") for c in caveats}
+        assert "sensitivity_skipped" in topics, (
+            "BR must surface varying-base sensitivity skip as a caveat; " f"got topics {topics}"
+        )

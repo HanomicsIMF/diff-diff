@@ -100,7 +100,12 @@ def multi_period_fit():
 def cs_fit():
     warnings.filterwarnings("ignore")
     sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
-    cs = CallawaySantAnna().fit(
+    # Use base_period='universal' so HonestDiD sensitivity can run on this
+    # fixture. CS's default is 'varying', which DR now skips with a
+    # methodology-critical reason (Rambachan-Roth bounds are not valid for
+    # interpretation on consecutive-comparison pre-periods). See the
+    # round-5 CI review on PR #318.
+    cs = CallawaySantAnna(base_period="universal").fit(
         sdf,
         outcome="outcome",
         unit="unit",
@@ -448,8 +453,6 @@ class TestNarrowedApplicabilityAndPlaceboSchema:
     def test_sun_abraham_sensitivity_not_applicable(self):
         """SA is not in HonestDiD's adapter list; DR must not try to run it."""
         import warnings
-
-        import pandas as pd
 
         from diff_diff import SunAbraham, generate_staggered_data
 

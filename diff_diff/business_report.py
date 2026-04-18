@@ -364,12 +364,32 @@ class BusinessReport:
             )
             variance_method = getattr(r, "variance_method", None)
 
+            # Many staggered / continuous / dCDH result classes copy
+            # bootstrap-derived se/p/conf_int directly into their top-level
+            # fields and do not advertise ``inference_method`` or
+            # ``bootstrap_distribution``. Instead they expose either a
+            # populated ``bootstrap_results`` sub-object (CS, SA, Imputation,
+            # TwoStage, EfficientDiD, StaggeredTripleDiff, dCDH) or an
+            # ``n_bootstrap`` field set > 0 (ContinuousDiD, plus the above
+            # when applicable). Treat both as bootstrap markers so an
+            # ``alpha`` override does not silently swap a percentile /
+            # multiplier-bootstrap CI for a normal-approximation one.
+            has_bootstrap_results = getattr(r, "bootstrap_results", None) is not None
+            raw_n_bootstrap = getattr(r, "n_bootstrap", 0)
+            has_n_bootstrap = (
+                isinstance(raw_n_bootstrap, (int, float))
+                and np.isfinite(raw_n_bootstrap)
+                and raw_n_bootstrap > 0
+            )
+
             # Any non-analytic inference surface that stores a sampling /
             # resampling distribution (wild cluster bootstrap, percentile
             # bootstrap, jackknife, placebo) should preserve its native CI.
             bootstrap_like = (
                 inference_method in {"bootstrap", "wild_bootstrap"}
                 or has_bootstrap_dist
+                or has_bootstrap_results
+                or has_n_bootstrap
                 or variance_method in {"bootstrap", "jackknife", "placebo"}
             )
             finite_df = isinstance(df_survey, (int, float)) and df_survey > 0
@@ -663,6 +683,36 @@ def _describe_assumption(estimator_name: str) -> Dict[str, Any]:
                 "covariates are used."
             ),
         }
+    if estimator_name == "ChaisemartinDHaultfoeuilleResults":
+        # de Chaisemartin & D'Haultfoeuille (2020, 2024) — identification is
+        # transition-based across (joiner, leaver, stable-control) cells
+        # around each switching period, not a group-time ATT parallel-
+        # trends restriction. Writing up dCDH as "parallel trends across
+        # treatment cohorts" was flagged as a source-faithfulness bug in
+        # PR #318 review; REGISTRY.md §ChaisemartinDHaultfoeuille is
+        # explicit about the transition-set construction.
+        return {
+            "parallel_trends_variant": "transition_based",
+            "no_anticipation": True,
+            "description": (
+                "Identification is transition-based (de Chaisemartin & "
+                "D'Haultfoeuille 2020; dynamic companion 2024). At each "
+                "switching period, the estimator contrasts joiners "
+                "(D:0->1), leavers (D:1->0), and stable-treated / "
+                "stable-untreated control cells that share the same "
+                "treatment state across adjacent periods, yielding the "
+                "contemporaneous ``DID_M`` and per-horizon ``DID_l`` / "
+                "``DID_{g,l}`` building blocks. The identifying "
+                "restriction is parallel trends within each transition's "
+                "stable-control cell (not a single group-time ATT PT "
+                "condition across all cohorts) plus no anticipation; "
+                "with non-binary treatment the stable-control match is "
+                "additionally on exact baseline dose ``D_{g,1}``. "
+                "Reversible treatment is natively supported, unlike the "
+                "absorbing-treatment designs that rely on a fixed "
+                "treatment-onset cohort."
+            ),
+        }
     if estimator_name in {
         "CallawaySantAnnaResults",
         "SunAbrahamResults",
@@ -671,7 +721,6 @@ def _describe_assumption(estimator_name: str) -> Dict[str, Any]:
         "StackedDiDResults",
         "EfficientDiDResults",
         "WooldridgeDiDResults",
-        "ChaisemartinDHaultfoeuilleResults",
     }:
         return {
             "parallel_trends_variant": "conditional_or_group_time",
@@ -822,6 +871,42 @@ def _build_caveats(
                             "half the observed pre-period variation. Treat "
                             "the headline as tentative."
                         ),
+                    }
+                )
+
+        # Sensitivity was skipped for methodology reasons (e.g., CS fit with
+        # ``base_period='varying'`` — HonestDiD bounds are not interpretable
+        # there). Surface the reason as a warning-severity caveat so readers
+        # do not assume the headline is robust across the R-R grid.
+        if sens.get("status") == "skipped":
+            reason = sens.get("reason")
+            if isinstance(reason, str) and reason:
+                caveats.append(
+                    {
+                        "severity": "warning",
+                        "topic": "sensitivity_skipped",
+                        "message": ("HonestDiD sensitivity was not run on this fit. " + reason),
+                    }
+                )
+
+        # Non-fatal warnings captured from delegated diagnostics
+        # (e.g., HonestDiD's bootstrap diag-covariance fallback, dropped
+        # non-consecutive horizons on dCDH). DR already records these in
+        # ``schema["warnings"]``; mirror the methodology-critical ones
+        # into BR's caveat list so summary/full-report prose can surface
+        # them without readers having to inspect the DR schema.
+        for msg in dr_schema.get("warnings", []) or []:
+            if not isinstance(msg, str) or not msg:
+                continue
+            # Skip alpha-override and design-effect messages already
+            # covered by dedicated caveats above.
+            lower = msg.lower()
+            if "sensitivity:" in lower or "pretrends_power:" in lower:
+                caveats.append(
+                    {
+                        "severity": "info",
+                        "topic": "diagnostic_warning",
+                        "message": msg,
                     }
                 )
 

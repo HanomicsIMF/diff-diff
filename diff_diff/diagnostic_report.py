@@ -500,6 +500,25 @@ class DiagnosticReport:
             # Precomputed sensitivity always unlocks this check.
             if "sensitivity" in self._precomputed:
                 return None
+            # CallawaySantAnna with ``base_period='varying'`` (the default)
+            # produces consecutive-comparison pre-period coefficients;
+            # HonestDiD explicitly warns those bounds are not valid for
+            # interpreted sensitivity. Skip at the applicability gate so
+            # BR/DR do not narrate the grid as robustness. Users opting
+            # in can pass ``precomputed={'sensitivity': ...}`` or re-fit
+            # with ``base_period='universal'``.
+            if name == "CallawaySantAnnaResults":
+                base_period = getattr(r, "base_period", "universal")
+                if base_period != "universal":
+                    return (
+                        "HonestDiD on CallawaySantAnna requires "
+                        "``base_period='universal'`` for valid interpretation "
+                        "(Rambachan-Roth bounds are not comparable across the "
+                        "consecutive pre-period comparisons produced by "
+                        f"``base_period={base_period!r}``). Re-fit with "
+                        "``CallawaySantAnna(base_period='universal')`` or pass "
+                        "``precomputed={'sensitivity': ...}`` to opt in."
+                    )
             # dCDH uses ``placebo_event_study`` as its pre-period surface,
             # which HonestDiD consumes via a dedicated branch. Accept the
             # fit when that attribute is populated.
@@ -625,6 +644,21 @@ class DiagnosticReport:
             if section.get("status") == "error":
                 reason = section.get("reason") or "diagnostic raised an exception"
                 top_warnings.append(f"{check}: {reason}")
+            # Surface non-fatal warnings captured by delegated diagnostics
+            # (e.g., HonestDiD's "base_period='varying' is not valid for
+            # interpretation" on CallawaySantAnna, or the diag-covariance
+            # fallback on bootstrap-fitted CS). These rode up on each
+            # section's ``warnings`` field and must not be swallowed.
+            section_warnings = section.get("warnings")
+            if isinstance(section_warnings, (list, tuple)):
+                for msg in section_warnings:
+                    if msg is None:
+                        continue
+                    top_warnings.append(f"{check}: {msg}")
+            # Some sections (e.g., sensitivity skipped for varying-base CS)
+            # also surface methodology-critical context via ``reason`` even
+            # though ``status != "error"``. We do not duplicate those here
+            # — the section's own status/reason is the authoritative record.
 
         schema: Dict[str, Any] = {
             "schema_version": DIAGNOSTIC_REPORT_SCHEMA_VERSION,
@@ -994,21 +1028,36 @@ class DiagnosticReport:
                 "method": "estimator_native",
             }
 
+        # Varying-base CS gate: handled at ``_instance_skip_reason``, so
+        # this code path is not reached for a varying-base CS fit unless
+        # the user passed ``precomputed={'sensitivity': ...}`` (handled
+        # above). Kept here as a comment anchor; see _instance_skip_reason.
+
+        import warnings as _warnings
+
         try:
             from typing import cast
 
             from diff_diff.honest_did import HonestDiD
 
-            # The sensitivity_method string is validated at runtime by
-            # HonestDiD; the Literal annotation is for static typing only.
-            honest = HonestDiD(
-                method=cast(Any, self._sensitivity_method),
-                alpha=self._alpha,
-            )
-            sens = honest.sensitivity_analysis(
-                self._results,
-                M_grid=list(self._sensitivity_M_grid),
-            )
+            # Capture any non-fatal UserWarnings HonestDiD emits (bootstrap
+            # diag-covariance fallback on CS, library-extension note on
+            # dCDH, dropped non-consecutive horizons, etc.) so BR/DR do not
+            # silently narrate sensitivity as clean when the helper
+            # flagged caveats. The try/except below still handles fatal
+            # errors; captured warnings ride on the returned dict.
+            with _warnings.catch_warnings(record=True) as caught:
+                _warnings.simplefilter("always")
+                # The sensitivity_method string is validated at runtime by
+                # HonestDiD; the Literal annotation is for static typing only.
+                honest = HonestDiD(
+                    method=cast(Any, self._sensitivity_method),
+                    alpha=self._alpha,
+                )
+                sens = honest.sensitivity_analysis(
+                    self._results,
+                    M_grid=list(self._sensitivity_M_grid),
+                )
         except Exception as exc:  # noqa: BLE001
             return {
                 "status": "error",
@@ -1016,7 +1065,11 @@ class DiagnosticReport:
                 "reason": f"HonestDiD.sensitivity_analysis raised " f"{type(exc).__name__}: {exc}",
             }
 
-        return self._format_sensitivity_results(sens)
+        captured = [str(w.message) for w in caught if issubclass(w.category, Warning)]
+        formatted = self._format_sensitivity_results(sens)
+        if captured:
+            formatted["warnings"] = captured
+        return formatted
 
     def _format_sensitivity_results(self, sens: Any) -> Dict[str, Any]:
         grid = []
