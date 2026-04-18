@@ -798,3 +798,108 @@ class TestInvariants:
             f"Expected persisted df to reflect reduced rank (< R - 1 = "
             f"{R - 1}), got {res.survey_metadata.df_survey}."
         )
+
+    def test_rank_1_replicate_forces_nan_inference(self, base_panel):
+        """All replicate columns identical → QR-rank = 1 → design df
+        undefined (None). Even if per-IF replicate SEs come back
+        finite, every public inference field (t_stat / p_value /
+        conf_int) MUST be NaN — otherwise users get z-based inference
+        silently instead of the NaN contract documented in REGISTRY.md.
+
+        R2 P0 regression: before the fix, ``_effective_df_survey``
+        returned None, ``safe_inference(df=None)`` computed z-based
+        statistics, and a rank-1 replicate design with finite SEs
+        would produce valid-looking (but wrong) p-values/CIs.
+        """
+        R = 8
+        df = _attach_replicate_weights(base_panel, R=R, method="BRR", seed=3)
+        # Make every replicate column identical → QR-rank = 1.
+        rep_col_shared = df["rep0"].copy()
+        for r in range(R):
+            df[f"rep{r}"] = rep_col_shared
+        sd = _build_replicate_design(R, "BRR")
+        resolved = sd.resolve(df)
+        assert resolved.df_survey is None, (
+            "Rank-1 replicate matrix must have undefined design df"
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            res = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd, L_max=1,
+            )
+        # survey_metadata.df_survey stays None — the honest undefined
+        # signal for downstream consumers.
+        assert res.survey_metadata.df_survey is None
+        # Main dCDH inference fields are NaN via the _inference_df
+        # coercion (None → 0 under replicate → safe_inference NaN
+        # branch).
+        assert np.isnan(res.overall_t_stat)
+        assert np.isnan(res.overall_p_value)
+        assert not np.all(np.isfinite(res.overall_conf_int))
+        # Event study horizon 1 is also NaN.
+        if 1 in res.event_study_effects:
+            info = res.event_study_effects[1]
+            assert np.isnan(info["t_stat"])
+            assert np.isnan(info["p_value"])
+
+    def test_heterogeneity_replicate_cross_surface_df_consistency(
+        self, base_panel,
+    ):
+        """With ``heterogeneity=`` active under a rank-deficient
+        replicate design, every public surface — top-level dCDH,
+        event study, heterogeneity, ``survey_metadata.df_survey``,
+        and HonestDiD — MUST use the SAME final effective df.
+
+        R2 P1 regression: before the fix, the main surfaces
+        (``overall_*``, ``event_study_effects``) computed t/p/CI
+        with an intermediate ``_df_survey`` that did not include
+        heterogeneity's ``n_valid_het``. Then
+        ``survey_metadata.df_survey`` was overwritten with the
+        post-heterogeneity min — so HonestDiD used a different df
+        than the main dCDH surface.
+        """
+        from scipy import stats as _stats
+
+        R = 12
+        df = _attach_replicate_weights(base_panel, R=R, method="BRR", seed=7)
+        # Rank deficiency: 2 duplicated pairs → rank = R - 2 = 10.
+        df["rep1"] = df["rep0"]
+        df["rep3"] = df["rep2"]
+        sd = _build_replicate_design(R, "BRR")
+        resolved = sd.resolve(df)
+        design_df = resolved.df_survey
+        assert design_df is not None and design_df < R - 1
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            res = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd, L_max=1,
+                heterogeneity="x_het",
+                honest_did=True,
+            )
+        final_df = res.survey_metadata.df_survey
+        # All sites report n_valid == R → effective df = min(design_df, R-1)
+        # = design_df.
+        assert final_df == design_df
+        # Verify overall inference was computed with df=final_df by
+        # checking p-value against t(final_df) — would disagree if
+        # df=R-1 or df=None was used.
+        t_stat = res.overall_att / res.overall_se
+        expected_p = 2 * _stats.t.sf(abs(t_stat), df=final_df)
+        assert res.overall_p_value == pytest.approx(expected_p, rel=1e-6)
+        # Same check for heterogeneity surface.
+        if res.heterogeneity_effects:
+            het_info = res.heterogeneity_effects[1]
+            if np.isfinite(het_info["se"]):
+                het_t = het_info["beta"] / het_info["se"]
+                expected_het_p = 2 * _stats.t.sf(abs(het_t), df=final_df)
+                assert het_info["p_value"] == pytest.approx(
+                    expected_het_p, rel=1e-6
+                )
+        # HonestDiD bounds were computed from the same survey_metadata;
+        # asserting the result attribute is populated confirms the df
+        # flow-through was exercised.
+        assert res.honest_did_results is not None

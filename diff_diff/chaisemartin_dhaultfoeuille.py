@@ -1627,7 +1627,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
                 did_l_val = multi_horizon_dids[l_h]["did_l"]
                 _df_s = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
-                t_l, p_l, ci_l = safe_inference(did_l_val, se_l, alpha=self.alpha, df=_df_s)
+                t_l, p_l, ci_l = safe_inference(did_l_val, se_l, alpha=self.alpha, df=_inference_df(_df_s, resolved_survey))
                 multi_horizon_inference[l_h] = {
                     "effect": did_l_val,
                     "se": se_l,
@@ -1756,7 +1756,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     pl_val = pl_data["placebo_l"]
                     _df_s = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
                     t_pl_l, p_pl_l, ci_pl_l = safe_inference(
-                        pl_val, se_pl_l, alpha=self.alpha, df=_df_s
+                        pl_val, se_pl_l, alpha=self.alpha,
+                        df=_inference_df(_df_s, resolved_survey),
                     )
                     placebo_horizon_inference[lag_l] = {
                         "effect": pl_val,
@@ -1863,7 +1864,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             )
         _df_survey = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
         overall_t, overall_p, overall_ci = safe_inference(
-            overall_att, overall_se, alpha=self.alpha, df=_df_survey
+            overall_att, overall_se, alpha=self.alpha,
+            df=_inference_df(_df_survey, resolved_survey),
         )
 
         # Joiners SE (uses joiner-only centered IF; conservative bound)
@@ -1878,7 +1880,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 _replicate_n_valid_list.append(n_valid_joiners)
             _df_survey = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
             joiners_t, joiners_p, joiners_ci = safe_inference(
-                joiners_att, joiners_se, alpha=self.alpha, df=_df_survey
+                joiners_att, joiners_se, alpha=self.alpha,
+                df=_inference_df(_df_survey, resolved_survey),
             )
         else:
             joiners_se, joiners_t, joiners_p, joiners_ci = (
@@ -1900,7 +1903,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 _replicate_n_valid_list.append(n_valid_leavers)
             _df_survey = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
             leavers_t, leavers_p, leavers_ci = safe_inference(
-                leavers_att, leavers_se, alpha=self.alpha, df=_df_survey
+                leavers_att, leavers_se, alpha=self.alpha,
+                df=_inference_df(_df_survey, resolved_survey),
             )
         else:
             leavers_se, leavers_t, leavers_p, leavers_ci = (
@@ -2200,17 +2204,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 overall_se = br.overall_se
                 overall_p = br.overall_p_value if br.overall_p_value is not None else np.nan
                 overall_ci = br.overall_ci if br.overall_ci is not None else (np.nan, np.nan)
-                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=_df_survey)[0]
+                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))[0]
             if joiners_available and br.joiners_se is not None and np.isfinite(br.joiners_se):
                 joiners_se = br.joiners_se
                 joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
                 joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
-                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=_df_survey)[0]
+                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))[0]
             if leavers_available and br.leavers_se is not None and np.isfinite(br.leavers_se):
                 leavers_se = br.leavers_se
                 leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
                 leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
-                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=_df_survey)[0]
+                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))[0]
 
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
@@ -2372,7 +2376,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 if np.isfinite(delta_se):
                     effective_overall_se = delta_se
                     effective_overall_t, effective_overall_p, effective_overall_ci = safe_inference(
-                        delta_val, delta_se, alpha=self.alpha, df=_df_survey
+                        delta_val, delta_se, alpha=self.alpha,
+                        df=_inference_df(_df_survey, resolved_survey),
                     )
                 else:
                     effective_overall_se = float("nan")
@@ -2406,7 +2411,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         # Fallback: NaN SE (Phase 1 path or missing IF)
                         pl_se = float("nan")
                         pl_t, pl_p, pl_ci = safe_inference(
-                            pl_data["placebo_l"], pl_se, alpha=self.alpha, df=_df_survey
+                            pl_data["placebo_l"], pl_se, alpha=self.alpha,
+                            df=_inference_df(_df_survey, resolved_survey),
                         )
                         placebo_event_study_dict[-lag_l] = {
                             "effect": pl_data["placebo_l"],
@@ -2457,7 +2463,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             bs_ci if bs_ci is not None else (np.nan, np.nan)
                         )
                         placebo_event_study_dict[neg_key]["t_stat"] = safe_inference(
-                            eff, bs_se, alpha=self.alpha, df=_df_survey
+                            eff, bs_se, alpha=self.alpha,
+                            df=_inference_df(_df_survey, resolved_survey),
                         )[0]
 
         # Phase 2: build normalized_effects with SE
@@ -2470,7 +2477,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # SE via delta method: SE(DID^n_l) = SE(DID_l) / delta^D_l
                 se_did_l = multi_horizon_se.get(l_h, float("nan"))
                 se_norm = se_did_l / denom if np.isfinite(denom) and denom > 0 else float("nan")
-                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=_df_survey)
+                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))
                 normalized_effects_out[l_h] = {
                     "effect": eff,
                     "se": se_norm,
@@ -2529,7 +2536,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 else:
                     running_se_ub = float("nan")
                 cum_t, cum_p, cum_ci = safe_inference(
-                    cum_effect, running_se_ub, alpha=self.alpha, df=_df_survey
+                    cum_effect, running_se_ub, alpha=self.alpha,
+                    df=_inference_df(_df_survey, resolved_survey),
                 )
                 cumulated[l_h] = {
                     "effect": cum_effect,
@@ -2683,21 +2691,73 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             effective_joiners_available = False
             effective_leavers_available = False
 
-        # Persist the final effective df_survey (post-heterogeneity,
-        # post-all-IF-sites) into survey_metadata so downstream
-        # consumers — HonestDiD bounds (honest_did.py:973 reads
-        # results.survey_metadata.df_survey), exported metadata, and
-        # users — all see the same df that the top-level dCDH inference
-        # actually used. Before this assignment, survey_metadata carries
-        # the design-level `resolved_survey.df_survey` from survey
-        # resolution; under replicate designs the effective df may be
-        # smaller (reduced via _replicate_n_valid_list). SurveyMetadata
-        # is a mutable @dataclass (diff_diff/survey.py:681), so direct
-        # attribute assignment is safe.
-        if survey_metadata is not None:
-            survey_metadata.df_survey = _effective_df_survey(
-                resolved_survey, _replicate_n_valid_list
+        # R2 P1b: Finalize replicate-df propagation across public
+        # surfaces. When heterogeneity is active, its n_valid is
+        # appended to `_replicate_n_valid_list` AFTER the main
+        # surfaces (overall / joiners / leavers / event study /
+        # placebo horizon) have already computed their t/p/CI fields
+        # with an intermediate `_df_survey`. If heterogeneity reports
+        # the smallest n_valid, the main-surface inference would be
+        # anti-conservative relative to `survey_metadata.df_survey`
+        # and HonestDiD. Re-run safe_inference with the FINAL
+        # effective df so every surface agrees.
+        _final_eff_df = _effective_df_survey(
+            resolved_survey, _replicate_n_valid_list
+        )
+        if _replicate_n_valid_list:
+            _final_inf_df = _inference_df(_final_eff_df, resolved_survey)
+            overall_t, overall_p, overall_ci = safe_inference(
+                overall_att, overall_se,
+                alpha=self.alpha, df=_final_inf_df,
             )
+            if joiners_available:
+                joiners_t, joiners_p, joiners_ci = safe_inference(
+                    joiners_att, joiners_se,
+                    alpha=self.alpha, df=_final_inf_df,
+                )
+            if leavers_available:
+                leavers_t, leavers_p, leavers_ci = safe_inference(
+                    leavers_att, leavers_se,
+                    alpha=self.alpha, df=_final_inf_df,
+                )
+            if multi_horizon_inference is not None:
+                for _lag_r2, _info_r2 in list(multi_horizon_inference.items()):
+                    _t_r2, _p_r2, _ci_r2 = safe_inference(
+                        _info_r2["effect"], _info_r2["se"],
+                        alpha=self.alpha, df=_final_inf_df,
+                    )
+                    _info_r2["t_stat"] = _t_r2
+                    _info_r2["p_value"] = _p_r2
+                    _info_r2["conf_int"] = _ci_r2
+            if placebo_horizon_inference is not None:
+                for _lag_r2, _info_r2 in list(placebo_horizon_inference.items()):
+                    _t_r2, _p_r2, _ci_r2 = safe_inference(
+                        _info_r2["effect"], _info_r2["se"],
+                        alpha=self.alpha, df=_final_inf_df,
+                    )
+                    _info_r2["t_stat"] = _t_r2
+                    _info_r2["p_value"] = _p_r2
+                    _info_r2["conf_int"] = _ci_r2
+            if heterogeneity_effects:
+                for _lag_r2, _info_r2 in list(heterogeneity_effects.items()):
+                    if np.isfinite(_info_r2["se"]):
+                        _t_r2, _p_r2, _ci_r2 = safe_inference(
+                            _info_r2["beta"], _info_r2["se"],
+                            alpha=self.alpha, df=_final_inf_df,
+                        )
+                        _info_r2["t_stat"] = _t_r2
+                        _info_r2["p_value"] = _p_r2
+                        _info_r2["conf_int"] = _ci_r2
+
+        # Persist the final effective df_survey into survey_metadata so
+        # downstream consumers — HonestDiD bounds (honest_did.py:973
+        # reads results.survey_metadata.df_survey), exported metadata,
+        # and users — all see the same df that the recomputed
+        # inference above used. SurveyMetadata is a mutable @dataclass
+        # (diff_diff/survey.py:681), so direct attribute assignment is
+        # safe.
+        if survey_metadata is not None:
+            survey_metadata.df_survey = _final_eff_df
 
         results = ChaisemartinDHaultfoeuilleResults(
             overall_att=effective_overall_att,
@@ -3496,17 +3556,18 @@ def _compute_heterogeneity_test(
         obs_gids_raw = np.asarray(obs_survey_info["group_ids"])
         obs_w_raw = np.asarray(obs_survey_info["weights"], dtype=np.float64)
         resolved = obs_survey_info["resolved"]
-        # df_s starts from the design-level df (n_psu - n_strata under TSL,
-        # R - 1 under replicate). It may be reduced further by replicate
-        # failures reported via replicate_n_valid_list (this function
-        # appends its own n_valid observations).
-        if (
-            replicate_n_valid_list is not None
-            and len(replicate_n_valid_list) > 0
-        ):
-            df_s = int(min(replicate_n_valid_list)) - 1
-        else:
-            df_s = resolved.df_survey if resolved is not None else None
+        # df_s starts from the shared effective df (base-capped by
+        # design df). Under replicate designs the helper handles the
+        # min(resolved.df_survey, min(n_valid) - 1) reduction and
+        # preserves None when the base df is undefined (QR-rank ≤ 1).
+        # Using the helper here — rather than re-deriving locally —
+        # keeps heterogeneity's df consistent with the main dCDH
+        # surfaces (R2 P1a). `list(... or [])` avoids accidental
+        # mutation of the caller's shared tracker at this site; the
+        # explicit append happens inside the horizon loop below.
+        df_s = _effective_df_survey(
+            resolved, list(replicate_n_valid_list or [])
+        )
         # Contract: only obs whose group is in the canonical post-filter
         # list contribute. Groups dropped upstream (Step 5b interior gaps,
         # Step 6 multi-switch) appear in obs_gids_raw but must be
@@ -3674,9 +3735,17 @@ def _compute_heterogeneity_test(
                 if replicate_n_valid_list is not None:
                     replicate_n_valid_list.append(n_valid_het)
                 # Reduce df_s to reflect this horizon's n_valid.
-                df_s_local = int(n_valid_het) - 1 if df_s is None else min(
-                    df_s, int(n_valid_het) - 1
-                )
+                # R2 P1a: when the shared base-capped df_s is None
+                # (undefined base df, e.g., QR-rank ≤ 1), the
+                # heterogeneity df MUST stay None — per-site n_valid
+                # cannot rescue a rank-deficient design. The
+                # _inference_df wrapper at the safe_inference call
+                # below coerces None to 0 under replicate, forcing
+                # NaN inference.
+                if df_s is None:
+                    df_s_local = None
+                else:
+                    df_s_local = min(int(df_s), int(n_valid_het) - 1)
             else:
                 var_s = compute_survey_if_variance(psi_obs, resolved)
                 df_s_local = df_s
@@ -3686,7 +3755,8 @@ def _compute_heterogeneity_test(
                 else float("nan")
             )
             t_stat, p_val, ci = safe_inference(
-                beta_het, se_het, alpha=alpha, df=df_s_local
+                beta_het, se_het, alpha=alpha,
+                df=_inference_df(df_s_local, resolved),
             )
 
         results[l_h] = {
@@ -5004,6 +5074,36 @@ def _validate_group_constant_strata_psu(
                 f"group as the effective sampling unit for stratified "
                 f"design-based variance."
             )
+
+
+def _inference_df(
+    effective_df: Optional[int],
+    resolved_survey: Any,
+) -> Optional[int]:
+    """Coerce an effective-df value for use in ``safe_inference(df=...)``.
+
+    ``_effective_df_survey()`` returns ``None`` when the replicate
+    design's base df is undefined (QR-rank ≤ 1) or when the reduced
+    df would be < 1. ``safe_inference`` treats ``df=None`` as the
+    standard normal (z-inference) and only returns NaN for
+    ``df <= 0``. Under a replicate design, "undefined effective df"
+    MUST map to NaN inference per REGISTRY.md — NOT to z-inference.
+
+    Returns:
+    - ``effective_df`` when defined (t-inference with that df).
+    - ``0`` when ``effective_df is None`` AND ``resolved_survey`` uses
+      replicate variance — forces ``safe_inference`` to return NaN
+      t/p/CI via its ``df <= 0`` branch.
+    - ``None`` otherwise (no survey, or TSL design where the resolver
+      always returns an int df — z-inference is never reachable here).
+    """
+    if effective_df is not None:
+        return effective_df
+    if resolved_survey is None:
+        return None
+    if getattr(resolved_survey, "uses_replicate_variance", False):
+        return 0
+    return None
 
 
 def _effective_df_survey(
