@@ -1172,6 +1172,25 @@ class TestSurveyWithinGroupValidation:
                 survey_design=sd,
             )
 
+    def test_auto_inject_with_varying_strata_raises(self, base_data):
+        """Auto-injected `psu=<group>` with nest=False cannot honor
+        strata that vary across cells of a group — the synthesized PSU
+        column would reuse group labels across strata and trip the
+        cross-stratum PSU uniqueness check. fit() detects that combo
+        before survey resolution and raises a targeted ValueError
+        pointing users to the explicit `psu=<col>, nest=True` path.
+        """
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["stratum"] = df_["period"] % 2  # varies across cells of each group
+        sd = SurveyDesign(weights="pw", strata="stratum")
+        with pytest.raises(ValueError, match=r"psu=<col>"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df_, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd,
+            )
+
     def test_within_cell_psu_variation_rejected(self, base_data):
         """Multiple PSUs inside a single (g, t) cell (a multi-obs-per-
         cell panel) remain ambiguous under the cell allocator and must
@@ -1432,7 +1451,9 @@ class TestSurveyWithinGroupValidation:
             a11_plus_zeroed_arr=a11_plus_zeroed,
             a11_minus_zeroed_arr=a11_minus_zeroed,
             side="overall",
+            compute_per_period=True,
         )
+        assert U_pp is not None
 
         # Hand computation at t=2 joiner side:
         #   G0: stable_0, -(2/2) * (3.0 - 2.0) = -1.0
