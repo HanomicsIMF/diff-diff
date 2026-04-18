@@ -2087,3 +2087,57 @@ class TestImputationEdgeCases:
             df_treated, "first_treat", all_horizons, 1, cohort_rel_times
         )
         assert all(mask1)
+
+    def test_iterative_fe_warns_on_nonconvergence(self):
+        """Silent-failure audit axis B: _iterative_fe must warn when max_iter exhausts."""
+        rng = np.random.default_rng(42)
+        n_units, n_periods = 8, 5
+        units = np.repeat(np.arange(n_units), n_periods)
+        times = np.tile(np.arange(n_periods), n_units)
+        y = rng.standard_normal(n_units * n_periods)
+        idx = pd.RangeIndex(len(y))
+        est = ImputationDiD()
+
+        with pytest.warns(UserWarning, match="did not converge"):
+            est._iterative_fe(y, units, times, idx, max_iter=1, tol=1e-15)
+
+    def test_iterative_fe_no_warning_on_convergence(self):
+        """Silent-failure audit axis B: no warning on well-behaved convergent input."""
+        rng = np.random.default_rng(42)
+        n_units, n_periods = 8, 5
+        units = np.repeat(np.arange(n_units), n_periods)
+        times = np.tile(np.arange(n_periods), n_units)
+        y = rng.standard_normal(n_units * n_periods)
+        idx = pd.RangeIndex(len(y))
+        est = ImputationDiD()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            est._iterative_fe(y, units, times, idx)
+        assert not any("did not converge" in str(x.message) for x in w)
+
+    def test_iterative_demean_warns_on_nonconvergence(self):
+        """Silent-failure audit axis B: _iterative_demean must warn when max_iter exhausts."""
+        rng = np.random.default_rng(42)
+        n_units, n_periods = 8, 5
+        units = np.repeat(np.arange(n_units), n_periods)
+        times = np.tile(np.arange(n_periods), n_units)
+        vals = rng.standard_normal(n_units * n_periods)
+        idx = pd.RangeIndex(len(vals))
+
+        with pytest.warns(UserWarning, match="did not converge"):
+            ImputationDiD._iterative_demean(vals, units, times, idx, max_iter=1, tol=1e-15)
+
+    def test_iterative_demean_no_warning_on_convergence(self):
+        """Silent-failure audit axis B: no warning on well-behaved convergent input."""
+        rng = np.random.default_rng(42)
+        n_units, n_periods = 8, 5
+        units = np.repeat(np.arange(n_units), n_periods)
+        times = np.tile(np.arange(n_periods), n_units)
+        vals = rng.standard_normal(n_units * n_periods)
+        idx = pd.RangeIndex(len(vals))
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ImputationDiD._iterative_demean(vals, units, times, idx)
+        assert not any("did not converge" in str(x.message) for x in w)

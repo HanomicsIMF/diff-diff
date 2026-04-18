@@ -65,6 +65,29 @@ def validate_binary(arr: np.ndarray, name: str) -> None:
         raise ValueError(f"{name} must be binary (0 or 1). " f"Found values: {unique_values}")
 
 
+def warn_if_not_converged(
+    converged: bool,
+    method_name: str,
+    max_iter: int,
+    tol: Optional[float] = None,
+    stacklevel: int = 3,
+) -> None:
+    """Emit a UserWarning when an iterative solver exhausts max_iter without converging.
+
+    Shared helper for axis-B silent-failure fixes (iterative loops that otherwise
+    return the current iterate without signaling non-convergence).
+    """
+    if converged:
+        return
+    tol_suffix = f" (tol={tol})" if tol is not None else ""
+    warnings.warn(
+        f"{method_name} did not converge in {max_iter} iterations{tol_suffix}. "
+        "Results may be inaccurate.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+
+
 def compute_robust_se(
     X: np.ndarray, residuals: np.ndarray, cluster_ids: Optional[np.ndarray] = None
 ) -> np.ndarray:
@@ -1791,6 +1814,8 @@ def within_transform(
     inplace: bool = False,
     suffix: str = "_demeaned",
     weights: Optional[np.ndarray] = None,
+    max_iter: int = 100,
+    tol: float = 1e-8,
 ) -> pd.DataFrame:
     """
     Apply two-way within transformation to remove unit and time fixed effects.
@@ -1818,6 +1843,14 @@ def within_transform(
         Suffix for new column names when inplace=False.
     weights : np.ndarray, optional
         Observation weights for weighted group means.
+    max_iter : int, default 100
+        Maximum number of alternating-projection iterations. Used only when
+        ``weights`` is not ``None``; the unweighted path is a single pass and
+        ignores this argument. Emits a ``UserWarning`` per call when any
+        variable fails to converge within this budget.
+    tol : float, default 1e-8
+        Convergence tolerance on the max absolute change across the iterate.
+        Used only when ``weights`` is not ``None``.
 
     Returns
     -------
@@ -1853,29 +1886,45 @@ def within_transform(
             wx_sum = pd.Series(w * x).groupby(groups).transform("sum").values
             return x - wx_sum / w_sum
 
+        non_converged_vars: List[str] = []
         if inplace:
             for var in variables:
                 x = data[var].values.astype(np.float64)
-                for _iter in range(100):  # max iterations
+                converged = False
+                for _iter in range(max_iter):
                     x_old = x.copy()
                     x = _weighted_group_demean(x, unit_groups, w, unit_w_sum)
                     x = _weighted_group_demean(x, time_groups, w, time_w_sum)
-                    if np.max(np.abs(x - x_old)) < 1e-8:
+                    if np.max(np.abs(x - x_old)) < tol:
+                        converged = True
                         break
+                if not converged:
+                    non_converged_vars.append(var)
                 data[var] = x
         else:
             demeaned_data = {}
             for var in variables:
                 x = data[var].values.astype(np.float64)
-                for _iter in range(100):
+                converged = False
+                for _iter in range(max_iter):
                     x_old = x.copy()
                     x = _weighted_group_demean(x, unit_groups, w, unit_w_sum)
                     x = _weighted_group_demean(x, time_groups, w, time_w_sum)
-                    if np.max(np.abs(x - x_old)) < 1e-8:
+                    if np.max(np.abs(x - x_old)) < tol:
+                        converged = True
                         break
+                if not converged:
+                    non_converged_vars.append(var)
                 demeaned_data[f"{var}{suffix}"] = x
             demeaned_df = pd.DataFrame(demeaned_data, index=data.index)
             data = pd.concat([data, demeaned_df], axis=1)
+        if non_converged_vars:
+            warn_if_not_converged(
+                False,
+                f"within_transform weighted demean (variables: {non_converged_vars})",
+                max_iter,
+                tol,
+            )
     else:
         # Cache groupby objects for efficiency
         unit_grouper = data.groupby(unit, sort=False)

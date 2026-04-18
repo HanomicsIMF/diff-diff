@@ -235,6 +235,27 @@ class TestWithinTransformationAlgebra:
         np.testing.assert_allclose(unit_sums.values, 0, atol=1e-10)
         np.testing.assert_allclose(time_sums.values, 0, atol=1e-10)
 
+    def test_within_transform_weighted_warns_on_nonconvergence(self):
+        """Silent-failure audit axis B: within_transform weighted path must warn."""
+        data = generate_twfe_panel(n_units=20, n_periods=4, seed=99)
+        weights = np.ones(len(data))
+
+        with pytest.warns(UserWarning, match="did not converge"):
+            within_transform(
+                data, ["outcome"], "unit", "period",
+                weights=weights, max_iter=1, tol=1e-15,
+            )
+
+    def test_within_transform_weighted_no_warning_on_convergence(self):
+        """Silent-failure audit axis B: no warning on well-behaved convergent input."""
+        data = generate_twfe_panel(n_units=20, n_periods=4, seed=99)
+        weights = np.ones(len(data))
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            within_transform(data, ["outcome"], "unit", "period", weights=weights)
+        assert not any("did not converge" in str(x.message) for x in w)
+
 
 # =============================================================================
 # Phase 2: R Comparison
