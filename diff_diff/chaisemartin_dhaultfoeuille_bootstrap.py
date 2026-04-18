@@ -70,6 +70,8 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         # --- Phase 2: multi-horizon inputs ---
         multi_horizon_inputs: Optional[Dict[int, Tuple[np.ndarray, int, float]]] = None,
         placebo_horizon_inputs: Optional[Dict[int, Tuple[np.ndarray, int, float]]] = None,
+        # --- Survey: PSU-level bootstrap under survey designs ---
+        group_to_psu_map: Optional[np.ndarray] = None,
     ) -> DCDHBootstrapResults:
         """
         Compute multiplier-bootstrap inference for all dCDH targets.
@@ -175,6 +177,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                 rng=rng,
                 context="dCDH overall DID_M bootstrap",
                 return_distribution=True,
+                group_to_psu_map=group_to_psu_map,
             )
         else:
             overall_se = np.nan
@@ -206,6 +209,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     rng=rng,
                     context="dCDH joiners DID_+ bootstrap",
                     return_distribution=False,
+                    group_to_psu_map=_slice_psu_map(group_to_psu_map, u_j.size),
                 )
                 results.joiners_se = se_j
                 results.joiners_ci = ci_j
@@ -225,6 +229,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     rng=rng,
                     context="dCDH leavers DID_- bootstrap",
                     return_distribution=False,
+                    group_to_psu_map=_slice_psu_map(group_to_psu_map, u_l.size),
                 )
                 results.leavers_se = se_l
                 results.leavers_ci = ci_l
@@ -244,6 +249,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     rng=rng,
                     context="dCDH placebo DID_M^pl bootstrap",
                     return_distribution=False,
+                    group_to_psu_map=_slice_psu_map(group_to_psu_map, u_pl.size),
                 )
                 results.placebo_se = se_pl
                 results.placebo_ci = ci_pl
@@ -259,13 +265,18 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
             es_pvals: Dict[int, float] = {}
             es_dists: Dict[int, np.ndarray] = {}
 
-            # Shared weight matrix sized for the group set
+            # Shared weight matrix sized for the group set. Under PSU-level
+            # bootstrap (Hall-Mammen wild PSU), weights are drawn once per
+            # PSU and broadcast to groups so all groups in the same PSU
+            # share a multiplier within a single bootstrap replicate —
+            # preserving the sup-t joint distribution across horizons.
             n_groups_mh = n_groups_for_overall
-            shared_weights = _generate_bootstrap_weights_batch(
+            shared_weights = _generate_psu_or_group_weights(
                 n_bootstrap=self.n_bootstrap,
-                n_units=n_groups_mh,
+                n_groups_target=n_groups_mh,
                 weight_type=self.bootstrap_weights,
                 rng=rng,
+                group_to_psu_map=group_to_psu_map,
             )
 
             for l_h, (u_h, n_h, eff_h) in sorted(multi_horizon_inputs.items()):
@@ -324,6 +335,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                         rng=rng,
                         context=f"dCDH placebo l={l_h} bootstrap",
                         return_distribution=False,
+                        group_to_psu_map=_slice_psu_map(group_to_psu_map, u_h.size),
                     )
                     pl_ses[l_h] = se_h
                     pl_cis[l_h] = ci_h
@@ -341,6 +353,93 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
 # =============================================================================
 
 
+def _slice_psu_map(
+    group_to_psu_map: Optional[np.ndarray],
+    target_size: int,
+) -> Optional[np.ndarray]:
+    """Slice a full-set group-to-PSU map to a target's contributing group count.
+
+    Multi-horizon / joiner / leaver targets share the overall variance-
+    eligible group ordering but may have fewer contributing groups
+    (``u_centered.shape[0] <= n_groups_for_overall``). Slice the first
+    ``target_size`` entries — this mirrors the existing shared-weights
+    truncation at the multi-horizon bootstrap site. Returns ``None``
+    when no map is provided (plain multiplier-bootstrap path).
+    """
+    if group_to_psu_map is None:
+        return None
+    if target_size <= 0 or target_size > len(group_to_psu_map):
+        return group_to_psu_map
+    return group_to_psu_map[:target_size]
+
+
+def _generate_psu_or_group_weights(
+    n_bootstrap: int,
+    n_groups_target: int,
+    weight_type: str,
+    rng: np.random.Generator,
+    group_to_psu_map: Optional[np.ndarray],
+) -> np.ndarray:
+    """Generate a group-level weight matrix, possibly via PSU broadcasting.
+
+    When ``group_to_psu_map`` is ``None`` or is the identity (each group
+    is its own PSU), generates weights at the group level directly —
+    bit-identical to the pre-PSU-bootstrap contract.
+
+    When ``group_to_psu_map`` has fewer unique values than
+    ``n_groups_target`` (strictly coarser PSU than group), generates
+    weights at the PSU level and broadcasts to groups via the map.
+    This is the Hall-Mammen wild PSU bootstrap.
+
+    Parameters
+    ----------
+    n_bootstrap, weight_type, rng
+        Passed through to generate_bootstrap_weights_batch.
+    n_groups_target : int
+        Number of groups contributing to the target's IF vector.
+    group_to_psu_map : np.ndarray or None
+        Dense integer PSU indices of shape ``(n_groups_target,)``.
+        ``None`` triggers the group-level path.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_bootstrap, n_groups_target)`` multiplier weights.
+    """
+    if group_to_psu_map is None:
+        return _generate_bootstrap_weights_batch(
+            n_bootstrap=n_bootstrap,
+            n_units=n_groups_target,
+            weight_type=weight_type,
+            rng=rng,
+        )
+    if len(group_to_psu_map) != n_groups_target:
+        raise ValueError(
+            f"group_to_psu_map length ({len(group_to_psu_map)}) does not "
+            f"match n_groups_target ({n_groups_target})."
+        )
+    n_psu = int(np.max(group_to_psu_map)) + 1 if group_to_psu_map.size > 0 else 0
+    if n_psu >= n_groups_target:
+        # Identity (each group its own PSU) — skip the broadcast for a
+        # bit-identical fast path matching the pre-PSU-bootstrap behavior.
+        return _generate_bootstrap_weights_batch(
+            n_bootstrap=n_bootstrap,
+            n_units=n_groups_target,
+            weight_type=weight_type,
+            rng=rng,
+        )
+    # Hall-Mammen wild PSU bootstrap: draw n_psu multipliers, broadcast
+    # via the dense index map so all groups in the same PSU share a
+    # multiplier. Preserves clustered sampling structure.
+    psu_weights = _generate_bootstrap_weights_batch(
+        n_bootstrap=n_bootstrap,
+        n_units=n_psu,
+        weight_type=weight_type,
+        rng=rng,
+    )
+    return psu_weights[:, group_to_psu_map]
+
+
 def _bootstrap_one_target(
     u_centered: np.ndarray,
     divisor: int,
@@ -351,6 +450,7 @@ def _bootstrap_one_target(
     rng: np.random.Generator,
     context: str,
     return_distribution: bool,
+    group_to_psu_map: Optional[np.ndarray] = None,
 ) -> Tuple[float, Tuple[float, float], float, Optional[np.ndarray]]:
     """
     Run the multiplier bootstrap for a single dCDH target.
@@ -367,16 +467,24 @@ def _bootstrap_one_target(
     sample mean of the bootstrap distribution should be approximately
     zero, not the original effect). The original effect is passed
     separately as the centering point for the percentile p-value.
+
+    When ``group_to_psu_map`` is provided (length ``len(u_centered)``,
+    dense integer PSU indices), multiplier weights are generated at the
+    PSU level and broadcast to groups so all groups in the same PSU
+    receive the same bootstrap multiplier. This is the Hall-Mammen wild
+    PSU bootstrap; it reduces to the group-level bootstrap when each
+    group is its own PSU (identity map).
     """
     n_groups_target = u_centered.shape[0]
     if n_groups_target == 0 or divisor == 0:
         return np.nan, (np.nan, np.nan), np.nan, None
 
-    weight_matrix = _generate_bootstrap_weights_batch(
+    weight_matrix = _generate_psu_or_group_weights(
         n_bootstrap=n_bootstrap,
-        n_units=n_groups_target,
+        n_groups_target=n_groups_target,
         weight_type=weight_type,
         rng=rng,
+        group_to_psu_map=group_to_psu_map,
     )
 
     # Each bootstrap replicate: (1 / divisor) * sum_g w_b[g] * u_centered[g]

@@ -266,7 +266,7 @@ est.fit(
     trends_nonparam: Any | None = None,          # Phase 3: DID^s
     honest_did: bool = False,                    # Phase 3: HonestDiD integration
     # ---- survey support ----
-    survey_design: SurveyDesign | None = None,    # pweight + strata/PSU/FPC (TSL)
+    survey_design: SurveyDesign | None = None,    # pweight + strata/PSU/FPC (TSL) OR BRR/Fay/JK1/JKn/SDR replicate weights; n_bootstrap > 0 uses Hall-Mammen PSU multiplier
 ) -> ChaisemartinDHaultfoeuilleResults
 ```
 
@@ -1672,8 +1672,8 @@ sd_female, data_female = sd.subpopulation(data, mask=lambda df: df['sex'] == 'F'
 
 **Key features:**
 - Taylor Series Linearization (TSL) variance with strata + PSU + FPC
-- Replicate weight variance: BRR, Fay's BRR, JK1, JKn, SDR (12 of 16 estimators)
-- Survey-aware bootstrap: multiplier at PSU or Rao-Wu rescaled
+- Replicate weight variance: BRR, Fay's BRR, JK1, JKn, SDR (13 of 16 estimators, including dCDH)
+- Survey-aware bootstrap: multiplier at PSU (Hall-Mammen wild; dCDH, staggered) or Rao-Wu rescaled (SyntheticDiD, SunAbraham)
 - DEFF diagnostics, subpopulation analysis, weight trimming (`trim_weights`)
 - Repeated cross-sections: `CallawaySantAnna(panel=False)`
 - Compatibility matrix: see `docs/choosing_estimator.rst` Survey Design Support section

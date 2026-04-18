@@ -317,8 +317,16 @@ class TestValidation:
             result_survey.overall_att, abs=0.01
         )
 
-    def test_rejects_replicate_weights(self, base_data):
-        """Replicate weight variance not yet supported."""
+    def test_rejects_replicate_weights_with_bootstrap(self, base_data):
+        """Replicate weights combined with n_bootstrap > 0 is rejected.
+
+        Replicate variance is closed-form (compute_replicate_if_variance);
+        combining it with a multiplier bootstrap would double-count
+        variance. Matches library precedent in efficient_did.py:989,
+        staggered.py:1869, two_stage.py:251-253. The standalone
+        replicate-only path (n_bootstrap=0) is supported separately;
+        see tests/test_survey_dcdh_replicate_psu.py.
+        """
         df = base_data.copy()
         df["pw"] = 1.0
         df["rep1"] = 1.0
@@ -328,8 +336,8 @@ class TestValidation:
             replicate_weights=["rep1", "rep2"],
             replicate_method="BRR",
         )
-        with pytest.raises(NotImplementedError, match="Replicate"):
-            ChaisemartinDHaultfoeuille().fit(
+        with pytest.raises(NotImplementedError, match="replicate weights and n_bootstrap"):
+            ChaisemartinDHaultfoeuille(n_bootstrap=100, seed=1).fit(
                 df,
                 outcome="outcome",
                 group="group",
@@ -366,9 +374,31 @@ class TestMultiHorizonSurvey:
 
 class TestBootstrapSurveyWarning:
 
-    def test_bootstrap_survey_emits_warning(self, data_with_survey):
+    def test_bootstrap_survey_auto_inject_no_warning(self, data_with_survey):
+        """Under auto-inject psu=group, Hall-Mammen wild PSU bootstrap
+        coincides with the group-level multiplier bootstrap — so no
+        warning should fire. The old 'PSU-level deferred' warning has
+        been replaced with a conditional one that only fires when the
+        user passes a strictly coarser PSU.
+
+        See the new test file tests/test_survey_dcdh_replicate_psu.py for
+        the strictly-coarser-PSU case where the warning DOES fire.
+        """
         sd = SurveyDesign(weights="pw")
-        with pytest.warns(UserWarning, match="group-level multiplier"):
+        import warnings as _w
+
+        with _w.catch_warnings():
+            _w.simplefilter("error", UserWarning)
+            # Ignore warnings unrelated to the bootstrap-PSU contract.
+            _w.filterwarnings(
+                "ignore", message="Single-period placebo SE"
+            )
+            _w.filterwarnings(
+                "ignore", message="pweight weights normalized"
+            )
+            _w.filterwarnings(
+                "ignore", message="Assumption 11"
+            )
             ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1).fit(
                 data_with_survey,
                 outcome="outcome",
@@ -728,9 +758,11 @@ class TestSurveyTWFEParity:
                 survey_design=sd,
             )
 
-    def test_twfe_helper_rejects_replicate_weights(self, base_data):
-        """Replicate-weight survey designs must be rejected by the helper,
-        matching fit()'s NotImplementedError contract."""
+    def test_twfe_helper_accepts_replicate_weights(self, base_data):
+        """Replicate-weight designs are accepted by the helper (no SE field
+        on TWFEWeightsResult, so only cell aggregation is affected). Matches
+        fit()'s new contract where replicate variance runs analytically via
+        compute_replicate_if_variance."""
         from diff_diff.chaisemartin_dhaultfoeuille import twowayfeweights
 
         df_ = base_data.copy()
@@ -742,13 +774,15 @@ class TestSurveyTWFEParity:
             replicate_weights=["rep1", "rep2"],
             replicate_method="BRR",
         )
-        with pytest.raises(NotImplementedError, match="Replicate"):
-            twowayfeweights(
-                df_,
-                outcome="outcome", group="group",
-                time="period", treatment="treatment",
-                survey_design=sd,
-            )
+        result = twowayfeweights(
+            df_,
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(result.beta_fe)
+        assert np.isfinite(result.sigma_fe)
+        assert 0.0 <= result.fraction_negative <= 1.0
 
 
 # ── Test: TWFE diagnostic oracle under survey ───────────────────────
