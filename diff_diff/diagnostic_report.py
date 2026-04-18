@@ -449,8 +449,22 @@ class DiagnosticReport:
                 # vcov is optional for the Bonferroni fallback.
             return None
         if check == "pretrends_power":
-            if getattr(r, "vcov", None) is None:
-                return "Pre-trends power requires results.vcov; not available."
+            # ``compute_pretrends_power`` handles CS / SA / ImputationDiD
+            # event-study results by reading ``event_study_effects``
+            # directly, so we accept either a top-level ``vcov`` OR a
+            # populated event-study surface. Precomputed overrides also
+            # bypass this gate.
+            if "pretrends_power" in self._precomputed:
+                return None
+            has_vcov = getattr(r, "vcov", None) is not None
+            has_event_vcov = getattr(r, "event_study_vcov", None) is not None
+            has_event_es = getattr(r, "event_study_effects", None) is not None
+            if not (has_vcov or has_event_vcov or has_event_es):
+                return (
+                    "Pre-trends power needs either results.vcov or "
+                    "event_study_effects (from aggregate='event_study' on "
+                    "staggered estimators); neither available."
+                )
             pre_coefs = _collect_pre_period_coefs(r)
             if len(pre_coefs) < 2:
                 return "Pre-trends power needs >= 2 pre-treatment periods."
@@ -459,9 +473,22 @@ class DiagnosticReport:
             # Native SDiD/TROP paths substitute for HonestDiD.
             if name in {"SyntheticDiDResults", "TROPResults"}:
                 return None
-            # Standard HonestDiD path.
-            if getattr(r, "vcov", None) is None:
-                return "HonestDiD requires results.vcov for the pre-period coefficients."
+            # Precomputed sensitivity always unlocks this check.
+            if "sensitivity" in self._precomputed:
+                return None
+            # ``HonestDiD.sensitivity_analysis`` handles CS / SA /
+            # ImputationDiD internally via ``event_study_effects`` +
+            # ``event_study_vcov`` (or per-SE diagonal fallback), so we
+            # accept any of: top-level vcov, event_study_vcov, or a
+            # populated event_study_effects surface.
+            has_vcov = getattr(r, "vcov", None) is not None
+            has_event_vcov = getattr(r, "event_study_vcov", None) is not None
+            has_event_es = getattr(r, "event_study_effects", None) is not None
+            if not (has_vcov or has_event_vcov or has_event_es):
+                return (
+                    "HonestDiD needs either results.vcov, event_study_vcov, "
+                    "or event_study_effects; none available."
+                )
             pre_coefs = _collect_pre_period_coefs(r)
             if len(pre_coefs) < 1:
                 return "HonestDiD requires at least one pre-period coefficient."
@@ -729,26 +756,52 @@ class DiagnosticReport:
         df = len(pre_coefs)
         method = "bonferroni"
         # Joint-Wald pathway is taken only when EVERY pre-period key is present
-        # in ``interaction_indices`` (required len == df guard below). This
+        # in the relevant index mapping (required len == df guard below). This
         # protects against estimators whose event-study keys use a different
         # namespace than the vcov indexing: if any key is missing, we fall back
         # to Bonferroni rather than risk indexing into the wrong vcov rows.
         # The schema's ``method`` field exposes which path ran so agents and
         # tests can distinguish the two unambiguously.
-        if vcov is not None and interaction_indices is not None and df > 0:
+        #
+        # Two covariance sources are supported:
+        #   1. ``interaction_indices`` + ``vcov`` — the MultiPeriodDiDResults
+        #      convention, where ``vcov`` is the full regression covariance
+        #      matrix and ``interaction_indices`` maps period labels to rows.
+        #   2. ``event_study_vcov_index`` + ``event_study_vcov`` — the
+        #      CallawaySantAnnaResults convention, where the event-study
+        #      covariance is stored separately from the full regression vcov.
+        vcov_for_wald: Optional[Any] = None
+        idx_map_for_wald: Optional[Any] = None
+        vcov_method_tag = "joint_wald"
+        if vcov is not None and interaction_indices is not None:
+            vcov_for_wald = vcov
+            idx_map_for_wald = interaction_indices
+        else:
+            es_vcov = getattr(r, "event_study_vcov", None)
+            es_vcov_index = getattr(r, "event_study_vcov_index", None)
+            if es_vcov is not None and es_vcov_index is not None:
+                vcov_for_wald = es_vcov
+                # ``event_study_vcov_index`` is an ordered list of relative-time
+                # keys; convert it into a dict mapping key -> position.
+                try:
+                    idx_map_for_wald = {k: i for i, k in enumerate(es_vcov_index)}
+                    vcov_method_tag = "joint_wald_event_study"
+                except TypeError:
+                    idx_map_for_wald = None
+        if vcov_for_wald is not None and idx_map_for_wald is not None and df > 0:
             try:
-                keys_in_vcov = [k for (k, _, _, _) in pre_coefs if k in interaction_indices]
+                keys_in_vcov = [k for (k, _, _, _) in pre_coefs if k in idx_map_for_wald]
                 if len(keys_in_vcov) == df:
-                    idx = [interaction_indices[k] for k in keys_in_vcov]
+                    idx = [idx_map_for_wald[k] for k in keys_in_vcov]
                     beta_map = {k: eff for (k, eff, _, _) in pre_coefs}
                     beta = np.array([beta_map[k] for k in keys_in_vcov], dtype=float)
-                    v_sub = np.asarray(vcov)[np.ix_(idx, idx)]
+                    v_sub = np.asarray(vcov_for_wald)[np.ix_(idx, idx)]
                     stat = float(beta @ np.linalg.solve(v_sub, beta))
                     from scipy.stats import chi2
 
                     joint_p = float(1.0 - chi2.cdf(stat, df=df))
                     test_statistic = stat
-                    method = "joint_wald"
+                    method = vcov_method_tag
             except Exception:  # noqa: BLE001
                 joint_p = None
                 test_statistic = None
@@ -1085,22 +1138,56 @@ class DiagnosticReport:
         }
 
     def _check_epv(self) -> Dict[str, Any]:
-        """Read EPV diagnostics from ``results.epv_diagnostics``."""
-        epv = getattr(self._results, "epv_diagnostics", None)
+        """Read EPV diagnostics from ``results.epv_diagnostics``.
+
+        The diff-diff convention (see ``diff_diff/staggered.py`` around the
+        low-EPV summary warning) is that ``epv_diagnostics`` is a dict keyed
+        by cell identifier (e.g. ``(g, t)`` for staggered) whose values are
+        per-cell dicts with ``is_low`` (bool) and ``epv`` (float). The
+        threshold lives on ``results.epv_threshold`` (default 10) rather
+        than being hardcoded.
+        """
+        r = self._results
+        epv = getattr(r, "epv_diagnostics", None)
         if epv is None:
             return {
                 "status": "skipped",
-                "reason": "Estimator did not produce results.epv_diagnostics for " "this fit.",
+                "reason": "Estimator did not produce results.epv_diagnostics for this fit.",
             }
-        threshold = 10
-        low_cells = getattr(epv, "low_epv_cells", None) or []
-        min_epv = _to_python_float(getattr(epv, "min_epv", None))
+        threshold = _to_python_float(getattr(r, "epv_threshold", 10)) or 10.0
+
+        if isinstance(epv, dict):
+            low_cells = [k for k, v in epv.items() if isinstance(v, dict) and v.get("is_low")]
+            epv_floats: List[float] = []
+            for v in epv.values():
+                if not isinstance(v, dict):
+                    continue
+                raw = v.get("epv")
+                if raw is None:
+                    continue
+                converted = _to_python_float(raw)
+                if converted is not None:
+                    epv_floats.append(converted)
+            min_epv: Optional[float] = min(epv_floats) if epv_floats else None
+            return {
+                "status": "ran",
+                "threshold": threshold,
+                "n_cells_low": len(low_cells),
+                "n_cells_total": len(epv),
+                "min_epv": min_epv,
+                "affected_cohorts": [_to_python_scalar(c) for c in low_cells],
+            }
+
+        # Legacy object-shaped fallback (not currently emitted by the library
+        # but kept so custom subclasses that mirror the old shape still work).
+        low_cells_attr = getattr(epv, "low_epv_cells", None) or []
         return {
             "status": "ran",
             "threshold": threshold,
-            "n_cells_low": int(len(low_cells)),
-            "min_epv": min_epv,
-            "affected_cohorts": [_to_python_scalar(c) for c in low_cells],
+            "n_cells_low": int(len(low_cells_attr)),
+            "n_cells_total": _to_python_scalar(getattr(epv, "n_cells_total", None)),
+            "min_epv": _to_python_float(getattr(epv, "min_epv", None)),
+            "affected_cohorts": [_to_python_scalar(c) for c in low_cells_attr],
         }
 
     def _check_estimator_native(self) -> Dict[str, Any]:
@@ -1391,41 +1478,96 @@ class DiagnosticReport:
 
     def _extract_headline_metric(self) -> Optional[Dict[str, Any]]:
         """Best-effort extraction of the scalar headline metric from the result."""
-        r = self._results
-        # Try the usual attribute names in priority order.
-        for name in ("overall_att", "avg_att", "att"):
-            val = getattr(r, name, None)
-            if val is None:
-                continue
-            se_name = {
-                "overall_att": "overall_se",
-                "avg_att": "avg_se",
-                "att": "se",
-            }[name]
-            p_name = {
-                "overall_att": "overall_p_value",
-                "avg_att": "avg_p_value",
-                "att": "p_value",
-            }[name]
-            ci_name = {
-                "overall_att": "overall_conf_int",
-                "avg_att": "avg_conf_int",
-                "att": "conf_int",
-            }[name]
-            return {
-                "name": name,
-                "value": _to_python_float(val),
-                "se": _to_python_float(getattr(r, se_name, None)),
-                "p_value": _to_python_float(getattr(r, p_name, None)),
-                "conf_int": _to_python_ci(getattr(r, ci_name, None)),
-                "alpha": _to_python_float(getattr(r, "alpha", self._alpha)),
-            }
-        return None
+        extracted = _extract_scalar_headline(self._results, fallback_alpha=self._alpha)
+        if extracted is None:
+            return None
+        name, value, se, p, ci, alpha = extracted
+        return {
+            "name": name,
+            "value": value,
+            "se": se,
+            "p_value": p,
+            "conf_int": ci,
+            "alpha": alpha,
+        }
 
 
 # ---------------------------------------------------------------------------
 # Helpers (module-private)
 # ---------------------------------------------------------------------------
+def _extract_scalar_headline(
+    results: Any,
+    fallback_alpha: float = 0.05,
+) -> Optional[
+    Tuple[
+        str,
+        Optional[float],
+        Optional[float],
+        Optional[float],
+        Optional[List[float]],
+        Optional[float],
+    ]
+]:
+    """Extract ``(name, value, se, p_value, conf_int, alpha)`` from a fitted result.
+
+    Centralizes the scalar-headline mapping shared by both ``BusinessReport``
+    and ``DiagnosticReport`` so schema drift (e.g. ``ContinuousDiDResults``
+    using ``overall_att_se`` / ``overall_att_p_value`` /
+    ``overall_att_conf_int`` instead of the ``overall_att`` stem) is handled
+    in one place.
+
+    Each row in the attribute-alias table below is tried in priority order.
+    The first point-estimate attribute that resolves to a non-None value
+    wins; the companion SE / p-value / CI attributes are then resolved from
+    the same row, taking the first alias that exists on the result object.
+    """
+    # (name, [se aliases], [p-value aliases], [ci aliases])
+    alias_table: List[Tuple[str, List[str], List[str], List[str]]] = [
+        # Staggered / multi-period aggregations
+        (
+            "overall_att",
+            ["overall_se", "overall_att_se"],
+            ["overall_p_value", "overall_att_p_value"],
+            ["overall_conf_int", "overall_att_conf_int"],
+        ),
+        # MultiPeriodDiDResults
+        ("avg_att", ["avg_se"], ["avg_p_value"], ["avg_conf_int"]),
+        # Simple DiDResults / SyntheticDiDResults / TROPResults / TripleDifferenceResults
+        ("att", ["se"], ["p_value"], ["conf_int"]),
+    ]
+    for name, se_aliases, p_aliases, ci_aliases in alias_table:
+        val = getattr(results, name, None)
+        if val is None:
+            continue
+        se = next(
+            (
+                _to_python_float(getattr(results, a, None))
+                for a in se_aliases
+                if getattr(results, a, None) is not None
+            ),
+            None,
+        )
+        p = next(
+            (
+                _to_python_float(getattr(results, a, None))
+                for a in p_aliases
+                if getattr(results, a, None) is not None
+            ),
+            None,
+        )
+        ci = next(
+            (
+                _to_python_ci(getattr(results, a, None))
+                for a in ci_aliases
+                if getattr(results, a, None) is not None
+            ),
+            None,
+        )
+        alpha = _to_python_float(getattr(results, "alpha", fallback_alpha))
+        return (name, _to_python_float(val), se, p, ci, alpha)
+    return None
+
+
 def _extract_scalar_effect(val: Any) -> Optional[float]:
     """Pull a scalar ``effect`` out of the many shapes results expose.
 
@@ -1675,11 +1817,34 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
                 "weighted parallel-trends analogue."
             )
 
-    # Sentence 3: sensitivity
+    # Sentence 3: sensitivity. The "robust across the grid" phrasing is reserved
+    # for genuine SensitivityResults grids; a precomputed single-M HonestDiDResults
+    # is narrated as a point check ("at M=<value>") even though breakdown_M is None.
     sens = schema.get("sensitivity") or {}
     if sens.get("status") == "ran":
         bkd = sens.get("breakdown_M")
-        if bkd is None:
+        conclusion = sens.get("conclusion")
+        if conclusion == "single_M_precomputed":
+            grid = sens.get("grid") or []
+            point = grid[0] if grid else {}
+            m_val = point.get("M")
+            robust = point.get("robust_to_zero")
+            if isinstance(m_val, (int, float)):
+                if robust:
+                    sentences.append(
+                        f"HonestDiD sensitivity (single point checked): "
+                        f"at M = {m_val:.2g}, the robust CI excludes zero. "
+                        f"This is a point check, not a grid — use "
+                        f"HonestDiD.sensitivity() for a breakdown value."
+                    )
+                else:
+                    sentences.append(
+                        f"HonestDiD sensitivity (single point checked): "
+                        f"at M = {m_val:.2g}, the robust CI includes zero. "
+                        f"Run HonestDiD.sensitivity() across a grid to find "
+                        f"the breakdown value."
+                    )
+        elif bkd is None:
             sentences.append(
                 "The effect remains significant across the entire HonestDiD "
                 "grid — robust to plausible parallel-trends violations."

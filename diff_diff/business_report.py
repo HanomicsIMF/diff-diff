@@ -313,51 +313,21 @@ class BusinessReport:
     def _extract_headline(self, dr_schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Extract the headline effect + CI + p-value from the result."""
         r = self._results
+        # Delegate the attribute-alias lookup to the shared helper in the
+        # diagnostic_report module so BR and DR agree on which fields a
+        # result class exposes for its headline (including
+        # ``ContinuousDiDResults`` which uses ``overall_att_se`` /
+        # ``overall_att_p_value`` / ``overall_att_conf_int``).
+        from diff_diff.diagnostic_report import _extract_scalar_headline
+
+        extracted = _extract_scalar_headline(r, fallback_alpha=self._context.alpha)
         att: Optional[float] = None
         se: Optional[float] = None
         p: Optional[float] = None
         ci: Optional[List[float]] = None
         alpha = self._context.alpha
-
-        for name in ("overall_att", "avg_att", "att"):
-            val = getattr(r, name, None)
-            if val is None:
-                continue
-            att = _safe_float(val)
-            se = _safe_float(
-                getattr(
-                    r,
-                    {
-                        "overall_att": "overall_se",
-                        "avg_att": "avg_se",
-                        "att": "se",
-                    }[name],
-                    None,
-                )
-            )
-            p = _safe_float(
-                getattr(
-                    r,
-                    {
-                        "overall_att": "overall_p_value",
-                        "avg_att": "avg_p_value",
-                        "att": "p_value",
-                    }[name],
-                    None,
-                )
-            )
-            ci = _safe_ci(
-                getattr(
-                    r,
-                    {
-                        "overall_att": "overall_conf_int",
-                        "avg_att": "avg_conf_int",
-                        "att": "conf_int",
-                    }[name],
-                    None,
-                )
-            )
-            break
+        if extracted is not None:
+            _name, att, se, p, ci, _alpha = extracted
 
         unit = self._context.outcome_unit
         unit_kind = _UNIT_KINDS.get(unit.lower() if unit else "", "unknown")
@@ -992,11 +962,35 @@ def _render_summary(schema: Dict[str, Any]) -> str:
                 "trends analogue)."
             )
 
-    # Sensitivity.
+    # Sensitivity. A ``single_M_precomputed`` sensitivity block has
+    # ``breakdown_M=None`` by construction because only one M was evaluated;
+    # narrate it as a point check, NOT as grid-wide robustness.
     sens = schema.get("sensitivity", {}) or {}
     if sens.get("status") == "computed":
         bkd = sens.get("breakdown_M")
-        if bkd is None:
+        conclusion = sens.get("conclusion")
+        if conclusion == "single_M_precomputed":
+            grid_points = sens.get("grid") or []
+            point = grid_points[0] if grid_points else {}
+            m_val = point.get("M")
+            robust = point.get("robust_to_zero")
+            if isinstance(m_val, (int, float)):
+                if robust:
+                    sentences.append(
+                        f"HonestDiD (single point checked): at M = {m_val:.2g}, "
+                        f"the robust confidence interval excludes zero. This is "
+                        f"a point check, not a breakdown analysis — run "
+                        f"HonestDiD.sensitivity() across a grid of M values "
+                        f"for a full robustness claim."
+                    )
+                else:
+                    sentences.append(
+                        f"HonestDiD (single point checked): at M = {m_val:.2g}, "
+                        f"the robust confidence interval includes zero. Run "
+                        f"HonestDiD.sensitivity() across a grid to find the "
+                        f"breakdown value."
+                    )
+        elif bkd is None:
             sentences.append(
                 "HonestDiD: the result remains significant across the "
                 "full grid — robust to plausible parallel-trends violations."

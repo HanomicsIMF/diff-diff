@@ -415,6 +415,235 @@ class TestJointWaldAlignment:
         assert pt["method"] == "bonferroni"
 
 
+class TestSingleMSensitivityPrecomputed:
+    """Single-M HonestDiDResults must NOT be narrated as full-grid robustness.
+
+    Regression for the P0 CI-review finding that ``conclusion='single_M_precomputed'``
+    was being swallowed because both renderers checked ``breakdown_M is None`` and
+    fell through to the "robust across the full grid" phrasing.
+    """
+
+    def _fake_single_m(self, M=1.5, ci_lb=1.0, ci_ub=3.0):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            M=M,
+            lb=ci_lb,
+            ub=ci_ub,
+            ci_lb=ci_lb,
+            ci_ub=ci_ub,
+            method="relative_magnitude",
+            alpha=0.05,
+        )
+
+    def test_dr_schema_preserves_single_m_marker(self, multi_period_fit):
+        fit, _ = multi_period_fit
+        dr = DiagnosticReport(fit, precomputed={"sensitivity": self._fake_single_m()})
+        sens = dr.to_dict()["sensitivity"]
+        assert sens["status"] == "ran"
+        assert sens["conclusion"] == "single_M_precomputed"
+        assert sens["breakdown_M"] is None
+        assert len(sens["grid"]) == 1
+
+    def test_dr_summary_does_not_claim_full_grid_robustness(self, multi_period_fit):
+        fit, _ = multi_period_fit
+        dr = DiagnosticReport(fit, precomputed={"sensitivity": self._fake_single_m()})
+        summary = dr.summary()
+        assert "across the entire HonestDiD grid" not in summary
+        assert "robust across the grid" not in summary
+        # It should narrate the single-M check honestly.
+        assert "single point checked" in summary
+        assert "not a breakdown" in summary or "not a grid" in summary
+
+    def test_br_summary_does_not_claim_full_grid_robustness(self, multi_period_fit):
+        """BR via honest_did_results= passthrough must not oversell a point check."""
+        from diff_diff import BusinessReport
+
+        fit, _ = multi_period_fit
+        br = BusinessReport(fit, honest_did_results=self._fake_single_m())
+        summary = br.summary()
+        assert "full grid" not in summary
+        assert "single point checked" in summary
+
+
+class TestEPVDictBacked:
+    """EPV diagnostics on fits that use the dict-of-dicts convention.
+
+    Regression for the P0 CI-review finding that ``_check_epv`` assumed
+    ``low_epv_cells`` / ``min_epv`` attributes but the library stores
+    ``epv_diagnostics`` as ``{(g, t): {"is_low": ..., "epv": ...}}``.
+    """
+
+    def _make_cs_stub(self, epv_diag, threshold=10.0):
+        class CallawaySantAnnaResults:
+            pass
+
+        obj = CallawaySantAnnaResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.1
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 200
+        obj.n_treated = 40
+        obj.n_control = 160
+        obj.survey_metadata = None
+        obj.event_study_effects = None
+        obj.epv_diagnostics = epv_diag
+        obj.epv_threshold = threshold
+        return obj
+
+    def test_low_epv_cells_counted_from_is_low_flag(self):
+        epv = {
+            (2020, 1): {"is_low": True, "epv": 4.5},
+            (2020, 2): {"is_low": False, "epv": 18.0},
+            (2021, 1): {"is_low": True, "epv": 2.0},
+            (2021, 2): {"is_low": False, "epv": 22.0},
+        }
+        stub = self._make_cs_stub(epv, threshold=10.0)
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        section = dr.to_dict()["epv"]
+        assert section["status"] == "ran"
+        assert section["n_cells_low"] == 2
+        assert section["n_cells_total"] == 4
+        assert section["min_epv"] == pytest.approx(2.0)
+        assert section["threshold"] == pytest.approx(10.0)
+
+    def test_no_low_cells_reports_clean(self):
+        epv = {(2020, 1): {"is_low": False, "epv": 15.0}}
+        stub = self._make_cs_stub(epv, threshold=10.0)
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        section = dr.to_dict()["epv"]
+        assert section["n_cells_low"] == 0
+        assert section["min_epv"] == pytest.approx(15.0)
+
+    def test_threshold_read_from_results_not_hardcoded(self):
+        """Pass a non-default epv_threshold and confirm DR echoes it."""
+        epv = {(2020, 1): {"is_low": True, "epv": 7.0}}
+        stub = self._make_cs_stub(epv, threshold=8.5)
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        assert dr.to_dict()["epv"]["threshold"] == pytest.approx(8.5)
+
+
+class TestCSEventStudyVCovSupport:
+    """CS sensitivity + pretrends_power must not be skipped for absence of results.vcov.
+
+    Regression for the P1 CI-review finding that the applicability gate required
+    ``results.vcov`` but CS exposes ``event_study_vcov`` / ``event_study_vcov_index``.
+    """
+
+    def test_cs_sensitivity_runs_on_aggregated_fit(self, cs_fit):
+        fit, sdf = cs_fit
+        dr = DiagnosticReport(
+            fit,
+            data=sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        assert (
+            "sensitivity" in dr.applicable_checks
+        ), "CS fit with event_study aggregation must not skip sensitivity"
+        sens = dr.to_dict()["sensitivity"]
+        # It may run successfully or emit an error depending on data shape,
+        # but it must NOT be skipped for "results.vcov not available".
+        assert sens["status"] in {"ran", "error"}, sens
+
+    def test_cs_pretrends_power_runs_on_aggregated_fit(self, cs_fit):
+        fit, sdf = cs_fit
+        dr = DiagnosticReport(
+            fit,
+            data=sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        assert (
+            "pretrends_power" in dr.applicable_checks
+        ), "CS fit with event_study aggregation must not skip pretrends_power"
+
+
+class TestCSJointWaldViaEventStudyVCov:
+    """CS PT should use joint_wald via event_study_vcov when interaction_indices is absent.
+
+    Regression for the P1 CI-review finding that CS always fell back to Bonferroni
+    even though ``event_study_vcov`` + ``event_study_vcov_index`` were available.
+    """
+
+    def _make_cs_stub_with_es_vcov(self):
+        class CallawaySantAnnaResults:
+            pass
+
+        obj = CallawaySantAnnaResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.1
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 200
+        obj.n_treated = 40
+        obj.n_control = 160
+        obj.survey_metadata = None
+        # Pre-period event-study entries with known coefficients + vcov.
+        obj.event_study_effects = {
+            -3: {"effect": 0.5, "se": 0.5, "p_value": 0.32},
+            -2: {"effect": -0.5, "se": 0.5, "p_value": 0.32},
+            -1: {"effect": 0.2, "se": 0.4, "p_value": 0.62},
+            0: {"effect": 2.0, "se": 0.3, "p_value": 0.0001},
+            1: {"effect": 2.5, "se": 0.3, "p_value": 0.0001},
+        }
+        obj.event_study_vcov = np.diag([0.25, 0.25, 0.16, 0.09, 0.09])
+        obj.event_study_vcov_index = [-3, -2, -1, 0, 1]
+        obj.vcov = None  # CS convention
+        obj.interaction_indices = None
+        return obj
+
+    def test_cs_pt_uses_event_study_vcov_wald(self):
+        stub = self._make_cs_stub_with_es_vcov()
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran"
+        assert (
+            pt["method"] == "joint_wald_event_study"
+        ), f"Expected event-study-backed Wald; got method={pt.get('method')!r}"
+        # Closed-form: 0.5^2/0.25 + (-0.5)^2/0.25 + 0.2^2/0.16 = 1 + 1 + 0.25 = 2.25
+        assert pt["test_statistic"] == pytest.approx(2.25, rel=1e-6)
+        assert pt["df"] == 3
+
+
+class TestContinuousDiDHeadline:
+    """ContinuousDiDResults exposes overall_att_se/p_value/conf_int, not overall_se/…
+
+    Regression for the P1 CI-review finding that both report classes missed
+    ContinuousDiDResults inference fields.
+    """
+
+    def test_extract_scalar_headline_resolves_continuous_did_aliases(self):
+        from diff_diff.diagnostic_report import _extract_scalar_headline
+
+        class ContinuousDiDResults:
+            pass
+
+        obj = ContinuousDiDResults()
+        obj.overall_att = 2.5
+        obj.overall_att_se = 0.4
+        obj.overall_att_p_value = 0.00001
+        obj.overall_att_conf_int = (1.7, 3.3)
+        obj.alpha = 0.05
+
+        result = _extract_scalar_headline(obj)
+        assert result is not None
+        name, value, se, p, ci, alpha = result
+        assert name == "overall_att"
+        assert value == pytest.approx(2.5)
+        assert se == pytest.approx(0.4)
+        assert p == pytest.approx(0.00001)
+        assert ci == [pytest.approx(1.7), pytest.approx(3.3)]
+        assert alpha == pytest.approx(0.05)
+
+
 class TestVerdictsAndTiers:
     def test_pt_verdict_three_bins(self):
         assert _pt_verdict(0.001) == "clear_violation"
