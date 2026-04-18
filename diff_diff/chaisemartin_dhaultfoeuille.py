@@ -2683,6 +2683,22 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             effective_joiners_available = False
             effective_leavers_available = False
 
+        # Persist the final effective df_survey (post-heterogeneity,
+        # post-all-IF-sites) into survey_metadata so downstream
+        # consumers — HonestDiD bounds (honest_did.py:973 reads
+        # results.survey_metadata.df_survey), exported metadata, and
+        # users — all see the same df that the top-level dCDH inference
+        # actually used. Before this assignment, survey_metadata carries
+        # the design-level `resolved_survey.df_survey` from survey
+        # resolution; under replicate designs the effective df may be
+        # smaller (reduced via _replicate_n_valid_list). SurveyMetadata
+        # is a mutable @dataclass (diff_diff/survey.py:681), so direct
+        # attribute assignment is safe.
+        if survey_metadata is not None:
+            survey_metadata.df_survey = _effective_df_survey(
+                resolved_survey, _replicate_n_valid_list
+            )
+
         results = ChaisemartinDHaultfoeuilleResults(
             overall_att=effective_overall_att,
             overall_se=effective_overall_se,
@@ -3439,8 +3455,21 @@ def _compute_heterogeneity_test(
         Observation-level survey info with keys ``group_ids`` (raw per-row
         group labels), ``weights`` (per-row survey weights), and ``resolved``
         (ResolvedSurveyDesign). When provided, the regression uses WLS with
-        per-group weights W_g = sum of obs survey weights, and SE is computed
-        via Binder TSL IF expansion through ``compute_survey_if_variance``.
+        per-group weights W_g = sum of obs survey weights. SE is computed
+        via Binder TSL IF expansion through ``compute_survey_if_variance``
+        by default; under a replicate-weight design (BRR/Fay/JK1/JKn/SDR),
+        dispatches to ``compute_replicate_if_variance`` for Rao-Wu-style
+        variance. The effective df for t-critical values follows the
+        site-level ``min(df_s, n_valid_het - 1)`` rule and the helper
+        mutates ``replicate_n_valid_list`` so the final
+        ``_effective_df_survey(...)`` sees this site's n_valid.
+    replicate_n_valid_list : list[int], optional
+        Shared accumulator for replicate-weight ``n_valid`` counts across
+        IF sites. When provided and a replicate design is in use, this
+        function appends its own ``n_valid_het`` before computing the
+        local effective df — so both the local inference fields and the
+        final ``survey_metadata.df_survey`` (set by ``fit()``) reflect
+        this site's contribution.
 
     Returns
     -------
@@ -4985,18 +5014,30 @@ def _effective_df_survey(
 
     Under replicate-weight designs, each IF site returns an ``n_valid``
     count (number of replicate columns that produced a finite estimate).
-    This helper returns ``min(n_valid) - 1`` across sites, matching the
-    precedent in ``diff_diff/efficient_did.py:1133-1135`` and
-    ``diff_diff/triple_diff.py:676-686``. Under TSL (analytical) or
-    non-survey fits, ``replicate_n_valid_list`` is empty and this falls
-    through to ``resolved_survey.df_survey`` (or ``None`` when there's
-    no survey design at all).
+    This helper **reduces** — never overwrites — the design-level
+    ``resolved_survey.df_survey`` (which for replicate designs is
+    ``QR-rank - 1`` per R's ``survey::degf()`` convention; see
+    ``diff_diff/survey.py:590``). Returns
+    ``min(resolved_survey.df_survey, min(n_valid) - 1)`` when both are
+    defined.
+
+    Matches the precedent in ``diff_diff/efficient_did.py:1133-1135``
+    and ``diff_diff/triple_diff.py:676-686`` (both reduce, not
+    replace). Under TSL (analytical) or non-survey fits,
+    ``replicate_n_valid_list`` is empty and this falls through to the
+    design-level df. Returns ``None`` when either the base df is
+    undefined (rank ≤ 1) or the reduced df would be < 1 — preserving
+    the NaN-inference contract from ``safe_inference``.
     """
     if resolved_survey is None:
         return None
-    if replicate_n_valid_list:
-        return int(min(replicate_n_valid_list)) - 1
-    return resolved_survey.df_survey
+    base_df = resolved_survey.df_survey
+    if not replicate_n_valid_list:
+        return base_df
+    reduced_df = int(min(replicate_n_valid_list)) - 1
+    if base_df is None or reduced_df < 1:
+        return None
+    return min(int(base_df), reduced_df)
 
 
 def _compute_se(

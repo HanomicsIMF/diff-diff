@@ -711,3 +711,90 @@ class TestInvariants:
             # honest_did.py internals. Just verify the attribute is
             # populated so the SE flow-through is exercised.
             assert res.honest_did_results is not None
+
+    def test_rank_deficient_replicate_uses_design_df(self, base_panel):
+        """Duplicated replicate columns → QR-rank < R → design df < R-1.
+
+        Regression for PR #311 CI review R1 P1. The main dCDH surface,
+        ``survey_metadata.df_survey``, and HonestDiD must all use the
+        reduced effective df (``min(design_df, n_valid - 1)``) rather
+        than the naive ``n_valid - 1`` that ignored the design's QR
+        rank. Before the fix, ``survey_metadata.df_survey`` stayed at
+        ``R - 1`` for rank-deficient replicate designs — which is
+        anti-conservative for t-inference.
+        """
+        R = 12
+        df = _attach_replicate_weights(base_panel, R=R, method="BRR", seed=3)
+        # Force duplicate columns to induce rank deficiency:
+        # rep1 = rep0, rep3 = rep2 → true rank = R - 2.
+        df["rep1"] = df["rep0"]
+        df["rep3"] = df["rep2"]
+        sd = _build_replicate_design(R, "BRR")
+        # Read off the design-level df via the resolved design so the
+        # test is robust to internal QR tolerance changes.
+        resolved = sd.resolve(df)
+        design_df = resolved.df_survey
+        assert design_df is not None and design_df < R - 1, (
+            f"Expected rank deficiency: design df={design_df} "
+            f"should be < {R - 1}"
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            res = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd, L_max=1, honest_did=True,
+            )
+        # survey_metadata carries the final (reduced) df — not R - 1.
+        assert res.survey_metadata.df_survey == design_df, (
+            f"Expected survey_metadata.df_survey == design_df "
+            f"({design_df}), got {res.survey_metadata.df_survey}."
+        )
+        # HonestDiD reads results.survey_metadata.df_survey directly
+        # (honest_did.py:973), so the same reduced df flows through.
+        # We assert the HonestDiD result is populated (df flow-through
+        # is exercised by the honest_did=True call above).
+        assert res.honest_did_results is not None
+
+    def test_dropped_replicate_reduces_df(self, base_panel):
+        """When some replicate columns produce degenerate per-replicate
+        estimates (e.g., all-zero weight vectors), the design's QR rank
+        drops below R — which flows through to the effective df.
+
+        Regression for PR #311 CI review R1 P2. Even when every IF site
+        reports the full ``n_valid = R``, the persisted df must never
+        exceed the design-level df. Pre-fix, ``_effective_df_survey``
+        returned ``n_valid - 1 = R - 1`` which over-counted degrees of
+        freedom on a reduced-rank design.
+        """
+        R = 15
+        df = _attach_replicate_weights(base_panel, R=R, method="JK1", seed=4)
+        # Zero out two replicate columns → drops rank by 2.
+        df["rep0"] = 0.0
+        df["rep1"] = 0.0
+        sd = _build_replicate_design(R, "JK1")
+        resolved = sd.resolve(df)
+        design_df = resolved.df_survey
+        assert design_df is not None and design_df <= R - 3, (
+            f"Expected zero-column rank deficiency: design df={design_df} "
+            f"should be <= {R - 3}"
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            res = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd, L_max=1,
+            )
+        # Persisted df must be capped by the design df, not R - 1.
+        assert res.survey_metadata.df_survey is not None
+        assert res.survey_metadata.df_survey <= design_df, (
+            f"Expected survey_metadata.df_survey <= design_df "
+            f"({design_df}), got {res.survey_metadata.df_survey}. "
+            f"Effective df must NEVER exceed the design-level df under "
+            f"replicate variance."
+        )
+        assert res.survey_metadata.df_survey < R - 1, (
+            f"Expected persisted df to reflect reduced rank (< R - 1 = "
+            f"{R - 1}), got {res.survey_metadata.df_survey}."
+        )
