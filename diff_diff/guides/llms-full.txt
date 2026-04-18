@@ -266,7 +266,7 @@ est.fit(
     trends_nonparam: Any | None = None,          # DID^s state-set-specific trends
     honest_did: bool = False,                    # HonestDiD sensitivity on placebos
     # ---- survey support ----
-    survey_design: SurveyDesign | None = None,   # pweight + strata/PSU/FPC (TSL)
+    survey_design: SurveyDesign | None = None,   # pweight (TSL or replicate BRR/Fay/JK1/JKn/SDR); n_bootstrap > 0 uses Hall-Mammen PSU multiplier
 ) -> ChaisemartinDHaultfoeuilleResults
 ```
 
@@ -320,9 +320,9 @@ print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 
 **Notes:**
 - Validated against R `DIDmultiplegtDYN` v2.3.3 at horizon `l = 1` via `tests/test_chaisemartin_dhaultfoeuille_parity.py`
-- Placebo SE contract: single-period placebo `DID_M^pl` (`L_max=None`) has `NaN` SE because the per-period aggregation path has no influence-function derivation; inference fields stay NaN-consistent **even when `n_bootstrap > 0`** for the single-period path (bootstrap covers `DID_M`, `DID_+`, and `DID_-` only). Multi-horizon dynamic placebos `DID^{pl}_l` (`L_max >= 1`) have valid analytical SE via the placebo influence function (same cohort-recentered structure as positive horizons, applied to backward outcome differences), with bootstrap SE override when `n_bootstrap > 0`. This is a library extension beyond the dynamic companion paper, which states Theorem 1 variance for `DID_l` only.
+- Placebo SE contract: single-period placebo `DID_M^pl` (`L_max=None`) has `NaN` SE because the per-period aggregation path has no influence-function derivation; inference fields stay NaN-consistent **even when `n_bootstrap > 0`** for the single-period path (single-period bootstrap covers only `DID_M`, `DID_+`, and `DID_-`). Multi-horizon dynamic placebos `DID^{pl}_l` (`L_max >= 1`) have valid analytical SE via the placebo influence function (same cohort-recentered structure as positive horizons, applied to backward outcome differences), with bootstrap SE override when `n_bootstrap > 0` — bootstrap at `L_max >= 1` covers `DID_M`, `DID_+`, `DID_-`, per-horizon event-study effects (`event_study_effects[l]`), and placebo horizons (`placebo_event_study[-l]`), with shared weights across horizons for valid joint (sup-t) bands. This is a library extension beyond the dynamic companion paper, which states Theorem 1 variance for `DID_l` only.
 - The analytical CI is conservative under Assumption 8 (independent groups) of the dynamic companion paper, exact only under iid sampling
-- Survey design supported: pweight with strata/PSU/FPC via Taylor Series Linearization. Replicate weights and PSU-level bootstrap deferred
+- Survey design supported: pweight with strata/PSU/FPC via Taylor Series Linearization (analytical) or replicate-weight variance (BRR/Fay/JK1/JKn/SDR). Opt-in PSU-level Hall-Mammen wild bootstrap via `n_bootstrap > 0`. Replicate + `n_bootstrap > 0` rejected with `NotImplementedError` (replicate variance is closed-form)
 
 ### SunAbraham
 
@@ -1672,8 +1672,8 @@ sd_female, data_female = sd.subpopulation(data, mask=lambda df: df['sex'] == 'F'
 
 **Key features:**
 - Taylor Series Linearization (TSL) variance with strata + PSU + FPC
-- Replicate weight variance: BRR, Fay's BRR, JK1, JKn, SDR (12 of 16 estimators)
-- Survey-aware bootstrap: multiplier at PSU or Rao-Wu rescaled
+- Replicate weight variance: BRR, Fay's BRR, JK1, JKn, SDR (13 of 16 estimators, including dCDH)
+- Survey-aware bootstrap: multiplier at PSU (Hall-Mammen wild; dCDH, staggered) or Rao-Wu rescaled (SyntheticDiD, SunAbraham)
 - DEFF diagnostics, subpopulation analysis, weight trimming (`trim_weights`)
 - Repeated cross-sections: `CallawaySantAnna(panel=False)`
 - Compatibility matrix: see `docs/choosing_estimator.rst` Survey Design Support section

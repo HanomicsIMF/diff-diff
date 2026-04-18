@@ -404,32 +404,35 @@ class TestForwardCompatGates:
 
     def test_cluster_parameter_raises_not_implemented(self, data):
         """
-        Per Phase 1 cluster contract: dCDH always clusters at the
-        group level via the cohort-recentered influence function
-        (analytical SEs) and the multiplier bootstrap (also grouped at
-        the group column). Custom clustering is not supported in
-        Phase 1.
+        Per the dCDH cluster contract: dCDH clusters at the group
+        level by default via the cohort-recentered influence function
+        (analytical SEs) and the multiplier bootstrap. Under
+        ``survey_design`` with strictly-coarser PSUs the bootstrap
+        automatically upgrades to PSU-level Hall-Mammen wild. User-
+        specified clustering via the ``cluster=`` kwarg is not
+        supported.
 
         The reviewer flagged that ``cluster`` was previously accepted
         on ``__init__`` and stored on ``self.cluster`` but never
         actually read by ``fit()`` or ``_compute_dcdh_bootstrap()``,
-        making it a silent no-op. This test pins the new contract: any
+        making it a silent no-op. This test pins the contract: any
         non-None cluster value raises ``NotImplementedError`` at
         construction time with a message naming the offending value
-        and pointing at the Phase 1 reservation. The same gate fires
-        from ``set_params``.
+        and pointing at the no-custom-clustering reservation. The
+        same gate fires from ``set_params``.
 
-        See REGISTRY.md ``Note (Phase 1 cluster contract)``.
+        See REGISTRY.md ``Note (cluster contract)``.
         """
+        pattern = r"cluster.*(not supported|reserved for a future)"
         # __init__ rejects any non-None cluster
-        with pytest.raises(NotImplementedError, match=r"cluster.*Phase 1"):
+        with pytest.raises(NotImplementedError, match=pattern):
             ChaisemartinDHaultfoeuille(cluster="state")
-        with pytest.raises(NotImplementedError, match=r"cluster.*Phase 1"):
+        with pytest.raises(NotImplementedError, match=pattern):
             ChaisemartinDHaultfoeuille(cluster="unit")
 
         # set_params after construction also rejects
         est = ChaisemartinDHaultfoeuille()
-        with pytest.raises(NotImplementedError, match=r"cluster.*Phase 1"):
+        with pytest.raises(NotImplementedError, match=pattern):
             est.set_params(cluster="state")
 
         # cluster=None still works (the only supported value)
@@ -439,7 +442,7 @@ class TestForwardCompatGates:
 
         # The convenience function also rejects (forward-compat gate
         # propagates through the wrapper at __init__ time)
-        with pytest.raises(NotImplementedError, match=r"cluster.*Phase 1"):
+        with pytest.raises(NotImplementedError, match=pattern):
             chaisemartin_dhaultfoeuille(
                 data,
                 outcome="outcome",

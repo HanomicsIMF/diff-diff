@@ -309,7 +309,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
       (computed automatically by default; gate via ``placebo=False``)
     - Analytical SE via the cohort-recentered plug-in formula from Web
       Appendix Section 3.7.3; multiplier bootstrap clustered at the group
-      level via ``n_bootstrap``
+      level by default via ``n_bootstrap``; under ``survey_design`` with
+      strictly-coarser PSUs the bootstrap automatically upgrades to
+      PSU-level Hall-Mammen wild clustering (see REGISTRY.md
+      ``ChaisemartinDHaultfoeuille`` Note on survey + bootstrap)
     - Normalized estimator ``DID^n_l``, cost-benefit aggregate ``delta``,
       and sup-t simultaneous confidence bands
     - Residualization-style covariate adjustment (``DID^X``) via
@@ -317,8 +320,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
       ``trends_linear=True``, state-set-specific trends via
       ``trends_nonparam=``, heterogeneity testing, non-binary treatment,
       HonestDiD sensitivity integration on placebos via ``honest_did=True``
-    - Survey support via ``survey_design=`` (pweight + strata/PSU/FPC with
-      Taylor-series linearization)
+    - Survey support via ``survey_design=``: pweight with strata/PSU/FPC
+      via Taylor Series Linearization (analytical) or replicate-weight
+      variance (BRR/Fay/JK1/JKn/SDR)
     - TWFE decomposition diagnostic from Theorem 1 of AER 2020
 
     Only ``aggregate`` on :meth:`fit` still raises ``NotImplementedError``.
@@ -328,13 +332,27 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
     alpha : float, default=0.05
         Significance level for confidence intervals.
     cluster : str, optional, default=None
-        Must be ``None`` (the default). dCDH always clusters at the group
-        level via the cohort-recentered influence-function plug-in
-        (analytical SEs) and the multiplier bootstrap (also grouped at the
-        ``group`` column). Passing any non-``None`` value raises
-        ``NotImplementedError``. Custom clustering at a coarser or finer
-        level than the group is a planned extension. See REGISTRY.md
-        ``ChaisemartinDHaultfoeuille`` section for the full contract.
+        Must be ``None`` (the default). User-specified clustering via
+        this kwarg is not supported — passing any non-``None`` value
+        raises ``NotImplementedError`` at construction time (and the
+        same gate fires from ``set_params``). The effective clustering
+        depends on how you call ``fit()``:
+
+        - **Default (no survey_design)**: clustered at the group level
+          via the cohort-recentered influence-function plug-in
+          (analytical SEs) and the multiplier bootstrap.
+        - **Under ``survey_design`` with auto-inject or explicit
+          ``psu=group``**: PSU coincides with the group and the
+          group-level and PSU-level paths are bit-identical.
+        - **Under ``survey_design`` with strictly-coarser PSUs**: the
+          multiplier bootstrap automatically upgrades to PSU-level
+          Hall-Mammen wild clustering.
+
+        So dCDH does NOT always cluster at the group level — see
+        REGISTRY.md ``ChaisemartinDHaultfoeuille`` Notes on cluster
+        contract and survey + bootstrap for the full matrix. Custom
+        user-specified clustering at a coarser or finer level than the
+        group is a planned extension.
     n_bootstrap : int, default=0
         Number of multiplier-bootstrap iterations. ``0`` (default) uses
         only the analytical SE. Set to ``999`` or higher for stable
@@ -439,12 +457,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             raise ValueError(f"n_bootstrap must be non-negative, got {n_bootstrap}")
         if cluster is not None:
             raise NotImplementedError(
-                f"cluster={cluster!r}: custom clustering is not supported in "
-                f"Phase 1 of ChaisemartinDHaultfoeuille. dCDH always clusters "
-                f"at the group level via the cohort-recentered influence-"
-                f"function plug-in (analytical SEs) and the multiplier "
-                f"bootstrap (also grouped at the group column). To use the "
-                f"supported group-level clustering, pass cluster=None (the "
+                f"cluster={cluster!r}: user-specified clustering is not "
+                f"supported in ChaisemartinDHaultfoeuille. dCDH clusters at "
+                f"the group level by default via the cohort-recentered "
+                f"influence-function plug-in (analytical SEs) and the "
+                f"multiplier bootstrap. Under survey_design with strictly-"
+                f"coarser PSUs, bootstrap clustering automatically upgrades "
+                f"to PSU-level Hall-Mammen wild. To use the default path, "
+                f"pass cluster=None (the "
                 f"default). Custom clustering is reserved for a future "
                 f"phase. See REGISTRY.md ChaisemartinDHaultfoeuille section "
                 f"for the full contract."
@@ -510,11 +530,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             raise ValueError(f"n_bootstrap must be non-negative, got {self.n_bootstrap}")
         if self.cluster is not None:
             raise NotImplementedError(
-                f"cluster={self.cluster!r}: custom clustering is not supported "
-                f"in Phase 1 of ChaisemartinDHaultfoeuille. dCDH always clusters "
-                f"at the group level. To use the supported group-level "
-                f"clustering, pass cluster=None (the default). Custom clustering "
-                f"is reserved for a future phase. See REGISTRY.md "
+                f"cluster={self.cluster!r}: user-specified clustering is "
+                f"not supported in ChaisemartinDHaultfoeuille. dCDH clusters "
+                f"at the group level by default; under survey_design with "
+                f"strictly-coarser PSUs the bootstrap automatically upgrades "
+                f"to PSU-level Hall-Mammen wild clustering. Pass cluster=None "
+                f"(the default) to use this path. User-specified custom "
+                f"clustering is reserved for a future phase. See REGISTRY.md "
                 f"ChaisemartinDHaultfoeuille section for the full contract."
             )
         return self
@@ -615,11 +637,25 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             ``drop_larger_lower=False`` to retain 2-switch groups.
         survey_design : SurveyDesign, optional
             Survey design specification for design-based inference.
-            Supports pweight with strata/PSU/FPC via Taylor Series
-            Linearization. Survey weights produce weighted cell means
-            for the point estimate; the IF-based variance accounts for
-            the survey design structure. Replicate weights are not yet
-            supported.
+            Supports ``weight_type='pweight'`` with two variance paths:
+            (1) Taylor Series Linearization using strata / PSU / FPC
+            (analytical) and (2) replicate-weight variance using
+            BRR / Fay / JK1 / JKn / SDR methods (analytical,
+            closed-form). Survey weights produce weighted cell means
+            for the point estimate. Under a survey design without an
+            explicit ``psu``, ``fit()`` auto-injects ``psu=<group_col>``
+            so the group is the effective sampling unit (strata / PSU
+            must be within-group-constant; mixed labels within a group
+            raise ``ValueError``). When ``n_bootstrap > 0`` and a
+            survey design is supplied, the multiplier bootstrap
+            operates at the PSU level (Hall-Mammen wild PSU
+            bootstrap) — under the default auto-inject this collapses
+            to a group-level clustered bootstrap. **Replicate weights
+            combined with ``n_bootstrap > 0`` are rejected** with
+            ``NotImplementedError`` (replicate variance is
+            closed-form; bootstrap would double-count variance). See
+            REGISTRY.md ``ChaisemartinDHaultfoeuille`` Notes for the
+            full contract.
 
         Returns
         -------
@@ -725,13 +761,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"weight_type='pweight', got '{resolved_survey.weight_type}'. "
                     f"The survey IF variance math assumes probability weights."
                 )
-            if (resolved_survey.replicate_weights is not None
-                    and resolved_survey.replicate_weights.shape[1] > 0):
-                raise NotImplementedError(
-                    "Replicate weight variance for dCDH is not yet supported. "
-                    "Use strata/PSU/FPC for design-based inference via Taylor "
-                    "Series Linearization."
-                )
+            # Replicate-weight designs (BRR/Fay/JK1/JKn/SDR) are supported
+            # for analytical variance via compute_replicate_if_variance()
+            # at each IF site (see _survey_se_from_group_if). The combination
+            # of replicate weights and n_bootstrap > 0 is rejected inside
+            # the bootstrap entry block (replicate variance is closed-form;
+            # bootstrap would double-count variance). Matches library
+            # precedent: efficient_did.py:989, staggered.py:1869,
+            # two_stage.py:251-253.
+
             # Within-group-constant PSU/strata is required: the IF
             # expansion psi_i = U[g] * (w_i / W_g) supports within-group
             # variation in WEIGHTS (each obs contributes proportionally),
@@ -777,6 +815,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 "weights": survey_weights,
                 "resolved": resolved_survey,
             }
+
+        # Replicate-weight variance tracker: each _compute_se call under
+        # a replicate design returns n_valid (number of replicate columns
+        # that produced a finite estimate). The effective df_survey is
+        # min(n_valid) - 1 across all IF sites — matches the precedent in
+        # `diff_diff/efficient_did.py:1133-1135` and
+        # `diff_diff/triple_diff.py:676-686`. Under TSL (analytical),
+        # _compute_se returns None for n_valid and df_survey falls through
+        # to resolved_survey.df_survey (= n_psu - n_strata).
+        _replicate_n_valid_list: List[int] = []
 
         # ------------------------------------------------------------------
         # Step 4b: Covariate aggregation (DID^X, Web Appendix Section 1.2)
@@ -1600,17 +1648,19 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 U_centered_l = _cohort_recenter(U_l_elig, cid_elig)
                 N_l_h = multi_horizon_dids[l_h]["N_l"]
                 _elig_groups_l = [all_groups[g] for g in range(len(all_groups)) if eligible_mask_var[g]]
-                se_l = _compute_se(
+                se_l, n_valid_l = _compute_se(
                     U_centered=U_centered_l,
                     divisor=N_l_h,
                     obs_survey_info=_obs_survey_info,
                     eligible_groups=_elig_groups_l,
                 )
+                if n_valid_l is not None:
+                    _replicate_n_valid_list.append(n_valid_l)
                 multi_horizon_se[l_h] = se_l
 
                 did_l_val = multi_horizon_dids[l_h]["did_l"]
-                _df_s = resolved_survey.df_survey if resolved_survey is not None else None
-                t_l, p_l, ci_l = safe_inference(did_l_val, se_l, alpha=self.alpha, df=_df_s)
+                _df_s = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
+                t_l, p_l, ci_l = safe_inference(did_l_val, se_l, alpha=self.alpha, df=_inference_df(_df_s, resolved_survey))
                 multi_horizon_inference[l_h] = {
                     "effect": did_l_val,
                     "se": se_l,
@@ -1727,17 +1777,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     cid_elig_pl = cid_pl[eligible_mask_pl]
                     U_centered_pl_l = _cohort_recenter(U_pl_elig, cid_elig_pl)
                     _elig_groups_pl = [all_groups[g] for g in range(len(all_groups)) if eligible_mask_pl[g]]
-                    se_pl_l = _compute_se(
+                    se_pl_l, n_valid_pl_l = _compute_se(
                         U_centered=U_centered_pl_l,
                         divisor=pl_data["N_pl_l"],
                         obs_survey_info=_obs_survey_info,
                         eligible_groups=_elig_groups_pl,
                     )
+                    if n_valid_pl_l is not None:
+                        _replicate_n_valid_list.append(n_valid_pl_l)
                     placebo_horizon_se[lag_l] = se_pl_l
                     pl_val = pl_data["placebo_l"]
-                    _df_s = resolved_survey.df_survey if resolved_survey is not None else None
+                    _df_s = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
                     t_pl_l, p_pl_l, ci_pl_l = safe_inference(
-                        pl_val, se_pl_l, alpha=self.alpha, df=_df_s
+                        pl_val, se_pl_l, alpha=self.alpha,
+                        df=_inference_df(_df_s, resolved_survey),
                     )
                     placebo_horizon_inference[lag_l] = {
                         "effect": pl_val,
@@ -1810,12 +1863,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         )
 
         # Analytical SE for DID_M (survey-aware when survey_design provided)
-        overall_se = _compute_se(
+        overall_se, n_valid_overall = _compute_se(
             U_centered=U_centered_overall,
             divisor=N_S,
             obs_survey_info=_obs_survey_info,
             eligible_groups=_eligible_group_ids,
         )
+        if n_valid_overall is not None:
+            _replicate_n_valid_list.append(n_valid_overall)
         # Detect the degenerate-cohort case: every variance-eligible group
         # forms its own (D_{g,1}, F_g, S_g) cohort, so the centered
         # influence function is identically zero and `_plugin_se` returns
@@ -1840,23 +1895,26 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 UserWarning,
                 stacklevel=2,
             )
-        _df_survey = (
-            resolved_survey.df_survey if resolved_survey is not None else None
-        )
+        _df_survey = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
         overall_t, overall_p, overall_ci = safe_inference(
-            overall_att, overall_se, alpha=self.alpha, df=_df_survey
+            overall_att, overall_se, alpha=self.alpha,
+            df=_inference_df(_df_survey, resolved_survey),
         )
 
         # Joiners SE (uses joiner-only centered IF; conservative bound)
         if joiners_available:
-            joiners_se = _compute_se(
+            joiners_se, n_valid_joiners = _compute_se(
                 U_centered=U_centered_joiners,
                 divisor=joiner_total,
                 obs_survey_info=_obs_survey_info,
                 eligible_groups=_eligible_group_ids,
             )
+            if n_valid_joiners is not None:
+                _replicate_n_valid_list.append(n_valid_joiners)
+            _df_survey = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
             joiners_t, joiners_p, joiners_ci = safe_inference(
-                joiners_att, joiners_se, alpha=self.alpha, df=_df_survey
+                joiners_att, joiners_se, alpha=self.alpha,
+                df=_inference_df(_df_survey, resolved_survey),
             )
         else:
             joiners_se, joiners_t, joiners_p, joiners_ci = (
@@ -1868,14 +1926,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
         # Leavers SE
         if leavers_available:
-            leavers_se = _compute_se(
+            leavers_se, n_valid_leavers = _compute_se(
                 U_centered=U_centered_leavers,
                 divisor=leaver_total,
                 obs_survey_info=_obs_survey_info,
                 eligible_groups=_eligible_group_ids,
             )
+            if n_valid_leavers is not None:
+                _replicate_n_valid_list.append(n_valid_leavers)
+            _df_survey = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
             leavers_t, leavers_p, leavers_ci = safe_inference(
-                leavers_att, leavers_se, alpha=self.alpha, df=_df_survey
+                leavers_att, leavers_se, alpha=self.alpha,
+                df=_inference_df(_df_survey, resolved_survey),
             )
         else:
             leavers_se, leavers_t, leavers_p, leavers_ci = (
@@ -1916,14 +1978,81 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         bootstrap_results: Optional[DCDHBootstrapResults] = None
         if self.n_bootstrap > 0:
             if resolved_survey is not None:
-                warnings.warn(
-                    "Bootstrap with survey_design uses group-level multiplier "
-                    "weights, not PSU-level. This is conservative when groups "
-                    "are finer than PSUs. PSU-level survey bootstrap is "
-                    "deferred to a future release.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+                # Replicate-weight designs have their own closed-form
+                # variance (Rao-Wu / BRR / Fay / JK1 / JKn / SDR via
+                # compute_replicate_if_variance). Combining replicate
+                # variance with a multiplier bootstrap would double-count
+                # variance. Match library precedent:
+                # efficient_did.py:989, staggered.py:1869,
+                # two_stage.py:251-253.
+                if (
+                    resolved_survey.replicate_weights is not None
+                    and resolved_survey.replicate_weights.shape[1] > 0
+                ):
+                    raise NotImplementedError(
+                        "dCDH survey support rejects the combination of "
+                        "replicate weights and n_bootstrap > 0. Replicate-"
+                        "weight variance is closed-form "
+                        "(compute_replicate_if_variance); use n_bootstrap=0. "
+                        "For a bootstrap-based SE, use strata/PSU/FPC design "
+                        "instead of replicate weights."
+                    )
+
+                # Warning fires only when PSU is strictly coarser than
+                # group. Under auto-inject psu=group (or explicit
+                # psu=<group_col>), groups and PSUs coincide so
+                # Hall-Mammen wild PSU bootstrap equals group-level
+                # multiplier bootstrap — no need to warn.
+                # Count groups/PSUs on the POST-FILTER eligible set
+                # (`_eligible_group_ids`) — the same set the bootstrap
+                # map is built from below. Using raw positive-weight
+                # groups here would emit a misleading warning on
+                # panels where upstream dCDH filtering drops groups
+                # that happen to share PSUs with kept groups.
+                psu_arr_warn = getattr(resolved_survey, "psu", None)
+                if psu_arr_warn is None or _obs_survey_info is None:
+                    # No PSU info — can't compare to group count.
+                    n_psu_eff_warn, n_groups_eff_warn = -1, -1
+                else:
+                    obs_gids_warn = np.asarray(_obs_survey_info["group_ids"])
+                    obs_ws_warn = np.asarray(
+                        _obs_survey_info["weights"], dtype=np.float64
+                    )
+                    pos_mask_warn = obs_ws_warn > 0
+                    psu_codes_warn = np.asarray(psu_arr_warn)
+                    # Collect the PSU label for each variance-eligible
+                    # group (within-group-constant PSU is validated
+                    # upstream, so the first positive-weight label
+                    # represents the whole group).
+                    eligible_psu_labels: List[Any] = []
+                    for gid in _eligible_group_ids:
+                        mask_g = (obs_gids_warn == gid) & pos_mask_warn
+                        if mask_g.any():
+                            eligible_psu_labels.append(
+                                psu_codes_warn[mask_g][0]
+                            )
+                    n_groups_eff_warn = len(eligible_psu_labels)
+                    n_psu_eff_warn = (
+                        int(len(np.unique(np.asarray(eligible_psu_labels))))
+                        if eligible_psu_labels
+                        else -1
+                    )
+                if 0 <= n_psu_eff_warn < n_groups_eff_warn:
+                    warnings.warn(
+                        f"Bootstrap with survey_design uses Hall-Mammen "
+                        f"wild multiplier weights at the PSU level "
+                        f"(n_psu={n_psu_eff_warn} PSUs across "
+                        f"n_groups={n_groups_eff_warn} groups). For "
+                        f"designs with substantially unequal PSU sizes, "
+                        f"the wild bootstrap may under-cover relative to "
+                        f"analytical TSL inference; consider "
+                        f"n_bootstrap=0 for the TSL variance. If n_psu "
+                        f"is close to n_groups, lonely-PSU removal "
+                        f"(lonely_psu='remove') may be collapsing "
+                        f"singletons.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
             joiners_inputs = (
                 (U_centered_joiners, joiner_total, joiners_att) if joiners_available else None
             )
@@ -2039,6 +2168,52 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         h_data["did_l"],
                     )
 
+            # Under a survey design with PSU information, build a
+            # `group_id_to_psu_code` dict so the bootstrap mixin can
+            # derive each target's PSU map by ID lookup rather than by
+            # positional reuse. PSU/strata are within-group-constant by
+            # the _validate_group_constant_strata_psu precondition, so
+            # each variance-eligible group has exactly one PSU label.
+            # Under auto-inject psu=group each group has a unique PSU
+            # code and the bootstrap mixin's identity-map fast path
+            # reproduces the pre-PSU behavior bit-for-bit.
+            group_id_to_psu_code_bootstrap: Optional[Dict[Any, int]] = None
+            eligible_group_ids_bootstrap: Optional[np.ndarray] = None
+            if (
+                resolved_survey is not None
+                and getattr(resolved_survey, "psu", None) is not None
+                and _obs_survey_info is not None
+            ):
+                obs_psu_codes = np.asarray(resolved_survey.psu)
+                obs_gids_boot = np.asarray(_obs_survey_info["group_ids"])
+                obs_weights_boot = np.asarray(
+                    _obs_survey_info["weights"], dtype=np.float64
+                )
+                pos_mask_boot = obs_weights_boot > 0
+                group_psu_labels: List[Any] = []
+                valid_map = True
+                for gid in _eligible_group_ids:
+                    mask_g = (obs_gids_boot == gid) & pos_mask_boot
+                    if not mask_g.any():
+                        valid_map = False
+                        break
+                    labels = obs_psu_codes[mask_g]
+                    # Within-group-constant PSU is validated upstream;
+                    # the first label represents the whole group.
+                    group_psu_labels.append(labels[0])
+                if valid_map and len(group_psu_labels) == n_groups_for_overall_var:
+                    # Factor PSU labels to dense integer codes.
+                    _, dense_codes = np.unique(
+                        np.asarray(group_psu_labels),
+                        return_inverse=True,
+                    )
+                    dense_codes = np.asarray(dense_codes, dtype=np.int64)
+                    group_id_to_psu_code_bootstrap = {
+                        gid: int(code)
+                        for gid, code in zip(_eligible_group_ids, dense_codes)
+                    }
+                    eligible_group_ids_bootstrap = np.asarray(_eligible_group_ids)
+
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
                 u_centered_overall=U_centered_overall,
@@ -2049,6 +2224,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 placebo_inputs=placebo_inputs,
                 multi_horizon_inputs=mh_boot_inputs,
                 placebo_horizon_inputs=pl_boot_inputs,
+                group_id_to_psu_code=group_id_to_psu_code_bootstrap,
+                eligible_group_ids=eligible_group_ids_bootstrap,
             )
             bootstrap_results = br
 
@@ -2077,17 +2254,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 overall_se = br.overall_se
                 overall_p = br.overall_p_value if br.overall_p_value is not None else np.nan
                 overall_ci = br.overall_ci if br.overall_ci is not None else (np.nan, np.nan)
-                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=_df_survey)[0]
+                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))[0]
             if joiners_available and br.joiners_se is not None and np.isfinite(br.joiners_se):
                 joiners_se = br.joiners_se
                 joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
                 joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
-                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=_df_survey)[0]
+                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))[0]
             if leavers_available and br.leavers_se is not None and np.isfinite(br.leavers_se):
                 leavers_se = br.leavers_se
                 leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
                 leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
-                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=_df_survey)[0]
+                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))[0]
 
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
@@ -2249,7 +2426,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 if np.isfinite(delta_se):
                     effective_overall_se = delta_se
                     effective_overall_t, effective_overall_p, effective_overall_ci = safe_inference(
-                        delta_val, delta_se, alpha=self.alpha, df=_df_survey
+                        delta_val, delta_se, alpha=self.alpha,
+                        df=_inference_df(_df_survey, resolved_survey),
                     )
                 else:
                     effective_overall_se = float("nan")
@@ -2283,7 +2461,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         # Fallback: NaN SE (Phase 1 path or missing IF)
                         pl_se = float("nan")
                         pl_t, pl_p, pl_ci = safe_inference(
-                            pl_data["placebo_l"], pl_se, alpha=self.alpha, df=_df_survey
+                            pl_data["placebo_l"], pl_se, alpha=self.alpha,
+                            df=_inference_df(_df_survey, resolved_survey),
                         )
                         placebo_event_study_dict[-lag_l] = {
                             "effect": pl_data["placebo_l"],
@@ -2334,7 +2513,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             bs_ci if bs_ci is not None else (np.nan, np.nan)
                         )
                         placebo_event_study_dict[neg_key]["t_stat"] = safe_inference(
-                            eff, bs_se, alpha=self.alpha, df=_df_survey
+                            eff, bs_se, alpha=self.alpha,
+                            df=_inference_df(_df_survey, resolved_survey),
                         )[0]
 
         # Phase 2: build normalized_effects with SE
@@ -2347,7 +2527,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # SE via delta method: SE(DID^n_l) = SE(DID_l) / delta^D_l
                 se_did_l = multi_horizon_se.get(l_h, float("nan"))
                 se_norm = se_did_l / denom if np.isfinite(denom) and denom > 0 else float("nan")
-                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=_df_survey)
+                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))
                 normalized_effects_out[l_h] = {
                     "effect": eff,
                     "se": se_norm,
@@ -2406,7 +2586,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 else:
                     running_se_ub = float("nan")
                 cum_t, cum_p, cum_ci = safe_inference(
-                    cum_effect, running_se_ub, alpha=self.alpha, df=_df_survey
+                    cum_effect, running_se_ub, alpha=self.alpha,
+                    df=_inference_df(_df_survey, resolved_survey),
                 )
                 cumulated[l_h] = {
                     "effect": cum_effect,
@@ -2507,6 +2688,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 rank_deficient_action=self.rank_deficient_action,
                 group_ids_order=np.array(all_groups),
                 obs_survey_info=_obs_survey_info,
+                replicate_n_valid_list=_replicate_n_valid_list,
             )
 
         twfe_weights_df = None
@@ -2558,6 +2740,115 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # applicable to the per-group DID_1 estimand)
             effective_joiners_available = False
             effective_leavers_available = False
+
+        # R2 P1b: Finalize replicate-df propagation across public
+        # surfaces. When heterogeneity is active, its n_valid is
+        # appended to `_replicate_n_valid_list` AFTER the main
+        # surfaces (overall / joiners / leavers / event study /
+        # placebo horizon) have already computed their t/p/CI fields
+        # with an intermediate `_df_survey`. If heterogeneity reports
+        # the smallest n_valid, the main-surface inference would be
+        # anti-conservative relative to `survey_metadata.df_survey`
+        # and HonestDiD. Re-run safe_inference with the FINAL
+        # effective df so every surface agrees.
+        _final_eff_df = _effective_df_survey(
+            resolved_survey, _replicate_n_valid_list
+        )
+        if _replicate_n_valid_list:
+            _final_inf_df = _inference_df(_final_eff_df, resolved_survey)
+            # Recompute `effective_overall_*` directly — that's what
+            # ships in results at line ~2776+. `effective_overall_att/se`
+            # may differ from the raw `overall_att/se` under the delta
+            # (cost-benefit) path at L_max >= 2; recomputing from
+            # `effective_*` ensures both paths get the final df.
+            if np.isfinite(effective_overall_se):
+                effective_overall_t, effective_overall_p, effective_overall_ci = (
+                    safe_inference(
+                        effective_overall_att, effective_overall_se,
+                        alpha=self.alpha, df=_final_inf_df,
+                    )
+                )
+            # Keep `overall_*` in sync for any downstream code that
+            # reads them directly (e.g., placebo_event_study_dict
+            # construction flows from overall_*).
+            overall_t, overall_p, overall_ci = safe_inference(
+                overall_att, overall_se,
+                alpha=self.alpha, df=_final_inf_df,
+            )
+            if joiners_available:
+                joiners_t, joiners_p, joiners_ci = safe_inference(
+                    joiners_att, joiners_se,
+                    alpha=self.alpha, df=_final_inf_df,
+                )
+            if leavers_available:
+                leavers_t, leavers_p, leavers_ci = safe_inference(
+                    leavers_att, leavers_se,
+                    alpha=self.alpha, df=_final_inf_df,
+                )
+            if multi_horizon_inference is not None:
+                for _lag_r2, _info_r2 in list(multi_horizon_inference.items()):
+                    _t_r2, _p_r2, _ci_r2 = safe_inference(
+                        _info_r2["effect"], _info_r2["se"],
+                        alpha=self.alpha, df=_final_inf_df,
+                    )
+                    _info_r2["t_stat"] = _t_r2
+                    _info_r2["p_value"] = _p_r2
+                    _info_r2["conf_int"] = _ci_r2
+            if placebo_horizon_inference is not None:
+                for _lag_r2, _info_r2 in list(placebo_horizon_inference.items()):
+                    _t_r2, _p_r2, _ci_r2 = safe_inference(
+                        _info_r2["effect"], _info_r2["se"],
+                        alpha=self.alpha, df=_final_inf_df,
+                    )
+                    _info_r2["t_stat"] = _t_r2
+                    _info_r2["p_value"] = _p_r2
+                    _info_r2["conf_int"] = _ci_r2
+                    # `placebo_event_study_dict` holds VALUE copies
+                    # (not shared references) of the inner dicts, so
+                    # mutating `placebo_horizon_inference[lag]` above
+                    # does NOT propagate to the public surface. Update
+                    # the negative-key mirror explicitly so the
+                    # recomputed t/p/CI ship in results.
+                    if (
+                        placebo_event_study_dict is not None
+                        and -_lag_r2 in placebo_event_study_dict
+                    ):
+                        placebo_event_study_dict[-_lag_r2]["t_stat"] = _t_r2
+                        placebo_event_study_dict[-_lag_r2]["p_value"] = _p_r2
+                        placebo_event_study_dict[-_lag_r2]["conf_int"] = _ci_r2
+            if heterogeneity_effects:
+                for _lag_r2, _info_r2 in list(heterogeneity_effects.items()):
+                    if np.isfinite(_info_r2["se"]):
+                        _t_r2, _p_r2, _ci_r2 = safe_inference(
+                            _info_r2["beta"], _info_r2["se"],
+                            alpha=self.alpha, df=_final_inf_df,
+                        )
+                        _info_r2["t_stat"] = _t_r2
+                        _info_r2["p_value"] = _p_r2
+                        _info_r2["conf_int"] = _ci_r2
+            # Normalized effects: another public surface built with the
+            # pre-heterogeneity `_df_survey`. Recompute inference with
+            # the final df so t/p/CI match the other surfaces (and the
+            # NaN contract when the final df becomes undefined).
+            if normalized_effects_out is not None:
+                for _lag_r2, _info_r2 in list(normalized_effects_out.items()):
+                    _t_r2, _p_r2, _ci_r2 = safe_inference(
+                        _info_r2["effect"], _info_r2["se"],
+                        alpha=self.alpha, df=_final_inf_df,
+                    )
+                    _info_r2["t_stat"] = _t_r2
+                    _info_r2["p_value"] = _p_r2
+                    _info_r2["conf_int"] = _ci_r2
+
+        # Persist the final effective df_survey into survey_metadata so
+        # downstream consumers — HonestDiD bounds (honest_did.py:973
+        # reads results.survey_metadata.df_survey), exported metadata,
+        # and users — all see the same df that the recomputed
+        # inference above used. SurveyMetadata is a mutable @dataclass
+        # (diff_diff/survey.py:681), so direct attribute assignment is
+        # safe.
+        if survey_metadata is not None:
+            survey_metadata.df_survey = _final_eff_df
 
         results = ChaisemartinDHaultfoeuilleResults(
             overall_att=effective_overall_att,
@@ -3289,6 +3580,7 @@ def _compute_heterogeneity_test(
     rank_deficient_action: str = "warn",
     group_ids_order: Optional[np.ndarray] = None,
     obs_survey_info: Optional[Dict[str, Any]] = None,
+    replicate_n_valid_list: Optional[List[int]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """Test for heterogeneous treatment effects (Web Appendix Section 1.5).
 
@@ -3314,8 +3606,21 @@ def _compute_heterogeneity_test(
         Observation-level survey info with keys ``group_ids`` (raw per-row
         group labels), ``weights`` (per-row survey weights), and ``resolved``
         (ResolvedSurveyDesign). When provided, the regression uses WLS with
-        per-group weights W_g = sum of obs survey weights, and SE is computed
-        via Binder TSL IF expansion through ``compute_survey_if_variance``.
+        per-group weights W_g = sum of obs survey weights. SE is computed
+        via Binder TSL IF expansion through ``compute_survey_if_variance``
+        by default; under a replicate-weight design (BRR/Fay/JK1/JKn/SDR),
+        dispatches to ``compute_replicate_if_variance`` for Rao-Wu-style
+        variance. The effective df for t-critical values follows the
+        site-level ``min(df_s, n_valid_het - 1)`` rule and the helper
+        mutates ``replicate_n_valid_list`` so the final
+        ``_effective_df_survey(...)`` sees this site's n_valid.
+    replicate_n_valid_list : list[int], optional
+        Shared accumulator for replicate-weight ``n_valid`` counts across
+        IF sites. When provided and a replicate design is in use, this
+        function appends its own ``n_valid_het`` before computing the
+        local effective df — so both the local inference fields and the
+        final ``survey_metadata.df_survey`` (set by ``fit()``) reflect
+        this site's contribution.
 
     Returns
     -------
@@ -3334,13 +3639,25 @@ def _compute_heterogeneity_test(
         obs_survey_info is not None and group_ids_order is not None
     )
     if use_survey:
-        from diff_diff.survey import compute_survey_if_variance
+        from diff_diff.survey import (
+            compute_replicate_if_variance,
+            compute_survey_if_variance,
+        )
 
         obs_gids_raw = np.asarray(obs_survey_info["group_ids"])
         obs_w_raw = np.asarray(obs_survey_info["weights"], dtype=np.float64)
         resolved = obs_survey_info["resolved"]
-        df_s = (
-            resolved.df_survey if resolved is not None else None
+        # df_s starts from the shared effective df (base-capped by
+        # design df). Under replicate designs the helper handles the
+        # min(resolved.df_survey, min(n_valid) - 1) reduction and
+        # preserves None when the base df is undefined (QR-rank ≤ 1).
+        # Using the helper here — rather than re-deriving locally —
+        # keeps heterogeneity's df consistent with the main dCDH
+        # surfaces (R2 P1a). `list(... or [])` avoids accidental
+        # mutation of the caller's shared tracker at this site; the
+        # explicit append happens inside the horizon loop below.
+        df_s = _effective_df_survey(
+            resolved, list(replicate_n_valid_list or [])
         )
         # Contract: only obs whose group is in the canonical post-filter
         # list contribute. Groups dropped upstream (Step 5b interior gaps,
@@ -3495,15 +3812,42 @@ def _compute_heterogeneity_test(
                         obs_w_raw[mask_g] / w_sum_g
                     )
 
-            # Binder TSL variance across stratified PSUs.
-            var_s = compute_survey_if_variance(psi_obs, resolved)
+            # Dispatch: replicate-weight variance (BRR/Fay/JK1/JKn/SDR)
+            # vs Binder TSL across stratified PSUs. Mirrors the inline
+            # branch in _survey_se_from_group_if and the pattern in
+            # TripleDifference:1206-1238. Heterogeneity uses WLS with
+            # full-sample weights; theta_hat is treated as fixed per the
+            # FWL plug-in IF convention (REGISTRY.md Note on heterogeneity
+            # under replicate — no per-replicate refits).
+            if getattr(resolved, "uses_replicate_variance", False):
+                var_s, n_valid_het = compute_replicate_if_variance(
+                    psi_obs, resolved
+                )
+                if replicate_n_valid_list is not None:
+                    replicate_n_valid_list.append(n_valid_het)
+                # Reduce df_s to reflect this horizon's n_valid.
+                # R2 P1a: when the shared base-capped df_s is None
+                # (undefined base df, e.g., QR-rank ≤ 1), the
+                # heterogeneity df MUST stay None — per-site n_valid
+                # cannot rescue a rank-deficient design. The
+                # _inference_df wrapper at the safe_inference call
+                # below coerces None to 0 under replicate, forcing
+                # NaN inference.
+                if df_s is None:
+                    df_s_local = None
+                else:
+                    df_s_local = min(int(df_s), int(n_valid_het) - 1)
+            else:
+                var_s = compute_survey_if_variance(psi_obs, resolved)
+                df_s_local = df_s
             se_het = (
                 float(np.sqrt(var_s))
                 if np.isfinite(var_s) and var_s > 0
                 else float("nan")
             )
             t_stat, p_val, ci = safe_inference(
-                beta_het, se_het, alpha=alpha, df=df_s
+                beta_het, se_het, alpha=alpha,
+                df=_inference_df(df_s_local, resolved),
             )
 
         results[l_h] = {
@@ -4823,24 +5167,93 @@ def _validate_group_constant_strata_psu(
             )
 
 
+def _inference_df(
+    effective_df: Optional[int],
+    resolved_survey: Any,
+) -> Optional[int]:
+    """Coerce an effective-df value for use in ``safe_inference(df=...)``.
+
+    ``_effective_df_survey()`` returns ``None`` when the replicate
+    design's base df is undefined (QR-rank ≤ 1) or when the reduced
+    df would be < 1. ``safe_inference`` treats ``df=None`` as the
+    standard normal (z-inference) and only returns NaN for
+    ``df <= 0``. Under a replicate design, "undefined effective df"
+    MUST map to NaN inference per REGISTRY.md — NOT to z-inference.
+
+    Returns:
+    - ``effective_df`` when defined (t-inference with that df).
+    - ``0`` when ``effective_df is None`` AND ``resolved_survey`` uses
+      replicate variance — forces ``safe_inference`` to return NaN
+      t/p/CI via its ``df <= 0`` branch.
+    - ``None`` otherwise (no survey, or TSL design where the resolver
+      always returns an int df — z-inference is never reachable here).
+    """
+    if effective_df is not None:
+        return effective_df
+    if resolved_survey is None:
+        return None
+    if getattr(resolved_survey, "uses_replicate_variance", False):
+        return 0
+    return None
+
+
+def _effective_df_survey(
+    resolved_survey: Any,
+    replicate_n_valid_list: List[int],
+) -> Optional[int]:
+    """Compute the effective ``df_survey`` for t-critical values.
+
+    Under replicate-weight designs, each IF site returns an ``n_valid``
+    count (number of replicate columns that produced a finite estimate).
+    This helper **reduces** — never overwrites — the design-level
+    ``resolved_survey.df_survey`` (which for replicate designs is
+    ``QR-rank - 1`` per R's ``survey::degf()`` convention; see
+    ``diff_diff/survey.py:590``). Returns
+    ``min(resolved_survey.df_survey, min(n_valid) - 1)`` when both are
+    defined.
+
+    Matches the precedent in ``diff_diff/efficient_did.py:1133-1135``
+    and ``diff_diff/triple_diff.py:676-686`` (both reduce, not
+    replace). Under TSL (analytical) or non-survey fits,
+    ``replicate_n_valid_list`` is empty and this falls through to the
+    design-level df. Returns ``None`` when either the base df is
+    undefined (rank ≤ 1) or the reduced df would be < 1 — preserving
+    the NaN-inference contract from ``safe_inference``.
+    """
+    if resolved_survey is None:
+        return None
+    base_df = resolved_survey.df_survey
+    if not replicate_n_valid_list:
+        return base_df
+    reduced_df = int(min(replicate_n_valid_list)) - 1
+    if base_df is None or reduced_df < 1:
+        return None
+    return min(int(base_df), reduced_df)
+
+
 def _compute_se(
     U_centered: np.ndarray,
     divisor: int,
     obs_survey_info: Optional[dict],
     eligible_groups: Optional[list] = None,
-) -> float:
+) -> Tuple[float, Optional[int]]:
     """Dispatch to plug-in SE or survey-design-aware SE.
 
     When ``obs_survey_info`` is ``None``, falls back to the simple
     plug-in formula.  Otherwise, expands group-level IFs and delegates
-    to TSL variance.
+    to TSL variance (or replicate-weight variance when the resolved
+    design carries replicate weights).
+
+    Returns ``(se, n_valid_replicates)``. ``n_valid_replicates`` is
+    ``None`` under the plug-in / TSL paths, and the number of valid
+    replicate columns under the replicate path.
     """
     if obs_survey_info is None:
-        return _plugin_se(U_centered=U_centered, divisor=divisor)
+        return _plugin_se(U_centered=U_centered, divisor=divisor), None
     if eligible_groups is None:
-        return _plugin_se(U_centered=U_centered, divisor=divisor)
+        return _plugin_se(U_centered=U_centered, divisor=divisor), None
     if divisor <= 0:
-        return float("nan")
+        return float("nan"), None
     # dCDH IFs are numerator-scale (U.sum() == N_S * DID_M).
     # compute_survey_if_variance() expects estimator-scale psi.
     # Scale by 1/divisor to normalize before survey expansion.
@@ -4856,16 +5269,20 @@ def _survey_se_from_group_if(
     U_centered: np.ndarray,
     eligible_groups: list,
     obs_survey_info: dict,
-) -> float:
+) -> Tuple[float, Optional[int]]:
     """Compute survey-design-aware SE from group-level centered IFs.
 
     Expands group-level influence function values to observation level
     using the proportional-weight allocation ``psi_i = U[g] * (w_i / W_g)``
-    so that ``sum(psi_i for i in g) = U[g]``, then delegates to
-    ``compute_survey_if_variance()`` for the TSL design-based variance.
+    so that ``sum(psi_i for i in g) = U[g]``, then delegates to either
+    ``compute_survey_if_variance()`` (TSL / analytical path) or
+    ``compute_replicate_if_variance()`` (BRR/Fay/JK1/JKn/SDR) depending
+    on whether the resolved design carries replicate weights.
 
     This is a library extension not in the dCDH papers (the paper's
-    plug-in variance assumes iid sampling).
+    plug-in variance assumes iid sampling). The replicate path uses
+    Rao-Wu weight-ratio rescaling; see REGISTRY.md
+    ``ChaisemartinDHaultfoeuille`` Note on survey expansion.
 
     Parameters
     ----------
@@ -4880,10 +5297,18 @@ def _survey_se_from_group_if(
 
     Returns
     -------
-    float
-        Survey-design-aware SE, or NaN if degenerate.
+    Tuple[float, Optional[int]]
+        ``(se, n_valid_replicates)``. ``se`` is the survey-design-aware
+        SE, or NaN if degenerate. ``n_valid_replicates`` is the number
+        of valid replicate columns used for variance under the replicate
+        path, or ``None`` under the TSL (analytical) path. Callers
+        track the min across sites to set an effective ``df_survey``
+        for replicate designs.
     """
-    from diff_diff.survey import compute_survey_if_variance
+    from diff_diff.survey import (
+        compute_replicate_if_variance,
+        compute_survey_if_variance,
+    )
 
     # Degenerate-cohort contract (mirror _plugin_se): when the centered
     # IF is empty or every cohort is a singleton (→ recentered IF is
@@ -4893,9 +5318,9 @@ def _survey_se_from_group_if(
     # through _compute_se (overall, joiners/leavers, multi-horizon
     # ATT, placebos, normalized/cumulated, heterogeneity).
     if U_centered.size == 0:
-        return float("nan")
+        return float("nan"), None
     if float((U_centered ** 2).sum()) <= 0:
-        return float("nan")
+        return float("nan"), None
 
     group_ids = obs_survey_info["group_ids"]
     weights = obs_survey_info["weights"]
@@ -4913,7 +5338,7 @@ def _survey_se_from_group_if(
     psi = np.zeros(n_obs, dtype=np.float64)
 
     if not pos_mask.any():
-        return float("nan")
+        return float("nan"), None
 
     gids_eff = np.asarray(group_ids)[pos_mask]
     w_eff = weights_arr[pos_mask]
@@ -4933,10 +5358,20 @@ def _survey_se_from_group_if(
     safe_w = np.where(w_obs_total_eff > 0, w_obs_total_eff, 1.0)
     psi[pos_mask] = u_obs_eff * (w_eff / safe_w)
 
+    # Dispatch: replicate variance (BRR/Fay/JK1/JKn/SDR) vs TSL.
+    # Mirrors the inline branch in TripleDifference:1206-1238 and
+    # EfficientDiD:1119-1142. Under replicate, returns (variance, n_valid);
+    # the caller propagates min(n_valid) to df_survey.
+    if getattr(resolved, "uses_replicate_variance", False):
+        variance, n_valid = compute_replicate_if_variance(psi, resolved)
+        if not np.isfinite(variance) or variance < 0:
+            return float("nan"), n_valid
+        return float(np.sqrt(variance)), n_valid
+
     variance = compute_survey_if_variance(psi, resolved)
     if not np.isfinite(variance) or variance < 0:
-        return float("nan")
-    return float(np.sqrt(variance))
+        return float("nan"), None
+    return float(np.sqrt(variance)), None
 
 
 def _build_group_time_design(
@@ -5228,6 +5663,11 @@ def twowayfeweights(
         (matching ``fit(..., survey_design=sd).twfe_*``). Required to preserve
         fit-vs-helper parity under survey-backed inputs. Only
         ``weight_type='pweight'`` is supported; other types raise ValueError.
+        Replicate-weight designs (BRR/Fay/JK1/JKn/SDR) are accepted —
+        the TWFE diagnostic has no SE field on ``TWFEWeightsResult``,
+        so replicate weights only affect the cell aggregation path
+        (aggregated numbers are identical to
+        ``fit(..., survey_design=sd).twfe_*`` under the same input).
 
     Returns
     -------
@@ -5251,16 +5691,13 @@ def twowayfeweights(
                 f"The TWFE diagnostic under survey uses survey-weighted cell "
                 f"means; other weight types are not supported."
             )
-        if (
-            resolved is not None
-            and resolved.replicate_weights is not None
-            and resolved.replicate_weights.shape[1] > 0
-        ):
-            raise NotImplementedError(
-                "Replicate weight variance for twowayfeweights() is not "
-                "supported. Use strata/PSU/FPC for design-based inference "
-                "via Taylor Series Linearization (matches the fit() path)."
-            )
+        # Replicate-weight designs are accepted. TWFE diagnostic has no
+        # SE field on TWFEWeightsResult — the replicate weights only
+        # participate through the full-sample weight (resolved.weights),
+        # which drives survey-weighted cell aggregation in
+        # _validate_and_aggregate_to_cells. Diagnostic numbers
+        # (beta_fe, sigma_fe, fraction_negative) match
+        # fit(..., survey_design=sd).twfe_* under replicate input.
 
     # Validation + cell aggregation via the same helper used by
     # ChaisemartinDHaultfoeuille.fit() — enforces NaN/binary/within-cell
