@@ -995,7 +995,13 @@ class SimulationPowerResults:
     coverage : float
         Proportion of CIs containing true effect.
     n_simulations : int
-        Number of simulations performed.
+        Number of simulations performed (successful count; see
+        ``n_simulation_failures`` for failed-replicate count).
+    n_simulation_failures : int
+        Number of simulations at the primary effect size whose `estimator.fit`
+        (or result extraction) raised an exception and was skipped. Lets
+        callers programmatically detect fragile DGP/estimator pairings; a
+        proportional warning is also emitted above a 10% failure rate.
     effect_sizes : List[float]
         Effect sizes tested (if multiple).
     powers : List[float]
@@ -1020,6 +1026,7 @@ class SimulationPowerResults:
     mean_se: float
     coverage: float
     n_simulations: int
+    n_simulation_failures: int
     effect_sizes: List[float]
     powers: List[float]
     true_effect: float
@@ -1062,6 +1069,7 @@ class SimulationPowerResults:
             "",
             f"{'Estimator:':<35} {self.estimator_name}",
             f"{'Number of simulations:':<35} {self.n_simulations}",
+            f"{'Simulation failures:':<35} {self.n_simulation_failures}",
             f"{'True treatment effect:':<35} {self.true_effect:.4f}",
             f"{'Significance level (alpha):':<35} {self.alpha:.3f}",
             "",
@@ -2097,6 +2105,7 @@ def simulate_power(
     primary_p_values: List[float] = []
     primary_rejections: List[bool] = []
     primary_ci_contains: List[bool] = []
+    primary_n_failures = 0
 
     # Survey DGP truth accumulation (DEFF/ICC are DGP properties,
     # independent of effect size, so averaging across all sims is correct)
@@ -2238,7 +2247,13 @@ def simulate_power(
                 rejections.append(rejected)
                 ci_contains_true.append(ci[0] <= effect <= ci[1])
 
-            except Exception as e:
+            except (
+                ValueError,
+                np.linalg.LinAlgError,
+                KeyError,
+                RuntimeError,
+                ZeroDivisionError,
+            ) as e:
                 n_failures += 1
                 if progress:
                     print(f"  Warning: Simulation {sim} failed: {e}")
@@ -2266,6 +2281,7 @@ def simulate_power(
             primary_p_values = p_values
             primary_rejections = rejections
             primary_ci_contains = ci_contains_true
+            primary_n_failures = n_failures
 
     # Compute confidence interval for power (primary effect)
     power_val = all_powers[primary_idx]
@@ -2292,6 +2308,7 @@ def simulate_power(
         mean_se=mean_se,
         coverage=coverage,
         n_simulations=n_valid,
+        n_simulation_failures=primary_n_failures,
         effect_sizes=effect_sizes,
         powers=all_powers,
         true_effect=primary_effect,

@@ -556,6 +556,110 @@ class TestSimulatePower:
             # Should have completed successfully without warning
             assert len([x for x in w if "simulations" in str(x.message)]) == 0
 
+    def test_simulation_failure_counter_on_result(self):
+        """`n_simulation_failures` on the result object surfaces the internal counter."""
+        from diff_diff.prep import generate_did_data
+
+        class AlternatingFailingEstimator:
+            """Raises ValueError on every other call — ~50% failure rate."""
+
+            def __init__(self):
+                self.call_count = 0
+
+            def fit(self, data, **kwargs):
+                self.call_count += 1
+                if self.call_count % 2 == 0:
+                    raise ValueError("forced simulated failure")
+
+                class Result:
+                    att = 5.0
+                    se = 1.0
+                    p_value = 0.01
+                    conf_int = (3.0, 7.0)
+
+                return Result()
+
+        estimator = AlternatingFailingEstimator()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            results = simulate_power(
+                estimator=estimator,
+                n_simulations=20,
+                progress=False,
+                data_generator=generate_did_data,
+            )
+
+        assert results.n_simulation_failures == 10
+        assert results.n_simulations == 10
+        assert results.n_simulation_failures + results.n_simulations == 20
+
+    def test_simulation_failure_counter_zero_on_clean_run(self):
+        """Clean run: counter is exactly 0, not omitted or None."""
+        did = DifferenceInDifferences()
+        results = simulate_power(
+            estimator=did,
+            n_units=50,
+            n_periods=4,
+            treatment_effect=5.0,
+            sigma=2.0,
+            n_simulations=15,
+            seed=42,
+            progress=False,
+        )
+        assert results.n_simulation_failures == 0
+
+    def test_simulation_does_not_swallow_programming_errors(self):
+        """`TypeError` (programming error) must propagate, not be absorbed as a failure."""
+        from diff_diff.prep import generate_did_data
+
+        class TypeErrorEstimator:
+            """Raises TypeError — a programming bug signal, not a DGP failure."""
+
+            def fit(self, data, **kwargs):
+                raise TypeError("programming bug — must propagate")
+
+        with pytest.raises(TypeError, match="programming bug"):
+            simulate_power(
+                estimator=TypeErrorEstimator(),
+                n_simulations=5,
+                progress=False,
+                data_generator=generate_did_data,
+            )
+
+    def test_simulation_failure_rate_warning_above_threshold(self):
+        """10% threshold: >10% failure still warns with the per-effect-size message."""
+        from diff_diff.prep import generate_did_data
+
+        class MostlyFailingEstimator:
+            """Fails 16/20 calls (80% failure rate) — triggers warning."""
+
+            def __init__(self):
+                self.call_count = 0
+
+            def fit(self, data, **kwargs):
+                self.call_count += 1
+                if self.call_count % 5 != 0:
+                    raise ValueError("forced failure")
+
+                class Result:
+                    att = 5.0
+                    se = 1.0
+                    p_value = 0.01
+                    conf_int = (3.0, 7.0)
+
+                return Result()
+
+        with pytest.warns(UserWarning, match=r"simulations .* failed for effect_size="):
+            results = simulate_power(
+                estimator=MostlyFailingEstimator(),
+                n_simulations=20,
+                progress=False,
+                data_generator=generate_did_data,
+            )
+
+        assert results.n_simulation_failures == 16
+        assert results.n_simulations == 4
+
 
 class TestVisualization:
     """Tests for power curve visualization."""
