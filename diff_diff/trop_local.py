@@ -24,6 +24,7 @@ from diff_diff._backend import (
     _rust_bootstrap_trop_variance,
     _rust_unit_distance_matrix,
 )
+from diff_diff.bootstrap_utils import warn_bootstrap_failure_rate
 from diff_diff.trop_results import _PrecomputedStructures
 from diff_diff.utils import warn_if_not_converged
 
@@ -727,8 +728,10 @@ class TROPLocalMixin:
                 _nonconvergence_tracker.append(1)
             else:
                 warn_if_not_converged(
-                    converged, "TROP local alternating minimization",
-                    self.max_iter, self.tol,
+                    converged,
+                    "TROP local alternating minimization",
+                    self.max_iter,
+                    self.tol,
                 )
 
         return alpha, beta, L
@@ -1068,14 +1071,13 @@ class TROPLocalMixin:
                 self.tol,
             )
 
-        if len(bootstrap_estimates) < 10:
-            warnings.warn(
-                f"Only {len(bootstrap_estimates)} bootstrap iterations succeeded. "
-                "Standard errors may be unreliable.",
-                UserWarning,
-            )
-            if len(bootstrap_estimates) == 0:
-                return np.nan, np.array([])
+        warn_bootstrap_failure_rate(
+            n_success=len(bootstrap_estimates),
+            n_attempted=self.n_bootstrap,
+            context="TROP local bootstrap",
+        )
+        if len(bootstrap_estimates) == 0:
+            return np.nan, np.array([])
 
         se = np.std(bootstrap_estimates, ddof=1)
         return float(se), bootstrap_estimates
@@ -1236,14 +1238,13 @@ class TROPLocalMixin:
                 self.tol,
             )
 
-        if len(bootstrap_estimates) < 10:
-            warnings.warn(
-                f"Only {len(bootstrap_estimates)} bootstrap iterations succeeded. "
-                "Standard errors may be unreliable.",
-                UserWarning,
-            )
-            if len(bootstrap_estimates) == 0:
-                return np.nan, np.array([])
+        warn_bootstrap_failure_rate(
+            n_success=len(bootstrap_estimates),
+            n_attempted=self.n_bootstrap,
+            context="TROP local Rao-Wu bootstrap",
+        )
+        if len(bootstrap_estimates) == 0:
+            return np.nan, np.array([])
 
         se = np.std(bootstrap_estimates, ddof=1)
         return float(se), bootstrap_estimates
@@ -1338,7 +1339,12 @@ class TROPLocalMixin:
 
             # Fit model with these weights
             alpha, beta, L = self._estimate_model(
-                Y, control_mask, weight_matrix, lambda_nn, n_units, n_periods,
+                Y,
+                control_mask,
+                weight_matrix,
+                lambda_nn,
+                n_units,
+                n_periods,
                 _nonconvergence_tracker=_nonconvergence_tracker,
             )
 

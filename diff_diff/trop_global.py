@@ -24,6 +24,7 @@ from diff_diff._backend import (
     _rust_bootstrap_trop_variance_global,
     _rust_loocv_grid_search_global,
 )
+from diff_diff.bootstrap_utils import warn_bootstrap_failure_rate
 from diff_diff.trop_local import _soft_threshold_svd, _validate_and_pivot_treatment
 from diff_diff.trop_results import TROPResults
 from diff_diff.utils import safe_inference, warn_if_not_converged
@@ -169,7 +170,11 @@ class TROPGlobalMixin:
             L = np.zeros((n_periods, n_units))
         else:
             mu, alpha, beta, L = self._solve_global_with_lowrank(
-                Y, delta, lambda_nn, self.max_iter, self.tol,
+                Y,
+                delta,
+                lambda_nn,
+                self.max_iter,
+                self.tol,
                 _nonconvergence_tracker=_nonconvergence_tracker,
             )
         return mu, alpha, beta, L
@@ -284,7 +289,9 @@ class TROPGlobalMixin:
 
             try:
                 mu, alpha, beta, L = self._solve_global_model(
-                    Y, delta_ex, lambda_nn,
+                    Y,
+                    delta_ex,
+                    lambda_nn,
                     _nonconvergence_tracker=nonconverg_tracker,
                 )
 
@@ -988,13 +995,13 @@ class TROPGlobalMixin:
                     unit_weight_arr,
                 )
 
-                if len(bootstrap_estimates) < 10:
-                    warnings.warn(
-                        f"Only {len(bootstrap_estimates)} bootstrap iterations succeeded.",
-                        UserWarning,
-                    )
-                    if len(bootstrap_estimates) == 0:
-                        return np.nan, np.array([])
+                warn_bootstrap_failure_rate(
+                    n_success=len(bootstrap_estimates),
+                    n_attempted=self.n_bootstrap,
+                    context="TROP global bootstrap (Rust)",
+                )
+                if len(bootstrap_estimates) == 0:
+                    return np.nan, np.array([])
 
                 return float(se), np.array(bootstrap_estimates)
 
@@ -1073,12 +1080,13 @@ class TROPGlobalMixin:
                 self.tol,
             )
 
-        if len(bootstrap_estimates) < 10:
-            warnings.warn(
-                f"Only {len(bootstrap_estimates)} bootstrap iterations succeeded.", UserWarning
-            )
-            if len(bootstrap_estimates) == 0:
-                return np.nan, np.array([])
+        warn_bootstrap_failure_rate(
+            n_success=len(bootstrap_estimates),
+            n_attempted=self.n_bootstrap,
+            context="TROP global bootstrap",
+        )
+        if len(bootstrap_estimates) == 0:
+            return np.nan, np.array([])
 
         se = np.std(bootstrap_estimates, ddof=1)
         return float(se), bootstrap_estimates
@@ -1236,7 +1244,9 @@ class TROPGlobalMixin:
                     Y, D, lambda_time, lambda_unit, treated_periods, n_units, n_periods
                 )
                 mu, alpha, beta, L = self._solve_global_model(
-                    Y, delta, lambda_nn,
+                    Y,
+                    delta,
+                    lambda_nn,
                     _nonconvergence_tracker=nonconverg_tracker,
                 )
 
@@ -1261,13 +1271,13 @@ class TROPGlobalMixin:
                 self.tol,
             )
 
-        if len(bootstrap_estimates) < 10:
-            warnings.warn(
-                f"Only {len(bootstrap_estimates)} bootstrap iterations succeeded.",
-                UserWarning,
-            )
-            if len(bootstrap_estimates) == 0:
-                return np.nan, np.array([])
+        warn_bootstrap_failure_rate(
+            n_success=len(bootstrap_estimates),
+            n_attempted=self.n_bootstrap,
+            context="TROP global Rao-Wu bootstrap",
+        )
+        if len(bootstrap_estimates) == 0:
+            return np.nan, np.array([])
 
         se = np.std(bootstrap_estimates, ddof=1)
         return float(se), bootstrap_estimates
@@ -1325,7 +1335,9 @@ class TROPGlobalMixin:
 
         # Fit model on control data and extract post-hoc tau
         mu, alpha, beta, L = self._solve_global_model(
-            Y, delta, lambda_nn,
+            Y,
+            delta,
+            lambda_nn,
             _nonconvergence_tracker=_nonconvergence_tracker,
         )
         att, _, _ = self._extract_posthoc_tau(

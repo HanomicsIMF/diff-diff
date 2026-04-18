@@ -23,7 +23,49 @@ __all__ = [
     "compute_bootstrap_pvalue",
     "compute_effect_bootstrap_stats",
     "compute_effect_bootstrap_stats_batch",
+    "warn_bootstrap_failure_rate",
 ]
+
+
+def warn_bootstrap_failure_rate(
+    n_success: int,
+    n_attempted: int,
+    context: str,
+    threshold: float = 0.05,
+    stacklevel: int = 3,
+) -> None:
+    """Emit one proportional failure-rate warning after a replicate loop.
+
+    Replaces the hard-coded ``< N successes`` pattern that lets high-failure
+    runs (e.g. 11 of 200) pass silently. Does not emit when the replicate
+    count is zero (callers handle the NaN-return path explicitly).
+
+    Parameters
+    ----------
+    n_success : int
+        Number of replicates that produced a finite estimate.
+    n_attempted : int
+        Total replicates attempted (``self.n_bootstrap``).
+    context : str
+        Short label for the caller (e.g. ``"TROP global bootstrap"``).
+    threshold : float, default=0.05
+        Failure-rate threshold above which a warning is emitted. ``0.05``
+        matches the existing SyntheticDiD bootstrap and placebo guards.
+    stacklevel : int, default=3
+        Passed to :func:`warnings.warn`.
+    """
+    if n_attempted <= 0 or n_success >= n_attempted:
+        return
+    failure_rate = 1.0 - (n_success / n_attempted)
+    if failure_rate <= threshold:
+        return
+    warnings.warn(
+        f"Only {n_success}/{n_attempted} bootstrap iterations succeeded in "
+        f"{context} ({failure_rate:.1%} failure rate). "
+        "Standard errors may be unreliable.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
 
 
 def generate_bootstrap_weights(
