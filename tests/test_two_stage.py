@@ -1364,3 +1364,17 @@ class TestSilentWarningAudit:
 
         with pytest.warns(UserWarning, match="did not converge"):
             TwoStageDiD._iterative_demean(vals, units, times, idx, max_iter=1, tol=1e-15)
+
+    def test_iterative_demean_no_warning_on_convergence(self):
+        """Silent-failure audit axis B: no warning on well-behaved convergent input."""
+        rng = np.random.default_rng(42)
+        n_units, n_periods = 8, 5
+        units = np.repeat(np.arange(n_units), n_periods)
+        times = np.tile(np.arange(n_periods), n_units)
+        vals = rng.standard_normal(n_units * n_periods)
+        idx = pd.RangeIndex(len(vals))
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            TwoStageDiD._iterative_demean(vals, units, times, idx)
+        assert not any("did not converge" in str(x.message) for x in w)
