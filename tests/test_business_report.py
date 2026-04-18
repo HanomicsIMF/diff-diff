@@ -110,6 +110,17 @@ def sdid_fit():
     return sdid, fdf
 
 
+@pytest.fixture(scope="module")
+def edid_fit():
+    from diff_diff import EfficientDiD
+
+    sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
+    edid = EfficientDiD().fit(
+        sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+    )
+    return edid, sdf
+
+
 # ---------------------------------------------------------------------------
 # Schema contract
 # ---------------------------------------------------------------------------
@@ -740,6 +751,146 @@ class TestAssumptionBlockSourceFaithful:
         assert "triple-difference" in desc.lower() or "DDD" in desc
         # Must NOT be the generic group-time PT text.
         assert "group-time ATT" not in desc
+
+
+class TestEfficientDiDAssumptionPtAllPtPost:
+    """Round-8 regression: EfficientDiD has two distinct PT regimes
+    (PT-All and PT-Post, per Chen-Sant'Anna-Xie 2025 Corollary 3.2 and
+    Lemma 2.1). The old generic group-time PT text was source-unfaithful;
+    the assumption block must now read ``results.pt_assumption`` and
+    branch on it.
+    """
+
+    def _stub(self, pt_assumption: str, control_group: str = "not_yet_treated"):
+        class EfficientDiDResults:
+            pass
+
+        stub = EfficientDiDResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.inference_method = "analytical"
+        stub.pt_assumption = pt_assumption
+        stub.control_group = control_group
+        return stub
+
+    def test_pt_all_uses_pt_all_language(self):
+        br = BusinessReport(self._stub("all"), auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a["parallel_trends_variant"] == "pt_all"
+        assert "PT-All" in a["description"]
+        assert "Hausman" in a["description"]
+        # Must NOT be the old generic group-time PT text.
+        assert "group-time ATT" not in a["description"]
+
+    def test_pt_post_uses_pt_post_language(self):
+        br = BusinessReport(self._stub("post"), auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a["parallel_trends_variant"] == "pt_post"
+        assert "PT-Post" in a["description"]
+        assert "Corollary 3.2" in a["description"] or "single-baseline" in a["description"]
+
+    def test_control_group_is_reflected_in_block(self):
+        br = BusinessReport(self._stub("all", "last_cohort"), auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a.get("control_group") == "last_cohort"
+
+
+class TestMethodAwarePTProse:
+    """Round-8 regression: BR and DR summary prose must branch on the
+    ``parallel_trends.method`` field. Generic "pre-treatment event-study
+    coefficients" wording is wrong for the 2x2 ``slope_difference`` path
+    and for EfficientDiD's ``hausman`` PT-All vs PT-Post pretest.
+    """
+
+    def test_br_summary_uses_slope_difference_wording_for_simple_did(self):
+        """Use a stub DR schema with a known slope_difference verdict so
+        the test is deterministic across pre-period counts. The real
+        2x2 fit can produce NaN verdicts when there is only one
+        pre-period, so we don't rely on a real DR here."""
+
+        class DiDResults:
+            pass
+
+        stub = DiDResults()
+        stub.att = 1.0
+        stub.se = 0.2
+        stub.p_value = 0.001
+        stub.conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.inference_method = "analytical"
+
+        # Hand-crafted DR schema with ``method = "slope_difference"``.
+        from diff_diff.diagnostic_report import DiagnosticReportResults
+
+        fake_schema = {
+            "schema_version": "1.0",
+            "estimator": "DiDResults",
+            "headline_metric": {"name": "att", "value": 1.0},
+            "parallel_trends": {
+                "status": "ran",
+                "method": "slope_difference",
+                "joint_p_value": 0.40,
+                "verdict": "no_detected_violation",
+            },
+            "pretrends_power": {"status": "not_applicable"},
+            "sensitivity": {"status": "not_applicable"},
+            "placebo": {"status": "skipped", "reason": "opt-in"},
+            "bacon": {"status": "not_applicable"},
+            "design_effect": {"status": "not_applicable"},
+            "heterogeneity": {"status": "not_applicable"},
+            "epv": {"status": "not_applicable"},
+            "estimator_native_diagnostics": {"status": "not_applicable"},
+            "skipped": {},
+            "warnings": [],
+            "overall_interpretation": "",
+            "next_steps": [],
+        }
+        fake_dr_results = DiagnosticReportResults(
+            schema=fake_schema,
+            interpretation="",
+            applicable_checks=("parallel_trends",),
+            skipped_checks={},
+            warnings=(),
+        )
+        br = BusinessReport(stub, diagnostics=fake_dr_results)
+        summary = br.summary()
+        pt_method = br.to_dict()["pre_trends"].get("method")
+        assert pt_method == "slope_difference"
+        # Must NOT use the generic event-study wording.
+        assert "event-study coefficients" not in summary
+        # Must use the slope-difference subject phrase.
+        assert "slope-difference" in summary
+
+    def test_dr_summary_uses_hausman_wording_for_efficient_did(self, edid_fit):
+        from diff_diff import DiagnosticReport
+
+        fit, sdf = edid_fit
+        dr = DiagnosticReport(
+            fit,
+            data=sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        summary = dr.summary()
+        pt = dr.to_dict()["parallel_trends"]
+        # EfficientDiD's PT check routes through hausman_pretest.
+        assert pt.get("method") == "hausman"
+        # The generic event-study wording must not appear for this path.
+        assert "event-study coefficients" not in summary
 
 
 class TestFullReportSingleM:

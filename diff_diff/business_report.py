@@ -264,7 +264,7 @@ class BusinessReport:
         pre_trends = _lift_pre_trends(dr_schema)
         sensitivity = _lift_sensitivity(dr_schema)
         robustness = _lift_robustness(dr_schema)
-        assumption = _describe_assumption(estimator_name)
+        assumption = _describe_assumption(estimator_name, self._results)
         next_steps = (dr_schema or {}).get("next_steps", [])
         caveats = _build_caveats(self._results, headline, sample, dr_schema)
         references = _references_for(estimator_name)
@@ -605,7 +605,7 @@ def _lift_robustness(dr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _describe_assumption(estimator_name: str) -> Dict[str, Any]:
+def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, Any]:
     """Return the identifying-assumption block for an estimator."""
     if estimator_name in {
         "SyntheticDiDResults",
@@ -703,13 +703,58 @@ def _describe_assumption(estimator_name: str) -> Dict[str, Any]:
                 "treatment-onset cohort."
             ),
         }
+    if estimator_name == "EfficientDiDResults":
+        # Chen, Sant'Anna & Xie (2025) — identification is parameterized
+        # by ``pt_assumption`` ("all" vs "post"). PT-All is the stronger
+        # regime (PT across all groups/periods, over-identified — paper
+        # Lemma 2.1), PT-Post the weaker (PT only in post-treatment,
+        # just-identified reduction to single-baseline DiD per Corollary
+        # 3.2). Also read ``control_group`` when present (not_yet_treated
+        # vs last_cohort) to be source-faithful to REGISTRY.md §EfficientDiD
+        # lines 736-738 and 907.
+        pt_assumption = getattr(results, "pt_assumption", "all")
+        control_group = getattr(results, "control_group", None)
+        if pt_assumption == "post":
+            variant = "pt_post"
+            description = (
+                "Identification under PT-Post (Chen, Sant'Anna & Xie "
+                "2025): parallel trends holds only in post-treatment "
+                "periods, the comparison group is never-treated, and "
+                "the baseline is period g-1 only. This is the weaker "
+                "of the two regimes — just-identified and reducing to "
+                "standard single-baseline DiD (Corollary 3.2). Also "
+                "assumes no anticipation (Assumption NA), overlap "
+                "(Assumption O), and absorbing / irreversible treatment."
+            )
+        else:
+            variant = "pt_all"
+            description = (
+                "Identification under PT-All (Chen, Sant'Anna & Xie "
+                "2025): parallel trends holds for all groups and all "
+                "periods, allowing any not-yet-treated cohort and any "
+                "pre-treatment period as baseline. The estimator is "
+                "over-identified (Lemma 2.1), and the paper's optimal "
+                "combination weights are applied. Also assumes no "
+                "anticipation (Assumption NA), overlap (Assumption O), "
+                "and absorbing / irreversible treatment. The Hausman "
+                "PT-All vs PT-Post pretest (operating on the post-"
+                "treatment event-study vector ES(e), Theorem A.1) "
+                "checks whether the stronger PT-All regime is tenable."
+            )
+        block: Dict[str, Any] = {
+            "parallel_trends_variant": variant,
+            "no_anticipation": True,
+            "description": description,
+        }
+        if isinstance(control_group, str):
+            block["control_group"] = control_group
+        return block
     if estimator_name in {
         "CallawaySantAnnaResults",
         "SunAbrahamResults",
         "ImputationDiDResults",
         "TwoStageDiDResults",
         "StackedDiDResults",
-        "EfficientDiDResults",
         "WooldridgeDiDResults",
     }:
         return {
@@ -916,6 +961,46 @@ def _build_caveats(
             }
         )
     return caveats
+
+
+def _pt_method_subject(method: Optional[str]) -> str:
+    """Return a source-faithful sentence subject for the PT verdict prose.
+
+    The ``parallel_trends.method`` field distinguishes between the
+    2x2 slope-difference check, the pre-period event-study Wald /
+    Bonferroni variants, EfficientDiD's Hausman PT-All vs PT-Post
+    pretest, SDiD's weighted pre-treatment fit, and TROP's factor-
+    model identification. Generic "pre-treatment event-study" wording
+    is wrong for the first and third cases. See round-8 CI review on
+    PR #318 and REGISTRY.md §EfficientDiD (Hausman pretest).
+    """
+    if method == "slope_difference":
+        return "The pre-period slope-difference test"
+    if method == "hausman":
+        return "The Hausman PT-All vs PT-Post pretest"
+    if method in {"joint_wald", "joint_wald_event_study", "joint_wald_no_vcov", "bonferroni"}:
+        return "Pre-treatment event-study coefficients"
+    if method == "synthetic_fit":
+        return "The synthetic-control pre-treatment fit"
+    if method == "factor":
+        return "The factor-model pre-treatment fit"
+    return "Pre-treatment data"
+
+
+def _pt_method_stat_label(method: Optional[str]) -> Optional[str]:
+    """Return the joint-statistic label appropriate to the PT method.
+
+    Returns ``"joint p"`` for Wald / Bonferroni paths, ``"p"`` for the
+    2x2 slope-difference and Hausman paths (which are single-statistic
+    tests), and ``None`` for design-enforced paths that have no p-value.
+    """
+    if method in {"joint_wald", "joint_wald_event_study", "joint_wald_no_vcov", "bonferroni"}:
+        return "joint p"
+    if method in {"slope_difference", "hausman"}:
+        return "p"
+    if method in {"synthetic_fit", "factor"}:
+        return None
+    return "joint p"
 
 
 def _references_for(estimator_name: str) -> List[Dict[str, str]]:
@@ -1125,6 +1210,7 @@ def _render_summary(schema: Dict[str, Any]) -> str:
         jp = pt.get("joint_p_value")
         verdict = pt.get("verdict")
         tier = pt.get("power_tier")
+        method = pt.get("method")
         # ``compute_pretrends_power`` currently falls back to ``np.diag(ses**2)``
         # for CS / SA / ImputationDiD / Stacked / etc., even when the full
         # ``event_study_vcov`` is available. Downgrade any "well_powered" tier
@@ -1134,41 +1220,41 @@ def _render_summary(schema: Dict[str, Any]) -> str:
         cov_source = pt.get("power_covariance_source")
         if tier == "well_powered" and cov_source == "diag_fallback_available_full_vcov_unused":
             tier = "moderately_powered"
+        subject = _pt_method_subject(method)
+        stat_label = _pt_method_stat_label(method)
+        jp_phrase = (
+            f" ({stat_label} = {jp:.3g})" if isinstance(jp, (int, float)) and stat_label else ""
+        )
         if verdict == "clear_violation":
             sentences.append(
-                f"Pre-treatment data clearly reject parallel trends (joint "
-                f"p = {jp:.3g}); the headline should be treated as tentative "
-                f"pending the sensitivity analysis below."
-                if isinstance(jp, (int, float))
-                else "Pre-treatment data clearly reject parallel trends; the "
-                "headline should be treated as tentative."
+                f"{subject} clearly reject parallel trends{jp_phrase}; the "
+                "headline should be treated as tentative pending the "
+                "sensitivity analysis below."
             )
         elif verdict == "some_evidence_against":
             sentences.append(
-                f"Pre-treatment data show some evidence of diverging trends "
-                f"(joint p = {jp:.3g}); interpret the headline alongside the "
-                f"sensitivity analysis below."
-                if isinstance(jp, (int, float))
-                else "Pre-treatment data show some evidence of diverging trends."
+                f"{subject} show some evidence against parallel trends"
+                f"{jp_phrase}; interpret the headline alongside the "
+                "sensitivity analysis below."
             )
         elif verdict == "no_detected_violation":
             if tier == "well_powered":
                 sentences.append(
-                    "Pre-treatment data are consistent with parallel trends, "
-                    "and the test is well-powered (the minimum-detectable "
+                    f"{subject} are consistent with parallel trends, and "
+                    "the test is well-powered (the minimum-detectable "
                     "violation is small relative to the estimated effect)."
                 )
             elif tier == "moderately_powered":
                 sentences.append(
-                    "Pre-treatment data do not reject parallel trends; the "
-                    "test is moderately informative. See the sensitivity "
-                    "analysis below for bounded-violation guarantees."
+                    f"{subject} do not reject parallel trends; the test is "
+                    "moderately informative. See the sensitivity analysis "
+                    "below for bounded-violation guarantees."
                 )
             else:
                 sentences.append(
-                    "Pre-treatment data do not reject parallel trends, but "
-                    "the test has limited power — a non-rejection does not "
-                    "prove the assumption. See the sensitivity analysis below."
+                    f"{subject} do not reject parallel trends, but the test "
+                    "has limited power — a non-rejection does not prove the "
+                    "assumption. See the sensitivity analysis below."
                 )
         elif verdict == "design_enforced_pt":
             sentences.append(

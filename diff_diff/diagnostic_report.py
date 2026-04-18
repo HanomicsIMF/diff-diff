@@ -2017,6 +2017,45 @@ def _check_headline(check: str, section: Dict[str, Any]) -> Optional[Any]:
     return None
 
 
+def _pt_subject_phrase(method: Optional[str]) -> str:
+    """Return a source-faithful subject for DR's PT verdict sentence.
+
+    Round-8 CI review: the generic "pre-treatment event-study
+    coefficients" wording mis-describes the 2x2 slope-difference check
+    (``method="slope_difference"``) and EfficientDiD's Hausman PT-All
+    vs PT-Post pretest (``method="hausman"``). See REGISTRY.md
+    §EfficientDiD line 907 for the Hausman test's operating vector.
+    """
+    if method == "slope_difference":
+        return "The pre-period slope-difference test"
+    if method == "hausman":
+        return "The Hausman PT-All vs PT-Post pretest"
+    if method in {"joint_wald", "joint_wald_event_study", "joint_wald_no_vcov", "bonferroni"}:
+        return "Pre-treatment event-study coefficients"
+    if method == "synthetic_fit":
+        return "The synthetic-control pre-treatment fit"
+    if method == "factor":
+        return "The factor-model pre-treatment fit"
+    return "Pre-treatment data"
+
+
+def _pt_stat_label(method: Optional[str]) -> Optional[str]:
+    """Label for the joint-statistic p-value in the PT prose.
+
+    Wald / Bonferroni paths take a joint p-value (``joint p``); the 2x2
+    slope-difference and Hausman paths are single-statistic tests
+    (``p``). Design-enforced paths return ``None`` so the sentence
+    omits a statistic.
+    """
+    if method in {"joint_wald", "joint_wald_event_study", "joint_wald_no_vcov", "bonferroni"}:
+        return "joint p"
+    if method in {"slope_difference", "hausman"}:
+        return "p"
+    if method in {"synthetic_fit", "factor"}:
+        return None
+    return "joint p"
+
+
 def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str]) -> str:
     """Synthesize a plain-English paragraph across DR checks.
 
@@ -2055,47 +2094,57 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
             f"On {est}, {treatment} {direction} {outcome} by {val:.3g}{ci_str}{p_str}."
         )
 
-    # Sentence 2: parallel trends + power
+    # Sentence 2: parallel trends + power (method-aware prose per the
+    # round-8 CI review on PR #318; PT method can be slope_difference
+    # (2x2), joint_wald / bonferroni (event study), hausman (EfficientDiD
+    # PT-All vs PT-Post), synthetic_fit (SDiD), or factor (TROP), and the
+    # generic "event-study coefficients" wording is wrong for the
+    # 2x2 and Hausman paths).
     pt = schema.get("parallel_trends") or {}
     pp = schema.get("pretrends_power") or {}
     if pt.get("status") == "ran":
         verdict = pt.get("verdict")
         jp = pt.get("joint_p_value")
-        jp_str = f" (joint p = {jp:.3g})" if isinstance(jp, (int, float)) else ""
+        method = pt.get("method")
+        subject = _pt_subject_phrase(method)
+        stat_label = _pt_stat_label(method)
+        jp_str = (
+            f" ({stat_label} = {jp:.3g})" if isinstance(jp, (int, float)) and stat_label else ""
+        )
         if verdict == "clear_violation":
             sentences.append(
-                f"Pre-treatment event-study coefficients clearly reject parallel "
-                f"trends{jp_str}. The headline estimate should be treated as "
-                f"tentative pending sensitivity analysis."
+                f"{subject} clearly reject parallel trends{jp_str}. The "
+                "headline estimate should be treated as tentative pending "
+                "sensitivity analysis."
             )
         elif verdict == "some_evidence_against":
             sentences.append(
-                f"Pre-treatment data show some evidence of diverging trends"
+                f"{subject} show some evidence against parallel trends"
                 f"{jp_str}. Interpret the headline alongside the sensitivity "
-                f"analysis below."
+                "analysis below."
             )
         elif verdict == "no_detected_violation":
             tier = pp.get("tier") if pp.get("status") == "ran" else "unknown"
             if tier == "well_powered":
                 sentences.append(
-                    f"Pre-treatment data are consistent with parallel trends"
+                    f"{subject} are consistent with parallel trends"
                     f"{jp_str} and the test is well-powered (MDV is a small "
-                    f"share of the estimated effect), so a material pre-trend "
-                    f"would likely have been detected."
+                    "share of the estimated effect), so a material pre-trend "
+                    "would likely have been detected."
                 )
             elif tier == "moderately_powered":
                 sentences.append(
-                    f"Pre-treatment data do not reject parallel trends"
+                    f"{subject} do not reject parallel trends"
                     f"{jp_str}; the test is moderately informative. See the "
-                    f"sensitivity analysis below for bounded-violation "
-                    f"guarantees."
+                    "sensitivity analysis below for bounded-violation "
+                    "guarantees."
                 )
             else:
                 sentences.append(
-                    f"Pre-treatment data do not reject parallel trends"
+                    f"{subject} do not reject parallel trends"
                     f"{jp_str}, but the test has limited power — a non-rejection "
-                    f"does not prove the assumption. See the HonestDiD "
-                    f"sensitivity analysis below for a more reliable signal."
+                    "does not prove the assumption. See the HonestDiD "
+                    "sensitivity analysis below for a more reliable signal."
                 )
         elif verdict == "design_enforced_pt":
             rmse = pt.get("pre_treatment_fit_rmse")
