@@ -1064,6 +1064,15 @@ class TestGetSetParams:
         assert sdid.zeta_omega == 2.0
         assert sdid.zeta_lambda == 0.1
 
+    def test_set_params_deprecated_names_warn(self):
+        """set_params with old names should emit DeprecationWarning."""
+        sdid = SyntheticDiD()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sdid.set_params(lambda_reg=1.0)
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep_warnings) == 1
+
     def test_set_params_unknown_raises(self):
         """set_params with unknown name should raise ValueError."""
         sdid = SyntheticDiD()
@@ -1071,8 +1080,39 @@ class TestGetSetParams:
             sdid.set_params(nonexistent_param=1.0)
 
 
-class TestDefaultVarianceMethod:
-    """Default variance_method sanity."""
+class TestDeprecatedParams:
+    """Test deprecated parameter handling in __init__."""
+
+    def test_lambda_reg_warns(self):
+        """SyntheticDiD(lambda_reg=...) emits DeprecationWarning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sdid = SyntheticDiD(lambda_reg=0.1)
+            dep = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep) == 1
+            assert "lambda_reg" in str(dep[0].message)
+
+        # Deprecated param is ignored — auto-computed used
+        assert sdid.zeta_omega is None
+
+    def test_zeta_warns(self):
+        """SyntheticDiD(zeta=...) emits DeprecationWarning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sdid = SyntheticDiD(zeta=2.0)
+            dep = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep) == 1
+            assert "zeta" in str(dep[0].message)
+
+        assert sdid.zeta_lambda is None
+
+    def test_both_deprecated_params(self):
+        """Both deprecated params at once should emit two warnings."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            SyntheticDiD(lambda_reg=0.5, zeta=1.5)
+            dep = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep) == 2
 
     def test_default_variance_method_is_placebo(self):
         """Default variance_method should be 'placebo' (matching R)."""

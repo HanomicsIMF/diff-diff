@@ -118,6 +118,16 @@ Different estimators compute SEs differently. Consider unified interface.
 Mypy reports 0 errors. All mixin `attr-defined` errors resolved via
 `TYPE_CHECKING`-guarded method stubs in bootstrap mixin classes.
 
+## Deprecated Code
+
+Deprecated parameters still present for backward compatibility:
+
+- `lambda_reg` and `zeta` in `SyntheticDiD` (`synthetic_did.py`)
+  - Deprecated in favor of `zeta_omega`/`zeta_lambda` parameters
+  - Remove in v4.0.0 (SemVer-safe: public kwarg removal requires a major bump)
+
+---
+
 ## Test Coverage
 
 **Note**: 21 visualization tests are skipped when matplotlib unavailable—this is expected.

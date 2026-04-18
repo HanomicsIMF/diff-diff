@@ -16,9 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Refresh `ROADMAP.md` to drop top-level phase numbering and reflect shipped state through v3.1.1 (PR #313). Absorbs dCDH into the Current State estimator list; adds Recently Shipped summary; reorganizes open work as Shipping Next / Under Consideration / AI-Agent Track / Long-term. Updates `docs/business-strategy.md`, `docs/survey-roadmap.md`, `docs/practitioner_decision_tree.rst`, `docs/choosing_estimator.rst`, `docs/api/chaisemartin_dhaultfoeuille.rst`, `README.md`, and `diff_diff/guides/llms-full.txt` to remove stale phase-deferral language now that the deferred items have shipped.
-
-### Removed
-- **`SyntheticDiD(lambda_reg=...)` and `SyntheticDiD(zeta=...)`** - deprecated since v2.3.1 (2026-02-10) in favor of `zeta_omega` / `zeta_lambda`, which match R `synthdid`'s unit-weight / time-weight split. Passing the old kwargs now raises `TypeError` at `__init__` and `ValueError: Unknown parameter` at `set_params`. Internal helpers that take a `lambda_reg` ridge parameter (`compute_synthetic_weights`, `rank_control_units`, Rust FFI bindings) are unaffected - they remain supported.
+- Bump the `SyntheticDiD(lambda_reg=...)` and `SyntheticDiD(zeta=...)` deprecation warnings' removal target from `v3.1` to `v4.0.0`. Removing public kwargs in a patch / minor release would violate Semantic Versioning; the deprecation stays warning-only throughout the `3.x` line and will be removed in the next major release. Use `zeta_omega` / `zeta_lambda` instead.
 
 ## [3.1.1] - 2026-04-16
 

@@ -2758,6 +2758,27 @@ class TestSyntheticDiD:
         sdid.set_params(variance_method="bootstrap")
         assert sdid.variance_method == "bootstrap"
 
+    def test_deprecated_params(self):
+        """Test that old parameter names emit DeprecationWarning."""
+        import warnings as _warnings
+
+        with _warnings.catch_warnings(record=True) as w:
+            _warnings.simplefilter("always")
+            sdid = SyntheticDiD(lambda_reg=1.0, zeta=0.5)
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep_warnings) == 2
+
+        # Deprecated params are ignored — auto-computed regularization is used
+        assert sdid.zeta_omega is None
+        assert sdid.zeta_lambda is None
+
+        # set_params with deprecated names also warns
+        with _warnings.catch_warnings(record=True) as w:
+            _warnings.simplefilter("always")
+            sdid.set_params(lambda_reg=2.0)
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep_warnings) == 1
+
     def test_missing_unit_column(self, sdid_panel_data):
         """Test error when unit column is missing."""
         sdid = SyntheticDiD()
