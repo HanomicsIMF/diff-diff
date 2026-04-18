@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.3] - 2026-04-18
+
+### Added
+- **Replicate-weight variance and PSU-level bootstrap for dCDH** (PR #311) - `ChaisemartinDHaultfoeuille` now accepts `variance_method="replicate"` for BRR / Fay / JK1 / JKn / SDR inference, and PSU-level multiplier bootstrap when `survey_design.psu` is set. Adds df-aware inference (reduced effective df under replicate variance; propagated through delta / HonestDiD surfaces) plus group-level PSU map construction. Validated via per-cohort aggregation, shared-draw multi-horizon bootstrap alignment, and cross-surface df consistency.
+- **Zenodo DOI auto-minting configuration** (PR #321) - `.zenodo.json` at repo root defines release metadata so the next GitHub Release automatically mints a Zenodo DOI (concept DOI + versioned DOI). Also adds a top-level `LICENSE` file for Zenodo archival.
+
+### Fixed
+- **Silent sparse→dense lstsq fallback in `ImputationDiD` and `TwoStageDiD`** (PR #319) - when the sparse solver fails and the dense fallback runs, the estimator now emits a `ConvergenceWarning` instead of silently switching paths. Regression tests assert the dense fallback SEs remain usable.
+- **Non-convergence signaling in TROP alternating-minimization solvers** (PR #317) - the global- and local-TROP solvers now emit a `ConvergenceWarning` when the alternating-minimization loop exits without meeting tolerance, including LOOCV and bootstrap aggregation paths. Warnings aggregate at top-level call sites to avoid log spam.
+
+### Changed
+- **`/bump-version` skill updates `CITATION.cff`** (PR #320) - internal release-management tooling now keeps `CITATION.cff` `version:` and `date-released:` in sync with the other version surfaces. Resolves a single `RELEASE_DATE` upfront (from the CHANGELOG header if pre-populated, else today's date) and threads it through all date-bearing files — fixes drift that caused v3.1.2 to ship with `CITATION.cff` still pinned at 3.1.1.
+
 ## [3.1.2] - 2026-04-18
 
 ### Fixed
@@ -1306,6 +1319,7 @@ for the full feature history leading to this release.
 [2.1.2]: https://github.com/igerber/diff-diff/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/igerber/diff-diff/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/igerber/diff-diff/compare/v2.0.3...v2.1.0
+[3.1.3]: https://github.com/igerber/diff-diff/compare/v3.1.2...v3.1.3
 [3.1.2]: https://github.com/igerber/diff-diff/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/igerber/diff-diff/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/igerber/diff-diff/compare/v3.0.2...v3.1.0
