@@ -501,6 +501,51 @@ class TestAlphaKnob:
         assert br90.to_dict()["headline"]["ci_level"] == 90
         assert br95.to_dict()["headline"]["ci_level"] == 95
 
+    def test_ci_bounds_recomputed_when_alpha_differs_from_result(self, event_study_fit):
+        """Regression for the P0 CI-label bug: when alpha != results.alpha,
+        the displayed interval must be recomputed from (att, se) rather than
+        the stored interval being relabeled to the caller's alpha."""
+        import math
+
+        fit, _ = event_study_fit
+        br95 = BusinessReport(fit, alpha=0.05, auto_diagnostics=False)
+        br90 = BusinessReport(fit, alpha=0.10, auto_diagnostics=False)
+        h95 = br95.to_dict()["headline"]
+        h90 = br90.to_dict()["headline"]
+        if h95["effect"] is not None and math.isfinite(h95["effect"]):
+            # 90% bounds must be strictly inside 95% bounds.
+            assert h90["ci_lower"] > h95["ci_lower"] + 1e-9
+            assert h90["ci_upper"] < h95["ci_upper"] - 1e-9
+        assert h95["ci_level"] == 95
+        assert h90["ci_level"] == 90
+
+
+class TestFullReportSingleM:
+    """Regression: ``full_report()`` must not claim full-grid robustness for a
+    single-M HonestDiDResults passthrough. The summary path was fixed earlier;
+    the structured-markdown path had the same bug and now mirrors it."""
+
+    @staticmethod
+    def _fake_single_m(M=1.5, ci_lb=1.0, ci_ub=3.0):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            M=M,
+            lb=ci_lb,
+            ub=ci_ub,
+            ci_lb=ci_lb,
+            ci_ub=ci_ub,
+            method="relative_magnitude",
+            alpha=0.05,
+        )
+
+    def test_full_report_does_not_claim_full_grid_for_single_m(self, event_study_fit):
+        fit, _ = event_study_fit
+        br = BusinessReport(fit, honest_did_results=self._fake_single_m())
+        md = br.full_report()
+        assert "robust across full grid" not in md
+        assert "Single point checked" in md or "single point" in md.lower()
+
 
 # ---------------------------------------------------------------------------
 # Summary + full_report work across estimators

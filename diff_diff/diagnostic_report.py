@@ -257,11 +257,22 @@ class DiagnosticReport:
     alpha : float, default 0.05
         Significance level used across checks.
     precomputed : dict, optional
-        Map of check name to a pre-computed result object. Accepted keys:
-        ``"parallel_trends"``, ``"sensitivity"``, ``"placebo"``, ``"bacon"``,
-        ``"design_effect"``, ``"heterogeneity"``, ``"epv"``,
-        ``"pretrends_power"``. Supplied values are used verbatim and the
-        corresponding underlying function is not called.
+        Map of check name to a pre-computed result object. Accepted keys
+        (this is the full implemented list; unsupported keys raise
+        ``ValueError``):
+
+        - ``"parallel_trends"`` — a dict returned by
+          ``utils.check_parallel_trends`` (adapted into the schema shape).
+        - ``"sensitivity"`` — a ``SensitivityResults`` (grid) or
+          ``HonestDiDResults`` (single-M) object; used verbatim and no
+          ``HonestDiD.sensitivity_analysis`` call is made.
+        - ``"pretrends_power"`` — a ``PreTrendsPowerResults`` object.
+        - ``"bacon"`` — a ``BaconDecompositionResults`` object.
+
+        Other sections (``design_effect``, ``heterogeneity``, ``epv``) are
+        read directly from the fitted result object and do not currently
+        accept precomputed values — there is no expensive call to bypass.
+        ``placebo`` is reserved in the schema but opt-in / deferred in MVP.
     outcome_label, treatment_label : str, optional
         Plain-English labels used in prose rendering.
     """
@@ -317,6 +328,18 @@ class DiagnosticReport:
         self._sensitivity_method = sensitivity_method
         self._alpha = float(alpha)
         self._precomputed = dict(precomputed or {})
+        # Validate precomputed keys against the actually-implemented passthrough
+        # set so advertised contracts do not silently diverge from behavior.
+        _supported_precomputed = {"parallel_trends", "sensitivity", "pretrends_power", "bacon"}
+        _unsupported = set(self._precomputed) - _supported_precomputed
+        if _unsupported:
+            raise ValueError(
+                "precomputed= contains keys that are not implemented: "
+                f"{sorted(_unsupported)}. Supported keys: "
+                f"{sorted(_supported_precomputed)}. ``design_effect``, "
+                "``heterogeneity``, and ``epv`` are read directly from the "
+                "fitted result and do not accept precomputed overrides."
+            )
         self._outcome_label = outcome_label
         self._treatment_label = treatment_label
         self._cached: Optional[DiagnosticReportResults] = None
@@ -809,7 +832,16 @@ class DiagnosticReport:
 
         if joint_p is None:
             # Bonferroni: min per-period p-value scaled by count, capped at 1.
-            ps = [p["p_value"] for p in per_period if p["p_value"] is not None]
+            # NaN p-values are excluded — a non-finite p-value means the
+            # per-period test was undefined (zero SE, reference marker that
+            # slipped through, etc.) and must not be treated as clean
+            # evidence. If no valid p-values remain, joint_p stays None and
+            # the verdict will be ``inconclusive``.
+            ps = [
+                p["p_value"]
+                for p in per_period
+                if isinstance(p["p_value"], (int, float)) and np.isfinite(p["p_value"])
+            ]
             if ps:
                 joint_p = min(1.0, min(ps) * len(ps))
 
@@ -862,6 +894,38 @@ class DiagnosticReport:
         ):
             ratio = mdv / abs(att)
 
+        # Annotate whether ``compute_pretrends_power`` had access to the full
+        # pre-period covariance (CS / SA / ImputationDiD currently fall back to
+        # ``np.diag(ses**2)`` inside ``pretrends.py``, even when
+        # ``event_study_vcov`` is available). BR uses this field to downgrade
+        # power-tier prose when only the diagonal approximation was used.
+        r = self._results
+        has_full_es_vcov = (
+            getattr(r, "event_study_vcov", None) is not None
+            and getattr(r, "event_study_vcov_index", None) is not None
+        )
+        is_event_study_type = type(r).__name__ in {
+            "CallawaySantAnnaResults",
+            "SunAbrahamResults",
+            "ImputationDiDResults",
+            "StackedDiDResults",
+            "StaggeredTripleDiffResults",
+            "WooldridgeDiDResults",
+            "ChaisemartinDHaultfoeuilleResults",
+            "EfficientDiDResults",
+            "TwoStageDiDResults",
+        }
+        if is_event_study_type and has_full_es_vcov:
+            # ``compute_pretrends_power`` does not currently consume
+            # ``event_study_vcov`` for these result types (see the reviewer's
+            # note on pretrends.py). Flag the diagonal fallback explicitly so
+            # the prose layer can hedge.
+            cov_source = "diag_fallback_available_full_vcov_unused"
+        elif is_event_study_type:
+            cov_source = "diag_fallback"
+        else:
+            cov_source = "full_pre_period_vcov"
+
         tier = _power_tier(ratio)
         return {
             "status": "ran",
@@ -874,6 +938,7 @@ class DiagnosticReport:
             "power_at_M_1": _to_python_float(getattr(pp, "power", None)),
             "n_pre_periods": int(getattr(pp, "n_pre_periods", 0) or 0),
             "tier": tier,
+            "covariance_source": cov_source,
         }
 
     def _format_precomputed_pretrends_power(self, obj: Any) -> Dict[str, Any]:
@@ -1621,7 +1686,18 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
         on the staggered estimators (CS / SA / ImputationDiD / Stacked / EDiD / etc.).
         Pre-period entries are those with negative relative-time keys.
 
-    Returns an empty list when neither source provides pre-period entries.
+    Filtering rules (critical for methodology-safe PT tests):
+
+    * Entries marked as reference markers (``n_groups == 0`` on the CS / SA /
+      ImputationDiD / Stacked event-study shape) are excluded. These are
+      synthetic ``effect=0, se=NaN`` rows injected for universal-base
+      normalization; treating them as real pre-period evidence would inflate
+      the Bonferroni denominator and produce bogus zero-deviation entries.
+    * Entries whose ``effect`` or ``se`` is non-finite (NaN / inf) are
+      excluded. A NaN SE means inference is undefined — feeding it into
+      Bonferroni or Wald would produce a false-clean PT verdict.
+
+    Returns an empty list when neither source provides valid pre-period entries.
     """
     results_list: List[Tuple[Any, float, float, Optional[float]]] = []
     pre = getattr(results, "pre_period_effects", None)
@@ -1630,8 +1706,16 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
             eff = getattr(pe, "effect", None)
             se = getattr(pe, "se", None)
             p = getattr(pe, "p_value", None)
-            if eff is not None and se is not None:
-                results_list.append((k, float(eff), float(se), _to_python_float(p)))
+            if eff is None or se is None:
+                continue
+            try:
+                eff_f = float(eff)
+                se_f = float(se)
+            except (TypeError, ValueError):
+                continue
+            if not (np.isfinite(eff_f) and np.isfinite(se_f)):
+                continue
+            results_list.append((k, eff_f, se_f, _to_python_float(p)))
     else:
         es = getattr(results, "event_study_effects", None) or {}
         for k, entry in es.items():
@@ -1644,12 +1728,26 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
                 continue
             if not isinstance(entry, dict):
                 continue
+            # Drop universal-base reference markers. See
+            # ``staggered_aggregation.py`` around the reference-period
+            # injection: ``n_groups == 0`` flags the synthetic marker row
+            # with NaN SE and p-value.
+            n_groups = entry.get("n_groups")
+            if n_groups is not None and n_groups == 0:
+                continue
             eff = entry.get("effect")
             se = entry.get("se")
             p = entry.get("p_value")
             if eff is None or se is None:
                 continue
-            results_list.append((k, float(eff), float(se), _to_python_float(p)))
+            try:
+                eff_f = float(eff)
+                se_f = float(se)
+            except (TypeError, ValueError):
+                continue
+            if not (np.isfinite(eff_f) and np.isfinite(se_f)):
+                continue
+            results_list.append((k, eff_f, se_f, _to_python_float(p)))
     results_list.sort(key=lambda t: t[0] if isinstance(t[0], (int, float)) else str(t[0]))
     return results_list
 
@@ -1753,8 +1851,15 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
     p = headline.get("p_value") if isinstance(headline, dict) else None
     if val is not None:
         direction = "increased" if val > 0 else "decreased" if val < 0 else "did not change"
+        # Use the headline's own alpha rather than hardcoding 95 so prose
+        # stays consistent with the rendered interval when alpha != 0.05.
+        headline_alpha = headline.get("alpha") if isinstance(headline, dict) else None
+        if isinstance(headline_alpha, (int, float)) and 0 < headline_alpha < 1:
+            ci_level = int(round((1.0 - headline_alpha) * 100))
+        else:
+            ci_level = 95
         ci_str = (
-            f" (95% CI: {ci[0]:.3g} to {ci[1]:.3g})"
+            f" ({ci_level}% CI: {ci[0]:.3g} to {ci[1]:.3g})"
             if isinstance(ci, (list, tuple)) and len(ci) == 2 and None not in ci
             else ""
         )

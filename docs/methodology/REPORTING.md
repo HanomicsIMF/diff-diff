@@ -99,6 +99,21 @@ result or computed by an existing diff-diff utility
   The library already ships `compute_pretrends_power()`, so using it
   is the honest default rather than hedging every non-violation.
 
+- **Note:** Diagonal-covariance fallback for staggered-estimator power.
+  `compute_pretrends_power()` currently drops to `np.diag(ses**2)` for
+  CS / SA / ImputationDiD / Stacked / etc. even when the full
+  `event_study_vcov` is attached on the result. The
+  `DiagnosticReport.pretrends_power` block records
+  `covariance_source: "diag_fallback_available_full_vcov_unused"` in
+  that case, and `BusinessReport` downgrades a `well_powered` tier to
+  `moderately_powered` before rendering prose. This is a known
+  conservative deviation from the documented "use the full pre-period
+  covariance" position — it prevents the diagonal approximation from
+  producing an overly optimistic "well-powered" claim when correlated
+  pre-period errors could tighten the MDV. The right long-term fix is
+  to teach `compute_pretrends_power()` to consume `event_study_vcov`
+  and `event_study_vcov_index`; until that lands this downgrade stays.
+
 - **Note:** Unit-translation policy. BusinessReport does not
   arithmetically translate log-points to percents or level effects to
   log-points. The estimate is rendered in the scale the estimator

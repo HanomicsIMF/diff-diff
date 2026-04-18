@@ -326,8 +326,33 @@ class BusinessReport:
         p: Optional[float] = None
         ci: Optional[List[float]] = None
         alpha = self._context.alpha
+        result_alpha: Optional[float] = None
         if extracted is not None:
-            _name, att, se, p, ci, _alpha = extracted
+            _name, att, se, p, ci, result_alpha = extracted
+
+        # If the caller asked for a different alpha than the result was fit
+        # at, recompute the CI from (att, se) using ``safe_inference`` so the
+        # labeled CI level matches the interval actually shown. Without this
+        # the stored interval (e.g. 95%) would be relabeled to the caller's
+        # level (e.g. 90%) — the documented single-knob contract requires
+        # them to agree. SE is a scale parameter independent of alpha, so
+        # recomputation is safe; the result's original t-stat / p-value do
+        # not change either.
+        if (
+            result_alpha is not None
+            and not np.isclose(alpha, result_alpha)
+            and att is not None
+            and se is not None
+            and np.isfinite(att)
+            and np.isfinite(se)
+        ):
+            from diff_diff.utils import safe_inference
+
+            _t, _p, recomputed_ci = safe_inference(att, se, alpha=alpha)
+            if recomputed_ci is not None and all(
+                x is not None and np.isfinite(x) for x in recomputed_ci
+            ):
+                ci = [float(recomputed_ci[0]), float(recomputed_ci[1])]
 
         unit = self._context.outcome_unit
         unit_kind = _UNIT_KINDS.get(unit.lower() if unit else "", "unknown")
@@ -463,6 +488,10 @@ def _lift_pre_trends(dr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "power_tier": pp.get("tier"),
         "mdv": pp.get("mdv"),
         "mdv_share_of_att": pp.get("mdv_share_of_att"),
+        # Carry the covariance-source annotation through so BR can hedge the
+        # power-tier phrasing when compute_pretrends_power silently used a
+        # diagonal fallback despite event_study_vcov being available.
+        "power_covariance_source": pp.get("covariance_source"),
     }
 
 
@@ -919,6 +948,15 @@ def _render_summary(schema: Dict[str, Any]) -> str:
         jp = pt.get("joint_p_value")
         verdict = pt.get("verdict")
         tier = pt.get("power_tier")
+        # ``compute_pretrends_power`` currently falls back to ``np.diag(ses**2)``
+        # for CS / SA / ImputationDiD / Stacked / etc., even when the full
+        # ``event_study_vcov`` is available. Downgrade any "well_powered" tier
+        # to "moderately_powered" when we know the diagonal approximation was
+        # the only input — a diagonal-only MDV can be optimistic because it
+        # ignores correlations across pre-periods.
+        cov_source = pt.get("power_covariance_source")
+        if tier == "well_powered" and cov_source == "diag_fallback_available_full_vcov_unused":
+            tier = "moderately_powered"
         if verdict == "clear_violation":
             sentences.append(
                 f"Pre-treatment data clearly reject parallel trends (joint "
@@ -1103,18 +1141,37 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
         lines.append(f"- Pre-trends not computed: {pt.get('reason', 'unavailable')}")
     lines.append("")
 
-    # Sensitivity
+    # Sensitivity. A single-M HonestDiDResults passthrough has
+    # breakdown_M=None by construction because only one M was evaluated;
+    # the "robust across full grid" phrasing is reserved for genuine
+    # grid-over-M SensitivityResults.
     lines.append("## Sensitivity (HonestDiD)")
     lines.append("")
     if sens.get("status") == "computed":
         bkd = sens.get("breakdown_M")
         concl = sens.get("conclusion")
         lines.append(f"- Method: `{sens.get('method')}`")
-        lines.append(
-            f"- Breakdown M: {bkd:.3g}"
-            if isinstance(bkd, (int, float))
-            else "- Breakdown M: robust across full grid (no breakdown)"
-        )
+        if concl == "single_M_precomputed":
+            grid_points = sens.get("grid") or []
+            point = grid_points[0] if grid_points else {}
+            m_val = point.get("M")
+            robust = point.get("robust_to_zero")
+            if isinstance(m_val, (int, float)):
+                lines.append(f"- Single point checked: M = {m_val:.3g}")
+                lines.append(
+                    f"- Robust CI at M = {m_val:.3g}: "
+                    f"{'excludes zero' if robust else 'includes zero'}"
+                )
+                lines.append(
+                    "- Run `HonestDiD.sensitivity()` across a grid of M "
+                    "values to find the breakdown value."
+                )
+            else:
+                lines.append("- Single-M passthrough (breakdown not available)")
+        elif isinstance(bkd, (int, float)):
+            lines.append(f"- Breakdown M: {bkd:.3g}")
+        else:
+            lines.append("- Breakdown M: robust across full grid (no breakdown)")
         lines.append(f"- Conclusion: `{concl}`")
     else:
         lines.append(f"- Sensitivity not computed: {sens.get('reason', 'unavailable')}")

@@ -415,6 +415,165 @@ class TestJointWaldAlignment:
         assert pt["method"] == "bonferroni"
 
 
+class TestReferenceMarkerAndNaNFiltering:
+    """Regression for the P0 finding that reference markers + NaN pre-periods
+    were being swept into Bonferroni / Wald PT as real evidence.
+
+    Universal-base CS / SA / ImputationDiD / Stacked event-study output
+    injects a synthetic reference-period row (``effect=0``, ``se=NaN``,
+    ``p_value=NaN``, ``n_groups=0``). Treating that row as valid
+    pre-period evidence would inflate the Bonferroni denominator and
+    collapse all-NaN fallbacks to a false-clean verdict.
+    """
+
+    @staticmethod
+    def _cs_stub_with_reference_marker():
+        import numpy as np
+
+        class CallawaySantAnnaResults:
+            pass
+
+        obj = CallawaySantAnnaResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.1
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 200
+        obj.n_treated = 40
+        obj.n_control = 160
+        obj.survey_metadata = None
+        # Two real pre-period rows + one universal-base reference marker (n_groups=0).
+        obj.event_study_effects = {
+            -3: {"effect": 0.1, "se": 0.3, "p_value": 0.74, "n_groups": 5},
+            -2: {"effect": -0.2, "se": 0.3, "p_value": 0.51, "n_groups": 5},
+            -1: {
+                "effect": 0.0,
+                "se": np.nan,
+                "p_value": np.nan,
+                "conf_int": (np.nan, np.nan),
+                "n_groups": 0,
+            },
+            0: {"effect": 1.5, "se": 0.2, "p_value": 0.0001, "n_groups": 5},
+        }
+        obj.vcov = None
+        obj.interaction_indices = None
+        obj.event_study_vcov = None
+        obj.event_study_vcov_index = None
+        return obj
+
+    def test_reference_marker_excluded_from_pt_collection(self):
+        from diff_diff.diagnostic_report import _collect_pre_period_coefs
+
+        obj = self._cs_stub_with_reference_marker()
+        coefs = _collect_pre_period_coefs(obj)
+        keys = [k for (k, _, _, _) in coefs]
+        assert -1 not in keys, (
+            "Universal-base reference marker (n_groups=0) must not appear "
+            "as a valid pre-period coefficient"
+        )
+        assert -3 in keys and -2 in keys
+        # Every returned SE must be finite.
+        for _k, _eff, se, _p in coefs:
+            assert np.isfinite(se), f"Non-finite SE leaked through: {se}"
+
+    def test_all_nan_pre_periods_do_not_produce_clean_verdict(self):
+        """If *every* pre-period row is a reference marker / NaN, the PT
+        check must return inconclusive / skipped — never a clean p_value=1.0.
+        """
+        import numpy as np
+
+        class CallawaySantAnnaResults:
+            pass
+
+        obj = CallawaySantAnnaResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.1
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 200
+        obj.n_treated = 40
+        obj.n_control = 160
+        obj.survey_metadata = None
+        obj.event_study_effects = {
+            -1: {
+                "effect": 0.0,
+                "se": np.nan,
+                "p_value": np.nan,
+                "n_groups": 0,
+            },
+            0: {"effect": 1.5, "se": 0.2, "p_value": 0.0001, "n_groups": 5},
+        }
+        obj.vcov = None
+        obj.interaction_indices = None
+        obj.event_study_vcov = None
+        obj.event_study_vcov_index = None
+        dr = DiagnosticReport(obj, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+        # All pre-period rows were reference markers → no valid data → skipped.
+        assert pt["status"] == "skipped"
+        # Verdict must not falsely say "no detected violation" when the only
+        # "data" was a reference marker.
+        assert pt.get("verdict") != "no_detected_violation"
+
+    def test_bonferroni_excludes_nan_p_values(self):
+        """If a pre-period row has a finite effect/SE but NaN p-value (edge
+        case on some exotic fits), Bonferroni must skip it, not feed it in."""
+        import numpy as np
+
+        class MultiPeriodDiDResults:
+            pass
+
+        from types import SimpleNamespace
+
+        obj = MultiPeriodDiDResults()
+        obj.pre_period_effects = {
+            -2: SimpleNamespace(effect=1.0, se=0.5, p_value=0.04),
+            -1: SimpleNamespace(effect=0.5, se=0.5, p_value=np.nan),
+        }
+        obj.vcov = None
+        obj.interaction_indices = None
+        obj.event_study_vcov = None
+        obj.event_study_vcov_index = None
+        obj.avg_att = 1.0
+        obj.avg_se = 0.1
+        obj.avg_p_value = 0.001
+        obj.avg_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 50
+        obj.n_control = 50
+        obj.survey_metadata = None
+
+        dr = DiagnosticReport(obj, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+        # With only one valid p-value (0.04), Bonferroni should be min(1.0, 0.04*1) = 0.04.
+        # If the NaN were naively included the test would either error or coerce to 1.0.
+        assert pt["method"] == "bonferroni"
+        assert pt["joint_p_value"] == pytest.approx(0.04, abs=1e-9)
+
+
+class TestPrecomputedValidation:
+    """Regression for the P1 finding that ``precomputed=`` silently accepted
+    keys that were never implemented. Unsupported keys now raise."""
+
+    def test_unsupported_precomputed_key_raises(self, multi_period_fit):
+        fit, _ = multi_period_fit
+        with pytest.raises(ValueError, match="not implemented"):
+            DiagnosticReport(fit, precomputed={"design_effect": object()})
+
+    def test_supported_precomputed_keys_accepted(self, multi_period_fit):
+        fit, _ = multi_period_fit
+        # The four implemented keys should not raise at construction.
+        DiagnosticReport(fit, precomputed={"parallel_trends": {"p_value": 0.5}})
+
+    def test_mixed_supported_and_unsupported_raises(self, multi_period_fit):
+        fit, _ = multi_period_fit
+        with pytest.raises(ValueError, match="epv"):
+            DiagnosticReport(fit, precomputed={"sensitivity": None, "epv": object()})
+
+
 class TestSingleMSensitivityPrecomputed:
     """Single-M HonestDiDResults must NOT be narrated as full-grid robustness.
 
