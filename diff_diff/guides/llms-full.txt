@@ -320,7 +320,7 @@ print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 
 **Notes:**
 - Validated against R `DIDmultiplegtDYN` v2.3.3 at horizon `l = 1` via `tests/test_chaisemartin_dhaultfoeuille_parity.py`
-- Single-lag placebo SE is intentionally `NaN` with a warning (the dynamic companion paper Section 3.7.3 derives the cohort-recentered analytical variance for `DID_l` only, not for the single-lag placebo `DID_M^pl`). Dynamic placebos (`L_max >= 1`) have valid SE via multiplier bootstrap on `DID^{pl}_l`. For the single-lag path, the placebo point estimate is meaningful but inference fields stay NaN-consistent **even when `n_bootstrap > 0`** (bootstrap currently covers `DID_M`, `DID_+`, and `DID_-` only)
+- Placebo SE contract: single-period placebo `DID_M^pl` (`L_max=None`) has `NaN` SE because the per-period aggregation path has no influence-function derivation; inference fields stay NaN-consistent **even when `n_bootstrap > 0`** for the single-period path (bootstrap covers `DID_M`, `DID_+`, and `DID_-` only). Multi-horizon dynamic placebos `DID^{pl}_l` (`L_max >= 1`) have valid analytical SE via the placebo influence function (same cohort-recentered structure as positive horizons, applied to backward outcome differences), with bootstrap SE override when `n_bootstrap > 0`. This is a library extension beyond the dynamic companion paper, which states Theorem 1 variance for `DID_l` only.
 - The analytical CI is conservative under Assumption 8 (independent groups) of the dynamic companion paper, exact only under iid sampling
 - Survey design supported: pweight with strata/PSU/FPC via Taylor Series Linearization. Replicate weights and PSU-level bootstrap deferred
 
@@ -637,7 +637,7 @@ plot_event_study(results)
 
 ### EfficientDiD
 
-Efficient DiD estimator (Chen, Sant'Anna & Xie 2025). Achieves the semiparametric efficiency bound for ATT(g,t). Supports an optional doubly-robust covariate path (sieve-based propensity score and outcome regression) via the `covariates` parameter on `fit()`.
+Efficient DiD estimator (Chen, Sant'Anna & Xie 2025). Achieves the semiparametric efficiency bound for ATT(g,t) on the **no-covariate path**. Also supports an optional doubly-robust covariate path (sieve-based propensity score ratios + linear OLS outcome regression): the DR property gives consistency if either the OR or the PS is correctly specified, but the linear OLS outcome regression does not generically attain the efficiency bound unless the conditional mean is linear in the covariates. Pass column names to the `covariates` parameter on `fit()`.
 
 ```python
 EfficientDiD(

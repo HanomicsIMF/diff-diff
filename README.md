@@ -1113,7 +1113,7 @@ results = stacked_did(
 
 ### Efficient DiD (Chen, Sant'Anna & Xie 2025)
 
-Efficient DiD achieves the semiparametric efficiency bound for ATT estimation in staggered adoption designs. It optimally weights across all valid comparison groups and baselines via the inverse covariance matrix Omega*, producing tighter confidence intervals than standard estimators like Callaway-Sant'Anna when the stronger PT-All assumption holds.
+Efficient DiD achieves the semiparametric efficiency bound for ATT estimation in staggered adoption designs along the **no-covariate path**, producing tighter confidence intervals than standard estimators when the stronger PT-All assumption holds. It optimally weights across all valid comparison groups and baselines via the inverse covariance matrix Omega*. A doubly-robust covariate path is also available: it is consistent if either the outcome regression or the sieve propensity ratio is correctly specified, but the linear OLS outcome regression does not generically attain the efficiency bound unless the conditional mean is linear in the covariates.
 
 ```python
 from diff_diff import EfficientDiD, generate_staggered_data
@@ -1149,8 +1149,12 @@ EfficientDiD(
 ```
 
 > **Note:** EfficientDiD supports covariate adjustment via a doubly-robust path
-> (sieve-based propensity score and outcome regression). See the `covariates`
-> parameter on `fit()`.
+> (sieve-based propensity score ratios and a linear OLS outcome regression).
+> The DR property gives consistency if either the OR or the PS is correctly
+> specified, but the OLS working model for the outcome regression does not
+> generically attain the semiparametric efficiency bound. The unqualified
+> efficiency-bound claim applies to the no-covariate path only. See the
+> `covariates` parameter on `fit()` and `docs/methodology/REGISTRY.md`.
 
 **When to use Efficient DiD vs Callaway-Sant'Anna:**
 
@@ -1158,8 +1162,8 @@ EfficientDiD(
 |--------|--------------|-------------------|
 | Approach | Optimal EIF-based weighting | Separate 2x2 DiD aggregation |
 | PT assumption | PT-All (stronger) or PT-Post | Conditional PT |
-| Efficiency | Achieves semiparametric bound | Not efficient |
-| Covariates | Supported (doubly robust, sieve-based) | Supported (OR, IPW, DR) |
+| Efficiency | Achieves semiparametric bound on the no-covariate path; DR covariate path is consistent but does not generically attain the bound under a linear OLS outcome regression | Not efficient |
+| Covariates | Supported (doubly robust, sieve-based PS + linear OLS OR) | Supported (OR, IPW, DR) |
 | When to choose | Maximum efficiency, PT-All credible | Covariates needed, weaker PT |
 
 ### de Chaisemartin-D'Haultfœuille (dCDH) for Reversible Treatments
@@ -1261,7 +1265,7 @@ print(f"Fraction of negative weights: {diagnostic.fraction_negative:.3f}")
 print(f"sigma_fe (sign-flipping threshold): {diagnostic.sigma_fe:.3f}")
 ```
 
-> **Note:** Placebo SE is `NaN` for both the single-lag `DID_M^pl` and the dynamic placebos `DID^{pl}_l`. The point estimates are meaningful for visual pre-trends inspection; formal placebo inference (influence-function derivation) is deferred to a follow-up. See `REGISTRY.md` for the full contract.
+> **Note:** Placebo SE is `NaN` for the single-period `DID_M^pl` (`L_max=None`) because the per-period aggregation path has no influence-function derivation; the point estimate is meaningful for visual pre-trends inspection. Multi-horizon dynamic placebos `DID^{pl}_l` (`L_max >= 1`) have valid analytical SE via the same cohort-recentered plug-in variance as the positive horizons, with bootstrap SE available when `n_bootstrap > 0`. See `docs/methodology/REGISTRY.md` for the full contract.
 
 > **Note:** By default (`drop_larger_lower=True`), the estimator drops groups whose treatment switches more than once before estimation. This matches R `DIDmultiplegtDYN`'s default and is required for the analytical variance formula to be consistent with the point estimate. Each drop emits an explicit warning.
 

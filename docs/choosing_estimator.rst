@@ -289,10 +289,13 @@ integration on placebos, and survey support via Taylor-series linearization.
 
 .. note::
 
-   Placebo SE (both single-lag ``DID_M^pl`` and dynamic ``DID^{pl}_l``)
-   is intentionally ``NaN``. Placebo point estimates are meaningful for
-   visual pre-trends inspection; formal placebo inference is deferred.
-   See ``REGISTRY.md`` for the full contract.
+   Single-period placebo ``DID_M^pl`` (``L_max=None``) has ``NaN`` SE -
+   the per-period aggregation path has no influence-function derivation,
+   so inference fields stay ``NaN`` even when ``n_bootstrap > 0``. The
+   point estimate is meaningful for visual pre-trends inspection.
+   Multi-horizon dynamic placebos ``DID^{pl}_l`` (``L_max >= 1``) have
+   valid analytical SE and bootstrap SE via the placebo IF. See
+   ``docs/methodology/REGISTRY.md`` for the full contract.
 
 .. note::
 

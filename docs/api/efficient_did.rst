@@ -6,7 +6,7 @@ from Chen, Sant'Anna & Xie (2025).
 
 This module implements the efficiency-bound-attaining estimator that:
 
-1. **Achieves the semiparametric efficiency bound** for ATT(g,t) estimation
+1. **Achieves the semiparametric efficiency bound** for ATT(g,t) estimation on the no-covariate path
 2. **Optimally weights** across comparison groups and baselines via the
    inverse covariance matrix Ω*
 3. **Supports two PT assumptions**: PT-All (overidentified, tighter SEs) and
@@ -16,16 +16,27 @@ This module implements the efficiency-bound-attaining estimator that:
 
 .. note::
 
-   EfficientDiD supports a doubly-robust covariate path (sieve-based
-   propensity score and outcome regression). Pass column names to the
-   ``covariates`` parameter on ``fit()``.
+   EfficientDiD supports a doubly-robust covariate path: sieve-based
+   propensity score ratios combined with a linear OLS outcome regression.
+   The DR property ensures consistency if either the OR or the PS ratio is
+   correctly specified, but the linear OLS working model for the outcome
+   regression does not generically attain the semiparametric efficiency
+   bound unless the conditional mean is linear in the covariates. The
+   unqualified efficiency-bound claim applies to the no-covariate path
+   only. Pass column names to the ``covariates`` parameter on ``fit()``.
+   See ``docs/methodology/REGISTRY.md`` for the full contract.
 
 **When to use EfficientDiD:**
 
-- Staggered adoption design where you want **maximum efficiency**
+- Staggered adoption design where you want **maximum efficiency** on the no-covariate path
 - You believe parallel trends holds across all pre-treatment periods (PT-All)
 - You want tighter confidence intervals than Callaway-Sant'Anna
 - You need a formal efficiency benchmark for comparing estimators
+
+For covariate-adjusted designs, the doubly-robust path is consistent under
+either outcome-regression or propensity-ratio correctness but does not
+generically attain the efficiency bound under the shipped linear OLS
+outcome regression.
 
 **Reference:** Chen, X., Sant'Anna, P. H. C., & Xie, H. (2025). Efficient
 Difference-in-Differences and Event Study Estimators.
