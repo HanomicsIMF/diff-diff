@@ -266,7 +266,12 @@ class TestReplicateClassA:
         assert np.isfinite(info["se"]) and info["se"] > 0
 
     def test_placebo_under_replicate(self, replicate_design):
-        """Placebo DID^{pl}_l under replicate weights also carries finite SE."""
+        """Placebo DID^{pl}_l under replicate weights carries finite SE,
+        p-value, and CI. Placebo horizons are stored under NEGATIVE
+        keys in ``placebo_event_study`` (see REGISTRY.md line 546 —
+        ``-l`` corresponds to backward outcome difference
+        ``Y_{g, F_g-1-l} - Y_{g, F_g-1}``). Pre-R3-fix this test used
+        key ``1`` and silently skipped the assertion."""
         df = _make_reversible_panel(n_groups=30, n_periods=6, seed=42)
         R = 20
         df = replicate_design(df, R=R, method="BRR")
@@ -280,10 +285,20 @@ class TestReplicateClassA:
             survey_design=sd,
             L_max=1,
         )
-        if res.placebo_event_study:
-            info = res.placebo_event_study.get(1)
-            if info is not None and info.get("n_obs", 0) > 0:
-                assert np.isfinite(info["se"])
+        assert res.placebo_event_study, (
+            "Expected placebo_event_study to be populated for L_max=1 "
+            "reversible panel"
+        )
+        # Negative key convention: placebo horizon l → key -l.
+        assert -1 in res.placebo_event_study, (
+            f"Expected key -1 in placebo_event_study (got keys "
+            f"{sorted(res.placebo_event_study)})"
+        )
+        info = res.placebo_event_study[-1]
+        assert info["n_obs"] > 0, "Placebo horizon should have observations"
+        assert np.isfinite(info["se"]) and info["se"] > 0
+        assert np.isfinite(info["p_value"])
+        assert np.all(np.isfinite(info["conf_int"]))
 
     def test_did_x_replicate(self, base_panel, replicate_design):
         """DID^X covariate adjustment flows through the Class A dispatch
