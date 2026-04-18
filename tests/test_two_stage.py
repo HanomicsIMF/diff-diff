@@ -494,7 +494,11 @@ class TestTwoStageDiDVariance:
         """Silent-failure audit axis C: when sparse factorization of Stage 1's
         normal-equations matrix fails and the GMM sandwich falls back to dense
         lstsq, a UserWarning must surface so callers know SE came from the
-        degraded path rather than the fast sparse path."""
+        degraded path rather than the fast sparse path.
+
+        Also verifies the dense fallback still yields finite, usable SEs so
+        that a future regression in the fallback control flow cannot keep the
+        warning while breaking the degraded path."""
         import unittest.mock
 
         data = generate_test_data()
@@ -504,7 +508,7 @@ class TestTwoStageDiDVariance:
             side_effect=RuntimeError("test failure"),
         ):
             with pytest.warns(UserWarning, match="sparse factorization.*falling back to dense lstsq"):
-                TwoStageDiD().fit(
+                results = TwoStageDiD().fit(
                     data,
                     outcome="outcome",
                     unit="unit",
@@ -512,9 +516,16 @@ class TestTwoStageDiDVariance:
                     first_treat="first_treat",
                 )
 
+        # Dense fallback must still produce a usable SE.
+        assert np.isfinite(results.overall_se)
+        assert results.overall_se > 0
+
     def test_sparse_factorized_bootstrap_dense_fallback_emits_warning(self):
         """Silent-failure audit axis C: the TwoStage bootstrap path has the
-        same sparse->dense fallback and must also emit a UserWarning."""
+        same sparse->dense fallback and must also emit a UserWarning.
+
+        Also verifies the bootstrap dense fallback still yields finite,
+        usable SEs."""
         import unittest.mock
 
         data = generate_test_data()
@@ -524,13 +535,17 @@ class TestTwoStageDiDVariance:
             side_effect=RuntimeError("test failure"),
         ):
             with pytest.warns(UserWarning, match="sparse factorization.*falling back to dense lstsq"):
-                TwoStageDiD(n_bootstrap=4, seed=42).fit(
+                results = TwoStageDiD(n_bootstrap=4, seed=42).fit(
                     data,
                     outcome="outcome",
                     unit="unit",
                     time="time",
                     first_treat="first_treat",
                 )
+
+        # Bootstrap dense fallback must still produce a usable SE.
+        assert np.isfinite(results.overall_se)
+        assert results.overall_se > 0
 
 
 # =============================================================================
