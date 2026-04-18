@@ -985,13 +985,14 @@ class TROPLocalMixin:
                     unit_weight_arr,
                 )
 
-                if len(bootstrap_estimates) >= 10:
+                if len(bootstrap_estimates) > 0:
+                    warn_bootstrap_failure_rate(
+                        n_success=len(bootstrap_estimates),
+                        n_attempted=self.n_bootstrap,
+                        context="TROP local bootstrap (Rust)",
+                    )
                     return float(se), bootstrap_estimates
-                # Fall through to Python if too few bootstrap samples
-                logger.debug(
-                    "Rust bootstrap returned only %d samples, falling back to Python",
-                    len(bootstrap_estimates),
-                )
+                logger.debug("Rust bootstrap returned 0 samples, falling back to Python")
             except Exception as e:
                 logger.debug("Rust bootstrap variance failed, falling back to Python: %s", e)
                 warnings.warn(

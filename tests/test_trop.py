@@ -3828,6 +3828,70 @@ class TestTROPBootstrapFailureRateGuard:
         assert np.isfinite(se)
         assert len(dist) == 20
 
+    def test_local_rust_bootstrap_warns_above_5pct_failure(self):
+        """Rust-local path previously returned silently whenever `len >= 10`.
+
+        Now the same proportional guard fires: Rust returning 11 successful
+        draws out of n_bootstrap=200 (94.5% failure rate) must warn.
+        """
+        import sys
+        from unittest.mock import patch
+
+        df = TestTROPNValidTreated._make_panel()
+
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=200,
+            seed=42,
+        )
+
+        n_units = df["unit"].nunique()
+        n_periods = df["time"].nunique()
+        Y = np.zeros((n_periods, n_units), dtype=np.float64)
+        D = np.zeros((n_periods, n_units), dtype=np.float64)
+        trop_est._precomputed = {
+            "control_mask": np.ones((n_periods, n_units), dtype=bool),
+            "time_dist_matrix": np.abs(
+                np.arange(n_periods)[:, None] - np.arange(n_periods)[None, :]
+            ).astype(np.int64),
+        }
+
+        trop_local_module = sys.modules["diff_diff.trop_local"]
+        rng = np.random.default_rng(0)
+        fake_boot = rng.normal(size=11)
+
+        def _fake_rust_boot(*args, **kwargs):
+            return fake_boot, float(np.std(fake_boot, ddof=1))
+
+        with (
+            patch.object(trop_local_module, "HAS_RUST_BACKEND", True),
+            patch.object(
+                trop_local_module,
+                "_rust_bootstrap_trop_variance",
+                side_effect=_fake_rust_boot,
+            ),
+        ):
+            with pytest.warns(
+                UserWarning,
+                match=r"11/200 bootstrap iterations succeeded in TROP local bootstrap \(Rust\)",
+            ):
+                se, dist = trop_est._bootstrap_variance(
+                    df,
+                    "outcome",
+                    "treated",
+                    "unit",
+                    "time",
+                    (1.0, 1.0, 1e10),
+                    Y=Y,
+                    D=D,
+                )
+
+        assert np.isfinite(se)
+        assert len(dist) == 11
+
 
 class TestTROPModuleSplit:
     """Regression tests for the trop.py -> trop_global.py / trop_local.py split."""

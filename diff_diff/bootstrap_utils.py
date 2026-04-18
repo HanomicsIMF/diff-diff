@@ -37,8 +37,10 @@ def warn_bootstrap_failure_rate(
     """Emit one proportional failure-rate warning after a replicate loop.
 
     Replaces the hard-coded ``< N successes`` pattern that lets high-failure
-    runs (e.g. 11 of 200) pass silently. Does not emit when the replicate
-    count is zero (callers handle the NaN-return path explicitly).
+    runs (e.g. 11 of 200) pass silently. Does not emit when
+    ``n_attempted == 0`` (callers handle that degenerate path explicitly);
+    when ``n_success == 0`` and ``n_attempted > 0``, the warning fires
+    describing the all-failed run.
 
     Parameters
     ----------
