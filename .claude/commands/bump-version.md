@@ -25,6 +25,7 @@ Files that need updating:
 | `rust/Cargo.toml` | `version = "X.Y.Z"` | ~3 |
 | `CHANGELOG.md` | Section header + comparison link | Top + bottom |
 | `diff_diff/guides/llms-full.txt` | `- Version: X.Y.Z` | ~5 |
+| `CITATION.cff` | `version: "X.Y.Z"` + `date-released: "YYYY-MM-DD"` | ~10, ~11 |
 
 ## Instructions
 
@@ -83,6 +84,12 @@ Files that need updating:
    - `diff_diff/guides/llms-full.txt`:
      Replace `- Version: OLD_VERSION` with `- Version: NEW_VERSION`
 
+   - `CITATION.cff`:
+     Replace `version: "OLD_VERSION"` with `version: "NEW_VERSION"`.
+     Also update `date-released: "OLD_DATE"` to `date-released: "YYYY-MM-DD"`
+     using today's date (same value used for the CHANGELOG section header in
+     step 4). Both fields are quoted strings; preserve the quoting style.
+
 6. **Update CHANGELOG comparison links**:
    - Run `git remote get-url origin` to determine the repository's GitHub URL
      (strip `.git` suffix, convert SSH format to HTTPS if needed)
@@ -102,6 +109,7 @@ Files that need updating:
    - pyproject.toml: version = "NEW_VERSION"
    - rust/Cargo.toml: version = "NEW_VERSION"
    - diff_diff/guides/llms-full.txt: Version: NEW_VERSION
+   - CITATION.cff: version: NEW_VERSION, date-released: YYYY-MM-DD
    - CHANGELOG.md: Added/verified [NEW_VERSION] entry
 
    Next steps:
@@ -117,3 +125,7 @@ Files that need updating:
 - If CHANGELOG already has the target version entry with content, it will not be overwritten
 - Commit messages are cleaned up (prefixes like "feat:", "fix:" are removed) for CHANGELOG
 - The comparison link format uses `v` prefix for tags (e.g., `v2.2.0`)
+- `CITATION.cff` `date-released` is set to today's date (same value as the CHANGELOG
+  section header). If the release is cut on a different day, update it manually at
+  release time — drift here causes auto-citation tools (Zenodo, GitHub's "cite this
+  repository", reference managers) to report stale metadata.
