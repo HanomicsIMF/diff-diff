@@ -918,3 +918,140 @@ class TestInvariants:
         # asserting the result attribute is populated confirms the df
         # flow-through was exercised.
         assert res.honest_did_results is not None
+
+    def test_heterogeneity_late_nvalid_propagates_to_all_surfaces(
+        self, base_panel, monkeypatch,
+    ):
+        """Regression for PR #311 CI review R4 P2.
+
+        The duplicated-column test above exercises the design-df cap
+        (which binds BEFORE heterogeneity runs), so it cannot catch a
+        bug where the post-heterogeneity recompute block fails to
+        propagate the final df to every public surface. This test
+        isolates the late-arriving case by monkeypatching
+        `compute_replicate_if_variance` to return a SMALLER n_valid
+        only on the heterogeneity call site — after main surfaces
+        have already frozen their t/p/CI fields with the larger df.
+
+        Every public surface (`overall_*`, `event_study_effects`,
+        `placebo_event_study`, `heterogeneity_effects`,
+        `survey_metadata.df_survey`) must reflect the reduced df.
+        """
+        from scipy import stats as _stats
+        from diff_diff import survey as _survey_mod
+
+        R = 20
+        reduced_n_valid = 7  # small enough that (reduced - 1) < R - 1
+        df = _attach_replicate_weights(base_panel, R=R, method="JK1", seed=5)
+        sd = _build_replicate_design(R, "JK1")
+        resolved = sd.resolve(df)
+        # Clean (full-rank) design — design df is NOT the binding cap.
+        assert resolved.df_survey == R - 1
+
+        original = _survey_mod.compute_replicate_if_variance
+
+        # Pass 1: count the main-surface calls to
+        # `compute_replicate_if_variance` (L_max=1, no heterogeneity).
+        main_counter = {"n": 0}
+
+        def count_only(psi, resolved_arg):
+            main_counter["n"] += 1
+            return original(psi, resolved_arg)
+
+        monkeypatch.setattr(
+            _survey_mod, "compute_replicate_if_variance", count_only
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd, L_max=1,
+            )
+        main_call_count = main_counter["n"]
+        monkeypatch.undo()
+
+        # Pass 2: reduce n_valid on calls STRICTLY AFTER the main
+        # surfaces (i.e., heterogeneity's call).
+        tracker = {"count": 0}
+
+        def reduce_after_main(psi, resolved_arg):
+            tracker["count"] += 1
+            var, n_valid = original(psi, resolved_arg)
+            if tracker["count"] > main_call_count:
+                return var, reduced_n_valid
+            return var, n_valid
+
+        monkeypatch.setattr(
+            _survey_mod, "compute_replicate_if_variance",
+            reduce_after_main,
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            res = ChaisemartinDHaultfoeuille(seed=1).fit(
+                df, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd, L_max=1,
+                heterogeneity="x_het",
+            )
+
+        # Heterogeneity's smaller n_valid should be the binding final
+        # df: min(R - 1, reduced_n_valid - 1) = reduced_n_valid - 1.
+        expected_df = reduced_n_valid - 1
+        assert res.survey_metadata.df_survey == expected_df, (
+            f"survey_metadata.df_survey should be {expected_df} "
+            f"(reduced_n_valid - 1), got {res.survey_metadata.df_survey}"
+        )
+
+        # Overall surface: p-value must use the reduced df.
+        t_stat = res.overall_att / res.overall_se
+        expected_p_overall = 2 * _stats.t.sf(abs(t_stat), df=expected_df)
+        assert res.overall_p_value == pytest.approx(
+            expected_p_overall, rel=1e-6,
+        ), (
+            "overall_p_value should reflect heterogeneity's late "
+            "n_valid via the post-recompute block"
+        )
+
+        # Event study (L=1) surface.
+        if res.event_study_effects and 1 in res.event_study_effects:
+            info = res.event_study_effects[1]
+            if np.isfinite(info["se"]) and info["se"] > 0:
+                t_l = info["effect"] / info["se"]
+                expected_p_l = 2 * _stats.t.sf(abs(t_l), df=expected_df)
+                assert info["p_value"] == pytest.approx(
+                    expected_p_l, rel=1e-6,
+                )
+
+        # Placebo event study surface (NEGATIVE keys). This is the
+        # one the copied-value bug would hide: `placebo_event_study`
+        # holds a VALUE copy of `placebo_horizon_inference`, so a
+        # broken recompute block would leave stale t/p/CI here.
+        if res.placebo_event_study:
+            for _lag_neg, pl_info in res.placebo_event_study.items():
+                if np.isfinite(pl_info["se"]) and pl_info["se"] > 0:
+                    t_pl = pl_info["effect"] / pl_info["se"]
+                    expected_p_pl = 2 * _stats.t.sf(
+                        abs(t_pl), df=expected_df,
+                    )
+                    assert pl_info["p_value"] == pytest.approx(
+                        expected_p_pl, rel=1e-6,
+                    ), (
+                        f"placebo_event_study[{_lag_neg}] p-value "
+                        f"must reflect the reduced df "
+                        f"({expected_df}); got "
+                        f"{pl_info['p_value']} vs expected "
+                        f"{expected_p_pl}"
+                    )
+
+        # Heterogeneity surface.
+        if res.heterogeneity_effects:
+            het_info = res.heterogeneity_effects[1]
+            if np.isfinite(het_info["se"]) and het_info["se"] > 0:
+                het_t = het_info["beta"] / het_info["se"]
+                expected_het_p = 2 * _stats.t.sf(
+                    abs(het_t), df=expected_df,
+                )
+                assert het_info["p_value"] == pytest.approx(
+                    expected_het_p, rel=1e-6,
+                )

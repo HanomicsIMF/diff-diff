@@ -2706,6 +2706,21 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         )
         if _replicate_n_valid_list:
             _final_inf_df = _inference_df(_final_eff_df, resolved_survey)
+            # Recompute `effective_overall_*` directly — that's what
+            # ships in results at line ~2776+. `effective_overall_att/se`
+            # may differ from the raw `overall_att/se` under the delta
+            # (cost-benefit) path at L_max >= 2; recomputing from
+            # `effective_*` ensures both paths get the final df.
+            if np.isfinite(effective_overall_se):
+                effective_overall_t, effective_overall_p, effective_overall_ci = (
+                    safe_inference(
+                        effective_overall_att, effective_overall_se,
+                        alpha=self.alpha, df=_final_inf_df,
+                    )
+                )
+            # Keep `overall_*` in sync for any downstream code that
+            # reads them directly (e.g., placebo_event_study_dict
+            # construction flows from overall_*).
             overall_t, overall_p, overall_ci = safe_inference(
                 overall_att, overall_se,
                 alpha=self.alpha, df=_final_inf_df,
@@ -2738,6 +2753,19 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     _info_r2["t_stat"] = _t_r2
                     _info_r2["p_value"] = _p_r2
                     _info_r2["conf_int"] = _ci_r2
+                    # `placebo_event_study_dict` holds VALUE copies
+                    # (not shared references) of the inner dicts, so
+                    # mutating `placebo_horizon_inference[lag]` above
+                    # does NOT propagate to the public surface. Update
+                    # the negative-key mirror explicitly so the
+                    # recomputed t/p/CI ship in results.
+                    if (
+                        placebo_event_study_dict is not None
+                        and -_lag_r2 in placebo_event_study_dict
+                    ):
+                        placebo_event_study_dict[-_lag_r2]["t_stat"] = _t_r2
+                        placebo_event_study_dict[-_lag_r2]["p_value"] = _p_r2
+                        placebo_event_study_dict[-_lag_r2]["conf_int"] = _ci_r2
             if heterogeneity_effects:
                 for _lag_r2, _info_r2 in list(heterogeneity_effects.items()):
                     if np.isfinite(_info_r2["se"]):
