@@ -981,7 +981,13 @@ class DiagnosticReport:
             "target_power": _to_python_float(getattr(pp, "target_power", 0.80)),
             "mdv": mdv,
             "mdv_share_of_att": ratio,
-            "power_at_M_1": _to_python_float(getattr(pp, "power", None)),
+            # ``PreTrendsPowerResults.power`` is the power to detect a
+            # violation of ``violation_magnitude`` (which defaults to the
+            # MDV when the caller passes ``M=None``). The round-7 CI
+            # review flagged the prior ``power_at_M_1`` label as a schema
+            # contract bug — the stored value was not power at ``M=1.0``.
+            "violation_magnitude": _to_python_float(getattr(pp, "violation_magnitude", None)),
+            "power_at_violation_magnitude": _to_python_float(getattr(pp, "power", None)),
             "n_pre_periods": int(getattr(pp, "n_pre_periods", 0) or 0),
             "tier": tier,
             "covariance_source": cov_source,
@@ -1003,7 +1009,8 @@ class DiagnosticReport:
             "target_power": _to_python_float(getattr(obj, "target_power", 0.80)),
             "mdv": mdv,
             "mdv_share_of_att": ratio,
-            "power_at_M_1": _to_python_float(getattr(obj, "power", None)),
+            "violation_magnitude": _to_python_float(getattr(obj, "violation_magnitude", None)),
+            "power_at_violation_magnitude": _to_python_float(getattr(obj, "power", None)),
             "n_pre_periods": int(getattr(obj, "n_pre_periods", 0) or 0),
             "tier": _power_tier(ratio),
             "precomputed": True,

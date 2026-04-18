@@ -330,23 +330,30 @@ class BusinessReport:
         if extracted is not None:
             _name, att, se, p, ci, result_alpha = extracted
 
-        # If the caller asked for a different alpha than the result was fit
-        # at, the displayed CI needs to match the label. Naive recomputation
-        # via ``safe_inference(att, se, alpha=alpha)`` would use a normal
-        # distribution with no df, which silently discards finite-df /
-        # bootstrap / percentile inference contracts used by TROP,
-        # ContinuousDiD, dCDH-bootstrap, survey fits, etc. Rules:
-        #   1. If the result has an analytic inference contract we can
-        #      reproduce (no bootstrap distribution, no finite df we don't
-        #      know about), recompute via ``safe_inference`` — this covers
-        #      the common case of normal-approximation CIs.
-        #   2. Otherwise (bootstrap / percentile / finite-df / survey d.f.),
-        #      preserve the fitted CI and its native level so the displayed
-        #      interval keeps matching the stored p-value and inference
-        #      contract. The ``ci_level`` field will reflect the result's
-        #      own alpha, and a caveat is appended below noting that the
-        #      caller's alpha drives phrasing but the native interval is
-        #      shown.
+        # If the caller asked for a different alpha than the result was
+        # fit at, we cannot generally recompute a faithful CI from
+        # ``(att, se)`` alone: that would require reproducing the fit's
+        # exact inference contract (t-quantile with the fit's ``df``,
+        # bootstrap percentile, wild cluster bootstrap, survey replicate
+        # quantile, rank-deficient d.f.-undefined, etc.), none of which
+        # are exposed as a uniform descriptor across the 16 result
+        # classes. Recomputing via ``safe_inference(att, se, alpha)``
+        # silently substitutes a normal-z CI even for analytical t-based
+        # fits (``DifferenceInDifferences`` via
+        # ``LinearRegression.get_inference()`` with a finite ``df``,
+        # ``MultiPeriodDiD`` via ``safe_inference(..., df=df)``, TROP's
+        # ``df_trop``) and can invent a finite interval where the native
+        # fit deliberately returned NaN (replicate-survey fits with
+        # ``df=0``). Both were flagged as P0 by the round-7 CI review.
+        #
+        # Rule: always preserve the fitted CI on an alpha mismatch.
+        # ``display_alpha`` drives ``ci_level`` (so the displayed CI
+        # label matches the preserved bounds) while
+        # ``self._context.alpha`` — the caller's requested alpha — drives
+        # the significance phrasing (``is_significant`` /
+        # ``near_threshold``). A caveat records the override.
+        display_alpha = alpha
+        phrasing_alpha = alpha
         alpha_was_honored = True
         alpha_override_caveat: Optional[str] = None
         if (
@@ -354,71 +361,48 @@ class BusinessReport:
             and not np.isclose(alpha, result_alpha)
             and att is not None
             and se is not None
-            and np.isfinite(att)
-            and np.isfinite(se)
         ):
             inference_method = getattr(r, "inference_method", "analytical")
-            has_bootstrap_dist = getattr(r, "bootstrap_distribution", None) is not None
-            df_survey = getattr(
-                r, "df_survey", getattr(getattr(r, "survey_metadata", None), "df_survey", None)
-            )
-            variance_method = getattr(r, "variance_method", None)
-
-            # Many staggered / continuous / dCDH result classes copy
-            # bootstrap-derived se/p/conf_int directly into their top-level
-            # fields and do not advertise ``inference_method`` or
-            # ``bootstrap_distribution``. Instead they expose either a
-            # populated ``bootstrap_results`` sub-object (CS, SA, Imputation,
-            # TwoStage, EfficientDiD, StaggeredTripleDiff, dCDH) or an
-            # ``n_bootstrap`` field set > 0 (ContinuousDiD, plus the above
-            # when applicable). Treat both as bootstrap markers so an
-            # ``alpha`` override does not silently swap a percentile /
-            # multiplier-bootstrap CI for a normal-approximation one.
-            has_bootstrap_results = getattr(r, "bootstrap_results", None) is not None
-            raw_n_bootstrap = getattr(r, "n_bootstrap", 0)
-            has_n_bootstrap = (
-                isinstance(raw_n_bootstrap, (int, float))
-                and np.isfinite(raw_n_bootstrap)
-                and raw_n_bootstrap > 0
-            )
-
-            # Any non-analytic inference surface that stores a sampling /
-            # resampling distribution (wild cluster bootstrap, percentile
-            # bootstrap, jackknife, placebo) should preserve its native CI.
-            bootstrap_like = (
-                inference_method in {"bootstrap", "wild_bootstrap"}
-                or has_bootstrap_dist
-                or has_bootstrap_results
-                or has_n_bootstrap
-                or variance_method in {"bootstrap", "jackknife", "placebo"}
-            )
-            finite_df = isinstance(df_survey, (int, float)) and df_survey > 0
-
-            if bootstrap_like or finite_df:
-                # Preserve the fitted CI at its native level.
-                alpha_was_honored = False
-                alpha = float(result_alpha)
-                if inference_method == "wild_bootstrap":
-                    inference_label = "wild cluster bootstrap"
-                elif bootstrap_like:
-                    inference_label = "bootstrap"
-                else:
-                    inference_label = "finite-df"
-                alpha_override_caveat = (
-                    f"Requested alpha was not honored for the confidence "
-                    f"interval because this fit uses {inference_label} "
-                    f"inference; the displayed CI remains at the fit's "
-                    f"native level ({int(round((1.0 - result_alpha) * 100))}%). "
-                    f"The significance phrasing still uses the requested alpha."
-                )
+            if inference_method == "wild_bootstrap":
+                inference_label = "wild cluster bootstrap"
+            elif (
+                inference_method == "bootstrap" or getattr(r, "bootstrap_results", None) is not None
+            ):
+                inference_label = "bootstrap"
+            elif getattr(r, "bootstrap_distribution", None) is not None:
+                inference_label = "bootstrap"
+            elif getattr(r, "variance_method", None) in {"bootstrap", "jackknife", "placebo"}:
+                variance_method = getattr(r, "variance_method", None)
+                inference_label = f"{variance_method} variance"
             else:
-                from diff_diff.utils import safe_inference
+                df_survey = getattr(
+                    r,
+                    "df_survey",
+                    getattr(getattr(r, "survey_metadata", None), "df_survey", None),
+                )
+                if isinstance(df_survey, (int, float)) and df_survey > 0:
+                    inference_label = "finite-df survey"
+                elif isinstance(df_survey, (int, float)) and df_survey == 0:
+                    # Rank-deficient replicate design: the fit deliberately
+                    # left inference undefined. Preserve (NaN bounds remain NaN).
+                    inference_label = "undefined-df (replicate-weight)"
+                else:
+                    # Ordinary analytical fit with a finite but unexposed
+                    # ``df`` (``DifferenceInDifferences`` / ``MultiPeriodDiD``
+                    # / most staggered estimators / TROP). We cannot
+                    # reproduce the t-quantile without the fit's ``df``.
+                    inference_label = "analytical (native degrees of freedom)"
 
-                _t, _p, recomputed_ci = safe_inference(att, se, alpha=alpha)
-                if recomputed_ci is not None and all(
-                    x is not None and np.isfinite(x) for x in recomputed_ci
-                ):
-                    ci = [float(recomputed_ci[0]), float(recomputed_ci[1])]
+            display_alpha = float(result_alpha)
+            alpha_was_honored = False
+            alpha_override_caveat = (
+                f"Requested alpha ({phrasing_alpha:.2f}) was not honored "
+                f"for the confidence interval because this fit uses "
+                f"{inference_label} inference; the displayed CI remains "
+                f"at the fit's native level "
+                f"({int(round((1.0 - result_alpha) * 100))}%). The "
+                f"significance phrasing still uses the requested alpha."
+            )
 
         unit = self._context.outcome_unit
         unit_kind = _UNIT_KINDS.get(unit.lower() if unit else "", "unknown")
@@ -433,9 +417,15 @@ class BusinessReport:
         )
         if att is None or not np.isfinite(att):
             sign = "undefined"
-        ci_level = int(round((1.0 - alpha) * 100))
-        is_significant = p is not None and np.isfinite(p) and p < alpha if p is not None else False
-        near_threshold = p is not None and np.isfinite(p) and (alpha - 0.01) < p < (alpha + 0.001)
+        ci_level = int(round((1.0 - display_alpha) * 100))
+        is_significant = (
+            p is not None and np.isfinite(p) and p < phrasing_alpha if p is not None else False
+        )
+        near_threshold = (
+            p is not None
+            and np.isfinite(p)
+            and (phrasing_alpha - 0.01) < p < (phrasing_alpha + 0.001)
+        )
         # Use DR-computed breakdown_M if available for quick reference.
         breakdown_M: Optional[float] = None
         if dr_schema:

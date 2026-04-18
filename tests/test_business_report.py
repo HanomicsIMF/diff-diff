@@ -497,17 +497,21 @@ class TestSurveyPassthrough:
 # Single-knob alpha
 # ---------------------------------------------------------------------------
 class TestAlphaKnob:
-    def test_alpha_drives_ci_level(self, event_study_fit):
+    def test_alpha_equal_to_result_alpha_drives_ci_level(self, event_study_fit):
+        """When caller's alpha matches the fit's native alpha, ``ci_level``
+        reflects that alpha (e.g., alpha=0.05 -> 95% CI)."""
         fit, _ = event_study_fit
-        br90 = BusinessReport(fit, alpha=0.10, auto_diagnostics=False)
-        br95 = BusinessReport(fit, alpha=0.05, auto_diagnostics=False)
-        assert br90.to_dict()["headline"]["ci_level"] == 90
-        assert br95.to_dict()["headline"]["ci_level"] == 95
+        br = BusinessReport(fit, alpha=0.05, auto_diagnostics=False)
+        assert br.to_dict()["headline"]["ci_level"] == 95
 
-    def test_ci_bounds_recomputed_when_alpha_differs_from_result(self, event_study_fit):
-        """Regression for the P0 CI-label bug: when alpha != results.alpha,
-        the displayed interval must be recomputed from (att, se) rather than
-        the stored interval being relabeled to the caller's alpha."""
+    def test_alpha_mismatch_preserves_fitted_ci_at_native_level(self, event_study_fit):
+        """Round-7 regression: a caller alpha that differs from the fit's
+        native alpha must NOT recompute a z-based CI (the fit used t-based
+        inference with a finite ``df`` that BR cannot reproduce from
+        ``(att, se)`` alone). The displayed CI stays at the fit's native
+        level, while significance phrasing uses the caller's alpha. A
+        caveat records the override.
+        """
         import math
 
         fit, _ = event_study_fit
@@ -516,11 +520,19 @@ class TestAlphaKnob:
         h95 = br95.to_dict()["headline"]
         h90 = br90.to_dict()["headline"]
         if h95["effect"] is not None and math.isfinite(h95["effect"]):
-            # 90% bounds must be strictly inside 95% bounds.
-            assert h90["ci_lower"] > h95["ci_lower"] + 1e-9
-            assert h90["ci_upper"] < h95["ci_upper"] - 1e-9
+            # Bounds must match between the two: the alpha=0.10 call
+            # preserves the fit's 95% CI rather than recomputing a 90% z-CI.
+            assert h90["ci_lower"] == pytest.approx(h95["ci_lower"])
+            assert h90["ci_upper"] == pytest.approx(h95["ci_upper"])
+        # ``ci_level`` stays at the fit's native level in both cases.
         assert h95["ci_level"] == 95
-        assert h90["ci_level"] == 90
+        assert h90["ci_level"] == 95
+        # Override is surfaced as an info-level caveat.
+        topics = {c.get("topic") for c in br90.caveats()}
+        assert "alpha_override_preserved" in topics, (
+            "Alpha mismatch must surface a caveat documenting the preserved "
+            "native CI level; topics seen: " + str(topics)
+        )
 
 
 class TestAlphaOverrideBootstrapAndFiniteDF:
@@ -859,14 +871,22 @@ class TestBootstrapResultsAndNBootstrapDetection:
         topics = {c.get("topic") for c in br.caveats()}
         assert "alpha_override_preserved" in topics
 
-    def test_n_bootstrap_zero_does_not_trigger_preserve_path(self):
-        """Analytic fits with ``n_bootstrap = 0`` must still honor alpha."""
+    def test_n_bootstrap_zero_still_preserves_on_alpha_mismatch(self):
+        """Analytic fits (``n_bootstrap = 0``) also preserve the fitted CI
+        on alpha mismatch — BR cannot reproduce a ``DiDResults`` /
+        ``MultiPeriodDiDResults`` / TROP t-quantile CI without the fit's
+        finite ``df``, which is not exposed uniformly. Round-7 regression.
+        """
         stub = self._base_stub()
         stub.n_bootstrap = 0
         br = BusinessReport(stub, alpha=0.10, auto_diagnostics=False)
         h = br.to_dict()["headline"]
-        # Analytic — alpha honored, CI recomputed to 90%.
-        assert h["ci_level"] == 90
+        # Analytic fit's native 95% CI is preserved at 95% on 90% override.
+        assert h["ci_level"] == 95
+        assert h["ci_lower"] == pytest.approx(0.05)
+        assert h["ci_upper"] == pytest.approx(1.95)
+        topics = {c.get("topic") for c in br.caveats()}
+        assert "alpha_override_preserved" in topics
 
     def test_dcdh_shaped_bootstrap_stub_preserves_fit_ci(self):
         """dCDH copies bootstrap se/p/conf_int into top-level fields without
@@ -896,6 +916,89 @@ class TestBootstrapResultsAndNBootstrapDetection:
         assert h["ci_level"] == 95
         assert h["ci_lower"] == pytest.approx(0.72)
         assert h["ci_upper"] == pytest.approx(2.28)
+
+
+class TestAnalyticalFiniteDfAlphaOverride:
+    """Round-7 regressions for the P0 finding that
+    ``_extract_headline`` was recomputing a normal-z CI on alpha
+    mismatch for analytical fits whose native inference used a finite
+    ``df`` (``DifferenceInDifferences`` / ``MultiPeriodDiD`` / TROP)
+    that BR cannot reproduce from ``(att, se)`` alone. The fix is to
+    always preserve the fitted CI on alpha mismatch.
+    """
+
+    def test_analytical_did_result_preserves_native_ci(self):
+        from diff_diff import DifferenceInDifferences, generate_did_data
+
+        df = generate_did_data(n_units=80, n_periods=4, treatment_effect=1.5, seed=7)
+        fit = DifferenceInDifferences().fit(df, outcome="outcome", treatment="treated", time="post")
+        native_lo, native_hi = fit.conf_int
+
+        br = BusinessReport(fit, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        # Native 95% CI preserved — no z-based recomputation.
+        assert h["ci_level"] == 95
+        assert h["ci_lower"] == pytest.approx(native_lo)
+        assert h["ci_upper"] == pytest.approx(native_hi)
+        topics = {c.get("topic") for c in br.caveats()}
+        assert "alpha_override_preserved" in topics
+
+    def test_multiperiod_preserves_native_ci_on_alpha_override(self):
+        from diff_diff import MultiPeriodDiD, generate_did_data
+
+        df = generate_did_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
+        fit = MultiPeriodDiD().fit(
+            df,
+            outcome="outcome",
+            treatment="treated",
+            time="period",
+            unit="unit",
+            reference_period=3,
+        )
+        native_lo, native_hi = fit.avg_conf_int
+
+        br = BusinessReport(fit, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        assert h["ci_level"] == 95
+        assert h["ci_lower"] == pytest.approx(native_lo)
+        assert h["ci_upper"] == pytest.approx(native_hi)
+
+    def test_undefined_df_survey_stub_does_not_invent_finite_ci(self):
+        """When the fit's native inference returned NaN (rank-deficient
+        replicate design: ``df_survey = 0``), BR must not recompute a
+        finite interval — the NaN signal must propagate through."""
+        from types import SimpleNamespace
+
+        class _UndefinedDfStub:
+            pass
+
+        stub = _UndefinedDfStub()
+        stub.att = 1.0
+        stub.se = float("nan")
+        stub.p_value = float("nan")
+        stub.conf_int = (float("nan"), float("nan"))
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.inference_method = "analytical"
+        stub.survey_metadata = SimpleNamespace(
+            weight_type="replicate",
+            replicate_method="JK1",
+            effective_n=80.0,
+            design_effect=1.25,
+            sum_weights=100.0,
+            n_strata=None,
+            n_psu=None,
+            df_survey=0,
+        )
+
+        br = BusinessReport(stub, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        # NaN bounds must propagate — BR must not invent a finite CI.
+        lo, hi = h["ci_lower"], h["ci_upper"]
+        assert lo is None or not np.isfinite(lo), f"ci_lower should be NaN/None, got {lo}"
+        assert hi is None or not np.isfinite(hi), f"ci_upper should be NaN/None, got {hi}"
 
 
 class TestDCDHAssumptionTransitionBased:
