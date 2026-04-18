@@ -1613,6 +1613,20 @@ class DiagnosticReport:
                 ),
             }
 
+        # Propagate the fit's design settings into the pretest. If the
+        # original fit used non-default ``control_group`` (e.g.
+        # ``"last_cohort"``) or a non-zero ``anticipation``, rerunning
+        # with defaults would diagnose a different design than the
+        # estimate being summarized (round-9 CI review on PR #318).
+        r = self._results
+        hausman_kwargs: Dict[str, Any] = {}
+        fit_control_group = getattr(r, "control_group", None)
+        if isinstance(fit_control_group, str):
+            hausman_kwargs["control_group"] = fit_control_group
+        fit_anticipation = getattr(r, "anticipation", None)
+        if isinstance(fit_anticipation, (int, float)) and np.isfinite(fit_anticipation):
+            hausman_kwargs["anticipation"] = int(fit_anticipation)
+
         try:
             from diff_diff.efficient_did import EfficientDiD
 
@@ -1623,6 +1637,7 @@ class DiagnosticReport:
                 time=time,
                 first_treat=first_treat,
                 alpha=self._alpha,
+                **hausman_kwargs,
             )
         except Exception as exc:  # noqa: BLE001
             return {

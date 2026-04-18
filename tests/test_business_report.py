@@ -893,6 +893,64 @@ class TestMethodAwarePTProse:
         assert "event-study coefficients" not in summary
 
 
+class TestHausmanPretestPropagatesFitDesign:
+    """Round-9 regression: ``_pt_hausman`` must propagate the fitted
+    result's ``control_group`` and ``anticipation`` into
+    ``EfficientDiD.hausman_pretest`` so the pretest diagnoses the same
+    design as the estimate being summarized. Rerunning with defaults
+    would silently change the identification regime.
+    """
+
+    def _real_edid_fit(self):
+        from diff_diff import EfficientDiD
+
+        sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
+        edid = EfficientDiD().fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        # Force non-default design knobs on the result so the regression
+        # exercises propagation even when the constructor used defaults.
+        edid.control_group = "last_cohort"
+        edid.anticipation = 1
+        return edid, sdf
+
+    def test_hausman_pretest_receives_control_group_and_anticipation(self):
+        from diff_diff import DiagnosticReport
+
+        fit, sdf = self._real_edid_fit()
+        captured: dict = {}
+
+        def _fake_hausman(*args, **kwargs):
+            captured.update(kwargs)
+
+            class _Result:
+                statistic = 0.0
+                p_value = 0.5
+                df = 1
+
+            return _Result()
+
+        with patch(
+            "diff_diff.efficient_did.EfficientDiD.hausman_pretest",
+            side_effect=_fake_hausman,
+        ):
+            DiagnosticReport(
+                fit,
+                data=sdf,
+                outcome="outcome",
+                unit="unit",
+                time="period",
+                first_treat="first_treat",
+            ).run_all()
+
+        assert (
+            captured.get("control_group") == "last_cohort"
+        ), f"control_group must propagate from the fit; got {captured}"
+        assert (
+            captured.get("anticipation") == 1
+        ), f"anticipation must propagate from the fit; got {captured}"
+
+
 class TestFullReportSingleM:
     """Regression: ``full_report()`` must not claim full-grid robustness for a
     single-M HonestDiDResults passthrough. The summary path was fixed earlier;
