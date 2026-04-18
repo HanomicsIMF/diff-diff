@@ -19,7 +19,7 @@ multiplier weights (Rademacher / Mammen / Webb) and re-aggregates to
 produce a bootstrap distribution per target.
 """
 
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -71,7 +71,8 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         multi_horizon_inputs: Optional[Dict[int, Tuple[np.ndarray, int, float]]] = None,
         placebo_horizon_inputs: Optional[Dict[int, Tuple[np.ndarray, int, float]]] = None,
         # --- Survey: PSU-level bootstrap under survey designs ---
-        group_to_psu_map: Optional[np.ndarray] = None,
+        group_id_to_psu_code: Optional[Dict[Any, int]] = None,
+        eligible_group_ids: Optional[np.ndarray] = None,
     ) -> DCDHBootstrapResults:
         """
         Compute multiplier-bootstrap inference for all dCDH targets.
@@ -162,6 +163,14 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
             )
         rng = np.random.default_rng(self.seed)
 
+        # PSU label for each bootstrap weight column is derived from
+        # the group's ID via `_map_for_target`, not from positional
+        # truncation. All current dCDH bootstrap targets use the
+        # variance-eligible group ordering (`eligible_group_ids`); if a
+        # future target uses a different ordering, add a dedicated
+        # group-IDs parameter for it rather than reusing the overall
+        # eligible list.
+
         # --- Overall DID_M ---
         # Skip the scalar DID_M bootstrap when divisor_overall <= 0
         # (e.g., pure non-binary panels where N_S=0), but continue
@@ -177,7 +186,11 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                 rng=rng,
                 context="dCDH overall DID_M bootstrap",
                 return_distribution=True,
-                group_to_psu_map=group_to_psu_map,
+                group_to_psu_map=_map_for_target(
+                    u_centered_overall.shape[0],
+                    group_id_to_psu_code,
+                    eligible_group_ids,
+                ),
             )
         else:
             overall_se = np.nan
@@ -209,7 +222,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     rng=rng,
                     context="dCDH joiners DID_+ bootstrap",
                     return_distribution=False,
-                    group_to_psu_map=_slice_psu_map(group_to_psu_map, u_j.size),
+                    group_to_psu_map=_map_for_target(
+                        u_j.size, group_id_to_psu_code, eligible_group_ids,
+                    ),
                 )
                 results.joiners_se = se_j
                 results.joiners_ci = ci_j
@@ -229,7 +244,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     rng=rng,
                     context="dCDH leavers DID_- bootstrap",
                     return_distribution=False,
-                    group_to_psu_map=_slice_psu_map(group_to_psu_map, u_l.size),
+                    group_to_psu_map=_map_for_target(
+                        u_l.size, group_id_to_psu_code, eligible_group_ids,
+                    ),
                 )
                 results.leavers_se = se_l
                 results.leavers_ci = ci_l
@@ -249,7 +266,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     rng=rng,
                     context="dCDH placebo DID_M^pl bootstrap",
                     return_distribution=False,
-                    group_to_psu_map=_slice_psu_map(group_to_psu_map, u_pl.size),
+                    group_to_psu_map=_map_for_target(
+                        u_pl.size, group_id_to_psu_code, eligible_group_ids,
+                    ),
                 )
                 results.placebo_se = se_pl
                 results.placebo_ci = ci_pl
@@ -276,7 +295,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                 n_groups_target=n_groups_mh,
                 weight_type=self.bootstrap_weights,
                 rng=rng,
-                group_to_psu_map=group_to_psu_map,
+                group_to_psu_map=_map_for_target(
+                    n_groups_mh, group_id_to_psu_code, eligible_group_ids,
+                ),
             )
 
             for l_h, (u_h, n_h, eff_h) in sorted(multi_horizon_inputs.items()):
@@ -335,7 +356,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                         rng=rng,
                         context=f"dCDH placebo l={l_h} bootstrap",
                         return_distribution=False,
-                        group_to_psu_map=_slice_psu_map(group_to_psu_map, u_h.size),
+                        group_to_psu_map=_map_for_target(
+                            u_h.size, group_id_to_psu_code, eligible_group_ids,
+                        ),
                     )
                     pl_ses[l_h] = se_h
                     pl_cis[l_h] = ci_h
@@ -353,42 +376,56 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
 # =============================================================================
 
 
-def _slice_psu_map(
-    group_to_psu_map: Optional[np.ndarray],
+def _map_for_target(
     target_size: int,
+    group_id_to_psu_code: Optional[Dict[Any, int]],
+    eligible_group_ids: Optional[np.ndarray],
 ) -> Optional[np.ndarray]:
-    """Return a PSU map aligned to a subset bootstrap target.
+    """Build a PSU map for a bootstrap target from IDs (not positions).
 
-    The dCDH bootstrap passes a single full-length ``group_to_psu_map``
-    built in ``fit()`` from ``_eligible_group_ids`` (the variance-
-    eligible group ordering). By construction all current bootstrap
-    targets (overall, joiners, leavers, multi-horizon DID_l, placebo
-    DID^pl_l) use that same ordering — each target's IF vector has the
-    same length as the map and the entries correspond to the same
-    groups in the same order. This invariant is enforced by requiring
-    ``target_size == len(group_to_psu_map)``; if a future refactor
-    introduces a target whose group subset differs from the overall
-    variance-eligible ordering, this assertion fires loudly rather
-    than silently misclustering the bootstrap draws.
+    The caller passes:
+    - ``group_id_to_psu_code``: a dict mapping each variance-eligible
+      group ID to its dense PSU code (built once in ``fit()``).
+    - ``eligible_group_ids``: the ordered list of group IDs that
+      correspond to the current target's ``u_centered`` vector.
 
-    Returns ``None`` when no map is provided (plain multiplier-
-    bootstrap path — identity across targets). Raises ``ValueError``
-    when the target size does not match the map length: callers must
-    supply a target-specific map (not a truncation) if they introduce
-    non-aligned subsets.
+    Returns an integer array of length ``target_size`` where entry
+    ``i`` is the PSU code for the ``i``-th contributing group.
+
+    Returns ``None`` when no PSU information is available (plain
+    multiplier-bootstrap path — identity across targets).
+
+    Raises ``ValueError`` if ``target_size`` does not match
+    ``len(eligible_group_ids)``: every current dCDH bootstrap target
+    uses the variance-eligible group ordering, so any size mismatch
+    signals that a caller introduced a target whose group subset
+    diverges and should pass its own ``target_group_ids`` rather than
+    reusing the overall eligible list. Also raises ``ValueError`` if
+    any group ID is missing from the dict (signaling misalignment
+    between the target's IF vector and the map's keys).
     """
-    if group_to_psu_map is None:
+    if group_id_to_psu_code is None or eligible_group_ids is None:
         return None
-    if target_size == len(group_to_psu_map):
-        return group_to_psu_map
-    raise ValueError(
-        f"PSU map length ({len(group_to_psu_map)}) does not match "
-        f"bootstrap target size ({target_size}). dCDH's bootstrap contract "
-        f"requires all targets to use the same variance-eligible group "
-        f"ordering as `_eligible_group_ids`. If this target has a "
-        f"different ordering, construct a target-specific map keyed by "
-        f"its actual group IDs rather than truncating the full map."
-    )
+    if target_size != len(eligible_group_ids):
+        raise ValueError(
+            f"Bootstrap target size ({target_size}) does not match "
+            f"eligible_group_ids length ({len(eligible_group_ids)}). "
+            "dCDH's bootstrap contract requires all current targets to "
+            "use the variance-eligible group ordering; if a new target "
+            "has a different ordering, pass target-specific group IDs "
+            "to _map_for_target rather than reusing eligible_group_ids."
+        )
+    try:
+        return np.array(
+            [group_id_to_psu_code[gid] for gid in eligible_group_ids],
+            dtype=np.int64,
+        )
+    except KeyError as e:
+        raise ValueError(
+            f"Group ID {e.args[0]!r} in eligible_group_ids has no entry "
+            f"in group_id_to_psu_code — PSU map is misaligned with the "
+            f"bootstrap target's group set."
+        ) from e
 
 
 def _generate_psu_or_group_weights(

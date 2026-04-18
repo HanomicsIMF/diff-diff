@@ -2114,16 +2114,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         h_data["did_l"],
                     )
 
-            # Under a survey design with PSU information, build a dense
-            # group_to_psu_map so the bootstrap randomizes at the PSU
-            # level rather than at the group level (Hall-Mammen wild PSU
-            # bootstrap). PSU/strata are within-group-constant by the
-            # _validate_group_constant_strata_psu precondition, so each
-            # variance-eligible group has exactly one PSU label. Under
-            # auto-inject psu=group the map is the identity and the
-            # bootstrap mixin's fast path reproduces the pre-PSU
-            # behavior bit-for-bit.
-            group_to_psu_map_bootstrap: Optional[np.ndarray] = None
+            # Under a survey design with PSU information, build a
+            # `group_id_to_psu_code` dict so the bootstrap mixin can
+            # derive each target's PSU map by ID lookup rather than by
+            # positional reuse. PSU/strata are within-group-constant by
+            # the _validate_group_constant_strata_psu precondition, so
+            # each variance-eligible group has exactly one PSU label.
+            # Under auto-inject psu=group each group has a unique PSU
+            # code and the bootstrap mixin's identity-map fast path
+            # reproduces the pre-PSU behavior bit-for-bit.
+            group_id_to_psu_code_bootstrap: Optional[Dict[Any, int]] = None
+            eligible_group_ids_bootstrap: Optional[np.ndarray] = None
             if (
                 resolved_survey is not None
                 and getattr(resolved_survey, "psu", None) is not None
@@ -2144,17 +2145,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         break
                     labels = obs_psu_codes[mask_g]
                     # Within-group-constant PSU is validated upstream;
-                    # .item() on the first is robust to integer vs string.
+                    # the first label represents the whole group.
                     group_psu_labels.append(labels[0])
                 if valid_map and len(group_psu_labels) == n_groups_for_overall_var:
-                    # Dense integer indices for _generate_psu_or_group_weights.
-                    _, group_to_psu_map_bootstrap = np.unique(
+                    # Factor PSU labels to dense integer codes.
+                    _, dense_codes = np.unique(
                         np.asarray(group_psu_labels),
                         return_inverse=True,
                     )
-                    group_to_psu_map_bootstrap = np.asarray(
-                        group_to_psu_map_bootstrap, dtype=np.int64
-                    )
+                    dense_codes = np.asarray(dense_codes, dtype=np.int64)
+                    group_id_to_psu_code_bootstrap = {
+                        gid: int(code)
+                        for gid, code in zip(_eligible_group_ids, dense_codes)
+                    }
+                    eligible_group_ids_bootstrap = np.asarray(_eligible_group_ids)
 
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
@@ -2166,7 +2170,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 placebo_inputs=placebo_inputs,
                 multi_horizon_inputs=mh_boot_inputs,
                 placebo_horizon_inputs=pl_boot_inputs,
-                group_to_psu_map=group_to_psu_map_bootstrap,
+                group_id_to_psu_code=group_id_to_psu_code_bootstrap,
+                eligible_group_ids=eligible_group_ids_bootstrap,
             )
             bootstrap_results = br
 

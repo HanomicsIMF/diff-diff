@@ -563,23 +563,44 @@ class TestInvariants:
         )
         assert r1.overall_se == pytest.approx(r2.overall_se, rel=1e-10)
 
-    def test_psu_map_size_mismatch_raises(self):
-        """`_slice_psu_map` enforces strict length equality to prevent
-        silent miscluster if a future bootstrap target uses a different
-        group ordering than `_eligible_group_ids`. Today all targets
-        align so slicing is a no-op — this guards the invariant."""
+    def test_map_for_target_id_lookup(self):
+        """`_map_for_target` builds the PSU map from group IDs via dict
+        lookup, not positional reuse. All current dCDH bootstrap
+        targets use the variance-eligible group ordering, so the
+        helper looks up each target group's PSU via
+        `group_id_to_psu_code`. Length mismatch → ValueError (loud
+        failure rather than silent miscluster)."""
         from diff_diff.chaisemartin_dhaultfoeuille_bootstrap import (
-            _slice_psu_map,
+            _map_for_target,
         )
 
-        full_map = np.array([0, 0, 1, 1, 2], dtype=np.int64)
-        # Exact length: no-op, returns the full map
-        assert np.array_equal(_slice_psu_map(full_map, 5), full_map)
-        # None passthrough
-        assert _slice_psu_map(None, 5) is None
-        # Mismatched length: loud failure
-        with pytest.raises(ValueError, match="PSU map length"):
-            _slice_psu_map(full_map, 3)
+        gid_to_psu = {"a": 0, "b": 0, "c": 1, "d": 1, "e": 2}
+        eligible = np.asarray(["a", "b", "c", "d", "e"])
+        expected = np.array([0, 0, 1, 1, 2], dtype=np.int64)
+        built = _map_for_target(5, gid_to_psu, eligible)
+        assert built is not None
+        assert np.array_equal(built, expected)
+
+        # None passthrough when no PSU info
+        assert _map_for_target(5, None, None) is None
+
+        # Length mismatch → loud failure
+        with pytest.raises(ValueError, match="target size"):
+            _map_for_target(3, gid_to_psu, eligible)
+
+        # Missing group ID → loud failure
+        gid_to_psu_incomplete = {"a": 0, "b": 0, "c": 1, "d": 1}
+        with pytest.raises(ValueError, match="has no entry"):
+            _map_for_target(5, gid_to_psu_incomplete, eligible)
+
+        # Non-prefix reordering: different ordered group IDs produce a
+        # different PSU map even if the dict is the same. This is the
+        # key invariant the previous prefix-slicing lacked.
+        eligible_reordered = np.asarray(["c", "a", "d", "e", "b"])
+        built_reordered = _map_for_target(5, gid_to_psu, eligible_reordered)
+        assert built_reordered is not None
+        expected_reordered = np.array([1, 0, 1, 2, 0], dtype=np.int64)
+        assert np.array_equal(built_reordered, expected_reordered)
 
     def test_generate_psu_or_group_weights_broadcast(self):
         """Direct unit test of the PSU-level weight generator:
