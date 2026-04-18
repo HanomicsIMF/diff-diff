@@ -357,20 +357,38 @@ def _slice_psu_map(
     group_to_psu_map: Optional[np.ndarray],
     target_size: int,
 ) -> Optional[np.ndarray]:
-    """Slice a full-set group-to-PSU map to a target's contributing group count.
+    """Return a PSU map aligned to a subset bootstrap target.
 
-    Multi-horizon / joiner / leaver targets share the overall variance-
-    eligible group ordering but may have fewer contributing groups
-    (``u_centered.shape[0] <= n_groups_for_overall``). Slice the first
-    ``target_size`` entries — this mirrors the existing shared-weights
-    truncation at the multi-horizon bootstrap site. Returns ``None``
-    when no map is provided (plain multiplier-bootstrap path).
+    The dCDH bootstrap passes a single full-length ``group_to_psu_map``
+    built in ``fit()`` from ``_eligible_group_ids`` (the variance-
+    eligible group ordering). By construction all current bootstrap
+    targets (overall, joiners, leavers, multi-horizon DID_l, placebo
+    DID^pl_l) use that same ordering — each target's IF vector has the
+    same length as the map and the entries correspond to the same
+    groups in the same order. This invariant is enforced by requiring
+    ``target_size == len(group_to_psu_map)``; if a future refactor
+    introduces a target whose group subset differs from the overall
+    variance-eligible ordering, this assertion fires loudly rather
+    than silently misclustering the bootstrap draws.
+
+    Returns ``None`` when no map is provided (plain multiplier-
+    bootstrap path — identity across targets). Raises ``ValueError``
+    when the target size does not match the map length: callers must
+    supply a target-specific map (not a truncation) if they introduce
+    non-aligned subsets.
     """
     if group_to_psu_map is None:
         return None
-    if target_size <= 0 or target_size > len(group_to_psu_map):
+    if target_size == len(group_to_psu_map):
         return group_to_psu_map
-    return group_to_psu_map[:target_size]
+    raise ValueError(
+        f"PSU map length ({len(group_to_psu_map)}) does not match "
+        f"bootstrap target size ({target_size}). dCDH's bootstrap contract "
+        f"requires all targets to use the same variance-eligible group "
+        f"ordering as `_eligible_group_ids`. If this target has a "
+        f"different ordering, construct a target-specific map keyed by "
+        f"its actual group IDs rather than truncating the full map."
+    )
 
 
 def _generate_psu_or_group_weights(

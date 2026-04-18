@@ -604,11 +604,25 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             ``drop_larger_lower=False`` to retain 2-switch groups.
         survey_design : SurveyDesign, optional
             Survey design specification for design-based inference.
-            Supports pweight with strata/PSU/FPC via Taylor Series
-            Linearization. Survey weights produce weighted cell means
-            for the point estimate; the IF-based variance accounts for
-            the survey design structure. Replicate weights are not yet
-            supported.
+            Supports ``weight_type='pweight'`` with two variance paths:
+            (1) Taylor Series Linearization using strata / PSU / FPC
+            (analytical) and (2) replicate-weight variance using
+            BRR / Fay / JK1 / JKn / SDR methods (analytical,
+            closed-form). Survey weights produce weighted cell means
+            for the point estimate. Under a survey design without an
+            explicit ``psu``, ``fit()`` auto-injects ``psu=<group_col>``
+            so the group is the effective sampling unit (strata / PSU
+            must be within-group-constant; mixed labels within a group
+            raise ``ValueError``). When ``n_bootstrap > 0`` and a
+            survey design is supplied, the multiplier bootstrap
+            operates at the PSU level (Hall-Mammen wild PSU
+            bootstrap) — under the default auto-inject this collapses
+            to a group-level clustered bootstrap. **Replicate weights
+            combined with ``n_bootstrap > 0`` are rejected** with
+            ``NotImplementedError`` (replicate variance is
+            closed-form; bootstrap would double-count variance). See
+            REGISTRY.md ``ChaisemartinDHaultfoeuille`` Notes for the
+            full contract.
 
         Returns
         -------
@@ -5412,6 +5426,11 @@ def twowayfeweights(
         (matching ``fit(..., survey_design=sd).twfe_*``). Required to preserve
         fit-vs-helper parity under survey-backed inputs. Only
         ``weight_type='pweight'`` is supported; other types raise ValueError.
+        Replicate-weight designs (BRR/Fay/JK1/JKn/SDR) are accepted —
+        the TWFE diagnostic has no SE field on ``TWFEWeightsResult``,
+        so replicate weights only affect the cell aggregation path
+        (aggregated numbers are identical to
+        ``fit(..., survey_design=sd).twfe_*`` under the same input).
 
     Returns
     -------

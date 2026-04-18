@@ -563,6 +563,80 @@ class TestInvariants:
         )
         assert r1.overall_se == pytest.approx(r2.overall_se, rel=1e-10)
 
+    def test_psu_map_size_mismatch_raises(self):
+        """`_slice_psu_map` enforces strict length equality to prevent
+        silent miscluster if a future bootstrap target uses a different
+        group ordering than `_eligible_group_ids`. Today all targets
+        align so slicing is a no-op — this guards the invariant."""
+        from diff_diff.chaisemartin_dhaultfoeuille_bootstrap import (
+            _slice_psu_map,
+        )
+
+        full_map = np.array([0, 0, 1, 1, 2], dtype=np.int64)
+        # Exact length: no-op, returns the full map
+        assert np.array_equal(_slice_psu_map(full_map, 5), full_map)
+        # None passthrough
+        assert _slice_psu_map(None, 5) is None
+        # Mismatched length: loud failure
+        with pytest.raises(ValueError, match="PSU map length"):
+            _slice_psu_map(full_map, 3)
+
+    def test_generate_psu_or_group_weights_broadcast(self):
+        """Direct unit test of the PSU-level weight generator:
+        groups mapped to the same PSU receive the same multiplier
+        within a single bootstrap replicate (Hall-Mammen wild PSU
+        contract)."""
+        from diff_diff.chaisemartin_dhaultfoeuille_bootstrap import (
+            _generate_psu_or_group_weights,
+        )
+
+        # 6 groups → 3 PSUs: groups (0,1), (2,3), (4,5) share multipliers.
+        group_to_psu = np.array([0, 0, 1, 1, 2, 2], dtype=np.int64)
+        rng = np.random.default_rng(0)
+        W = _generate_psu_or_group_weights(
+            n_bootstrap=50,
+            n_groups_target=6,
+            weight_type="rademacher",
+            rng=rng,
+            group_to_psu_map=group_to_psu,
+        )
+        assert W.shape == (50, 6)
+        # Groups in the same PSU must receive the same multiplier
+        # within each bootstrap replicate.
+        assert np.array_equal(W[:, 0], W[:, 1])
+        assert np.array_equal(W[:, 2], W[:, 3])
+        assert np.array_equal(W[:, 4], W[:, 5])
+        # Different PSUs should NOT all produce identical columns
+        # (given 50 replicates and Rademacher weights, collision
+        # probability is 2^-49 → effectively 0).
+        assert not np.array_equal(W[:, 0], W[:, 2])
+
+    def test_generate_psu_or_group_weights_identity(self):
+        """Identity map (each group its own PSU) uses the fast path and
+        produces group-level weights bit-identical to the non-PSU path."""
+        from diff_diff.chaisemartin_dhaultfoeuille_bootstrap import (
+            _generate_psu_or_group_weights,
+        )
+
+        identity_map = np.arange(6, dtype=np.int64)
+        rng1 = np.random.default_rng(0)
+        W_identity = _generate_psu_or_group_weights(
+            n_bootstrap=20,
+            n_groups_target=6,
+            weight_type="mammen",
+            rng=rng1,
+            group_to_psu_map=identity_map,
+        )
+        rng2 = np.random.default_rng(0)
+        W_plain = _generate_psu_or_group_weights(
+            n_bootstrap=20,
+            n_groups_target=6,
+            weight_type="mammen",
+            rng=rng2,
+            group_to_psu_map=None,
+        )
+        assert np.array_equal(W_identity, W_plain)
+
     @pytest.mark.parametrize("method", ["BRR", "JK1"])
     def test_honest_did_under_replicate(
         self, base_panel, replicate_design, method
