@@ -1652,8 +1652,18 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
                 gamma_hat = np.column_stack(
                     [solve_XtX(Xt1_WX2[:, j]) for j in range(Xt1_WX2.shape[1])]
                 )
-        except RuntimeError:
-            # Singular matrix — fall back to dense least-squares
+        except RuntimeError as exc:
+            # Singular matrix — fall back to dense least-squares. Silent-failure
+            # audit axis C: emit a UserWarning on fallback instead of swallowing.
+            warnings.warn(
+                "TwoStageDiD GMM sandwich: sparse factorization of "
+                f"(X'_{{10}} W X_{{10}}) failed ({type(exc).__name__}); falling "
+                "back to dense lstsq. This may indicate a rank-deficient or "
+                "near-singular Stage 1 design matrix and SE estimates may be "
+                "less reliable.",
+                UserWarning,
+                stacklevel=2,
+            )
             gamma_hat = np.linalg.lstsq(XtWX_10.toarray(), Xt1_WX2, rcond=None)[0]
             if gamma_hat.ndim == 1:
                 gamma_hat = gamma_hat.reshape(-1, 1)
