@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "diff-diff"
-version = "3.1.2"
+version = "3.1.3"
 description = "Difference-in-Differences causal inference with sklearn-like API. Callaway-Sant'Anna, Synthetic DiD, Honest DiD, event studies, parallel trends."
 readme = "README.md"
 license = "MIT"
@@ -95,7 +95,7 @@ manifest-path = "rust/Cargo.toml"
 python-packages = ["diff_diff"]
 # Bundle LLM guide files (auto-inclusion varies across maturin 1.4-2.0; pin explicitly).
 # Bare-string glob form includes in both sdist and wheel.
-include = ["diff_diff/guides/*.txt"]
+include = ["diff_diff/guides/*.txt", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

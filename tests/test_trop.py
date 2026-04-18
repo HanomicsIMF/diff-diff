@@ -1,6 +1,8 @@
 """Tests for Triply Robust Panel (TROP) estimator."""
 
+import sys
 import warnings
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -3936,3 +3938,216 @@ class TestSilentWarningAudit:
         )
         with pytest.raises(ValueError, match="missing treatment values"):
             trop_est.fit(df, "outcome", "treated", "unit", "time")
+
+
+class TestTROPConvergenceWarnings:
+    """Silent-failure audit axis B: TROP alternating minimization must warn on non-convergence."""
+
+    @staticmethod
+    def _panel_matrices(simple_panel_data):
+        """Pivot simple_panel_data into (Y, D, n_units, n_periods, treated_periods)."""
+        all_units = sorted(simple_panel_data["unit"].unique())
+        all_periods = sorted(simple_panel_data["period"].unique())
+        n_units = len(all_units)
+        n_periods = len(all_periods)
+        Y = (
+            simple_panel_data.pivot(index="period", columns="unit", values="outcome")
+            .reindex(index=all_periods, columns=all_units)
+            .values
+        )
+        D = (
+            simple_panel_data.pivot(index="period", columns="unit", values="treated")
+            .reindex(index=all_periods, columns=all_units)
+            .fillna(0)
+            .astype(int)
+            .values
+        )
+        treated_periods = int(np.sum(np.any(D == 1, axis=1)))
+        return Y, D, n_units, n_periods, treated_periods
+
+    def test_global_alternating_min_warns_on_nonconvergence(self, simple_panel_data):
+        """_solve_global_with_lowrank must warn when outer alternating-min loop exhausts max_iter."""
+        Y, D, n_units, n_periods, treated_periods = self._panel_matrices(simple_panel_data)
+
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            seed=42,
+        )
+        delta = trop_est._compute_global_weights(
+            Y, D, 1.0, 1.0, treated_periods, n_units, n_periods
+        )
+
+        with pytest.warns(UserWarning, match="did not converge"):
+            trop_est._solve_global_with_lowrank(Y, delta, lambda_nn=0.1, max_iter=1, tol=1e-15)
+
+    def test_global_alternating_min_no_warning_on_convergence(self, simple_panel_data):
+        """_solve_global_with_lowrank must not warn on a well-behaved fit with generous max_iter."""
+        Y, D, n_units, n_periods, treated_periods = self._panel_matrices(simple_panel_data)
+
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            seed=42,
+        )
+        delta = trop_est._compute_global_weights(
+            Y, D, 1.0, 1.0, treated_periods, n_units, n_periods
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            trop_est._solve_global_with_lowrank(Y, delta, lambda_nn=0.1, max_iter=500, tol=1e-6)
+        assert not any("did not converge" in str(x.message) for x in w)
+
+    def test_local_alternating_min_warns_on_nonconvergence(self, simple_panel_data):
+        """TROP local _estimate_model must warn when alternating-min exhausts max_iter.
+
+        Uses observation-level control_mask matching the production call contract.
+        """
+        Y, D, n_units, n_periods, _ = self._panel_matrices(simple_panel_data)
+        control_mask = D == 0  # observation-level, matching trop.py/trop_local.py usage
+
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            max_iter=1,
+            tol=1e-15,
+            seed=42,
+        )
+        W = np.where(D == 0, 1.0, 0.0)
+
+        with pytest.warns(UserWarning, match="did not converge"):
+            trop_est._estimate_model(Y, control_mask, W, lambda_nn=0.1,
+                                     n_units=n_units, n_periods=n_periods)
+
+    def test_local_alternating_min_no_warning_on_convergence(self, simple_panel_data):
+        """TROP local _estimate_model must not warn on a well-behaved fit."""
+        Y, D, n_units, n_periods, _ = self._panel_matrices(simple_panel_data)
+        control_mask = D == 0  # observation-level, matching production
+
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            max_iter=500,
+            tol=1e-6,
+            seed=42,
+        )
+        W = np.where(D == 0, 1.0, 0.0)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            trop_est._estimate_model(Y, control_mask, W, lambda_nn=0.1,
+                                     n_units=n_units, n_periods=n_periods)
+        assert not any("did not converge" in str(x.message) for x in w)
+
+    def test_local_fit_emits_single_aggregate_warning(self, simple_panel_data):
+        """Fit-level warning aggregation: when routed through the Python
+        backend, every aggregation wrapper (per-treated-observation, LOOCV,
+        bootstrap) emits exactly one aggregate warning per call, not per
+        inner fit.
+
+        Forces HAS_RUST_BACKEND=False so the new Python aggregation paths are
+        actually exercised; without this the LOOCV and bootstrap paths would
+        dispatch to Rust in wheel-built environments and skip the changed code.
+
+        LOOCV count is >= 1 (not == 1) because fit() calls it multiple times
+        during coordinate-descent refinement of the lambda grid; the contract
+        this test pins is *per-call* single emission, asserted via message
+        format rather than global occurrence count."""
+        trop_est = TROP(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            max_iter=1,
+            tol=1e-15,
+            n_bootstrap=2,
+            seed=42,
+        )
+
+        trop_mod = sys.modules["diff_diff.trop"]
+        trop_local_mod = sys.modules["diff_diff.trop_local"]
+        with patch.object(trop_mod, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_local_mod, "HAS_RUST_BACKEND", False):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                trop_est.fit(
+                    simple_panel_data,
+                    outcome="outcome",
+                    treatment="treated",
+                    unit="unit",
+                    time="period",
+                )
+
+        def matching(needle: str):
+            return [str(x.message) for x in w if needle in str(x.message)]
+
+        # Per-treated-observation aggregation (called exactly once per .fit()).
+        per_obs = matching("per-treated-observation")
+        assert len(per_obs) == 1, f"expected 1 per-obs aggregate, got {len(per_obs)}"
+
+        # Bootstrap aggregation (called exactly once per .fit()).
+        boot = matching("local bootstrap")
+        assert len(boot) == 1, f"expected 1 bootstrap aggregate, got {len(boot)}"
+
+        # LOOCV: at least one aggregate fired (Python path exercised), and each
+        # fired message is itself an aggregate (has the "N of M" fan-out-reduced
+        # format), not one warning per inner observation.
+        loocv = matching("local LOOCV")
+        assert len(loocv) >= 1, "expected at least one LOOCV aggregate warning"
+        for msg in loocv:
+            assert "of" in msg and "per-observation fits" in msg, (
+                f"LOOCV warning is not in aggregate format (fan-out not reduced): {msg}"
+            )
+
+    def test_global_fit_emits_single_aggregate_warning(self, simple_panel_data):
+        """Global-method fit-level warning aggregation: mirrors the local test.
+
+        Forces HAS_RUST_BACKEND=False to exercise the Python aggregation path.
+        LOOCV count is >= 1 by the same grid-refinement reasoning; each fired
+        message must be in the aggregate format."""
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            max_iter=1,
+            tol=1e-15,
+            n_bootstrap=2,
+            seed=42,
+        )
+
+        trop_mod = sys.modules["diff_diff.trop"]
+        trop_global_mod = sys.modules["diff_diff.trop_global"]
+        with patch.object(trop_mod, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_global_mod, "HAS_RUST_BACKEND", False):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                trop_est.fit(
+                    simple_panel_data,
+                    outcome="outcome",
+                    treatment="treated",
+                    unit="unit",
+                    time="period",
+                )
+
+        def matching(needle: str):
+            return [str(x.message) for x in w if needle in str(x.message)]
+
+        boot = matching("global bootstrap")
+        assert len(boot) == 1, f"expected 1 bootstrap aggregate, got {len(boot)}"
+
+        loocv = matching("global LOOCV")
+        assert len(loocv) >= 1, "expected at least one LOOCV aggregate warning"
+        for msg in loocv:
+            assert "of" in msg and "per-observation fits" in msg, (
+                f"LOOCV warning is not in aggregate format (fan-out not reduced): {msg}"
+            )

@@ -547,15 +547,13 @@ class TestAlphaKnob:
 
 
 class TestAlphaOverrideBootstrapAndFiniteDF:
-    """Regression for the P0 finding that ``safe_inference(att, se, alpha)``
-    silently discards bootstrap / finite-df inference contracts on results
-    that use them (TROP, ContinuousDiD, dCDH-bootstrap, survey fits).
-
-    Rule: when the caller's alpha differs from the fit's alpha AND the
-    result's inference contract is bootstrap-backed or uses finite df,
-    BR preserves the fitted CI at the fit's native level rather than
-    recomputing with a normal approximation. The override is recorded as
-    an informational caveat.
+    """Alpha override preserves the fitted CI on any inference contract
+    that cannot be reproduced from point-estimate + SE alone (bootstrap /
+    wild cluster bootstrap / percentile / jackknife / placebo / finite-df
+    survey / undefined-d.f. replicate / analytical t-quantile). The
+    displayed CI stays at the fit's native level; significance phrasing
+    still uses the caller's alpha; an informational caveat records the
+    override.
     """
 
     class _BootstrapResultStub:

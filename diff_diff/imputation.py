@@ -1515,8 +1515,18 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             A0tA0_sparse = A_0.T @ A_0  # stays sparse
         try:
             z = spsolve(A0tA0_sparse.tocsc(), A1_w)
-        except Exception:
-            # Fallback to dense lstsq if sparse solver fails (e.g., singular matrix)
+        except Exception as exc:
+            # Fallback to dense lstsq if sparse solver fails (e.g., singular matrix).
+            # Silent-failure audit axis C: emit a UserWarning on fallback instead
+            # of swallowing the error.
+            warnings.warn(
+                "ImputationDiD variance: sparse solve of (A_0' [W] A_0) z = A_1' w "
+                f"failed ({type(exc).__name__}); falling back to dense lstsq. This "
+                "may indicate a rank-deficient or near-singular normal-equations "
+                "matrix and variance estimates may be less reliable.",
+                UserWarning,
+                stacklevel=2,
+            )
             A0tA0_dense = A0tA0_sparse.toarray()
             z, _, _, _ = np.linalg.lstsq(A0tA0_dense, A1_w, rcond=None)
 

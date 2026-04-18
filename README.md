@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Downloads](https://img.shields.io/pypi/dm/diff-diff.svg)](https://pypi.org/project/diff-diff/)
 [![Documentation](https://readthedocs.org/projects/diff-diff/badge/?version=stable)](https://diff-diff.readthedocs.io/en/stable/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19646175.svg)](https://doi.org/10.5281/zenodo.19646175)
 
 A Python library for Difference-in-Differences (DiD) causal inference analysis with an sklearn-like API and statsmodels-style outputs.
 
@@ -3090,13 +3091,19 @@ If you use diff-diff in your research, please cite it:
 ```bibtex
 @software{diff_diff,
   title = {diff-diff: Difference-in-Differences Causal Inference for Python},
-  author = {{diff-diff contributors}},
+  author = {Gerber, Isaac},
+  year = {2026},
   url = {https://github.com/igerber/diff-diff},
+  doi = {10.5281/zenodo.19646175},
   license = {MIT},
 }
 ```
 
+The DOI above is the Zenodo concept DOI — it always resolves to the latest release. To cite a specific version, look up its versioned DOI on [the Zenodo project page](https://doi.org/10.5281/zenodo.19646175).
+
 See [`CITATION.cff`](CITATION.cff) for the full citation metadata.
+
+**Note on authorship**: academic citation (`CITATION.cff`, the BibTeX above) lists individual authors with ORCIDs per scholarly convention. Package metadata surfaces (`pyproject.toml`, Sphinx docs) list "diff-diff contributors" to acknowledge the collective — see [`CONTRIBUTORS.md`](CONTRIBUTORS.md) for the full list.
 
 ## License
 

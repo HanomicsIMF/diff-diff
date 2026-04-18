@@ -330,27 +330,16 @@ class BusinessReport:
         if extracted is not None:
             _name, att, se, p, ci, result_alpha = extracted
 
-        # If the caller asked for a different alpha than the result was
-        # fit at, we cannot generally recompute a faithful CI from
-        # ``(att, se)`` alone: that would require reproducing the fit's
-        # exact inference contract (t-quantile with the fit's ``df``,
-        # bootstrap percentile, wild cluster bootstrap, survey replicate
-        # quantile, rank-deficient d.f.-undefined, etc.), none of which
-        # are exposed as a uniform descriptor across the 16 result
-        # classes. Recomputing via ``safe_inference(att, se, alpha)``
-        # silently substitutes a normal-z CI even for analytical t-based
-        # fits (``DifferenceInDifferences`` via
-        # ``LinearRegression.get_inference()`` with a finite ``df``,
-        # ``MultiPeriodDiD`` via ``safe_inference(..., df=df)``, TROP's
-        # ``df_trop``) and can invent a finite interval where the native
-        # fit deliberately returned NaN (replicate-survey fits with
-        # ``df=0``). Both were flagged as P0 by the round-7 CI review.
-        #
-        # Rule: always preserve the fitted CI on an alpha mismatch.
-        # ``display_alpha`` drives ``ci_level`` (so the displayed CI
-        # label matches the preserved bounds) while
-        # ``self._context.alpha`` — the caller's requested alpha — drives
-        # the significance phrasing (``is_significant`` /
+        # On any alpha mismatch, preserve the fitted CI at its native
+        # level. A faithful CI cannot be recomputed from point estimate
+        # and SE alone without reproducing the fit's inference contract
+        # (finite-df t-quantile, percentile bootstrap, wild cluster
+        # bootstrap, survey replicate quantile, rank-deficient
+        # undefined-df, etc.), and the 16 result classes do not expose
+        # a uniform descriptor for that. Two separate alpha values:
+        # ``display_alpha`` drives ``ci_level`` so the displayed CI
+        # label matches the preserved bounds; the caller's requested
+        # alpha drives the significance phrasing (``is_significant`` /
         # ``near_threshold``). A caveat records the override.
         display_alpha = alpha
         phrasing_alpha = alpha
