@@ -95,7 +95,7 @@ manifest-path = "rust/Cargo.toml"
 python-packages = ["diff_diff"]
 # Bundle LLM guide files (auto-inclusion varies across maturin 1.4-2.0; pin explicitly).
 # Bare-string glob form includes in both sdist and wheel.
-include = ["diff_diff/guides/*.txt"]
+include = ["diff_diff/guides/*.txt", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
