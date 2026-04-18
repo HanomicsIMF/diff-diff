@@ -749,6 +749,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
         # Use pre-computed treated observations
         treated_observations = self._precomputed["treated_observations"]
         nonconverg_tracker: list = []
+        n_fits_attempted = 0
 
         for t, i in treated_observations:
             unit_id = idx_to_unit[i]
@@ -766,6 +767,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
             )
 
             # Fit model with these weights
+            n_fits_attempted += 1
             alpha_hat, beta_hat, L_hat = self._estimate_model(
                 Y, control_mask, weight_matrix, lambda_nn, n_units, n_periods,
                 _nonconvergence_tracker=nonconverg_tracker,
@@ -788,7 +790,7 @@ class TROP(TROPLocalMixin, TROPGlobalMixin):
             warn_if_not_converged(
                 False,
                 f"TROP local per-treated-observation fit: "
-                f"{len(nonconverg_tracker)} of {len(treated_observations)} "
+                f"{len(nonconverg_tracker)} of {n_fits_attempted} "
                 f"fits did not converge",
                 self.max_iter,
                 self.tol,
