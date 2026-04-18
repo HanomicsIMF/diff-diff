@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-04-18
+
+### Fixed
+- **SyntheticDiD catastrophic cancellation at extreme Y scale** (PR #312) - the Frank-Wolfe weight solver lost precision when outcome magnitudes were very large or very small; results are now numerically stable across scales.
+- **Non-convergence signaling in FE imputation alternating-projection solvers** (PR #314) - `ImputationDiD`, `TwoStageDiD`, and shared `within_transform` now emit a `ConvergenceWarning` when the alternating-projection / weighted-demean loop exits without meeting the tolerance. `max_iter` and `tol` are documented on `within_transform`.
+- **Non-convergence signaling in SyntheticDiD Frank-Wolfe solver** (PR #315) - the numpy-path Frank-Wolfe SC weight solver now emits a `ConvergenceWarning` when the loop exits without meeting `min_decrease`. Wrapper-level and `max_iter=0` regression tests added.
+
 ### Changed
-- Refresh `ROADMAP.md` to drop top-level phase numbering and reflect shipped state through v3.1.1. Absorbs dCDH into the Current State estimator list; adds Recently Shipped summary; reorganizes open work as Shipping Next / Under Consideration / AI-Agent Track / Long-term. Updates `docs/business-strategy.md`, `docs/survey-roadmap.md`, `docs/practitioner_decision_tree.rst`, `docs/choosing_estimator.rst`, `docs/api/chaisemartin_dhaultfoeuille.rst`, `README.md`, and `diff_diff/guides/llms-full.txt` to remove stale phase-deferral language now that the deferred items have shipped.
+- Refresh `ROADMAP.md` to drop top-level phase numbering and reflect shipped state through v3.1.1 (PR #313). Absorbs dCDH into the Current State estimator list; adds Recently Shipped summary; reorganizes open work as Shipping Next / Under Consideration / AI-Agent Track / Long-term. Updates `docs/business-strategy.md`, `docs/survey-roadmap.md`, `docs/practitioner_decision_tree.rst`, `docs/choosing_estimator.rst`, `docs/api/chaisemartin_dhaultfoeuille.rst`, `README.md`, and `diff_diff/guides/llms-full.txt` to remove stale phase-deferral language now that the deferred items have shipped.
+- Bump the `SyntheticDiD(lambda_reg=...)` and `SyntheticDiD(zeta=...)` deprecation warnings' removal target from `v3.1` to `v4.0.0`. Removing public kwargs in a patch / minor release would violate Semantic Versioning; the deprecation stays warning-only throughout the `3.x` line and will be removed in the next major release. Use `zeta_omega` / `zeta_lambda` instead.
 
 ## [3.1.1] - 2026-04-16
 
@@ -1298,6 +1306,7 @@ for the full feature history leading to this release.
 [2.1.2]: https://github.com/igerber/diff-diff/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/igerber/diff-diff/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/igerber/diff-diff/compare/v2.0.3...v2.1.0
+[3.1.2]: https://github.com/igerber/diff-diff/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/igerber/diff-diff/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/igerber/diff-diff/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/igerber/diff-diff/compare/v3.0.1...v3.0.2

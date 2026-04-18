@@ -21,6 +21,7 @@ from diff_diff.utils import (
     _compute_regularization,
     _fw_step,
     _sc_weight_fw,
+    _sc_weight_fw_numpy,
     _sparsify,
     _sum_normalize,
     compute_sdid_estimator,
@@ -206,6 +207,58 @@ class TestFrankWolfe:
         assert abs(np.sum(lam_no_intercept) - 1.0) < 1e-6
         # They should be different because centering matters
         assert not np.allclose(lam_intercept, lam_no_intercept, atol=1e-3)
+
+    def test_fw_warns_on_nonconvergence(self):
+        """Silent-failure audit axis B: _sc_weight_fw_numpy must warn when max_iter exhausts."""
+        rng = np.random.default_rng(42)
+        Y = rng.standard_normal((15, 7))  # (N, T0+1) with T0=6
+
+        with pytest.warns(UserWarning, match="did not converge"):
+            _sc_weight_fw_numpy(Y, zeta=0.1, max_iter=1, min_decrease=1e-12)
+
+    def test_fw_no_warning_on_convergence(self):
+        """Silent-failure audit axis B: no warning on well-conditioned convergent input."""
+        rng = np.random.default_rng(42)
+        Y = rng.standard_normal((15, 7))
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _sc_weight_fw_numpy(Y, zeta=0.1, max_iter=10000, min_decrease=1e-3)
+        assert not any("did not converge" in str(x.message) for x in w)
+
+    def test_fw_wrapper_warns_on_nonconvergence_without_rust(self):
+        """Silent-failure audit axis B: public _sc_weight_fw wrapper must route
+        warnings through even when called via the dispatcher with the Rust
+        backend disabled. Pins the contract against refactors that would
+        bypass the numpy path."""
+        rng = np.random.default_rng(42)
+        Y = rng.standard_normal((15, 7))
+
+        with patch("diff_diff.utils.HAS_RUST_BACKEND", False):
+            with pytest.warns(UserWarning, match="did not converge"):
+                _sc_weight_fw(Y, zeta=0.1, max_iter=1, min_decrease=1e-12)
+
+    def test_fw_wrapper_no_warning_on_convergence_without_rust(self):
+        """Silent-failure audit axis B: wrapper-level negative control."""
+        rng = np.random.default_rng(42)
+        Y = rng.standard_normal((15, 7))
+
+        with patch("diff_diff.utils.HAS_RUST_BACKEND", False):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                _sc_weight_fw(Y, zeta=0.1, max_iter=10000, min_decrease=1e-3)
+            assert not any("did not converge" in str(x.message) for x in w)
+
+    def test_fw_max_iter_zero_warns(self):
+        """Silent-failure audit axis B: max_iter=0 produces the uniform init
+        without iterating, which cannot converge by construction. The warning
+        must fire (consistent with the convention: if we exited the loop
+        without hitting the tolerance gate, we signal). Pins this contract."""
+        Y = np.random.default_rng(0).standard_normal((5, 4))
+
+        with patch("diff_diff.utils.HAS_RUST_BACKEND", False):
+            with pytest.warns(UserWarning, match="did not converge"):
+                _sc_weight_fw(Y, zeta=0.1, max_iter=0)
 
 
 class TestSparsify:

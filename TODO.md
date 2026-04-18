@@ -124,7 +124,7 @@ Deprecated parameters still present for backward compatibility:
 
 - `lambda_reg` and `zeta` in `SyntheticDiD` (`synthetic_did.py`)
   - Deprecated in favor of `zeta_omega`/`zeta_lambda` parameters
-  - Remove in v3.1
+  - Remove in v4.0.0 (SemVer-safe: public kwarg removal requires a major bump)
 
 ---
 

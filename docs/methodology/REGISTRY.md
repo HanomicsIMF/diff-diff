@@ -1496,7 +1496,7 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
   P-value: analytical (normal distribution), not empirical.
 
 *Edge cases:*
-- **Frank-Wolfe non-convergence**: Returns current weights after max_iter iterations. No warning emitted; the convergence check `vals[t-1] - vals[t] < min_decrease²` simply does not trigger early exit, and the final iterate is returned.
+- **Frank-Wolfe non-convergence**: Returns current weights after max_iter iterations when the convergence check `vals[t-1] - vals[t] < min_decrease²` never triggers early exit. The numpy-backend path (`_sc_weight_fw_numpy`) emits a `UserWarning` via `diff_diff.utils.warn_if_not_converged` in that case; the Rust-backend path silently returns the final iterate (Rust-side signature change required to thread convergence status — tracked as an axis-G backend-parity follow-up).
 - **`_sparsify` all-zero input**: If `max(v) <= 0`, returns uniform weights `ones(len(v)) / len(v)`.
 - **Single control unit**: `compute_sdid_unit_weights` returns `[1.0]` immediately (short-circuit before Frank-Wolfe).
 - **Zero control units**: `compute_sdid_unit_weights` returns empty array `[]`.
