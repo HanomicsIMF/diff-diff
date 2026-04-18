@@ -28,7 +28,7 @@ from diff_diff.imputation_results import (  # noqa: F401 (re-export)
     ImputationDiDResults,
 )
 from diff_diff.linalg import solve_ols
-from diff_diff.utils import safe_inference
+from diff_diff.utils import safe_inference, warn_if_not_converged
 
 # =============================================================================
 # Main Estimator
@@ -909,6 +909,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             wsum_t = w_series.groupby(time_vals).transform("sum").values
             wsum_u = w_series.groupby(unit_vals).transform("sum").values
 
+        converged = False
         with np.errstate(invalid="ignore", divide="ignore"):
             for iteration in range(max_iter):
                 resid_after_alpha = y - alpha
@@ -943,7 +944,9 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 alpha = alpha_new
                 beta = beta_new
                 if max_change < tol:
+                    converged = True
                     break
+        warn_if_not_converged(converged, "ImputationDiD iterative FE solver", max_iter, tol)
 
         unit_fe = pd.Series(alpha, index=idx).groupby(unit_vals).first().to_dict()
         time_fe = pd.Series(beta, index=idx).groupby(time_vals).first().to_dict()
@@ -978,6 +981,7 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
             wsum_t = w_series.groupby(time_vals).transform("sum").values
             wsum_u = w_series.groupby(unit_vals).transform("sum").values
 
+        converged = False
         with np.errstate(invalid="ignore", divide="ignore"):
             for _ in range(max_iter):
                 if weights is not None:
@@ -1001,8 +1005,10 @@ class ImputationDiD(ImputationDiDBootstrapMixin):
                 result_new = result_after_time - unit_means
                 if np.max(np.abs(result_new - result)) < tol:
                     result = result_new
+                    converged = True
                     break
                 result = result_new
+        warn_if_not_converged(converged, "ImputationDiD iterative demean", max_iter, tol)
         return result
 
     @staticmethod

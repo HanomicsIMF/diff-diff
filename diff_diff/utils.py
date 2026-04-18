@@ -65,6 +65,29 @@ def validate_binary(arr: np.ndarray, name: str) -> None:
         raise ValueError(f"{name} must be binary (0 or 1). " f"Found values: {unique_values}")
 
 
+def warn_if_not_converged(
+    converged: bool,
+    method_name: str,
+    max_iter: int,
+    tol: Optional[float] = None,
+    stacklevel: int = 3,
+) -> None:
+    """Emit a UserWarning when an iterative solver exhausts max_iter without converging.
+
+    Shared helper for axis-B silent-failure fixes (iterative loops that otherwise
+    return the current iterate without signaling non-convergence).
+    """
+    if converged:
+        return
+    tol_suffix = f" (tol={tol})" if tol is not None else ""
+    warnings.warn(
+        f"{method_name} did not converge in {max_iter} iterations{tol_suffix}. "
+        "Results may be inaccurate.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+
+
 def compute_robust_se(
     X: np.ndarray, residuals: np.ndarray, cluster_ids: Optional[np.ndarray] = None
 ) -> np.ndarray:
