@@ -139,7 +139,17 @@ class TwoStageDiDBootstrapMixin:
                 gamma_hat = np.column_stack(
                     [solve_XtX(Xt1_X2[:, j]) for j in range(Xt1_X2.shape[1])]
                 )
-        except RuntimeError:
+        except RuntimeError as exc:
+            # Silent-failure audit axis C: emit a UserWarning on fallback instead
+            # of swallowing the error.
+            warnings.warn(
+                "TwoStageDiD bootstrap: sparse factorization of X_10' X_10 "
+                f"failed ({type(exc).__name__}); falling back to dense lstsq. "
+                "This may indicate a rank-deficient or near-singular Stage 1 "
+                "design matrix and bootstrap SE estimates may be less reliable.",
+                UserWarning,
+                stacklevel=2,
+            )
             gamma_hat = np.linalg.lstsq(XtX_10.toarray(), Xt1_X2, rcond=None)[0]
             if gamma_hat.ndim == 1:
                 gamma_hat = gamma_hat.reshape(-1, 1)

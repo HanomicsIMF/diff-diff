@@ -885,6 +885,31 @@ class TestImputationVariance:
         assert np.isfinite(results.overall_se)
         assert results.overall_se > 0
 
+    def test_sparse_solver_dense_fallback_emits_warning(self):
+        """Silent-failure audit axis C: the sparse -> dense lstsq fallback must
+        emit a UserWarning so callers are informed that variance estimates come
+        from the degraded path."""
+        import unittest.mock
+
+        data = generate_test_data(n_units=80, n_periods=8, seed=42)
+        rng = np.random.default_rng(42)
+        data["x1"] = rng.standard_normal(len(data))
+
+        est = ImputationDiD()
+
+        with unittest.mock.patch(
+            "diff_diff.imputation.spsolve", side_effect=RuntimeError("test failure")
+        ):
+            with pytest.warns(UserWarning, match="sparse solve.*falling back to dense lstsq"):
+                est.fit(
+                    data,
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                    covariates=["x1"],
+                )
+
 
 # =============================================================================
 # TestImputationBootstrap

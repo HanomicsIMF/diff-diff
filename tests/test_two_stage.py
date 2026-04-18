@@ -490,6 +490,48 @@ class TestTwoStageDiDVariance:
                 assert eff["se"] > 0, f"SE at h={h} should be positive"
                 assert np.isfinite(eff["se"])
 
+    def test_sparse_factorized_dense_fallback_emits_warning(self):
+        """Silent-failure audit axis C: when sparse factorization of Stage 1's
+        normal-equations matrix fails and the GMM sandwich falls back to dense
+        lstsq, a UserWarning must surface so callers know SE came from the
+        degraded path rather than the fast sparse path."""
+        import unittest.mock
+
+        data = generate_test_data()
+
+        with unittest.mock.patch(
+            "diff_diff.two_stage.sparse_factorized",
+            side_effect=RuntimeError("test failure"),
+        ):
+            with pytest.warns(UserWarning, match="sparse factorization.*falling back to dense lstsq"):
+                TwoStageDiD().fit(
+                    data,
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                )
+
+    def test_sparse_factorized_bootstrap_dense_fallback_emits_warning(self):
+        """Silent-failure audit axis C: the TwoStage bootstrap path has the
+        same sparse->dense fallback and must also emit a UserWarning."""
+        import unittest.mock
+
+        data = generate_test_data()
+
+        with unittest.mock.patch(
+            "diff_diff.two_stage_bootstrap.sparse_factorized",
+            side_effect=RuntimeError("test failure"),
+        ):
+            with pytest.warns(UserWarning, match="sparse factorization.*falling back to dense lstsq"):
+                TwoStageDiD(n_bootstrap=4, seed=42).fit(
+                    data,
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                )
+
 
 # =============================================================================
 # TestTwoStageDiDEdgeCases
