@@ -4047,11 +4047,9 @@ class TestTROPConvergenceWarnings:
         assert not any("did not converge" in str(x.message) for x in w)
 
     def test_local_fit_emits_single_aggregate_warning(self, simple_panel_data):
-        """Fit-level warning aggregation: per-treated-observation non-convergence must
-        surface as at most one aggregate warning per call, not one per observation.
-
-        Pins the P2 fan-out fix: warnings are accumulated via the
-        `_nonconvergence_tracker` kwarg and emitted once at the top-level fit."""
+        """Fit-level warning aggregation: per-treated-observation, LOOCV, and
+        bootstrap non-convergence each surface as at most one aggregate warning
+        per wrapping call, not one per inner fit. Pins the P2 fan-out fix."""
         trop_est = TROP(
             method="local",
             lambda_time_grid=[1.0],
@@ -4073,13 +4071,44 @@ class TestTROPConvergenceWarnings:
                 time="period",
             )
 
-        # The per-treated-observation fit loop must emit exactly one aggregate
-        # warning of the form "TROP local per-treated-observation fit: N of M fits
-        # did not converge", not N separate warnings.
-        per_obs_warnings = [
-            x for x in w if "per-treated-observation" in str(x.message)
-        ]
-        assert len(per_obs_warnings) <= 1, (
-            f"Expected at most one aggregated per-treated-observation warning, "
-            f"got {len(per_obs_warnings)}: {[str(x.message) for x in per_obs_warnings]}"
+        def count_matching(needle: str) -> int:
+            return sum(1 for x in w if needle in str(x.message))
+
+        # Per-treated-observation aggregation (called once per .fit()).
+        assert count_matching("per-treated-observation") <= 1
+        # LOOCV aggregation (called once per (lambda_time, lambda_unit, lambda_nn) combo;
+        # grid has exactly 1 combo).
+        assert count_matching("local LOOCV") <= 1
+        # Bootstrap aggregation (called once per .fit()).
+        assert count_matching("local bootstrap") <= 1
+
+    def test_global_fit_emits_single_aggregate_warning(self, simple_panel_data):
+        """Global-method fit-level warning aggregation: LOOCV and bootstrap
+        non-convergence each surface as at most one aggregate warning per
+        wrapping call, mirroring the local test above."""
+        trop_est = TROP(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[0.1],
+            max_iter=1,
+            tol=1e-15,
+            n_bootstrap=2,
+            seed=42,
         )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            trop_est.fit(
+                simple_panel_data,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="period",
+            )
+
+        def count_matching(needle: str) -> int:
+            return sum(1 for x in w if needle in str(x.message))
+
+        assert count_matching("global LOOCV") <= 1
+        assert count_matching("global bootstrap") <= 1
