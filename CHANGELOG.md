@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Add Zenodo DOI badge to README; upgrade the BibTeX citation block with the concept DOI (`10.5281/zenodo.19646175`) and list author as Isaac Gerber (matching `CITATION.cff`). Add `doi:` and `identifiers:` entries (concept + versioned) to `CITATION.cff`. DOI was minted by Zenodo when v3.1.3 was released.
+
 ## [3.1.3] - 2026-04-18
 
 ### Added
