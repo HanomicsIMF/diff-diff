@@ -302,6 +302,119 @@ class TestPrecomputed:
 # ---------------------------------------------------------------------------
 # Verdict / tier helpers
 # ---------------------------------------------------------------------------
+class TestJointWaldAlignment:
+    """Cover the event-study PT joint-Wald vs Bonferroni fallback paths.
+
+    These tests address the correctness-sensitive codepath in
+    ``_pt_event_study`` where pre-period coefficient keys must align with
+    ``interaction_indices`` before the joint Wald statistic can be indexed
+    into the right vcov rows/columns. When alignment fails, the code must
+    fall back to Bonferroni rather than compute a Wald statistic on the
+    wrong rows.
+    """
+
+    @staticmethod
+    def _stub_result(pre_effects, interaction_indices, vcov, **extra):
+        """Build a minimal MultiPeriodDiDResults-shaped stub for PT tests.
+
+        ``pre_effects`` is an iterable of ``(period_key, effect, se, p_value)``
+        tuples. Returns an object whose class name is ``MultiPeriodDiDResults``
+        so DR's name-keyed dispatch routes it to the event-study PT path.
+        """
+        from types import SimpleNamespace
+
+        pre_map = {
+            k: SimpleNamespace(effect=eff, se=se, p_value=p) for (k, eff, se, p) in pre_effects
+        }
+
+        class MultiPeriodDiDResults:  # noqa: D401 — test stub that mimics the real class name
+            pass
+
+        obj = MultiPeriodDiDResults()
+        obj.pre_period_effects = pre_map
+        obj.interaction_indices = interaction_indices
+        obj.vcov = np.asarray(vcov, dtype=float) if vcov is not None else None
+        obj.avg_att = 1.0
+        obj.avg_se = 0.1
+        obj.avg_p_value = 0.001
+        obj.avg_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 50
+        obj.n_control = 50
+        obj.survey_metadata = None
+        for k, v in extra.items():
+            setattr(obj, k, v)
+        return obj
+
+    def test_joint_wald_runs_when_keys_align(self):
+        """With aligned pre_effects + interaction_indices + vcov, Wald runs
+        and the computed chi-squared statistic matches the closed form."""
+        pre = [(-3, 0.0, 0.5, 0.99), (-2, 0.0, 0.5, 0.99), (-1, 0.0, 0.5, 0.99)]
+        interaction_indices = {-3: 0, -2: 1, -1: 2, 0: 3}  # maps period -> vcov row
+        vcov = np.diag([0.25, 0.25, 0.25, 0.25])  # SE = 0.5 for each pre-period
+        stub = self._stub_result(pre, interaction_indices, vcov)
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran"
+        assert (
+            pt["method"] == "joint_wald"
+        ), f"Expected joint_wald with aligned keys; got {pt.get('method')}"
+        # beta=0 across all periods -> test_statistic = 0 -> p = 1.0
+        assert pt["test_statistic"] == pytest.approx(0.0)
+        assert pt["joint_p_value"] == pytest.approx(1.0)
+        assert pt["df"] == 3
+
+    def test_joint_wald_computes_expected_statistic(self):
+        """Verify the Wald statistic matches a known closed-form value."""
+        # beta = [1.0, -0.5, 0.2]; vcov diagonal with variances [0.25, 0.25, 0.16]
+        # -> test_statistic = 1.0^2/0.25 + 0.5^2/0.25 + 0.2^2/0.16
+        #                   = 4.0 + 1.0 + 0.25 = 5.25
+        pre = [(-3, 1.0, 0.5, 0.04), (-2, -0.5, 0.5, 0.30), (-1, 0.2, 0.4, 0.61)]
+        interaction_indices = {-3: 0, -2: 1, -1: 2}
+        vcov = np.diag([0.25, 0.25, 0.16])
+        stub = self._stub_result(pre, interaction_indices, vcov)
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["method"] == "joint_wald"
+        assert pt["test_statistic"] == pytest.approx(5.25, rel=1e-6)
+
+    def test_falls_back_to_bonferroni_without_interaction_indices(self):
+        pre = [(-2, 1.0, 0.5, 0.04), (-1, 0.2, 0.5, 0.69)]
+        stub = self._stub_result(pre, interaction_indices=None, vcov=np.diag([0.25, 0.25]))
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran"
+        assert pt["method"] == "bonferroni", (
+            "Missing interaction_indices must force Bonferroni fallback, "
+            "never attempt a Wald statistic on misaligned rows."
+        )
+        # Bonferroni: min(per-period p) * n = 0.04 * 2 = 0.08 (< 1)
+        assert pt["joint_p_value"] == pytest.approx(0.08, rel=1e-6)
+
+    def test_falls_back_to_bonferroni_when_keys_misaligned(self):
+        """pre_effects has keys [-2, -1] but interaction_indices uses [2019, 2020]."""
+        pre = [(-2, 1.0, 0.5, 0.04), (-1, 0.2, 0.5, 0.69)]
+        interaction_indices = {2019: 0, 2020: 1}  # deliberately different namespace
+        vcov = np.diag([0.25, 0.25])
+        stub = self._stub_result(pre, interaction_indices, vcov)
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran"
+        assert pt["method"] == "bonferroni", (
+            "Misaligned interaction_indices must force Bonferroni fallback — "
+            "the len(keys_in_vcov) == df guard should prevent the Wald path."
+        )
+
+    def test_falls_back_to_bonferroni_when_vcov_missing(self):
+        pre = [(-2, 1.0, 0.5, 0.04), (-1, 0.2, 0.5, 0.69)]
+        interaction_indices = {-2: 0, -1: 1}
+        stub = self._stub_result(pre, interaction_indices, vcov=None)
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["method"] == "bonferroni"
+
+
 class TestVerdictsAndTiers:
     def test_pt_verdict_three_bins(self):
         assert _pt_verdict(0.001) == "clear_violation"

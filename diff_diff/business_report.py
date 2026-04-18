@@ -863,18 +863,42 @@ def _significance_phrase(p: Optional[float], alpha: float) -> str:
     return "the confidence interval includes zero; the data are consistent with no effect"
 
 
+def _direction_verb(effect: float, outcome_direction: Optional[str]) -> str:
+    """Return a direction-aware verb for the headline sentence.
+
+    When ``outcome_direction`` is unset we use neutral change verbs
+    (``increased`` / ``decreased``). When it is supplied, we additionally
+    flavor the verb with a value-laden connotation so the stakeholder can
+    read off whether the estimated effect points in the desired direction:
+
+    - ``higher_is_better``: positive effect -> "lifted"; negative -> "reduced"
+    - ``lower_is_better``:  positive effect -> "worsened"; negative -> "improved"
+    - None:                 positive -> "increased"; negative -> "decreased"
+    """
+    if effect == 0:
+        return "did not change"
+    if outcome_direction == "higher_is_better":
+        return "lifted" if effect > 0 else "reduced"
+    if outcome_direction == "lower_is_better":
+        return "worsened" if effect > 0 else "improved"
+    return "increased" if effect > 0 else "decreased"
+
+
 def _render_headline_sentence(schema: Dict[str, Any]) -> str:
     """Render the headline sentence from the schema.
 
     Uses the absolute value in the magnitude slot when the verb already
     conveys direction ("decreased ... by $0.14" rather than "decreased ...
     by -$0.14"). CI bounds are rendered at their natural signed values.
+    When ``outcome_direction`` is supplied, the verb picks up a value-laden
+    connotation ("lifted" / "reduced" vs neutral "increased" / "decreased").
     """
     ctx = schema.get("context", {})
     h = schema.get("headline", {})
     effect = h.get("effect")
     outcome = ctx.get("outcome_label", "the outcome")
     treatment = ctx.get("treatment_label", "the treatment")
+    outcome_direction = ctx.get("outcome_direction")
     unit = h.get("unit")
     unit_kind = h.get("unit_kind", "unknown")
 
@@ -884,7 +908,7 @@ def _render_headline_sentence(schema: Dict[str, Any]) -> str:
             f"effect on {outcome}. Inspect the data and model specification."
         )
 
-    verb = "increased" if effect > 0 else "decreased" if effect < 0 else "did not change"
+    verb = _direction_verb(effect, outcome_direction)
     magnitude = _format_value(abs(effect), unit, unit_kind)
     lo = h.get("ci_lower")
     hi = h.get("ci_upper")

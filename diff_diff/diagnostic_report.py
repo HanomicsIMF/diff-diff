@@ -61,6 +61,14 @@ _CHECK_NAMES: Tuple[str, ...] = (
 # required attributes are present (e.g. ``survey_metadata`` for DEFF) and by
 # whether the user disabled a check via ``run_*=False``.
 # See ``docs/methodology/REPORTING.md`` for the full matrix and rationale.
+#
+# Implementation note: The keys are result-class names looked up via
+# ``type(results).__name__``. This string-based dispatch mirrors the
+# ``_HANDLERS`` pattern in ``diff_diff/practitioner.py`` and avoids circular
+# imports across the 16 result modules. Renaming or aliasing any result class
+# requires updating both this table and ``_PT_METHOD`` below; the
+# applicability-matrix test parametrized over all result types serves as the
+# regression guard.
 _APPLICABILITY: Dict[str, FrozenSet[str]] = {
     "DiDResults": frozenset({"parallel_trends", "design_effect"}),
     "MultiPeriodDiDResults": frozenset(
@@ -544,6 +552,18 @@ class DiagnosticReport:
         # Pull suggested next steps from the practitioner workflow.
         next_steps = self._collect_next_steps(applicable)
 
+        # Populate schema-level warnings for every section that ended in "error",
+        # so users and agents do not have to scan each section dict to discover
+        # that a diagnostic failed. Preserves provenance per the "no silent
+        # failures" convention.
+        top_warnings: List[str] = []
+        for check in _CHECK_NAMES:
+            section_key = "estimator_native" if check == "estimator_native" else check
+            section = sections.get(section_key, {})
+            if section.get("status") == "error":
+                reason = section.get("reason") or "diagnostic raised an exception"
+                top_warnings.append(f"{check}: {reason}")
+
         schema: Dict[str, Any] = {
             "schema_version": DIAGNOSTIC_REPORT_SCHEMA_VERSION,
             "estimator": type(self._results).__name__,
@@ -558,7 +578,7 @@ class DiagnosticReport:
             "epv": sections["epv"],
             "estimator_native_diagnostics": sections["estimator_native"],
             "skipped": {k: v for k, v in skipped.items()},
-            "warnings": [],
+            "warnings": top_warnings,
             "overall_interpretation": "",
             "next_steps": next_steps,
         }
@@ -570,7 +590,7 @@ class DiagnosticReport:
             interpretation=interpretation,
             applicable_checks=tuple(sorted(applicable)),
             skipped_checks=skipped,
-            warnings=(),
+            warnings=tuple(top_warnings),
         )
 
     def _context_labels(self) -> Dict[str, str]:
@@ -708,6 +728,13 @@ class DiagnosticReport:
         test_statistic: Optional[float] = None
         df = len(pre_coefs)
         method = "bonferroni"
+        # Joint-Wald pathway is taken only when EVERY pre-period key is present
+        # in ``interaction_indices`` (required len == df guard below). This
+        # protects against estimators whose event-study keys use a different
+        # namespace than the vcov indexing: if any key is missing, we fall back
+        # to Bonferroni rather than risk indexing into the wrong vcov rows.
+        # The schema's ``method`` field exposes which path ran so agents and
+        # tests can distinguish the two unambiguously.
         if vcov is not None and interaction_indices is not None and df > 0:
             try:
                 keys_in_vcov = [k for (k, _, _, _) in pre_coefs if k in interaction_indices]

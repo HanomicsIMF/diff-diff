@@ -245,6 +245,69 @@ class TestUnitLabels:
 # ---------------------------------------------------------------------------
 # Significance phrasing
 # ---------------------------------------------------------------------------
+class TestOutcomeDirection:
+    """outcome_direction selects value-laden vs neutral verbs."""
+
+    def test_higher_is_better_positive_effect_uses_lifted(self, cs_fit):
+        fit, _ = cs_fit
+        br = BusinessReport(
+            fit,
+            outcome_label="sales",
+            outcome_unit="$",
+            outcome_direction="higher_is_better",
+            treatment_label="the policy",
+            auto_diagnostics=False,
+        )
+        headline = br.headline()
+        assert "lifted" in headline
+        assert "increased" not in headline
+
+    def test_lower_is_better_positive_effect_uses_worsened(self, cs_fit):
+        fit, _ = cs_fit  # CS has a positive effect on this seed
+        br = BusinessReport(
+            fit,
+            outcome_label="churn",
+            outcome_unit="%",
+            outcome_direction="lower_is_better",
+            treatment_label="the change",
+            auto_diagnostics=False,
+        )
+        headline = br.headline()
+        assert "worsened" in headline
+
+    def test_direction_none_uses_neutral_verb(self, cs_fit):
+        fit, _ = cs_fit
+        br = BusinessReport(
+            fit,
+            outcome_label="sales",
+            outcome_unit="$",
+            auto_diagnostics=False,
+        )
+        headline = br.headline()
+        assert "increased" in headline
+        assert "lifted" not in headline
+
+
+class TestWarningsPassthrough:
+    """Broad exception handling still records provenance in schema.warnings."""
+
+    def test_diagnostic_error_surfaces_as_top_level_warning(self, event_study_fit):
+        fit, _ = event_study_fit
+
+        def _raise(*args, **kwargs):
+            raise RuntimeError("synthetic test failure")
+
+        with patch("diff_diff.honest_did.HonestDiD.sensitivity_analysis", side_effect=_raise):
+            br = BusinessReport(fit, auto_diagnostics=True)
+            schema = br.to_dict()
+            inner = schema["diagnostics"]["schema"]
+            # The error is recorded at the section level...
+            assert inner["sensitivity"]["status"] == "error"
+            # ...AND surfaced at the top level for quick scanning.
+            assert any("sensitivity:" in w for w in inner["warnings"])
+            assert any("synthetic test failure" in w for w in inner["warnings"])
+
+
 class TestSignificancePhrasing:
     def test_high_significance_produces_strong_language(self, cs_fit):
         """CS on this seed has p ~ 1e-56 (very strong) -> 'strongly supported'."""
