@@ -1601,7 +1601,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # Step 12c: Multi-horizon per-group computation (L_max >= 1)
         # ------------------------------------------------------------------
         multi_horizon_dids: Optional[Dict[int, Dict[str, Any]]] = None
-        multi_horizon_if: Optional[Dict[int, np.ndarray]] = None
+        multi_horizon_if: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None
         multi_horizon_se: Optional[Dict[int, float]] = None
         multi_horizon_inference: Optional[Dict[int, Dict[str, Any]]] = None
 
@@ -1747,7 +1747,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
         # Phase 2: placebos, normalized effects, cost-benefit delta
         multi_horizon_placebos: Optional[Dict[int, Dict[str, Any]]] = None
-        placebo_horizon_if: Optional[Dict[int, np.ndarray]] = None
+        placebo_horizon_if: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None
         placebo_horizon_se: Optional[Dict[int, float]] = None
         placebo_horizon_inference: Optional[Dict[int, Dict[str, Any]]] = None
         normalized_effects_dict: Optional[Dict[int, Dict[str, Any]]] = None
@@ -4408,13 +4408,18 @@ def _compute_per_group_if_multi_horizon(
                 # contribution to U_l is zero, but its count is in N_l.
                 continue
 
-            # Switcher contribution: +S_g * (Y_{g, out} - Y_{g, ref})
+            # Switcher contribution: +S_g * (Y_{g, out} - Y_{g, ref}).
+            # Per-cell attribution convention: assign the whole contrast
+            # to the outcome cell (g, out_idx). See REGISTRY.md's Note
+            # on survey IF expansion for the rationale behind this
+            # convention (library choice, not a derived result).
             switcher_change = Y_mat[g, out_idx] - Y_mat[g, ref_idx]
             U_l[g] += S_g * switcher_change
             U_per_period_l[g, out_idx] += S_g * switcher_change
 
             # Control contributions: each control g' in the pool gets
-            # -S_g * (1/n_ctrl) * (Y_{g', out} - Y_{g', ref})
+            # -S_g * (1/n_ctrl) * (Y_{g', out} - Y_{g', ref}). Same
+            # post-period attribution as the switcher side.
             ctrl_changes = Y_mat[ctrl_pool, out_idx] - Y_mat[ctrl_pool, ref_idx]
             ctrl_contrib = (S_g / n_ctrl) * ctrl_changes
             U_l[ctrl_pool] -= ctrl_contrib
@@ -4516,7 +4521,10 @@ def _compute_per_group_if_placebo_horizon(
             if n_ctrl == 0:
                 continue
 
-            # Switcher contribution: paper convention backward - ref
+            # Switcher contribution: paper convention backward - ref.
+            # Attribute the whole contrast to the backward cell
+            # (mirrors the multi-horizon / DID_M post-period
+            # attribution convention).
             switcher_change = Y_mat[g, backward_idx] - Y_mat[g, ref_idx]
             U_pl[g] += S_g * switcher_change
             U_per_period_pl[g, backward_idx] += S_g * switcher_change
@@ -4936,6 +4944,14 @@ def _compute_full_per_group_contributions(
     include_joiners_side = side in ("overall", "joiners")
     include_leavers_side = side in ("overall", "leavers")
 
+    # Per-cell attribution convention (not a derivation from the
+    # observation-level survey linearization — see REGISTRY.md
+    # ``ChaisemartinDHaultfoeuille`` Note on survey IF expansion):
+    # attribute each (Y_curr - Y_prev) transition as a single
+    # difference to its post-period cell (g, t_idx). Preserves the
+    # row-sum identity U_per_period.sum(axis=1) == U and therefore
+    # the group-sum invariance that makes the cell expansion
+    # byte-identical to the pre-allocator convention under PSU=group.
     for t_idx in range(1, n_periods):
         d_curr = D_mat[:, t_idx]
         d_prev = D_mat[:, t_idx - 1]
