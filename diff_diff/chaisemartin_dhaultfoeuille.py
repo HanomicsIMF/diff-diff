@@ -639,23 +639,32 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             Survey design specification for design-based inference.
             Supports ``weight_type='pweight'`` with two variance paths:
             (1) Taylor Series Linearization using strata / PSU / FPC
-            (analytical) and (2) replicate-weight variance using
-            BRR / Fay / JK1 / JKn / SDR methods (analytical,
-            closed-form). Survey weights produce weighted cell means
-            for the point estimate. Under a survey design without an
-            explicit ``psu``, ``fit()`` auto-injects ``psu=<group_col>``
-            so the group is the effective sampling unit (strata / PSU
-            must be within-group-constant; mixed labels within a group
-            raise ``ValueError``). When ``n_bootstrap > 0`` and a
-            survey design is supplied, the multiplier bootstrap
-            operates at the PSU level (Hall-Mammen wild PSU
-            bootstrap) — under the default auto-inject this collapses
-            to a group-level clustered bootstrap. **Replicate weights
-            combined with ``n_bootstrap > 0`` are rejected** with
-            ``NotImplementedError`` (replicate variance is
-            closed-form; bootstrap would double-count variance). See
-            REGISTRY.md ``ChaisemartinDHaultfoeuille`` Notes for the
-            full contract.
+            (analytical) via the **cell-period IF allocator** that
+            attributes per-``(g, t)``-cell mass and aggregates through
+            Binder (1983), and (2) replicate-weight variance using
+            BRR / Fay / JK1 / JKn / SDR methods (analytical, closed-
+            form). Survey weights produce weighted cell means for the
+            point estimate. Under a survey design without an explicit
+            ``psu``, ``fit()`` auto-injects ``psu=<group_col>`` as a
+            safe default (the group is the effective sampling unit).
+            **Strata and PSU may vary across cells of a group** but
+            must be constant within each ``(g, t)`` cell (trivially
+            true in one-obs-per-cell panels; enforced otherwise with
+            ``ValueError``). When ``n_bootstrap > 0`` and a survey
+            design is supplied, the multiplier bootstrap operates at
+            the PSU level (Hall-Mammen wild PSU bootstrap) — under the
+            default auto-inject this collapses to a group-level
+            clustered bootstrap. **Out-of-scope combinations raise
+            ``NotImplementedError``**: (a) replicate weights with
+            ``n_bootstrap > 0`` (replicate variance is closed-form;
+            bootstrap would double-count variance); (b)
+            ``heterogeneity=`` with PSU/strata that vary within group
+            (heterogeneity WLS still uses the legacy group-level IF
+            expansion; follow-up PR extends it); (c) ``n_bootstrap >
+            0`` with PSU that varies within group (PSU-level bootstrap
+            still uses the legacy group-level PSU map; follow-up PR
+            extends it). See REGISTRY.md
+            ``ChaisemartinDHaultfoeuille`` Notes for the full contract.
 
         Returns
         -------
@@ -770,14 +779,43 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # precedent: efficient_did.py:989, staggered.py:1869,
             # two_stage.py:251-253.
 
-            # Within-group-constant PSU/strata is required: the IF
-            # expansion psi_i = U[g] * (w_i / W_g) supports within-group
-            # variation in WEIGHTS (each obs contributes proportionally),
-            # but PSU and strata must be constant within group — the
-            # group is treated as the effective sampling unit for the
-            # Binder stratified-PSU variance formula.
-            _validate_group_constant_strata_psu(
+            # Cell-period IF allocator contract: strata and PSU must be
+            # constant within each (g, t) cell, a strict relaxation of
+            # the previous within-group constancy rule. Two out-of-scope
+            # combinations are gated with NotImplementedError until the
+            # corresponding follow-up PRs extend them:
+            #   - heterogeneity= + within-group-varying PSU/strata
+            #     (PR 3: cell-period allocator for the WLS psi_obs)
+            #   - n_bootstrap > 0 + within-group-varying PSU
+            #     (PR 4: cell-level Hall-Mammen wild bootstrap)
+            strata_varies, psu_varies = _strata_psu_vary_within_group(
                 resolved_survey, data, group, survey_weights,
+            )
+            if strata_varies or psu_varies:
+                if heterogeneity is not None:
+                    raise NotImplementedError(
+                        "heterogeneity= is not supported under a survey "
+                        "design whose PSU or strata vary within group. "
+                        "The heterogeneity WLS path uses the legacy "
+                        "group-level IF expansion and will be extended "
+                        "to the cell-period allocator in a follow-up "
+                        "PR. For now, either (a) set heterogeneity=None, "
+                        "or (b) collapse PSU/strata to be constant "
+                        "within each group."
+                    )
+                if self.n_bootstrap > 0:
+                    raise NotImplementedError(
+                        "n_bootstrap > 0 is not supported under a "
+                        "survey design whose PSU varies within group. "
+                        "The PSU-level Hall-Mammen wild bootstrap uses "
+                        "the legacy group-level PSU map and will be "
+                        "extended to cell-level PSU in a follow-up PR. "
+                        "For now, use n_bootstrap=0 (analytical TSL "
+                        "variance, which fully supports within-group-"
+                        "varying PSU via the cell-period allocator)."
+                    )
+            _validate_cell_constant_strata_psu(
+                resolved_survey, data, group, time, survey_weights,
             )
 
         # Design-2 precondition: requires drop_larger_lower=False
@@ -2048,9 +2086,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     pos_mask_warn = obs_ws_warn > 0
                     psu_codes_warn = np.asarray(psu_arr_warn)
                     # Collect the PSU label for each variance-eligible
-                    # group (within-group-constant PSU is validated
-                    # upstream, so the first positive-weight label
-                    # represents the whole group).
+                    # group. PSU that varies within group is rejected
+                    # for the bootstrap path upstream (NotImplementedError
+                    # gate), so the first positive-weight label
+                    # represents the whole group here.
                     eligible_psu_labels: List[Any] = []
                     for gid in _eligible_group_ids:
                         mask_g = (obs_gids_warn == gid) & pos_mask_warn
@@ -2198,12 +2237,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # Under a survey design with PSU information, build a
             # `group_id_to_psu_code` dict so the bootstrap mixin can
             # derive each target's PSU map by ID lookup rather than by
-            # positional reuse. PSU/strata are within-group-constant by
-            # the _validate_group_constant_strata_psu precondition, so
-            # each variance-eligible group has exactly one PSU label.
-            # Under auto-inject psu=group each group has a unique PSU
-            # code and the bootstrap mixin's identity-map fast path
-            # reproduces the pre-PSU behavior bit-for-bit.
+            # positional reuse. PSU that varies within group is
+            # rejected for the bootstrap path by a NotImplementedError
+            # gate in fit() (the cell-period allocator used by the
+            # analytical TSL path does NOT require within-group PSU
+            # constancy, but the Hall-Mammen wild PSU bootstrap still
+            # uses a group-level PSU map — PR 4 extends it). Each
+            # variance-eligible group therefore has exactly one PSU
+            # label here. Under auto-inject psu=group each group has a
+            # unique PSU code and the bootstrap mixin's identity-map
+            # fast path reproduces the pre-PSU behavior bit-for-bit.
             group_id_to_psu_code_bootstrap: Optional[Dict[Any, int]] = None
             eligible_group_ids_bootstrap: Optional[np.ndarray] = None
             if (
@@ -5241,58 +5284,108 @@ def _plugin_se(U_centered: np.ndarray, divisor: int) -> float:
     return float(np.sqrt(sigma_hat_sq) / np.sqrt(divisor))
 
 
-def _validate_group_constant_strata_psu(
+def _strata_psu_vary_within_group(
     resolved: Any,
     data: pd.DataFrame,
     group_col: str,
     survey_weights: Optional[np.ndarray],
+) -> Tuple[bool, bool]:
+    """Return (strata_varies_within_group, psu_varies_within_group).
+
+    Diagnostic helper used to gate out-of-scope combinations for the
+    cell-period IF allocator — heterogeneity and ``n_bootstrap > 0``
+    currently require within-group constancy because they read
+    ``obs_survey_info`` through the legacy group-level expansion path.
+    PR 3 and PR 4 will extend them. Zero-weight rows are excluded from
+    the check (subpopulation contract).
+    """
+    if resolved is None:
+        return False, False
+    pos_mask = np.asarray(survey_weights) > 0
+    if not pos_mask.any():
+        return False, False
+    g_eff = np.asarray(data[group_col].values)[pos_mask]
+    strata_varies = False
+    psu_varies = False
+    if resolved.strata is not None:
+        s_eff = np.asarray(resolved.strata)[pos_mask]
+        strata_varies = bool(
+            pd.DataFrame({"g": g_eff, "s": s_eff}).groupby("g")["s"].nunique().gt(1).any()
+        )
+    if resolved.psu is not None:
+        p_eff = np.asarray(resolved.psu)[pos_mask]
+        psu_varies = bool(
+            pd.DataFrame({"g": g_eff, "p": p_eff}).groupby("g")["p"].nunique().gt(1).any()
+        )
+    return strata_varies, psu_varies
+
+
+def _validate_cell_constant_strata_psu(
+    resolved: Any,
+    data: pd.DataFrame,
+    group_col: str,
+    time_col: str,
+    survey_weights: Optional[np.ndarray],
 ) -> None:
-    """Reject survey designs where strata or PSU vary within group.
+    """Reject survey designs where strata or PSU vary within a (g, t) cell.
 
-    The dCDH IF expansion ``psi_i = U[g] * (w_i / W_g)`` treats the
-    group as the effective sampling unit for design-based variance.
-    When strata or PSU vary within group, the expansion silently spreads
-    horizon-specific IF mass onto observations whose survey stratum or
-    PSU differs from the rest of the group, contaminating the
-    stratified-PSU variance. Reject those designs with a clear error.
+    Under the cell-period IF allocator, ``psi_i`` attributes each
+    observation's mass to its ``(g, t)`` cell scaled by proportional
+    weight share:
+    ``psi_i = U_centered_per_period[g, t] * (w_i / W_{g, t})``. Binder
+    TSL aggregates at PSU level, so strata / PSU labels within a cell
+    must be unambiguous. In one-obs-per-cell panels (the canonical dCDH
+    structure) this check is trivially satisfied; in multi-obs-per-cell
+    panels, a cell split across strata or PSUs is rejected. This is a
+    strict relaxation of the old within-group constancy rule shipped
+    before the cell-period allocator (REGISTRY.md
+    ``ChaisemartinDHaultfoeuille`` Note on survey IF expansion).
 
-    Zero-weight rows are excluded from the check (subpopulation
-    contract — an excluded row with a different stratum/PSU label does
-    not actually participate in the variance).
+    Zero-weight rows are excluded (subpopulation contract).
     """
     if resolved is None:
         return
     pos_mask = np.asarray(survey_weights) > 0
+    if not pos_mask.any():
+        return
     g_eff = np.asarray(data[group_col].values)[pos_mask]
+    t_eff = np.asarray(data[time_col].values)[pos_mask]
     if resolved.strata is not None:
         s_eff = np.asarray(resolved.strata)[pos_mask]
-        df_s = pd.DataFrame({"g": g_eff, "s": s_eff})
-        varying = df_s.groupby("g")["s"].nunique()
+        df_cell = pd.DataFrame({"g": g_eff, "t": t_eff, "s": s_eff})
+        varying = df_cell.groupby(["g", "t"])["s"].nunique()
         bad = varying[varying > 1]
         if len(bad) > 0:
             raise ValueError(
                 f"ChaisemartinDHaultfoeuille survey support requires "
-                f"strata to be constant within group, but "
-                f"{len(bad)} group(s) have multiple strata "
-                f"(examples: {bad.index.tolist()[:5]}). The IF "
-                f"expansion psi_i = U[g] * (w_i / W_g) treats the "
-                f"group as the effective sampling unit for stratified "
-                f"design-based variance."
+                f"strata to be constant within each (group, time) cell "
+                f"under the cell-period IF allocator, but {len(bad)} "
+                f"cell(s) have multiple strata (examples: "
+                f"{bad.index.tolist()[:5]}). The cell allocator treats "
+                f"the (g, t) cell as the effective sampling unit for "
+                f"stratified Binder variance; within-cell stratum "
+                f"variation is ambiguous. The allocator DOES support "
+                f"strata that vary across cells of the same group "
+                f"(relaxation over the previous within-group constancy "
+                f"rule shipped in earlier releases)."
             )
     if resolved.psu is not None:
         p_eff = np.asarray(resolved.psu)[pos_mask]
-        df_p = pd.DataFrame({"g": g_eff, "p": p_eff})
-        varying = df_p.groupby("g")["p"].nunique()
+        df_cell = pd.DataFrame({"g": g_eff, "t": t_eff, "p": p_eff})
+        varying = df_cell.groupby(["g", "t"])["p"].nunique()
         bad = varying[varying > 1]
         if len(bad) > 0:
             raise ValueError(
                 f"ChaisemartinDHaultfoeuille survey support requires "
-                f"PSU to be constant within group, but "
-                f"{len(bad)} group(s) have multiple PSUs "
-                f"(examples: {bad.index.tolist()[:5]}). The IF "
-                f"expansion psi_i = U[g] * (w_i / W_g) treats the "
-                f"group as the effective sampling unit for stratified "
-                f"design-based variance."
+                f"PSU to be constant within each (group, time) cell "
+                f"under the cell-period IF allocator, but {len(bad)} "
+                f"cell(s) have multiple PSUs (examples: "
+                f"{bad.index.tolist()[:5]}). The cell allocator treats "
+                f"the (g, t) cell as the effective sampling unit; "
+                f"within-cell PSU variation is ambiguous. The allocator "
+                f"DOES support PSU that varies across cells of the same "
+                f"group (relaxation over the previous within-group "
+                f"constancy rule shipped in earlier releases)."
             )
 
 

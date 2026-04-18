@@ -1072,35 +1072,142 @@ class TestSurveyDesign2:
 
 
 class TestSurveyWithinGroupValidation:
-    """Survey designs with strata or PSU varying within a single group
-    are rejected because the dCDH IF expansion treats the group as the
-    effective sampling unit."""
+    """Cell-period IF allocator contract: strata and PSU may vary ACROSS
+    cells of a group, but must be constant WITHIN each (g, t) cell. In
+    canonical one-obs-per-cell panels the cell-level constancy check is
+    trivially satisfied. Out-of-scope combinations (heterogeneity +
+    within-group-varying PSU; n_bootstrap > 0 + within-group-varying
+    PSU) raise NotImplementedError with a pointer to the follow-up PR.
+    """
 
-    def test_rejects_varying_psu_within_group(self, base_data):
+    def test_accepts_varying_psu_within_group(self, base_data):
+        """Under the cell-period allocator, PSU that varies across cells
+        of a group is a valid design — the allocator attributes IF mass
+        to each (g, t) cell separately and Binder TSL aggregates at PSU
+        level with the honest cell-level variance.
+        """
         df_ = base_data.copy()
         df_["pw"] = 1.0
         df_["stratum"] = 0
-        # PSU varies within each group (alternates by period)
+        # PSU varies within each group (alternates by period). Still
+        # constant within each (g, t) cell because one obs per cell.
         df_["psu"] = df_["period"] % 2
         sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
-        with pytest.raises(ValueError, match="PSU to be constant within group"):
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd, L_max=2,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+        # And the SE differs from a within-group-constant-PSU baseline,
+        # because the cell allocator now honors the extra PSU structure.
+        df_const = base_data.copy()
+        df_const["pw"] = 1.0
+        df_const["stratum"] = 0
+        df_const["psu"] = 0  # constant-within-group PSU baseline
+        sd_const = SurveyDesign(weights="pw", strata="stratum", psu="psu")
+        r_const = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_const, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd_const, L_max=2,
+        )
+        assert result.overall_se != r_const.overall_se, (
+            "Cell-period allocator must produce a different SE when PSU "
+            "actually varies across cells vs. constant-within-group."
+        )
+
+    def test_accepts_varying_strata_within_group(self, base_data):
+        """Strata that vary across cells of a group are supported under
+        the cell-period allocator, trivially satisfying within-cell
+        constancy in one-obs-per-cell panels.
+        """
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        # Stratum varies within each group across cells
+        df_["stratum"] = df_["period"] % 2
+        # PSU = group, nested inside stratum so the resolver accepts the
+        # cross-stratum reuse of group labels.
+        df_["psu"] = df_["group"]
+        sd = SurveyDesign(weights="pw", strata="stratum", psu="psu", nest=True)
+        result = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd, L_max=2,
+        )
+        assert np.isfinite(result.overall_att)
+        assert np.isfinite(result.overall_se)
+
+    def test_heterogeneity_with_varying_psu_raises(self, base_data):
+        """heterogeneity= is gated under within-group-varying PSU until
+        PR 3 ships the cell-period allocator for the WLS psi_obs path.
+        """
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["stratum"] = 0
+        df_["psu"] = df_["period"] % 2  # varies within group
+        df_["x_het"] = np.arange(len(df_)) % 3  # categorical covariate
+        sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
+        with pytest.raises(NotImplementedError, match="heterogeneity"):
+            ChaisemartinDHaultfoeuille(seed=1).fit(
+                df_, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                heterogeneity="x_het", L_max=1,
+                survey_design=sd,
+            )
+
+    def test_bootstrap_with_varying_psu_raises(self, base_data):
+        """n_bootstrap > 0 is gated under within-group-varying PSU until
+        PR 4 ships the cell-level Hall-Mammen wild bootstrap.
+        """
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["stratum"] = 0
+        df_["psu"] = df_["period"] % 2  # varies within group
+        sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
+        with pytest.raises(NotImplementedError, match="n_bootstrap"):
+            ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1).fit(
+                df_, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd,
+            )
+
+    def test_within_cell_psu_variation_rejected(self, base_data):
+        """Multiple PSUs inside a single (g, t) cell (a multi-obs-per-
+        cell panel) remain ambiguous under the cell allocator and must
+        be rejected.
+        """
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["stratum"] = 0
+        df_["psu"] = 0
+        # Duplicate the first row with a different PSU so that cell
+        # (group[0], period[0]) has two obs with different PSU labels.
+        dup = df_.iloc[0].copy()
+        dup["psu"] = 99
+        df_ = pd.concat([df_, pd.DataFrame([dup])], ignore_index=True)
+        sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
+        with pytest.raises(ValueError, match="PSU to be constant within each"):
             ChaisemartinDHaultfoeuille(seed=1).fit(
                 df_, outcome="outcome", group="group",
                 time="period", treatment="treatment",
                 survey_design=sd,
             )
 
-    def test_rejects_varying_strata_within_group(self, base_data):
+    def test_within_cell_strata_variation_rejected(self, base_data):
+        """Multiple strata inside a single (g, t) cell are ambiguous
+        under the cell allocator and must be rejected.
+        """
         df_ = base_data.copy()
         df_["pw"] = 1.0
-        # Stratum varies within each group
-        df_["stratum"] = df_["period"] % 2
-        # Give each obs a unique PSU label so the SurveyDesign resolver
-        # doesn't reject on cross-stratum PSU reuse — we want our
-        # within-group strata check to fire first.
+        df_["stratum"] = 0
+        # Duplicate the first row with a different stratum.
+        dup = df_.iloc[0].copy()
+        dup["stratum"] = 1
+        df_ = pd.concat([df_, pd.DataFrame([dup])], ignore_index=True)
         df_["psu"] = np.arange(len(df_))
         sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
-        with pytest.raises(ValueError, match="strata to be constant within group"):
+        with pytest.raises(ValueError, match="strata to be constant within each"):
             ChaisemartinDHaultfoeuille(seed=1).fit(
                 df_, outcome="outcome", group="group",
                 time="period", treatment="treatment",
@@ -1271,17 +1378,19 @@ class TestSurveyWithinGroupValidation:
                 f"{r_dup.overall_se}) — auto-inject psu=group is not active."
             )
 
-    def test_rejection_excludes_zero_weight_rows(self, base_data):
-        """A zero-weight row with a different PSU from its group must
-        not trigger rejection — it is out-of-sample by the
-        subpopulation contract and does not enter the variance."""
+    def test_within_cell_check_excludes_zero_weight_rows(self, base_data):
+        """A zero-weight row with a different PSU label from its cell
+        must not trigger rejection — it is out-of-sample by the
+        subpopulation contract and does not enter the variance.
+        """
         df_ = base_data.copy()
         df_["pw"] = 1.0
         df_["stratum"] = 0
         df_["psu"] = 0
-        # Inject a zero-weight row with a different PSU
+        # Inject a zero-weight row whose PSU would collide with the
+        # first row's cell if it were counted.
         sample = df_.iloc[0].copy()
-        sample["psu"] = 99  # would violate constancy if counted
+        sample["psu"] = 99  # would violate within-cell constancy if counted
         sample["pw"] = 0.0
         df_ = pd.concat([df_, pd.DataFrame([sample])], ignore_index=True)
         sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
