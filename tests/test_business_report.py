@@ -759,7 +759,13 @@ class TestEfficientDiDAssumptionPtAllPtPost:
     branch on it.
     """
 
-    def _stub(self, pt_assumption: str, control_group: str = "not_yet_treated"):
+    def _stub(self, pt_assumption: str, control_group: str = "never_treated"):
+        """Build an EfficientDiD-shaped stub. ``control_group`` defaults to
+        ``"never_treated"`` (the estimator's actual default); the only other
+        accepted value is ``"last_cohort"`` (pseudo-never-treated). The
+        earlier ``"not_yet_treated"`` default was invalid for this estimator
+        and was flagged in round-10 CI review."""
+
         class EfficientDiDResults:
             pass
 
@@ -794,6 +800,30 @@ class TestEfficientDiDAssumptionPtAllPtPost:
         assert a["parallel_trends_variant"] == "pt_post"
         assert "PT-Post" in a["description"]
         assert "Corollary 3.2" in a["description"] or "single-baseline" in a["description"]
+
+    def test_pt_post_never_treated_names_never_treated(self):
+        """Default control_group: description must say never-treated."""
+        br = BusinessReport(self._stub("post", "never_treated"), auto_diagnostics=False)
+        desc = br.to_dict()["assumption"]["description"]
+        assert "never-treated" in desc
+        assert "latest treated cohort" not in desc
+
+    def test_pt_post_last_cohort_branch_describes_pseudo_control(self):
+        """Round-10 regression: ``control_group='last_cohort'`` must not be
+        narrated with generic never-treated language. The description must
+        describe the pseudo-never-treated latest-cohort design (REGISTRY.md
+        §EfficientDiD line 908)."""
+        br = BusinessReport(self._stub("post", "last_cohort"), auto_diagnostics=False)
+        desc = br.to_dict()["assumption"]["description"]
+        assert "latest treated cohort" in desc
+        assert "pseudo-never-treated" in desc
+        assert "dropped" in desc
+
+    def test_pt_all_last_cohort_branch_describes_pseudo_control(self):
+        br = BusinessReport(self._stub("all", "last_cohort"), auto_diagnostics=False)
+        desc = br.to_dict()["assumption"]["description"]
+        assert "latest treated cohort" in desc
+        assert "pseudo-never-treated" in desc
 
     def test_control_group_is_reflected_in_block(self):
         br = BusinessReport(self._stub("all", "last_cohort"), auto_diagnostics=False)
@@ -947,6 +977,96 @@ class TestHausmanPretestPropagatesFitDesign:
         assert (
             captured.get("anticipation") == 1
         ), f"anticipation must propagate from the fit; got {captured}"
+
+
+class TestHausmanFitFaithfulSkip:
+    """Round-10 regression: DR / survey-weighted EfficientDiD fits cannot
+    replay the Hausman pretest from ``(data, outcome, unit, time,
+    first_treat)`` alone because the result does not expose ``covariates``,
+    ``cluster``, nuisance kwargs, or the full survey design. DR must skip
+    with an explicit reason rather than rerunning defaults.
+    """
+
+    def _make_fit(self, *, estimation_path="nocov", survey_metadata=None):
+        from diff_diff import EfficientDiD
+
+        sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
+        edid = EfficientDiD().fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        edid.estimation_path = estimation_path
+        edid.survey_metadata = survey_metadata
+        return edid, sdf
+
+    def test_dr_covariate_path_skipped_with_reason(self):
+        from diff_diff import DiagnosticReport
+
+        fit, sdf = self._make_fit(estimation_path="dr")
+        dr = DiagnosticReport(
+            fit,
+            data=sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        assert "parallel_trends" not in dr.applicable_checks
+        reason = dr.skipped_checks.get("parallel_trends", "")
+        assert "doubly-robust" in reason
+
+    def test_survey_weighted_fit_skipped_with_reason(self):
+        from types import SimpleNamespace
+
+        from diff_diff import DiagnosticReport
+
+        fake_survey = SimpleNamespace(
+            weight_type="pweight",
+            effective_n=80.0,
+            design_effect=1.25,
+            sum_weights=100.0,
+            n_strata=None,
+            n_psu=None,
+            df_survey=40,
+        )
+        fit, sdf = self._make_fit(survey_metadata=fake_survey)
+        dr = DiagnosticReport(
+            fit,
+            data=sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        assert "parallel_trends" not in dr.applicable_checks
+        reason = dr.skipped_checks.get("parallel_trends", "")
+        assert "survey design" in reason
+
+
+class TestHausmanTestStatisticPopulated:
+    """Round-10 P3 regression: ``HausmanPretestResult`` exposes
+    ``statistic`` (not ``test_statistic``); the DR schema was previously
+    reading the wrong attribute and losing the H statistic."""
+
+    def test_test_statistic_field_is_populated_on_success(self, edid_fit):
+        from diff_diff import DiagnosticReport
+
+        fit, sdf = edid_fit
+        dr = DiagnosticReport(
+            fit,
+            data=sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        pt = dr.to_dict()["parallel_trends"]
+        if pt["status"] == "ran":
+            # Method-specific: only Hausman exposes a test_statistic.
+            assert pt["method"] == "hausman"
+            ts = pt["test_statistic"]
+            assert (
+                ts is not None and isinstance(ts, float) and np.isfinite(ts)
+            ), f"Hausman H statistic must be populated on success; got {ts}"
 
 
 class TestFullReportSingleM:

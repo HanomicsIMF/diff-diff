@@ -926,11 +926,18 @@ class TestEfficientDiDHausman:
         assert pt["method"] == "hausman"
 
     def test_hausman_skipped_without_data_kwargs(self, edid_fit):
+        """Without the raw panel kwargs, PT is now gated at the
+        applicability level (round-10 CI review) — no method field on
+        the skip section, but ``applicable_checks`` excludes
+        ``parallel_trends`` and ``skipped_checks`` names it with the
+        missing-kwargs reason."""
         fit, _ = edid_fit
         dr = DiagnosticReport(fit)
         pt = dr.to_dict()["parallel_trends"]
         assert pt["status"] == "skipped"
-        assert pt["method"] == "hausman"
+        assert "parallel_trends" not in dr.applicable_checks
+        assert "parallel_trends" in dr.skipped_checks
+        assert "hausman_pretest" in dr.skipped_checks["parallel_trends"]
 
 
 # ---------------------------------------------------------------------------

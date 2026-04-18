@@ -471,6 +471,45 @@ class DiagnosticReport:
                         "aggregate='event_study' to populate event-study output."
                     )
                 # vcov is optional for the Bonferroni fallback.
+            if method == "hausman":
+                # EfficientDiD's Hausman pretest requires the raw panel
+                # to refit under PT-All and PT-Post. Gate at applicability
+                # rather than letting ``_pt_hausman`` skip at runtime, so
+                # ``applicable_checks`` and ``completed_steps`` reflect
+                # reality.
+                hausman_missing = [
+                    arg
+                    for arg, val in (
+                        ("data", self._data),
+                        ("outcome", self._outcome),
+                        ("unit", self._unit),
+                        ("time", self._time),
+                        ("first_treat", self._first_treat),
+                    )
+                    if val is None
+                ]
+                if hausman_missing:
+                    return (
+                        "EfficientDiD.hausman_pretest needs raw panel data; "
+                        "pass data + outcome + unit + time + first_treat to "
+                        "DiagnosticReport. Missing: " + ", ".join(hausman_missing) + "."
+                    )
+                # Fit-faithful guard: DR / survey fits cannot be replayed
+                # under defaults, so skip with an explicit reason rather
+                # than rerunning a different design.
+                if getattr(r, "estimation_path", "nocov") != "nocov":
+                    return (
+                        "Original EfficientDiD fit used the doubly-robust "
+                        "covariate path; ``covariates`` is not stored on "
+                        "the result, so the Hausman pretest cannot be "
+                        "faithfully replayed."
+                    )
+                if getattr(r, "survey_metadata", None) is not None:
+                    return (
+                        "Original EfficientDiD fit used a survey design; "
+                        "replaying the Hausman pretest would require the "
+                        "full ``SurveyDesign`` object."
+                    )
             return None
         if check == "pretrends_power":
             # ``compute_pretrends_power`` handles CS / SA / ImputationDiD
@@ -631,7 +670,7 @@ class DiagnosticReport:
         headline = self._extract_headline_metric()
 
         # Pull suggested next steps from the practitioner workflow.
-        next_steps = self._collect_next_steps(applicable)
+        next_steps = self._collect_next_steps(sections)
 
         # Populate schema-level warnings for every section that ended in "error",
         # so users and agents do not have to scan each section dict to discover
@@ -696,17 +735,28 @@ class DiagnosticReport:
             "treatment_label": self._treatment_label or "the treatment",
         }
 
-    def _collect_next_steps(self, applicable: set) -> List[Dict[str, Any]]:
-        """Pull and filter practitioner_next_steps, marking DR-covered steps complete."""
+    def _collect_next_steps(self, sections: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Pull and filter practitioner_next_steps, marking DR-covered steps complete.
+
+        A step is marked complete only when its DR section actually ran
+        (``status == "ran"``). The previous implementation marked steps
+        complete based on membership in the applicability set, which
+        overstated completion for checks that were applicable but skipped
+        at runtime (e.g., Hausman on a DR / survey fit; sensitivity on
+        varying-base CS).
+        """
         try:
             from diff_diff.practitioner import practitioner_next_steps
 
+            def _ran(key: str) -> bool:
+                return sections.get(key, {}).get("status") == "ran"
+
             completed = []
-            if "parallel_trends" in applicable:
+            if _ran("parallel_trends"):
                 completed.append("parallel_trends")
-            if "sensitivity" in applicable:
+            if _ran("sensitivity"):
                 completed.append("sensitivity")
-            if "heterogeneity" in applicable:
+            if _ran("heterogeneity"):
                 completed.append("heterogeneity")
             ns = practitioner_next_steps(
                 self._results,
@@ -1612,12 +1662,50 @@ class DiagnosticReport:
                 ),
             }
 
-        # Propagate the fit's design settings into the pretest. If the
-        # original fit used non-default ``control_group`` (e.g.
-        # ``"last_cohort"``) or a non-zero ``anticipation``, rerunning
-        # with defaults would diagnose a different design than the
-        # estimate being summarized (round-9 CI review on PR #318).
+        # Fit-faithful guard. ``EfficientDiDResults`` exposes
+        # ``control_group``, ``anticipation``, and ``estimation_path``
+        # (``"nocov"`` or ``"dr"``) plus ``survey_metadata``, but not the
+        # ``covariates`` list, ``cluster`` column, or nuisance kwargs
+        # needed to replay a DR / clustered / survey-weighted fit. If
+        # the original fit used any of those paths, rerunning the
+        # pretest under defaults would diagnose a different design than
+        # the estimate being summarized. Skip with an explicit reason
+        # instead of silently fibbing.
         r = self._results
+        estimation_path = getattr(r, "estimation_path", "nocov")
+        has_survey = getattr(r, "survey_metadata", None) is not None
+        if estimation_path != "nocov" or has_survey:
+            reasons: List[str] = []
+            if estimation_path == "dr":
+                reasons.append(
+                    "the original fit used the doubly-robust path with "
+                    "covariates (``covariates`` list is not stored on "
+                    "``EfficientDiDResults``)"
+                )
+            if has_survey:
+                reasons.append(
+                    "the original fit used a survey design (replay would "
+                    "require the full ``SurveyDesign`` object)"
+                )
+            return {
+                "status": "skipped",
+                "method": "hausman",
+                "reason": (
+                    "Cannot faithfully replay the Hausman pretest: "
+                    + "; ".join(reasons)
+                    + ". Rerunning the pretest under defaults would "
+                    "diagnose a different design than the estimate. "
+                    "Rerun ``EfficientDiD.hausman_pretest(...)`` "
+                    "manually with the original fit's kwargs or pass "
+                    "``precomputed={'sensitivity': ...}`` if you have "
+                    "a pretest result."
+                ),
+            }
+
+        # Propagate settings we can read off the result. Same-design
+        # replay: only ``control_group`` and ``anticipation`` need to
+        # match; covariates / cluster / nuisance kwargs are irrelevant
+        # on the ``nocov`` path we just gated to.
         hausman_kwargs: Dict[str, Any] = {}
         fit_control_group = getattr(r, "control_group", None)
         if isinstance(fit_control_group, str):
@@ -1646,11 +1734,15 @@ class DiagnosticReport:
             }
 
         p_value = _to_python_float(getattr(pt, "p_value", None))
+        # ``HausmanPretestResult`` exposes ``statistic`` (not
+        # ``test_statistic``); keep a fallback in case a precomputed
+        # passthrough object uses the alternate name.
+        test_stat = _to_python_float(getattr(pt, "statistic", getattr(pt, "test_statistic", None)))
         return {
             "status": "ran",
             "method": "hausman",
             "joint_p_value": p_value,
-            "test_statistic": _to_python_float(getattr(pt, "test_statistic", None)),
+            "test_statistic": test_stat,
             "df": _to_python_scalar(getattr(pt, "df", None)),
             "verdict": _pt_verdict(p_value),
         }

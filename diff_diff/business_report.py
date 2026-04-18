@@ -703,32 +703,63 @@ def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, 
         # lines 736-738 and 907.
         pt_assumption = getattr(results, "pt_assumption", "all")
         control_group = getattr(results, "control_group", None)
+        # The estimator only accepts ``control_group`` values of
+        # ``"never_treated"`` (the default) or ``"last_cohort"``. When
+        # ``last_cohort`` is used, the latest treatment cohort is
+        # reclassified as a pseudo-never-treated comparison and time
+        # periods at/after its onset are dropped; describing such a fit
+        # with generic never-treated language would misstate the
+        # identifying setup (see REGISTRY.md §EfficientDiD line 908).
+        is_last_cohort = control_group == "last_cohort"
         if pt_assumption == "post":
             variant = "pt_post"
+            if is_last_cohort:
+                control_clause = (
+                    "the comparison group is the latest treated cohort "
+                    "reclassified as pseudo-never-treated (periods "
+                    "at/after that cohort's treatment start are "
+                    "dropped)"
+                )
+            else:
+                control_clause = "the comparison group is never-treated"
             description = (
                 "Identification under PT-Post (Chen, Sant'Anna & Xie "
                 "2025): parallel trends holds only in post-treatment "
-                "periods, the comparison group is never-treated, and "
-                "the baseline is period g-1 only. This is the weaker "
-                "of the two regimes — just-identified and reducing to "
-                "standard single-baseline DiD (Corollary 3.2). Also "
-                "assumes no anticipation (Assumption NA), overlap "
-                "(Assumption O), and absorbing / irreversible treatment."
+                "periods, " + control_clause + ", and the baseline is period g-1 only. This is the "
+                "weaker of the two regimes — just-identified and "
+                "reducing to standard single-baseline DiD (Corollary "
+                "3.2). Also assumes no anticipation (Assumption NA), "
+                "overlap (Assumption O), and absorbing / irreversible "
+                "treatment."
             )
         else:
             variant = "pt_all"
+            if is_last_cohort:
+                baseline_clause = (
+                    "using the latest treated cohort as a pseudo-never-"
+                    "treated comparison (periods at/after that cohort's "
+                    "treatment start are dropped); any earlier cohort "
+                    "and any pre-treatment period can serve as baseline"
+                )
+            else:
+                baseline_clause = (
+                    "using never-treated units as comparison; any "
+                    "not-yet-treated cohort and any pre-treatment period "
+                    "can serve as baseline"
+                )
             description = (
                 "Identification under PT-All (Chen, Sant'Anna & Xie "
                 "2025): parallel trends holds for all groups and all "
-                "periods, allowing any not-yet-treated cohort and any "
-                "pre-treatment period as baseline. The estimator is "
-                "over-identified (Lemma 2.1), and the paper's optimal "
-                "combination weights are applied. Also assumes no "
-                "anticipation (Assumption NA), overlap (Assumption O), "
-                "and absorbing / irreversible treatment. The Hausman "
-                "PT-All vs PT-Post pretest (operating on the post-"
-                "treatment event-study vector ES(e), Theorem A.1) "
-                "checks whether the stronger PT-All regime is tenable."
+                "periods, "
+                + baseline_clause
+                + ". The estimator is over-identified (Lemma 2.1), and "
+                "the paper's optimal combination weights are applied. "
+                "Also assumes no anticipation (Assumption NA), overlap "
+                "(Assumption O), and absorbing / irreversible "
+                "treatment. The Hausman PT-All vs PT-Post pretest "
+                "(operating on the post-treatment event-study vector "
+                "ES(e), Theorem A.1) checks whether the stronger "
+                "PT-All regime is tenable."
             )
         block: Dict[str, Any] = {
             "parallel_trends_variant": variant,
