@@ -606,6 +606,127 @@ class TestAlphaOverrideBootstrapAndFiniteDF:
         assert "alpha_override_preserved" in caveat_topics
 
 
+class TestWildBootstrapAlphaOverride:
+    """Regression for the round-4 P0 finding that ``inference='wild_bootstrap'``
+    results were falling through to a normal-approximation recomputation."""
+
+    def test_wild_bootstrap_preserves_fitted_ci(self):
+        class _WildBootstrapStub:
+            def __init__(self):
+                self.att = 1.0
+                self.se = 0.5
+                self.p_value = 0.04
+                # 95% CI produced by the wild cluster bootstrap surface.
+                self.conf_int = (0.10, 1.90)
+                self.alpha = 0.05
+                self.n_obs = 100
+                self.n_treated = 40
+                self.n_control = 60
+                self.inference_method = "wild_bootstrap"
+                self.survey_metadata = None
+                # Wild-boot fits don't necessarily carry a raw distribution;
+                # the inference_method string alone must be enough.
+                self.bootstrap_distribution = None
+
+        stub = _WildBootstrapStub()
+        br = BusinessReport(stub, alpha=0.10, auto_diagnostics=False)
+        h = br.to_dict()["headline"]
+        assert h["ci_level"] == 95, (
+            "Wild cluster bootstrap must preserve fitted CI level on alpha "
+            f"mismatch; got {h['ci_level']}"
+        )
+        assert h["ci_lower"] == pytest.approx(0.10)
+        assert h["ci_upper"] == pytest.approx(1.90)
+        caveats = br.caveats()
+        assert any(c.get("topic") == "alpha_override_preserved" for c in caveats)
+        # Caveat message should call out wild cluster bootstrap specifically.
+        preserved_msg = next(
+            c["message"] for c in caveats if c.get("topic") == "alpha_override_preserved"
+        )
+        assert "wild cluster bootstrap" in preserved_msg
+
+
+class TestAssumptionBlockSourceFaithful:
+    """Regression for the round-4 P1 finding that ``_describe_assumption``
+    was producing generic DiD PT text for ContinuousDiD, TripleDifference,
+    and StaggeredTripleDifference — all of which have different identifying
+    logic per the Methodology Registry."""
+
+    def _stub(self, class_name):
+        cls = type(class_name, (), {})
+        obj = cls()
+        obj.att = 1.0
+        obj.se = 0.1
+        obj.p_value = 0.001
+        obj.conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 40
+        obj.n_control = 60
+        obj.survey_metadata = None
+        obj.event_study_effects = None
+        obj.inference_method = "analytical"
+        return obj
+
+    def test_continuous_did_assumption_uses_two_level_pt(self):
+        br = BusinessReport(self._stub("ContinuousDiDResults"), auto_diagnostics=False)
+        assumption = br.to_dict()["assumption"]
+        assert assumption["parallel_trends_variant"] == "dose_pt_or_strong_pt"
+        desc = assumption["description"]
+        # Registry-backed language: PT vs Strong PT + ACRT mention.
+        assert "Strong Parallel Trends" in desc or "SPT" in desc
+        assert "ATT(d" in desc or "ACRT" in desc
+        assert "Callaway" in desc  # attribution to CGBS 2024
+
+    def test_triple_difference_assumption_uses_ddd_decomposition(self):
+        class TripleDifferenceResults:
+            pass
+
+        obj = TripleDifferenceResults()
+        obj.att = 1.0
+        obj.se = 0.1
+        obj.p_value = 0.001
+        obj.conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 40
+        obj.n_control = 60
+        obj.survey_metadata = None
+        obj.inference_method = "analytical"
+
+        br = BusinessReport(obj, auto_diagnostics=False)
+        assumption = br.to_dict()["assumption"]
+        assert assumption["parallel_trends_variant"] == "triple_difference_cancellation"
+        desc = assumption["description"]
+        assert "DDD" in desc
+        assert "Ortiz-Villavicencio" in desc or "2025" in desc
+
+    def test_staggered_triple_diff_assumption_uses_ddd_not_generic_pt(self):
+        class StaggeredTripleDiffResults:
+            pass
+
+        obj = StaggeredTripleDiffResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.1
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 40
+        obj.n_control = 60
+        obj.survey_metadata = None
+        obj.event_study_effects = None
+        obj.inference_method = "analytical"
+
+        br = BusinessReport(obj, auto_diagnostics=False)
+        assumption = br.to_dict()["assumption"]
+        assert assumption["parallel_trends_variant"] == "triple_difference_cancellation"
+        desc = assumption["description"]
+        assert "triple-difference" in desc.lower() or "DDD" in desc
+        # Must NOT be the generic group-time PT text.
+        assert "group-time ATT" not in desc
+
+
 class TestFullReportSingleM:
     """Regression: ``full_report()`` must not claim full-grid robustness for a
     single-M HonestDiDResults passthrough. The summary path was fixed earlier;

@@ -364,8 +364,11 @@ class BusinessReport:
             )
             variance_method = getattr(r, "variance_method", None)
 
+            # Any non-analytic inference surface that stores a sampling /
+            # resampling distribution (wild cluster bootstrap, percentile
+            # bootstrap, jackknife, placebo) should preserve its native CI.
             bootstrap_like = (
-                inference_method == "bootstrap"
+                inference_method in {"bootstrap", "wild_bootstrap"}
                 or has_bootstrap_dist
                 or variance_method in {"bootstrap", "jackknife", "placebo"}
             )
@@ -375,10 +378,15 @@ class BusinessReport:
                 # Preserve the fitted CI at its native level.
                 alpha_was_honored = False
                 alpha = float(result_alpha)
+                if inference_method == "wild_bootstrap":
+                    inference_label = "wild cluster bootstrap"
+                elif bootstrap_like:
+                    inference_label = "bootstrap"
+                else:
+                    inference_label = "finite-df"
                 alpha_override_caveat = (
                     f"Requested alpha was not honored for the confidence "
-                    f"interval because this fit uses "
-                    f"{'bootstrap' if bootstrap_like else 'finite-df'} "
+                    f"interval because this fit uses {inference_label} "
                     f"inference; the displayed CI remains at the fit's "
                     f"native level ({int(round((1.0 - result_alpha) * 100))}%). "
                     f"The significance phrasing still uses the requested alpha."
@@ -611,6 +619,50 @@ def _describe_assumption(estimator_name: str) -> Dict[str, Any]:
                 "captured through latent factor loadings."
             ),
         }
+    if estimator_name == "ContinuousDiDResults":
+        # Callaway, Goodman-Bacon & Sant'Anna (2024), two-level PT:
+        # REGISTRY.md §ContinuousDiD > Identification.
+        return {
+            "parallel_trends_variant": "dose_pt_or_strong_pt",
+            "no_anticipation": True,
+            "description": (
+                "ContinuousDiD identifies dose-specific treatment effects "
+                "under two possible parallel-trends conditions (Callaway, "
+                "Goodman-Bacon & Sant'Anna 2024). Parallel Trends (PT) "
+                "assumes untreated potential outcome paths are equal across "
+                "all dose groups and the untreated group (conditional on "
+                "dose), identifying ATT(d|d) and the binarized ATT^loc but "
+                "NOT ATT(d), ACRT, or cross-dose comparisons. Strong "
+                "Parallel Trends (SPT) additionally rules out selection "
+                "into dose on the basis of treatment effects and is "
+                "required to identify the dose-response curve ATT(d), "
+                "marginal effect ACRT(d), and cross-dose contrasts."
+            ),
+        }
+    if estimator_name in {"TripleDifferenceResults", "StaggeredTripleDiffResults"}:
+        # Ortiz-Villavicencio & Sant'Anna (2025) — identification is the
+        # triple-difference cancellation across the 2x2x2 cells, not
+        # ordinary DiD parallel trends; see REGISTRY.md §TripleDifference
+        # and §StaggeredTripleDifference.
+        return {
+            "parallel_trends_variant": "triple_difference_cancellation",
+            "no_anticipation": True,
+            "description": (
+                "Triple-difference identification relies on the DDD "
+                "decomposition (Ortiz-Villavicencio & Sant'Anna 2025): "
+                "the ATT is recovered from `DDD = DiD_A + DiD_B - DiD_C` "
+                "across the Group x Period x Eligibility (or Treatment) "
+                "cells, which differences out group-specific and "
+                "period-specific unobservables without requiring separate "
+                "parallel trends to hold between each cell pair. The "
+                "identifying restriction is therefore weaker than ordinary "
+                "DiD parallel trends but assumes that the residual "
+                "unobservable component is additively separable across the "
+                "three dimensions; practical overlap and common-support "
+                "conditions still apply on the propensity score when "
+                "covariates are used."
+            ),
+        }
     if estimator_name in {
         "CallawaySantAnnaResults",
         "SunAbrahamResults",
@@ -620,7 +672,6 @@ def _describe_assumption(estimator_name: str) -> Dict[str, Any]:
         "EfficientDiDResults",
         "WooldridgeDiDResults",
         "ChaisemartinDHaultfoeuilleResults",
-        "StaggeredTripleDiffResults",
     }:
         return {
             "parallel_trends_variant": "conditional_or_group_time",
