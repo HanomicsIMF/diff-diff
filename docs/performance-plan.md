@@ -96,6 +96,7 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
 | 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (54%) | `4_multi_outcome_loop_3_metrics` (25%) | `7_event_study_plus_honest_did` (14%) |
 | 3. BRFSS microdata -> CS panel | large | python | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
 | 3. BRFSS microdata -> CS panel | large | rust | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
+| 4. SDiD few markets | medium | python | `5_sensitivity_to_zeta_omega` (43%) | `3_in_time_placebo` (39%) | `1_sdid_jackknife_variance` (9%) |
 | 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (40%) | `3_in_time_placebo` (29%) | `1_sdid_jackknife_variance` (16%) |
 | 5. Reversible dCDH | single | python | `1_dcdh_fit_Lmax3_survey_TSL` (62%) | `4_heterogeneity_refit` (37%) | `3_honest_did_on_placebo` (1%) |
 | 5. Reversible dCDH | single | rust | `1_dcdh_fit_Lmax3_survey_TSL` (61%) | `4_heterogeneity_refit` (38%) | `3_honest_did_on_placebo` (1%) |
@@ -111,13 +112,14 @@ any rerun):
   SunAbraham (both ~30-40%); the Rust backend shifts relative shares
   more than totals. CS fit with `n_bootstrap=999` is well-vectorized and
   sits well below both in the ranking.
-- **Brand awareness survey.** At small scale HonestDiD dominates; at
-  medium the multi-outcome loop and the JK1 replicate path are
-  comparable; at large the JK1 path is the single top phase under both
-  backends. Python and Rust totals on this chain are within noise; the
-  JK1 replicate-fit loop is not Rust-accelerated, so the FFI crossings
-  cost approximately what they save - a neutral outcome, not a
-  regression.
+- **Brand awareness survey.** At small scale HonestDiD dominates. From
+  medium onwards the JK1 replicate-weight path is the clear top phase
+  under both backends (2-3x the multi-outcome loop on Python at medium;
+  still the top phase on Rust though by a smaller margin there). At
+  large it consolidates as the single dominant phase. Python and Rust
+  totals on this chain are within noise; the JK1 replicate-fit loop is
+  not Rust-accelerated, so the FFI crossings cost approximately what
+  they save - a neutral outcome, not a regression.
 - **BRFSS.** `aggregate_survey` share of total grows with scale and is
   effectively 100% of runtime at 1M rows. Downstream phases (CS fit,
   SunAbraham, HonestDiD) are a fraction of a second combined.

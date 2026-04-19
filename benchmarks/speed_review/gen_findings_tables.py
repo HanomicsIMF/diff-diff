@@ -152,7 +152,13 @@ def render_memory_by_scenario():
 
 
 def render_top_phases_by_scenario():
-    """Top-3 phases by time at largest scale, for both backends."""
+    """Top-3 phases at the largest-available scale per (scenario, backend).
+
+    If a scenario/backend skips `large` (e.g., geo_few_markets Python),
+    this falls back to the largest measured scale for that backend so
+    the table still reports the Python-vs-Rust comparison rather than
+    dropping the row entirely.
+    """
     rows = [
         "| Scenario | Scale | Backend | Top phase (%) "
         "| 2nd phase (%) | 3rd phase (%) |",
@@ -175,11 +181,18 @@ def render_top_phases_by_scenario():
             out.append("-")
         return out
 
+    def largest_available(scen, backend):
+        """Return (scale, record) for the largest scale this backend has."""
+        for scale in reversed(SCALE_ORDER):
+            rec = load(scen, scale, backend)
+            if rec is not None:
+                return scale, rec
+        return None, None
+
     for scen in MULTI_SCALE:
         display = SCENARIO_DISPLAY[scen]
-        scale = SCALE_ORDER[-1]  # largest
         for backend in ("python", "rust"):
-            rec = load(scen, scale, backend)
+            scale, rec = largest_available(scen, backend)
             top = phase_rank(rec)
             if not top:
                 continue
