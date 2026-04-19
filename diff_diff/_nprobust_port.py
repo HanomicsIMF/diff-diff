@@ -633,23 +633,10 @@ def lpbwselect_mse_dpi(
         If ``bwcheck`` is supplied and falls outside the valid range
         ``[1, len(x)]``.
     """
-    N = x.shape[0] if hasattr(x, "shape") else len(x)
-    if bwcheck is not None:
-        if bwcheck < 1:
-            raise ValueError(
-                f"bwcheck must be a positive integer (>= 1); got {bwcheck}"
-            )
-        if bwcheck > N:
-            raise ValueError(
-                f"bwcheck={bwcheck} exceeds sample size N={N}. Either "
-                f"reduce bwcheck or increase sample size; pass "
-                f"bwcheck=None to skip the nearest-neighbor floor."
-            )
-    if kernel not in _VALID_KERNELS:
-        raise ValueError(f"Unknown kernel {kernel!r}. Expected one of {_VALID_KERNELS}.")
-    if vce not in _VALID_VCE:
-        raise ValueError(f"Unknown vce {vce!r}. Expected one of {_VALID_VCE}.")
-
+    # Front-door input contract (shape / emptiness / finiteness).
+    # Must run BEFORE the bwcheck range check so empty-array or
+    # non-finite inputs get targeted messages instead of "bwcheck
+    # exceeds sample size".
     x = np.asarray(x, dtype=np.float64).ravel()
     y = np.asarray(y, dtype=np.float64).ravel()
     if x.shape != y.shape:
@@ -675,11 +662,28 @@ def lpbwselect_mse_dpi(
                 f"cluster must have the same shape as x; got "
                 f"{cluster.shape} and {x.shape}"
             )
+
+    N = x.shape[0]
+    if bwcheck is not None:
+        if bwcheck < 1:
+            raise ValueError(
+                f"bwcheck must be a positive integer (>= 1); got {bwcheck}"
+            )
+        if bwcheck > N:
+            raise ValueError(
+                f"bwcheck={bwcheck} exceeds sample size N={N}. Either "
+                f"reduce bwcheck or increase sample size; pass "
+                f"bwcheck=None to skip the nearest-neighbor floor."
+            )
+    if kernel not in _VALID_KERNELS:
+        raise ValueError(f"Unknown kernel {kernel!r}. Expected one of {_VALID_KERNELS}.")
+    if vce not in _VALID_VCE:
+        raise ValueError(f"Unknown vce {vce!r}. Expected one of {_VALID_VCE}.")
+
     if q is None:
         q = p + 1
 
     even = (p - deriv) % 2 == 0
-    N = x.shape[0]
     x_min = float(x.min())
     x_max = float(x.max())
     range_ = x_max - x_min
