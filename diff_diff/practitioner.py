@@ -663,7 +663,16 @@ def _handle_efficient(results: Any):
                 "pretest = EfficientDiD.hausman_pretest(\n"
                 "    data, outcome='y', unit='id', time='t', first_treat='g')"
             ),
-            step_name="heterogeneity",
+            # The Hausman pretest is a parallel-trends diagnostic per
+            # REGISTRY.md §EfficientDiD: it tests whether the stronger
+            # PT-All regime is tenable relative to PT-Post. ``DiagnosticReport``
+            # treats a ran Hausman block as ``parallel_trends`` completion
+            # (``_check_pt_hausman``), so tagging this practitioner step as
+            # ``parallel_trends`` keeps ``_collect_next_steps()`` from
+            # recommending a check the report already executed. Round-20 P2
+            # CI review on PR #318 flagged the earlier ``heterogeneity`` tag
+            # as a mismatched-step-name bug.
+            step_name="parallel_trends",
         ),
         _robustness_compare_step("CS, SA, or BJS"),
         _covariates_step(),

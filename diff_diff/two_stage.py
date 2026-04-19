@@ -841,6 +841,7 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
             n_treated_units=n_treated_units,
             n_control_units=n_control_units,
             alpha=self.alpha,
+            anticipation=self.anticipation,
             bootstrap_results=bootstrap_results,
             survey_metadata=survey_metadata,
         )

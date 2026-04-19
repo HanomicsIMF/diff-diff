@@ -1046,50 +1046,8 @@ class DiagnosticReport:
         ):
             ratio = mdv / abs(att)
 
-        # Annotate whether ``compute_pretrends_power`` had access to the full
-        # pre-period covariance (CS / SA / ImputationDiD currently fall back to
-        # ``np.diag(ses**2)`` inside ``pretrends.py``, even when
-        # ``event_study_vcov`` is available). BR uses this field to downgrade
-        # power-tier prose when only the diagonal approximation was used.
-        r = self._results
-        has_full_es_vcov = (
-            getattr(r, "event_study_vcov", None) is not None
-            and getattr(r, "event_study_vcov_index", None) is not None
-        )
-        is_event_study_type = type(r).__name__ in {
-            "CallawaySantAnnaResults",
-            "SunAbrahamResults",
-            "ImputationDiDResults",
-            "StackedDiDResults",
-            "StaggeredTripleDiffResults",
-            "WooldridgeDiDResults",
-            "ChaisemartinDHaultfoeuilleResults",
-            "EfficientDiDResults",
-            "TwoStageDiDResults",
-        }
-        if is_event_study_type and has_full_es_vcov:
-            # ``compute_pretrends_power`` does not currently consume
-            # ``event_study_vcov`` for these result types (see the reviewer's
-            # note on pretrends.py). Flag the diagonal fallback explicitly so
-            # the prose layer can hedge.
-            cov_source = "diag_fallback_available_full_vcov_unused"
-        elif is_event_study_type:
-            cov_source = "diag_fallback"
-        else:
-            cov_source = "full_pre_period_vcov"
-
-        tier = _power_tier(ratio)
-        # Central diagonal-fallback downgrade. When the helper used the
-        # diagonal-SE approximation while the full ``event_study_vcov``
-        # was available, a ``well_powered`` verdict can be optimistic
-        # because off-diagonal pre-period correlations are ignored.
-        # REPORTING.md's conservative deviation says to downgrade in
-        # that case. Doing it here (once) ensures every downstream
-        # surface — BR ``summary()``, BR ``full_report()``, BR schema,
-        # DR ``summary()`` — reads the same adjusted tier (round-14
-        # CI review flagged per-surface divergence).
-        if tier == "well_powered" and cov_source == "diag_fallback_available_full_vcov_unused":
-            tier = "moderately_powered"
+        cov_source = self._infer_cov_source(self._results)
+        tier = _apply_diag_fallback_downgrade(_power_tier(ratio), cov_source)
         return {
             "status": "ran",
             "method": "compute_pretrends_power",
@@ -1110,13 +1068,28 @@ class DiagnosticReport:
         }
 
     def _format_precomputed_pretrends_power(self, obj: Any) -> Dict[str, Any]:
-        """Adapt a pre-computed ``PreTrendsPowerResults`` to the schema shape."""
+        """Adapt a pre-computed ``PreTrendsPowerResults`` to the schema shape.
+
+        Round-20 P1 CI review on PR #318: this path must mirror the
+        covariance-source annotation and diagonal-fallback downgrade that
+        ``_check_pretrends_power`` applies on the default path. Otherwise
+        the same fit passed through ``precomputed={"pretrends_power": ...}``
+        can be labeled ``well_powered`` while the default path reports
+        ``moderately_powered`` (per REPORTING.md's conservative deviation
+        for CS / SA / ImputationDiD event-study fits with full
+        ``event_study_vcov`` available but unused). Resolve the source
+        fit via ``obj.original_results`` first (which ``compute_pretrends_power``
+        populates at construction time), falling back to ``self._results``.
+        """
         mdv = _to_python_float(getattr(obj, "mdv", None))
         hm = self._extract_headline_metric()
         att = hm.get("value") if hm else None
         ratio: Optional[float] = None
         if mdv is not None and att is not None and np.isfinite(att) and abs(att) > 0:
             ratio = mdv / abs(att)
+        source_fit = getattr(obj, "original_results", None) or self._results
+        cov_source = self._infer_cov_source(source_fit)
+        tier = _apply_diag_fallback_downgrade(_power_tier(ratio), cov_source)
         return {
             "status": "ran",
             "method": "precomputed",
@@ -1128,9 +1101,43 @@ class DiagnosticReport:
             "violation_magnitude": _to_python_float(getattr(obj, "violation_magnitude", None)),
             "power_at_violation_magnitude": _to_python_float(getattr(obj, "power", None)),
             "n_pre_periods": int(getattr(obj, "n_pre_periods", 0) or 0),
-            "tier": _power_tier(ratio),
+            "tier": tier,
+            "covariance_source": cov_source,
             "precomputed": True,
         }
+
+    @staticmethod
+    def _infer_cov_source(source_fit: Any) -> str:
+        """Classify whether ``compute_pretrends_power`` had access to the
+        full pre-period covariance on ``source_fit``.
+
+        CS / SA / ImputationDiD / EfficientDiD / Stacked / etc. currently
+        fall back to ``np.diag(ses**2)`` inside ``pretrends.py``, even when
+        ``event_study_vcov`` is populated on the result; the returned
+        ``PreTrendsPowerResults.vcov`` therefore ignores off-diagonal pre-
+        period correlations. Annotating the source explicitly lets BR
+        downgrade the tier conservatively.
+        """
+        is_event_study_type = type(source_fit).__name__ in {
+            "CallawaySantAnnaResults",
+            "SunAbrahamResults",
+            "ImputationDiDResults",
+            "StackedDiDResults",
+            "StaggeredTripleDiffResults",
+            "WooldridgeDiDResults",
+            "ChaisemartinDHaultfoeuilleResults",
+            "EfficientDiDResults",
+            "TwoStageDiDResults",
+        }
+        has_full_es_vcov = (
+            getattr(source_fit, "event_study_vcov", None) is not None
+            and getattr(source_fit, "event_study_vcov_index", None) is not None
+        )
+        if is_event_study_type and has_full_es_vcov:
+            return "diag_fallback_available_full_vcov_unused"
+        if is_event_study_type:
+            return "diag_fallback"
+        return "full_pre_period_vcov"
 
     def _check_sensitivity(self) -> Dict[str, Any]:
         """Run HonestDiD over the M grid. Uses ``SensitivityResults.breakdown_M``.
@@ -2056,6 +2063,26 @@ def _power_tier(ratio: Optional[float]) -> str:
     if ratio < 1.0:
         return "moderately_powered"
     return "underpowered"
+
+
+def _apply_diag_fallback_downgrade(tier: str, cov_source: str) -> str:
+    """Conservatively downgrade ``well_powered`` to ``moderately_powered``
+    when ``compute_pretrends_power`` used the diagonal-SE approximation
+    while the full ``event_study_vcov`` was available on the source fit.
+
+    REPORTING.md's conservative deviation: off-diagonal pre-period
+    correlations are ignored under the diagonal fallback, so a
+    ``well_powered`` verdict can overstate the real informativeness of
+    the pre-test. The downgrade applies at every DR path
+    (``_check_pretrends_power`` and ``_format_precomputed_pretrends_power``)
+    so BR ``summary()`` / ``full_report()`` / ``to_dict()`` and DR
+    ``summary()`` all read the same adjusted tier. Round-14 CI review
+    flagged per-surface divergence; round-20 flagged that the precomputed
+    adapter bypassed the downgrade entirely.
+    """
+    if tier == "well_powered" and cov_source == "diag_fallback_available_full_vcov_unused":
+        return "moderately_powered"
+    return tier
 
 
 def _pre_post_boundary(results: Any) -> int:

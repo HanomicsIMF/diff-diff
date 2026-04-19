@@ -93,6 +93,7 @@ class StackedDiDResults:
     weighting: str = "aggregate"
     clean_control: str = "not_yet_treated"
     alpha: float = 0.05
+    anticipation: int = 0
     # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
     survey_metadata: Optional[Any] = field(default=None)
 

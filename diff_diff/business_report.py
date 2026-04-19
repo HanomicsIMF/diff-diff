@@ -501,7 +501,7 @@ class BusinessReport:
         #     comparisons (never-treated + future-treated) and does not
         #     map to a never-treated count. Keep on the fixed-count
         #     path even in dynamic mode.
-        control_group = getattr(r, "control_group", None)
+        control_group = _control_group_choice(r)
         name = type(r).__name__
         n_never_treated: Optional[int] = None
         n_never_enabled: Optional[int] = None
@@ -701,6 +701,28 @@ def _anticipation_periods(results: Any) -> int:
     return k if k > 0 else 0
 
 
+def _control_group_choice(results: Any) -> Optional[str]:
+    """Return the control-group choice string for a fitted result, normalized
+    across estimator-specific attribute names.
+
+    Most anticipation-capable estimators expose the control-group choice as
+    ``results.control_group``. ``StackedDiDResults`` exposes the same choice
+    as ``clean_control`` (the public Wing-Freedman-Hollingsworth-2024 kwarg
+    name). Without this alias, a StackedDiD fit with
+    ``clean_control="not_yet_treated"`` would surface as ``control_group=None``
+    in the business-report schema, and the dynamic-control branch in
+    ``_extract_sample`` would never fire.
+    """
+    cg = getattr(results, "control_group", None)
+    if isinstance(cg, str):
+        return cg
+    if type(results).__name__ == "StackedDiDResults":
+        clean = getattr(results, "clean_control", None)
+        if isinstance(clean, str):
+            return clean
+    return None
+
+
 def _apply_anticipation_to_assumption(block: Dict[str, Any], results: Any) -> Dict[str, Any]:
     """If the fit used ``anticipation > 0``, flip ``no_anticipation`` off and
     append an anticipation clause to the description.
@@ -808,27 +830,77 @@ def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, 
         # treatment cohorts" was flagged as a source-faithfulness bug in
         # PR #318 review; REGISTRY.md §ChaisemartinDHaultfoeuille is
         # explicit about the transition-set construction.
+        #
+        # Phase-3 features (``controls``, ``trends_linear``,
+        # ``heterogeneity``) each modify the identifying contract and
+        # change the estimand from ``DID_l`` to ``DID^X_l`` /
+        # ``DID^{fd}_l`` / the heterogeneity-test variant. When active,
+        # append an explicit clause so the description does not
+        # misrepresent the identifying assumption (the reviewer has
+        # flagged several parallel source-faithfulness gaps elsewhere
+        # — explicitly surfacing Phase-3 config matches the per-estimator
+        # walkthrough pattern).
+        base_description = (
+            "Identification is transition-based (de Chaisemartin & "
+            "D'Haultfoeuille 2020; dynamic companion 2024). At each "
+            "switching period, the estimator contrasts joiners "
+            "(D:0->1), leavers (D:1->0), and stable-treated / "
+            "stable-untreated control cells that share the same "
+            "treatment state across adjacent periods, yielding the "
+            "contemporaneous ``DID_M`` and per-horizon ``DID_l`` / "
+            "``DID_{g,l}`` building blocks. The identifying "
+            "restriction is parallel trends within each transition's "
+            "stable-control cell (not a single group-time ATT PT "
+            "condition across all cohorts) plus no anticipation; "
+            "with non-binary treatment the stable-control match is "
+            "additionally on exact baseline dose ``D_{g,1}``. "
+            "Reversible treatment is natively supported, unlike the "
+            "absorbing-treatment designs that rely on a fixed "
+            "treatment-onset cohort."
+        )
+        has_controls = (
+            results is not None
+            and getattr(results, "covariate_residuals", None) is not None
+        )
+        has_trends = (
+            results is not None
+            and getattr(results, "linear_trends_effects", None) is not None
+        )
+        has_heterogeneity = (
+            results is not None
+            and getattr(results, "heterogeneity_effects", None) is not None
+        )
+        active_parts: List[str] = []
+        if has_controls and has_trends:
+            active_parts.append(
+                "the estimand is ``DID^{X,fd}_l`` (covariate-residualized "
+                "first-differences), and identification holds conditional on "
+                "the covariates entering the first-stage regression and "
+                "allowing group-specific linear trends"
+            )
+        elif has_controls:
+            active_parts.append(
+                "the estimand is ``DID^X_l``, and identification holds "
+                "conditional on the covariates entering the first-stage "
+                "residualization"
+            )
+        elif has_trends:
+            active_parts.append(
+                "the estimand is ``DID^{fd}_l`` (first-differenced) and the "
+                "identifying restriction is relaxed to allow group-specific "
+                "linear pre-trends"
+            )
+        if has_heterogeneity:
+            active_parts.append(
+                "heterogeneity tests ``beta^{het}_l`` are reported per horizon"
+            )
+        if active_parts:
+            phase3_clause = " Phase-3 configuration: " + "; ".join(active_parts) + "."
+            base_description = base_description + phase3_clause
         return {
             "parallel_trends_variant": "transition_based",
             "no_anticipation": True,
-            "description": (
-                "Identification is transition-based (de Chaisemartin & "
-                "D'Haultfoeuille 2020; dynamic companion 2024). At each "
-                "switching period, the estimator contrasts joiners "
-                "(D:0->1), leavers (D:1->0), and stable-treated / "
-                "stable-untreated control cells that share the same "
-                "treatment state across adjacent periods, yielding the "
-                "contemporaneous ``DID_M`` and per-horizon ``DID_l`` / "
-                "``DID_{g,l}`` building blocks. The identifying "
-                "restriction is parallel trends within each transition's "
-                "stable-control cell (not a single group-time ATT PT "
-                "condition across all cohorts) plus no anticipation; "
-                "with non-binary treatment the stable-control match is "
-                "additionally on exact baseline dose ``D_{g,1}``. "
-                "Reversible treatment is natively supported, unlike the "
-                "absorbing-treatment designs that rely on a fixed "
-                "treatment-onset cohort."
-            ),
+            "description": base_description,
         }
     if estimator_name == "EfficientDiDResults":
         # Chen, Sant'Anna & Xie (2025) — identification is parameterized
@@ -1071,9 +1143,33 @@ def _build_caveats(
         # ``base_period='varying'`` — HonestDiD bounds are not interpretable
         # there). Surface the reason as a warning-severity caveat so readers
         # do not assume the headline is robust across the R-R grid.
+        #
+        # Exception (round-20 P2 CI review on PR #318): SDiD and TROP route
+        # robustness to ``estimator_native_diagnostics`` and mark the HonestDiD
+        # sensitivity block ``status="skipped", method="estimator_native"``.
+        # Surfacing "sensitivity was not run" as a warning contradicts the
+        # documented native-routing contract when the native battery actually
+        # ran. Suppress the warning and point readers at the native block
+        # instead.
         if sens.get("status") == "skipped":
             reason = sens.get("reason")
-            if isinstance(reason, str) and reason:
+            method = sens.get("method")
+            native = dr_schema.get("estimator_native_diagnostics") or {}
+            native_ran = native.get("status") == "ran"
+            if method == "estimator_native" and native_ran:
+                caveats.append(
+                    {
+                        "severity": "info",
+                        "topic": "sensitivity_native_routed",
+                        "message": (
+                            "HonestDiD was not run for this estimator. Robustness "
+                            "is covered by the estimator-native sensitivity "
+                            "diagnostics reported under "
+                            "``estimator_native_diagnostics``."
+                        ),
+                    }
+                )
+            elif isinstance(reason, str) and reason:
                 caveats.append(
                     {
                         "severity": "warning",

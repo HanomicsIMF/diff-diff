@@ -136,6 +136,7 @@ class TwoStageDiDResults:
     n_treated_units: int
     n_control_units: int
     alpha: float = 0.05
+    anticipation: int = 0
     bootstrap_results: Optional[TwoStageBootstrapResults] = field(default=None, repr=False)
     # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
     survey_metadata: Optional[Any] = field(default=None, repr=False)

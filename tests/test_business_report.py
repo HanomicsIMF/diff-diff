@@ -1140,6 +1140,158 @@ class TestAnticipationPersistsOnRealResults:
         assert a["no_anticipation"] is False
         assert a["anticipation_periods"] == 1
 
+    def test_imputation_fit_persists_anticipation(self):
+        from diff_diff import ImputationDiD
+
+        sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
+        im = ImputationDiD(anticipation=1).fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        assert getattr(im, "anticipation", None) == 1
+        br = BusinessReport(im, auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a["no_anticipation"] is False
+        assert a["anticipation_periods"] == 1
+        assert "not strict no-anticipation" in a["description"]
+
+    def test_two_stage_fit_persists_anticipation(self):
+        from diff_diff import TwoStageDiD
+
+        sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
+        ts = TwoStageDiD(anticipation=2).fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        assert getattr(ts, "anticipation", None) == 2
+        br = BusinessReport(ts, auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a["no_anticipation"] is False
+        assert a["anticipation_periods"] == 2
+        assert "2 periods" in a["description"]
+
+    def test_stacked_fit_persists_anticipation(self):
+        from diff_diff import StackedDiD
+
+        sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
+        st = StackedDiD(anticipation=1).fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        assert getattr(st, "anticipation", None) == 1
+        br = BusinessReport(st, auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a["no_anticipation"] is False
+        assert a["anticipation_periods"] == 1
+
+
+class TestStackedCleanControlSurfacesInSampleBlock:
+    """Pre-emptive audit regression: ``StackedDiD`` exposes its control-
+    group choice as ``clean_control`` (the public Wing-Freedman-
+    Hollingsworth-2024 kwarg name), not ``control_group``. The business-
+    report sample-block treatment for ``"not_yet_treated"`` (dynamic
+    control comparison) must still fire — otherwise a Stacked fit with
+    ``clean_control="not_yet_treated"`` surfaces as ``control_group=None``
+    with ``dynamic_control=False``, which misreports the sample semantics
+    the same way R17/R18 flagged for EfficientDiD's ``control_group``
+    handling.
+    """
+
+    def test_stacked_not_yet_treated_surfaces_as_dynamic_control(self):
+        from diff_diff import StackedDiD
+
+        sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
+        st = StackedDiD(clean_control="not_yet_treated").fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        assert getattr(st, "clean_control", None) == "not_yet_treated"
+        sample = BusinessReport(st, auto_diagnostics=False).to_dict()["sample"]
+        # The clean_control choice must be normalized to control_group in
+        # the schema so downstream agents see a consistent key across
+        # estimators.
+        assert sample["control_group"] == "not_yet_treated"
+        assert sample["dynamic_control"] is True
+        # Under the dynamic-control branch, the fixed tally is relabeled:
+        # n_never_treated carries the fixed never-treated subset and
+        # n_control is set to None.
+        assert sample["n_never_treated"] is not None
+        assert sample["n_control"] is None
+
+    def test_stacked_never_treated_surfaces_as_fixed_control(self):
+        from diff_diff import StackedDiD
+
+        sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
+        st = StackedDiD(clean_control="never_treated").fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        sample = BusinessReport(st, auto_diagnostics=False).to_dict()["sample"]
+        assert sample["control_group"] == "never_treated"
+        assert sample["dynamic_control"] is False
+
+
+class TestDCDHPhase3AssumptionClause:
+    """Pre-emptive audit regression: ``ChaisemartinDHaultfoeuilleResults``
+    populates ``covariate_residuals`` when ``controls`` is set in fit,
+    ``linear_trends_effects`` when ``trends_linear=True``, and
+    ``heterogeneity_effects`` when ``heterogeneity`` is set. Each change
+    modifies the identifying contract and the estimand label
+    (``DID^X_l`` / ``DID^{fd}_l`` / ``DID^{X,fd}_l``). The BR assumption
+    description must surface the active configuration so the prose does
+    not misrepresent the identifying assumption on a Phase-3 fit.
+    """
+
+    def test_dcdh_base_case_has_no_phase3_clause(self):
+        from diff_diff.business_report import _describe_assumption
+
+        class Stub:
+            covariate_residuals = None
+            linear_trends_effects = None
+            heterogeneity_effects = None
+
+        block = _describe_assumption("ChaisemartinDHaultfoeuilleResults", Stub())
+        assert "Phase-3 configuration" not in block["description"]
+
+    def test_dcdh_controls_only_surfaces_did_x(self):
+        import pandas as pd
+
+        from diff_diff.business_report import _describe_assumption
+
+        class Stub:
+            covariate_residuals = pd.DataFrame({"theta_hat": [0.1]})
+            linear_trends_effects = None
+            heterogeneity_effects = None
+
+        desc = _describe_assumption("ChaisemartinDHaultfoeuilleResults", Stub())["description"]
+        assert "Phase-3 configuration" in desc
+        assert "DID^X_l" in desc
+        assert "first-stage residualization" in desc
+        assert "DID^{fd}_l" not in desc
+
+    def test_dcdh_trends_linear_only_surfaces_did_fd(self):
+        from diff_diff.business_report import _describe_assumption
+
+        class Stub:
+            covariate_residuals = None
+            linear_trends_effects = {1: {"effect": 0.1}}
+            heterogeneity_effects = None
+
+        desc = _describe_assumption("ChaisemartinDHaultfoeuilleResults", Stub())["description"]
+        assert "Phase-3 configuration" in desc
+        assert "DID^{fd}_l" in desc
+        assert "group-specific linear pre-trends" in desc
+
+    def test_dcdh_controls_and_trends_surfaces_combined_estimand(self):
+        import pandas as pd
+
+        from diff_diff.business_report import _describe_assumption
+
+        class Stub:
+            covariate_residuals = pd.DataFrame({"theta_hat": [0.1]})
+            linear_trends_effects = {1: {"effect": 0.1}}
+            heterogeneity_effects = {1: {}}
+
+        desc = _describe_assumption("ChaisemartinDHaultfoeuilleResults", Stub())["description"]
+        assert "DID^{X,fd}_l" in desc
+        assert "heterogeneity tests" in desc
+        assert "beta^{het}_l" in desc
+
 
 class TestAnticipationAwareAssumptionBlock:
     """Round-17 P1 regression: ``_describe_assumption`` must drop the
@@ -1768,6 +1920,119 @@ class TestSensitivityProseGuarding:
         fit, _ = sdid_fit
         summary = DiagnosticReport(fit).summary()
         assert "sensitivity analysis below" not in summary
+
+
+class TestSDiDTROPSkippedSensitivityCaveatSuppressed:
+    """Round-20 P2 regression on PR #318: ``DiagnosticReport`` marks the
+    HonestDiD sensitivity block ``status="skipped", method="estimator_native"``
+    for SDiD / TROP because robustness is routed to the native diagnostics
+    (``in_time_placebo``, ``sensitivity_to_zeta_omega``, factor-model
+    metrics) under ``estimator_native_diagnostics``. ``BusinessReport``
+    must not surface "HonestDiD sensitivity was not run" as a warning
+    caveat when the native battery actually ran, because that contradicts
+    the documented native-routing contract and misleads the reader into
+    thinking robustness was skipped.
+    """
+
+    def test_sdid_native_routed_suppresses_skipped_caveat(self, sdid_fit):
+        from diff_diff import DiagnosticReport
+
+        fit, _ = sdid_fit
+        br = BusinessReport(fit)
+        schema = br.to_dict()
+
+        # BR's lifted ``sensitivity`` block only carries status/reason; the
+        # ``method`` field lives on the DR schema, which BR reads internally
+        # to decide caveat suppression. Confirm the DR-side shape separately.
+        assert schema["sensitivity"]["status"] == "skipped"
+        dr_schema = DiagnosticReport(fit).to_dict()
+        assert dr_schema["sensitivity"]["status"] == "skipped"
+        assert dr_schema["sensitivity"]["method"] == "estimator_native"
+        native_ran = dr_schema["estimator_native_diagnostics"].get("status") == "ran"
+
+        caveat_topics = [c.get("topic") for c in schema.get("caveats", [])]
+        if native_ran:
+            # The fix: no "sensitivity_skipped" warning; instead an info
+            # caveat pointing at the native block.
+            assert "sensitivity_skipped" not in caveat_topics
+            assert "sensitivity_native_routed" in caveat_topics
+            native_msg = next(
+                c for c in schema["caveats"] if c.get("topic") == "sensitivity_native_routed"
+            )
+            assert native_msg["severity"] == "info"
+            assert "estimator-native" in native_msg["message"].lower()
+        else:
+            # When the native battery did not produce a ran block, the
+            # legacy warning behavior is still correct — SDiD users should
+            # know HonestDiD was not attempted.
+            assert (
+                "sensitivity_skipped" in caveat_topics
+                or "sensitivity_native_routed" in caveat_topics
+            )
+
+
+class TestEfficientDiDHausmanStepTaggedAsParallelTrends:
+    """Round-20 P2 regression on PR #318: the EfficientDiD practitioner
+    workflow step "Run Hausman pretest (PT-All vs PT-Post)" must be
+    tagged ``_step_name="parallel_trends"``, not ``"heterogeneity"``, so
+    that ``DiagnosticReport._collect_next_steps()`` — which treats a ran
+    Hausman block as parallel-trends completion — correctly suppresses the
+    step from the "next steps" list when the report already executed it.
+    REGISTRY.md §EfficientDiD (lines 895-908) classifies the Hausman
+    pretest as a parallel-trends diagnostic, so the fix aligns the
+    practitioner tag with the identification-layer classification.
+    """
+
+    def test_hausman_step_is_tagged_parallel_trends(self):
+        """``practitioner_next_steps`` strips ``_step_name`` from the
+        returned steps, so we exercise the tagging via the
+        ``completed_steps=["parallel_trends"]`` filter contract: a
+        correctly-tagged Hausman step is removed from the output; a
+        mistagged step remains.
+        """
+        from diff_diff.practitioner import practitioner_next_steps
+
+        class EfficientDiDResults:
+            pass
+
+        stub = EfficientDiDResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.3
+        stub.overall_p_value = 0.01
+        stub.overall_conf_int = (0.4, 1.6)
+        stub.alpha = 0.05
+        stub.n_obs = 500
+        stub.n_treated = 200
+        stub.n_control = 300
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.pt_assumption = "all"
+
+        # Without any completed steps, the Hausman pretest is included.
+        baseline = practitioner_next_steps(stub, verbose=False)["next_steps"]
+        hausman_in_baseline = any(
+            "Hausman pretest" in s.get("label", "") for s in baseline
+        )
+        assert hausman_in_baseline, (
+            "EfficientDiD workflow must include the Hausman pretest step"
+        )
+
+        # After marking ``parallel_trends`` complete (which DR does when
+        # ``_check_pt_hausman`` runs), the Hausman step must be filtered
+        # out. Before the round-20 retag it was tagged as
+        # ``heterogeneity`` and survived this filter — that is the bug.
+        filtered = practitioner_next_steps(
+            stub, completed_steps=["parallel_trends"], verbose=False
+        )["next_steps"]
+        assert not any(
+            "Hausman pretest" in s.get("label", "") for s in filtered
+        ), (
+            "Hausman step must be tagged as 'parallel_trends' (REGISTRY.md "
+            "§EfficientDiD classifies it as a PT diagnostic) so that "
+            "DR's _collect_next_steps() suppresses it after running the same "
+            "check. Still present after completed_steps=['parallel_trends'] "
+            "filter, meaning the tag is wrong."
+        )
 
 
 class TestHausmanTestStatisticPopulated:

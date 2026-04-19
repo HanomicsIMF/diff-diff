@@ -329,6 +329,89 @@ class TestPrecomputed:
         assert schema["sensitivity"]["status"] == "ran"
         assert schema["sensitivity"]["breakdown_M"] == 0.75
 
+    def test_precomputed_pretrends_power_parity_with_default_path(self, cs_fit):
+        """Round-20 P1 regression: ``precomputed={"pretrends_power": ...}``
+        must apply the same covariance-source annotation and conservative
+        diagonal-fallback downgrade as ``_check_pretrends_power``. Otherwise
+        the same fit can be labeled ``well_powered`` through the precomputed
+        path and ``moderately_powered`` through the default path.
+        """
+        from diff_diff.pretrends import compute_pretrends_power
+
+        fit, data = cs_fit
+
+        # Precompute the power result from the same fit. The compute function
+        # populates ``original_results`` on the output so DR's precomputed
+        # adapter can inspect the source fit's event_study_vcov.
+        pp = compute_pretrends_power(fit, alpha=0.05, target_power=0.80, violation_type="linear")
+        assert getattr(pp, "original_results", None) is fit
+
+        dr_default = DiagnosticReport(fit, data=data).to_dict()
+        dr_precomputed = DiagnosticReport(
+            fit, data=data, precomputed={"pretrends_power": pp}
+        ).to_dict()
+
+        default_block = dr_default["pretrends_power"]
+        precomp_block = dr_precomputed["pretrends_power"]
+
+        # Both paths are "ran"; the precomputed path flags itself with
+        # ``precomputed=True`` while the default path sets ``method=
+        # compute_pretrends_power``.
+        assert default_block["status"] == "ran"
+        assert precomp_block["status"] == "ran"
+        assert precomp_block.get("precomputed") is True
+
+        # Tier and covariance_source must agree across paths so downstream
+        # BR prose does not diverge based on which path produced the block.
+        assert default_block["tier"] == precomp_block["tier"]
+        assert default_block["covariance_source"] == precomp_block["covariance_source"]
+
+    def test_precomputed_pretrends_power_downgrades_when_full_vcov_unused(self):
+        """Stub-based regression: when the source fit has both
+        ``event_study_vcov`` and ``event_study_vcov_index`` populated but
+        the diagonal fallback was used, the precomputed adapter must emit
+        ``covariance_source='diag_fallback_available_full_vcov_unused'`` and
+        downgrade a ``well_powered`` tier to ``moderately_powered`` — just
+        like the default compute path. Complements the live-fit parity test
+        by exercising the tier-bumping edge explicitly.
+        """
+
+        # Minimal CS-shaped stub with full vcov flagged.
+        class _CSStub:
+            overall_att = 1.0
+            overall_se = 0.25
+            overall_t_stat = 4.0
+            overall_p_value = 0.001
+            overall_conf_int = (0.5, 1.5)
+            alpha = 0.05
+            n_obs = 400
+            n_treated = 80
+            n_control = 320
+            survey_metadata = None
+            event_study_effects = None
+            event_study_vcov = np.eye(3)
+            event_study_vcov_index = {-2: 0, -1: 1, 0: 2}
+
+        stub = _CSStub()
+        stub.__class__.__name__ = "CallawaySantAnnaResults"
+
+        class _PPStub:
+            mdv = 0.1  # |ATT| = 1.0 -> ratio = 0.1 -> well_powered before downgrade
+            violation_type = "linear"
+            alpha = 0.05
+            target_power = 0.80
+            violation_magnitude = 0.1
+            power = 0.80
+            n_pre_periods = 2
+            original_results = stub
+
+        dr = DiagnosticReport(stub, precomputed={"pretrends_power": _PPStub()})
+        block = dr.to_dict()["pretrends_power"]
+        assert block["status"] == "ran"
+        assert block["covariance_source"] == "diag_fallback_available_full_vcov_unused"
+        # Downgrade must apply: pre-tier is well_powered, post-tier is moderately_powered.
+        assert block["tier"] == "moderately_powered"
+
 
 # ---------------------------------------------------------------------------
 # Verdict / tier helpers

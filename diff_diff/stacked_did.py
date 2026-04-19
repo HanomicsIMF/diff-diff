@@ -593,6 +593,7 @@ class StackedDiD:
             weighting=self.weighting,
             clean_control=self.clean_control,
             alpha=self.alpha,
+            anticipation=self.anticipation,
             survey_metadata=survey_metadata,
         )
 
