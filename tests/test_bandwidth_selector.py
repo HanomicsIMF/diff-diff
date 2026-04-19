@@ -376,6 +376,24 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="not at a supported HAD estimand"):
             mse_optimal_bandwidth(d, y, boundary=-0.1)
 
+    def test_negative_dose_rejected_boundary_zero(self):
+        """HAD requires D_{g,2} >= 0. Negative-dose samples must be
+        rejected at the wrapper level, even under boundary=0."""
+        rng = np.random.default_rng(2026)
+        d = rng.uniform(-0.5, 0.5, size=1500)  # mix of negative and positive
+        y = d + rng.normal(0, 0.3, size=1500)
+        with pytest.raises(ValueError, match="Negative dose values"):
+            mse_optimal_bandwidth(d, y, boundary=0.0)
+
+    def test_negative_dose_rejected_boundary_at_d_min(self):
+        """Negative-dose samples must also be rejected when the caller
+        tries to pass boundary=d.min() < 0."""
+        rng = np.random.default_rng(2026)
+        d = rng.uniform(-1.0, -0.1, size=1500)  # entirely negative
+        y = d + rng.normal(0, 0.3, size=1500)
+        with pytest.raises(ValueError, match="Negative dose values"):
+            mse_optimal_bandwidth(d, y, boundary=float(d.min()))
+
     def test_mass_point_design_rejected(self):
         """Design 1 mass-point case (boundary > 0, modal fraction > 2%)
         must be rejected with NotImplementedError pointing to 2SLS."""

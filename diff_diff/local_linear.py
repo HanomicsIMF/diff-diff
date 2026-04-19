@@ -622,6 +622,25 @@ def mse_optimal_bandwidth(
     if not np.isfinite(boundary):
         raise ValueError(f"boundary must be finite; got {boundary}")
 
+    # HAD support restriction: de Chaisemartin et al. (2026) Assumption
+    # (dose definition in Section 2) treats ``D_{g,2}`` as the period-2
+    # treatment dose with ``D_{g,2} >= 0``. Negative dose values are
+    # outside the HAD design and would silently calibrate the selector
+    # against a symmetric-kernel two-sided problem while the downstream
+    # fitter remains one-sided. Reject front-door rather than produce a
+    # plausible bandwidth on a malformed input.
+    d_neg = d < 0.0
+    if np.any(d_neg):
+        n_neg = int(d_neg.sum())
+        min_neg = float(d[d_neg].min())
+        raise ValueError(
+            f"Negative dose values detected in d (n_neg={n_neg}, "
+            f"min={min_neg!r}). The HAD estimator (de Chaisemartin et "
+            f"al. 2026) requires the period-2 dose D_{{g,2}} >= 0. "
+            f"Nonnegative-dose data is required for both Design 1' "
+            f"(d_lower = 0) and Design 1 (d_lower > 0)."
+        )
+
     # Boundary-applicability check (Phase 1b scope).
     # The exported wrapper is scoped to the two documented HAD
     # nonparametric estimands:
