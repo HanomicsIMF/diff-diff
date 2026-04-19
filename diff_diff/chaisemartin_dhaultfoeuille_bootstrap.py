@@ -606,6 +606,18 @@ def _unroll_target_to_cells(
     variance-eligible group ordering, so no per-target row subset
     is needed.
 
+    Raises ``ValueError`` when any sentinel cell (-1 PSU) carries
+    non-zero cohort-recentered IF mass. This is a supported-edge-
+    case guard: under terminal missingness, ``_cohort_recenter_per_period``
+    subtracts column means across the full period grid, so a group
+    with no observation at period ``t`` can acquire non-zero centered
+    mass at that sentinel cell. The cell-level bootstrap cannot
+    allocate that mass to any PSU (the cell has no positive-weight
+    obs), so silently dropping it would under-weight the group's
+    bootstrap contribution. The conservative guard rejects the
+    combination and points users to ``n_bootstrap=0`` (analytical
+    TSL) as the documented alternative for such panels.
+
     Returns ``(u_cell, psu_cell)`` of shape
     ``(n_valid_cells_in_target,)`` each.
     """
@@ -626,6 +638,31 @@ def _unroll_target_to_cells(
     flat_u = u_per_period_target.ravel()
     flat_psu = psu_codes_per_cell.ravel()
     mask = flat_psu >= 0
+    # Sentinel-mass guard: reject terminal-missingness + within-group-
+    # varying PSU + bootstrap. The cohort-recentering column-subtraction
+    # at `_cohort_recenter_per_period` can leak non-zero centered mass
+    # onto cells with no positive-weight obs (missing-cell rows in the
+    # cohort still get -col_mean added when other rows contribute at
+    # that column). Dropping that mass silently would under-cluster the
+    # bootstrap in a supported panel regime.
+    sentinel_mass = flat_u[~mask]
+    if sentinel_mass.size > 0 and bool(
+        np.any(np.abs(sentinel_mass) > 1e-12)
+    ):
+        raise ValueError(
+            "Cell-level bootstrap cannot be computed on this survey "
+            "panel: cohort-recentered IF mass landed on cells with "
+            "no positive-weight observations (psu_codes_per_cell == "
+            "-1). This typically occurs when terminal missingness "
+            "(groups observed only through some period) combines with "
+            "within-group-varying PSU: `_cohort_recenter_per_period` "
+            "subtracts column means across the full period grid, so a "
+            "group with no observation at period t acquires non-zero "
+            "centered mass there, which the cell-level bootstrap "
+            "cannot allocate to any PSU. Use `n_bootstrap=0` to fall "
+            "back to analytical TSL variance (which supports this "
+            "panel regime)."
+        )
     return flat_u[mask], flat_psu[mask].astype(np.int64, copy=False)
 
 

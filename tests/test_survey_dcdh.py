@@ -1935,6 +1935,41 @@ class TestBootstrapCellPeriod:
                 psu_codes_per_cell=psu_codes_per_cell,
             )
 
+    def test_bootstrap_cell_level_raises_on_sentinel_mass_leak(self):
+        """Contract: when `_cohort_recenter_per_period` subtracts
+        column means across the full period grid, a group with no
+        observation at period t can acquire non-zero centered mass
+        at that cell. Under the cell-level bootstrap path, such
+        mass lands on a `psu_codes_per_cell == -1` sentinel cell
+        and has no PSU to attach to — the bootstrap must raise
+        rather than silently drop the mass.
+        """
+        est = ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1)
+        # Build a per-cell IF tensor with non-zero mass at a cell
+        # whose PSU code is -1 (simulating terminal missingness
+        # after cohort-recentering leaks mass to a missing cell).
+        psu_codes_per_cell = np.array(
+            [[0, 1, -1], [0, 1, 0]], dtype=np.int64,
+        )
+        u_pp_overall_with_leak = np.array(
+            [[0.25, 0.25, -0.15], [-0.15, -0.15, 0.15]],
+            dtype=np.float64,
+        )
+        u_overall = np.array([0.5, -0.3], dtype=np.float64)
+        eligible_group_ids = np.array([0, 1])
+        group_id_to_psu_code = {0: 0, 1: 1}
+        with pytest.raises(ValueError, match="no positive-weight observations"):
+            est._compute_dcdh_bootstrap(
+                n_groups_for_overall=2,
+                u_centered_overall=u_overall,
+                divisor_overall=4,
+                original_overall=0.1,
+                group_id_to_psu_code=group_id_to_psu_code,
+                eligible_group_ids=eligible_group_ids,
+                u_per_period_overall=u_pp_overall_with_leak,
+                psu_codes_per_cell=psu_codes_per_cell,
+            )
+
     def test_bootstrap_cell_level_raises_on_missing_horizon_tensor(self):
         """Contract: when PSU varies within group, each multi-horizon
         target must supply its per-cell IF tensor; missing one raises
