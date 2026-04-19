@@ -821,7 +821,8 @@ def check_parallel_trends_robust(
 
     # Compute outcome changes
     treated_changes, control_changes = _compute_outcome_changes(
-        pre_data, outcome, time, treatment_group, unit
+        pre_data, outcome, time, treatment_group, unit,
+        caller_label="check_parallel_trends_robust",
     )
 
     if len(treated_changes) < 2 or len(control_changes) < 2:
@@ -897,7 +898,12 @@ def check_parallel_trends_robust(
 
 
 def _compute_outcome_changes(
-    data: pd.DataFrame, outcome: str, time: str, treatment_group: str, unit: Optional[str] = None
+    data: pd.DataFrame,
+    outcome: str,
+    time: str,
+    treatment_group: str,
+    unit: Optional[str] = None,
+    caller_label: str = "parallel-trend diagnostic",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute period-to-period outcome changes for treated and control groups.
@@ -925,7 +931,24 @@ def _compute_outcome_changes(
         data_sorted = data.sort_values([unit, time])
         data_sorted["_outcome_change"] = data_sorted.groupby(unit)[outcome].diff()
 
-        # Remove NaN from first period of each unit
+        # Remove NaN from first period of each unit. The first period per unit
+        # has no prior observation to diff against, so n_units drops are
+        # expected. Anything beyond that is a silent side-effect of gaps or
+        # NaN outcomes — surface the excess via warning (axis-E drop counter).
+        n_units_observed = int(data_sorted[unit].nunique())
+        n_dropped = int(data_sorted["_outcome_change"].isna().sum())
+        n_unexpected_drops = max(0, n_dropped - n_units_observed)
+        if n_unexpected_drops > 0:
+            warnings.warn(
+                f"{caller_label}: dropped {n_dropped} row(s) with NaN "
+                f"first-differences; {n_units_observed} are the expected "
+                f"first-period-per-unit drops, and {n_unexpected_drops} are "
+                f"additional NaN first-differences (e.g. NaN outcomes or "
+                f"unit-period gaps upstream). Parallel-trend statistics are "
+                f"computed on the remaining rows.",
+                UserWarning,
+                stacklevel=3,
+            )
         changes_data = data_sorted.dropna(subset=["_outcome_change"])
 
         treated_changes = changes_data[changes_data[treatment_group] == 1]["_outcome_change"].values
@@ -1001,7 +1024,8 @@ def equivalence_test_trends(
 
     # Compute outcome changes
     treated_changes, control_changes = _compute_outcome_changes(
-        pre_data, outcome, time, treatment_group, unit
+        pre_data, outcome, time, treatment_group, unit,
+        caller_label="equivalence_test_trends",
     )
 
     # Need at least 2 observations per group to compute variance

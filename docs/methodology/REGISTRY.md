@@ -731,6 +731,8 @@ See `docs/methodology/continuous-did.md` Section 4 for full details.
 - [ ] Lowest-dose-as-control (Remark 3.1)
 - [x] Survey design support (Phase 3): weighted B-spline OLS, TSL on influence functions; bootstrap+survey supported (Phase 6)
 - **Note:** ContinuousDiD bootstrap with survey weights supported (Phase 6) via PSU-level multiplier weights
+- **Note:** The R-style convention of coding never-treated units as `first_treat=inf` is still accepted and normalized to `first_treat=0` internally, but the estimator now emits a `UserWarning` reporting the row count so the silent recategorization is surfaced (axis-E silent coercion under the Phase 2 audit). Only `+inf` is recoded (matching the R convention). Any **negative** `first_treat` value (including `-inf`) raises `ValueError` with the row count, since such units would otherwise silently fall out of both the treated (`g > 0`) and never-treated (`g == 0`) masks. Pass `0` directly for never-treated units to avoid the warning.
+- **Note:** Rows where `first_treat=0` (never-treated) carry a nonzero `dose` are silently zeroed for internal consistency (never-treated cells must have `D=0` in the dose response). The estimator now emits a `UserWarning` with the affected row count before the zeroing, so unintended nonzero doses on never-treated rows are no longer absorbed without a signal (axis-E silent coercion).
 
 ---
 
@@ -1314,6 +1316,7 @@ The saturated ETWFE regression includes:
 The interaction coefficient `δ_{g,t}` identifies `ATT(g, t)` under parallel trends.
 - **Note:** OLS path uses iterative alternating-projection within-transformation (uniform weights) for exact FE absorption on both balanced and unbalanced panels. One-pass demeaning (`y - ȳ_i - ȳ_t + ȳ`) is only exact for balanced panels.
 - **Note:** The weighted within-transformation (`utils.within_transform` with `weights`) is invoked on every WooldridgeDiD fit (survey weights when provided, `np.ones` otherwise) and emits a `UserWarning` on non-convergence per the shared convention documented under *Absorbed Fixed Effects with Survey Weights*.
+- **Note:** NaN values in the `cohort` column are filled with 0 (treated as never-treated), both in `_filter_sample` and in `fit()`. This recategorization now emits a `UserWarning` reporting the affected row count so it is no longer silent (axis-E silent coercion under the Phase 2 audit). Pass `0` directly for never-treated units to avoid the warning.
 
 *Nonlinear extensions (Wooldridge 2023):*
 
@@ -1700,6 +1703,7 @@ Balanced panel. Key variables:
 - `Q_i` (`eligibility`): binary, time-invariant eligibility indicator
 - Treatment: `D_{i,t} = 1{t >= S_i AND Q_i = 1}` (absorbing)
 - Covariates `X_i`: time-invariant (first observation per unit used)
+- **Note:** `first_treat=inf` (R-style never-enabled marker) is accepted and normalized to `0` internally. The recoding now emits a `UserWarning` reporting the affected row count so the reclassification is not silent (axis-E silent coercion under the Phase 2 audit, mirroring the StaggeredDiD behavior). Pass `first_treat=0` directly to avoid the warning.
 
 *Estimator equation (Equation 4.1 in paper, as implemented):*
 

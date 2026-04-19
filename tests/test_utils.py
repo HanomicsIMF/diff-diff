@@ -827,6 +827,86 @@ class TestComputeOutcomeChanges:
         np.testing.assert_array_almost_equal(treated_changes, 2.0, decimal=5)
         np.testing.assert_array_almost_equal(control_changes, 2.0, decimal=5)
 
+    def test_silent_on_balanced_panel(self):
+        """Balanced panel: only first-period-per-unit drops, no warning."""
+        import warnings
+
+        rng = np.random.default_rng(0)
+        rows = []
+        for unit in range(10):
+            treated = int(unit >= 5)
+            for t in range(1, 5):
+                rows.append({
+                    "unit": unit, "period": t,
+                    "treated": treated, "outcome": rng.normal(),
+                })
+        df = pd.DataFrame(rows)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _compute_outcome_changes(
+                df, outcome="outcome", time="period",
+                treatment_group="treated", unit="unit",
+            )
+
+        # Generic filter on "dropped" catches both the old and new label so a
+        # regression in the label wouldn't hide a real silent-drop warning.
+        drop_warnings = [x for x in w if "dropped" in str(x.message).lower()]
+        assert drop_warnings == []
+
+    def test_warns_on_nan_outcomes_with_excess_drop_count(self):
+        """Extra NaN-outcome rows beyond first-period drops must surface via
+        a UserWarning reporting the excess count (axis-E drop counter)."""
+        rng = np.random.default_rng(0)
+        rows = []
+        for unit in range(10):
+            treated = int(unit >= 5)
+            for t in range(1, 5):
+                rows.append({
+                    "unit": unit, "period": t,
+                    "treated": treated, "outcome": rng.normal(),
+                })
+        df = pd.DataFrame(rows)
+        df.loc[[5, 12, 22], "outcome"] = np.nan
+
+        with pytest.warns(
+            UserWarning,
+            match=r"parallel-trend diagnostic: dropped \d+ row\(s\).*additional NaN first-differences",
+        ):
+            _compute_outcome_changes(
+                df, outcome="outcome", time="period",
+                treatment_group="treated", unit="unit",
+            )
+
+    def test_warning_label_reflects_public_caller(self):
+        """`check_parallel_trends_robust` and `equivalence_test_trends` must
+        each surface the axis-E excess-drop warning under their own name so
+        users can trace the signal back to the function they called."""
+        rng = np.random.default_rng(0)
+        rows = []
+        for unit in range(10):
+            treated = int(unit >= 5)
+            for t in range(1, 5):
+                rows.append({
+                    "unit": unit, "period": t,
+                    "treated": treated, "outcome": rng.normal(),
+                })
+        df = pd.DataFrame(rows)
+        df.loc[[5, 12, 22], "outcome"] = np.nan
+
+        with pytest.warns(UserWarning, match="check_parallel_trends_robust:"):
+            check_parallel_trends_robust(
+                df, outcome="outcome", time="period",
+                treatment_group="treated", unit="unit",
+                n_permutations=100, seed=0,
+            )
+
+        with pytest.warns(UserWarning, match="equivalence_test_trends:"):
+            equivalence_test_trends(
+                df, outcome="outcome", time="period",
+                treatment_group="treated", unit="unit",
+            )
+
 
 # =============================================================================
 # Tests for check_parallel_trends_robust

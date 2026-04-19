@@ -13,6 +13,7 @@ Friosavila (2021). jwdid: Stata module. SSC s459114.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -112,6 +113,26 @@ def _resolve_survey_for_wooldridge(survey_design, sample, cluster_ids, cluster_n
     return resolved, survey_weights, survey_weight_type, survey_metadata, df_inf
 
 
+def _warn_and_fill_nan_cohort(df: pd.DataFrame, cohort: str, stacklevel: int) -> pd.DataFrame:
+    """Fill NaN cohort with 0 (never-treated) and warn with the row count.
+
+    Used by both `_filter_sample` (pre-fit) and `WooldridgeDiD.fit()` so the
+    silent recategorization is surfaced on whichever entry path the caller
+    hits first. See REGISTRY.md §WooldridgeDiD (axis-E silent coercion).
+    """
+    n_nan_cohort = int(df[cohort].isna().sum())
+    if n_nan_cohort > 0:
+        warnings.warn(
+            f"{n_nan_cohort} row(s) have NaN cohort values; filling with 0 "
+            f"and treating the corresponding units as never-treated. Pass "
+            f"an explicit never-treated marker (0) if this is not intended.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
+    df[cohort] = df[cohort].fillna(0)
+    return df
+
+
 def _filter_sample(
     data: pd.DataFrame,
     unit: str,
@@ -128,8 +149,7 @@ def _filter_sample(
     (see _build_interaction_matrix).
     """
     df = data.copy()
-    # Normalise never-treated: fill NaN cohort with 0
-    df[cohort] = df[cohort].fillna(0)
+    df = _warn_and_fill_nan_cohort(df, cohort, stacklevel=3)
 
     treated_mask = df[cohort] > 0
 
@@ -396,7 +416,7 @@ class WooldridgeDiD:
             ``NotImplementedError``.
         """
         df = data.copy()
-        df[cohort] = df[cohort].fillna(0)
+        df = _warn_and_fill_nan_cohort(df, cohort, stacklevel=2)
 
         # 0a. Validate cohort is time-invariant within unit
         cohort_per_unit = df.groupby(unit)[cohort].nunique()

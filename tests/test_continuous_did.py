@@ -641,15 +641,194 @@ class TestEdgeCases:
         assert isinstance(results, ContinuousDiDResults)
 
     def test_inf_first_treat_normalization(self):
-        """first_treat=inf should be treated as never-treated."""
+        """first_treat=inf should be treated as never-treated, and the caller
+        must receive a UserWarning reporting the affected row count so the
+        recategorization is not silent (axis-E counter)."""
         data = generate_continuous_did_data(n_units=50, n_periods=3, seed=42)
         data["first_treat"] = data["first_treat"].astype(float)
-        data.loc[data["first_treat"] == 0, "first_treat"] = np.inf
+        inf_mask = data["first_treat"] == 0
+        n_inf_rows = int(inf_mask.sum())
+        data.loc[inf_mask, "first_treat"] = np.inf
         est = ContinuousDiD()
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+
+        with pytest.warns(
+            UserWarning,
+            match=rf"{n_inf_rows} row\(s\) have inf in 'first_treat'",
+        ):
+            results = est.fit(
+                data, "outcome", "unit", "period", "first_treat", "dose"
+            )
         assert results.n_control_units > 0
+
+    def test_no_inf_first_treat_no_warning(self):
+        """No inf rows in first_treat — no recategorization warning."""
+        import warnings
+
+        data = generate_continuous_did_data(n_units=50, n_periods=3, seed=42)
+        data["first_treat"] = data["first_treat"].astype(float)
+        est = ContinuousDiD()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+
+        inf_warnings = [x for x in w if "inf in 'first_treat'" in str(x.message)]
+        assert inf_warnings == []
+
+    def test_nonzero_dose_on_never_treated_warns(self):
+        """first_treat=0 (never-treated) rows with nonzero dose must now surface
+        a UserWarning with the affected row count before the zeroing coercion.
+        Before PR #331's CI-review follow-up this was silent."""
+        # 4 units x 3 periods (12 rows). 2 units are never-treated (first_treat=0)
+        # but carry dose=1.5 on every row — 6 rows should be reported.
+        rows = []
+        for unit in range(4):
+            if unit < 2:
+                ft, dose_val = 0.0, 1.5  # never-treated with nonzero dose
+            else:
+                ft, dose_val = 2.0, 1.0  # treated
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": dose_val,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with pytest.warns(
+            UserWarning,
+            match=r"6 row\(s\) have 'first_treat'=0 \(never-treated\) but nonzero 'dose'",
+        ):
+            try:
+                est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+            except Exception:
+                # Downstream validation may reject this minimal panel (too few
+                # treated for OLS); we only care about the dose-coercion warning.
+                pass
+
+    def test_clean_never_treated_doses_silent(self):
+        """Never-treated rows with dose=0 must not trigger the coercion warning."""
+        import warnings
+        data = generate_continuous_did_data(n_units=50, n_periods=3, seed=42)
+        # generate_continuous_did_data already sets dose=0 for never-treated.
+        est = ContinuousDiD()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+
+        coerce_warnings = [
+            x for x in w
+            if "never-treated" in str(x.message) and "nonzero 'dose'" in str(x.message)
+        ]
+        assert coerce_warnings == []
+
+    def test_negative_first_treat_raises_with_row_count(self):
+        """Negative `first_treat` (including -inf) must raise ValueError with
+        the affected row count. Without this guard the affected units fall
+        out of both the treated (g > 0) and never-treated (g == 0) masks and
+        are silently excluded from the estimator."""
+        rows = []
+        for unit in range(4):
+            # Unit 0: -inf. Unit 1: -2. Others: valid (0 or positive).
+            if unit == 0:
+                ft = -np.inf
+            elif unit == 1:
+                ft = -2.0
+            else:
+                ft = 0.0
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": 0.0,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with pytest.raises(
+            ValueError,
+            match=r"6 row\(s\) have negative 'first_treat' values",
+        ):
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+
+    def test_nan_first_treat_raises_with_row_count(self):
+        """NaN `first_treat` must raise ValueError with the row count. Without
+        this guard, NaN rows survive preprocessing but match neither the
+        treated (g > 0) nor never-treated (g == 0) mask, so the affected
+        units would be silently excluded."""
+        rows = []
+        for unit in range(4):
+            # Unit 0 has NaN first_treat across all 3 periods (3 NaN rows).
+            ft = np.nan if unit == 0 else 0.0
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": 0.0,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with pytest.raises(
+            ValueError,
+            match=r"3 row\(s\) have NaN 'first_treat' values",
+        ):
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+
+    def test_positive_inf_warning_silent_when_no_inf(self):
+        """+inf warning is gated on +inf rows only; panels with only valid
+        non-negative values (including just 0 and positive periods) must
+        never trigger the recategorization warning."""
+        import warnings
+        rows = []
+        for unit in range(4):
+            ft = 0.0 if unit < 2 else 2.0
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": 0.0 if unit < 2 else 1.0,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            try:
+                est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+            except Exception:
+                pass
+
+        inf_warnings = [x for x in w if "inf in 'first_treat'" in str(x.message)]
+        assert inf_warnings == []
+
+    def test_inf_first_treat_warning_counts_rows_not_units(self):
+        """The warning counts affected rows (not units). On a panel with
+        multiple periods per unit, each inf row must count separately so the
+        message surface matches the per-row semantics of `.replace(inf, 0)`."""
+        # Build a 4-unit, 3-period panel (12 rows). 2 units have inf across
+        # all 3 periods → 6 inf rows, 2 units, so row-count != unit-count.
+        rows = []
+        for unit in range(4):
+            ft = np.inf if unit < 2 else 2.0
+            dose = 0.0 if unit < 2 else 1.0
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": dose,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with pytest.warns(
+            UserWarning,
+            match=r"6 row\(s\) have inf in 'first_treat'",
+        ):
+            try:
+                est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+            except Exception:
+                # Downstream validation may reject this minimal panel (too few
+                # treated for OLS). We only care that the inf-row warning fires
+                # with the correct row count.
+                pass
 
     def test_custom_dvals(self):
         data = generate_continuous_did_data(n_units=100, n_periods=3, seed=42)

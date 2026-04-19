@@ -284,6 +284,19 @@ class StaggeredTripleDifference(
 
         if first_treat != "first_treat":
             df["first_treat"] = df[first_treat]
+        # Surface the inf → 0 recategorization the same way StaggeredDiD does
+        # (see `staggered.py:1508-1519`). Silently recoding inf would shift
+        # units between treated and never-treated pools with no signal
+        # (axis-E silent coercion under the Phase 2 audit).
+        _inf_mask = np.isposinf(df["first_treat"].values)
+        if _inf_mask.any():
+            n_inf_rows = int(_inf_mask.sum())
+            warnings.warn(
+                f"{n_inf_rows} row(s) have first_treat=inf; recoding to 0 "
+                f"(never-treated). Use first_treat=0 to suppress this warning.",
+                UserWarning,
+                stacklevel=2,
+            )
         df["first_treat"] = df["first_treat"].replace([np.inf, float("inf")], 0)
 
         precomputed = self._precompute_structures(

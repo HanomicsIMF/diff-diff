@@ -227,7 +227,50 @@ class ContinuousDiD:
                 f"Dose must be time-invariant. Units with varying dose: {bad_units[:5]}"
             )
 
-        # Normalize first_treat: inf → 0
+        # Normalize first_treat: +inf → 0 (R-style never-treated encoding).
+        # Count rows recategorized so users can see how many units just
+        # crossed from "treated at some point" to "never treated" — silent
+        # recategorization here would shift the control composition (axis-E
+        # silent coercion). Only positive infinity is recoded (to match the
+        # existing `.replace([np.inf, float("inf")], 0)` semantics on the
+        # next line).
+        first_treat_vals = df[first_treat].values
+        # Reject NaN first_treat explicitly. NaN survives preprocessing but
+        # satisfies neither the treated (g > 0) nor never-treated (g == 0)
+        # mask, so affected units would be silently excluded from the
+        # estimator (same silent-failure shape as `first_treat < 0`).
+        nan_mask = pd.isna(df[first_treat])
+        n_nan_first_treat = int(nan_mask.sum())
+        if n_nan_first_treat > 0:
+            raise ValueError(
+                f"{n_nan_first_treat} row(s) have NaN '{first_treat}' "
+                f"values. Valid values are 0 (never-treated) or a positive "
+                f"treatment period; such units would otherwise be silently "
+                f"excluded from both treated and control pools."
+            )
+        inf_mask = np.isposinf(first_treat_vals)
+        n_inf_first_treat = int(inf_mask.sum())
+        if n_inf_first_treat > 0:
+            warnings.warn(
+                f"{n_inf_first_treat} row(s) have inf in '{first_treat}'; "
+                f"treating the corresponding units as never-treated. Pass an "
+                f"explicit never-treated marker (0) if this is not intended.",
+                UserWarning,
+                stacklevel=2,
+            )
+        # Reject negative first_treat values (including -inf) explicitly.
+        # Without this guard they would survive preprocessing but fall out of
+        # both the treated (g > 0) and never-treated (g == 0) masks, silently
+        # excluding the affected units.
+        negative_mask = first_treat_vals < 0
+        n_negative_first_treat = int(negative_mask.sum())
+        if n_negative_first_treat > 0:
+            raise ValueError(
+                f"{n_negative_first_treat} row(s) have negative '{first_treat}' "
+                f"values (including -inf). Valid values are 0 (never-treated) "
+                f"or a positive treatment period; such units would otherwise "
+                f"be silently excluded from both treated and control pools."
+            )
         df[first_treat] = df[first_treat].replace([np.inf, float("inf")], 0)
 
         # Drop units with positive first_treat but zero dose (R convention)
@@ -265,9 +308,22 @@ class ContinuousDiD:
                 stacklevel=2,
             )
 
-        # Force dose=0 for never-treated units with nonzero dose
+        # Force dose=0 for never-treated units with nonzero dose. Report the
+        # affected row count via UserWarning so users can see whether their
+        # never-treated rows had unintended nonzero doses — silent zeroing
+        # here would quietly shift part of the control trajectory (axis-E
+        # silent coercion, paired with the `first_treat=inf -> 0` fix above).
         never_treated_mask = df[first_treat] == 0
-        if (df.loc[never_treated_mask, dose] != 0).any():
+        nonzero_dose_rows = never_treated_mask & (df[dose] != 0)
+        n_nonzero_dose_never_treated = int(nonzero_dose_rows.sum())
+        if n_nonzero_dose_never_treated > 0:
+            warnings.warn(
+                f"{n_nonzero_dose_never_treated} row(s) have '{first_treat}'=0 "
+                f"(never-treated) but nonzero '{dose}'; zeroing the dose. Pass "
+                f"dose=0 for never-treated rows to avoid this coercion.",
+                UserWarning,
+                stacklevel=2,
+            )
             df.loc[never_treated_mask, dose] = 0.0
 
         # Verify balanced panel
