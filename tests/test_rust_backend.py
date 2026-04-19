@@ -2103,6 +2103,357 @@ class TestSDIDRustBackend:
         )
 
 
+# ---------------------------------------------------------------------------
+# Silent-failure audit axis-G coverage (findings #21, #22, #23).
+# The motivating incident (CS covariate scaling, early 2026) was a silent
+# Rust-vs-Python divergence on rank-deficient / mixed-scale designs that
+# sailed through the existing happy-path parity tests. These three classes
+# extend backend-parity coverage to the edge cases the Phase-2 audit flagged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not HAS_RUST_BACKEND, reason="Rust backend not available")
+class TestSolveOLSSkipRankCheckParity:
+    """Finding #21: `solve_ols(..., skip_rank_check=True)` parity.
+
+    Both backends skip the pivoted-QR rank check and trust the caller's
+    full-rank assertion. Rust uses SVD; Python uses scipy.linalg.lstsq
+    with ``cond=1e-7``. Parity is expected in well-conditioned cases, but
+    near-singular and mixed-scale inputs could divergence on singular-
+    value truncation ordering between LAPACK backends.
+
+    Rust dispatch is gated by ``vcov_type='hc1'`` and ``weights is None``
+    (linalg.py:621-634), so tests scope to that intersection — the only
+    path where Rust runs under ``skip_rank_check=True``.
+
+    Assertions target fitted values (X @ beta), not beta directly: for
+    rank-deficient designs, kept-column beta values depend on pivot order
+    while fitted values are backend-invariant.
+    """
+
+    def _run_both_backends(self, X, y):
+        """Call solve_ols with skip_rank_check=True under Rust and under
+        forced-Python, return (coef_rust, coef_py)."""
+        import sys
+        from unittest.mock import patch
+
+        from diff_diff.linalg import solve_ols
+
+        coef_rust, resid_rust, _ = solve_ols(
+            X, y, skip_rank_check=True, vcov_type="hc1", return_vcov=False
+        )
+
+        linalg_module = sys.modules["diff_diff.linalg"]
+        with patch.object(linalg_module, "HAS_RUST_BACKEND", False), \
+             patch.object(linalg_module, "_rust_solve_ols", None):
+            coef_py, resid_py, _ = solve_ols(
+                X, y, skip_rank_check=True, vcov_type="hc1", return_vcov=False
+            )
+        return coef_rust, coef_py
+
+    def test_mixed_scale_full_rank(self):
+        """Full-rank X with column-norm ratio > 1e6. Both SVD backends
+        should truncate the same singular values."""
+        rng = np.random.default_rng(11)
+        n, k = 80, 3
+        X = np.column_stack([
+            rng.normal(0, 1, n),              # unit scale
+            rng.normal(0, 1e6, n),            # 1e6 scale
+            rng.normal(0, 1, n),              # unit scale
+        ])
+        y = 1.0 + 0.5 * X[:, 0] + 1e-7 * X[:, 1] + 0.3 * X[:, 2] + rng.normal(0, 0.1, n)
+
+        coef_rust, coef_py = self._run_both_backends(X, y)
+
+        fitted_rust = X @ coef_rust
+        fitted_py = X @ coef_py
+        np.testing.assert_allclose(
+            fitted_rust, fitted_py, rtol=1e-6, atol=1e-8,
+            err_msg="Rust vs Python fitted-value divergence on mixed-scale X",
+        )
+
+    def test_near_singular_full_rank(self):
+        """Near-collinear full-rank X (cond(X'X) > 1e10). Backends use
+        the same SVD threshold (cond=1e-7), so should agree on truncation."""
+        rng = np.random.default_rng(22)
+        n = 80
+        x1 = rng.normal(0, 1, n)
+        x2 = x1 + rng.normal(0, 1e-6, n)  # nearly parallel to x1
+        x3 = rng.normal(0, 1, n)
+        X = np.column_stack([x1, x2, x3])
+        y = 1.0 + 0.5 * x1 - 0.3 * x3 + rng.normal(0, 0.1, n)
+
+        coef_rust, coef_py = self._run_both_backends(X, y)
+
+        fitted_rust = X @ coef_rust
+        fitted_py = X @ coef_py
+        np.testing.assert_allclose(
+            fitted_rust, fitted_py, rtol=1e-6, atol=1e-8,
+            err_msg="Rust vs Python fitted-value divergence on near-singular X",
+        )
+
+    def test_rank_deficient_collinear(self):
+        """Perfectly collinear columns. ``skip_rank_check=True`` bypasses
+        the QR detector; both backends must still produce matching fitted
+        values via minimum-norm SVD solve, even if individual coefficients
+        differ on dropped columns."""
+        rng = np.random.default_rng(33)
+        n = 80
+        x1 = rng.normal(0, 1, n)
+        X = np.column_stack([x1, 2.0 * x1, rng.normal(0, 1, n)])  # x2 ≡ 2*x1
+        y = 1.0 + 0.5 * x1 + 0.3 * X[:, 2] + rng.normal(0, 0.1, n)
+
+        coef_rust, coef_py = self._run_both_backends(X, y)
+
+        fitted_rust = X @ coef_rust
+        fitted_py = X @ coef_py
+        # Fitted values are the backend-invariant object under rank deficiency.
+        np.testing.assert_allclose(
+            fitted_rust, fitted_py, rtol=1e-6, atol=1e-8,
+            err_msg="Rust vs Python fitted-value divergence on rank-deficient X",
+        )
+
+
+@pytest.mark.skipif(not HAS_RUST_BACKEND, reason="Rust backend not available")
+class TestSyntheticWeightsBackendParity:
+    """Finding #22: `compute_synthetic_weights` Rust vs Python parity.
+
+    Both backends solve the same constrained QP (FW + simplex projection)
+    with ``_OPTIMIZATION_TOL=1e-8``. PR #312 normalized Y inside the SDID
+    fit path; the shared utility at ``utils.py:1134-1199`` is unchanged
+    and is called from ``prep.py:990`` (DGP) only.
+
+    Tolerance: ``atol=1e-7, rtol=1e-6`` on weights — loose enough to
+    absorb the FW convergence tolerance (1e-8) plus BLAS platform drift
+    (~1e-12 to 1e-14 on float64), tight enough to catch real algorithmic
+    divergence.
+    """
+
+    def _run_both_backends(self, Y_control, Y_treated, lambda_reg=0.0):
+        import sys
+        from unittest.mock import patch
+
+        from diff_diff.utils import compute_synthetic_weights
+
+        w_rust = compute_synthetic_weights(Y_control, Y_treated, lambda_reg=lambda_reg)
+
+        utils_module = sys.modules["diff_diff.utils"]
+        with patch.object(utils_module, "HAS_RUST_BACKEND", False):
+            w_py = compute_synthetic_weights(Y_control, Y_treated, lambda_reg=lambda_reg)
+        return w_rust, w_py
+
+    def test_near_singular_Y_prime_Y(self):
+        """Highly collinear control units make Y'Y near-singular. Both
+        backends should converge to the same (near-uniform or zeroed-out)
+        weight vector."""
+        rng = np.random.default_rng(7)
+        n_pre, n_control = 5, 4
+        base = rng.normal(0, 1, n_pre)
+        # Three of four control units are nearly parallel to `base`
+        Y_control = np.column_stack([
+            base,
+            base + 1e-10 * rng.normal(0, 1, n_pre),
+            base + 1e-10 * rng.normal(0, 1, n_pre),
+            rng.normal(0, 1, n_pre),
+        ])
+        Y_treated = base + 1e-8 * rng.normal(0, 1, n_pre)
+
+        w_rust, w_py = self._run_both_backends(Y_control, Y_treated)
+
+        np.testing.assert_allclose(
+            w_rust, w_py, atol=1e-7, rtol=1e-6,
+            err_msg="Near-singular Y'Y: weight divergence between Rust and Python",
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="Rust path is Frank-Wolfe, Python fallback at utils.py:1228 is "
+        "projected gradient descent. PGD and FW can converge to different "
+        "vertices under near-degenerate / extreme-scale inputs even though "
+        "both solve the same constrained QP. Algorithmic unification is a "
+        "larger fix (P1 follow-up in TODO.md); this xfail baselines the gap "
+        "so we notice if/when the algorithms align.",
+    )
+    def test_extreme_Y_scale(self):
+        """Y at 1e9 scale, well-conditioned panel. Known Rust-vs-Python
+        divergence: Rust/FW concentrates on one unit, Python/PGD returns
+        near-uniform. See xfail reason."""
+        rng = np.random.default_rng(44)
+        n_pre, n_control = 8, 5
+        Y_control = rng.normal(0, 1, (n_pre, n_control)) + 1e9
+        Y_treated = rng.normal(0, 1, n_pre) + 1e9
+
+        w_rust, w_py = self._run_both_backends(Y_control, Y_treated)
+
+        np.testing.assert_allclose(
+            w_rust, w_py, atol=1e-7, rtol=1e-6,
+            err_msg="Extreme Y scale: weight divergence "
+            "(known FW-vs-PGD algorithmic mismatch; see xfail reason)",
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="Rust path is Frank-Wolfe, Python fallback at utils.py:1228 is "
+        "projected gradient descent. Same algorithmic mismatch as "
+        "test_extreme_Y_scale — backends reach different simplex vertices "
+        "on moderate-scale random data. P1 follow-up in TODO.md.",
+    )
+    def test_regularization_lambda_variations(self):
+        """Parity across lambda_reg=0 (unregularized) and lambda_reg>0
+        (shrink toward uniform). Known divergence; see xfail reason."""
+        rng = np.random.default_rng(55)
+        n_pre, n_control = 8, 5
+        Y_control = rng.normal(0, 1, (n_pre, n_control))
+        Y_treated = rng.normal(0, 1, n_pre)
+
+        for lr in (0.0, 0.01, 1.0):
+            w_rust, w_py = self._run_both_backends(Y_control, Y_treated, lambda_reg=lr)
+            np.testing.assert_allclose(
+                w_rust, w_py, atol=1e-7, rtol=1e-6,
+                err_msg=f"lambda_reg={lr}: weight divergence between Rust and Python",
+            )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not HAS_RUST_BACKEND, reason="Rust backend not available")
+class TestTROPRustEdgeCaseParity:
+    """Finding #23: TROP Rust grid-search + bootstrap parity on edge cases.
+
+    Existing parity tests (this file, ~line 1687 / 1757) compare ATT and
+    effect dictionaries on well-conditioned random data at ``atol=1e-6``.
+    Gap: rank-deficient Y on the grid-search path, seed reproducibility
+    on the bootstrap path.
+
+    Sizing kept minimal (n_units=6, n_periods=5–6) per the
+    `feedback_trop_heavy_tests` memory.
+    """
+
+    @staticmethod
+    def _make_correlated_panel(n_units=6, n_periods=5, n_treated=2):
+        """Panel with two control units nearly parallel to each other,
+        making the pre-period Y matrix near rank-deficient."""
+        import pandas as pd
+        rng = np.random.default_rng(13)
+        data = []
+        shared_path = rng.normal(0, 1, n_periods)
+        for i in range(n_units):
+            is_treated = i < n_treated
+            if i in (n_treated, n_treated + 1):
+                # Two control units share a near-identical trajectory
+                base = shared_path + 1e-10 * rng.normal(0, 1, n_periods)
+            else:
+                base = rng.normal(0, 1, n_periods)
+            for t in range(n_periods):
+                y = 5.0 + i * 0.3 + base[t]
+                treated = 1 if (is_treated and t >= n_periods - 2) else 0
+                if treated:
+                    y += 1.5
+                data.append({"unit": i, "time": t, "outcome": y, "treated": treated})
+        return pd.DataFrame(data)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="TROP Rust grid-search at trop_global.py:688 and Python fallback "
+        "at trop_global.py:753 diverge on rank-deficient Y: empirical ATT "
+        "gap ~6% on two near-parallel control units. Either (a) grid-winner "
+        "ties break differently between backends, or (b) the per-λ solver "
+        "itself reaches different stationary points under rank deficiency. "
+        "Finding #23 flagged this exact surface as the Phase-2 gap. Rust "
+        "vs Python unification is a P1 follow-up (TODO.md). This xfail "
+        "baselines the divergence so we notice when/if the backends align.",
+    )
+    def test_grid_search_rank_deficient_Y(self):
+        """Grid-search ATT parity on rank-deficient Y.
+
+        Known to fail: two near-parallel control units produce ~6% ATT
+        divergence between Rust and Python LOOCV grid-search. See xfail
+        reason for follow-up plan.
+        """
+        import sys
+        from unittest.mock import patch
+
+        from diff_diff import TROP
+
+        df = self._make_correlated_panel()
+        # n_bootstrap>=2 is required by TROP.__init__; we set the minimum.
+        # Bootstrap SE is NOT asserted here (see separate test below +
+        # xfail baseline for the RNG-algorithm mismatch between backends).
+        trop_params = dict(
+            method="global",
+            lambda_time_grid=[0.1, 1.0, 10.0],
+            lambda_unit_grid=[0.1, 1.0, 10.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=2,
+            seed=42,
+        )
+
+        trop_rust = TROP(**trop_params)
+        res_rust = trop_rust.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        trop_global_module = sys.modules["diff_diff.trop_global"]
+        with patch.object(trop_global_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_global_module, "_rust_loocv_grid_search_global", None), \
+             patch.object(trop_global_module, "_rust_bootstrap_trop_variance_global", None):
+            trop_py = TROP(**trop_params)
+            res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        # Primary assertion: the ATT point estimate at the chosen λ matches.
+        # This catches both (a) same λ chosen and (b) tied λ producing same fit.
+        np.testing.assert_allclose(
+            res_rust.att, res_py.att, atol=1e-6,
+            err_msg="Grid-search ATT divergence on rank-deficient Y: "
+            f"Rust={res_rust.att:.8f}, Python={res_py.att:.8f}",
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="Rust bootstrap uses its own RNG (rand crate) while Python uses "
+        "numpy's default_rng; same `seed=42` produces different bootstrap "
+        "replicate indices. Empirical SE divergence ~28%. Unifying the RNG "
+        "across backends is a P1 follow-up (TODO.md). This xfail baselines "
+        "the gap so we notice if/when the backends share an RNG seed-to-"
+        "bytestream mapping. Grid-search ATT parity is validated in the "
+        "previous test (rank-deficient Y path).",
+    )
+    def test_bootstrap_seed_reproducibility(self):
+        """Bootstrap SE parity under a fixed seed.
+
+        Known to fail: Rust and Python use different RNG backends, so
+        identical ``seed=42`` produces different bootstrap replicates.
+        See xfail reason for follow-up plan.
+        """
+        import sys
+        from unittest.mock import patch
+
+        from diff_diff import TROP
+
+        df = self._make_correlated_panel(n_units=6, n_periods=6, n_treated=2)
+        trop_params = dict(
+            method="global",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=10,
+            seed=42,
+        )
+
+        trop_rust = TROP(**trop_params)
+        res_rust = trop_rust.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        trop_global_module = sys.modules["diff_diff.trop_global"]
+        with patch.object(trop_global_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_global_module, "_rust_loocv_grid_search_global", None), \
+             patch.object(trop_global_module, "_rust_bootstrap_trop_variance_global", None):
+            trop_py = TROP(**trop_params)
+            res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        np.testing.assert_allclose(
+            res_rust.se, res_py.se, atol=1e-8,
+            err_msg=f"Bootstrap SE divergence under seed=42: "
+            f"Rust={res_rust.se:.10f}, Python={res_py.se:.10f}",
+        )
+
+
 class TestFallbackWhenNoRust:
     """Test that pure Python fallback works when Rust is unavailable."""
 
