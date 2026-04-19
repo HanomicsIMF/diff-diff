@@ -568,6 +568,20 @@ class BusinessReport:
         is_dynamic_control = (
             _canonical_control == "notyettreated" or is_stacked_dynamic
         )
+        # StaggeredTripleDiff comparison-group contract:
+        # ``n_control_units`` is a composite total that also includes
+        # the eligibility-denied / larger-cohort cells. Regardless of
+        # the ``control_group`` mode the valid fixed comparison is the
+        # never-enabled cohort (``staggered_triple_diff.py:384``,
+        # REGISTRY.md §StaggeredTripleDifference line 1730). Round-37
+        # P1 CI review on PR #318: under ``control_group="never_treated"``
+        # (i.e., ``_canonical_control == "nevertreated"``) the composite
+        # total was being narrated as "control". Surface
+        # ``n_never_enabled`` instead on both the ``nevertreated`` and
+        # the dynamic ``notyettreated`` modes.
+        if name == "StaggeredTripleDiffResults" and _canonical_control == "nevertreated":
+            n_never_enabled = _safe_int(getattr(r, "n_never_enabled", None))
+            n_control = None
         if is_dynamic_control:
             if name == "StaggeredTripleDiffResults":
                 n_never_enabled = _safe_int(getattr(r, "n_never_enabled", None))
@@ -1661,11 +1675,31 @@ def _render_headline_sentence(schema: Dict[str, Any]) -> str:
     magnitude = _format_value(abs(effect), unit, unit_kind)
     lo = h.get("ci_lower")
     hi = h.get("ci_upper")
+    # Round-37 P1 CI review on PR #318: on a finite point estimate
+    # whose CI bounds are NaN (undefined inference — survey-df
+    # collapse, zero effective clusters, etc.), the previous isinstance
+    # check passed because ``NaN`` is a ``float`` and the sentence
+    # rendered ``(... 95% CI: undefined to undefined)``. Gate on
+    # ``np.isfinite`` like DR's own headline renderer already does;
+    # add an explicit inference-unavailable trailer instead of the
+    # broken CI clause.
     ci_str = ""
-    if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+    ci_finite = (
+        isinstance(lo, (int, float))
+        and isinstance(hi, (int, float))
+        and np.isfinite(lo)
+        and np.isfinite(hi)
+    )
+    if ci_finite:
         lo_s = _format_value(lo, unit, unit_kind)
         hi_s = _format_value(hi, unit, unit_kind)
         ci_str = f" ({h.get('ci_level', 95)}% CI: {lo_s} to {hi_s})"
+    elif isinstance(lo, (int, float)) or isinstance(hi, (int, float)):
+        # At least one bound was supplied but not finite -> inference
+        # undefined. Replace the CI clause with an explicit marker so
+        # downstream prose does not claim a confidence interval that
+        # is not actually available.
+        ci_str = " (inference unavailable: confidence interval is undefined for this fit)"
     by_clause = f" by {magnitude}" if effect != 0 else ""
     return f"{treatment.capitalize()} {verb} {outcome}{by_clause}{ci_str}."
 

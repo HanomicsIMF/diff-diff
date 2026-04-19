@@ -1288,6 +1288,116 @@ class TestAnticipationPersistsOnRealResults:
         assert a["anticipation_periods"] == 1
 
 
+class TestStaggeredTripleDiffNeverTreatedFixedComparison:
+    """Round-37 P1 CI review on PR #318: ``StaggeredTripleDiffResults``
+    stores ``n_control_units`` as a composite total that also includes
+    the eligibility-denied cohorts. The valid fixed comparison under
+    ``control_group="never_treated"`` is the never-enabled cohort
+    (``staggered_triple_diff.py:384``, REGISTRY.md §StaggeredTripleDifference
+    line 1730). BR was previously narrating the composite total as
+    "control" on the ``nevertreated`` mode; the fix surfaces
+    ``n_never_enabled`` as the fixed comparison count on that path
+    too (the dynamic ``notyettreated`` path was already correct).
+    """
+
+    @staticmethod
+    def _stub(control_group: str):
+        class StaggeredTripleDiffResults:
+            pass
+
+        stub = StaggeredTripleDiffResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 800
+        stub.n_treated = 100
+        stub.n_control_units = 500  # composite total
+        stub.n_never_enabled = 300  # fixed never-enabled subset
+        stub.event_study_effects = None
+        stub.survey_metadata = None
+        stub.control_group = control_group
+        return stub
+
+    def test_never_treated_mode_surfaces_never_enabled_not_composite_total(self):
+        sample = BusinessReport(
+            self._stub("never_treated"), auto_diagnostics=False
+        ).to_dict()["sample"]
+        # Composite total must not be surfaced as the fixed control
+        # count on the ``nevertreated`` path.
+        assert sample["n_control"] is None, (
+            f"n_control must not carry the composite n_control_units "
+            f"total on StaggeredTripleDiff(control_group='never_treated'); "
+            f"got sample={sample!r}"
+        )
+        assert sample["n_never_enabled"] == 300
+
+    def test_never_treated_mode_summary_does_not_narrate_composite_as_control(self):
+        summary = BusinessReport(
+            self._stub("never_treated"), auto_diagnostics=False
+        ).summary()
+        # The composite total must not appear as "500 control" in prose.
+        import re
+
+        assert not re.search(r"\b500\s+control", summary), (
+            f"BR summary must not narrate the composite n_control_units "
+            f"total as 'control' on StaggeredTripleDiff(control_group="
+            f"'never_treated'); got: {summary!r}"
+        )
+
+
+class TestBRHeadlineOmitsBrokenCIOnUndefinedInference:
+    """Round-37 P1 CI review on PR #318: ``_extract_headline`` preserves
+    the fit's native CI even when it is undefined (e.g., survey-df
+    collapse produces finite ATT but NaN CI endpoints). The renderer
+    previously gated on ``isinstance(lo, (int, float))``, which accepts
+    ``NaN`` (a float) and rendered ``95% CI: undefined to undefined``.
+    Gate on ``np.isfinite`` instead, and emit an explicit
+    "inference unavailable" trailer when at least one bound is
+    non-finite. DR's own headline renderer already handled this
+    correctly (round-36 fix).
+    """
+
+    @staticmethod
+    def _stub_nan_ci():
+        class DiDResults:
+            pass
+
+        stub = DiDResults()
+        stub.att = 1.0
+        stub.se = float("nan")
+        stub.t_stat = float("nan")
+        stub.p_value = float("nan")
+        stub.conf_int = (float("nan"), float("nan"))
+        stub.alpha = 0.05
+        stub.n_obs = 200
+        stub.n_treated = 100
+        stub.n_control = 100
+        stub.survey_metadata = None
+        return stub
+
+    def test_summary_does_not_render_undefined_ci_interval(self):
+        summary = BusinessReport(
+            self._stub_nan_ci(), auto_diagnostics=False
+        ).summary()
+        lower = summary.lower()
+        # Must not render the broken CI interval fragment.
+        assert "undefined to undefined" not in lower, summary
+        assert "95% ci: nan" not in lower
+        # Must explicitly flag that inference is unavailable.
+        assert "inference unavailable" in lower
+
+    def test_full_report_does_not_render_undefined_ci_interval(self):
+        md = BusinessReport(
+            self._stub_nan_ci(), auto_diagnostics=False
+        ).full_report()
+        lower = md.lower()
+        assert "undefined to undefined" not in lower
+        assert "95% ci: nan" not in lower
+        assert "inference unavailable" in lower
+
+
 class TestStackedCleanControlSurfacesInSampleBlock:
     """Pre-emptive audit regression: ``StackedDiD`` exposes its control-
     group choice as ``clean_control`` (the public Wing-Freedman-
