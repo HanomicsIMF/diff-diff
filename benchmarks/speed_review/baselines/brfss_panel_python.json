@@ -1,0 +1,48 @@
+{
+  "scenario": "brfss_panel",
+  "backend": "python",
+  "has_rust_backend": false,
+  "total_seconds": 1.599043583,
+  "phases": {
+    "1_aggregate_survey_microdata_to_panel": {
+      "seconds": 1.530210625,
+      "ok": true,
+      "error": null
+    },
+    "2_cs_fit_with_stage2_survey_design": {
+      "seconds": 0.014581666999999854,
+      "ok": true,
+      "error": null
+    },
+    "3_inspect_pretrends": {
+      "seconds": 1.8749999997069722e-06,
+      "ok": true,
+      "error": null
+    },
+    "4_honest_did_grid": {
+      "seconds": 0.003660958000000214,
+      "ok": true,
+      "error": null
+    },
+    "5_sun_abraham_robustness": {
+      "seconds": 0.05053487499999987,
+      "ok": true,
+      "error": null
+    },
+    "6_practitioner_next_steps": {
+      "seconds": 4.9042000000110164e-05,
+      "ok": true,
+      "error": null
+    }
+  },
+  "metadata": {
+    "n_microdata_rows": 50000,
+    "n_states": 50,
+    "n_years": 10,
+    "n_strata": 10,
+    "n_psu": 200,
+    "n_bootstrap": 199
+  },
+  "diff_diff_version": "3.1.3",
+  "numpy_version": "2.0.2"
+}

@@ -1,0 +1,38 @@
+{
+  "scenario": "reversible_dcdh",
+  "backend": "rust",
+  "has_rust_backend": true,
+  "total_seconds": 0.44736124999999993,
+  "phases": {
+    "1_dcdh_fit_Lmax3_survey_TSL": {
+      "seconds": 0.319021125,
+      "ok": true,
+      "error": null
+    },
+    "2_inspect_placebo_and_summary": {
+      "seconds": 1.37499999997015e-06,
+      "ok": true,
+      "error": null
+    },
+    "3_honest_did_on_placebo": {
+      "seconds": 0.003557540999999942,
+      "ok": true,
+      "error": null
+    },
+    "4_heterogeneity_refit": {
+      "seconds": 0.12477833300000007,
+      "ok": true,
+      "error": null
+    }
+  },
+  "metadata": {
+    "n_groups": 120,
+    "n_periods": 10,
+    "pattern": "single_switch",
+    "L_max": 3,
+    "n_strata": 8,
+    "n_psu": 24
+  },
+  "diff_diff_version": "3.1.3",
+  "numpy_version": "2.0.2"
+}
