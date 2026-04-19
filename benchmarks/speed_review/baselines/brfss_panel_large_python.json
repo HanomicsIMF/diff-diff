@@ -2,42 +2,42 @@
   "scenario": "brfss_panel_large",
   "backend": "python",
   "has_rust_backend": false,
-  "total_seconds": 23.767577457999998,
+  "total_seconds": 24.406984582999996,
   "memory": {
     "available": true,
-    "start_mb": 398.88,
-    "peak_mb": 426.2,
-    "growth_mb": 27.33,
+    "start_mb": 401.05,
+    "peak_mb": 418.12,
+    "growth_mb": 17.08,
     "sampler_interval_s": 0.01
   },
   "phases": {
     "1_aggregate_survey_microdata_to_panel": {
-      "seconds": 23.684428833,
+      "seconds": 24.295822291,
       "ok": true,
       "error": null
     },
     "2_cs_fit_with_stage2_survey_design": {
-      "seconds": 0.012686416999997618,
+      "seconds": 0.012265292000002148,
       "ok": true,
       "error": null
     },
     "3_inspect_pretrends": {
-      "seconds": 2.4160000009487703e-06,
+      "seconds": 2.2919999977943917e-06,
       "ok": true,
       "error": null
     },
     "4_honest_did_grid": {
-      "seconds": 0.0016776669999991611,
+      "seconds": 0.0016812089999973523,
       "ok": true,
       "error": null
     },
     "5_sun_abraham_robustness": {
-      "seconds": 0.06832108300000428,
+      "seconds": 0.09669395799999592,
       "ok": true,
       "error": null
     },
     "6_practitioner_next_steps": {
-      "seconds": 0.0004543749999967872,
+      "seconds": 0.0005083750000025589,
       "ok": true,
       "error": null
     }

@@ -2,42 +2,42 @@
   "scenario": "geo_few_markets_small",
   "backend": "python",
   "has_rust_backend": false,
-  "total_seconds": 3.6806861669999997,
+  "total_seconds": 3.697791375,
   "memory": {
     "available": true,
-    "start_mb": 113.86,
-    "peak_mb": 123.45,
-    "growth_mb": 9.59,
+    "start_mb": 114.09,
+    "peak_mb": 124.02,
+    "growth_mb": 9.92,
     "sampler_interval_s": 0.01
   },
   "phases": {
     "1_sdid_jackknife_variance": {
-      "seconds": 0.5916519580000001,
+      "seconds": 0.593809709,
       "ok": true,
       "error": null
     },
     "2_sdid_bootstrap_variance_200": {
-      "seconds": 0.5638875840000002,
+      "seconds": 0.584832209,
       "ok": true,
       "error": null
     },
     "3_in_time_placebo": {
-      "seconds": 1.1952183330000001,
+      "seconds": 1.194314458,
       "ok": true,
       "error": null
     },
     "4_get_loo_effects_df": {
-      "seconds": 0.0009582500000000493,
+      "seconds": 0.0009036250000002966,
       "ok": true,
       "error": null
     },
     "5_sensitivity_to_zeta_omega": {
-      "seconds": 1.3288901659999999,
+      "seconds": 1.3238487909999996,
       "ok": true,
       "error": null
     },
     "6_weight_concentration": {
-      "seconds": 7.466600000061163e-05,
+      "seconds": 7.791699999959434e-05,
       "ok": true,
       "error": null
     }

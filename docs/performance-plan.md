@@ -41,20 +41,20 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
 <!-- TABLE:start scale_sweep_totals -->
 | Scenario | Scale | Python (s) | Rust (s) | Py/Rust |
 |---|---|---:|---:|---:|
-| 1. Staggered campaign | small | 0.50 | 0.50 | 1.0x |
-|  | medium | 0.72 | 0.75 | 1.0x |
-|  | large | 1.27 | 1.28 | 1.0x |
-| 2. Brand awareness survey | small | 0.20 | 0.21 | 1.0x |
-|  | medium | 0.80 | 0.51 | 1.6x |
-|  | large | 0.96 | 0.88 | 1.1x |
-| 3. BRFSS microdata -> CS panel | small | 1.57 | 1.65 | 1.0x |
-|  | medium | 5.94 | 6.30 | 0.9x |
-|  | large | 23.77 | 26.38 | 0.9x |
-| 4. SDiD few markets | small | 3.68 | 0.04 | 88.9x |
-|  | medium | 4.01 | 0.12 | 33.5x |
-|  | large | skip | 0.27 | - |
-| 5. Reversible dCDH | single | 0.84 | 0.79 | 1.1x |
-| 6. Pricing dose-response | single | 0.60 | 0.63 | 1.0x |
+| 1. Staggered campaign | small | 0.51 | 0.50 | 1.0x |
+|  | medium | 0.75 | 0.76 | 1.0x |
+|  | large | 1.33 | 1.38 | 1.0x |
+| 2. Brand awareness survey | small | 0.19 | 0.20 | 1.0x |
+|  | medium | 0.56 | 0.55 | 1.0x |
+|  | large | 1.09 | 1.00 | 1.1x |
+| 3. BRFSS microdata -> CS panel | small | 1.61 | 1.66 | 1.0x |
+|  | medium | 6.10 | 6.23 | 1.0x |
+|  | large | 24.41 | 24.94 | 1.0x |
+| 4. SDiD few markets | small | 3.70 | 0.04 | 89.5x |
+|  | medium | 3.99 | 0.12 | 33.6x |
+|  | large | skip | 0.26 | - |
+| 5. Reversible dCDH | single | 0.72 | 0.75 | 1.0x |
+| 6. Pricing dose-response | single | 0.59 | 0.60 | 1.0x |
 <!-- TABLE:end scale_sweep_totals -->
 
 ### Scaling findings
@@ -69,9 +69,10 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
    (`aggregate_survey` is entirely Python).
 2. **Staggered CS chain stays cheap across scales.** A 10x unit increase
    (150 -> 1,500) is a small-single-digit multiplier on total time.
-   ImputationDiD is the dominant phase at most (scale, backend)
-   combinations; SunAbraham takes the top spot at Rust medium but the
-   two phases together consistently account for ~70-80% of the chain.
+   ImputationDiD and SunAbraham together consistently account for
+   ~70-80% of the chain; either can be the single top phase at a given
+   (scale, backend) cell, which is a per-cell ranking detail not a
+   stable pattern to optimize against.
 3. **SDiD Rust gap is stable across scales, not emergent.** Python SDiD
    has a fixed per-jackknife-refit overhead that dominates even at small
    n. Rust stays sub-second through 500 units.
@@ -95,32 +96,32 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
 <!-- TABLE:start top_phases_by_scenario -->
 | Scenario | Scale | Backend | Top phase (%) | 2nd phase (%) | 3rd phase (%) |
 |---|---|---|---|---|---|
-| 1. Staggered campaign | large | python | `6_imputation_did_robustness` (51%) | `5_sun_abraham_robustness` (26%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
-| 1. Staggered campaign | large | rust | `6_imputation_did_robustness` (43%) | `5_sun_abraham_robustness` (32%) | `2_cs_fit_with_covariates_bootstrap999` (14%) |
-| 2. Brand awareness survey | large | python | `3_replicate_weights_jk1` (54%) | `4_multi_outcome_loop_3_metrics` (26%) | `7_event_study_plus_honest_did` (14%) |
-| 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (48%) | `4_multi_outcome_loop_3_metrics` (24%) | `7_event_study_plus_honest_did` (16%) |
+| 1. Staggered campaign | large | python | `6_imputation_did_robustness` (49%) | `5_sun_abraham_robustness` (28%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
+| 1. Staggered campaign | large | rust | `6_imputation_did_robustness` (40%) | `5_sun_abraham_robustness` (37%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
+| 2. Brand awareness survey | large | python | `3_replicate_weights_jk1` (57%) | `4_multi_outcome_loop_3_metrics` (22%) | `7_event_study_plus_honest_did` (14%) |
+| 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (54%) | `4_multi_outcome_loop_3_metrics` (22%) | `7_event_study_plus_honest_did` (14%) |
 | 3. BRFSS microdata -> CS panel | large | python | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
 | 3. BRFSS microdata -> CS panel | large | rust | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
 | 4. SDiD few markets | medium | python | `5_sensitivity_to_zeta_omega` (43%) | `3_in_time_placebo` (39%) | `2_sdid_bootstrap_variance_200` (9%) |
-| 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (40%) | `3_in_time_placebo` (29%) | `1_sdid_jackknife_variance` (16%) |
-| 5. Reversible dCDH | single | python | `1_dcdh_fit_Lmax3_survey_TSL` (58%) | `4_heterogeneity_refit` (41%) | `3_honest_did_on_placebo` (1%) |
-| 5. Reversible dCDH | single | rust | `4_heterogeneity_refit` (51%) | `1_dcdh_fit_Lmax3_survey_TSL` (49%) | `3_honest_did_on_placebo` (1%) |
-| 6. Pricing dose-response | single | python | `1_cdid_cubic_spline_bootstrap199` (26%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (25%) |
-| 6. Pricing dose-response | single | rust | `1_cdid_cubic_spline_bootstrap199` (26%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (24%) |
+| 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (40%) | `3_in_time_placebo` (30%) | `1_sdid_jackknife_variance` (16%) |
+| 5. Reversible dCDH | single | python | `4_heterogeneity_refit` (51%) | `1_dcdh_fit_Lmax3_survey_TSL` (48%) | `3_honest_did_on_placebo` (1%) |
+| 5. Reversible dCDH | single | rust | `4_heterogeneity_refit` (50%) | `1_dcdh_fit_Lmax3_survey_TSL` (49%) | `3_honest_did_on_placebo` (1%) |
+| 6. Pricing dose-response | single | python | `1_cdid_cubic_spline_bootstrap199` (25%) | `6_spline_sensitivity_num_knots2` (25%) | `5_spline_sensitivity_degree1` (25%) |
+| 6. Pricing dose-response | single | rust | `1_cdid_cubic_spline_bootstrap199` (25%) | `6_spline_sensitivity_num_knots2` (25%) | `3_cdid_event_study_pretrend` (25%) |
 <!-- TABLE:end top_phases_by_scenario -->
 
 Per-scenario phase narrative (cross-check against the table above after
 any rerun):
 
-- **Staggered campaign.** ImputationDiD robustness and SunAbraham are
-  the two largest phases at every scale, together accounting for
-  ~70-80% of the chain. Their relative order is not stable across
-  backend and scale: ImputationDiD is the single largest phase under
-  Python at every scale and under Rust at small and large, but at
-  Rust medium SunAbraham clearly leads (roughly 1.7x the ImputationDiD
-  phase there). CS fit with `n_bootstrap=999` (both with and without
-  covariates) is well-vectorized and sits well below both in the
-  ranking.
+- **Staggered campaign.** ImputationDiD robustness and SunAbraham
+  consistently account for ~70-80% of the chain at every scale. They
+  sit in a narrow phase-share band (each typically ~25-50%) and which
+  one leads varies by (scale, backend) and can flip across reruns at
+  medium scale where the two are close; see the table for the exact
+  ordering per cell. CS fit with `n_bootstrap=999` (both with and
+  without covariates) is well-vectorized and sits well below both in
+  the ranking. Either phase is a legitimate optimization target; the
+  aggregate share is what drives the "next hotspot" priority.
 - **Brand awareness survey.** At small scale HonestDiD dominates. At
   medium the backends diverge: on Python JK1 leads clearly (about
   2.2x the multi-outcome loop), while on Rust the multi-outcome loop
@@ -143,12 +144,13 @@ any rerun):
   they stay in the top ranks but of a sub-second total runtime. That
   is the Python-vs-Rust story for this scenario.
 - **Reversible dCDH.** Main fit and heterogeneity refit are the two
-  largest phases by design - together effectively the whole chain. The
-  split is not stable across backends: under Python the main fit is
-  the larger of the two (roughly 58/41), under Rust the heterogeneity
-  refit slightly leads (roughly 51/49). Both fits run under the same
-  `SurveyDesign` and rebuild shared TSL scaffolding - that is the
-  optimization opportunity.
+  largest phases by design - together effectively the whole chain,
+  with the remainder on HonestDiD at <2%. The two phases sit within a
+  few percentage points of each other at this shape and the leader
+  can flip across reruns under either backend. Both fits run under
+  the same `SurveyDesign` and rebuild shared TSL scaffolding - that
+  is the optimization opportunity, independent of which side is
+  slightly larger on a given measurement.
 - **Pricing dose-response.** Four spline fits account for essentially all
   runtime; linear scaling in variant count.
 
@@ -157,7 +159,7 @@ any rerun):
 | # | Location | Scenario + scale | Signal | Recommended action |
 |---|---|---|---|---|
 | 1 | `diff_diff/survey.py:1160` `_compute_stratified_psu_meat` | BRFSS @ 1M rows | dominates BRFSS chain at all scales, ~100% at 1M rows | **Algorithmic fix, highest priority.** Function called once per (state, year) cell (500 calls); per-call work rebuilds stratum-PSU scaffolding every time. Precompute stratum indexes once at `aggregate_survey` top-level and reuse. |
-| 2 | `diff_diff/imputation.py` ImputationDiD fit | Staggered CS @ 1,500 units | dominant phase under Python at every scale and under Rust at small/large; at Rust medium SunAbraham takes the top spot. Together ImputationDiD + SunAbraham are ~70-80% of the chain at every scale | **Investigate only after BRFSS fix lands.** Total chain is well under practitioner-perceptible threshold; candidate follow-up. |
+| 2 | `diff_diff/imputation.py` ImputationDiD fit (+ `diff_diff/sun_abraham.py` SunAbraham fit) | Staggered CS @ 1,500 units | together consistently ~70-80% of the chain at every scale; either can be the top phase at a given (scale, backend) cell | **Investigate only after BRFSS fix lands.** Total chain is well under practitioner-perceptible threshold; candidate follow-up. Either phase is a legitimate target. |
 | 3 | `diff_diff/utils.py:1434` `_sc_weight_fw_numpy` | SDiD python @ any scale | dominates Python SDiD at all scales | **Already ported to Rust.** Python fallback acceptable as a teaching/safety path; non-production for n > 100. Python skipped at n=500 (jackknife cost would exceed 4 minutes per run). |
 | 4 | `diff_diff/chaisemartin_dhaultfoeuille.py` dCDH fit + heterogeneity | Reversible (single scale) | main fit and survey-aware heterogeneity refit each rebuild TSL scaffolding; heterogeneity phase is as expensive as the main fit | **Cache/precompute** - heterogeneity refit duplicates the main fit's TSL setup under the same `SurveyDesign`. Not P0; newer code path (v3.1) never optimization-reviewed. |
 | 5 | `diff_diff/continuous_did.py` CDiD spline bootstrap | Dose-response (single scale) | four spline fits ~equal, linear in variant count | **Leave alone** - well under perceptible threshold. |
@@ -174,20 +176,20 @@ in `benchmarks/speed_review/baselines/mem_profile_brfss_large_<backend>.txt`.
 <!-- TABLE:start memory_by_scenario -->
 | Scenario | Scale | Py peak RSS (MB) | Py growth (MB) | Rust peak RSS (MB) | Rust growth (MB) |
 |---|---|---:|---:|---:|---:|
-| 1. Staggered campaign | small | 141 | 27 | 147 | 33 |
-|  | medium | 222 | 77 | 252 | 101 |
-|  | large | 485 | 262 | 585 | 331 |
-| 2. Brand awareness survey | small | 127 | 11 | 128 | 13 |
-|  | medium | 189 | 56 | 184 | 50 |
-|  | large | 347 | 150 | 342 | 153 |
-| 3. BRFSS microdata -> CS panel | small | 134 | 12 | 134 | 13 |
-|  | medium | 210 | 18 | 211 | 16 |
-|  | large | 426 | 27 | 427 | 29 |
-| 4. SDiD few markets | small | 123 | 10 | 115 | 2 |
-|  | medium | 146 | 6 | 117 | 0 |
+| 1. Staggered campaign | small | 143 | 28 | 151 | 36 |
+|  | medium | 227 | 79 | 254 | 99 |
+|  | large | 472 | 245 | 588 | 322 |
+| 2. Brand awareness survey | small | 127 | 12 | 128 | 13 |
+|  | medium | 188 | 54 | 185 | 50 |
+|  | large | 327 | 139 | 336 | 142 |
+| 3. BRFSS microdata -> CS panel | small | 133 | 11 | 136 | 15 |
+|  | medium | 210 | 17 | 212 | 15 |
+|  | large | 418 | 17 | 429 | 33 |
+| 4. SDiD few markets | small | 124 | 10 | 116 | 1 |
+|  | medium | 152 | 8 | 118 | 0 |
 |  | large | skip | skip | 118 | 0 |
 | 5. Reversible dCDH | single | 135 | 22 | 135 | 21 |
-| 6. Pricing dose-response | single | 122 | 8 | 124 | 10 |
+| 6. Pricing dose-response | single | 123 | 9 | 121 | 8 |
 <!-- TABLE:end memory_by_scenario -->
 
 The ~115-130 MB floor is the Python + diff-diff + numpy import footprint;

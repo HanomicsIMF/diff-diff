@@ -2,47 +2,47 @@
   "scenario": "brand_awareness_survey_small",
   "backend": "rust",
   "has_rust_backend": true,
-  "total_seconds": 0.209049209,
+  "total_seconds": 0.19669587500000008,
   "memory": {
     "available": true,
-    "start_mb": 115.23,
-    "peak_mb": 128.47,
-    "growth_mb": 13.23,
+    "start_mb": 114.78,
+    "peak_mb": 127.91,
+    "growth_mb": 13.12,
     "sampler_interval_s": 0.01
   },
   "phases": {
     "1_naive_fit_no_survey_design": {
-      "seconds": 0.0016902500000000042,
+      "seconds": 0.0016678749999999853,
       "ok": true,
       "error": null
     },
     "2_tsl_strata_psu_fpc": {
-      "seconds": 0.005705791000000016,
+      "seconds": 0.005756874999999995,
       "ok": true,
       "error": null
     },
     "3_replicate_weights_jk1": {
-      "seconds": 0.01469479100000004,
+      "seconds": 0.012066042000000055,
       "ok": true,
       "error": null
     },
     "4_multi_outcome_loop_3_metrics": {
-      "seconds": 0.05941337499999999,
+      "seconds": 0.05887395800000006,
       "ok": true,
       "error": null
     },
     "5_check_parallel_trends": {
-      "seconds": 0.009663624999999954,
+      "seconds": 0.008938375000000054,
       "ok": true,
       "error": null
     },
     "6_placebo_refit_pre_period": {
-      "seconds": 0.02708766600000001,
+      "seconds": 0.0274049999999999,
       "ok": true,
       "error": null
     },
     "7_event_study_plus_honest_did": {
-      "seconds": 0.090782625,
+      "seconds": 0.08197737500000002,
       "ok": true,
       "error": null
     }

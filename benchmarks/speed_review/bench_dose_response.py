@@ -19,14 +19,21 @@ from bench_shared import run_scenario
 
 
 def build_data(seed=42):
+    # cohort_periods=[3] pins the single treated cohort to period 3 to
+    # match the documented scenario shape. The generator default would
+    # be period 2, which would desync this scenario from the spec in
+    # docs/performance-scenarios.md and from the binarized DiD
+    # comparison phase below.
     df = generate_continuous_did_data(
-        n_units=500, n_periods=6, seed=seed,
+        n_units=500, n_periods=6, cohort_periods=[3], seed=seed,
     )
-    # Set first_treat to period 3 for all treated; ContinuousDiD expects
-    # staggered/first_treat format.
-    if "first_treat" not in df.columns:
-        treated_mask = df.get("dose", pd.Series(0.0, index=df.index)) > 0
-        df["first_treat"] = np.where(treated_mask, 3, 0)
+    positive_first_treat = sorted(
+        v for v in df["first_treat"].unique() if v > 0
+    )
+    assert len(positive_first_treat) == 1, (
+        f"dose-response scenario expects exactly one treated cohort; "
+        f"got first_treat values {positive_first_treat}"
+    )
     return df
 
 
@@ -67,9 +74,15 @@ def main():
         )
 
     def binarized_comparison():
+        # Derive post from the actual first_treat cohort in the data so
+        # this phase is aligned with the CDiD fits above. A hardcoded
+        # period cutoff would silently desync if the DGP cohort moves.
+        treated_cohort = int(
+            sorted(v for v in data["first_treat"].unique() if v > 0)[0]
+        )
         data_bin = data.copy()
         data_bin["treated_any"] = (data_bin["dose"] > 0).astype(int)
-        data_bin["post"] = (data_bin["period"] >= 3).astype(int)
+        data_bin["post"] = (data_bin["period"] >= treated_cohort).astype(int)
         did = DifferenceInDifferences(robust=True)
         results["binarized"] = did.fit(
             data_bin, outcome="outcome", treatment="treated_any", time="post",
