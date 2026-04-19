@@ -1804,8 +1804,12 @@ class TestRound5Fixes:
         )
         model_auto.fit(X, y)
 
-        # Weights should be populated after fit
-        assert model_auto.weights is not None
+        # Configured state (`self.weights`) stays at user's None — fit
+        # does NOT mutate configuration. The fit-time effective weights
+        # (derived from the survey design) are stored on the fitted
+        # attribute `_fit_weights_`.
+        assert model_auto.weights is None
+        assert model_auto._fit_weights_ is not None
 
         # Coefficients should match
         np.testing.assert_allclose(

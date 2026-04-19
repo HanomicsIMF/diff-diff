@@ -2271,12 +2271,15 @@ class LinearRegression:
         self.survey_design = survey_design  # ResolvedSurveyDesign or None
         # Resolve vcov_type from the legacy `robust` alias via the shared helper.
         self.vcov_type = resolve_vcov_type(robust, vcov_type)
-        # Track whether `vcov_type` was supplied explicitly. Used at fit
-        # time to decide whether to remap implicit ``"classical"`` to
-        # ``"hc1"`` under the legacy ``robust=False`` + cluster
-        # backward-compat rule. Resolved in ``fit()`` (not ``__init__``)
-        # so the remap also fires when the caller uses the documented
-        # ``fit(cluster_ids=...)`` override rather than the constructor.
+        # Preserve the raw constructor arg (possibly None) so `fit()` can
+        # distinguish "alias-derived classical" from "explicit classical".
+        # This is the single source of truth for backward-compat remap
+        # decisions (robust=False + cluster -> CR1). `fit()` treats the
+        # configured state as IMMUTABLE and computes all effective fit-
+        # time values as locals, so repeat fits with different cluster
+        # or survey context produce the correct result without state
+        # drift between calls.
+        self._vcov_type_arg = vcov_type
         self._vcov_type_explicit = vcov_type is not None
 
         # Fitted attributes (set by fit())
@@ -2337,37 +2340,33 @@ class LinearRegression:
         # Use provided cluster_ids or fall back to instance-level
         effective_cluster_ids = cluster_ids if cluster_ids is not None else self.cluster_ids
 
+        # Resolve the effective fit-time vcov_type WITHOUT mutating self.
         # Legacy-alias backward compat: when the user supplied
         # ``robust=False`` without an explicit ``vcov_type`` and a cluster
-        # structure is present at fit time (either via the constructor
-        # ``cluster_ids`` or the documented ``fit(cluster_ids=...)``
-        # override), remap the implicit ``"classical"`` to ``"hc1"`` so
-        # the call dispatches to CR1 instead of raising
-        # ``classical SEs are one-way only``. The estimator classes
-        # (DifferenceInDifferences / MultiPeriodDiD / TwoWayFixedEffects)
-        # apply the same remap at their respective fit-time call sites;
-        # this block is the public-API equivalent for direct
-        # ``LinearRegression`` callers. Users who genuinely want non-
-        # robust SEs can pass ``vcov_type="classical"`` explicitly.
-        # Store the per-fit effective vcov_type on a local so a later
-        # ``fit()`` call with different cluster context re-evaluates.
+        # structure is present at fit time, remap the implicit
+        # ``"classical"`` to ``"hc1"`` so the call dispatches to CR1
+        # instead of raising. Per-fit local only; the configured
+        # ``self.vcov_type`` is left untouched so a subsequent unclustered
+        # fit continues to use classical SEs.
+        _fit_vcov_type = self.vcov_type
         if (
             not self._vcov_type_explicit
-            and self.vcov_type == "classical"
+            and _fit_vcov_type == "classical"
             and effective_cluster_ids is not None
         ):
             warnings.warn(
                 "LinearRegression(robust=False) with clustered fit "
                 "(cluster_ids=...) historically produced CR1 cluster-"
                 "robust SEs. To preserve that behavior, vcov_type has "
-                "been remapped from 'classical' to 'hc1'. Pass "
+                "been remapped from 'classical' to 'hc1' for THIS fit "
+                "only (configured state on `self` is preserved). Pass "
                 "vcov_type='hc1' explicitly to silence this warning, or "
-                "vcov_type='classical' (with cluster_ids=None) for non-"
-                "robust SEs.",
+                "vcov_type='classical' (with cluster_ids=None) for "
+                "non-robust SEs.",
                 UserWarning,
                 stacklevel=2,
             )
-            self.vcov_type = "hc1"
+            _fit_vcov_type = "hc1"
 
         # Determine if survey vcov should be used
         _use_survey_vcov = False
@@ -2377,7 +2376,9 @@ class LinearRegression:
             if isinstance(self.survey_design, ResolvedSurveyDesign):
                 _use_survey_vcov = self.survey_design.needs_survey_vcov
                 # Canonicalize weights from survey_design to ensure consistency
-                # between coefficient estimation and survey vcov computation
+                # between coefficient estimation and survey vcov computation.
+                # Locals only — configured self.weights / self.weight_type
+                # are preserved.
                 if self.weights is not None and self.weights is not self.survey_design.weights:
                     warnings.warn(
                         "Explicit weights= differ from survey_design.weights. "
@@ -2387,11 +2388,21 @@ class LinearRegression:
                         UserWarning,
                         stacklevel=2,
                     )
-                self.weights = self.survey_design.weights
-                self.weight_type = self.survey_design.weight_type
 
-        if self.weights is not None:
-            self.weights = _validate_weights(self.weights, self.weight_type, X.shape[0])
+        # Resolve effective fit-time weights/weight_type WITHOUT mutating
+        # self. When a survey design is present, canonicalize weights from
+        # the design so coefficient estimation and survey vcov agree.
+        # Otherwise use what the user configured.
+        _fit_weights = self.weights
+        _fit_weight_type = self.weight_type
+        if self.survey_design is not None:
+            from diff_diff.survey import ResolvedSurveyDesign as _RSD2
+
+            if isinstance(self.survey_design, _RSD2):
+                _fit_weights = self.survey_design.weights
+                _fit_weight_type = self.survey_design.weight_type
+        if _fit_weights is not None:
+            _fit_weights = _validate_weights(_fit_weights, _fit_weight_type, X.shape[0])
 
         # Inject cluster as PSU for survey variance when no PSU specified.
         # Use a local variable to avoid mutating self.survey_design, which
@@ -2410,7 +2421,7 @@ class LinearRegression:
                     _effective_survey_design, effective_cluster_ids
                 )
 
-        if self.vcov_type != "classical" or effective_cluster_ids is not None:
+        if _fit_vcov_type != "classical" or effective_cluster_ids is not None:
             # Use solve_ols with robust/cluster SEs
             # When survey vcov will be used, skip standard vcov computation
             coefficients, residuals, fitted, vcov = solve_ols(
@@ -2420,20 +2431,20 @@ class LinearRegression:
                 return_fitted=True,
                 return_vcov=not _use_survey_vcov,
                 rank_deficient_action=self.rank_deficient_action,
-                weights=self.weights,
-                weight_type=self.weight_type,
-                vcov_type=self.vcov_type,
+                weights=_fit_weights,
+                weight_type=_fit_weight_type,
+                vcov_type=_fit_vcov_type,
             )
             # For hc2_bm, compute per-coefficient Bell-McCaffrey DOF. Both
             # the one-way HC2+BM case and the cluster CR2 case are supported;
             # the weighted cluster path (guarded in compute_robust_vcov) is
             # Phase 2+ and is skipped here (falls through to self._bm_dof = None).
             if (
-                self.vcov_type == "hc2_bm"
+                _fit_vcov_type == "hc2_bm"
                 and not _use_survey_vcov
                 and vcov is not None
                 and not np.all(np.isnan(coefficients))
-                and not (effective_cluster_ids is not None and self.weights is not None)
+                and not (effective_cluster_ids is not None and _fit_weights is not None)
             ):
                 # Identified columns for DOF (rank-deficient case sets NaN coefs).
                 nan_mask = np.isnan(coefficients)
@@ -2442,8 +2453,8 @@ class LinearRegression:
                         X,
                         residuals,
                         cluster_ids=effective_cluster_ids,
-                        weights=self.weights,
-                        weight_type=self.weight_type,
+                        weights=_fit_weights,
+                        weight_type=_fit_weight_type,
                         vcov_type="hc2_bm",
                         return_dof=True,
                     )
@@ -2455,8 +2466,8 @@ class LinearRegression:
                             X[:, kept],
                             residuals,
                             cluster_ids=effective_cluster_ids,
-                            weights=self.weights,
-                            weight_type=self.weight_type,
+                            weights=_fit_weights,
+                            weight_type=_fit_weight_type,
                             vcov_type="hc2_bm",
                             return_dof=True,
                         )
@@ -2475,8 +2486,8 @@ class LinearRegression:
                 return_fitted=True,
                 return_vcov=False,
                 rank_deficient_action=self.rank_deficient_action,
-                weights=self.weights,
-                weight_type=self.weight_type,
+                weights=_fit_weights,
+                weight_type=_fit_weight_type,
             )
             # Compute classical OLS variance-covariance matrix
             # Handle rank-deficient case: use effective rank for df
@@ -2487,11 +2498,11 @@ class LinearRegression:
             # Effective n for df: fweights use sum(w), pweight/aweight with
             # zeros use positive-weight count (zero-weight rows don't contribute)
             n_eff_df = n
-            if self.weights is not None:
-                if self.weight_type == "fweight":
-                    n_eff_df = int(round(np.sum(self.weights)))
-                elif np.any(self.weights == 0):
-                    n_eff_df = int(np.count_nonzero(self.weights > 0))
+            if _fit_weights is not None:
+                if _fit_weight_type == "fweight":
+                    n_eff_df = int(round(np.sum(_fit_weights)))
+                elif np.any(_fit_weights == 0):
+                    n_eff_df = int(np.count_nonzero(_fit_weights > 0))
 
             if k_effective == 0:
                 # All coefficients dropped - no valid inference
@@ -2500,9 +2511,9 @@ class LinearRegression:
                 # Rank-deficient: compute vcov for identified coefficients only
                 kept_cols = np.where(~nan_mask)[0]
                 X_reduced = X[:, kept_cols]
-                if self.weights is not None:
+                if _fit_weights is not None:
                     # Weighted classical vcov: use weighted RSS and X'WX
-                    w = self.weights
+                    w = _fit_weights
                     mse = np.sum(w * residuals**2) / (n_eff_df - k_effective)
                     XtWX_reduced = X_reduced.T @ (X_reduced * w[:, np.newaxis])
                     try:
@@ -2521,9 +2532,9 @@ class LinearRegression:
                 vcov = _expand_vcov_with_nan(vcov_reduced, k, kept_cols)
             else:
                 # Full rank: standard computation
-                if self.weights is not None:
+                if _fit_weights is not None:
                     # Weighted classical vcov: use weighted RSS and X'WX
-                    w = self.weights
+                    w = _fit_weights
                     mse = np.sum(w * residuals**2) / (n_eff_df - k)
                     XtWX = X.T @ (X * w[:, np.newaxis])
                     try:
@@ -2558,7 +2569,7 @@ class LinearRegression:
                             y,
                             coefficients[kept_cols],
                             _effective_survey_design,
-                            weight_type=self.weight_type,
+                            weight_type=_fit_weight_type,
                         )
                         vcov = _expand_vcov_with_nan(vcov_reduced, X.shape[1], kept_cols)
                     else:
@@ -2570,7 +2581,7 @@ class LinearRegression:
                         y,
                         coefficients,
                         _effective_survey_design,
-                        weight_type=self.weight_type,
+                        weight_type=_fit_weight_type,
                     )
                 # Store effective replicate df only when replicates were dropped
                 if _n_valid_rep < _effective_survey_design.n_replicates:
@@ -2602,6 +2613,15 @@ class LinearRegression:
         self._X = X
         self.n_obs_ = X.shape[0]
         self.n_params_ = X.shape[1]
+        # Preserve the effective fit-time weights / weight_type / vcov_type
+        # as fitted attributes so downstream helpers (e.g., compute_deff)
+        # can read what was actually used without needing to re-derive
+        # from the configured state. These are per-fit values; a repeat
+        # fit overwrites them. Sklearn convention: fitted attrs end in
+        # `_` (so they are distinguishable from config).
+        self._fit_weights_ = _fit_weights
+        self._fit_weight_type_ = _fit_weight_type
+        self._fit_vcov_type_ = _fit_vcov_type
 
         # Compute effective number of parameters (excluding dropped columns)
         # This is needed for correct degrees of freedom in inference
@@ -2610,11 +2630,11 @@ class LinearRegression:
         # Effective n for df: fweights use sum(w), pweight/aweight with
         # zeros use positive-weight count (matches compute_robust_vcov)
         n_eff_df = self.n_obs_
-        if self.weights is not None:
-            if self.weight_type == "fweight":
-                n_eff_df = int(round(np.sum(self.weights)))
-            elif np.any(self.weights == 0):
-                n_eff_df = int(np.count_nonzero(self.weights > 0))
+        if _fit_weights is not None:
+            if _fit_weight_type == "fweight":
+                n_eff_df = int(round(np.sum(_fit_weights)))
+            elif np.any(_fit_weights == 0):
+                n_eff_df = int(np.count_nonzero(_fit_weights > 0))
         self.df_ = n_eff_df - self.n_params_effective_ - df_adjustment
 
         # Survey degrees of freedom: n_PSU - n_strata (overrides standard df)
@@ -2664,15 +2684,20 @@ class LinearRegression:
                     survey_se=nan_arr.copy(),
                     coefficient_names=coefficient_names,
                 )
-            # Compute on kept columns only
+            # Compute on kept columns only. Use fit-time effective weights
+            # (captured in `self._fit_weights_`) so survey-canonicalized
+            # weights are used for the DEFF computation, not the
+            # user-configured state.
             X_kept = self._X[:, kept]
             vcov_kept = self.vcov_[np.ix_(kept, kept)]
+            _deff_weights = getattr(self, "_fit_weights_", self.weights)
+            _deff_weight_type = getattr(self, "_fit_weight_type_", self.weight_type)
             deff_kept = compute_deff_diagnostics(
                 X_kept,
                 self.residuals_,
                 vcov_kept,
-                self.weights,
-                weight_type=self.weight_type,
+                _deff_weights,
+                weight_type=_deff_weight_type,
             )
             # Expand back to full size with NaN for dropped
             k = len(self.coefficients_)
@@ -2694,12 +2719,14 @@ class LinearRegression:
                 coefficient_names=coefficient_names,
             )
 
+        _deff_weights = getattr(self, "_fit_weights_", self.weights)
+        _deff_weight_type = getattr(self, "_fit_weight_type_", self.weight_type)
         return compute_deff_diagnostics(
             self._X,
             self.residuals_,
             self.vcov_,
-            self.weights,
-            weight_type=self.weight_type,
+            _deff_weights,
+            weight_type=_deff_weight_type,
             coefficient_names=coefficient_names,
         )
 

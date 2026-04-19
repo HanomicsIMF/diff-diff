@@ -155,13 +155,13 @@ class DifferenceInDifferences:
         self.robust = robust
         self.cluster = cluster
         self.vcov_type = resolve_vcov_type(robust, vcov_type)
-        # Track whether the user supplied `vcov_type` explicitly. When it
-        # was implicit (alias-derived) and a cluster structure is present
-        # at fit time, `_resolve_effective_vcov_type` remaps implicit
-        # `"classical"` to `"hc1"` to preserve the legacy behavior where
-        # `robust=False` + `cluster=...` silently produced CR1 cluster-
-        # robust SEs rather than raising. Set only in __init__ so
-        # set_params drives the flag transitions there.
+        # Preserve the raw constructor arg (possibly None) alongside the
+        # resolved `vcov_type`. `get_params()` returns the raw arg so
+        # sklearn clones preserve the implicit-vs-explicit distinction
+        # (and therefore the backward-compat remap). Set only in __init__
+        # and updated in ``set_params`` so the flag transitions match the
+        # user-visible parameter state.
+        self._vcov_type_arg = vcov_type
         self._vcov_type_explicit = vcov_type is not None
         self.alpha = alpha
         self.inference = inference
@@ -794,15 +794,25 @@ class DifferenceInDifferences:
         """
         Get estimator parameters (sklearn-compatible).
 
+        Returns the *raw* user input for ``vcov_type`` (``None`` when
+        the value was alias-derived from ``robust``). This preserves
+        the backward-compat remap semantics across clones: a clone of
+        ``DifferenceInDifferences(robust=False, cluster="unit")`` must
+        behave the same as the original on a clustered fit, which
+        requires the clone's ``__init__`` to see ``vcov_type=None`` (so
+        it flags ``_vcov_type_explicit=False``) rather than the
+        alias-resolved ``"classical"`` (which would mark it explicit
+        and skip the CR1 remap).
+
         Returns
         -------
         Dict[str, Any]
-            Estimator parameters.
+            Estimator parameters suitable for passing to ``__init__``.
         """
         return {
             "robust": self.robust,
             "cluster": self.cluster,
-            "vcov_type": self.vcov_type,
+            "vcov_type": self._vcov_type_arg,  # raw, possibly None
             "alpha": self.alpha,
             "inference": self.inference,
             "n_bootstrap": self.n_bootstrap,
@@ -861,14 +871,16 @@ class DifferenceInDifferences:
         for key, value in params.items():
             setattr(self, key, value)
         self.vcov_type = resolved_vcov
-        # Update the explicit-vs-alias flag: `vcov_type=` in the call marks
-        # the stored value as explicit; `robust=` alone re-derives via the
-        # alias and must clear the flag so a subsequent cluster fit can
-        # remap the implicit "classical" back to CR1.
+        # Update the raw-vs-resolved tracking. `vcov_type=` in the call
+        # updates `_vcov_type_arg` to whatever the user passed (including
+        # None); `robust=` alone clears the raw arg since the resolution
+        # re-derives from the alias. The `_vcov_type_explicit` flag is
+        # True iff the raw arg is non-None.
         if "vcov_type" in params:
-            self._vcov_type_explicit = True
+            self._vcov_type_arg = params["vcov_type"]
         elif "robust" in params:
-            self._vcov_type_explicit = False
+            self._vcov_type_arg = None
+        self._vcov_type_explicit = self._vcov_type_arg is not None
         return self
 
     def _resolve_effective_vcov_type(self, effective_cluster_ids) -> str:
