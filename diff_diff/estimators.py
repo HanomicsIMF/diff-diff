@@ -1291,6 +1291,27 @@ class MultiPeriodDiD(DifferenceInDifferences):
         # Determine if survey vcov should be used
         _use_survey_vcov = resolved_survey is not None and resolved_survey.needs_survey_vcov
 
+        # Reject cluster + vcov_type="hc2_bm": `_compute_cr2_bm` produces CR2
+        # per-coefficient DOF, but the post-period-average contrast needs a
+        # cluster-aware contrast-BM DOF that isn't implemented yet. Pairing
+        # CR2 SEs with one-way BM DOF would be a broken hybrid — reject with
+        # a clear error until the cluster-aware contrast DOF is in place.
+        # Tracked in TODO.md. Users can drop cluster for one-way HC2+BM, or
+        # drop vcov_type for CR1 cluster-robust.
+        if (
+            self.vcov_type == "hc2_bm"
+            and effective_cluster_ids is not None
+            and not _use_survey_vcov
+        ):
+            raise NotImplementedError(
+                "MultiPeriodDiD(cluster=..., vcov_type='hc2_bm') is not yet "
+                "supported: the cluster-aware CR2 Bell-McCaffrey contrast DOF "
+                "for the post-period average has not been implemented. "
+                "Workarounds: use vcov_type='hc2_bm' without cluster (one-way "
+                "HC2 + BM DOF), or use vcov_type='hc1' with cluster (CR1 "
+                "Liang-Zeger cluster-robust)."
+            )
+
         # Note: Wild bootstrap for multi-period effects is complex (multiple coefficients)
         # For now, we use analytical inference even if inference="wild_bootstrap"
         coefficients, residuals, fitted, vcov = solve_ols(

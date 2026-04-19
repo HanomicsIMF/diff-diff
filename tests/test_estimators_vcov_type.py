@@ -251,6 +251,27 @@ class TestFitBehavior:
         # SEs must differ — vcov_type actually changed the variance family.
         assert r_hc1.avg_se != pytest.approx(r_classical.avg_se, abs=1e-10)
 
+    def test_multi_period_cluster_plus_hc2_bm_rejected(self):
+        """MultiPeriodDiD rejects cluster + hc2_bm until contrast-aware cluster BM lands.
+
+        The CR2 per-coefficient DOF is available, but the post-period-average
+        contrast DOF under cluster-robust Bell-McCaffrey is not yet
+        implemented. Pairing CR2 SEs with one-way BM DOF would be a broken
+        hybrid. Fail fast with a clear workaround.
+        """
+        rng = np.random.default_rng(2)
+        rows = []
+        for i in range(20):
+            treated = int(i >= 10)
+            for t in range(3):
+                y = rng.normal(0.0, 1.0) + 0.5 * treated * (t >= 1)
+                rows.append({"unit": i, "time": t, "treated": treated, "y": y})
+        data = pd.DataFrame(rows)
+
+        est = MultiPeriodDiD(vcov_type="hc2_bm", cluster="unit")
+        with pytest.raises(NotImplementedError, match="cluster"):
+            est.fit(data, outcome="y", treatment="treated", time="time")
+
     def test_multi_period_fit_honors_hc2_bm(self):
         """MultiPeriodDiD.fit with vcov_type='hc2_bm' uses Bell-McCaffrey DOF.
 

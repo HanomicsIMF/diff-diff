@@ -929,6 +929,59 @@ def _solve_ols_numpy(
 _VALID_VCOV_TYPES = frozenset({"classical", "hc1", "hc2", "hc2_bm"})
 
 
+def _validate_vcov_args(
+    vcov_type: str,
+    cluster_ids: Optional[np.ndarray],
+    weights: Optional[np.ndarray],
+) -> None:
+    """Shared validation for ``vcov_type`` / ``cluster_ids`` / ``weights`` combinations.
+
+    Called from both the public :func:`compute_robust_vcov` and the internal
+    :func:`_compute_robust_vcov_numpy` so that any call path reaches the same
+    raise. Validation was previously only in the public wrapper, which meant
+    direct calls from ``solve_ols`` / ``_solve_ols_numpy`` could silently
+    reach an unsupported code path with one-way formulas or drop weights.
+    Reviewer P0: prevent that class of silent wrong inference.
+
+    Raises
+    ------
+    ValueError
+        If ``vcov_type`` is not in the allowed set, or if ``cluster_ids`` is
+        combined with a ``vcov_type`` that is one-way only (``classical``,
+        ``hc2``).
+    NotImplementedError
+        If ``vcov_type == "hc2_bm"`` is combined with both ``cluster_ids`` and
+        ``weights`` (weighted cluster CR2 Bell-McCaffrey is Phase 2+).
+    """
+    if vcov_type not in _VALID_VCOV_TYPES:
+        raise ValueError(
+            f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; "
+            f"got {vcov_type!r}"
+        )
+    if vcov_type in ("classical", "hc2") and cluster_ids is not None:
+        msg = {
+            "classical": (
+                "classical SEs are one-way only; pass vcov_type='hc1' or "
+                "'hc2_bm' for cluster-robust."
+            ),
+            "hc2": (
+                "hc2 is one-way only. Use vcov_type='hc2_bm' for "
+                "cluster-robust Bell-McCaffrey."
+            ),
+        }[vcov_type]
+        raise ValueError(msg)
+    if (
+        vcov_type == "hc2_bm"
+        and cluster_ids is not None
+        and weights is not None
+    ):
+        raise NotImplementedError(
+            "vcov_type='hc2_bm' with both cluster_ids and weights is a "
+            "Phase 2+ follow-up. Use vcov_type='hc1' for weighted cluster-"
+            "robust, or drop weights for CR2 Bell-McCaffrey."
+        )
+
+
 def resolve_vcov_type(
     robust: bool = True,
     vcov_type: Optional[str] = None,
@@ -1071,33 +1124,7 @@ def compute_robust_vcov(
 
     The cluster-robust CR1 computation is vectorized using pandas groupby.
     """
-    if vcov_type not in _VALID_VCOV_TYPES:
-        raise ValueError(
-            f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; "
-            f"got {vcov_type!r}"
-        )
-    if vcov_type in ("classical", "hc2") and cluster_ids is not None:
-        msg = {
-            "classical": (
-                "classical SEs are one-way only; pass vcov_type='hc1' or "
-                "'hc2_bm' for cluster-robust."
-            ),
-            "hc2": (
-                "hc2 is one-way only. Use vcov_type='hc2_bm' for "
-                "cluster-robust Bell-McCaffrey."
-            ),
-        }[vcov_type]
-        raise ValueError(msg)
-    if (
-        vcov_type == "hc2_bm"
-        and cluster_ids is not None
-        and weights is not None
-    ):
-        raise NotImplementedError(
-            "vcov_type='hc2_bm' with both cluster_ids and weights is a "
-            "Phase 2+ follow-up. Use vcov_type='hc1' for weighted cluster-"
-            "robust, or drop weights for CR2 Bell-McCaffrey."
-        )
+    _validate_vcov_args(vcov_type, cluster_ids, weights)
 
     # Validate weights before dispatching to backend
     if weights is not None:
@@ -1445,6 +1472,13 @@ def _compute_robust_vcov_numpy(
 
     See :func:`compute_robust_vcov` for parameter and return semantics.
     """
+    # Re-run the shared validation here too. The public wrapper validates
+    # before dispatch, but solve_ols / _solve_ols_numpy call this function
+    # directly and previously bypassed the raise, letting unsupported
+    # combinations (cluster + classical, cluster + hc2, cluster + weights +
+    # hc2_bm) silently produce wrong inference. Reviewer P0 fix.
+    _validate_vcov_args(vcov_type, cluster_ids, weights)
+
     n, k = X.shape
 
     # Bread: (X'WX) or (X'X) depending on whether weights present

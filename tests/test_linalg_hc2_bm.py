@@ -330,6 +330,67 @@ class TestInvalidInputs:
                 compute_robust_vcov(X, resid, vcov_type=bad)
 
 
+class TestSolveOlsValidationBypass:
+    """Regression tests for the P0 the CI reviewer surfaced: validation must
+    fire for `solve_ols` / `_solve_ols_numpy` call paths too, not just through
+    the public `compute_robust_vcov` wrapper. Unsupported combinations must
+    raise everywhere rather than silently dropping to one-way formulas.
+    """
+
+    def test_solve_ols_rejects_cluster_plus_classical(self):
+        rng = np.random.default_rng(1)
+        n = 20
+        X = np.column_stack([np.ones(n), rng.uniform(0, 1, n)])
+        y = X @ np.array([1.0, 0.5]) + rng.normal(0, 0.1, n)
+        cluster_ids = np.arange(n) % 4
+        with pytest.raises(ValueError, match="classical SEs are one-way only"):
+            solve_ols(
+                X, y, cluster_ids=cluster_ids, vcov_type="classical"
+            )
+
+    def test_solve_ols_rejects_cluster_plus_hc2(self):
+        rng = np.random.default_rng(2)
+        n = 20
+        X = np.column_stack([np.ones(n), rng.uniform(0, 1, n)])
+        y = X @ np.array([1.0, 0.5]) + rng.normal(0, 0.1, n)
+        cluster_ids = np.arange(n) % 4
+        with pytest.raises(ValueError, match="hc2 is one-way only"):
+            solve_ols(
+                X, y, cluster_ids=cluster_ids, vcov_type="hc2"
+            )
+
+    def test_solve_ols_rejects_cluster_weights_hc2_bm(self):
+        rng = np.random.default_rng(3)
+        n = 20
+        X = np.column_stack([np.ones(n), rng.uniform(0, 1, n)])
+        y = X @ np.array([1.0, 0.5]) + rng.normal(0, 0.1, n)
+        cluster_ids = np.arange(n) % 4
+        weights = rng.uniform(0.5, 2.0, size=n)
+        with pytest.raises(NotImplementedError, match="weights"):
+            solve_ols(
+                X,
+                y,
+                cluster_ids=cluster_ids,
+                vcov_type="hc2_bm",
+                weights=weights,
+                weight_type="pweight",
+            )
+
+    def test_linear_regression_rejects_cluster_plus_hc2(self):
+        """LinearRegression is an estimator-level entry; it must also raise."""
+        from diff_diff.linalg import LinearRegression
+
+        rng = np.random.default_rng(4)
+        n = 20
+        X = np.column_stack([rng.uniform(0, 1, n)])  # LR adds intercept
+        y = rng.normal(0, 1, n)
+        cluster_ids = np.arange(n) % 4
+        with pytest.raises(ValueError, match="hc2 is one-way only"):
+            LinearRegression(
+                cluster_ids=cluster_ids, vcov_type="hc2"
+            ).fit(X, y)
+
+
 # =============================================================================
 # CR2 Bell-McCaffrey cluster-robust
 # =============================================================================
