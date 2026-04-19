@@ -564,10 +564,20 @@ def mse_optimal_bandwidth(
     Raises
     ------
     ValueError
-        If shapes mismatch, inputs are non-finite, or ``kernel`` is
-        unknown.
+        Raised on: shape mismatch between ``d`` and ``y``; non-finite
+        values in ``d``, ``y``, or ``boundary``; unknown ``kernel``
+        name; ``bwcheck`` outside ``[1, len(d)]``; ``boundary`` that
+        is not approximately 0 or approximately ``d.min()`` (the only
+        two supported HAD estimands in Phase 1b); or a rank-deficient
+        / under-determined pilot fit inside the DPI port (surfaced
+        from ``qrXXinv`` or the per-stage count guards in
+        ``lprobust_bw``).
     NotImplementedError
-        If ``weights`` is passed (see parameter note).
+        Raised on: ``weights=`` passed (no nprobust parity anchor);
+        detected Design 1 mass-point design (``d.min() > 0`` and
+        modal fraction at ``d.min()`` exceeds 2%, per the paper's
+        Section 3.2.4 redirection to the 2SLS sample-average
+        estimator, queued for Phase 2).
 
     Notes
     -----
