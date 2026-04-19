@@ -2772,6 +2772,182 @@ class TestTROPInTimePlaceboStepTaggedAsPlacebo:
         )
 
 
+class TestPrecomputedSensitivityHonoredOnAllCompatibleEstimators:
+    """Round-31 P1 CI review on PR #318: ``DiagnosticReport(precomputed=
+    {"sensitivity": ...})`` and ``BusinessReport(honest_did_results=...)``
+    were silently dropped on estimator families whose ``_APPLICABILITY``
+    row lacked ``"sensitivity"`` — SA, Imputation, TwoStage, Stacked,
+    EfficientDiD, Wooldridge, TripleDifference, StaggeredTripleDiff,
+    ContinuousDiD, and plain DiD. The applicability gate filtered the
+    section out before the supplied object reached the runner, so the
+    schema rendered ``sensitivity: {"status": "not_applicable"}`` and
+    the user never learned their robustness result had been ignored.
+
+    The gate now honors an explicit passthrough regardless of the
+    default ``_APPLICABILITY`` matrix. SDiD / TROP are still rejected
+    up front in ``__init__`` (round-21) because their native-routing
+    contract is methodology-incompatible with HonestDiD.
+    """
+
+    @staticmethod
+    def _fake_grid_sens():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            M_values=[0.5, 1.0, 1.5],
+            bounds=[(0.1, 2.0), (-0.2, 2.5), (-0.5, 3.0)],
+            robust_cis=[(0.05, 2.1), (-0.3, 2.6), (-0.6, 3.1)],
+            breakdown_M=1.25,
+            method="relative_magnitude",
+            original_estimate=1.0,
+            original_se=0.2,
+            alpha=0.05,
+        )
+
+    @staticmethod
+    def _stub(class_name: str, **extras):
+        from diff_diff.prep_dgp import generate_staggered_data
+
+        # For estimator types that have fits, we'd use real fits; but
+        # several of these need specific setup. Stub with minimal
+        # required fields — the gate fix operates on the applicability
+        # set and the sensitivity runner short-circuits on the
+        # precomputed key without touching result internals.
+        stub_cls = type(class_name, (), {})
+        stub = stub_cls()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.att = 1.0
+        stub.se = 0.2
+        stub.p_value = 0.001
+        stub.conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 500
+        stub.n_treated = 200
+        stub.n_control = 300
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        for k, v in extras.items():
+            setattr(stub, k, v)
+        return stub
+
+    def test_dr_precomputed_sensitivity_honored_on_sun_abraham(self):
+        from diff_diff import DiagnosticReport
+
+        stub = self._stub("SunAbrahamResults")
+        dr = DiagnosticReport(stub, precomputed={"sensitivity": self._fake_grid_sens()})
+        sens = dr.to_dict()["sensitivity"]
+        assert sens["status"] == "ran", (
+            f"precomputed sensitivity on SunAbrahamResults must be honored; "
+            f"got {sens!r}"
+        )
+        assert sens.get("precomputed") is True
+        assert sens["breakdown_M"] == 1.25
+
+    def test_dr_precomputed_sensitivity_honored_on_efficient_did(self):
+        from diff_diff import DiagnosticReport
+
+        stub = self._stub("EfficientDiDResults", pt_assumption="all")
+        dr = DiagnosticReport(stub, precomputed={"sensitivity": self._fake_grid_sens()})
+        sens = dr.to_dict()["sensitivity"]
+        assert sens["status"] == "ran"
+        assert sens.get("precomputed") is True
+
+    def test_dr_precomputed_sensitivity_honored_on_plain_did(self):
+        from diff_diff import DiagnosticReport
+
+        stub = self._stub("DiDResults")
+        dr = DiagnosticReport(stub, precomputed={"sensitivity": self._fake_grid_sens()})
+        sens = dr.to_dict()["sensitivity"]
+        assert sens["status"] == "ran"
+
+    def test_br_honest_did_results_honored_on_imputation(self):
+        stub = self._stub("ImputationDiDResults")
+        br = BusinessReport(stub, honest_did_results=self._fake_grid_sens())
+        sens = br.to_dict()["sensitivity"]
+        assert sens["status"] == "computed", (
+            f"honest_did_results on ImputationDiDResults must be honored "
+            f"by BR; got {sens!r}"
+        )
+        assert sens["breakdown_M"] == 1.25
+
+
+class TestHeterogeneityLiftAlwaysReturnsDict:
+    """Round-31 P2 CI review on PR #318: ``_lift_heterogeneity`` used to
+    return ``None`` whenever the DR heterogeneity section didn't
+    successfully run, so the BR schema stored a raw ``None`` at
+    ``schema["heterogeneity"]``. The rest of the schema promises dict-
+    shaped ``{"status": ..., "reason": ...}`` blocks on every top-
+    level key; this one broke the contract and forced downstream
+    consumers to special-case it.
+    """
+
+    def test_lift_none_dr_returns_dict(self):
+        from diff_diff.business_report import _lift_heterogeneity
+
+        block = _lift_heterogeneity(None)
+        assert isinstance(block, dict)
+        assert block["status"] == "skipped"
+        assert "auto_diagnostics" in (block.get("reason") or "")
+
+    def test_lift_skipped_dr_section_returns_dict_with_status(self):
+        from diff_diff.business_report import _lift_heterogeneity
+
+        block = _lift_heterogeneity(
+            {
+                "heterogeneity": {
+                    "status": "skipped",
+                    "reason": "No group_effects or event_study_effects on result.",
+                }
+            }
+        )
+        assert block["status"] == "skipped"
+        assert "No group_effects" in block["reason"]
+
+    def test_lift_not_applicable_dr_section_returns_dict(self):
+        from diff_diff.business_report import _lift_heterogeneity
+
+        block = _lift_heterogeneity(
+            {
+                "heterogeneity": {
+                    "status": "not_applicable",
+                    "reason": "TripleDifferenceResults is a 2-period design.",
+                }
+            }
+        )
+        assert block["status"] == "not_applicable"
+        assert block["reason"]
+
+    def test_br_schema_heterogeneity_is_always_dict(self):
+        """End-to-end: a fit whose heterogeneity did not run still
+        exposes a dict-shaped block at ``schema["heterogeneity"]``
+        rather than a raw ``None``.
+        """
+
+        class DiDResults:
+            pass
+
+        stub = DiDResults()
+        stub.att = 1.0
+        stub.se = 0.2
+        stub.p_value = 0.001
+        stub.conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 200
+        stub.n_treated = 100
+        stub.n_control = 100
+        stub.survey_metadata = None
+
+        het = BusinessReport(stub, auto_diagnostics=True).to_dict()["heterogeneity"]
+        assert isinstance(het, dict), (
+            f"schema['heterogeneity'] must be a dict (the stable-schema "
+            f"contract); got {type(het).__name__}: {het!r}"
+        )
+        assert "status" in het
+
+
 class TestSDiDTROPRejectIncompatiblePrecomputedInputs:
     """Round-21 P1 CI review on PR #318: ``precomputed={"sensitivity":
     ...}`` and ``BusinessReport(honest_did_results=...)`` previously

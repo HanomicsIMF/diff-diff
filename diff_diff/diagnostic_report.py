@@ -460,6 +460,21 @@ class DiagnosticReport:
         """
         type_name = type(self._results).__name__
         type_level = set(_APPLICABILITY.get(type_name, frozenset()))
+        # A precomputed passthrough is a caller-supplied override, not
+        # a claim about estimator-native applicability. Round-31 P1 CI
+        # review on PR #318: when a caller passes
+        # ``precomputed["sensitivity"] = ...`` on an estimator family
+        # whose ``_APPLICABILITY`` row lacks ``"sensitivity"`` (SA,
+        # Imputation, TwoStage, Stacked, EfficientDiD, Wooldridge,
+        # TripleDifference, StaggeredTripleDiff, ContinuousDiD, plain
+        # DiD), the gate previously filtered the section out silently
+        # and the supplied result disappeared from the schema. SDiD
+        # and TROP are still rejected up front in ``__init__``
+        # (round-21) because their native-routing contract makes
+        # HonestDiD methodology-incompatible; those never reach here.
+        # For every other estimator, an explicit passthrough wins
+        # over the default applicability matrix.
+        type_level = type_level | set(self._precomputed)
         applicable: set = set()
         skipped: Dict[str, str] = {}
 
@@ -468,7 +483,14 @@ class DiagnosticReport:
             if not self._run_flags.get(check, True):
                 skipped[check] = f"run_{check}=False (user opted out)"
                 continue
-            # Instance-level gating
+            # Instance-level gating — skipped when the caller supplied
+            # a precomputed override (the per-check ``_instance_skip_reason``
+            # branches already return None for precomputed keys, but this
+            # short-circuit makes the override contract explicit and
+            # survives any future gate additions).
+            if check in self._precomputed:
+                applicable.add(check)
+                continue
             reason = self._instance_skip_reason(check)
             if reason is not None:
                 skipped[check] = reason

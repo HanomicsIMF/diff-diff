@@ -751,13 +751,28 @@ def _lift_sensitivity(dr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _lift_heterogeneity(dr: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _lift_heterogeneity(dr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return the heterogeneity section of the BR schema.
+
+    Round-31 P2 CI review on PR #318: the lift previously returned
+    ``None`` on any non-``ran`` path, which broke the schema contract
+    that every top-level BR key resolves to a dict with a ``status``
+    field. Downstream consumers had to special-case this one section.
+    Now returns a dict-shaped ``{"status": ..., "reason": ...}`` block
+    mirroring DR's own status enum so ``schema["heterogeneity"]
+    ["status"]`` is always readable.
+    """
     if dr is None:
-        return None
+        return {"status": "skipped", "reason": "auto_diagnostics=False"}
     het = dr.get("heterogeneity") or {}
-    if het.get("status") != "ran":
-        return None
+    status = het.get("status")
+    if status != "ran":
+        return {
+            "status": status or "not_run",
+            "reason": het.get("reason"),
+        }
     return {
+        "status": "ran",
         "source": het.get("source"),
         "n_effects": het.get("n_effects"),
         "min": het.get("min"),
