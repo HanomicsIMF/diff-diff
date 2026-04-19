@@ -46,13 +46,16 @@ def main():
         results["cubic"] = cdid.fit(**fit_kwargs, aggregate="dose")
 
     def extract_curves():
+        # The cubic fit used aggregate="dose", so only dose-response and
+        # group-time levels are available on the result. Event-study is
+        # extracted separately in the dedicated pretrend phase below.
+        # NB: ContinuousDiD uses 'eventstudy' for fit(aggregate=...) but
+        # 'event_study' for to_dataframe(level=...). Two different
+        # spellings within one estimator - flagged in performance-plan.md.
         r = results["cubic"]
         out = {}
-        for level in ("dose_response", "group_time", "event_study"):
-            try:
-                out[level] = r.to_dataframe(level=level)
-            except Exception as e:
-                out[level] = f"{type(e).__name__}: {e}"
+        for level in ("dose_response", "group_time"):
+            out[level] = r.to_dataframe(level=level)
         results["curves"] = out
 
     def cdid_event_study():

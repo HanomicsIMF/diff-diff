@@ -77,22 +77,16 @@ def main():
     def honest_placebo():
         out = {}
         for M in (0.5, 1.0, 1.5):
-            try:
-                out[M] = compute_honest_did(
-                    results["dcdh"], method="relative_magnitude", M=M,
-                )
-            except Exception as e:
-                out[M] = f"{type(e).__name__}: {e}"
+            out[M] = compute_honest_did(
+                results["dcdh"], method="relative_magnitude", M=M,
+            )
         results["honest"] = out
 
     def heterogeneity_refit():
         est = ChaisemartinDHaultfoeuille(seed=123)
-        try:
-            results["het"] = est.fit(
-                **fit_kwargs, L_max=3, heterogeneity="group",
-            )
-        except (NotImplementedError, ValueError) as e:
-            results["het"] = f"{type(e).__name__}: {e}"
+        results["het"] = est.fit(
+            **fit_kwargs, L_max=3, heterogeneity="group",
+        )
 
     phases = [
         ("1_dcdh_fit_Lmax3_survey_TSL", dcdh_fit_lmax3),

@@ -129,12 +129,9 @@ def make_phases(data, results, rw_cols):
         results["event_study"] = es_result
         out = {}
         for M in (0.5, 1.0, 1.5):
-            try:
-                out[M] = compute_honest_did(
-                    es_result, method="relative_magnitude", M=M,
-                )
-            except Exception as e:
-                out[M] = f"{type(e).__name__}: {e}"
+            out[M] = compute_honest_did(
+                es_result, method="relative_magnitude", M=M,
+            )
         results["honest"] = out
 
     return [

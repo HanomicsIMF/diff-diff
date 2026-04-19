@@ -105,12 +105,9 @@ def make_phases(micro, results):
     def honest_grid():
         out = {}
         for M in (0.5, 1.0, 1.5):
-            try:
-                out[M] = compute_honest_did(
-                    results["cs"], method="relative_magnitude", M=M,
-                )
-            except Exception as e:
-                out[M] = f"{type(e).__name__}: {e}"
+            out[M] = compute_honest_did(
+                results["cs"], method="relative_magnitude", M=M,
+            )
         results["honest"] = out
 
     def sun_abraham():

@@ -20,6 +20,9 @@ writeups. The six scenarios are defined in
 Environment: macOS darwin 25.3 on Apple Silicon M4, Python 3.9,
 numpy 2.x, diff_diff 3.1.3. Each multi-scale scenario runs at three data
 scales under both `DIFF_DIFF_BACKEND=python` and `DIFF_DIFF_BACKEND=rust`.
+The numerical tables below are auto-generated from the committed JSON
+baselines by `benchmarks/speed_review/gen_findings_tables.py`; narrative
+prose is hand-written and must be re-read when numbers shift.
 
 ### Scale sweep - end-to-end wall-clock
 
@@ -29,104 +32,108 @@ practitioner workloads; large stretches toward the upper end of what an
 analyst might bring (1M-row BRFSS microdata, 1,500-unit county-level
 staggered panel, 1,000-unit multi-region brand survey, 500-unit zip-level
 geo-experiment). Dose-response and reversible-dCDH run at a single mid-range
-scale.
+scale. Data-shape details are in `docs/performance-scenarios.md`.
 
-| Scenario | Scale | Data shape | Python (s) | Rust (s) | Py/Rust |
-|---|---|---|---:|---:|---:|
-| **1. Staggered campaign** | small | 150 units × 26 periods | 0.48 | 0.49 | 1.0x |
-| (CS + 8-step chain, bootstrap 999) | medium | 500 units × 26 periods | 0.72 | 0.87 | 0.8x |
-|  | large | 1,500 units × 26 periods | 1.24 | 1.22 | 1.0x |
-| **2. Brand awareness survey** | small | 200 units × 12 periods, 40 JK1 reps | 0.21 | 0.20 | 1.0x |
-| (DiD + SurveyDesign + JK1 replicate weights) | medium | 500 units × 12 periods, 90 JK1 reps | 0.52 | 0.46 | 1.1x |
-|  | large | 1,000 units × 12 periods, 160 JK1 reps | 0.83 | 0.92 | 0.9x |
-| **3. BRFSS microdata → CS panel** | small | 50K rows → 500 cells | 1.59 | 1.61 | 1.0x |
-| (`aggregate_survey` + CS + HonestDiD) | medium | 250K rows → 500 cells | 6.11 | 6.20 | 1.0x |
-|  | large | **1M rows → 500 cells** | **23.96** | **24.37** | **1.0x** |
-| **4. Geo-experiment few markets (SDiD)** | small | 80 units, 5 treated | 3.05 | 0.04 | **76x** |
-| (jackknife + bootstrap + sensitivity chain) | medium | 200 units, 15 treated | 3.65 | 0.12 | **31x** |
-|  | large | 500 units, 30 treated | skip | 0.26 | - |
-| 5. Reversible dCDH (L_max=3 + TSL) | (single) | 120 groups × 10 periods | 0.55 | 0.53 | 1.0x |
-| 6. Pricing dose-response (CDiD spline) | (single) | 500 units × 6 periods | 0.58 | 0.59 | 1.0x |
+<!-- TABLE:start scale_sweep_totals -->
+| Scenario | Scale | Python (s) | Rust (s) | Py/Rust |
+|---|---|---:|---:|---:|
+| 1. Staggered campaign | small | 0.53 | 0.50 | 1.0x |
+|  | medium | 0.82 | 0.79 | 1.0x |
+|  | large | 1.36 | 1.57 | 0.9x |
+| 2. Brand awareness survey | small | 0.21 | 0.20 | 1.1x |
+|  | medium | 0.76 | 0.58 | 1.3x |
+|  | large | 1.03 | 1.04 | 1.0x |
+| 3. BRFSS microdata -> CS panel | small | 1.67 | 1.79 | 0.9x |
+|  | medium | 6.40 | 6.48 | 1.0x |
+|  | large | 24.75 | 25.41 | 1.0x |
+| 4. SDiD few markets | small | 3.93 | 0.04 | 94.9x |
+|  | medium | 4.09 | 0.12 | 33.9x |
+|  | large | skip | 0.27 | - |
+| 5. Reversible dCDH | single | 0.59 | 0.55 | 1.1x |
+| 6. Pricing dose-response | single | 0.60 | 0.61 | 1.0x |
+<!-- TABLE:end scale_sweep_totals -->
 
 ### Scaling findings
 
-**Three findings invert at large scale relative to the tutorial-scale pass:**
+**Three findings are load-bearing for the optimization priority list:**
 
-1. **BRFSS `aggregate_survey` becomes the dominant practitioner pain point.**
-   Scales near-linearly with microdata row count - 50K → 1M rows (20x)
-   costs 15x runtime (1.5s → 24s). At 1M rows, 97% of runtime is inside
-   `_compute_stratified_psu_meat`, called once per output cell. This is a
-   concrete 20-second cost hit on any realistic pooled multi-year BRFSS
-   study, and Rust does not touch it (aggregate_survey is entirely Python).
-2. **Staggered CS chain remains cheap across scales.** 150 → 1,500 units
-   (10x) increases total by only 2.6x (0.48s → 1.24s). ImputationDiD stays
-   the dominant phase (46-62%) but scales well; absolute time at
-   practitioner scale is still under 1 second.
-3. **SDiD Rust gap is stable, not emergent.** Python SDiD at 80 units is
-   already 3 seconds; at 200 units it is 3.7 seconds. The cost is
-   dominated by fixed-overhead-per-jackknife-refit rather than data size;
-   Rust stays sub-second through 500 units. The 76x headline at small scale
-   is driven by Python having ~3s of baseline cost, not by bad scaling.
+1. **BRFSS `aggregate_survey` is the dominant practitioner pain point at
+   realistic pooled-multi-year scale.** Scales near-linearly with microdata
+   row count. At 1M rows (roughly what a 10-year pooled BRFSS analysis
+   looks like) the full chain takes ~24 seconds and essentially all of it
+   is inside `_compute_stratified_psu_meat`. Rust does not touch it
+   (`aggregate_survey` is entirely Python).
+2. **Staggered CS chain stays cheap across scales.** A 10x unit increase
+   (150 -> 1,500) is a small-single-digit multiplier on total time.
+   ImputationDiD is consistently the dominant phase but scales well.
+3. **SDiD Rust gap is stable across scales, not emergent.** Python SDiD
+   has a fixed per-jackknife-refit overhead that dominates even at small
+   n. Rust stays sub-second through 500 units.
 
 **Two findings hold across scales:**
 
-4. Brand-awareness survey chain scales roughly linearly in n_units
-   (0.21s → 0.83s for a 5x unit increase); the JK1 replicate-weight path
-   itself scales closer to n_units × n_replicates (40 → 160 replicates
-   across the sweep), becoming the dominant phase at large scale.
-5. Rust backend gives measurable uplift only for SDiD; for everything else
+4. Brand-awareness survey total scales roughly linearly in n_units, but
+   the JK1 replicate path inside it scales closer to
+   n_units x n_replicates - faster growth than the chain total, so it
+   increasingly dominates at large n.
+5. Rust backend gives measurable uplift only for SDiD; everywhere else
    backend choice is within noise because the bottlenecks are in Python
-   (`aggregate_survey`) or already well-vectorized (CS bootstrap, ImputationDiD,
-   Survey TSL/replicate).
+   (`aggregate_survey`, JK1 replicate fit) or already well-vectorized
+   (CS bootstrap, ImputationDiD, Survey TSL).
 
-### Top hotspots ranked by total-time contribution (at largest measured scale)
+### Top phases by scenario at largest measured scale
 
-| # | Location | Scenario + scale | Time | Recommended action |
-|---|---|---|---:|---|
-| 1 | `diff_diff/survey.py:1160` `_compute_stratified_psu_meat` | BRFSS @ 1M rows | **20.7s self + 22.6s inclusive** | **Algorithmic fix, raised priority.** Function called once per (state, year) cell (500 calls); per-call work scales with cell size and rebuilds stratum-PSU scaffolding every time. Precompute stratum indexes once at `aggregate_survey` top-level and reuse. Upside at practitioner scale is now 15-20 seconds, not 1.5 seconds. |
-| 2 | `diff_diff/imputation.py` ImputationDiD fit | Staggered CS @ 1,500 units | 0.66s (53%) | **Investigate if/when BRFSS fix lands.** Stayed the dominant phase across scales but total chain is ~1.2s at large - not P0. Still a candidate follow-up once the higher-value fix is in. |
-| 3 | `diff_diff/utils.py:1434` `_sc_weight_fw_numpy` | SDiD python @ any scale | 3s fixed overhead + scaling | **Already ported to Rust.** Python fallback acceptable as a teaching/safety path; document as non-production for n > 100. Python skipped at n=500 because jackknife 500 refits × ~500ms/refit would exceed 4 minutes. |
-| 4 | `diff_diff/chaisemartin_dhaultfoeuille.py` dCDH fit + heterogeneity | Reversible (single scale) | 0.32s main + 0.22s heterogeneity | **Cache/precompute** - heterogeneity refit rebuilds TSL scaffolding the main fit already computed. Not P0 - total is ~550ms - but newer code path (v3.1) never optimization-reviewed. |
-| 5 | `diff_diff/continuous_did.py` CDiD spline bootstrap | Dose-response (single scale) | 0.14s per fit × 4 variants | **Leave alone** - linear in variant count, all well under perceptible threshold. |
+<!-- TABLE:start top_phases_by_scenario -->
+| Scenario | Scale | Backend | Top phase (%) | 2nd phase (%) | 3rd phase (%) |
+|---|---|---|---|---|---|
+| 1. Staggered campaign | large | python | `6_imputation_did_robustness` (52%) | `5_sun_abraham_robustness` (26%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
+| 1. Staggered campaign | large | rust | `6_imputation_did_robustness` (37%) | `5_sun_abraham_robustness` (31%) | `7_cs_without_covariates` (20%) |
+| 2. Brand awareness survey | large | python | `3_replicate_weights_jk1` (56%) | `4_multi_outcome_loop_3_metrics` (21%) | `7_event_study_plus_honest_did` (13%) |
+| 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (54%) | `4_multi_outcome_loop_3_metrics` (25%) | `7_event_study_plus_honest_did` (14%) |
+| 3. BRFSS microdata -> CS panel | large | python | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
+| 3. BRFSS microdata -> CS panel | large | rust | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
+| 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (40%) | `3_in_time_placebo` (29%) | `1_sdid_jackknife_variance` (16%) |
+| 5. Reversible dCDH | single | python | `1_dcdh_fit_Lmax3_survey_TSL` (62%) | `4_heterogeneity_refit` (37%) | `3_honest_did_on_placebo` (1%) |
+| 5. Reversible dCDH | single | rust | `1_dcdh_fit_Lmax3_survey_TSL` (61%) | `4_heterogeneity_refit` (38%) | `3_honest_did_on_placebo` (1%) |
+| 6. Pricing dose-response | single | python | `1_cdid_cubic_spline_bootstrap199` (26%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (25%) |
+| 6. Pricing dose-response | single | rust | `1_cdid_cubic_spline_bootstrap199` (26%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (25%) |
+<!-- TABLE:end top_phases_by_scenario -->
 
-### Per-scenario phase rankings at each scale
+Per-scenario phase narrative (cross-check against the table above after
+any rerun):
 
-**Scenario 1 - Staggered campaign (CS + 8-step chain).**
-ImputationDiD robustness remains the single dominant phase at every scale
-(0.30s / 0.33s / 0.66s for small / medium / large). SunAbraham scales at
-similar rate. The CS fit with `n_bootstrap=999` at 1,500 units is 0.18s
-(15%) - well-vectorized. Action: investigate ImputationDiD only after
-higher-upside items land.
+- **Staggered campaign.** ImputationDiD robustness is the dominant phase
+  under Python at every scale. Under Rust at large scale it is tied with
+  SunAbraham (both ~30-40%); the Rust backend shifts relative shares
+  more than totals. CS fit with `n_bootstrap=999` is well-vectorized and
+  sits well below both in the ranking.
+- **Brand awareness survey.** At small scale HonestDiD dominates; at
+  medium the multi-outcome loop and the JK1 replicate path are
+  comparable; at large the JK1 path is the single top phase under both
+  backends. Python and Rust totals on this chain are within noise; the
+  JK1 replicate-fit loop is not Rust-accelerated, so the FFI crossings
+  cost approximately what they save - a neutral outcome, not a
+  regression.
+- **BRFSS.** `aggregate_survey` share of total grows with scale and is
+  effectively 100% of runtime at 1M rows. Downstream phases (CS fit,
+  SunAbraham, HonestDiD) are a fraction of a second combined.
+- **SDiD few markets.** `sensitivity_to_zeta_omega` and `in_time_placebo`
+  are the dominant Python-backend phases at every scale; Rust eliminates
+  both.
+- **Reversible dCDH.** Main fit and heterogeneity refit split the time
+  ~60/40, both rebuilding shared TSL scaffolding.
+- **Pricing dose-response.** Four spline fits account for essentially all
+  runtime; linear scaling in variant count.
 
-**Scenario 2 - Brand awareness survey.**
-At small scale HonestDiD dominates (42%); at medium the multi-outcome loop
-and the JK1 replicate-weight path are within a factor of 2 (23-36%); at
-large the JK1 path becomes the single top phase (~45-50%, 0.37s Python /
-0.46s Rust). Replicate count grows with PSU count (40 / 90 / 160 at the
-three scales), so the path scales roughly as n_units × n_replicates - a
-near-quadratic curve in a design dimension that commonly grows. Note that
-Rust is marginally slower than Python here because the JK1 replicate-fit
-loop is not yet Rust-accelerated and the FFI crossings cost more than the
-per-fit work. Action: leave alone, but flag the JK1 path as a Rust-port
-candidate if practitioners regularly run n_replicates >= 160.
+### Top hotspots ranked by total-time contribution
 
-**Scenario 3 - BRFSS microdata → CS panel.**
-`aggregate_survey` share of total grows with scale: 94% at 50K → 99% at 250K →
-100% at 1M. Everything downstream (CS fit, SunAbraham, HonestDiD) stays
-under 500 ms combined. Action: fix `aggregate_survey` per-cell loop. This
-is now the single most impactful optimization identified.
-
-**Scenario 4 - Geo-experiment few markets (SDiD).**
-`sensitivity_to_zeta_omega` and `in_time_placebo` are the dominant
-python-backend phases at every scale (together ~70%); Rust eliminates both.
-Action: no further optimization needed - Rust port ships the answer.
-
-**Scenario 5 - Reversible treatment (dCDH L_max=3 + TSL).**
-Unchanged from single-scale pass: main fit 58% + heterogeneity refit 40%,
-both rebuilding shared TSL scaffolding.
-
-**Scenario 6 - Pricing dose-response (ContinuousDiD).**
-Unchanged: four spline fits ~140ms each, ~99% of total.
+| # | Location | Scenario + scale | Signal | Recommended action |
+|---|---|---|---|---|
+| 1 | `diff_diff/survey.py:1160` `_compute_stratified_psu_meat` | BRFSS @ 1M rows | dominates BRFSS chain at all scales, ~100% at 1M rows | **Algorithmic fix, highest priority.** Function called once per (state, year) cell (500 calls); per-call work rebuilds stratum-PSU scaffolding every time. Precompute stratum indexes once at `aggregate_survey` top-level and reuse. |
+| 2 | `diff_diff/imputation.py` ImputationDiD fit | Staggered CS @ 1,500 units | dominant phase of the CS chain under Python at all scales; tied with SunAbraham under Rust at large | **Investigate only after BRFSS fix lands.** Total chain is well under practitioner-perceptible threshold; candidate follow-up. |
+| 3 | `diff_diff/utils.py:1434` `_sc_weight_fw_numpy` | SDiD python @ any scale | dominates Python SDiD at all scales | **Already ported to Rust.** Python fallback acceptable as a teaching/safety path; non-production for n > 100. Python skipped at n=500 (jackknife cost would exceed 4 minutes per run). |
+| 4 | `diff_diff/chaisemartin_dhaultfoeuille.py` dCDH fit + heterogeneity | Reversible (single scale) | main fit + heterogeneity refit each rebuild TSL scaffolding | **Cache/precompute** - heterogeneity refit duplicates the main fit's TSL setup. Not P0; newer code path (v3.1) never optimization-reviewed. |
+| 5 | `diff_diff/continuous_did.py` CDiD spline bootstrap | Dose-response (single scale) | four spline fits ~equal, linear in variant count | **Leave alone** - well under perceptible threshold. |
 
 ### Memory analysis
 
@@ -134,80 +141,78 @@ End-to-end peak RSS and per-scenario growth are captured in each JSON
 baseline under the `memory` field, recorded via a psutil background
 sampler at 10 ms. A standalone `tracemalloc`-based allocator attribution
 pass for the BRFSS-1M scenario lives at
-`benchmarks/speed_review/mem_profile_brfss.py`; its output is in
-`benchmarks/speed_review/baselines/mem_profile_brfss_large_<backend>.txt`.
+`benchmarks/speed_review/mem_profile_brfss.py`; its scrubbed output is
+in `benchmarks/speed_review/baselines/mem_profile_brfss_large_<backend>.txt`.
 
-| Scenario | Scale | Peak RSS (Py) | Growth during run (Py) | Peak RSS (Rust) | Growth (Rust) |
+<!-- TABLE:start memory_by_scenario -->
+| Scenario | Scale | Py peak RSS (MB) | Py growth (MB) | Rust peak RSS (MB) | Rust growth (MB) |
 |---|---|---:|---:|---:|---:|
-| Staggered campaign | small | 141 MB | +26 | 147 MB | +33 |
-|  | medium | 226 MB | +81 | 263 MB | +109 |
-|  | **large** | **486 MB** | **+252** | **589 MB** | **+322** |
-| Brand awareness survey | small | 126 MB | +10 | 130 MB | +13 |
-|  | medium | 188 MB | +56 | 185 MB | +52 |
-|  | large | 336 MB | +146 | 315 MB | +127 |
-| BRFSS microdata -> CS panel | small (50K) | 131 MB | +10 | 134 MB | +11 |
-|  | medium (250K) | 206 MB | +19 | 214 MB | +24 |
-|  | **large (1M)** | **419 MB** | **+23** | **428 MB** | **+29** |
-| SDiD few markets | small | 124 MB | +10 | 115 MB | +1 |
-|  | medium | 152 MB | +8 | 117 MB | 0 |
-|  | large | skip | skip | 117 MB | 0 |
-| Reversible dCDH | single | 131 MB | +18 | 136 MB | +22 |
-| Dose-response | single | 120 MB | +6 | 122 MB | +9 |
+| 1. Staggered campaign | small | 141 | 27 | 148 | 34 |
+|  | medium | 233 | 84 | 264 | 108 |
+|  | large | 474 | 237 | 576 | 312 |
+| 2. Brand awareness survey | small | 131 | 16 | 131 | 16 |
+|  | medium | 194 | 58 | 190 | 54 |
+|  | large | 335 | 140 | 339 | 144 |
+| 3. BRFSS microdata -> CS panel | small | 133 | 12 | 136 | 14 |
+|  | medium | 209 | 20 | 223 | 30 |
+|  | large | 426 | 31 | 446 | 33 |
+| 4. SDiD few markets | small | 124 | 10 | 115 | 2 |
+|  | medium | 152 | 9 | 117 | 0 |
+|  | large | skip | skip | 118 | 0 |
+| 5. Reversible dCDH | single | 132 | 19 | 135 | 21 |
+| 6. Pricing dose-response | single | 121 | 7 | 123 | 9 |
+<!-- TABLE:end memory_by_scenario -->
 
 The ~115-130 MB floor is the Python + diff-diff + numpy import footprint;
-the "growth during run" column is the practitioner-meaningful number.
+the "growth" columns are the practitioner-meaningful numbers.
 
 ### Memory findings
 
-1. **BRFSS `aggregate_survey` is compute-bound, not memory-bound.** Across
-   a 20x data growth (50K → 1M rows), working-memory growth only goes
-   10 → 19 → 23 MB. The tracemalloc pass confirms this: net retained
-   allocation after `aggregate_survey` returns is 0.6 MB, Python traced
-   peak is 84 MB (vs 46 MB input microdata), and the top allocation site
-   is `tracemalloc`'s own `linecache.py` overhead - a smoking gun that
-   nothing else is allocating meaningfully. **The 24-second cost is pure
-   CPU; the function is already memory-efficient.** This strengthens the
-   case for the precompute-scaffolding fix: low-risk, pure CPU win, fits
-   in any deployment environment including 512 MB Lambda.
-
+1. **BRFSS `aggregate_survey` is compute-bound, not memory-bound.** At
+   20x data growth (50K -> 1M rows), working-memory growth stays in the
+   low tens of MB. The tracemalloc pass confirms: net retained allocation
+   after `aggregate_survey` returns is well under 1 MB; the top
+   allocation site is `tracemalloc`'s own linecache overhead (a smoking
+   gun that nothing else is allocating meaningfully). **The BRFSS cost
+   is pure CPU; the function is already memory-efficient.** This
+   strengthens the case for the precompute-scaffolding fix: low-risk,
+   pure CPU win, fits in any deployment environment including 512 MB
+   Lambda.
 2. **Staggered CS chain is memory-heavier than wall-clock suggested.** At
-   1,500 units the chain allocates +252 MB Python / +322 MB Rust during
-   the run, pushing peak RSS to ~486-589 MB. Fine for workstations,
-   tight for 512 MB Lambda tier. The Bootstrap-999 in CS and ImputationDiD's
-   saturated regression are the plausible drivers. Not a P0 today but
-   worth flagging for future edge / Lambda deployments. Interestingly,
-   Rust uses **more** memory here (70 MB more at large scale), likely
-   FFI-held temporary array copies; not worth optimizing.
-
-3. **JK1 replicate path is allocation-heavy at scale.** At 1,000 units ×
-   160 replicates, +127-146 MB growth. Each replicate refit plus the
+   1,500 units the chain's peak RSS sits in the high-400s to high-500s
+   MB depending on backend. Fine for workstations, tight for 512 MB
+   Lambda tier. Bootstrap-999 in CS and ImputationDiD's saturated
+   regression are plausible drivers. Rust uses slightly more memory here
+   (likely FFI-held temporary array copies); not worth optimizing.
+3. **JK1 replicate path is allocation-heavy at large replicate count.**
+   At 1,000 units × 160 replicates the chain's growth during run sits in
+   the mid-100s of MB (see memory table). Each replicate refit plus the
    n × n_replicates weight matrix drives this. A Rust port would save
-   both time (0.3-0.4s) and memory (~100 MB) - the dual benefit slightly
-   strengthens the case for the port.
-
-4. **SDiD Rust path is essentially memory-free** (+0-1 MB across scales).
-   Rust does the work in native memory without round-tripping through
-   the Python allocator. Confirms the existing Rust port is well-behaved
-   on both axes.
-
-5. **No scenario hits OOM territory at measured scales.** Maximum peak
-   RSS across the whole sweep is 589 MB (staggered CS large + Rust).
-   1 GB is a comfortable ceiling for every scenario measured.
+   memory even though time is within noise today - the dual benefit
+   strengthens the case for the port if replicate counts grow.
+4. **SDiD Rust path is essentially memory-free** (growth at or below a
+   single MB across scales). Rust does the work in native memory without
+   round-tripping through the Python allocator. Confirms the existing
+   Rust port is well-behaved on both axes.
+5. **No scenario hits OOM territory at measured scales.** Peak RSS across
+   the whole sweep stays under 600 MB. 1 GB is a comfortable ceiling for
+   every scenario measured.
 
 ### Priority of optimization opportunities
 
 | # | Opportunity | Time upside | Memory upside | Risk | Priority |
 |---|---|---|---|---|---|
-| 1 | `aggregate_survey` precompute stratum scaffolding | -15 to -20s at 1M rows | none (already memory-efficient) | Low | **High** |
-| 2 | Rust-port JK1 replicate fit loop | -0.3s at 160 replicates | -100 MB at 160 replicates | Medium | Medium |
-| 3 | dCDH: cache TSL scaffolding across main fit + heterogeneity refit | -0.2s per chain | -20 MB per chain | Low | Low |
-| 4 | ImputationDiD fit-loop vectorization audit | -0.1 to -0.3s at 1,500 units | unknown | Low | Low |
-| 5 | Staggered CS chain working-memory audit (Lambda-oriented) | none | -100+ MB at 1,500 units | Medium | Low |
+| 1 | `aggregate_survey` precompute stratum scaffolding | ~-20s at 1M rows | none (already memory-efficient) | Low | **High** |
+| 2 | Staggered CS chain working-memory audit (Lambda-oriented) | none | ~200-300 MB at 1,500 units (peak RSS crosses 512 MB Lambda line under Rust) | Medium | Low (bump to Medium if Lambda deployment becomes a concrete ask) |
+| 3 | dCDH: cache TSL scaffolding across main fit + heterogeneity refit | ~0.2s per chain | ~20 MB per chain | Low | Low |
+| 4 | ImputationDiD fit-loop vectorization audit | ~0.1-0.3s at 1,500 units | unknown | Low | Low |
+| 5 | Rust-port JK1 replicate fit loop | ~0.5s at 160 replicates | ~140 MB at 160 replicates | Medium | Low (demoted: Rust is no longer slower than Python on this path after rerun, so the "fix-a-Rust-regression" leg of the original rationale is gone) |
 
-#1 is the single clearest practitioner win. Everything else is optional
-polish that should be prioritized by actual deployment-environment signal
-(e.g. "our practitioners keep hitting 512 MB Lambda limits on the
-staggered chain" → item 5 moves up).
+**Bottom line: one clear priority, four optional.** #1 is the single
+practitioner-perceptible win identified by this analysis and should be
+the next PR. #2-5 are optional polish that should be prioritized by
+concrete deployment-environment signal (Lambda OOMs, practitioner
+reports of slowness at specific shapes), not proactively.
 
 ### Correctness-adjacent observations (not P0, route separately)
 

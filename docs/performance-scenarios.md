@@ -196,10 +196,10 @@ serves a different purpose: R-parity accuracy). They complement it.
   ```
 - **Operation chain.** (1) `aggregate_survey()` - the microdata-to-panel
   collapse; (2) CS fit with staged second-stage SurveyDesign
-  (`weight_type="pweight"`) and bootstrap at PSU level; (3) event-study
-  pre-trend inspection; (4) HonestDiD sensitivity grid; (5) SunAbraham
-  robustness refit (also survey-aware via Full replicate-weight path);
-  (6) `practitioner_next_steps()`.
+  (`weight_type="pweight"`, analytical TSL via strata + PSU) and bootstrap
+  at PSU level; (3) event-study pre-trend inspection; (4) HonestDiD
+  sensitivity grid; (5) SunAbraham robustness refit using the same
+  second-stage pweight SurveyDesign; (6) `practitioner_next_steps()`.
 - **Source anchor.** `docs/practitioner_getting_started.rst` ("What If
   You Have Survey Data?" section), CDC BRFSS 2024 overview
   (cdc.gov/brfss/annual_data/2024), `diff_diff.prep.aggregate_survey`
@@ -264,9 +264,9 @@ serves a different purpose: R-parity accuracy). They complement it.
   l=1..3, dynamic placebos, sup-t bands, TWFE diagnostic); (2) inspect
   `placebo_effect` and dynamic placebos for pre-trend evidence;
   (3) `results.print_summary()`; (4) `compute_honest_did()` on the placebo
-  event study; (5) heterogeneity refit with `heterogeneity="cohort"` if
-  the code path supports it on this shape. The TSL path for `L_max >= 1`
-  is newer code (v3.1) and has not been profiled.
+  event study; (5) heterogeneity refit with `heterogeneity="group"`.
+  The TSL path for `L_max >= 1` is newer code (v3.1) and has not been
+  profiled.
 - **Source anchor.** `docs/practitioner_decision_tree.rst`
   ("Reversible Treatment (On/Off Cycles)"), de Chaisemartin & D'Haultfoeuille
   (2020), NBER WP 29873 (dynamic companion), R package

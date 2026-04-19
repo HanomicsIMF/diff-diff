@@ -104,8 +104,26 @@ def main():
         f"{'#':<4} {'size diff (MB)':>16} {'count diff':>12}  location",
         f"{'-'*80}",
     ]
+    # Scrub workstation-specific absolute paths before committing output
+    # (keeps the file reproducible and avoids leaking $HOME / system paths).
+    import site, sys as _sys
+    home = str(Path.home())
+    sys_paths = sorted(
+        {p for p in (site.getsitepackages() + [site.getusersitepackages()])
+         if p} | {_sys.prefix, _sys.base_prefix},
+        key=len, reverse=True,
+    )
+    repo_root = str(Path(__file__).resolve().parents[2])
+
+    def _scrub(s):
+        s = s.replace(repo_root, "<repo>")
+        for sp in sys_paths:
+            s = s.replace(sp, "<site-packages>")
+        s = s.replace(home, "$HOME")
+        return s
+
     for i, s in enumerate(stats[:args.top], 1):
-        loc = str(s.traceback).split("\n")[0]
+        loc = _scrub(str(s.traceback).split("\n")[0])
         lines.append(
             f"{i:<4} {s.size_diff/1024/1024:>16.2f} {s.count_diff:>12d}  {loc}"
         )
