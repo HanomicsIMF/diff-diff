@@ -9,19 +9,42 @@ level by default (matching the inference convention used by
 ``CallawaySantAnna``, ``ImputationDiD``, and ``TwoStageDiD``). Under
 ``survey_design`` with an explicitly-coarser PSU, the bootstrap switches
 to PSU-level Hall-Mammen wild clustering: each PSU draws a single
-multiplier and all groups within that PSU share it
-(see ``_generate_psu_or_group_weights`` and ``_map_for_target`` below,
-plus the REGISTRY.md ``ChaisemartinDHaultfoeuille`` Note on survey +
+multiplier and all groups within that PSU share it (see
+``_generate_psu_or_group_weights`` and ``_map_for_target`` below, plus
+the REGISTRY.md ``ChaisemartinDHaultfoeuille`` Note on survey +
 bootstrap). Under the default auto-inject ``psu=group`` each group is
 its own PSU and the identity-map fast path reproduces the original
-group-level behavior bit-for-bit. The bootstrap is a library extension,
-not a paper requirement, and is documented as such in ``REGISTRY.md``.
+group-level behavior bit-for-bit.
+
+**Cell-level wild PSU bootstrap (within-group-varying PSU):** when a
+survey design's PSU varies across the cells of a group, the group-level
+PSU map cannot represent per-PSU contributions (a group with cells in
+PSUs ``{p1, p2}`` would collapse to the first PSU, under-clustering the
+bootstrap). This module's dispatcher (``_psu_varies_within_group``)
+detects the regime and switches to a cell-level allocator: each
+observation-level ``psi_i`` is attributed to its ``(g, t)`` cell's PSU
+via ``psu_codes_per_cell`` (shape ``(n_eligible_groups, n_periods)``,
+-1 sentinel for zero-weight cells), and the bootstrap statistic becomes
+``theta_r = sum_c multiplier[psu(c)] * u_centered_pp[c] / divisor``
+(using the cohort-recentered per-cell IF ``U_centered_per_period``).
+Under PSU-within-group-constant the row-sum identity
+``sum_{c in g} u_cell[c] == u_centered[g]`` (enforced by
+``_cohort_recenter_per_period``) makes the cell-level and group-level
+bootstraps statistically equivalent, and the dispatcher routes to the
+legacy group-level path for bit-identity with pre-cell-level releases.
+Multi-horizon bootstraps draw a single shared ``(n_bootstrap, n_psu)``
+PSU-level weight matrix per block and broadcast per-horizon via each
+horizon's cell-to-PSU map, so the sup-t simultaneous band remains a
+valid joint distribution. The bootstrap is a library extension, not a
+paper requirement, and is documented in ``REGISTRY.md``.
 
 The mixin operates on **pre-computed cohort-centered influence-function
 values**: the main estimator class computes per-group ``U^G_g`` values
-during the analytical variance calculation, recenters them by their
-cohort means (using the ``(D_{g,1}, F_g, S_g)`` triple), and stores the
-recentered vector. The bootstrap then multiplies this vector by random
+(and, under survey designs, per-``(g, t)``-cell attributions
+``U_centered_per_period[g, t]``) during the analytical variance
+calculation, recenters them by their cohort means (using the
+``(D_{g,1}, F_g, S_g)`` triple), and stores the recentered vector /
+tensor. The bootstrap then multiplies this structure by random
 multiplier weights (Rademacher / Mammen / Webb) and re-aggregates to
 produce a bootstrap distribution per target.
 """
@@ -71,15 +94,28 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         u_centered_overall: np.ndarray,
         divisor_overall: int,
         original_overall: float,
-        joiners_inputs: Optional[Tuple[np.ndarray, int, float]] = None,
-        leavers_inputs: Optional[Tuple[np.ndarray, int, float]] = None,
-        placebo_inputs: Optional[Tuple[np.ndarray, int, float]] = None,
+        joiners_inputs: Optional[
+            Tuple[np.ndarray, int, float, Optional[np.ndarray]]
+        ] = None,
+        leavers_inputs: Optional[
+            Tuple[np.ndarray, int, float, Optional[np.ndarray]]
+        ] = None,
+        placebo_inputs: Optional[
+            Tuple[np.ndarray, int, float, Optional[np.ndarray]]
+        ] = None,
         # --- Phase 2: multi-horizon inputs ---
-        multi_horizon_inputs: Optional[Dict[int, Tuple[np.ndarray, int, float]]] = None,
-        placebo_horizon_inputs: Optional[Dict[int, Tuple[np.ndarray, int, float]]] = None,
+        multi_horizon_inputs: Optional[
+            Dict[int, Tuple[np.ndarray, int, float, Optional[np.ndarray]]]
+        ] = None,
+        placebo_horizon_inputs: Optional[
+            Dict[int, Tuple[np.ndarray, int, float, Optional[np.ndarray]]]
+        ] = None,
         # --- Survey: PSU-level bootstrap under survey designs ---
         group_id_to_psu_code: Optional[Dict[Any, int]] = None,
         eligible_group_ids: Optional[np.ndarray] = None,
+        # --- Survey: cell-level wild PSU bootstrap ---
+        u_per_period_overall: Optional[np.ndarray] = None,
+        psu_codes_per_cell: Optional[np.ndarray] = None,
     ) -> DCDHBootstrapResults:
         """
         Compute multiplier-bootstrap inference for all dCDH targets.
@@ -178,13 +214,38 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         # group-IDs parameter for it rather than reusing the overall
         # eligible list.
 
+        # Dispatcher for the cell-level wild PSU bootstrap. When PSU
+        # varies across cells of a group, a group-level PSU map
+        # collapses within-group PSU variation and the bootstrap
+        # under-clusters. The cell-level path draws multipliers at
+        # PSU granularity and applies them per (g, t) cell via
+        # `psu_codes_per_cell`. Under PSU-within-group-constant
+        # regimes (including PSU=group and strictly-coarser PSU
+        # within-group-constant), the row-sum identity
+        # `sum_{c in g} u_cell[c] == u_centered[g]` makes the two
+        # paths statistically equivalent, and the dispatcher routes
+        # to the legacy path for bit-identity with pre-release
+        # behavior. See REGISTRY.md survey + bootstrap contract Note.
+        psu_varies = _psu_varies_within_group(psu_codes_per_cell)
+
         # --- Overall DID_M ---
         # Skip the scalar DID_M bootstrap when divisor_overall <= 0
         # (e.g., pure non-binary panels where N_S=0), but continue
         # to process multi_horizon_inputs and placebo_horizon_inputs.
         if divisor_overall > 0:
+            if psu_varies and u_per_period_overall is not None:
+                u_boot_overall, map_boot_overall = _unroll_target_to_cells(
+                    u_per_period_overall, psu_codes_per_cell,
+                )
+            else:
+                u_boot_overall = u_centered_overall
+                map_boot_overall = _map_for_target(
+                    u_centered_overall.shape[0],
+                    group_id_to_psu_code,
+                    eligible_group_ids,
+                )
             overall_se, overall_ci, overall_p, overall_dist = _bootstrap_one_target(
-                u_centered=u_centered_overall,
+                u_centered=u_boot_overall,
                 divisor=divisor_overall,
                 original=original_overall,
                 n_bootstrap=self.n_bootstrap,
@@ -193,11 +254,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                 rng=rng,
                 context="dCDH overall DID_M bootstrap",
                 return_distribution=True,
-                group_to_psu_map=_map_for_target(
-                    u_centered_overall.shape[0],
-                    group_id_to_psu_code,
-                    eligible_group_ids,
-                ),
+                group_to_psu_map=map_boot_overall,
             )
         else:
             overall_se = np.nan
@@ -217,10 +274,19 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
 
         # --- Joiners (DID_+) ---
         if joiners_inputs is not None:
-            u_j, n_j, eff_j = joiners_inputs
+            u_j, n_j, eff_j, u_pp_j = joiners_inputs
             if u_j.size > 0 and n_j > 0:
+                if psu_varies and u_pp_j is not None:
+                    u_boot_j, map_boot_j = _unroll_target_to_cells(
+                        u_pp_j, psu_codes_per_cell,
+                    )
+                else:
+                    u_boot_j = u_j
+                    map_boot_j = _map_for_target(
+                        u_j.size, group_id_to_psu_code, eligible_group_ids,
+                    )
                 se_j, ci_j, p_j, _ = _bootstrap_one_target(
-                    u_centered=u_j,
+                    u_centered=u_boot_j,
                     divisor=n_j,
                     original=eff_j,
                     n_bootstrap=self.n_bootstrap,
@@ -229,9 +295,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     rng=rng,
                     context="dCDH joiners DID_+ bootstrap",
                     return_distribution=False,
-                    group_to_psu_map=_map_for_target(
-                        u_j.size, group_id_to_psu_code, eligible_group_ids,
-                    ),
+                    group_to_psu_map=map_boot_j,
                 )
                 results.joiners_se = se_j
                 results.joiners_ci = ci_j
@@ -239,10 +303,19 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
 
         # --- Leavers (DID_-) ---
         if leavers_inputs is not None:
-            u_l, n_l, eff_l = leavers_inputs
+            u_l, n_l, eff_l, u_pp_l = leavers_inputs
             if u_l.size > 0 and n_l > 0:
+                if psu_varies and u_pp_l is not None:
+                    u_boot_l, map_boot_l = _unroll_target_to_cells(
+                        u_pp_l, psu_codes_per_cell,
+                    )
+                else:
+                    u_boot_l = u_l
+                    map_boot_l = _map_for_target(
+                        u_l.size, group_id_to_psu_code, eligible_group_ids,
+                    )
                 se_l, ci_l, p_l, _ = _bootstrap_one_target(
-                    u_centered=u_l,
+                    u_centered=u_boot_l,
                     divisor=n_l,
                     original=eff_l,
                     n_bootstrap=self.n_bootstrap,
@@ -251,17 +324,17 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     rng=rng,
                     context="dCDH leavers DID_- bootstrap",
                     return_distribution=False,
-                    group_to_psu_map=_map_for_target(
-                        u_l.size, group_id_to_psu_code, eligible_group_ids,
-                    ),
+                    group_to_psu_map=map_boot_l,
                 )
                 results.leavers_se = se_l
                 results.leavers_ci = ci_l
                 results.leavers_p_value = p_l
 
         # --- Placebo (DID_M^pl) ---
+        # Phase 1 placebo has no per-cell IF (unpack tolerates None in
+        # the fourth slot — callers always pass None for this target).
         if placebo_inputs is not None:
-            u_pl, n_pl, eff_pl = placebo_inputs
+            u_pl, n_pl, eff_pl, _u_pp_pl_unused = placebo_inputs
             if u_pl.size > 0 and n_pl > 0:
                 se_pl, ci_pl, p_pl, _ = _bootstrap_one_target(
                     u_centered=u_pl,
@@ -282,32 +355,58 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                 results.placebo_p_value = p_pl
 
         # --- Phase 2: Multi-horizon bootstrap with shared weight matrix ---
-        # Generate ONE shared (n_bootstrap, n_groups) weight matrix so all
-        # horizons use the same bootstrap draw, making the sup-t statistic
-        # a valid joint multiplier-bootstrap band.
+        # Generate ONE shared weight matrix so all horizons use the same
+        # bootstrap draw, making the sup-t statistic a valid joint
+        # multiplier-bootstrap band. Under PSU-within-group-constant the
+        # shared draws live at group granularity (bit-identical to
+        # pre-cell-level); under within-group-varying PSU the shared
+        # draws live at PSU granularity and are broadcast per-horizon to
+        # the horizon's cells via `psu_codes_per_cell`.
         if multi_horizon_inputs is not None:
             es_ses: Dict[int, float] = {}
             es_cis: Dict[int, Tuple[float, float]] = {}
             es_pvals: Dict[int, float] = {}
             es_dists: Dict[int, np.ndarray] = {}
 
-            # Shared weight matrix sized for the group set. Under PSU-level
-            # bootstrap (Hall-Mammen wild PSU), weights are drawn once per
-            # PSU and broadcast to groups so all groups in the same PSU
-            # share a multiplier within a single bootstrap replicate —
-            # preserving the sup-t joint distribution across horizons.
             n_groups_mh = n_groups_for_overall
-            shared_weights = _generate_psu_or_group_weights(
-                n_bootstrap=self.n_bootstrap,
-                n_groups_target=n_groups_mh,
-                weight_type=self.bootstrap_weights,
-                rng=rng,
-                group_to_psu_map=_map_for_target(
-                    n_groups_mh, group_id_to_psu_code, eligible_group_ids,
-                ),
-            )
+            if psu_varies:
+                # Draw ONE shared (n_bootstrap, n_psu) PSU-level weight
+                # matrix. Broadcast per-horizon via each horizon's
+                # cell-to-PSU map inside the loop. PSU count derived
+                # from the dense code domain of psu_codes_per_cell.
+                assert psu_codes_per_cell is not None
+                valid_psu_codes = psu_codes_per_cell[psu_codes_per_cell >= 0]
+                n_psu_mh = int(valid_psu_codes.max()) + 1 if valid_psu_codes.size > 0 else 0
+                shared_psu_weights: Optional[np.ndarray]
+                if n_psu_mh > 0:
+                    shared_psu_weights = _generate_bootstrap_weights_batch(
+                        n_bootstrap=self.n_bootstrap,
+                        n_units=n_psu_mh,
+                        weight_type=self.bootstrap_weights,
+                        rng=rng,
+                    )
+                else:
+                    shared_psu_weights = None
+                shared_weights = None  # not used on the cell path
+            else:
+                # Shared weight matrix sized for the group set. Under
+                # PSU-within-group-constant (Hall-Mammen wild PSU),
+                # weights are drawn once per PSU and broadcast to groups
+                # so all groups in the same PSU share a multiplier
+                # within a single bootstrap replicate — preserving the
+                # sup-t joint distribution across horizons.
+                shared_weights = _generate_psu_or_group_weights(
+                    n_bootstrap=self.n_bootstrap,
+                    n_groups_target=n_groups_mh,
+                    weight_type=self.bootstrap_weights,
+                    rng=rng,
+                    group_to_psu_map=_map_for_target(
+                        n_groups_mh, group_id_to_psu_code, eligible_group_ids,
+                    ),
+                )
+                shared_psu_weights = None
 
-            for l_h, (u_h, n_h, eff_h) in sorted(multi_horizon_inputs.items()):
+            for l_h, (u_h, n_h, eff_h, u_pp_h) in sorted(multi_horizon_inputs.items()):
                 if u_h.size > 0 and n_h > 0:
                     # Under the current contract every horizon's IF
                     # vector uses the variance-eligible group ordering
@@ -331,8 +430,19 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                             f"shared PSU draws onto the horizon's own "
                             f"ordering via `_map_for_target`."
                         )
-                    w_h = shared_weights
-                    deviations = (w_h @ u_h) / n_h
+                    if psu_varies and u_pp_h is not None and shared_psu_weights is not None:
+                        # Cell-level: unroll this horizon's cells and
+                        # broadcast the shared PSU weights.
+                        u_cell_h, psu_cell_h = _unroll_target_to_cells(
+                            u_pp_h, psu_codes_per_cell,
+                        )
+                        if u_cell_h.size == 0:
+                            continue
+                        w_cell_h = shared_psu_weights[:, psu_cell_h]
+                        deviations = (w_cell_h @ u_cell_h) / n_h
+                    else:
+                        assert shared_weights is not None
+                        deviations = (shared_weights @ u_h) / n_h
                     dist_h = deviations + eff_h
 
                     se_h, ci_h, p_h = _compute_effect_bootstrap_stats(
@@ -367,15 +477,31 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     results.cband_crit_value = cband_crit
 
         # --- Phase 2: Placebo horizon bootstrap ---
+        # Note: placebo-horizons are treated as independent single-target
+        # draws (no sup-t joint-distribution requirement across placebo
+        # horizons), so each horizon gets its own RNG draw via
+        # `_bootstrap_one_target`. Under within-group-varying PSU the
+        # per-horizon cell unroll is used.
         if placebo_horizon_inputs is not None:
             pl_ses: Dict[int, float] = {}
             pl_cis: Dict[int, Tuple[float, float]] = {}
             pl_pvals: Dict[int, float] = {}
 
-            for l_h, (u_h, n_h, eff_h) in sorted(placebo_horizon_inputs.items()):
+            for l_h, (u_h, n_h, eff_h, u_pp_h) in sorted(placebo_horizon_inputs.items()):
                 if u_h.size > 0 and n_h > 0:
+                    if psu_varies and u_pp_h is not None:
+                        u_boot_plh, map_boot_plh = _unroll_target_to_cells(
+                            u_pp_h, psu_codes_per_cell,
+                        )
+                        if u_boot_plh.size == 0:
+                            continue
+                    else:
+                        u_boot_plh = u_h
+                        map_boot_plh = _map_for_target(
+                            u_h.size, group_id_to_psu_code, eligible_group_ids,
+                        )
                     se_h, ci_h, p_h, _ = _bootstrap_one_target(
-                        u_centered=u_h,
+                        u_centered=u_boot_plh,
                         divisor=n_h,
                         original=eff_h,
                         n_bootstrap=self.n_bootstrap,
@@ -384,9 +510,7 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                         rng=rng,
                         context=f"dCDH placebo l={l_h} bootstrap",
                         return_distribution=False,
-                        group_to_psu_map=_map_for_target(
-                            u_h.size, group_id_to_psu_code, eligible_group_ids,
-                        ),
+                        group_to_psu_map=map_boot_plh,
                     )
                     pl_ses[l_h] = se_h
                     pl_cis[l_h] = ci_h
@@ -402,6 +526,56 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
 # =============================================================================
 # Internal helpers
 # =============================================================================
+
+
+def _psu_varies_within_group(
+    psu_codes_per_cell: Optional[np.ndarray],
+) -> bool:
+    """True when any row of ``psu_codes_per_cell`` has more than one
+    unique PSU label (ignoring -1 sentinel entries).
+
+    When ``False`` — including the ``None`` case for non-survey fits —
+    the legacy group-level bootstrap path is invoked. The row-sum
+    identity ``sum_{c in g} u_cell[c] == u_centered[g]`` established
+    by ``_cohort_recenter_per_period`` makes the cell-level and
+    group-level bootstraps statistically equivalent under this regime,
+    and the group-level path is bit-identical to pre-cell-level
+    releases through the existing identity-map fast path.
+    """
+    if psu_codes_per_cell is None:
+        return False
+    for row in psu_codes_per_cell:
+        valid = row[row >= 0]
+        if valid.size > 1 and np.unique(valid).size > 1:
+            return True
+    return False
+
+
+def _unroll_target_to_cells(
+    u_per_period_target: np.ndarray,
+    psu_codes_per_cell: Optional[np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Flatten a target's cohort-recentered per-cell IF tensor + its
+    per-cell PSU map into 1-D arrays, dropping cells with sentinel
+    PSU code (-1 — zero-weight cells).
+
+    Both inputs must have shape ``(n_eligible_groups, n_periods)``;
+    the dCDH bootstrap contract guarantees all targets share the
+    variance-eligible group ordering, so no per-target row subset
+    is needed.
+
+    Returns ``(u_cell, psu_cell)`` of shape
+    ``(n_valid_cells_in_target,)`` each.
+    """
+    if psu_codes_per_cell is None:
+        raise ValueError(
+            "_unroll_target_to_cells requires psu_codes_per_cell; "
+            "caller should only invoke this on the cell-level path."
+        )
+    flat_u = u_per_period_target.ravel()
+    flat_psu = psu_codes_per_cell.ravel()
+    mask = flat_psu >= 0
+    return flat_u[mask], flat_psu[mask].astype(np.int64, copy=False)
 
 
 def _map_for_target(
@@ -423,14 +597,22 @@ def _map_for_target(
     Returns ``None`` when no PSU information is available (plain
     multiplier-bootstrap path — identity across targets).
 
+    **Group-level granularity only.** This helper is invoked on the
+    legacy group-level bootstrap path; on the cell-level path
+    (within-group-varying PSU), callers build the cell-to-PSU map
+    directly via ``_unroll_target_to_cells`` and do not route through
+    ``_map_for_target``, so the size-mismatch raise below does not
+    fire.
+
     Raises ``ValueError`` if ``target_size`` does not match
     ``len(eligible_group_ids)``: every current dCDH bootstrap target
-    uses the variance-eligible group ordering, so any size mismatch
-    signals that a caller introduced a target whose group subset
-    diverges and should pass its own ``target_group_ids`` rather than
-    reusing the overall eligible list. Also raises ``ValueError`` if
-    any group ID is missing from the dict (signaling misalignment
-    between the target's IF vector and the map's keys).
+    uses the variance-eligible group ordering on the group-level path,
+    so any size mismatch signals that a caller introduced a target
+    whose group subset diverges and should pass its own
+    ``target_group_ids`` rather than reusing the overall eligible
+    list. Also raises ``ValueError`` if any group ID is missing from
+    the dict (signaling misalignment between the target's IF vector
+    and the map's keys).
     """
     if group_id_to_psu_code is None or eligible_group_ids is None:
         return None

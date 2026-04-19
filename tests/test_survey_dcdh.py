@@ -1,5 +1,7 @@
 """Survey support tests for ChaisemartinDHaultfoeuille (dCDH)."""
 
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -1075,10 +1077,12 @@ class TestSurveyWithinGroupValidation:
     """Cell-period IF allocator contract: strata and PSU may vary ACROSS
     cells of a group, but must be constant WITHIN each (g, t) cell. In
     canonical one-obs-per-cell panels the cell-level constancy check is
-    trivially satisfied. Heterogeneity + within-group-varying PSU is
-    supported via the cell-period allocator. The remaining out-of-scope
-    combination is n_bootstrap > 0 + within-group-varying PSU, which
-    still raises NotImplementedError with a pointer to the follow-up PR.
+    trivially satisfied. All three variance paths — analytical TSL,
+    heterogeneity WLS, and the PSU-level wild multiplier bootstrap —
+    support within-group-varying PSU via the cell-period allocator. No
+    dCDH survey combination raises NotImplementedError beyond the
+    SurveyDesign-level exclusion of ``replicate_weights`` +
+    ``n_bootstrap > 0``.
     """
 
     def test_accepts_varying_psu_within_group(self, base_data):
@@ -1169,21 +1173,41 @@ class TestSurveyWithinGroupValidation:
         assert np.isfinite(entry["p_value"])
         assert all(np.isfinite(entry["conf_int"]))
 
-    def test_bootstrap_with_varying_psu_raises(self, base_data):
-        """n_bootstrap > 0 is gated under within-group-varying PSU until
-        PR 4 ships the cell-level Hall-Mammen wild bootstrap.
+    def test_bootstrap_with_varying_psu_succeeds(self, base_data):
+        """PR 4: the PSU-level wild multiplier bootstrap now supports
+        within-group-varying PSU via the cell-level allocator. Each
+        (g, t) cell's IF mass is multiplied by its PSU's multiplier,
+        so a group spanning 2+ PSUs receives independent draws per
+        PSU. Assert a finite bootstrap SE and CI at the overall
+        surface and at every event-study horizon (the multi-horizon
+        path uses a shared PSU-level weight matrix for the sup-t
+        simultaneous band).
         """
         df_ = base_data.copy()
         df_["pw"] = 1.0
-        df_["stratum"] = 0
-        df_["psu"] = df_["period"] % 2  # varies within group
-        sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
-        with pytest.raises(NotImplementedError, match="n_bootstrap"):
-            ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1).fit(
-                df_, outcome="outcome", group="group",
-                time="period", treatment="treatment",
-                survey_design=sd,
-            )
+        # Per-group PSU parity — unique per (group, parity), varies
+        # within group so the cell-level dispatcher is exercised.
+        df_["psu"] = df_["group"].astype(int) * 2 + (df_["period"].astype(int) % 2)
+        sd = SurveyDesign(weights="pw", psu="psu")
+        res = ChaisemartinDHaultfoeuille(n_bootstrap=200, seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd, L_max=2,
+        )
+        assert res.bootstrap_results is not None
+        assert np.isfinite(res.bootstrap_results.overall_se)
+        assert res.bootstrap_results.overall_se >= 0.0
+        overall_ci = res.bootstrap_results.overall_ci
+        assert overall_ci is not None and all(np.isfinite(overall_ci))
+        # Multi-horizon bootstrap must produce finite SE at each
+        # horizon (guards the shared-PSU-weight path from CRITICAL #2
+        # of the PR 4 plan review).
+        es_ses = res.bootstrap_results.event_study_ses
+        assert es_ses is not None
+        for l_h in (1, 2):
+            assert l_h in es_ses, f"horizon {l_h} missing from event_study_ses"
+            assert np.isfinite(es_ses[l_h]), f"horizon {l_h} SE not finite"
+            assert es_ses[l_h] >= 0.0
 
     def test_auto_inject_with_varying_strata_nest_true_succeeds(self, base_data):
         """When strata varies across cells of a group and the user
@@ -1779,3 +1803,114 @@ class TestHeterogeneityCellPeriod:
             f"(counterexample from PR #329 CI review). Got "
             f"var_legacy={var_legacy}, var_new={var_new}."
         )
+
+
+class TestBootstrapCellPeriod:
+    """Regression guards for the cell-level wild PSU bootstrap allocator
+    (PR 4). Under PSU-within-group-constant regimes the dispatcher
+    routes to the legacy group-level bootstrap for bit-identity; under
+    within-group-varying PSU the cell-level path runs with per-cell
+    PSU multipliers.
+    """
+
+    # Captured on pre-PR-4 code (origin/main at SHA ac181b7f — PR #329
+    # merge) via a scratch fit on the fixture below. Pinned here as
+    # the bit-identity regression guard for the dispatcher's
+    # PSU-within-group-constant legacy-path routing. If this test
+    # drifts, the dispatcher is no longer reproducing pre-PR-4
+    # behavior under PSU=group and the legacy fast path has
+    # regressed.
+    _BASELINE_OVERALL_SE = 0.3030802540369796
+
+    @staticmethod
+    def _make_baseline_fixture() -> pd.DataFrame:
+        """Deterministic fixture for the pinned bootstrap SE baseline.
+        12 groups, 5 periods, two switch cohorts (first-treated at
+        periods 2 and 3) plus never-switchers, fixed per-row
+        idiosyncratic draws so the bootstrap distribution is
+        non-degenerate. MUST stay identical to the capture fixture
+        or the pinned baseline becomes meaningless.
+        """
+        rng = np.random.default_rng(12345)
+        rows = []
+        n_groups, n_periods = 12, 5
+        for g in range(n_groups):
+            if g < 4:
+                f: Optional[int] = None
+            elif g < 8:
+                f = 2
+            else:
+                f = 3
+            for t in range(n_periods):
+                d = 1 if (f is not None and t >= f) else 0
+                y = float(g) + 0.3 * t + 1.5 * d + float(rng.normal(0.0, 0.5))
+                rows.append({
+                    "group": int(g),
+                    "period": int(t),
+                    "treatment": int(d),
+                    "outcome": y,
+                    "pw": 1.0,
+                })
+        return pd.DataFrame(rows)
+
+    def test_bootstrap_se_matches_pre_pr4_baseline(self):
+        """Bit-identity regression guard: under PSU=group the
+        dispatcher routes through the legacy group-level bootstrap
+        path, so the overall bootstrap SE must match pre-PR-4 code
+        to ULP precision. The baseline value was captured on
+        `origin/main` at `ac181b7f` (the PR #329 merge).
+        """
+        df_ = self._make_baseline_fixture()
+        sd = SurveyDesign(weights="pw", psu="group")
+        res = ChaisemartinDHaultfoeuille(n_bootstrap=500, seed=42).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert res.bootstrap_results is not None
+        observed_se = float(res.bootstrap_results.overall_se)
+        assert observed_se == pytest.approx(
+            self._BASELINE_OVERALL_SE, rel=0.0, abs=1e-15,
+        ), (
+            f"Bootstrap SE drifted from pre-PR-4 baseline. "
+            f"expected={self._BASELINE_OVERALL_SE!r}, "
+            f"observed={observed_se!r}. The dispatcher's "
+            f"PSU-within-group-constant routing is no longer "
+            f"bit-identical to the legacy group-level bootstrap."
+        )
+
+    def test_bootstrap_cell_level_with_all_zero_weight_group_does_not_crash(self):
+        """When one eligible group has all zero-weight observations,
+        every entry of its `psu_codes_per_cell` row is the sentinel
+        -1 and it contributes no cells to the bootstrap. The
+        dispatcher must handle this without crashing; overall
+        inference stays finite (driven by the remaining groups).
+        """
+        rows = []
+        n_groups, n_periods = 10, 5
+        for g in range(n_groups):
+            f = 3 if g < n_groups // 2 else None
+            for t in range(n_periods):
+                # Zero-weight the last group entirely.
+                pw = 0.0 if g == n_groups - 1 else 1.0
+                d = 1 if (f is not None and t >= f) else 0
+                y = float(g) + 0.1 * t + 1.0 * d
+                rows.append({
+                    "group": int(g),
+                    "period": int(t),
+                    "treatment": int(d),
+                    "outcome": y,
+                    "pw": pw,
+                    "psu": int(g) * 2 + (int(t) % 2),  # varying PSU
+                })
+        df_ = pd.DataFrame(rows)
+        sd = SurveyDesign(weights="pw", psu="psu")
+        res = ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert res.bootstrap_results is not None
+        # Bootstrap SE should be finite (zero-weight group does not
+        # disturb the other groups' contributions).
+        assert np.isfinite(res.bootstrap_results.overall_se)

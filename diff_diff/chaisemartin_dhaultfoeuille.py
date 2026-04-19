@@ -662,13 +662,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             design is supplied, the multiplier bootstrap operates at
             the PSU level (Hall-Mammen wild PSU bootstrap) — under the
             default auto-inject this collapses to a group-level
-            clustered bootstrap. **Out-of-scope combinations raise
-            ``NotImplementedError``**: (a) replicate weights with
-            ``n_bootstrap > 0`` (replicate variance is closed-form;
-            bootstrap would double-count variance); (b) ``n_bootstrap >
-            0`` with PSU that varies within group (PSU-level bootstrap
-            still uses the legacy group-level PSU map; follow-up PR
-            extends it). See REGISTRY.md
+            clustered bootstrap. Under within-group-varying PSU the
+            bootstrap uses a cell-level wild PSU allocator — a group
+            contributing cells to multiple PSUs receives independent
+            multiplier draws per PSU (see the Survey + bootstrap
+            contract Note in REGISTRY.md). **Replicate weights with
+            ``n_bootstrap > 0`` raises ``NotImplementedError``**
+            (replicate variance is closed-form; bootstrap would
+            double-count variance). See REGISTRY.md
             ``ChaisemartinDHaultfoeuille`` Notes for the full contract.
 
         Returns
@@ -825,25 +826,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
             # Cell-period IF allocator contract: strata and PSU must be
             # constant within each (g, t) cell, a strict relaxation of
-            # the previous within-group constancy rule. One out-of-scope
-            # combination remains gated with NotImplementedError until
-            # the corresponding follow-up PR extends it:
-            #   - n_bootstrap > 0 + within-group-varying PSU
-            #     (PR 4: cell-level Hall-Mammen wild bootstrap)
-            _, psu_varies = _strata_psu_vary_within_group(
-                resolved_survey, data, group, survey_weights,
-            )
-            if psu_varies and self.n_bootstrap > 0:
-                raise NotImplementedError(
-                    "n_bootstrap > 0 is not supported under a "
-                    "survey design whose PSU varies within group. "
-                    "The PSU-level Hall-Mammen wild bootstrap uses "
-                    "the legacy group-level PSU map and will be "
-                    "extended to cell-level PSU in a follow-up PR. "
-                    "For now, use n_bootstrap=0 (analytical TSL "
-                    "variance, which fully supports within-group-"
-                    "varying PSU via the cell-period allocator)."
-                )
+            # the previous within-group constancy rule. Both the
+            # analytical TSL path and the PSU-level wild bootstrap now
+            # honor within-group-varying PSU via the cell-period
+            # allocator (the bootstrap dispatcher routes PSU-within-
+            # group-constant regimes through the legacy group-level
+            # path for bit-identity with prior releases).
             _validate_cell_constant_strata_psu(
                 resolved_survey, data, group, time, survey_weights,
             )
@@ -1693,6 +1681,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
             multi_horizon_se = {}
             multi_horizon_inference = {}
+            # Cache the cohort-recentered per-cell IF tensors built
+            # inside this loop so the bootstrap block below can reuse
+            # them without recomputing cohort-recentering. Keyed by
+            # horizon; value shape (n_eligible_var, n_periods). Populated
+            # only when a survey design is active (else the per-period
+            # tensor is None and the bootstrap has no cell-level path
+            # to take).
+            _mh_pp_cache: Dict[int, np.ndarray] = {}
             # Compute inference for ALL horizons 1..L_max (including l=1)
             # so the event_study_effects dict uses a consistent estimand
             # (per-group DID_{g,l}) across all horizons.
@@ -1736,6 +1732,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     U_centered_pp_l: Optional[np.ndarray] = _cohort_recenter_per_period(
                         U_pp_l[eligible_mask_var], cid_elig
                     )
+                    _mh_pp_cache[l_h] = U_centered_pp_l
                 else:
                     U_centered_pp_l = None
                 N_l_h = multi_horizon_dids[l_h]["N_l"]
@@ -1842,6 +1839,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     [g not in singleton_baseline_set_pl for g in all_groups],
                     dtype=bool,
                 )
+                # Cache per-placebo-horizon cohort-recentered per-cell
+                # IF tensors for the bootstrap block below (same
+                # pattern as _mh_pp_cache for positive horizons).
+                _pl_pp_cache: Dict[int, np.ndarray] = {}
                 for lag_l in range(1, L_max + 1):
                     pl_data = multi_horizon_placebos.get(lag_l)
                     if pl_data is None or pl_data["N_pl_l"] == 0:
@@ -1874,6 +1875,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         U_centered_pp_pl_l: Optional[np.ndarray] = _cohort_recenter_per_period(
                             U_pp_pl[eligible_mask_pl], cid_elig_pl
                         )
+                        _pl_pp_cache[lag_l] = U_centered_pp_pl_l
                     else:
                         U_centered_pp_pl_l = None
                     _elig_groups_pl = [all_groups[g] for g in range(len(all_groups)) if eligible_mask_pl[g]]
@@ -2163,10 +2165,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         stacklevel=2,
                     )
             joiners_inputs = (
-                (U_centered_joiners, joiner_total, joiners_att) if joiners_available else None
+                (U_centered_joiners, joiner_total, joiners_att, U_centered_pp_joiners)
+                if joiners_available else None
             )
             leavers_inputs = (
-                (U_centered_leavers, leaver_total, leavers_att) if leavers_available else None
+                (U_centered_leavers, leaver_total, leavers_att, U_centered_pp_leavers)
+                if leavers_available else None
             )
             # Phase 1 placebo bootstrap: the Phase 1 per-period placebo
             # DID_M^pl still uses NaN SE (no IF derivation for the
@@ -2220,6 +2224,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         U_centered_pl_b,
                         pl_data["N_pl_l"],
                         pl_data["placebo_l"],
+                        _pl_pp_cache.get(lag_l),
                     )
 
             # Phase 2: build multi-horizon bootstrap inputs from the
@@ -2275,23 +2280,28 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         U_centered_h,
                         h_data["N_l"],
                         h_data["did_l"],
+                        _mh_pp_cache.get(l_h),
                     )
 
-            # Under a survey design with PSU information, build a
-            # `group_id_to_psu_code` dict so the bootstrap mixin can
-            # derive each target's PSU map by ID lookup rather than by
-            # positional reuse. PSU that varies within group is
-            # rejected for the bootstrap path by a NotImplementedError
-            # gate in fit() (the cell-period allocator used by the
-            # analytical TSL path does NOT require within-group PSU
-            # constancy, but the Hall-Mammen wild PSU bootstrap still
-            # uses a group-level PSU map — PR 4 extends it). Each
-            # variance-eligible group therefore has exactly one PSU
-            # label here. Under auto-inject psu=group each group has a
-            # unique PSU code and the bootstrap mixin's identity-map
-            # fast path reproduces the pre-PSU behavior bit-for-bit.
+            # Under a survey design with PSU information, build both
+            # (a) a group-level `group_id_to_psu_code` dict (one PSU
+            # code per eligible group) and (b) a per-cell PSU tensor
+            # `psu_codes_per_cell` of shape (n_eligible, n_periods).
+            # The bootstrap mixin's dispatcher inspects (b) to decide
+            # whether PSU is within-group-constant: when constant, it
+            # runs the legacy group-level bootstrap via (a) for
+            # bit-identity with pre-release behavior; when varying,
+            # it switches to the cell-level wild PSU bootstrap that
+            # draws one multiplier per (g, t)'s PSU. Under auto-inject
+            # `psu=group` each group has a unique PSU code and every
+            # cell of a group shares it — the dispatcher routes to
+            # the legacy path and the identity-map fast path
+            # reproduces the pre-PSU behavior bit-for-bit. See
+            # REGISTRY.md ChaisemartinDHaultfoeuille Survey +
+            # bootstrap contract Note.
             group_id_to_psu_code_bootstrap: Optional[Dict[Any, int]] = None
             eligible_group_ids_bootstrap: Optional[np.ndarray] = None
+            psu_codes_per_cell_bootstrap: Optional[np.ndarray] = None
             if (
                 resolved_survey is not None
                 and getattr(resolved_survey, "psu", None) is not None
@@ -2299,33 +2309,86 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             ):
                 obs_psu_codes = np.asarray(resolved_survey.psu)
                 obs_gids_boot = np.asarray(_obs_survey_info["group_ids"])
+                obs_tids_boot = np.asarray(_obs_survey_info["time_ids"])
                 obs_weights_boot = np.asarray(
                     _obs_survey_info["weights"], dtype=np.float64
                 )
                 pos_mask_boot = obs_weights_boot > 0
-                group_psu_labels: List[Any] = []
-                valid_map = True
-                for gid in _eligible_group_ids:
-                    mask_g = (obs_gids_boot == gid) & pos_mask_boot
-                    if not mask_g.any():
-                        valid_map = False
-                        break
-                    labels = obs_psu_codes[mask_g]
-                    # Within-group-constant PSU is validated upstream;
-                    # the first label represents the whole group.
-                    group_psu_labels.append(labels[0])
-                if valid_map and len(group_psu_labels) == n_groups_for_overall_var:
-                    # Factor PSU labels to dense integer codes.
-                    _, dense_codes = np.unique(
-                        np.asarray(group_psu_labels),
-                        return_inverse=True,
+                # Factor PSU labels to dense int codes over the
+                # positive-weight subpopulation. Shared code domain
+                # for both the per-cell tensor and the group-level
+                # dict below.
+                pos_psu_labels = obs_psu_codes[pos_mask_boot]
+                dense_per_row: Optional[np.ndarray] = None
+                if pos_psu_labels.size > 0:
+                    _, pos_dense_codes = np.unique(
+                        pos_psu_labels, return_inverse=True,
                     )
-                    dense_codes = np.asarray(dense_codes, dtype=np.int64)
-                    group_id_to_psu_code_bootstrap = {
-                        gid: int(code)
-                        for gid, code in zip(_eligible_group_ids, dense_codes)
+                    pos_dense_codes = np.asarray(pos_dense_codes, dtype=np.int64)
+                    dense_per_row = np.full(
+                        len(obs_psu_codes), -1, dtype=np.int64,
+                    )
+                    dense_per_row[pos_mask_boot] = pos_dense_codes
+
+                # Per-cell PSU tensor: (n_eligible, n_periods), -1 sentinel
+                # for ineligible / zero-weight cells.
+                if dense_per_row is not None:
+                    gid_to_idx = {
+                        gid: i for i, gid in enumerate(_eligible_group_ids)
                     }
-                    eligible_group_ids_bootstrap = np.asarray(_eligible_group_ids)
+                    tid_to_idx = {t: i for i, t in enumerate(all_periods)}
+                    n_elig_boot = len(_eligible_group_ids)
+                    n_per_boot = len(all_periods)
+                    psu_codes_per_cell = np.full(
+                        (n_elig_boot, n_per_boot), -1, dtype=np.int64,
+                    )
+                    g_idx_arr = np.array(
+                        [gid_to_idx.get(g, -1) for g in obs_gids_boot],
+                        dtype=np.int64,
+                    )
+                    t_idx_arr = np.array(
+                        [tid_to_idx.get(t, -1) for t in obs_tids_boot],
+                        dtype=np.int64,
+                    )
+                    valid_obs_boot = (
+                        pos_mask_boot
+                        & (g_idx_arr >= 0)
+                        & (t_idx_arr >= 0)
+                    )
+                    psu_codes_per_cell[
+                        g_idx_arr[valid_obs_boot],
+                        t_idx_arr[valid_obs_boot],
+                    ] = dense_per_row[valid_obs_boot]
+
+                    # Group-level dict: first non-sentinel code per row.
+                    # Under within-group-constant PSU this matches the
+                    # pre-PR-4 "first label per group" convention
+                    # bit-for-bit; under varying PSU the dispatcher
+                    # routes to the cell-level path which uses the
+                    # full `psu_codes_per_cell` tensor.
+                    group_psu_labels: List[int] = []
+                    valid_map = True
+                    for i in range(n_elig_boot):
+                        row = psu_codes_per_cell[i]
+                        valid = row[row >= 0]
+                        if valid.size == 0:
+                            valid_map = False
+                            break
+                        group_psu_labels.append(int(valid[0]))
+                    if (
+                        valid_map
+                        and len(group_psu_labels) == n_groups_for_overall_var
+                    ):
+                        group_id_to_psu_code_bootstrap = {
+                            gid: code
+                            for gid, code in zip(
+                                _eligible_group_ids, group_psu_labels
+                            )
+                        }
+                        eligible_group_ids_bootstrap = np.asarray(
+                            _eligible_group_ids
+                        )
+                        psu_codes_per_cell_bootstrap = psu_codes_per_cell
 
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
@@ -2339,6 +2402,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 placebo_horizon_inputs=pl_boot_inputs,
                 group_id_to_psu_code=group_id_to_psu_code_bootstrap,
                 eligible_group_ids=eligible_group_ids_bootstrap,
+                u_per_period_overall=U_centered_pp_overall,
+                psu_codes_per_cell=psu_codes_per_cell_bootstrap,
             )
             bootstrap_results = br
 
