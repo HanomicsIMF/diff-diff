@@ -316,3 +316,33 @@ class TestLpbwselectMseDpiValidation:
         y = rng.normal(size=100)
         with pytest.raises(ValueError, match="eval_point"):
             lpbwselect_mse_dpi(y, x, eval_point=np.nan)
+
+    def test_missing_cluster_id_rejected_nan(self):
+        """Missing (NaN) cluster IDs must be rejected, not silently
+        dropped from block grouping (cluster == c is False for NaN).
+        Deviates from nprobust's complete-case filter -- documented
+        in the module docstring."""
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        rng = np.random.default_rng(0)
+        x = rng.uniform(0.0, 1.0, size=100)
+        y = rng.normal(size=100)
+        cluster = np.arange(100, dtype=np.float64)
+        cluster[7] = np.nan
+        cluster[42] = np.nan
+        with pytest.raises(ValueError, match="missing values"):
+            lpbwselect_mse_dpi(y, x, cluster=cluster, eval_point=0.0)
+
+    def test_missing_cluster_id_rejected_none(self):
+        """``None`` sentinel in an object-dtype cluster array must
+        also be rejected."""
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        rng = np.random.default_rng(0)
+        x = rng.uniform(0.0, 1.0, size=10)
+        y = rng.normal(size=10)
+        cluster = np.array(
+            [1, 2, None, 3, 4, 5, 6, 7, 8, 9], dtype=object
+        )
+        with pytest.raises(ValueError, match="missing values"):
+            lpbwselect_mse_dpi(y, x, cluster=cluster, eval_point=0.0)

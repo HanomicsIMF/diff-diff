@@ -43,6 +43,14 @@ Deviations from nprobust (documented):
   your own risk until Phase 1c.
 * ``cluster=`` is supported in ``lprobust_vce`` and the ``lprobust_bw``
   wrapper but is only exercised by the HAD estimator via Phase 2.
+* **Missing-data policy for cluster IDs:** nprobust's ``lpbwselect``
+  complete-case-filters ``(x, y, cluster)`` before dispatch, dropping
+  rows where any of the three is missing. This port deliberately
+  rejects missing cluster IDs with a targeted ``ValueError`` instead
+  so callers see the missingness rather than silently losing rows.
+  (``x`` and ``y`` finiteness is also rejected up front for the same
+  reason; they could not be silently dropped in the nprobust way
+  without ambiguity.)
 """
 
 from __future__ import annotations
@@ -661,6 +669,38 @@ def lpbwselect_mse_dpi(
             raise ValueError(
                 f"cluster must have the same shape as x; got "
                 f"{cluster.shape} and {x.shape}"
+            )
+        # Missing cluster IDs must be rejected, not silently dropped.
+        # nprobust::lpbwselect complete-case-filters (x, y, cluster)
+        # before dispatch; this port deliberately rejects instead so
+        # callers see the missingness rather than lose rows silently.
+        # The "reject" vs "filter" choice is documented in the module
+        # docstring deviations list.
+        has_missing = False
+        if cluster.dtype.kind in ("f", "c"):
+            has_missing = bool(np.any(~np.isfinite(cluster)))
+        else:
+            # object / string / None-containing arrays: treat None and
+            # NaN-like sentinels as missing.
+            try:
+                has_missing = bool(np.any([x is None for x in cluster]))
+            except TypeError:
+                has_missing = False
+            if not has_missing:
+                try:
+                    # np.nan comparisons are False; use pd-style check.
+                    cluster_f = cluster.astype(np.float64, copy=False)
+                    has_missing = bool(np.any(~np.isfinite(cluster_f)))
+                except (TypeError, ValueError):
+                    pass
+        if has_missing:
+            raise ValueError(
+                "cluster contains missing values (NaN / None). Unlike "
+                "nprobust::lpbwselect which complete-case-filters "
+                "(x, y, cluster), this port rejects missing cluster "
+                "IDs so the caller sees the missingness rather than "
+                "silently losing rows. Filter your data before the "
+                "call or drop missing observations explicitly."
             )
 
     N = x.shape[0]
