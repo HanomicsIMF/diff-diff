@@ -116,6 +116,25 @@ class TestStageDiagnosticsParity:
         else:
             assert actual == pytest.approx(expected, rel=_PARITY_TOL), f"{name} {stage}"
 
+    @pytest.mark.parametrize(
+        "stage",
+        ["stage_d1", "stage_d2", "stage_b", "stage_h"],
+    )
+    def test_R_parity(self, dgp_case, stage):
+        """R (BWreg) parity. stage_d1 / stage_d2 use scale=0 so R=0;
+        stage_b / stage_h use scale=bwregul=1 so R is non-trivial and
+        must match nprobust."""
+        name, d, y, g = dgp_case
+        br = mse_optimal_bandwidth(d, y, return_diagnostics=True)
+        actual = getattr(br, f"{stage}_R")
+        expected = g[stage]["R"]
+        if expected == 0:
+            assert actual == pytest.approx(0, abs=1e-10), f"{name} {stage}"
+        else:
+            assert actual == pytest.approx(expected, rel=_PARITY_TOL), (
+                f"{name} {stage}: py={actual!r} R={expected!r}"
+            )
+
 
 # =============================================================================
 # Behavioral tests
@@ -302,6 +321,53 @@ class TestInputValidation:
         h = mse_optimal_bandwidth(d, y, boundary=0.0)
         assert np.isfinite(h)
         assert h > 0.0
+
+    def test_mass_point_design_rejected(self):
+        """Design 1 mass-point case (boundary > 0, modal fraction > 2%)
+        must be rejected with NotImplementedError pointing to 2SLS."""
+        rng = np.random.default_rng(2026)
+        n_mass = 200  # 10% mass at d_lower
+        n_cont = 1800
+        d_mass = np.full(n_mass, 0.1)
+        d_cont = rng.uniform(0.1, 1.0, size=n_cont)
+        d = np.concatenate([d_mass, d_cont])
+        y = d + rng.normal(0, 0.5, size=d.size)
+        with pytest.raises(NotImplementedError, match="mass-point"):
+            mse_optimal_bandwidth(d, y, boundary=float(d.min()))
+
+    def test_continuous_near_d_lower_accepted(self):
+        """Design 1 continuous-near-d_lower (boundary > 0, modal
+        fraction <= 2%) must pass through to nonparametric."""
+        rng = np.random.default_rng(20260419)
+        d = rng.uniform(0.1, 1.0, size=1500)  # no mass point
+        y = d + rng.normal(0, 0.3, size=1500)
+        h = mse_optimal_bandwidth(d, y, boundary=float(d.min()))
+        assert np.isfinite(h)
+        assert h > 0.0
+
+    def test_untreated_at_zero_accepted(self):
+        """Paper Section 3.1.5 / Garrett et al. application: untreated
+        units at d=0 are OK for Design 1'. boundary=0 with mass at 0
+        must NOT trigger the mass-point rejection."""
+        rng = np.random.default_rng(2026)
+        # ~15% at d=0 (genuinely untreated), rest continuous on (0, 1).
+        d_zero = np.zeros(300)
+        d_pos = rng.uniform(0.01, 1.0, size=1700)
+        d = np.concatenate([d_zero, d_pos])
+        y = d + rng.normal(0, 0.5, size=d.size)
+        h = mse_optimal_bandwidth(d, y, boundary=0.0)
+        assert np.isfinite(h)
+        assert h > 0.0
+
+    def test_rank_deficient_design_raises_valueerror(self):
+        """Duplicate-support windows must fail with a clear ValueError
+        from qrXXinv's Cholesky guard, not an opaque LinAlgError."""
+        from diff_diff._nprobust_port import qrXXinv
+
+        # Rank-1 X: all rows identical -> X.T @ X is rank-1.
+        X = np.tile([[1.0, 2.0, 3.0]], (10, 1))
+        with pytest.raises(ValueError, match="qrXXinv"):
+            qrXXinv(X)
 
 
 class TestKernelDispatch:

@@ -633,6 +633,36 @@ def mse_optimal_bandwidth(
             f"separately parity-tested against nprobust."
         )
 
+    # Mass-point design check (REGISTRY.md plans `>2%` modal-min rule).
+    # If d_lower > 0 and the distribution bunches at d_lower, the paper
+    # (de Chaisemartin et al. 2026 Section 3.2.4) prescribes the 2SLS
+    # sample-average path, NOT the nonparametric CCF local-polynomial
+    # path. Detect bunching and redirect the caller.
+    #
+    # We only flag when boundary > 0 (Design 1 continuous-near-d_lower
+    # vs Design 1 mass-point). For boundary = 0 (Design 1' or "untreated
+    # units present" subcase), the paper accepts nonparametric even with
+    # mass at 0 (Garrett et al. 2020 application with 12/2954 at 0).
+    if boundary > _boundary_tol:
+        eps_eq = 1e-12 * max(1.0, abs(d_min))
+        at_boundary_mask = np.abs(d - d_min) <= eps_eq
+        modal_fraction = float(np.mean(at_boundary_mask))
+        _MASS_POINT_THRESHOLD = 0.02  # REGISTRY rule: > 2% modal-min
+        if modal_fraction > _MASS_POINT_THRESHOLD:
+            raise NotImplementedError(
+                f"Detected mass-point design: the lower boundary "
+                f"d_lower={d_min!r} has modal fraction "
+                f"{modal_fraction:.4f} > {_MASS_POINT_THRESHOLD:.2f}. "
+                f"Per de Chaisemartin et al. (2026) Section 3.2.4 and "
+                f"the methodology registry, this case requires the 2SLS "
+                f"sample-average estimator with instrument 1{{D_2 > "
+                f"d_lower}}, not the nonparametric CCF local-polynomial "
+                f"bandwidth selector. That estimator is queued for "
+                f"Phase 2 (HeterogeneousAdoptionDiD). For continuous "
+                f"near-d_lower designs (modal fraction <= "
+                f"{_MASS_POINT_THRESHOLD:.2f}), this wrapper is applicable."
+            )
+
     # Defer heavy import to call time to avoid import-cycle risk.
     from diff_diff._nprobust_port import lpbwselect_mse_dpi
 

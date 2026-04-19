@@ -122,11 +122,29 @@ def qrXXinv(x: np.ndarray) -> np.ndarray:
     -------
     np.ndarray, shape (k, k)
         Inverse of ``x.T @ x``.
+
+    Raises
+    ------
+    ValueError
+        If ``x.T @ x`` is rank-deficient (Cholesky fails). Converts
+        the raw ``np.linalg.LinAlgError`` into a targeted message so
+        callers (``lprobust_bw``) can surface a clear failure reason
+        instead of an opaque linear-algebra error.
     """
     xtx = x.T @ x
-    # Cholesky solve for the inverse. Matches R's chol2inv(chol(.)).
-    L = np.linalg.cholesky(xtx)
     k = xtx.shape[0]
+    # Cholesky solve for the inverse. Matches R's chol2inv(chol(.)).
+    try:
+        L = np.linalg.cholesky(xtx)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError(
+            f"qrXXinv: Cholesky decomposition of X'X ({k}x{k}) failed. "
+            f"The weighted design matrix is rank-deficient, likely "
+            f"because the in-window support has fewer than {k} distinct "
+            f"points. Increase sample size, widen the bandwidth, or pick "
+            f"a boundary with more distinct values nearby. "
+            f"(LinAlgError: {exc})"
+        ) from exc
     Linv = np.linalg.solve(L, np.eye(k))
     return Linv.T @ Linv
 
