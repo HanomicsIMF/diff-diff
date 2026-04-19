@@ -172,9 +172,10 @@ def bspline_derivative_design_matrix(x, knots, degree, include_intercept=True):
                 f"(indices {failed_basis_indices}); their derivative columns "
                 f"are zero. This typically indicates a malformed knot vector "
                 f"(too few knots for the chosen degree, non-monotonic, or "
-                f"repeated interior knots). ContinuousDiD inference may be "
-                f"biased; consider increasing the number of distinct doses "
-                f"or reducing the B-spline degree.",
+                f"repeated interior knots). Both ACRT point estimates and "
+                f"analytical/bootstrap inference depend on this derivative "
+                f"matrix, so both may be biased. Consider increasing the "
+                f"number of distinct doses or reducing the B-spline degree.",
                 UserWarning,
                 stacklevel=2,
             )
