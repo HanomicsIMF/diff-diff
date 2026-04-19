@@ -614,9 +614,13 @@ def _unroll_target_to_cells(
     mass at that sentinel cell. The cell-level bootstrap cannot
     allocate that mass to any PSU (the cell has no positive-weight
     obs), so silently dropping it would under-weight the group's
-    bootstrap contribution. The conservative guard rejects the
-    combination and points users to ``n_bootstrap=0`` (analytical
-    TSL) as the documented alternative for such panels.
+    bootstrap contribution. The analytical TSL path shares the same
+    cell-period allocator and fires a matching guard in
+    ``_survey_se_from_group_if``, so both paths reject this regime
+    consistently. Documented workarounds: pre-process the panel
+    (drop late-exit groups or trim to a balanced sub-panel), or use
+    an explicit ``psu=<group_col>`` so both analytical and bootstrap
+    paths route through the legacy group-level allocator.
 
     Returns ``(u_cell, psu_cell)`` of shape
     ``(n_valid_cells_in_target,)`` each.
@@ -658,10 +662,14 @@ def _unroll_target_to_cells(
             "within-group-varying PSU: `_cohort_recenter_per_period` "
             "subtracts column means across the full period grid, so a "
             "group with no observation at period t acquires non-zero "
-            "centered mass there, which the cell-level bootstrap "
-            "cannot allocate to any PSU. Use `n_bootstrap=0` to fall "
-            "back to analytical TSL variance (which supports this "
-            "panel regime)."
+            "centered mass there, which the cell-level allocator "
+            "cannot allocate to any PSU. The analytical TSL path "
+            "(`_survey_se_from_group_if`) fires a matching guard on "
+            "the same regime, so both paths reject this panel "
+            "consistently. Pre-process the panel to remove terminal "
+            "missingness (drop late-exit groups or trim to a balanced "
+            "sub-panel), or use an explicit `psu=<group_col>` so both "
+            "paths route through the legacy group-level allocator."
         )
     return flat_u[mask], flat_psu[mask].astype(np.int64, copy=False)
 

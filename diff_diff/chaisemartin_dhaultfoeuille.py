@@ -5863,6 +5863,38 @@ def _survey_se_from_group_if(
         and U_centered_per_period.size > 0
     )
 
+    # When the cell allocator would apply but PSU is within-group-
+    # constant (PSU=group, strictly-coarser PSU within-group-constant,
+    # or the auto-inject default), the cell and group allocators are
+    # equivalent at PSU-level aggregation via the row-sum identity
+    # `sum_{c in g} u_cell[c] == u_centered[g]`. Prefer the legacy
+    # group-level path in that regime: it sidesteps the sentinel-
+    # mass guard (below) that would otherwise fire spuriously on
+    # terminally-missing panels whose PSU structure does not require
+    # cell-level resolution. Matches the bootstrap dispatcher's
+    # routing rule (`_compute_dcdh_bootstrap` + `_psu_varies_within_group`).
+    if use_cell_allocator:
+        psu_arr = getattr(resolved, "psu", None)
+        if psu_arr is None:
+            use_cell_allocator = False
+        else:
+            psu_eff = np.asarray(psu_arr)[pos_mask]
+            eligible_set = set(eligible_groups)
+            elig_row_mask = np.array(
+                [g in eligible_set for g in gids_eff], dtype=bool
+            )
+            if elig_row_mask.any():
+                psu_varies_within = bool(
+                    pd.DataFrame({
+                        "g": gids_eff[elig_row_mask],
+                        "p": psu_eff[elig_row_mask],
+                    }).groupby("g")["p"].nunique().gt(1).any()
+                )
+                if not psu_varies_within:
+                    use_cell_allocator = False
+            else:
+                use_cell_allocator = False
+
     if use_cell_allocator:
         tids_eff = np.asarray(time_ids)[pos_mask]
         # Map row's group to an index in eligible_groups (−1 when the

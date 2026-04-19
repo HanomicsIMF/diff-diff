@@ -2186,6 +2186,62 @@ class TestBootstrapCellPeriod:
                     survey_design=sd, L_max=1,
                 )
 
+    def test_fit_succeeds_on_terminal_missingness_with_psu_group(self):
+        """Companion regression: the terminal-missingness + varying-PSU
+        sentinel-mass guard must NOT fire when PSU is within-group-
+        constant. Same fixture as the varying-PSU test above but with
+        `psu=<group column>` (auto-inject default) — both analytical
+        and bootstrap paths route through the legacy group-level
+        allocator (the analytical dispatcher in
+        `_survey_se_from_group_if` falls back to the group-level
+        allocator when PSU does not vary within group; the bootstrap
+        dispatcher in `_compute_dcdh_bootstrap` does the same). Fit
+        must succeed with finite SE.
+        """
+        rows = []
+        for g in range(10):
+            if g < 5:
+                d_pattern = [0, 0, 0, 1, 1, 1]
+            elif g < 8:
+                d_pattern = [1, 1, 1, 1, 0, 0]
+            else:
+                d_pattern = [0, 0, 0, 0, 0, 0]
+            for t in range(6):
+                if g == 2 and t >= 4:
+                    continue
+                d = d_pattern[t]
+                y = float(g) + 0.1 * t + 1.0 * d
+                rows.append({
+                    "group": int(g),
+                    "period": int(t),
+                    "treatment": int(d),
+                    "outcome": y,
+                    "pw": 1.0,
+                })
+        df_ = pd.DataFrame(rows)
+        # Auto-inject: no explicit `psu` → `SurveyDesign` falls back to
+        # `psu=<group_col>` at fit() time. Within-group-constant.
+        sd = SurveyDesign(weights="pw")
+        import warnings as _w
+        for n_boot in (0, 50):
+            with _w.catch_warnings():
+                _w.simplefilter("ignore")
+                res = ChaisemartinDHaultfoeuille(
+                    n_bootstrap=n_boot, seed=1,
+                ).fit(
+                    df_, outcome="outcome", group="group",
+                    time="period", treatment="treatment",
+                    survey_design=sd, L_max=1,
+                )
+            assert np.isfinite(res.overall_att), (
+                f"n_bootstrap={n_boot}: overall_att must be finite "
+                f"under PSU=group + terminal missingness."
+            )
+            assert np.isfinite(res.overall_se) and res.overall_se >= 0.0, (
+                f"n_bootstrap={n_boot}: overall_se must be finite "
+                f"under PSU=group + terminal missingness."
+            )
+
     def test_bootstrap_dense_codes_under_singleton_baseline_excluded_group(self):
         """Regression for P0 #2: when a group is singleton-baseline-
         excluded (e.g., an always-treated group whose baseline D=1
