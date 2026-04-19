@@ -139,6 +139,15 @@ class BusinessReport:
         regardless of ``survey_design``. Supply
         ``precomputed={'parallel_trends': ...}`` with a survey-aware
         pretest to opt in. See ``docs/methodology/REPORTING.md``.
+    precomputed : dict, optional
+        Pre-computed diagnostic objects forwarded to the auto-
+        constructed ``DiagnosticReport`` (same keys as
+        ``DiagnosticReport(precomputed=...)``): ``"parallel_trends"``,
+        ``"sensitivity"``, ``"pretrends_power"``, ``"bacon"``. DR
+        validates keys and rejects estimator-incompatible entries
+        (e.g., HonestDiD bounds or generic PT on SDiD / TROP).
+        ``honest_did_results`` remains a shorthand for ``sensitivity``;
+        an explicit ``precomputed['sensitivity']`` wins on conflict.
     """
 
     def __init__(
@@ -162,6 +171,7 @@ class BusinessReport:
         time: Optional[str] = None,
         first_treat: Optional[str] = None,
         survey_design: Optional[Any] = None,
+        precomputed: Optional[Dict[str, Any]] = None,
     ):
         if type(results).__name__ == "BaconDecompositionResults":
             raise TypeError(
@@ -229,6 +239,42 @@ class BusinessReport:
         # Without this passthrough, the auto path silently replays an
         # unweighted decomposition / PT verdict for a weighted fit.
         self._dr_survey_design = survey_design
+        # Round-43 P2 CI review on PR #318: BR docs and docstrings
+        # advertised a ``precomputed={'parallel_trends': ...}`` opt-in
+        # for survey-aware 2x2 PT and other escape hatches, but BR did
+        # not actually accept a ``precomputed=`` kwarg — the auto path
+        # only synthesized ``{"sensitivity": honest_did_results}``, so
+        # callers following the BR docs hit a ``TypeError`` on
+        # ``__init__``. Accept the passthrough here and forward every
+        # key to the auto-constructed DR (which owns validation against
+        # its implemented-key set and estimator-aware rejection rules).
+        # ``honest_did_results`` still feeds into ``sensitivity`` as a
+        # convenience; an explicit ``precomputed['sensitivity']`` wins
+        # on conflict.
+        self._dr_precomputed: Dict[str, Any] = dict(precomputed or {})
+        # Round-43 P2 CI review on PR #318: mirror DR's eager key
+        # validation so users get the "unsupported key" error at BR
+        # construction rather than lazily when the DR is built inside
+        # ``to_dict()``. Kept in sync with ``DiagnosticReport``'s
+        # ``_supported_precomputed`` set; the cheapest way to avoid
+        # drift would be to import the set, but DR currently scopes it
+        # locally to ``__init__`` so mirror the literal here with a
+        # pointer comment.
+        _br_supported_precomputed = {
+            "parallel_trends",
+            "sensitivity",
+            "pretrends_power",
+            "bacon",
+        }
+        _br_unsupported = set(self._dr_precomputed) - _br_supported_precomputed
+        if _br_unsupported:
+            raise ValueError(
+                "precomputed= contains keys that are not implemented: "
+                f"{sorted(_br_unsupported)}. Supported keys: "
+                f"{sorted(_br_supported_precomputed)}. ``design_effect``, "
+                "``heterogeneity``, and ``epv`` are read directly from the "
+                "fitted result and do not accept precomputed overrides."
+            )
 
         resolved_alpha = alpha if alpha is not None else getattr(results, "alpha", 0.05)
         self._context = BusinessContext(
@@ -307,9 +353,16 @@ class BusinessReport:
             raise TypeError("diagnostics= must be a DiagnosticReport or DiagnosticReportResults")
         if not self._auto_diagnostics:
             return None
-        precomputed: Dict[str, Any] = {}
+        # Round-43 P2 CI review on PR #318: forward the user's
+        # ``precomputed`` dict through to DR. ``honest_did_results``
+        # stays a convenience shortcut for ``sensitivity`` only; an
+        # explicit ``precomputed['sensitivity']`` from the caller
+        # wins. DR handles key validation (rejects unsupported keys
+        # and estimator-incompatible sensitivities / parallel_trends
+        # entries) so BR just merges and forwards.
+        precomputed: Dict[str, Any] = dict(self._dr_precomputed)
         if self._honest_did_results is not None:
-            precomputed["sensitivity"] = self._honest_did_results
+            precomputed.setdefault("sensitivity", self._honest_did_results)
         dr = DiagnosticReport(
             self._results,
             alpha=self._context.alpha,
@@ -666,7 +719,15 @@ class BusinessReport:
             "weight_type": getattr(sm, "weight_type", None),
             "effective_n": _safe_float(getattr(sm, "effective_n", None)),
             "design_effect": deff,
-            "is_trivial": deff is not None and 0.95 <= deff <= 1.05,
+            # Round-43 P2 CI review on PR #318: the ``is_trivial``
+            # upper bound matches DR's ``_check_design_effect`` and
+            # REPORTING.md's ``trivial`` band definition
+            # ``0.95 <= deff < 1.05`` (half-open). The prior closed
+            # interval ``<= 1.05`` produced ``is_trivial=True`` at
+            # exactly ``deff == 1.05`` while the DR schema emitted
+            # ``band_label="slightly_reduces"`` for the same value,
+            # suppressing BR's non-trivial prose at that boundary.
+            "is_trivial": deff is not None and 0.95 <= deff < 1.05,
             "n_strata": _safe_int(getattr(sm, "n_strata", None)),
             "n_psu": _safe_int(getattr(sm, "n_psu", None)),
             "df_survey": _safe_int(getattr(sm, "df_survey", None)),

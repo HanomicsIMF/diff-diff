@@ -1717,7 +1717,17 @@ class DiagnosticReport:
         # ``deff < 0.95`` and keep ``is_trivial`` restricted to the
         # tight "effectively no effect" window so the schema
         # carries the precision-improving signal explicitly.
-        is_trivial = deff is not None and 0.95 <= deff <= 1.05
+        #
+        # Round-43 P2 CI review on PR #318: the ``is_trivial`` upper
+        # bound used ``<= 1.05`` (closed interval) but REPORTING.md
+        # defines the ``trivial`` band as ``0.95 <= deff < 1.05``
+        # (half-open) and ``slightly_reduces`` as ``1.05 <= deff < 2``.
+        # At exactly ``deff == 1.05`` the schema emitted
+        # ``band_label="slightly_reduces"`` while also setting
+        # ``is_trivial=True``, suppressing the non-trivial prose that
+        # the documented threshold says should fire. Align the
+        # ``is_trivial`` bound with the band-label bound.
+        is_trivial = deff is not None and 0.95 <= deff < 1.05
         if deff is None or not np.isfinite(deff):
             band_label: Optional[str] = None
         elif deff < 0.95:

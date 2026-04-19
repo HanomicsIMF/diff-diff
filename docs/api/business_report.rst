@@ -14,6 +14,15 @@ to surface pre-trends, sensitivity, and other validity checks as part
 of the narrative. Pass ``auto_diagnostics=False`` to skip this, or
 ``diagnostics=<DiagnosticReport>`` to supply an explicit one.
 
+Pre-computed diagnostics can be forwarded directly to the auto-
+constructed ``DiagnosticReport`` via
+``precomputed={'parallel_trends': ...}``,
+``precomputed={'sensitivity': ...}``,
+``precomputed={'pretrends_power': ...}``, or
+``precomputed={'bacon': ...}`` — same keys as
+``DiagnosticReport(precomputed=...)``. DR validates keys and rejects
+estimator-incompatible entries.
+
 Data-dependent checks (2x2 parallel trends on simple DiD,
 Goodman-Bacon decomposition on staggered estimators, the EfficientDiD
 Hausman PT-All vs PT-Post pretest) require the raw panel + column

@@ -3319,6 +3319,72 @@ class TestDesignEffectBandLabel:
     def test_large_warning_band_at_or_above_5(self):
         assert self._stub_with_deff(7.5)["band_label"] == "large_warning"
 
+    def test_deff_exactly_1_05_is_slightly_reduces_not_trivial(self):
+        """Round-43 P2 regression: REPORTING.md defines the ``trivial``
+        band as ``0.95 <= deff < 1.05`` (half-open) and
+        ``slightly_reduces`` as starting at ``1.05``. The prior code used
+        ``is_trivial = 0.95 <= deff <= 1.05`` (closed), producing a
+        schema that labeled exactly ``deff == 1.05`` as
+        ``band_label="slightly_reduces"`` AND ``is_trivial=True`` —
+        internally inconsistent, and the ``is_trivial=True`` flag
+        suppressed the non-trivial prose that the documented threshold
+        says should fire.
+        """
+        # DR schema: band_label="slightly_reduces" and is_trivial=False.
+        block = self._stub_with_deff(1.05)
+        assert block["band_label"] == "slightly_reduces", (
+            f"DEFF==1.05 must land in the ``slightly_reduces`` band per "
+            f"REPORTING.md (half-open threshold). Got: {block!r}"
+        )
+        assert block["is_trivial"] is False, (
+            f"DEFF==1.05 must NOT be classified as trivial (half-open "
+            f"threshold). Got is_trivial={block['is_trivial']!r}"
+        )
+
+        # BR's sample-block ``is_trivial`` must match.
+        from types import SimpleNamespace
+
+        from diff_diff import BusinessReport
+
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 500
+        stub.n_treated = 100
+        stub.n_control_units = 400
+        stub.event_study_effects = None
+        stub.survey_metadata = SimpleNamespace(
+            design_effect=1.05,
+            effective_n=500.0 / 1.05,
+            weight_type="pweight",
+            n_strata=None,
+            n_psu=None,
+            df_survey=None,
+            replicate_method=None,
+        )
+        br = BusinessReport(stub, auto_diagnostics=False)
+        sample = br.to_dict()["sample"]
+        assert sample["survey"] is not None
+        assert sample["survey"]["is_trivial"] is False, (
+            f"BR sample-block ``is_trivial`` at DEFF==1.05 must match "
+            f"DR's half-open threshold. Got: {sample['survey']!r}"
+        )
+
+    def test_deff_just_under_1_05_is_trivial(self):
+        """Round-43 P2 regression: the lower-bound adjacent point
+        ``deff == 1.049`` is still inside the half-open ``trivial``
+        band ``[0.95, 1.05)``.
+        """
+        block = self._stub_with_deff(1.049)
+        assert block["band_label"] == "trivial"
+        assert block["is_trivial"] is True
+
 
 class TestSDiDTROPRejectIncompatiblePrecomputedInputs:
     """Round-21 P1 CI review on PR #318: ``precomputed={"sensitivity":
@@ -3978,3 +4044,133 @@ class TestBusinessReportSurveyDesignPassthrough:
         assert bacon_block.get("status") == "skipped"
         reason = (bacon_block.get("reason") or "").lower()
         assert "survey design" in reason
+
+
+class TestBusinessReportPrecomputedPassthrough:
+    """Round-43 P2 CI review on PR #318: ``BusinessReport`` must accept
+    the ``precomputed=`` dict that its docs advertise and forward every
+    key to the auto-constructed ``DiagnosticReport``. DR owns key
+    validation (rejects unsupported keys and estimator-incompatible
+    entries)."""
+
+    def _did_with_survey(self):
+        from types import SimpleNamespace
+
+        class DiDResults:
+            pass
+
+        obj = DiDResults()
+        obj.att = 1.0
+        obj.se = 0.2
+        obj.t_stat = 5.0
+        obj.p_value = 0.001
+        obj.conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 400
+        obj.n_treated = 100
+        obj.n_control = 300
+        obj.survey_metadata = SimpleNamespace(
+            design_effect=1.25,
+            effective_n=320.0,
+            weight_type="pweight",
+            n_strata=None,
+            n_psu=None,
+            df_survey=20.0,
+            replicate_method=None,
+        )
+        obj.inference_method = "analytical"
+        return obj
+
+    def test_br_accepts_precomputed_parallel_trends_on_survey_did(self):
+        """The BR docs advertise
+        ``precomputed={'parallel_trends': ...}`` as the opt-in for
+        survey-backed 2x2 PT. That contract must actually be
+        reachable from BR's constructor, not just DR's."""
+        obj = self._did_with_survey()
+        precomputed_pt = {
+            "p_value": 0.42,
+            "treated_trend": 0.05,
+            "control_trend": 0.04,
+            "trend_difference": 0.01,
+            "t_statistic": 0.8,
+        }
+        br = BusinessReport(
+            obj,
+            outcome_label="Revenue",
+            outcome_unit="$",
+            precomputed={"parallel_trends": precomputed_pt},
+        )
+        schema = br.to_dict()
+        dr_schema = schema["diagnostics"]["schema"]
+        pt = dr_schema["parallel_trends"]
+        assert pt["status"] == "ran", (
+            "BR precomputed PT passthrough must unlock the otherwise-"
+            f"skipped survey-backed 2x2 path. Got PT block: {pt!r}"
+        )
+        assert pt["joint_p_value"] == pytest.approx(0.42)
+
+    def test_br_rejects_unsupported_precomputed_key(self):
+        """DR validates the precomputed key set; BR must raise the same
+        error rather than silently dropping unsupported keys."""
+        obj = self._did_with_survey()
+        with pytest.raises(ValueError, match="precomputed="):
+            BusinessReport(obj, precomputed={"unknown_check": object()})
+
+    def test_br_explicit_precomputed_sensitivity_wins_over_honest_did_results(self):
+        """When both ``honest_did_results`` (shorthand) and explicit
+        ``precomputed['sensitivity']`` are supplied, the explicit
+        passthrough wins. Documented contract: honest_did_results is a
+        convenience that only kicks in when no explicit sensitivity is
+        present."""
+        from types import SimpleNamespace
+
+        class MultiPeriodDiDResults:
+            pass
+
+        obj = MultiPeriodDiDResults()
+        obj.avg_att = 1.0
+        obj.avg_se = 0.1
+        obj.avg_p_value = 0.001
+        obj.avg_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 40
+        obj.n_control = 60
+        obj.survey_metadata = None
+        obj.pre_period_effects = {}
+        obj.vcov = None
+        obj.interaction_indices = None
+        obj.event_study_vcov = None
+        obj.event_study_vcov_index = None
+
+        explicit_sens = SimpleNamespace(
+            M_values=[0.5, 1.0],
+            bounds=[(0.1, 2.0), (-0.2, 2.5)],
+            robust_cis=[(0.05, 2.1), (-0.3, 2.6)],
+            breakdown_M=0.87,  # sentinel — the explicit one's breakdown
+            method="relative_magnitude",
+            original_estimate=1.0,
+            original_se=0.1,
+            alpha=0.05,
+        )
+        shorthand_sens = SimpleNamespace(
+            M_values=[0.5, 1.0],
+            bounds=[(0.1, 2.0), (-0.2, 2.5)],
+            robust_cis=[(0.05, 2.1), (-0.3, 2.6)],
+            breakdown_M=0.33,  # different sentinel
+            method="relative_magnitude",
+            original_estimate=1.0,
+            original_se=0.1,
+            alpha=0.05,
+        )
+        br = BusinessReport(
+            obj,
+            honest_did_results=shorthand_sens,
+            precomputed={"sensitivity": explicit_sens},
+        )
+        dr_schema = br.to_dict()["diagnostics"]["schema"]
+        sens = dr_schema["sensitivity"]
+        assert sens.get("breakdown_M") == pytest.approx(0.87), (
+            "Explicit precomputed['sensitivity'] must win over "
+            "honest_did_results shorthand. Got sens block: " + repr(sens)
+        )
