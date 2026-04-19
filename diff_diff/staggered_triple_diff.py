@@ -348,6 +348,11 @@ class StaggeredTripleDifference(
             {} if (covariates and self.estimation_method in ("ipw", "dr")) else None
         )
 
+        # Tracker for rank-deficient OR-IF solves across all (g, g_c, t) cells.
+        # _compute_did_panel appends one condition-number sample per LinAlgError
+        # so we emit ONE aggregate warning below rather than fanning out.
+        self._lstsq_fallback_tracker: List[float] = []
+
         for g in treatment_groups:
             # In universal mode, skip the reference period (t == g-1-anticipation)
             # so it's omitted from GT estimation. The event-study mixin injects
@@ -506,6 +511,26 @@ class StaggeredTripleDifference(
                 }
                 comparison_group_counts[(g, t)] = len(gc_labels)
                 gmm_weights_store[(g, t)] = dict(zip(gc_labels, gmm_w.tolist()))
+
+        # Consolidated OR influence-function rank-deficiency warning.
+        # Finding #17 in the Phase 2 silent-failures audit: the per-pair OR
+        # solve at _compute_did_panel() previously fell back to lstsq with no
+        # signal, so near/fully singular X'WX in the covariate expansion went
+        # to the user as a normal result.
+        if self._lstsq_fallback_tracker:
+            n_cells = len(self._lstsq_fallback_tracker)
+            finite_conds = [c for c in self._lstsq_fallback_tracker if np.isfinite(c)]
+            max_cond = max(finite_conds) if finite_conds else float("inf")
+            warnings.warn(
+                f"Rank-deficient X'WX detected in the outcome-regression "
+                f"influence-function step for {n_cells} (g, g_c, t) pair(s); "
+                f"fell back to np.linalg.lstsq. "
+                f"Max condition number of affected X'WX: {max_cond:.2e}. "
+                f"Consider dropping collinear covariates or using "
+                f"estimation_method='ipw' to avoid the OR projection.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Consolidated EPV summary warning
         if epv_diagnostics:
@@ -1330,6 +1355,14 @@ class StaggeredTripleDifference(
             try:
                 asy_linear_or = (np.linalg.solve(XpX, or_ex.T)).T
             except np.linalg.LinAlgError:
+                # Rank-deficient X'WX in the OR influence-function step. Record
+                # a condition-number sample so fit() can emit ONE aggregate
+                # warning across all (g, g_c, t) cells rather than fanning out.
+                tracker = getattr(self, "_lstsq_fallback_tracker", None)
+                if tracker is not None:
+                    with np.errstate(invalid="ignore", over="ignore"):
+                        cond = float(np.linalg.cond(XpX))
+                    tracker.append(cond)
                 asy_linear_or = (np.linalg.lstsq(XpX, or_ex.T, rcond=None)[0]).T
 
             inf_treat_or = -(asy_linear_or @ M1)

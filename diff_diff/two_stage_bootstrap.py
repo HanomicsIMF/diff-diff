@@ -197,6 +197,17 @@ class TwoStageDiDBootstrapMixin:
         try:
             bread = np.linalg.solve(XtX_2, np.eye(k))
         except np.linalg.LinAlgError:
+            # Sibling of finding #17 (axis A) — silent lstsq fallback in the
+            # TwoStage bootstrap bread matrix. Called once per (static / event-
+            # study / group) aggregation, so warning fan-out is bounded.
+            warnings.warn(
+                "Rank-deficient second-stage X'WX in TwoStageDiD multiplier "
+                "bootstrap bread; falling back to np.linalg.lstsq. Bootstrap "
+                "SEs may be numerically unstable; consider dropping collinear "
+                "covariates.",
+                UserWarning,
+                stacklevel=2,
+            )
             bread = np.linalg.lstsq(XtX_2, np.eye(k), rcond=None)[0]
 
         return S, bread, unique_clusters

@@ -753,6 +753,7 @@ See `docs/methodology/continuous-did.md` Section 4 for full details.
 - **Balanced panel**: Short balanced panel required ("large-n, fixed-T" regime). Does not handle unbalanced panels or repeated cross-sections
 - Warn if treatment varies within units (non-absorbing treatment)
 - Warn if propensity score estimates are near boundary values
+- **Note:** Polynomial-sieve propensity fits now reject any K whose normal-equations matrix has condition number above `1/sqrt(eps)` (≈ 6.7e7) — previously a near-singular `np.linalg.solve` could return numerically meaningless coefficients without raising. If at least one K succeeds but others were skipped via this precondition, a `UserWarning` lists the skipped K values. If every K is skipped, the existing "estimation failed for all K values" fallback warning still fires. Axis-A finding #18 in the Phase 2 silent-failures audit.
 
 *Estimator equation -- single treatment date (Equations 3.2, 3.5):*
 
@@ -1175,6 +1176,7 @@ Our implementation uses multiplier bootstrap on the GMM influence function: clus
 - **Zero-observation cohorts in group effects:** If all treated observations for a cohort have NaN `y_tilde` (excluded from estimation), that cohort's group effect is NaN with n_obs=0.
 - **Note:** Survey weights in TwoStageDiD GMM sandwich via weighted cross-products: bread uses (X'_2 W X_2)^{-1}, gamma_hat uses (X'_{10} W X_{10})^{-1}(X'_1 W X_2), per-cluster scores multiply by survey weights. PSU clustering, stratification, and FPC are fully supported in the meat matrix via `_compute_stratified_meat_from_psu_scores()`. When strata or FPC are present, the meat computation replaces `S' S` with the stratified formula `sum_h (1 - f_h) * (n_h/(n_h-1)) * centered_h' centered_h`. Strata also enters survey df (n_PSU - n_strata) for t-distribution inference. Bootstrap + survey supported (Phase 6) via PSU-level multiplier weights.
 - **Note:** Both the iterative FE solver (`_iterative_fe`, Stage 1) and the iterative alternating-projection demeaning helper (`_iterative_demean`, used in covariate residualization) emit `UserWarning` when `max_iter` exhausts without reaching `tol`, via `diff_diff.utils.warn_if_not_converged`. Silent return of the current iterate was classified as a silent failure under the Phase 2 audit and replaced with an explicit signal to match the logistic/Poisson IRLS pattern in `linalg.py`.
+- **Note:** When the Stage-2 bread `X'_2 W X_2` is singular, both the analytical TSL variance (`two_stage.py`) and the multiplier-bootstrap bread (`two_stage_bootstrap.py`) now emit a `UserWarning` before falling back to `np.linalg.lstsq`. Previously this fallback was silent. Sibling of axis-A finding #17 in the Phase 2 silent-failures audit; surfaced by the repo-wide lstsq-fallback pattern grep that accompanied the StaggeredTripleDifference fix.
 - **Note:** The GMM sandwich and bootstrap paths both use `scipy.sparse.linalg.factorized` for the Stage 1 normal-equations solve `(X'_{10} W X_{10}) gamma = X'_1 W X_2` and fall back to dense `lstsq` when the sparse factorization raises `RuntimeError` on a near-singular matrix. Both fallback sites emit a `UserWarning` (silent-failure audit axis C) so callers know SE estimates came from the degraded path rather than the fast sparse path.
 
 **Reference implementation(s):**
@@ -1695,6 +1697,7 @@ has no additional effect.
 - **Note:** `pscore_fallback` default changed from unconditional to error.
   Set `pscore_fallback="unconditional"` for legacy behavior.
 - Warns on singular GMM covariance matrix (falls back to pseudoinverse)
+- **Note:** Rank-deficient X'WX in the per-pair outcome-regression influence-function step now emits ONE aggregate `UserWarning` at `fit()` time (counting affected (g, g_c, t) cells and reporting the max condition number), instead of silently falling back to `np.linalg.lstsq`. Axis-A finding #17 in the Phase 2 silent-failures audit.
 
 *Data structure:*
 
@@ -2719,6 +2722,12 @@ unequal selection probabilities).
   per-observation PSUs for the TSL meat computation, consistent with the
   stratified-no-PSU path. The adjustment factor is `n/(n-1)` (not HC1's
   `n/(n-k)`).
+- **Note:** TSL now precondition-checks `X'WX` via `np.linalg.cond` before
+  solving the sandwich. If the condition number exceeds `1/sqrt(eps)` (≈
+  6.7e7) a `UserWarning` fires stating that the bread is ill-conditioned
+  and variance estimates may be numerically unstable. Previously a near-
+  singular `X'WX` could silently produce unstable SEs. Axis-A finding #19
+  in the Phase 2 silent-failures audit.
 
 ### Weight Type Effects on Inference
 

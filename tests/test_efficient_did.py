@@ -2052,3 +2052,85 @@ class TestSieveFallbacks:
         assert np.all(np.isfinite(s_hat))
         # Should fall back to unconditional n/n_group = 100/2 = 50
         assert np.allclose(s_hat, 50.0)
+
+
+# ---------------------------------------------------------------------------
+# Silent-failure audit PR #9: finding #18 — estimate_*_sieve silently
+# `continue`'d past rank-deficient K values. Now we track skipped K and
+# warn when we ship a result that wasn't the IC-winner across all K.
+# ---------------------------------------------------------------------------
+
+
+class TestSievePartialKSkipWarning:
+    """Finding #18 (axis A): partial K-failure no longer silent."""
+
+    def test_ratio_sieve_partial_skip_warns(self):
+        """If some K's are rank-deficient but at least one succeeds,
+        the function warns about the partial skip instead of swallowing it."""
+        from diff_diff.efficient_did_covariates import estimate_propensity_ratio_sieve
+
+        rng = np.random.default_rng(7)
+        n = 200
+        # 1D covariate with discrete support {0, 1}. At K=1 the basis is
+        # [1, x]; at K>=2 the basis reaches size >= n_gp for most groups
+        # before hitting singularity, but with this discrete support the
+        # polynomial powers x^2, x^3, ... equal x, yielding rank-deficient
+        # normal equations deterministically.
+        X = rng.integers(0, 2, size=(n, 1)).astype(float)
+        mask_g = np.zeros(n, dtype=bool)
+        mask_g[:100] = True
+        mask_gp = np.zeros(n, dtype=bool)
+        mask_gp[100:] = True
+        with pytest.warns(UserWarning) as caught:
+            ratio = estimate_propensity_ratio_sieve(X, mask_g, mask_gp, k_max=3)
+        assert np.all(np.isfinite(ratio))
+        partial_skip_msgs = [
+            str(w.message) for w in caught if "skipped K=" in str(w.message)
+        ]
+        assert partial_skip_msgs, (
+            "Expected a partial-K-skip warning when some K's are rank deficient "
+            "but at least one succeeds; got none."
+        )
+        # Message should name the specific K values that were skipped.
+        assert any("K=" in m for m in partial_skip_msgs)
+
+    def test_inverse_propensity_sieve_partial_skip_warns(self):
+        """Same contract for the inverse propensity sieve."""
+        from diff_diff.efficient_did_covariates import estimate_inverse_propensity_sieve
+
+        rng = np.random.default_rng(7)
+        n = 200
+        X = rng.integers(0, 2, size=(n, 1)).astype(float)
+        mask = np.zeros(n, dtype=bool)
+        mask[:100] = True
+        with pytest.warns(UserWarning) as caught:
+            s_hat = estimate_inverse_propensity_sieve(X, mask, k_max=3)
+        assert np.all(np.isfinite(s_hat))
+        partial_skip_msgs = [
+            str(w.message) for w in caught if "skipped K=" in str(w.message)
+        ]
+        assert partial_skip_msgs
+
+    def test_ratio_sieve_no_warning_when_no_skips(self):
+        """Clean, well-conditioned covariates → no partial-skip warning."""
+        from diff_diff.efficient_did_covariates import estimate_propensity_ratio_sieve
+
+        rng = np.random.default_rng(101)
+        n = 300
+        X = rng.normal(0, 1, (n, 2))
+        mask_g = np.zeros(n, dtype=bool)
+        mask_g[:150] = True
+        mask_gp = np.zeros(n, dtype=bool)
+        mask_gp[150:] = True
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            ratio = estimate_propensity_ratio_sieve(X, mask_g, mask_gp, k_max=3)
+        assert np.all(np.isfinite(ratio))
+        partial_skip_msgs = [
+            str(w.message) for w in caught if "skipped K=" in str(w.message)
+        ]
+        assert partial_skip_msgs == [], (
+            f"Unexpected partial-skip warning on clean data: {partial_skip_msgs}"
+        )

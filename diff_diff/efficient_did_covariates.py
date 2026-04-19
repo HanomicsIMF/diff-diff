@@ -227,6 +227,10 @@ def estimate_propensity_ratio_sieve(
 
     best_ic = np.inf
     best_ratio = np.ones(n_units)  # fallback: constant ratio 1
+    singular_K: List[int] = []  # K values skipped due to rank deficiency (#18)
+    # Near-singular matrices solve without raising LinAlgError but return
+    # numerically meaningless beta. Rule-of-thumb threshold: 1/sqrt(eps).
+    cond_threshold = 1.0 / np.sqrt(np.finfo(float).eps)
 
     for K in range(1, k_max + 1):
         n_basis = comb(K + d, d)
@@ -249,13 +253,23 @@ def estimate_propensity_ratio_sieve(
             A = Psi_gp.T @ Psi_gp
             b = Psi_g.sum(axis=0)
 
+        # Precondition check (#18, axis A): reject near-singular A explicitly
+        # so np.linalg.solve can't silently return garbage coefficients.
+        with np.errstate(invalid="ignore", over="ignore"):
+            A_cond = float(np.linalg.cond(A))
+        if not np.isfinite(A_cond) or A_cond > cond_threshold:
+            singular_K.append(K)
+            continue
+
         try:
             beta = np.linalg.solve(A, b)
         except np.linalg.LinAlgError:
+            singular_K.append(K)
             continue  # singular — try next K
 
         # Check for NaN/Inf in solution
         if not np.all(np.isfinite(beta)):
+            singular_K.append(K)
             continue
 
         # Predicted ratio for all units
@@ -279,6 +293,18 @@ def estimate_propensity_ratio_sieve(
             "Propensity ratio sieve estimation failed for all K values. "
             "Falling back to constant ratio of 1 (no ratio adjustment). "
             "The DR estimator relies on outcome regression only.",
+            UserWarning,
+            stacklevel=2,
+        )
+    elif singular_K:
+        # Finding #18 (axis A): partial K-failure was previously silent.
+        # Surface it so users see that the selected basis order was
+        # forced by rank deficiency at higher K rather than by the IC.
+        warnings.warn(
+            f"Propensity ratio sieve: skipped K={singular_K} due to "
+            f"rank-deficient or non-finite normal equations. "
+            f"Selected basis used the remaining K values; "
+            f"this may indicate limited variation in the covariates.",
             UserWarning,
             stacklevel=2,
         )
@@ -377,6 +403,8 @@ def estimate_inverse_propensity_sieve(
 
     best_ic = np.inf
     best_s = np.full(n_units, fallback_ratio)  # fallback: unconditional
+    singular_K: List[int] = []  # K values skipped due to rank deficiency (#18)
+    cond_threshold = 1.0 / np.sqrt(np.finfo(float).eps)
 
     for K in range(1, k_max + 1):
         n_basis = comb(K + d, d)
@@ -397,11 +425,20 @@ def estimate_inverse_propensity_sieve(
             # RHS: sum of basis over ALL units (not just one group)
             b = basis_all.sum(axis=0)
 
+        # Precondition check (#18, axis A): see ratio-sieve comment above.
+        with np.errstate(invalid="ignore", over="ignore"):
+            A_cond = float(np.linalg.cond(A))
+        if not np.isfinite(A_cond) or A_cond > cond_threshold:
+            singular_K.append(K)
+            continue
+
         try:
             beta = np.linalg.solve(A, b)
         except np.linalg.LinAlgError:
+            singular_K.append(K)
             continue
         if not np.all(np.isfinite(beta)):
+            singular_K.append(K)
             continue
 
         s_hat = basis_all @ beta
@@ -420,6 +457,16 @@ def estimate_inverse_propensity_sieve(
         warnings.warn(
             "Inverse propensity sieve estimation failed for all K values. "
             "Falling back to unconditional n/n_group scaling.",
+            UserWarning,
+            stacklevel=2,
+        )
+    elif singular_K:
+        # Finding #18 (axis A): partial K-failure was previously silent.
+        warnings.warn(
+            f"Inverse propensity sieve: skipped K={singular_K} due to "
+            f"rank-deficient or non-finite normal equations. "
+            f"Selected basis used the remaining K values; "
+            f"this may indicate limited variation in the covariates.",
             UserWarning,
             stacklevel=2,
         )

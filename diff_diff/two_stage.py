@@ -1768,6 +1768,17 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         try:
             bread = np.linalg.solve(XtWX_2, np.eye(k))
         except np.linalg.LinAlgError:
+            # Sibling of finding #17 (axis A) — silent lstsq fallback in the
+            # TSL-variance bread was previously silent. Surface it so a
+            # rank-deficient second-stage design doesn't quietly degrade SEs.
+            warnings.warn(
+                "Rank-deficient second-stage X'WX in TwoStageDiD TSL variance; "
+                "falling back to np.linalg.lstsq for the bread matrix. "
+                "Analytical SEs may be numerically unstable; consider dropping "
+                "collinear covariates.",
+                UserWarning,
+                stacklevel=2,
+            )
             bread = np.linalg.lstsq(XtWX_2, np.eye(k), rcond=None)[0]
 
         # 7. V = bread @ meat @ bread
