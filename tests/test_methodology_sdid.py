@@ -2423,6 +2423,63 @@ class TestDiagnosticScaleParity:
         )
 
 
+class TestDiagnosticSnapshotBackwardCompat:
+    """Locks in the backward-compatibility contract for legacy
+    _SyntheticDiDFitSnapshot objects that pre-date Y_shift/Y_scale. Their
+    defaults (0.0, 1.0) must make the new normalization a pure no-op so
+    older cached snapshots still drive diagnostic refits unchanged."""
+
+    def test_legacy_snapshot_defaults_are_noop(self):
+        from diff_diff.results import _SyntheticDiDFitSnapshot
+
+        data = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = SyntheticDiD(variance_method="jackknife", seed=1).fit(
+                data, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+            )
+
+        # Baseline diagnostic output with the real (fit-captured) normalization.
+        placebo0 = r.in_time_placebo()
+        sens0 = r.sensitivity_to_zeta_omega()
+
+        # Overwrite the snapshot with a legacy one built without Y_shift /
+        # Y_scale — the defaults must make the two diagnostic paths produce
+        # the same output as the fit-captured version, because the main
+        # fit's Y-shift/scale choice is a no-op on a small, well-scaled
+        # panel (Y_shift ~ 10, Y_scale ~ O(1), so (Y - shift)/scale is just
+        # a shifted/scaled copy of Y).
+        snap = r._fit_snapshot
+        legacy_snap = _SyntheticDiDFitSnapshot(
+            Y_pre_control=np.array(snap.Y_pre_control),
+            Y_post_control=np.array(snap.Y_post_control),
+            Y_pre_treated=np.array(snap.Y_pre_treated),
+            Y_post_treated=np.array(snap.Y_post_treated),
+            control_unit_ids=list(snap.control_unit_ids),
+            treated_unit_ids=list(snap.treated_unit_ids),
+            pre_periods=list(snap.pre_periods),
+            post_periods=list(snap.post_periods),
+            w_control=snap.w_control,
+            w_treated=snap.w_treated,
+            # Defaults — no Y_shift/Y_scale captured.
+        )
+        # Confirm the defaults are what we expect.
+        assert legacy_snap.Y_shift == 0.0
+        assert legacy_snap.Y_scale == 1.0
+
+        r._fit_snapshot = legacy_snap
+        placebo_legacy = r.in_time_placebo()
+        sens_legacy = r.sensitivity_to_zeta_omega()
+
+        # Shape and columns must match.
+        assert list(placebo_legacy.columns) == list(placebo0.columns)
+        assert list(sens_legacy.columns) == list(sens0.columns)
+        assert len(placebo_legacy) == len(placebo0)
+        assert len(sens_legacy) == len(sens0)
+
+
 class TestHeterogeneousAndRampingScale:
     """D-4b: the existing TestScaleEquivariance suite is affine-only
     (Y → a*Y + b with a single scalar a). These pathways are not covered:
