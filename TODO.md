@@ -77,6 +77,9 @@ Deferred items from PR reviews that were not addressed before merge.
 | WooldridgeDiD: aggregation weights use cell-level n_{g,t} counts. Paper (W2025 Eqs. 7.2-7.4) defines cohort-share weights. Add optional `weights="cohort_share"` parameter to `aggregate()`. | `wooldridge_results.py` | #216 | Medium |
 | WooldridgeDiD: canonical link requirement (W2023 Prop 3.1) not enforced — no warning if user applies wrong method to outcome type. Estimator is consistent regardless, but equivalence with imputation breaks. | `wooldridge.py` | #216 | Low |
 | WooldridgeDiD: Stata `jwdid` golden value tests — add R/Stata reference script and `TestReferenceValues` class. | `tests/test_wooldridge.py` | #216 | Medium |
+| Thread `vcov_type` (classical / hc1 / hc2 / hc2_bm) through the 8 standalone estimators that expose `cluster=`: `CallawaySantAnna`, `SunAbraham`, `ImputationDiD`, `TwoStageDiD`, `TripleDifference`, `StackedDiD`, `WooldridgeDiD`, `EfficientDiD`. Phase 1a added `vcov_type` to the `DifferenceInDifferences` inheritance chain only. | multiple | Phase 1a | Medium |
+| Weighted CR2 Bell-McCaffrey cluster-robust (`vcov_type="hc2_bm"` + `cluster_ids` + `weights`) currently raises `NotImplementedError`. Weighted hat matrix and residual rebalancing need threading per clubSandwich WLS handling. | `linalg.py::_compute_cr2_bm` | Phase 1a | Medium |
+| Regenerate `benchmarks/data/clubsandwich_cr2_golden.json` from R (`Rscript benchmarks/R/generate_clubsandwich_golden.R`). Current JSON has `source: python_self_reference` as a stability anchor until an authoritative R run. | `benchmarks/R/generate_clubsandwich_golden.R` | Phase 1a | Medium |
 
 #### Performance
 
@@ -85,6 +88,9 @@ Deferred items from PR reviews that were not addressed before merge.
 | ImputationDiD event-study SEs recompute full conservative variance per horizon (should cache A0/A1 factorization) | `imputation.py` | #141 | Low |
 | Rust faer SVD ndarray-to-faer conversion overhead (minimal vs SVD cost) | `rust/src/linalg.rs:67` | #115 | Low |
 | Unrelated label events (e.g., adding `bug` label) re-trigger CI workflows when `ready-for-ci` is already present; filter `labeled`/`unlabeled` events to only `ready-for-ci` transitions | `.github/workflows/rust-test.yml`, `notebooks.yml` | #269 | Low |
+| `bread_inv` as a performance kwarg on `compute_robust_vcov` to avoid re-inverting `(X'WX)` when the caller already has it. Deferred from Phase 1a for scope. HC2 and HC2+BM both need the bread inverse, so a shared hint would save one `np.linalg.solve` per sandwich. | `linalg.py::compute_robust_vcov` | Phase 1a | Low |
+| Rust-backend HC2 implementation. Current Rust path only supports HC1; HC2 and CR2 Bell-McCaffrey fall through to the NumPy backend. For large-n fits this is noticeable. | `rust/src/linalg.rs` | Phase 1a | Low |
+| CR2 Bell-McCaffrey DOF uses a naive `O(n² k)` per-coefficient loop over cluster pairs. Pustejovsky-Tipton (2018) Appendix B has a scores-based formulation that avoids the full `n × n` `M` matrix. Switch when a user hits a large-`n` cluster-robust design. | `linalg.py::_compute_cr2_bm` | Phase 1a | Low |
 
 #### Testing/Docs
 

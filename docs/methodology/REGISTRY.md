@@ -22,6 +22,7 @@ This document provides the academic foundations and key implementation requireme
    - [TripleDifference](#tripledifference)
    - [StaggeredTripleDifference](#staggeredtripledifference)
    - [TROP](#trop)
+   - [HeterogeneousAdoptionDiD](#heterogeneousadoptiondid)
 4. [Diagnostics & Sensitivity](#diagnostics--sensitivity)
    - [PlaceboTests](#placebotests)
    - [BaconDecomposition](#bacondecomposition)
@@ -2103,6 +2104,207 @@ For global method, LOOCV works as follows:
 - [x] Alternating minimization for nuclear norm penalty
 - [x] Returns ATT = mean of per-observation post-hoc τ̂_{it}
 - [x] Rust acceleration for LOOCV and bootstrap
+
+---
+
+## HeterogeneousAdoptionDiD
+
+**Implementation status (2026-04-18):** Methodology plan approved; implementation queued across 7 phased PRs (Phase 1a kernels + local-linear + HC2/Bell-McCaffrey; Phase 1b MSE-optimal bandwidth; Phase 1c bias-corrected CI + `nprobust` parity; Phase 2 `HeterogeneousAdoptionDiD` class + multi-period event study; Phase 3 QUG/Stute/Yatchew-HR diagnostics; Phase 4 Pierce-Schott replication harness; Phase 5 docs + tutorial + `practitioner_next_steps` integration). Full plan at `~/.claude/plans/vectorized-beaming-feather.md`; full paper review at `docs/methodology/papers/dechaisemartin-2026-review.md`. The requirements checklist at the end of this section tracks phase completion.
+
+**Primary source:** de Chaisemartin, C., Ciccia, D., D'Haultfœuille, X., & Knau, F. (2026). Difference-in-Differences Estimators When No Unit Remains Untreated. arXiv:2405.04465v6.
+
+**Scope:** Heterogeneous Adoption Design (HAD): a single-date, two-period DiD setting in which no unit is treated at period one and at period two all units receive strictly positive, heterogeneous treatment doses `D_{g,2} >= 0`. The estimator targets a Weighted Average Slope (WAS) when no genuinely untreated group exists. Extensions cover multiple periods without variation in treatment timing (Appendix B.2) and covariate-adjusted identification (Appendix B.1, future work).
+
+**Key implementation requirements:**
+
+*Assumption checks / warnings:*
+- Data must be panel (or repeated cross-section) with `D_{g,1} = 0` for all `g` (nobody treated in period one).
+- Treatment dose `D_{g,2} >= 0`. For Design 1' (the QUG case) the support infimum `d̲ := inf Supp(D_{g,2})` must equal 0; for Design 1 (no QUG) `d̲ > 0` and Assumption 5 or 6 must be invoked.
+- Assumption 1 (i.i.d. sample): `(Y_{g,1}, Y_{g,2}, D_{g,1}, D_{g,2})_{g=1,...,G}` i.i.d.
+- Assumption 2 (parallel trends for the least-treated): `lim_{d ↓ d̲} E[ΔY(0) | D_2 ≤ d] = E[ΔY(0)]`. Testable with pre-trends when a pre-treatment period `t=0` exists. Reduces to standard parallel trends when treatment is binary.
+- Assumption 3 (uniform continuity of `d → Y_2(d)` at zero): excludes extensive-margin effects; holds if `d → Y_2(d)` is Lipschitz. Not testable.
+- Assumption 4 (regularity for nonparametric estimation): positive density at boundary (`lim_{d ↓ 0} f_{D_2}(d) > 0`), twice-differentiable `m(d) := E[ΔY | D_2 = d]` near 0, continuous `σ²(d) := V(ΔY | D_2 = d)` with `lim_{d ↓ 0} σ²(d) > 0`, bounded kernel, bandwidth `h_G → 0` with `G h_G → ∞`.
+- Assumption 5 (for Design 1 sign identification): `lim_{d ↓ d̲} E(TE_2 | D_2 ≤ d) / WAS < E(D_2) / d̲`. Not testable via pre-trends. Sufficient version Equation 9: `0 ≤ E(TE_2 | D_2 = d) / E(TE_2 | D_2 = d') < E(D_2) / d̲` for all `(d, d')` in `Supp(D_2)²`.
+- Assumption 6 (for Design 1 WAS_{d̲} identification): `lim_{d ↓ d̲} E[Y_2(d̲) - Y_2(0) | D_2 ≤ d] = E[Y_2(d̲) - Y_2(0)]`. Not testable.
+- Warn (do NOT fit silently) when staggered treatment timing is detected: the paper's Appendix B.2 excludes designs with variation in treatment timing and no untreated group (only the last treatment cohort's effects are identified in a staggered setting).
+- Warn when Assumption 5/6 is invoked that these are not testable via pre-trends.
+- With Design 1 (no QUG) WAS is NOT point-identified under Assumptions 1-3 alone (Proposition 1); only sign identification (Theorem 2) or the alternative target WAS_{d̲} (Theorem 3) is available.
+
+*Target parameter - Weighted Average Slope (WAS, Equation 2):*
+
+    WAS := E[(D_2 / E[D_2]) · TE_2]
+         = E[Y_2(D_2) - Y_2(0)] / E[D_2]
+
+where `TE_2 := (Y_2(D_2) - Y_2(0)) / D_2` is the per-unit slope relative to "no treatment". Authors prefer WAS over the unweighted Average Slope `AS := E[TE_2]` because AS suffers a small-denominator problem near `D_2 = 0` that prevents `√G`-rate estimation.
+
+Alternative target (Design 1 under Assumption 6):
+
+    WAS_{d̲} := E[(D_2 - d̲) / E[D_2 - d̲] · TE_{2,d̲}]
+
+where `TE_{2,d̲} := (Y_2(D_2) - Y_2(d̲)) / (D_2 - d̲)`. Compares to a counterfactual where every unit gets the lowest dose, not zero; authors describe it as "less policy-relevant" than WAS.
+
+*Estimator equations:*
+
+Design 1' identification (Theorem 1, Equation 3):
+
+    WAS = (E[ΔY] - lim_{d ↓ 0} E[ΔY | D_2 ≤ d]) / E[D_2]
+
+Nonparametric local-linear estimator (Equation 7):
+
+    β̂_{h*_G}^{np} := ((1/G) Σ_{g=1}^G ΔY_g  -  μ̂_{h*_G}) / ((1/G) Σ_{g=1}^G D_{g,2})
+
+where `μ̂_h` is the intercept from a local-linear regression of `ΔY_g` on `D_{g,2}` using weights `k(D_{g,2}/h)/h`. This estimates the conditional mean `m(0) = lim_{d ↓ 0} E[ΔY | D_2 ≤ d]`.
+
+Design 1 mass-point case (Section 3.2.4, discrete bunching at `d̲`):
+
+    target = (E[ΔY] - E[ΔY | D_2 = d̲]) / E[D_2 - d̲]
+           = (E[ΔY | D_2 > d̲] - E[ΔY | D_2 = d̲]) / (E[D_2 | D_2 > d̲] - E[D_2 | D_2 = d̲])
+
+Compute via sample averages or a 2SLS of `ΔY` on `D_2` with instrument `1{D_2 > d̲}`. Convergence rate is `√G`.
+
+Design 1 continuous-near-`d̲` case: use the same kernel construction as Equation 7 with 0 replaced by `d̲` and `D_2` replaced by `D_2 - d̲`. `d̲` is estimated by `min_g D_{g,2}`, which converges at rate `G` (asymptotically negligible versus the `G^{2/5}` nonparametric rate of `β̂_{h*_G}^{np}`).
+
+Sign identification for Design 1 (Theorem 2, Equation 10):
+
+    WAS ≥ 0  ⟺  (E[ΔY] - lim_{d ↓ d̲} E[ΔY | D_2 ≤ d]) / E[D_2 - d̲] ≥ 0
+
+WAS_{d̲} identification (Theorem 3, Equation 11):
+
+    WAS_{d̲} = (E[ΔY] - lim_{d ↓ d̲} E[ΔY | D_2 ≤ d]) / E[D_2 - d̲]
+
+*With covariates / conditional identification (Equation 19, Appendix B.1):*
+
+Assumption 9 (conditional parallel trends): almost surely, `lim_{d ↓ 0} E[ΔY(0) | D_2 ≤ d, X] = E[ΔY(0) | X]`.
+
+Theorem 6 (Design 1' + Assumptions 3 and 9):
+
+    WAS = (E[ΔY] - E[ lim_{d ↓ 0} E[ΔY | D_2 ≤ d, X] ]) / E[D_2]
+
+Implementing Equation 19 requires MULTIVARIATE nonparametric regression `E[ΔY | D_2, X]`; Calonico et al. (2018) covers only the univariate case, so the authors leave this extension to future work. The Phase-2 estimator will raise `NotImplementedError` when `covariates=` is passed, pointing to this section.
+
+TWFE-with-covariates (Appendix B.1, Equations 20-21): under linearity Assumption 10 (`E[ΔY(0) | D_2, X] = X' γ_0`) and homogeneity `E[TE_2 | D_2, X] = X' δ_0`,
+
+    E[ΔY | D_2, X] = X' γ_0 + D_2 X' δ_0    (21)
+
+so `δ_0` is recovered by OLS of `ΔY` on `X` and `D_2 * X`; Average Slope is `((1/n) Σ X_i)' δ̂^X`.
+
+*Standard errors (Section 3.1.3-3.1.4, 4):*
+
+- Nonparametric estimator (Design 1' and Design 1 continuous-near-`d̲`): bias-corrected Calonico-Cattaneo-Farrell (2018, 2019) 95% CI (Equation 8):
+
+      [ β̂_{ĥ*_G}^{np} + M̂_{ĥ*_G} / ((1/G) Σ D_{g,2})  ±  q_{1-α/2} sqrt(V̂_{ĥ*_G} / (G ĥ*_G)) / ((1/G) Σ D_{g,2}) ]
+
+  The procedure ports the Calonico et al. `nprobust` machinery in-house (Phase 1a/1b/1c of the implementation plan): estimate optimal bandwidth `ĥ*_G`, compute `μ̂_{ĥ*_G}`, the first-order bias estimator `M̂_{ĥ*_G}`, and the variance estimator `V̂_{ĥ*_G}`.
+- 2SLS (Design 1 mass-point case): standard 2SLS inference (details not elaborated in the paper).
+- TWFE with small `G`: HC2 standard errors with Bell-McCaffrey (2002) degrees-of-freedom correction, following Imbens and Kolesar (2016). Used in the Pierce and Schott (2016) application with `G=103`. Added library-wide to `diff_diff/linalg.py` as a new `vcov_type` dispatch (Phase 1a), exposed on `DifferenceInDifferences` and `TwoWayFixedEffects`.
+- Bootstrap: wild bootstrap with Mammen (1993) two-point weights is used for the Stute test (see Diagnostics below), NOT for the main WAS estimator. Reuses the existing `diff_diff.bootstrap_utils.generate_bootstrap_weights(..., weight_type="mammen")` helper.
+- Clustering: no explicit clustering formulas in the paper's core equations.
+
+*Convergence rates:*
+- Design 1' nonparametric estimator: `G^{2/5}` (univariate nonparametric rate; Equations 5-6).
+- Design 1 discrete-mass-point case: `√G` (parametric rate).
+- Estimate of `d̲` via `min_g D_{g,2}`: rate `G` (asymptotically negligible).
+
+*Asymptotic distributions (Equations 5-6):*
+- Equation 5: `√(G h_G) (β̂_{h_G}^{np} - WAS - h_G² · C m''(0) / (2 E[D_2])) →^d N(0, σ²(0) ∫_0^∞ k*(u)² du / (E[D_2]² f_{D_2}(0)))`
+- Equation 6 (optimal rate, `G^{1/5} h_G → c > 0`): `G^{2/5} (β̂_{h_G}^{np} - WAS) →^d N(c² C m''(0) / (2 E[D_2]), σ²(0) ∫_0^∞ k*(u)² du / (c E[D_2]² f_{D_2}(0)))`
+- Kernel constants: `κ_k := ∫_0^∞ t^k k(t) dt`, `k*(t) := (κ_2 - κ_1 t) / (κ_0 κ_2 - κ_1²) · k(t)`, `C := (κ_2² - κ_1 κ_3) / (κ_0 κ_2 - κ_1²)`.
+
+*Edge cases:*
+- **No genuinely untreated units, D_2 continuous with `d̲ = 0` (Design 1')**: use `β̂_{h*_G}^{np}` (Equation 7) with bias-corrected CI (Equation 8).
+- **No untreated units, `d̲ > 0`, `D_2` has mass point at `d̲`**: use 2SLS of `ΔY` on `D_2` with instrument `1{D_2 > d̲}`, or equivalent sample-average formula. Identifies WAS_{d̲} under Assumption 6 (Theorem 3) or the sign of WAS under Assumption 5 (Theorem 2).
+- **No untreated units, `d̲ > 0`, `D_2` continuous near `d̲`**: replace 0 by `d̲` and `D_2` by `D_2 - d̲` in Equation 7; estimate `d̲` by `min_g D_{g,2}`.
+- **Genuinely untreated units present but a small share**: Authors do NOT require untreated units to be dropped. In the Garrett et al. (2020) bonus-depreciation application with 12 untreated counties out of 2,954, they keep the untreated subsample. Simulations (DGP 2, DGP 3) suggest CIs retain close-to-nominal coverage even when `f_{D_2}(0) = 0`.
+- **WAS is not point-identified without a QUG (Proposition 1, proof C.1)**: the proof explicitly constructs `tilde-Y_2(d) := Y_2(d) + (c / d̲) · E[D_2] · (d - d̲)` for any `c ∈ R`, compatible with the data under Assumptions 2 and 3 but with `tilde-WAS = WAS + c`. Practical consequence: do NOT report a point estimate of WAS under Design 1 without Assumption 5 or 6; fall back to Theorem 2 (sign) or Theorem 3 (WAS_{d̲}).
+- **Extensive-margin effects**: ruled out by Assumption 3. If a jump `Y_2(0) ≠ Y_2(0+)` is suspected, the target parameter and estimator are not appropriate.
+- **Partial identification of WAS_{d̲}**: only identified up to a positive constant offset `≤ ε` by the bound in Equation 22 (Jensen inequality argument in Appendix C.3).
+- **Density at boundary**: Assumption 4 requires `f_{D_2}(0) > 0`. This is a non-trivial assumption since 0 is on the boundary of `Supp(D_2)`.
+- **Variation in treatment timing**: Appendix B.2 - "in designs with variation in treatment timing, there must be an untreated group, at least till the period where the last cohort gets treated." The implementation errors (hard fail, not warning) on this configuration and redirects users to `ChaisemartinDHaultfoeuille`.
+- **Mechanical zero at reference period under linear trends (Footnote 13, main text p. 31)**: with industry/unit-specific linear trends, the pre-trends estimator is mechanically zero in the second-to-last pre-period (the slope anchor year). Practical consequence: that year is not an informative placebo check.
+
+*Algorithm (Design 1' nonparametric - summarized from Section 3.1.3-3.1.4 and Equations 7-8):*
+1. Compute bandwidth `ĥ*_G` via Calonico et al. (2018) plug-in MSE-optimal bandwidth selector on the local-linear regression of `ΔY_g` on `D_{g,2}` with kernel weights `k(D_{g,2}/h)/h`.
+2. Fit the local-linear regression at bandwidth `ĥ*_G`; read off the intercept `μ̂_{ĥ*_G}`.
+3. Compute `β̂_{ĥ*_G}^{np} = ((1/G) Σ ΔY_g - μ̂_{ĥ*_G}) / ((1/G) Σ D_{g,2})` (Equation 7).
+4. Compute the first-order bias estimator `M̂_{ĥ*_G}` and the variance estimator `V̂_{ĥ*_G}` (Calonico et al. 2018, 2019).
+5. Form the bias-corrected 95% CI by Equation 8.
+
+*Algorithm variant - Design 1 mass-point 2SLS (Section 3.2.4):*
+1. Detect a mass point at `d̲`: either user-supplied `d̲` or detected automatically via the `design="auto"` rule (fraction of observations at `min_g D_{g,2}` exceeds 2%).
+2. Either compute `(Ȳ_{D_2 > d̲} - Ȳ_{D_2 = d̲}) / (D̄_{D_2 > d̲} - D̄_{D_2 = d̲})` (sample averages), or run 2SLS of `ΔY_g` on `D_{g,2}` with instrument `1{D_{g,2} > d̲}`.
+3. Report the estimate as WAS_{d̲} under Assumption 6 or as the sign-identifying quantity under Assumption 5.
+
+*Algorithm variant - QUG null test (Theorem 4, Section 3.3):*
+Tuning-parameter-free test of `H_0: d̲ = 0` versus `H_1: d̲ > 0`. Shipped in `diff_diff/diagnostics.py` as `qug_test()`.
+1. Sort `D_{2,g}` ascending to obtain order statistics `D_{2,(1)} ≤ D_{2,(2)} ≤ ... ≤ D_{2,(G)}`.
+2. Compute test statistic `T := D_{2,(1)} / (D_{2,(2)} - D_{2,(1)})`.
+3. Reject `H_0` if `T > 1/α - 1`.
+4. Theorem 4 establishes: asymptotic size `α`; uniform consistency against fixed alternatives; local power at rate `G` on the class `F^{d̲,d̄}_{m,K}` of differentiable cdfs with positive density and Lipschitz derivative.
+5. Li et al. (2024, Theorem 2.4) implies the QUG test is asymptotically independent of the WAS / TWFE estimator, so conditional inference on WAS given non-rejection does not distort inference (asymptotically; the paper's Footnote 8 notes the extension to triangular arrays is conjectured but not proven).
+- **Note:** Implementation is `O(G)` via `np.partition`; no sort required.
+
+*Algorithm variant - TWFE linearity test via Stute (1997) Cramér-von Mises with wild bootstrap (Section 4.3, Appendix D):*
+Shipped in `diff_diff/diagnostics.py` as `stute_test()`. Tests whether `E(ΔY | D_2)` is linear, the testable implication of TWFE's homogeneity assumption (Assumption 8) in HADs.
+1. Fit linear regression of `ΔY_g` on constant and `D_{g,2}`; collect residuals `ε̂_{lin,g}`.
+2. Form cusum process `c_G(d) := G^{-1/2} Σ_{g=1}^G 1{D_{g,2} ≤ d} · ε̂_{lin,g}`.
+3. Compute Cramér-von Mises statistic `S := (1/G) Σ_{g=1}^G c_G²(D_{g,2})`. Equivalently, after sorting by `D_{g,2}`: `S = Σ_{g=1}^G (g/G)² · ((1/g) Σ_{h=1}^g ε̂_{lin,(h)})²`.
+4. Wild bootstrap for p-value (Stute, Manteiga, Quindimil 1998; Algorithm in main text p. 25 and vectorized form in Appendix D):
+   - Draw `(η_g)_{g=1,...,G}` i.i.d. from the Mammen two-point distribution: `η_g = (1+√5)/2` with probability `(√5-1)/(2√5)`, else `η_g = (1-√5)/2`. Reuses `diff_diff.bootstrap_utils.generate_bootstrap_weights(..., "mammen")`.
+   - Set `ε̂*_{lin,g} := ε̂_{lin,g} · η_g`.
+   - Compute `ΔY*_g = β̂_0 + D_{g,2} · β̂_{fe} + ε̂*_{lin,g}` (paper writes `ΔD_g` here, which equals `D_{g,2}` since `D_{g,1} = 0`; the two forms are equivalent in this design).
+   - Re-fit OLS on the bootstrap sample to get `ε̂*_{lin,g}`, compute `S*`.
+   - Repeat B times; the p-value is the fraction of `S*` exceeding `S`.
+5. Properties (page 26): asymptotic size, consistency under any fixed alternative, non-trivial local power at rate `G^{-1/2}`.
+6. Vectorized implementation (Appendix D): with `L` a `G × G` lower-triangular matrix of ones, `S = (1/G²) · 1ᵀ (L · E)^{∘2}`. Bootstrap uses a `G × G` realization matrix `H` of Mammen weights; memory-bounded at `G ≈ 100,000`.
+- **Note:** Default `n_bootstrap = 499` is a diff-diff choice; the paper does not prescribe.
+
+*Algorithm variant - Yatchew (1997) heteroskedasticity-robust linearity test (Appendix E, Theorem 7):*
+Shipped in `diff_diff/diagnostics.py` as `yatchew_hr_test()`. Alternative to Stute when `G` is large or heteroskedasticity is suspected.
+1. Sort `(D_{g,2}, ΔY_g)` by `D_{g,2}`.
+2. Compute difference-based variance estimator: `σ̂²_{diff} := (1/(2G)) Σ_{g=2}^G [(Y_{2,(g)} - Y_{1,(g)}) - (Y_{2,(g-1)} - Y_{1,(g-1)})]²`.
+3. Fit linear regression; compute residual variance `σ̂²_{lin}`.
+4. Heteroskedasticity-robust variance: `σ̂⁴_W := (1/(G-1)) Σ_{g=2}^G ε̂²_{lin,(g)} ε̂²_{lin,(g-1)}`.
+5. Robust test statistic: `T_{hr} := √G · (σ̂²_{lin} - σ̂²_{diff}) / σ̂²_W`. Reject linearity if `T_{hr} ≥ q_{1-α}` (Equation 29 and downstream in Theorem 7).
+6. Theorem 7: under `H_0`, `lim E[φ_α] = α`; under fixed alternative, `lim E[φ_α] = 1`; local power against alternatives at rate `G^{-1/4}` (slower than Stute's `G^{-1/2}` rate, but scales to `G ≥ 10⁵`).
+7. Inference on `β̂_{fe}` conditional on accepting the linearity test is asymptotically valid (Theorem 7, Point 1; citing de Chaisemartin and D'Haultfœuille 2024 arXiv:2407.03725).
+
+*Four-step pre-testing workflow (Section 4.2-4.3):*
+Shipped as `did_had_pretest_workflow()` and surfaced via `practitioner_next_steps()`. The paper's decision rule for TWFE reliability in HADs:
+1. Test the null of a QUG (`H_0: d̲ = 0`) using `qug_test()`.
+2. Run a pre-trends test of Assumption 7 (requires a pre-period `t=0`).
+3. Test that `E(ΔY | D_2)` is linear (`stute_test` or `yatchew_hr_test`).
+4. If NONE of the three is rejected, `β̂_{fe}` from TWFE may be used to estimate the treatment effect.
+
+**Reference implementation(s):**
+- R: `did_had` (de Chaisemartin, Ciccia, D'Haultfœuille, Knau 2024a); `stute_test` (2024c); `yatchew_test` (Online Appendix, Table 3).
+- Stata: `did_had` (2024b); `stute_test` (2024d); `yatchew_test`. Also `twowayfeweights` (de Chaisemartin, D'Haultfœuille, Deeb 2019) for negative-weight diagnostics.
+- Underlying bias-correction machinery: Calonico, Cattaneo, Farrell (2018, 2019) `nprobust`; ported in-house for diff-diff (decision recorded in the plan).
+
+**Requirements checklist (tracks implementation phase completion):**
+- [x] Phase 1a: Epanechnikov / triangular / uniform kernels with closed-form `κ_k` constants (`diff_diff/local_linear.py`).
+- [x] Phase 1a: Univariate local-linear regression at a boundary (`local_linear_fit` in `diff_diff/local_linear.py`).
+- [x] Phase 1a: HC2 + Bell-McCaffrey DOF correction in `diff_diff/linalg.py` via `vcov_type="hc2_bm"` enum (both one-way and CR2 cluster-robust with Imbens-Kolesar / Pustejovsky-Tipton Satterthwaite DOF). Weighted cluster CR2 raises `NotImplementedError` and is tracked as Phase 2+ in `TODO.md`.
+- [x] Phase 1a: `vcov_type` enum threaded through `DifferenceInDifferences` (`MultiPeriodDiD`, `TwoWayFixedEffects` inherit); `robust=True` <=> `vcov_type="hc1"`, `robust=False` <=> `vcov_type="classical"`. Conflict detection at `__init__`. Results summary prints the variance-family label.
+- [x] Phase 1a: `clubSandwich::vcovCR(..., type="CR2")` parity script (`benchmarks/R/generate_clubsandwich_golden.R`) and golden JSON committed. Parity test at `tests/test_linalg_hc2_bm.py::TestCR2BMCluster::test_cr2_parity_with_golden` with 1e-6 tolerance (Phase 1a plan committed 6-digit parity).
+- [ ] Phase 1b: Calonico-Cattaneo-Farrell (2018) MSE-optimal bandwidth selector.
+- [ ] Phase 1c: First-order bias estimator `M̂_{ĥ*_G}` and robust variance `V̂_{ĥ*_G}`.
+- [ ] Phase 1c: Bias-corrected CI (Equation 8) with `nprobust` parity.
+- [ ] Phase 2: `HeterogeneousAdoptionDiD` class with separate code paths for Design 1', Design 1 mass-point, and Design 1 continuous-near-`d̲`.
+- [ ] Phase 2: `design="auto"` detection rule (`min_g D_{g,2} < 0.01 · median_g D_{g,2}` → continuous_at_zero; modal-min fraction > 2% → mass_point; else continuous_near_lower).
+- [ ] Phase 2: Panel validator verifies `D_{g,1} = 0` for all units; error on staggered timing without last-cohort subgroup.
+- [ ] Phase 2: Multi-period event-study extension (Appendix B.2).
+- [ ] Phase 2: NaN-propagation tests across all ~15 result fields via `assert_nan_inference`.
+- [ ] Phase 3: `qug_test()` (`T = D_{2,(1)} / (D_{2,(2)} - D_{2,(1)})`, rejection `{T > 1/α - 1}`).
+- [ ] Phase 3: `stute_test()` Cramér-von Mises with Mammen wild bootstrap.
+- [ ] Phase 3: `yatchew_hr_test()` heteroskedasticity-robust linearity test.
+- [ ] Phase 3: `did_had_pretest_workflow()` composite helper.
+- [ ] Phase 4: Pierce-Schott (2016) replication harness reproduces Figure 2 values.
+- [ ] Phase 4: Full DGP 1/2/3 coverage-rate reproduction from Table 1.
+- [ ] Phase 5: `practitioner_next_steps()` integration for HAD results.
+- [ ] Phase 5: Tutorial notebook + `llms.txt` + `llms-full.txt` updates (preserving the UTF-8 fingerprint).
+- [ ] Documentation of non-testability of Assumptions 5 and 6.
+- [ ] Warnings for staggered treatment timing (redirect to `ChaisemartinDHaultfoeuille`).
+- [ ] `NotImplementedError` phase pointer when `covariates=` is passed (Theorem 6 future work).
 
 ---
 

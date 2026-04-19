@@ -122,6 +122,7 @@ class DifferenceInDifferences:
         self,
         robust: bool = True,
         cluster: Optional[str] = None,
+        vcov_type: Optional[str] = None,
         alpha: float = 0.05,
         inference: str = "analytical",
         n_bootstrap: int = 999,
@@ -129,8 +130,28 @@ class DifferenceInDifferences:
         seed: Optional[int] = None,
         rank_deficient_action: str = "warn",
     ):
+        # Resolve vcov_type from the `robust` alias. Precedence:
+        #   - If `vcov_type` is supplied, use it.
+        #   - Otherwise map `robust=True` -> "hc1" and `robust=False` -> "classical".
+        #   - `robust=False` + explicit non-"classical" vcov_type is a conflict.
+        _VALID = {"classical", "hc1", "hc2", "hc2_bm"}
+        if vcov_type is None:
+            vcov_type = "hc1" if robust else "classical"
+        else:
+            if vcov_type not in _VALID:
+                raise ValueError(
+                    f"vcov_type must be one of {sorted(_VALID)}; got {vcov_type!r}"
+                )
+            if robust is False and vcov_type != "classical":
+                raise ValueError(
+                    f"robust=False conflicts with vcov_type={vcov_type!r}. "
+                    "Pass vcov_type='classical' for non-robust SEs, or drop "
+                    "`robust=` and rely on vcov_type alone."
+                )
+
         self.robust = robust
         self.cluster = cluster
+        self.vcov_type = vcov_type
         self.alpha = alpha
         self.inference = inference
         self.n_bootstrap = n_bootstrap
@@ -374,6 +395,7 @@ class DifferenceInDifferences:
             weights=survey_weights,
             weight_type=survey_weight_type,
             survey_design=_lr_survey,
+            vcov_type=self.vcov_type,
         ).fit(X, y, df_adjustment=n_absorbed_effects)
 
         coefficients = reg.coefficients_
@@ -490,6 +512,8 @@ class DifferenceInDifferences:
             n_bootstrap=n_bootstrap_used,
             n_clusters=n_clusters_used,
             survey_metadata=survey_metadata,
+            vcov_type=self.vcov_type,
+            cluster_name=self.cluster,
         )
 
         self._coefficients = coefficients
@@ -740,6 +764,7 @@ class DifferenceInDifferences:
         return {
             "robust": self.robust,
             "cluster": self.cluster,
+            "vcov_type": self.vcov_type,
             "alpha": self.alpha,
             "inference": self.inference,
             "n_bootstrap": self.n_bootstrap,

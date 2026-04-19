@@ -46,6 +46,36 @@ def _format_survey_block(sm, width: int) -> list:
     return lines
 
 
+def _format_vcov_label(
+    vcov_type: str,
+    *,
+    cluster_name: Optional[str],
+    n_clusters: Optional[int],
+    n_obs: Optional[int],
+) -> Optional[str]:
+    """Compose a human-readable variance-family label for summary output.
+
+    Returns None when vcov_type is not recognized so the caller can skip the
+    line silently (backward-compat).
+    """
+    if vcov_type == "classical":
+        return "Classical OLS SEs (non-robust)"
+    if vcov_type == "hc1":
+        if cluster_name:
+            suffix = f", G={n_clusters}" if n_clusters else ""
+            return f"CR1 cluster-robust at {cluster_name}{suffix}"
+        return "HC1 heteroskedasticity-robust"
+    if vcov_type == "hc2":
+        return "HC2 leverage-corrected"
+    if vcov_type == "hc2_bm":
+        if cluster_name:
+            suffix = f", G={n_clusters}" if n_clusters else ""
+            return f"CR2 Bell-McCaffrey cluster-robust at {cluster_name}{suffix}"
+        suffix = f", n={n_obs}" if n_obs else ""
+        return f"HC2 + Bell-McCaffrey DOF (one-way{suffix})"
+    return None
+
+
 @dataclass
 class DiDResults:
     """
@@ -95,6 +125,11 @@ class DiDResults:
     bootstrap_distribution: Optional[np.ndarray] = field(default=None, repr=False)
     # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
     survey_metadata: Optional[Any] = field(default=None)
+    # Variance-covariance family: "classical" | "hc1" | "hc2" | "hc2_bm".
+    # Plus cluster_name when cluster-robust. Used by summary() to label the
+    # SE family in the output.
+    vcov_type: Optional[str] = field(default=None)
+    cluster_name: Optional[str] = field(default=None)
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -156,6 +191,17 @@ class DiDResults:
                 lines.append(f"{'Bootstrap replications:':<25} {self.n_bootstrap:>10}")
             if self.n_clusters is not None:
                 lines.append(f"{'Number of clusters:':<25} {self.n_clusters:>10}")
+
+        # Add variance family label (vcov_type) when set.
+        if self.vcov_type is not None:
+            label = _format_vcov_label(
+                self.vcov_type,
+                cluster_name=self.cluster_name,
+                n_clusters=self.n_clusters,
+                n_obs=self.n_obs,
+            )
+            if label is not None:
+                lines.append(f"{'Variance:':<25} {label:>40}")
 
         lines.extend(
             [
