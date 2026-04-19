@@ -633,21 +633,24 @@ def mse_optimal_bandwidth(
             f"separately parity-tested against nprobust."
         )
 
-    # Mass-point design check (REGISTRY.md plans `>2%` modal-min rule).
-    # If d_lower > 0 and the distribution bunches at d_lower, the paper
-    # (de Chaisemartin et al. 2026 Section 3.2.4) prescribes the 2SLS
-    # sample-average path, NOT the nonparametric CCF local-polynomial
-    # path. Detect bunching and redirect the caller.
+    # Design classification (REGISTRY.md Phase 2 design="auto" rule
+    # plus paper Section 3.2.4 mass-point redirection):
     #
-    # We only flag when boundary > 0 (Design 1 continuous-near-d_lower
-    # vs Design 1 mass-point). For boundary = 0 (Design 1' or "untreated
-    # units present" subcase), the paper accepts nonparametric even with
-    # mass at 0 (Garrett et al. 2020 application with 12/2954 at 0).
+    #   Design 1'        <=> d_lower = inf supp(D_2) = 0
+    #   Design 1 masspt  <=> d_lower > 0, P(D_2 = d_lower) > 0
+    #   Design 1 cont    <=> d_lower > 0, D_2 continuous near d_lower
+    #
+    # The CCF nonparametric selector is appropriate for Design 1' and
+    # Design 1 continuous-near-d_lower. Mass-point Design 1 requires a
+    # 2SLS sample-average estimator (Phase 2, not Phase 1b).
+    _MASS_POINT_THRESHOLD = 0.02  # REGISTRY rule: > 2% modal-min
+    eps_eq = 1e-12 * max(1.0, abs(d_min))
+    at_d_min_mask = np.abs(d - d_min) <= eps_eq
+    modal_fraction = float(np.mean(at_d_min_mask))
+
     if boundary > _boundary_tol:
-        eps_eq = 1e-12 * max(1.0, abs(d_min))
-        at_boundary_mask = np.abs(d - d_min) <= eps_eq
-        modal_fraction = float(np.mean(at_boundary_mask))
-        _MASS_POINT_THRESHOLD = 0.02  # REGISTRY rule: > 2% modal-min
+        # User supplied boundary = d_min > 0 explicitly. This is
+        # Design 1; distinguish mass-point vs continuous-near-d_lower.
         if modal_fraction > _MASS_POINT_THRESHOLD:
             raise NotImplementedError(
                 f"Detected mass-point design: the lower boundary "
@@ -661,6 +664,42 @@ def mse_optimal_bandwidth(
                 f"Phase 2 (HeterogeneousAdoptionDiD). For continuous "
                 f"near-d_lower designs (modal fraction <= "
                 f"{_MASS_POINT_THRESHOLD:.2f}), this wrapper is applicable."
+            )
+    else:
+        # User passed boundary <= 0 (default). Intent is Design 1'.
+        # Apply the REGISTRY's `min(d) < 0.01 * median(d)` rule: only
+        # accept when the support infimum is effectively 0 relative to
+        # the data scale. Otherwise force the user to disambiguate.
+        d_median = float(np.median(d))
+        _DESIGN_1_PRIME_RATIO = 0.01  # REGISTRY: min(d)/median(d) < 1%
+        # Guard against pathological all-zero or all-negative median.
+        effective_threshold = _DESIGN_1_PRIME_RATIO * max(abs(d_median), 1e-12)
+        if d_min > effective_threshold:
+            if modal_fraction > _MASS_POINT_THRESHOLD:
+                # Mass-point design dressed as Design 1': same
+                # NotImplementedError as the boundary>0 branch.
+                raise NotImplementedError(
+                    f"Detected mass-point design at d.min()={d_min!r} "
+                    f"(modal fraction {modal_fraction:.4f} > "
+                    f"{_MASS_POINT_THRESHOLD:.2f}), but boundary=0 "
+                    f"implies Design 1' intent. Either: (a) pass "
+                    f"boundary=d.min() to make the mass-point "
+                    f"classification explicit (which will then raise "
+                    f"NotImplementedError directing to the 2SLS path "
+                    f"per de Chaisemartin et al. 2026 Section 3.2.4), "
+                    f"or (b) reconsider whether the data is truly "
+                    f"Design 1' (support at 0)."
+                )
+            raise ValueError(
+                f"Ambiguous design: boundary=0 but d.min()={d_min!r} "
+                f"exceeds the Design 1' threshold of "
+                f"0.01 * median(d) = {effective_threshold!r}. This "
+                f"dataset does not satisfy Design 1' (support infimum "
+                f"at 0). Either: (a) pass boundary=d.min() for the "
+                f"Design 1 continuous-near-d_lower path, or (b) verify "
+                f"the data truly has support at 0 (in which case "
+                f"d.min() would be much closer to zero relative to the "
+                f"data scale)."
             )
 
     # Defer heavy import to call time to avoid import-cycle risk.

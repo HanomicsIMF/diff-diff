@@ -312,15 +312,40 @@ class TestInputValidation:
         assert np.isfinite(h)
         assert h > 0.0
 
-    def test_boundary_below_min_d_accepted(self):
-        """Design 1' uses boundary = 0 when all D_2 > 0; boundary
-        below d.min() must pass."""
+    def test_boundary_zero_design_1_prime_accepted(self):
+        """Design 1' data: d.min() effectively 0 relative to median,
+        so boundary=0 passes the REGISTRY 1%-of-median rule."""
         rng = np.random.default_rng(20260419)
-        d = rng.uniform(0.01, 1.0, size=1500)  # d.min() > 0
-        y = d + d**2 + rng.normal(0, 0.5, size=1500)
+        # d.min() ~ 5e-4 << 0.01 * median(d) ~ 5e-3
+        d = rng.uniform(0.0, 1.0, size=3000)
+        y = d + d**2 + rng.normal(0, 0.5, size=3000)
         h = mse_optimal_bandwidth(d, y, boundary=0.0)
         assert np.isfinite(h)
         assert h > 0.0
+
+    def test_boundary_zero_with_positive_d_min_rejected(self):
+        """Default boundary=0 with d.min() substantially positive (>1%
+        of median) is not Design 1'; force the caller to pass
+        boundary=d.min() instead of silently misclassifying."""
+        rng = np.random.default_rng(2026)
+        # d.min() ~ 0.5, median ~ 0.75 -> ratio 0.67 >> 0.01.
+        d = rng.uniform(0.5, 1.0, size=1500)
+        y = d + rng.normal(0, 0.3, size=1500)
+        with pytest.raises(ValueError, match="Ambiguous design"):
+            mse_optimal_bandwidth(d, y, boundary=0.0)
+
+    def test_boundary_zero_with_d_min_mass_point_rejected(self):
+        """boundary=0 default path with d.min() > 0 AND mass at d.min()
+        must also be rejected, pointing to the 2SLS redirection."""
+        rng = np.random.default_rng(2026)
+        n_mass = 300  # 15% at 0.1
+        n_cont = 1700
+        d_mass = np.full(n_mass, 0.1)
+        d_cont = rng.uniform(0.1, 1.0, size=n_cont)
+        d = np.concatenate([d_mass, d_cont])
+        y = d + rng.normal(0, 0.5, size=d.size)
+        with pytest.raises(NotImplementedError, match="mass-point"):
+            mse_optimal_bandwidth(d, y, boundary=0.0)
 
     def test_mass_point_design_rejected(self):
         """Design 1 mass-point case (boundary > 0, modal fraction > 2%)
@@ -368,6 +393,31 @@ class TestInputValidation:
         X = np.tile([[1.0, 2.0, 3.0]], (10, 1))
         with pytest.raises(ValueError, match="qrXXinv"):
             qrXXinv(X)
+
+    def test_full_stack_rank_deficient_raises_valueerror(self):
+        """End-to-end rank-deficiency integration test: a sample with
+        enough rows but only a handful of distinct in-window d values
+        drives rank-deficient X'X at some DPI stage. The public wrapper
+        must surface a clear ValueError (either from qrXXinv's Cholesky
+        guard or from the stage-count guards), not IndexError or
+        LinAlgError.
+        """
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        # Only 3 distinct d values; each pilot stage's design matrix
+        # will have at most 3 independent rows, but the B2 fit needs
+        # o_B+2 = 5 or 6 columns -> rank deficient.
+        d = np.repeat([0.1, 0.2, 0.3], 50).astype(np.float64)
+        rng = np.random.default_rng(2026)
+        y = d + rng.normal(0, 0.1, size=d.size)
+        with pytest.raises(ValueError):
+            lpbwselect_mse_dpi(y, d, eval_point=0.0, bwcheck=None)
+        # Same through the public wrapper (boundary=0 is fine since
+        # d.min()=0.1 triggers either ambiguous-design or rank-deficient
+        # rejection; we only care that it is a ValueError and not an
+        # opaque linear-algebra crash).
+        with pytest.raises((ValueError, NotImplementedError)):
+            mse_optimal_bandwidth(d, y)
 
 
 class TestKernelDispatch:
