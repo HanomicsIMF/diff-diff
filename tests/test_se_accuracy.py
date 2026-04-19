@@ -10,6 +10,7 @@ Key comparisons:
 - BasicDiD/TWFE: Should be 0% difference (exact match)
 """
 
+import os
 import time
 from typing import Dict, Tuple
 
@@ -18,6 +19,16 @@ import pandas as pd
 import pytest
 
 from diff_diff import CallawaySantAnna
+
+# Wall-clock timing assertions on shared CI runners are flaky (neighbor-VM
+# contention, BLAS path variation, cold caches). Default Python CI already
+# excludes `@pytest.mark.slow`; Rust-backend CI invokes pytest with `-m ''`
+# which overrides that filter and re-includes the slow set. GitHub Actions
+# sets ``CI=true`` on every runner, so this predicate catches both.
+_SKIP_WALLCLOCK_ON_CI = pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="wall-clock timing is flaky on shared CI runners; run locally via `pytest -m slow`",
+)
 
 
 def generate_staggered_data_for_benchmark(
@@ -253,6 +264,7 @@ class TestCallawaySantAnnaSEAccuracy:
             f"SE differs from R by {se_diff_pct:.4f}%, expected <0.01%"
 
     @pytest.mark.slow
+    @_SKIP_WALLCLOCK_ON_CI
     def test_timing_performance(self, cs_results):
         """
         Ensure estimation timing doesn't regress.
@@ -260,10 +272,13 @@ class TestCallawaySantAnnaSEAccuracy:
         Baseline: ~0.005s for 200 units x 8 periods (small scale)
         Threshold: <0.1s.
 
-        Excluded from default CI via ``@pytest.mark.slow`` — wall-clock time
-        on shared runners is noisy (BLAS path variation, neighbor VM
-        contention, cold caches) and produces false positives. Run locally
-        with ``pytest -m slow`` for ad-hoc performance sanity checks.
+        Excluded from default CI via ``@pytest.mark.slow`` AND from all CI
+        via ``skipif(CI=="true")`` — wall-clock time on shared runners is
+        noisy (BLAS path variation, neighbor VM contention, cold caches)
+        and produces false positives. The ``skipif`` layer is needed
+        because the Rust-backend CI jobs override ``-m 'not slow'`` with
+        ``-m ''`` to include the full slow suite. Run locally with
+        ``pytest -m slow`` for ad-hoc performance sanity checks.
         """
         _, elapsed = cs_results
 
@@ -405,13 +420,17 @@ class TestSEFormulaComparison:
 
 
 @pytest.mark.slow
+@_SKIP_WALLCLOCK_ON_CI
 class TestPerformanceRegression:
     """Tests to prevent performance regression.
 
-    Excluded from default CI via ``@pytest.mark.slow`` — wall-clock time on
-    shared runners is noisy (BLAS path variation, neighbor VM contention,
-    cold caches) and produces false positives. Run locally with
-    ``pytest -m slow`` for ad-hoc performance sanity checks.
+    Excluded from default CI via ``@pytest.mark.slow`` AND from all CI via
+    ``skipif(CI=="true")`` — wall-clock time on shared runners is noisy
+    (BLAS path variation, neighbor VM contention, cold caches) and
+    produces false positives. The ``skipif`` layer is needed because the
+    Rust-backend CI jobs override ``-m 'not slow'`` with ``-m ''`` to
+    include the full slow suite. Run locally with ``pytest -m slow`` for
+    ad-hoc performance sanity checks.
     """
 
     @pytest.mark.parametrize("n_units,max_time", [
