@@ -170,6 +170,64 @@ class TestReplicateClassA:
         assert np.isfinite(res.overall_se)
         assert res.overall_se > 0
 
+    def test_att_raises_on_terminal_missingness_replicate_path(self):
+        """Replicate ATT + terminal missingness: the Class A replicate
+        path uses the cell-period allocator unconditionally (per the
+        PR #323 contract), so cohort-recentering leakage onto missing
+        cells hits the `_survey_se_from_group_if` sentinel-mass guard
+        regardless of PSU structure (replicate designs do not carry
+        `resolved.psu`). Unlike Binder TSL, replicate has no
+        `psu=<group_col>` fallback — the documented workaround is to
+        pre-process the panel. Locks this user-facing failure mode.
+        """
+        import warnings as _w
+        rows = []
+        for g in range(10):
+            if g < 5:
+                d_pattern = [0, 0, 0, 1, 1, 1]
+            elif g < 8:
+                d_pattern = [1, 1, 1, 1, 0, 0]
+            else:
+                d_pattern = [0, 0, 0, 0, 0, 0]
+            for t in range(6):
+                if g == 2 and t >= 4:
+                    continue  # terminal missingness for group 2
+                d = d_pattern[t]
+                y = float(g) + 0.1 * t + 1.0 * d
+                row = {
+                    "group": int(g),
+                    "period": int(t),
+                    "treatment": int(d),
+                    "outcome": y,
+                    "pw": 1.0,
+                }
+                # Attach 5 replicate-weight columns (per-row
+                # Rademacher-like draws; SDR is the simplest method
+                # that does not require a replicate_strata schedule).
+                for r in range(5):
+                    row[f"rep{r}"] = 0.5 if (g + t + r) % 2 == 0 else 1.5
+                rows.append(row)
+        df_ = pd.DataFrame(rows)
+        sd = SurveyDesign(
+            weights="pw",
+            replicate_weights=[f"rep{r}" for r in range(5)],
+            replicate_method="SDR",
+        )
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")  # terminal-missingness UserWarning
+            with pytest.raises(
+                ValueError, match="no positive-weight observations",
+            ):
+                ChaisemartinDHaultfoeuille(seed=1).fit(
+                    df_,
+                    outcome="outcome",
+                    group="group",
+                    time="period",
+                    treatment="treatment",
+                    survey_design=sd,
+                    L_max=1,
+                )
+
     def test_att_cell_allocator_with_varying_replicate_ratios(
         self, base_panel, replicate_design, monkeypatch,
     ):

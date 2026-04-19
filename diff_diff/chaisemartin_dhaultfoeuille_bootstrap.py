@@ -171,17 +171,50 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
             :func:`compute_effect_bootstrap_stats` for the percentile
             p-value computation.
         joiners_inputs : tuple, optional
-            ``(u_centered, divisor, original_effect)`` triple for the
-            joiners-only ``DID_+`` target. The ``divisor`` is the
-            joiner switching-cell total ``sum_t N_{1,0,t}``, NOT the
-            joiner group count. ``None`` when no joiners exist.
+            ``(u_centered, divisor, original_effect, u_per_period)``
+            4-tuple for the joiners-only ``DID_+`` target. The
+            ``divisor`` is the joiner switching-cell total
+            ``sum_t N_{1,0,t}`` (NOT the joiner group count).
+            ``u_per_period`` is the cohort-recentered per-cell IF
+            tensor of shape ``(n_eligible_groups, n_periods)`` (or
+            ``None`` when survey is inactive); it is consumed only
+            by the cell-level dispatch described below.
         leavers_inputs : tuple, optional
-            Same triple for the leavers-only ``DID_-`` target. The
-            ``divisor`` is the leaver switching-cell total
-            ``sum_t N_{0,1,t}``.
+            Same 4-tuple for the leavers-only ``DID_-`` target.
+            ``divisor`` is ``sum_t N_{0,1,t}``.
         placebo_inputs : tuple, optional
-            Same triple for the Phase 1 per-period placebo ``DID_M^pl``.
-            ``None`` when ``L_max=None`` (per-period placebo has no IF).
+            Same 4-tuple for the Phase 1 per-period placebo
+            ``DID_M^pl``. ``None`` when ``L_max=None`` (per-period
+            placebo has no IF). The 4th slot is always ``None`` here
+            because the Phase 1 placebo has no per-cell attribution.
+        multi_horizon_inputs : dict, optional
+            Per-horizon 4-tuples keyed by horizon ``l``. Same layout
+            as ``joiners_inputs``; the per-horizon per-cell tensor
+            drives the shared-PSU-weights broadcast under the cell-
+            level path.
+        placebo_horizon_inputs : dict, optional
+            Same shape as ``multi_horizon_inputs`` for the Phase 2
+            placebo-horizon targets.
+        group_id_to_psu_code : dict, optional
+            Group-ID → dense PSU code map for the legacy group-level
+            bootstrap path. ``None`` when no PSU info is available.
+        eligible_group_ids : np.ndarray, optional
+            Ordered group IDs matching the ``u_centered_*`` vectors
+            for the legacy group-level path.
+        u_per_period_overall : np.ndarray, optional
+            Cohort-recentered per-cell IF tensor for the overall
+            ``DID_M`` target, shape ``(n_eligible_groups, n_periods)``.
+            Consumed only by the cell-level path.
+        psu_codes_per_cell : np.ndarray, optional
+            Per-cell PSU code tensor, shape
+            ``(n_eligible_groups, n_periods)``, with ``-1`` sentinel
+            for ineligible / zero-weight cells. Used by
+            ``_psu_varies_within_group`` to pick between the legacy
+            group-level bootstrap path (PSU-within-group-constant,
+            bit-identical to pre-PR-4 behavior via the identity-map
+            fast path) and the cell-level wild PSU bootstrap
+            (within-group-varying PSU, cell-level multipliers and
+            shared PSU-level weights across multi-horizon blocks).
 
         Returns
         -------
