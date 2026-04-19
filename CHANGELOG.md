@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Add Zenodo DOI badge to README; upgrade the BibTeX citation block with the concept DOI (`10.5281/zenodo.19646175`) and list author as Isaac Gerber (matching `CITATION.cff`). Add `doi:` and `identifiers:` entries (concept + versioned) to `CITATION.cff`. DOI was minted by Zenodo when v3.1.3 was released.
+- **`ChaisemartinDHaultfoeuille` heterogeneity + within-group-varying PSU/strata now supported** - `fit(heterogeneity=..., survey_design=...)` no longer raises `NotImplementedError` when the resolved design's PSU or strata vary across the cells of a group. The heterogeneity WLS coefficient IF is now expanded to observation level via the cell-period allocator (`ψ_i = ψ_g * (w_i / W_{g, out_idx})` on the post-period cell), consistent with the DID_l post-period single-cell convention shipped in v3.1.x. Under PSU=group the PSU-level Binder TSL variance and Rao-Wu replicate variance are byte-identical to the previous release (the PSU-level aggregate telescopes to `ψ_g` in both expansions); under within-group-varying PSU, mass lands in the post-period PSU of the transition. `n_bootstrap > 0` combined with within-group-varying PSU remains gated with `NotImplementedError` — the PSU-level Hall-Mammen wild bootstrap still uses the legacy group-level PSU map and will be extended in a follow-up PR.
 
 ## [3.1.3] - 2026-04-18
 
