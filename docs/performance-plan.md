@@ -84,12 +84,12 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
    n_units x n_replicates - faster growth than the chain total, so it
    increasingly dominates at large n.
 5. Rust backend gives large uplift only for SDiD (order-of-magnitude
-   and up). Elsewhere the gap is modest - under ~1.6x at worst on
-   brand-awareness medium, and within noise on the other scenarios
-   and scales. The primary bottlenecks live in Python code the Rust
-   backend does not touch (`aggregate_survey`, JK1 replicate fit), and
-   paths that Rust does touch (CS bootstrap, ImputationDiD, Survey
-   TSL) are already well-vectorized in Python.
+   and up). Elsewhere the gap is modest across all measured (scenario,
+   scale) cells - see the scale-sweep table for exact ratios. The
+   primary bottlenecks live in Python code the Rust backend does not
+   touch (`aggregate_survey`, JK1 replicate fit), and paths that Rust
+   does touch (CS bootstrap, ImputationDiD, Survey TSL) are already
+   well-vectorized in Python.
 
 ### Top phases by scenario at largest measured scale
 
@@ -122,15 +122,13 @@ any rerun):
   without covariates) is well-vectorized and sits well below both in
   the ranking. Either phase is a legitimate optimization target; the
   aggregate share is what drives the "next hotspot" priority.
-- **Brand awareness survey.** At small scale HonestDiD dominates. At
-  medium the backends diverge: on Python JK1 leads clearly (about
-  2.2x the multi-outcome loop), while on Rust the multi-outcome loop
-  and JK1 come in essentially tied. Medium is also the scale where
-  Python and Rust separate the most on total time (~1.6x under
-  Python at the time of writing); the analytical TSL path with FPC
-  appears to vectorize better under Rust at that shape. At large,
-  JK1 becomes the clearly dominant phase under both backends and
-  totals re-converge.
+- **Brand awareness survey.** At small scale HonestDiD dominates. From
+  medium onwards JK1 is the single largest phase under both backends;
+  see the table for the exact share per cell. Python and Rust totals
+  stay close across the sweep (within ~1.1x at any measured scale,
+  see scale-sweep table); the JK1 replicate-fit loop is not
+  Rust-accelerated, so the backends neither help nor hurt each other
+  meaningfully on this chain.
 - **BRFSS.** `aggregate_survey` share of total grows with scale and is
   effectively 100% of runtime at 1M rows. Downstream phases (CS fit,
   SunAbraham, HonestDiD) are a fraction of a second combined.

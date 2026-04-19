@@ -3,8 +3,10 @@ Scenario 2: Brand awareness survey DiD - 2x2 with survey design.
 
 DifferenceInDifferences + SurveyDesign under two variance paths:
   (a) analytical Taylor-series linearization (strata + PSU + FPC)
-  (b) replicate-weight bootstrap (JK1 delete-one-PSU weights; count equals
-      the number of PSUs, so 40/90/160 at small/medium/large)
+  (b) replicate-weight variance (JK1 delete-one-PSU; count equals
+      the number of PSUs, so 40/90/160 at small/medium/large).
+      This is replicate-weight variance, not bootstrap resampling -
+      see REGISTRY.md for the distinction.
 
 Chains: naive fit (for SE-inflation comparison) -> TSL -> replicate -> multi-
 outcome refit loop -> check_parallel_trends -> placebo -> HonestDiD grid.
