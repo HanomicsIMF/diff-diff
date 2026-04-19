@@ -291,7 +291,10 @@ class BusinessReport:
         pre_trends = _lift_pre_trends(dr_schema)
         sensitivity = _lift_sensitivity(dr_schema)
         robustness = _lift_robustness(dr_schema)
-        assumption = _describe_assumption(estimator_name, self._results)
+        assumption = _apply_anticipation_to_assumption(
+            _describe_assumption(estimator_name, self._results),
+            self._results,
+        )
         next_steps = (dr_schema or {}).get("next_steps", [])
         caveats = _build_caveats(self._results, headline, sample, dr_schema)
         references = _references_for(estimator_name)
@@ -483,10 +486,32 @@ class BusinessReport:
         # active control-group mode so prose can surface the dynamic-
         # comparison context instead of misreporting "0 control"
         # (round-13 CI review on PR #318).
+        #
+        # Estimator-specific exception (round-17 CI review): Wooldridge
+        # stores ``n_control_units`` as the total eligible comparison
+        # set (never-treated plus future-treated units that contribute
+        # valid not-yet-treated comparisons). Re-labeling that total as
+        # ``n_never_treated`` would overstate never-treated availability.
+        # Keep the fixed-count labeling for Wooldridge in that mode.
         control_group = getattr(r, "control_group", None)
+        name = type(r).__name__
         n_never_treated: Optional[int] = None
         n_control: Optional[int] = n_control_units
-        if isinstance(control_group, str) and control_group == "not_yet_treated":
+        _never_treated_count_contract = name in {
+            "CallawaySantAnnaResults",
+            "SunAbrahamResults",
+            "ImputationDiDResults",
+            "TwoStageDiDResults",
+            "StackedDiDResults",
+            "EfficientDiDResults",
+            "StaggeredTripleDiffResults",
+            "ChaisemartinDHaultfoeuilleResults",
+        }
+        if (
+            isinstance(control_group, str)
+            and control_group == "not_yet_treated"
+            and _never_treated_count_contract
+        ):
             n_never_treated = n_control_units
             # Do not populate a fixed ``n_control`` for this mode: the
             # comparison set is dynamic and varies by (g, t) cell.
@@ -643,6 +668,53 @@ def _lift_robustness(dr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             "pre_treatment_fit": native.get("pre_treatment_fit"),
         },
     }
+
+
+def _anticipation_periods(results: Any) -> int:
+    """Return the non-negative anticipation-period count from a result, or 0.
+
+    Helper for ``_describe_assumption``. Anticipation-capable estimators
+    (MultiPeriodDiD, CS, SA, ImputationDiD, TwoStageDiD, Stacked, EfficientDiD,
+    StaggeredTripleDiff, ContinuousDiD, Wooldridge) expose ``anticipation``
+    as an int defaulting to ``0``.
+    """
+    a = getattr(results, "anticipation", 0)
+    try:
+        k = int(a)
+    except (TypeError, ValueError):
+        return 0
+    return k if k > 0 else 0
+
+
+def _apply_anticipation_to_assumption(block: Dict[str, Any], results: Any) -> Dict[str, Any]:
+    """If the fit used ``anticipation > 0``, flip ``no_anticipation`` off and
+    append an anticipation clause to the description.
+
+    Round-17 CI review flagged the strict "plus no anticipation" language
+    on anticipation-enabled fits. Per REGISTRY.md §CallawaySantAnna lines
+    355-395 and the matching sections for SA / MultiPeriod / Wooldridge /
+    EfficientDiD, a fit with ``anticipation=k`` shifts the effective
+    treatment boundary by ``k`` pre-periods; the identifying assumption
+    becomes "no treatment effects earlier than ``k`` periods before the
+    treatment start" rather than strict no-anticipation.
+    """
+    k = _anticipation_periods(results)
+    if k <= 0:
+        return block
+    block = dict(block)  # don't mutate the caller's dict
+    block["no_anticipation"] = False
+    block["anticipation_periods"] = k
+    period_word = "period" if k == 1 else "periods"
+    clause = (
+        f" Anticipation is allowed for the {k} {period_word} immediately "
+        "before treatment: the identifying contract requires no treatment "
+        f"effects earlier than {k} {period_word} before the treatment "
+        "start (not strict no-anticipation)."
+    )
+    desc = block.get("description", "")
+    if isinstance(desc, str):
+        block["description"] = desc + clause
+    return block
 
 
 def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, Any]:

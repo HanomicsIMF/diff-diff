@@ -1100,6 +1100,146 @@ class TestHausmanPretestPropagatesCluster:
         ), f"cluster column must propagate from fit to Hausman pretest; got {captured}"
 
 
+class TestAnticipationAwareAssumptionBlock:
+    """Round-17 P1 regression: ``_describe_assumption`` must drop the
+    strict "plus no anticipation" language when the fit allows
+    ``anticipation > 0``. REGISTRY.md §CallawaySantAnna lines 355-395
+    (and the matching SA / MultiPeriod / Wooldridge / EfficientDiD
+    sections) treat anticipation as a relaxation of the strict no-
+    anticipation assumption: no treatment effects earlier than ``k``
+    periods before treatment, not none at all.
+    """
+
+    def test_cs_with_anticipation_sets_no_anticipation_false(self):
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.anticipation = 2
+
+        br = BusinessReport(stub, auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert (
+            a["no_anticipation"] is False
+        ), f"anticipation=2 must flip no_anticipation off; got {a}"
+        assert a["anticipation_periods"] == 2
+        assert "2 periods" in a["description"]
+        assert "not strict no-anticipation" in a["description"]
+
+    def test_efficient_did_with_anticipation_flips_no_anticipation_off(self):
+        class EfficientDiDResults:
+            pass
+
+        stub = EfficientDiDResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.pt_assumption = "all"
+        stub.control_group = "never_treated"
+        stub.anticipation = 1
+
+        br = BusinessReport(stub, auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a["no_anticipation"] is False
+        assert a["anticipation_periods"] == 1
+        assert "1 period" in a["description"]
+
+    def test_anticipation_zero_preserves_strict_no_anticipation(self):
+        """Default (``anticipation=0``) keeps the strict text."""
+
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.anticipation = 0
+
+        br = BusinessReport(stub, auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a["no_anticipation"] is True
+        assert "anticipation_periods" not in a
+        assert "not strict no-anticipation" not in a["description"]
+
+
+class TestWooldridgeSampleNotYetTreatedSemantics:
+    """Round-17 P1 regression: Wooldridge's ``n_control_units`` is the
+    total eligible comparison set (never-treated plus future-treated
+    units that contribute valid not-yet-treated comparisons). BR must
+    NOT reinterpret that count as ``n_never_treated`` for Wooldridge,
+    which would overstate never-treated availability. CS / SA /
+    ImputationDiD / etc. retain the existing reinterpretation because
+    their contracts define ``n_control_units`` as never-treated only.
+    """
+
+    def test_wooldridge_not_yet_treated_keeps_fixed_n_control(self):
+        class WooldridgeDiDResults:
+            pass
+
+        stub = WooldridgeDiDResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60  # Total eligible, NOT never-treated only.
+        stub.survey_metadata = None
+        stub.control_group = "not_yet_treated"
+
+        br = BusinessReport(stub, auto_diagnostics=False)
+        sample = br.to_dict()["sample"]
+        assert sample["n_control"] == 60, (
+            "Wooldridge n_control_units is total eligible controls; "
+            "must not be hidden behind not_yet_treated reinterpretation"
+        )
+        assert sample["n_never_treated"] is None
+
+    def test_cs_not_yet_treated_still_reinterprets(self):
+        """CS retains the existing behavior: the fixed ``n_control`` is
+        suppressed and ``n_never_treated`` surfaces the never-treated
+        count. Regression from round 13."""
+        sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
+        cs = CallawaySantAnna(base_period="universal", control_group="not_yet_treated").fit(
+            sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+        br = BusinessReport(cs, auto_diagnostics=False)
+        sample = br.to_dict()["sample"]
+        assert sample["n_control"] is None
+        assert sample["n_never_treated"] == getattr(cs, "n_control_units", None)
+
+
 class TestWooldridgeResultsRouting:
     """Round-16 P1 regression: the collectors must accept
     ``WooldridgeDiDResults`` payloads, which use ``att`` (not
