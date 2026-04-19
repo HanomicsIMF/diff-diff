@@ -921,6 +921,112 @@ class TestMethodAwarePTProse:
         assert "event-study coefficients" not in summary
 
 
+class TestFullReportMethodAwarePTLabel:
+    """Round-25 P2 CI review on PR #318: ``BusinessReport.full_report()``
+    previously hard-coded ``joint p = ...`` in the Pre-Trends section,
+    which mislabels the 2x2 ``slope_difference`` and EfficientDiD
+    ``hausman`` single-statistic tests and invents a nonexistent
+    ``joint p`` label for design-enforced SDiD / TROP paths that have
+    no p-value at all. The markdown path must use the same
+    method-aware label helper the summary path already uses
+    (``_pt_method_stat_label``).
+    """
+
+    @staticmethod
+    def _stub_result_with_method(method: str):
+        from diff_diff.diagnostic_report import DiagnosticReportResults
+
+        class DiDResults:
+            pass
+
+        stub = DiDResults()
+        stub.att = 1.0
+        stub.se = 0.2
+        stub.p_value = 0.001
+        stub.conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.inference_method = "analytical"
+
+        pt_block: dict = {
+            "status": "ran",
+            "method": method,
+            "verdict": "no_detected_violation",
+        }
+        # SDiD's synthetic_fit path has no p-value by design; the other
+        # methods do.
+        if method != "synthetic_fit":
+            pt_block["joint_p_value"] = 0.40
+
+        fake_schema = {
+            "schema_version": "1.0",
+            "estimator": "DiDResults",
+            "headline_metric": {"name": "att", "value": 1.0},
+            "parallel_trends": pt_block,
+            "pretrends_power": {"status": "not_applicable"},
+            "sensitivity": {"status": "not_applicable"},
+            "placebo": {"status": "skipped", "reason": "opt-in"},
+            "bacon": {"status": "not_applicable"},
+            "design_effect": {"status": "not_applicable"},
+            "heterogeneity": {"status": "not_applicable"},
+            "epv": {"status": "not_applicable"},
+            "estimator_native_diagnostics": {"status": "not_applicable"},
+            "skipped": {},
+            "warnings": [],
+            "overall_interpretation": "",
+            "next_steps": [],
+        }
+        fake_dr = DiagnosticReportResults(
+            schema=fake_schema,
+            interpretation="",
+            applicable_checks=("parallel_trends",),
+            skipped_checks={},
+            warnings=(),
+        )
+        return stub, fake_dr
+
+    def _pt_section(self, md: str) -> str:
+        # The Pre-Trends section is delimited by the next ``##`` heading.
+        after = md.split("## Pre-Trends", 1)[1]
+        return after.split("\n## ", 1)[0]
+
+    def test_full_report_slope_difference_uses_single_p_label(self):
+        stub, fake_dr = self._stub_result_with_method("slope_difference")
+        md = BusinessReport(stub, diagnostics=fake_dr).full_report()
+        section = self._pt_section(md)
+        assert "joint p" not in section, (
+            f"2x2 slope_difference is a single-statistic test and must "
+            f"not be labeled ``joint p`` in the markdown. Got: {section!r}"
+        )
+        # The single-statistic label ``p = ...`` must be present.
+        assert "p = 0.4" in section
+
+    def test_full_report_hausman_uses_single_p_label(self):
+        stub, fake_dr = self._stub_result_with_method("hausman")
+        section = self._pt_section(
+            BusinessReport(stub, diagnostics=fake_dr).full_report()
+        )
+        assert "joint p" not in section, (
+            f"EfficientDiD Hausman is a single-statistic test and must "
+            f"not be labeled ``joint p`` in the markdown. Got: {section!r}"
+        )
+        assert "p = 0.4" in section
+
+    def test_full_report_synthetic_fit_omits_p_label(self):
+        stub, fake_dr = self._stub_result_with_method("synthetic_fit")
+        section = self._pt_section(
+            BusinessReport(stub, diagnostics=fake_dr).full_report()
+        )
+        # No p-value of any kind for design-enforced SDiD PT analogue.
+        assert "joint p" not in section
+        assert "p = " not in section
+        # Verdict must still render.
+        assert "Verdict:" in section
+
+
 class TestHausmanPretestPropagatesFitDesign:
     """Round-9 regression: ``_pt_hausman`` must propagate the fitted
     result's ``control_group`` and ``anticipation`` into

@@ -153,11 +153,24 @@ not new inference.
   coefficients), which would be unsafe in the presence of non-linear
   link functions (Poisson QMLE, logit).
 
-- **Note:** Single-knob `alpha`. BusinessReport exposes only `alpha`
-  (defaults to `results.alpha`); there is no separate
-  `significance_threshold` parameter. `alpha` drives both the CI level
-  (`(1 - alpha) * 100`% interval) and the phrasing tier threshold
-  ("statistically significant at the (1 - alpha) * 100% level").
+- **Note:** Single-knob `alpha` with preserved-native-CI fallback.
+  BusinessReport exposes only `alpha` (defaults to `results.alpha`);
+  there is no separate `significance_threshold` parameter. When the
+  requested `alpha` matches the fit's native level, it drives both the
+  CI level (`(1 - alpha) * 100`% interval) and the phrasing tier
+  threshold ("statistically significant at the (1 - alpha) * 100%
+  level"). When the requested `alpha` differs from the fit's native
+  level (e.g., the user asks for `alpha=0.10` on a result fit with
+  `alpha=0.05`), BusinessReport does NOT recompute the CI at the
+  requested level, because the stored CI is the only quantile the
+  underlying estimator supplied (bootstrap distributions and
+  finite-df analytical variances are not always retained on the
+  result). Instead, the schema preserves the fit's native CI (with its
+  original level) and uses the requested `alpha` only for the
+  significance-phrasing threshold, and emits an
+  `alpha_override_preserved` caveat describing the mismatch. This is
+  the conservative choice: it avoids silently recomputing CIs under
+  assumptions the estimator may not support.
 
 - **Note:** Schema stability policy for the AI-legible `to_dict()`
   surface. New top-level keys count as additive (no version bump); new

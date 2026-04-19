@@ -1820,8 +1820,21 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
         jp = pt.get("joint_p_value")
         verdict = pt.get("verdict")
         tier = pt.get("power_tier")
-        jp_str = f"joint p = {jp:.3g}" if isinstance(jp, (int, float)) else "joint p unavailable"
-        lines.append(f"- Verdict: `{verdict}` ({jp_str})")
+        # Use the method-aware statistic label the summary path already
+        # uses: "joint p" for Wald / Bonferroni event-study, "p" for
+        # slope-difference / Hausman single-statistic tests, and None
+        # for design-enforced SDiD / TROP paths where there is no
+        # p-value at all. Round-25 P2 CI review on PR #318 flagged the
+        # hard-coded "joint p" wording as misdescribing 2x2 / Hausman
+        # fits and inventing a nonexistent p-value for SDiD / TROP.
+        method = pt.get("method")
+        stat_label = _pt_method_stat_label(method)
+        if stat_label and isinstance(jp, (int, float)):
+            lines.append(f"- Verdict: `{verdict}` ({stat_label} = {jp:.3g})")
+        elif stat_label:
+            lines.append(f"- Verdict: `{verdict}` ({stat_label} unavailable)")
+        else:
+            lines.append(f"- Verdict: `{verdict}`")
         if tier:
             lines.append(f"- Power tier: `{tier}`")
         mdv = pt.get("mdv")
