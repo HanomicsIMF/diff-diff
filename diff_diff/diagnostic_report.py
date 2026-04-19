@@ -570,7 +570,7 @@ class DiagnosticReport:
                         + "."
                     )
             if method == "event_study":
-                pre_coefs = _collect_pre_period_coefs(r)
+                pre_coefs, _ = _collect_pre_period_coefs(r)
                 if not pre_coefs:
                     return (
                         "No pre-period event-study coefficients are exposed on "
@@ -635,7 +635,7 @@ class DiagnosticReport:
                     "event_study_effects (from aggregate='event_study' on "
                     "staggered estimators); neither available."
                 )
-            pre_coefs = _collect_pre_period_coefs(r)
+            pre_coefs, _ = _collect_pre_period_coefs(r)
             if len(pre_coefs) < 2:
                 return "Pre-trends power needs >= 2 pre-treatment periods."
             return None
@@ -689,7 +689,7 @@ class DiagnosticReport:
                     "HonestDiD needs either results.vcov, event_study_vcov, "
                     "or event_study_effects; none available."
                 )
-            pre_coefs = _collect_pre_period_coefs(r)
+            pre_coefs, _ = _collect_pre_period_coefs(r)
             if len(pre_coefs) < 1:
                 return "HonestDiD requires at least one pre-period coefficient."
             return None
@@ -996,11 +996,42 @@ class DiagnosticReport:
         ImputationDiD style, dict of dicts with ``effect``/``se``/``p_value`` keys).
         """
         r = self._results
-        pre_coefs = _collect_pre_period_coefs(r)
+        pre_coefs, n_dropped_undefined = _collect_pre_period_coefs(r)
         if not pre_coefs:
             return {
                 "status": "skipped",
                 "reason": "No pre-period event-study coefficients available.",
+            }
+        # Round-33 P0 CI review on PR #318: if any real pre-period was
+        # rejected for undefined inference (``se <= 0`` or non-finite
+        # ``effect`` / ``se``), the Bonferroni fallback used to silently
+        # shrink the test family on the remaining subset and publish a
+        # finite joint p-value that then lifted into clean BR prose.
+        # That violates the ``safe_inference`` contract (``se <= 0`` ->
+        # NaN downstream). Return an explicit inconclusive PT result
+        # instead — the user cannot conclude "PT holds" from a
+        # partially-undefined pre-period surface.
+        if n_dropped_undefined > 0:
+            return {
+                "status": "ran",
+                "method": "inconclusive",
+                "joint_p_value": None,
+                "test_statistic": None,
+                "df": len(pre_coefs),
+                "n_pre_periods": len(pre_coefs),
+                "n_dropped_undefined": n_dropped_undefined,
+                "verdict": "inconclusive",
+                "reason": (
+                    f"{n_dropped_undefined} pre-period coefficient(s) "
+                    "have undefined inference (non-finite effect / SE or "
+                    "SE <= 0). Per the safe-inference contract "
+                    "(``utils.py`` line 175, REGISTRY.md line 197), this "
+                    "yields NaN downstream; the joint PT test is "
+                    "inconclusive on this fit. Re-fit with a different "
+                    "variance method (bootstrap / cluster) if the "
+                    "affected rows are a small number of cohorts, or "
+                    "investigate why the per-period SE collapsed."
+                ),
             }
         interaction_indices = getattr(r, "interaction_indices", None)
         vcov = getattr(r, "vcov", None)
@@ -2394,8 +2425,11 @@ def _pre_post_boundary(results: Any) -> int:
     return -k
 
 
-def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Optional[float]]]:
-    """Return a sorted list of ``(key, effect, se, p_value)`` for pre-period coefficients.
+def _collect_pre_period_coefs(
+    results: Any,
+) -> Tuple[List[Tuple[Any, float, float, Optional[float]]], int]:
+    """Return ``(sorted list of (key, effect, se, p_value), n_dropped_undefined)``
+    for pre-period coefficients.
 
     Handles three shapes:
       * ``pre_period_effects``: dict-of-``PeriodEffect`` on ``MultiPeriodDiDResults``.
@@ -2404,26 +2438,31 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
         Pre-period entries are those with negative relative-time keys.
       * ``placebo_event_study``: dict-of-dict on
         ``ChaisemartinDHaultfoeuilleResults`` — dCDH's dynamic placebos
-        ``DID^{pl}_l`` are the estimator's pre-period analogue (the
-        Rambachan-Roth machinery in ``honest_did.py`` consumes them via a
-        dedicated branch, and this diagnostic must match). Keys are
-        negative horizons; entries share the event-study dict shape.
+        ``DID^{pl}_l`` are the estimator's pre-period analogue.
 
     Filtering rules (critical for methodology-safe PT tests):
 
-    * Entries marked as reference markers (``n_groups == 0`` on the CS / SA /
-      ImputationDiD / Stacked event-study shape) are excluded. These are
-      synthetic ``effect=0, se=NaN`` rows injected for universal-base
-      normalization; treating them as real pre-period evidence would inflate
-      the Bonferroni denominator and produce bogus zero-deviation entries.
-    * Entries whose ``effect`` or ``se`` is non-finite (NaN / inf) are
-      excluded. A NaN SE means inference is undefined — feeding it into
-      Bonferroni or Wald would produce a false-clean PT verdict.
+    * Entries marked as reference markers (``n_groups == 0`` on CS / SA or
+      ``n_obs == 0`` on Stacked / TwoStage / Imputation event-study shape)
+      are excluded. These are synthetic ``effect=0, se=NaN`` rows injected
+      for universal-base normalization and are NOT counted in
+      ``n_dropped_undefined`` — they never represented a real pre-period.
+    * Entries whose ``effect`` or ``se`` is non-finite (NaN / inf) or whose
+      ``se <= 0`` are excluded as undefined inference (``safe_inference``
+      contract, ``utils.py:175``). These ARE real pre-periods whose
+      inference is undefined, so they contribute to
+      ``n_dropped_undefined``. Round-33 P0 CI review on PR #318 flagged
+      that the Bonferroni fallback silently shrank the test family when
+      this happened, turning partially-undefined PT surfaces into clean
+      stakeholder-facing verdicts. Callers (``_pt_event_study``) use
+      ``n_dropped_undefined`` to force an inconclusive verdict rather
+      than silently shrinking.
 
-    Returns an empty list when none of the three sources provides valid
+    Returns ``([], 0)`` when none of the three sources provides valid
     pre-period entries.
     """
     results_list: List[Tuple[Any, float, float, Optional[float]]] = []
+    n_dropped_undefined = 0
     pre = getattr(results, "pre_period_effects", None)
     # dCDH exposes pre-period placebos via ``placebo_event_study``; the
     # round-6 CI review flagged that routing dCDH through the generic
@@ -2436,13 +2475,16 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
             se = getattr(pe, "se", None)
             p = getattr(pe, "p_value", None)
             if eff is None or se is None:
+                n_dropped_undefined += 1
                 continue
             try:
                 eff_f = float(eff)
                 se_f = float(se)
             except (TypeError, ValueError):
+                n_dropped_undefined += 1
                 continue
-            if not (np.isfinite(eff_f) and np.isfinite(se_f)):
+            if not (np.isfinite(eff_f) and np.isfinite(se_f) and se_f > 0):
+                n_dropped_undefined += 1
                 continue
             results_list.append((k, eff_f, se_f, _to_python_float(p)))
     elif dcdh_placebo:
@@ -2454,13 +2496,16 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
             se = entry.get("se")
             p = entry.get("p_value")
             if eff is None or se is None:
+                n_dropped_undefined += 1
                 continue
             try:
                 eff_f = float(eff)
                 se_f = float(se)
             except (TypeError, ValueError):
+                n_dropped_undefined += 1
                 continue
-            if not (np.isfinite(eff_f) and np.isfinite(se_f)):
+            if not (np.isfinite(eff_f) and np.isfinite(se_f) and se_f > 0):
+                n_dropped_undefined += 1
                 continue
             results_list.append((k, eff_f, se_f, _to_python_float(p)))
     else:
@@ -2480,13 +2525,9 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
                 continue
             if not isinstance(entry, dict):
                 continue
-            # Drop universal-base reference markers. Different estimator
-            # aggregations use different flags for the synthetic marker row
-            # (all of which carry NaN SE and p-value):
-            #   * CS / SA: ``n_groups == 0``
-            #   * Stacked / TwoStage / Imputation: ``n_obs == 0``
-            # Treat either as a disqualifier so the Bonferroni denominator
-            # and joint-Wald index are not inflated by non-informative rows.
+            # Drop universal-base reference markers. These are synthetic,
+            # not a real pre-period, so they do not count toward
+            # ``n_dropped_undefined``.
             if entry.get("n_groups") == 0 or entry.get("n_obs") == 0:
                 continue
             # Wooldridge stores ``att`` rather than ``effect`` in its
@@ -2497,17 +2538,20 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
             se = entry.get("se")
             p = entry.get("p_value")
             if eff is None or se is None:
+                n_dropped_undefined += 1
                 continue
             try:
                 eff_f = float(eff)
                 se_f = float(se)
             except (TypeError, ValueError):
+                n_dropped_undefined += 1
                 continue
-            if not (np.isfinite(eff_f) and np.isfinite(se_f)):
+            if not (np.isfinite(eff_f) and np.isfinite(se_f) and se_f > 0):
+                n_dropped_undefined += 1
                 continue
             results_list.append((k, eff_f, se_f, _to_python_float(p)))
     results_list.sort(key=lambda t: t[0] if isinstance(t[0], (int, float)) else str(t[0]))
-    return results_list
+    return results_list, n_dropped_undefined
 
 
 def _pt_verdict(p: Optional[float]) -> str:

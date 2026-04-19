@@ -1932,7 +1932,7 @@ class TestWooldridgeResultsRouting:
         from diff_diff.diagnostic_report import _collect_pre_period_coefs
 
         stub = self._wooldridge_stub()
-        pre = _collect_pre_period_coefs(stub)
+        pre, _ = _collect_pre_period_coefs(stub)
         keys = sorted(row[0] for row in pre)
         assert keys == [
             -2,
@@ -1955,7 +1955,7 @@ class TestWooldridgeResultsRouting:
         from diff_diff.diagnostic_report import _collect_pre_period_coefs
 
         stub = self._wooldridge_stub(anticipation=1)
-        pre = _collect_pre_period_coefs(stub)
+        pre, _ = _collect_pre_period_coefs(stub)
         keys = sorted(row[0] for row in pre)
         # Wooldridge keeps rel < 0 regardless of anticipation.
         assert keys == [-2, -1]
@@ -2016,7 +2016,7 @@ class TestAnticipationAwareHorizonClassification:
         from diff_diff.diagnostic_report import _collect_pre_period_coefs
 
         stub = self._cs_stub_with_anticipation(anticipation=1)
-        pre = _collect_pre_period_coefs(stub)
+        pre, _ = _collect_pre_period_coefs(stub)
         keys = sorted(row[0] for row in pre)
         # Anticipation window (rel=-1) must be excluded; only -3, -2 remain.
         assert keys == [-3, -2], (
@@ -2037,7 +2037,7 @@ class TestAnticipationAwareHorizonClassification:
         from diff_diff.diagnostic_report import _collect_pre_period_coefs
 
         stub = self._cs_stub_with_anticipation(anticipation=0)
-        pre = _collect_pre_period_coefs(stub)
+        pre, _ = _collect_pre_period_coefs(stub)
         assert sorted(row[0] for row in pre) == [-3, -2, -1]
 
         dr = DiagnosticReport(stub)

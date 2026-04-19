@@ -626,12 +626,17 @@ class PreTrendsPower:
                 except (TypeError, ValueError):
                     _ant = 0
                 _pre_cutoff = -_ant
+                # ``safe_inference`` treats ``se <= 0`` as undefined
+                # inference; filter the same way here so pre-trends
+                # power never silently includes rows whose per-period
+                # SE collapsed (round-33 P0 CI review on PR #318).
                 pre_effects = {
                     t: data
                     for t, data in results.event_study_effects.items()
                     if t < _pre_cutoff
                     and data.get("n_groups", 1) > 0
                     and np.isfinite(data.get("se", np.nan))
+                    and float(data.get("se", 0.0)) > 0
                 }
 
                 if not pre_effects:
@@ -661,12 +666,14 @@ class PreTrendsPower:
                 except (TypeError, ValueError):
                     _ant = 0
                 _pre_cutoff = -_ant
+                # Mirror the ``se > 0`` filter applied on the CS branch.
                 pre_effects = {
                     t: data
                     for t, data in results.event_study_effects.items()
                     if t < _pre_cutoff
                     and data.get("n_groups", 1) > 0
                     and np.isfinite(data.get("se", np.nan))
+                    and float(data.get("se", 0.0)) > 0
                 }
 
                 if not pre_effects:

@@ -1009,7 +1009,7 @@ class TestNarrowedApplicabilityAndPlaceboSchema:
             },
             0: {"effect": 1.5, "se": 0.2, "p_value": 0.0001, "n_obs": 50},
         }
-        coefs = _collect_pre_period_coefs(obj)
+        coefs, _ = _collect_pre_period_coefs(obj)
         keys = [k for (k, _, _, _) in coefs]
         assert -1 not in keys, "n_obs==0 row must be filtered out"
         assert -2 in keys
@@ -1066,7 +1066,7 @@ class TestReferenceMarkerAndNaNFiltering:
         from diff_diff.diagnostic_report import _collect_pre_period_coefs
 
         obj = self._cs_stub_with_reference_marker()
-        coefs = _collect_pre_period_coefs(obj)
+        coefs, _ = _collect_pre_period_coefs(obj)
         keys = [k for (k, _, _, _) in coefs]
         assert -1 not in keys, (
             "Universal-base reference marker (n_groups=0) must not appear "
@@ -1117,20 +1117,31 @@ class TestReferenceMarkerAndNaNFiltering:
         # "data" was a reference marker.
         assert pt.get("verdict") != "no_detected_violation"
 
-    def test_bonferroni_excludes_nan_p_values(self):
-        """If a pre-period row has a finite effect/SE but NaN p-value (edge
-        case on some exotic fits), Bonferroni must skip it, not feed it in."""
+    def test_undefined_pre_period_inference_yields_inconclusive_not_shrunken_bonferroni(self):
+        """Round-33 P0 regression: when any pre-period has undefined
+        inference (non-finite effect / SE or ``se <= 0``), the Bonferroni
+        fallback must NOT silently shrink the test family on the
+        remaining subset and publish a clean joint p-value. Per the
+        ``safe_inference`` contract (``utils.py`` line 175), undefined
+        SE yields NaN downstream; the joint PT test must be explicitly
+        inconclusive so BR prose does not render a stakeholder-facing
+        "parallel trends hold" verdict from a partially-undefined
+        pre-period surface.
+        """
         import numpy as np
+        from types import SimpleNamespace
 
         class MultiPeriodDiDResults:
             pass
 
-        from types import SimpleNamespace
-
         obj = MultiPeriodDiDResults()
+        # One valid row + one row whose p-value is NaN (the ``se`` here
+        # is finite / positive; the NaN p models an exotic fit where
+        # the inference pipeline could not produce a p-value even with
+        # a valid SE).
         obj.pre_period_effects = {
             -2: SimpleNamespace(effect=1.0, se=0.5, p_value=0.04),
-            -1: SimpleNamespace(effect=0.5, se=0.5, p_value=np.nan),
+            -1: SimpleNamespace(effect=0.5, se=0.0, p_value=np.nan),
         }
         obj.vcov = None
         obj.interaction_indices = None
@@ -1148,10 +1159,82 @@ class TestReferenceMarkerAndNaNFiltering:
 
         dr = DiagnosticReport(obj, run_sensitivity=False, run_bacon=False)
         pt = dr.to_dict()["parallel_trends"]
-        # With only one valid p-value (0.04), Bonferroni should be min(1.0, 0.04*1) = 0.04.
-        # If the NaN were naively included the test would either error or coerce to 1.0.
-        assert pt["method"] == "bonferroni"
-        assert pt["joint_p_value"] == pytest.approx(0.04, abs=1e-9)
+
+        # Method flagged inconclusive; joint_p None; verdict inconclusive.
+        assert pt["method"] == "inconclusive"
+        assert pt["joint_p_value"] is None
+        assert pt["verdict"] == "inconclusive"
+        # Metadata records how many pre-periods were dropped and why.
+        assert pt["n_dropped_undefined"] == 1
+        assert "undefined inference" in pt["reason"]
+
+    def test_zero_se_pre_period_yields_inconclusive(self):
+        """Round-33 P0 regression: a pre-period row whose SE is
+        zero/negative is undefined inference per the ``safe_inference``
+        contract and must push the event-study PT to inconclusive.
+        """
+        from types import SimpleNamespace
+
+        class MultiPeriodDiDResults:
+            pass
+
+        obj = MultiPeriodDiDResults()
+        obj.pre_period_effects = {
+            -2: SimpleNamespace(effect=1.0, se=0.5, p_value=0.04),
+            -1: SimpleNamespace(effect=0.5, se=0.0, p_value=0.99),
+        }
+        obj.vcov = None
+        obj.interaction_indices = None
+        obj.event_study_vcov = None
+        obj.event_study_vcov_index = None
+        obj.avg_att = 1.0
+        obj.avg_se = 0.1
+        obj.avg_p_value = 0.001
+        obj.avg_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 50
+        obj.n_control = 50
+        obj.survey_metadata = None
+
+        pt = DiagnosticReport(
+            obj, run_sensitivity=False, run_bacon=False
+        ).to_dict()["parallel_trends"]
+        assert pt["verdict"] == "inconclusive"
+        assert pt["method"] == "inconclusive"
+        assert pt["n_dropped_undefined"] >= 1
+
+    def test_pretrends_power_adapter_filters_zero_se_cs(self):
+        """Round-33 P0 regression: CS / SA ``compute_pretrends_power``
+        adapters also use the ``se > 0`` filter alongside
+        ``np.isfinite(se)`` so the power analysis never includes rows
+        whose per-period SE collapsed.
+        """
+        from types import SimpleNamespace
+
+        import numpy as np
+
+        from diff_diff.pretrends import compute_pretrends_power
+        from diff_diff.staggered import CallawaySantAnnaResults
+
+        obj = object.__new__(CallawaySantAnnaResults)
+        obj.anticipation = 0
+        # Three pre-periods: two valid, one with zero SE. The valid
+        # two are enough to run power analysis; the zero-SE row must
+        # NOT slip into the `ses` vector and divide-by-zero.
+        obj.event_study_effects = {
+            -3: {"effect": 0.1, "se": 0.2, "p_value": 0.7, "n_groups": 1},
+            -2: {"effect": 0.0, "se": 0.0, "p_value": float("nan"), "n_groups": 1},
+            -1: {"effect": 0.0, "se": 0.2, "p_value": 0.99, "n_groups": 1},
+            0: {"effect": 1.0, "se": 0.2, "p_value": 0.0, "n_groups": 1},
+        }
+        obj.overall_att = 1.0
+        obj.alpha = 0.05
+
+        pp = compute_pretrends_power(obj, alpha=0.05, target_power=0.80, violation_type="linear")
+        # Zero-SE row must not appear in pre_period_ses.
+        assert len(pp.pre_period_ses) == 2
+        assert np.all(pp.pre_period_ses > 0)
 
 
 class TestPrecomputedValidation:
