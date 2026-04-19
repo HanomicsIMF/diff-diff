@@ -173,10 +173,10 @@ serves a different purpose: R-parity accuracy). They complement it.
   to a state-year panel, then a modern staggered estimator.
 - **Data shape (scale sweep).** 50 states × 10 years × N respondents per
   state-year cell, 5 adoption cohorts staggered over the window. Three scales:
-    - **small** - 50,000 rows (100/cell, 10 strata × 200 PSUs). Substate
-      analytic slice of a single year.
-    - **medium** - 250,000 rows (500/cell, 15 strata × 600 PSUs). Pooled
-      substate analytic slice across multiple years.
+    - **small** - 50,000 rows (100/cell, 10 strata × 200 PSUs). Narrow
+      analytic slice on a state-year grid.
+    - **medium** - 250,000 rows (500/cell, 15 strata × 600 PSUs).
+      Mid-range analytic slice on the same state-year grid.
     - **large** - 1,000,000 rows (2,000/cell, 20 strata × 1,000 PSUs).
       A realistic pooled 10-year multi-state analysis - comparable to the
       kind of panel built from BRFSS 2024's ~458K-record universe filtered
@@ -229,13 +229,12 @@ serves a different purpose: R-parity accuracy). They complement it.
   # then also variance_method="bootstrap", n_bootstrap=200 for comparison
   ```
 - **Operation chain.** (1) SDiD fit with `variance_method="jackknife"` -
-  exercises the leave-one-out refit loop (80 full refits); (2) SDiD fit
-  with `variance_method="bootstrap"`, `n_bootstrap=200` for SE comparison;
+  exercises the leave-one-out refit loop; (2) SDiD fit with
+  `variance_method="bootstrap"`, `n_bootstrap=200` for SE comparison;
   (3) `results.in_time_placebo()`; (4) `results.get_loo_effects_df()`;
   (5) `results.sensitivity_to_zeta_omega()`; (6)
-  `results.get_weight_concentration()`; (7) `plot_synth_weights()` equivalent
-  (data extraction via `results.get_unit_weights_df()`). The jackknife loop
-  is the primary time sink; `sensitivity_to_zeta_omega` also refits.
+  `results.get_weight_concentration()`. The jackknife loop is the primary
+  time sink; `sensitivity_to_zeta_omega` also refits.
 - **Source anchor.** `docs/tutorials/18_geo_experiments.ipynb`,
   Arkhangelsky et al. (2021), Mercado Libre geo-experiment writeup
   (medium.com/mercadolibre-tech), Meta GeoLift methodology docs
@@ -261,12 +260,12 @@ serves a different purpose: R-parity accuracy). They complement it.
   )
   ```
 - **Operation chain.** (1) dCDH fit with `L_max=3` (computes `DID_l` for
-  l=1..3, dynamic placebos, sup-t bands, TWFE diagnostic); (2) inspect
-  `placebo_effect` and dynamic placebos for pre-trend evidence;
-  (3) `results.print_summary()`; (4) `compute_honest_did()` on the placebo
-  event study; (5) heterogeneity refit with `heterogeneity="group"`.
-  The TSL path for `L_max >= 1` is newer code (v3.1) and has not been
-  profiled.
+  l=1..3, dynamic placebos, sup-t bands, TWFE diagnostic); (2) snapshot
+  `placebo_effect`, `overall_att`, `joiners_att`, `leavers_att` from the
+  result object for pre-trend evidence and joiner/leaver inspection;
+  (3) `compute_honest_did()` M-grid on the placebo event study;
+  (4) heterogeneity refit with `heterogeneity="group"`. The TSL path for
+  `L_max >= 1` is newer code (v3.1) and has not been profiled.
 - **Source anchor.** `docs/practitioner_decision_tree.rst`
   ("Reversible Treatment (On/Off Cycles)"), de Chaisemartin & D'Haultfoeuille
   (2020), NBER WP 29873 (dynamic companion), R package
@@ -290,12 +289,17 @@ serves a different purpose: R-parity accuracy). They complement it.
   )
   ```
 - **Operation chain.** (1) CDiD fit with `aggregate="dose"` - produces
-  overall ATT, overall ACRT, and the dose-response curves; (2)
-  `results.to_dataframe(level="dose_response")`; (3)
-  `results.to_dataframe(level="event_study")` for pre-trend diagnostics;
+  overall ATT, overall ACRT, and the dose-response curves; (2) extract
+  `results.to_dataframe(level="dose_response")` and
+  `level="group_time"` (event-study is not populated by a dose-only
+  fit, so it is extracted in a separate step); (3) a second CDiD fit
+  with `aggregate="eventstudy"` for pre-trend diagnostics (note the
+  spelling: `fit(aggregate="eventstudy")` with no underscore, but
+  `to_dataframe(level="event_study")` with underscore - see the
+  correctness-adjacent observations in `performance-plan.md`);
   (4) compare to a binarized DiD fit on the same data to quantify
-  the information loss from binarizing; (5) alternate `degree=1`
-  (linear) and `num_knots=2` refits for spline-sensitivity. The dose-curve
+  information loss from binarizing; (5) alternate `degree=1` (linear)
+  and (6) `num_knots=2` refits for spline-sensitivity. The dose-curve
   bootstrap loop (199 reps x spline refit) is the primary time sink.
 - **Source anchor.** `docs/tutorials/14_continuous_did.ipynb`,
   Callaway, Goodman-Bacon & Sant'Anna (2024), `docs/methodology/REGISTRY.md`
