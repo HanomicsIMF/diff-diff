@@ -3483,6 +3483,24 @@ class TestAggregateSurveyScaffolding:
             sd = SurveyDesign(weights="wt", strata="stratum", psu="psu")
             return df, sd
 
+        if mode == "stratified_no_psu":
+            # strata present, psu absent — each observation is its own
+            # PSU within its stratum.  This is a distinct scaffolding
+            # branch (survey.py:_precompute_psu_scaffolding, else clause
+            # of the `if psu is not None` block).
+            df = df_base.copy()
+            df["stratum"] = rng.integers(0, 4, n)
+            sd = SurveyDesign(weights="wt", strata="stratum")
+            return df, sd
+
+        if mode == "stratified_no_psu_fpc":
+            # Same branch as above plus stratum-level FPC lookup.
+            df = df_base.copy()
+            df["stratum"] = rng.integers(0, 4, n)
+            df["fpc"] = 1000.0  # well above per-stratum obs count
+            sd = SurveyDesign(weights="wt", strata="stratum", fpc="fpc")
+            return df, sd
+
         if mode == "psu_only":
             df = df_base.copy()
             df["psu"] = rng.integers(0, 12, n)
@@ -3532,6 +3550,8 @@ class TestAggregateSurveyScaffolding:
         [
             "stratified_fpc",
             "stratified_no_fpc",
+            "stratified_no_psu",
+            "stratified_no_psu_fpc",
             "psu_only",
             "weights_only",
             "lonely_remove",
