@@ -1114,11 +1114,26 @@ class DiagnosticReport:
             return self._format_precomputed_sensitivity(self._precomputed["sensitivity"])
 
         name = type(self._results).__name__
-        if name in {"SyntheticDiDResults", "TROPResults"}:
+        if name == "SyntheticDiDResults":
             return {
                 "status": "skipped",
-                "reason": "Estimator uses native sensitivity (see "
-                "estimator_native_diagnostics).",
+                "reason": (
+                    "SyntheticDiD uses native sensitivity analogues "
+                    "(``in_time_placebo``, ``sensitivity_to_zeta_omega``) "
+                    "rather than HonestDiD; see "
+                    "``estimator_native_diagnostics``."
+                ),
+                "method": "estimator_native",
+            }
+        if name == "TROPResults":
+            return {
+                "status": "skipped",
+                "reason": (
+                    "TROP identification is factor-model-based; HonestDiD "
+                    "bounds do not apply. Use the factor-model fit metrics "
+                    "(effective rank, LOOCV score, selected lambdas) in "
+                    "``estimator_native_diagnostics`` as the analogue."
+                ),
                 "method": "estimator_native",
             }
 
@@ -2252,6 +2267,11 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
     # 2x2 and Hausman paths).
     pt = schema.get("parallel_trends") or {}
     pp = schema.get("pretrends_power") or {}
+    # Only point to "the sensitivity analysis below" when a sensitivity
+    # block actually ran. For estimators routing to native diagnostics
+    # (SDiD / TROP) or fits where sensitivity was skipped / not
+    # applicable, the clause would be misleading (round-12 CI review).
+    sens_ran = (schema.get("sensitivity") or {}).get("status") == "ran"
     if pt.get("status") == "ran":
         verdict = pt.get("verdict")
         jp = pt.get("joint_p_value")
@@ -2261,17 +2281,29 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
         jp_str = (
             f" ({stat_label} = {jp:.3g})" if isinstance(jp, (int, float)) and stat_label else ""
         )
+        sens_tail_pending = " pending sensitivity analysis" if sens_ran else ""
+        sens_tail_alongside = (
+            " Interpret the headline alongside the sensitivity analysis below." if sens_ran else ""
+        )
+        sens_tail_bounded = (
+            " See the sensitivity analysis below for bounded-violation guarantees."
+            if sens_ran
+            else ""
+        )
+        sens_tail_reliable = (
+            " See the HonestDiD sensitivity analysis below for a more reliable signal."
+            if sens_ran
+            else ""
+        )
         if verdict == "clear_violation":
             sentences.append(
                 f"{subject} clearly reject parallel trends{jp_str}. The "
-                "headline estimate should be treated as tentative pending "
-                "sensitivity analysis."
+                "headline estimate should be treated as tentative" + sens_tail_pending + "."
             )
         elif verdict == "some_evidence_against":
             sentences.append(
                 f"{subject} show some evidence against parallel trends"
-                f"{jp_str}. Interpret the headline alongside the sensitivity "
-                "analysis below."
+                f"{jp_str}." + sens_tail_alongside
             )
         elif verdict == "no_detected_violation":
             tier = pp.get("tier") if pp.get("status") == "ran" else "unknown"
@@ -2285,16 +2317,13 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
             elif tier == "moderately_powered":
                 sentences.append(
                     f"{subject} do not reject parallel trends"
-                    f"{jp_str}; the test is moderately informative. See the "
-                    "sensitivity analysis below for bounded-violation "
-                    "guarantees."
+                    f"{jp_str}; the test is moderately informative." + sens_tail_bounded
                 )
             else:
                 sentences.append(
                     f"{subject} do not reject parallel trends"
                     f"{jp_str}, but the test has limited power — a non-rejection "
-                    "does not prove the assumption. See the HonestDiD "
-                    "sensitivity analysis below for a more reliable signal."
+                    "does not prove the assumption." + sens_tail_reliable
                 )
         elif verdict == "design_enforced_pt":
             rmse = pt.get("pre_treatment_fit_rmse")

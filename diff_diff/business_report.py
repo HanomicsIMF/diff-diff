@@ -13,9 +13,13 @@ Design principles:
 
 - Plain English, not academic jargon. The library ships this in addition to, not
   in place of, the estimator's existing ``results.summary()`` academic output.
-- No new statistical computation. Every reported number is either read from
-  ``results`` or computed by an existing diff-diff utility function; no p-value
-  or variance is re-derived here.
+- No estimator fitting and no variance re-derivation. Every effect, SE, p-value,
+  CI, and sensitivity bound is either read from ``results`` or produced by an
+  existing diff-diff utility. The report layer does compose a few cross-period
+  summaries from per-period inputs already on the result (joint-Wald / Bonferroni
+  pre-trends p-value, MDV-to-ATT ratio, heterogeneity dispersion over
+  post-treatment effects); see ``docs/methodology/REPORTING.md`` for the full
+  enumeration.
 - Optional business context via keyword args (``outcome_label``, ``outcome_unit``,
   ``business_question``, ``treatment_label``). Without them, BusinessReport uses
   generic fallbacks — the zero-config path works.
@@ -133,6 +137,12 @@ class BusinessReport:
         auto_diagnostics: bool = True,
         diagnostics: Optional[Union[DiagnosticReport, DiagnosticReportResults]] = None,
         include_appendix: bool = True,
+        data: Optional[Any] = None,
+        outcome: Optional[str] = None,
+        treatment: Optional[str] = None,
+        unit: Optional[str] = None,
+        time: Optional[str] = None,
+        first_treat: Optional[str] = None,
     ):
         if type(results).__name__ == "BaconDecompositionResults":
             raise TypeError(
@@ -155,6 +165,17 @@ class BusinessReport:
         self._auto_diagnostics = auto_diagnostics
         self._diagnostics_arg = diagnostics
         self._include_appendix = include_appendix
+        # Raw-data passthrough so the auto-constructed DR can run
+        # data-dependent checks (2x2 PT on simple DiD, Bacon-from-
+        # scratch on staggered estimators, EfficientDiD Hausman
+        # pretest). Without these, the auto path silently skips those
+        # checks (round-12 CI review on PR #318).
+        self._dr_data = data
+        self._dr_outcome = outcome
+        self._dr_treatment = treatment
+        self._dr_unit = unit
+        self._dr_time = time
+        self._dr_first_treat = first_treat
 
         resolved_alpha = alpha if alpha is not None else getattr(results, "alpha", 0.05)
         self._context = BusinessContext(
@@ -242,6 +263,12 @@ class BusinessReport:
             precomputed=precomputed or None,
             outcome_label=self._context.outcome_label,
             treatment_label=self._context.treatment_label,
+            data=self._dr_data,
+            outcome=self._dr_outcome,
+            treatment=self._dr_treatment,
+            unit=self._dr_unit,
+            time=self._dr_time,
+            first_treat=self._dr_first_treat,
         )
         return dr.run_all()
 
@@ -1245,17 +1272,31 @@ def _render_summary(schema: Dict[str, Any]) -> str:
         jp_phrase = (
             f" ({stat_label} = {jp:.3g})" if isinstance(jp, (int, float)) and stat_label else ""
         )
+        # Only point to "the sensitivity analysis below" when a
+        # sensitivity block actually ran. For estimators that route to
+        # native diagnostics (SDiD / TROP) or fits where sensitivity was
+        # skipped / not applicable, the clause would mislead (round-12
+        # CI review on PR #318).
+        sens_ran = (schema.get("sensitivity", {}) or {}).get("status") == "computed"
+        sens_tail_major = " pending the sensitivity analysis below" if sens_ran else ""
+        sens_tail_alongside = " alongside the sensitivity analysis below" if sens_ran else ""
+        sens_tail_see_bounded = (
+            " See the sensitivity analysis below for bounded-violation guarantees."
+            if sens_ran
+            else ""
+        )
+        sens_tail_see_reliable = " See the sensitivity analysis below." if sens_ran else ""
         if verdict == "clear_violation":
             sentences.append(
                 f"{subject} clearly reject parallel trends{jp_phrase}; the "
-                "headline should be treated as tentative pending the "
-                "sensitivity analysis below."
+                "headline should be treated as tentative" + sens_tail_major + "."
             )
         elif verdict == "some_evidence_against":
             sentences.append(
                 f"{subject} show some evidence against parallel trends"
-                f"{jp_phrase}; interpret the headline alongside the "
-                "sensitivity analysis below."
+                f"{jp_phrase}; interpret the headline"
+                + (sens_tail_alongside if sens_ran else " with caution")
+                + "."
             )
         elif verdict == "no_detected_violation":
             if tier == "well_powered":
@@ -1267,14 +1308,13 @@ def _render_summary(schema: Dict[str, Any]) -> str:
             elif tier == "moderately_powered":
                 sentences.append(
                     f"{subject} do not reject parallel trends; the test is "
-                    "moderately informative. See the sensitivity analysis "
-                    "below for bounded-violation guarantees."
+                    "moderately informative." + sens_tail_see_bounded
                 )
             else:
                 sentences.append(
                     f"{subject} do not reject parallel trends, but the test "
                     "has limited power — a non-rejection does not prove the "
-                    "assumption. See the sensitivity analysis below."
+                    "assumption." + sens_tail_see_reliable
                 )
         elif verdict == "design_enforced_pt":
             sentences.append(

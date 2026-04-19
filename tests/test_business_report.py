@@ -1100,6 +1100,84 @@ class TestHausmanPretestPropagatesCluster:
         ), f"cluster column must propagate from fit to Hausman pretest; got {captured}"
 
 
+class TestBRDataKwargsPassthroughToAutoDR:
+    """Round-12 regression: ``BusinessReport`` now accepts
+    ``data`` / ``outcome`` / ``treatment`` / ``unit`` / ``time`` /
+    ``first_treat`` kwargs and forwards them to the auto-constructed
+    ``DiagnosticReport``. Without this, data-dependent checks (2x2 PT,
+    Bacon, EfficientDiD Hausman) are silently skipped on the zero-
+    config auto path even though the README markets one-call
+    diagnostics from a fitted result.
+    """
+
+    def test_did_fit_gets_2x2_pt_via_passthrough(self, did_fit):
+        fit, df = did_fit
+        br = BusinessReport(
+            fit,
+            data=df,
+            outcome="outcome",
+            treatment="treated",
+            time="post",
+        )
+        # Auto-DR received the kwargs and ran the 2x2 PT check.
+        dr_schema = br.to_dict()["diagnostics"]["schema"]
+        assert dr_schema["parallel_trends"]["status"] == "ran"
+        assert dr_schema["parallel_trends"]["method"] == "slope_difference"
+
+    def test_cs_fit_gets_bacon_via_passthrough(self, cs_fit):
+        fit, sdf = cs_fit
+        br = BusinessReport(
+            fit,
+            data=sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        dr_schema = br.to_dict()["diagnostics"]["schema"]
+        # Bacon needs data + outcome + time + unit + first_treat; before
+        # the passthrough, the auto path skipped because only the
+        # estimator result was available.
+        assert dr_schema["bacon"]["status"] == "ran"
+
+    def test_no_passthrough_still_works_and_skips_gracefully(self, did_fit):
+        """Zero-config auto path must still produce a valid report; it
+        just skips data-dependent checks."""
+        fit, _ = did_fit
+        br = BusinessReport(fit)  # no data kwargs
+        dr_schema = br.to_dict()["diagnostics"]["schema"]
+        # PT needs data for 2x2 and was gated out of applicable — section
+        # is "skipped" rather than "ran".
+        assert dr_schema["parallel_trends"]["status"] in {"skipped", "not_applicable"}
+
+
+class TestSensitivityProseGuarding:
+    """Round-12 regression: BR / DR summary prose must not promise a
+    "sensitivity analysis below" sentence when no sensitivity block
+    actually ran (e.g., SDiD / TROP routed to native diagnostics,
+    single-M precomputed passthrough rendered separately, skipped
+    sensitivity for varying-base CS).
+    """
+
+    def test_br_sdid_does_not_mention_sensitivity_below(self, sdid_fit):
+        fit, _ = sdid_fit
+        summary = BusinessReport(fit).summary()
+        # SDiD routes to estimator-native diagnostics, not HonestDiD.
+        # The PT verdict for SDiD is ``design_enforced_pt`` which does
+        # not append any "see sensitivity below" clause, so the prose
+        # should not mention it.
+        assert "sensitivity analysis below" not in summary
+
+    def test_dr_trop_does_not_mention_sensitivity_below(self, sdid_fit):
+        # SDiD and TROP both skip HonestDiD. Use SDiD as proxy here
+        # since it already has a fixture; the same guard covers TROP.
+        from diff_diff import DiagnosticReport
+
+        fit, _ = sdid_fit
+        summary = DiagnosticReport(fit).summary()
+        assert "sensitivity analysis below" not in summary
+
+
 class TestHausmanTestStatisticPopulated:
     """Round-10 P3 regression: ``HausmanPretestResult`` exposes
     ``statistic`` (not ``test_statistic``); the DR schema was previously

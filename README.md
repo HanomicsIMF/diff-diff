@@ -110,6 +110,15 @@ report = BusinessReport(
     outcome_unit="$",
     business_question="Did the loyalty program lift revenue?",
     treatment_label="the loyalty program",
+    # Optional: pass the panel + column names so the auto-constructed
+    # DiagnosticReport can run data-dependent checks (2x2 pre-trends,
+    # Goodman-Bacon decomposition, EfficientDiD Hausman pretest).
+    # Without these the auto path still runs but skips those checks.
+    data=df,
+    outcome="revenue",
+    unit="store",
+    time="month",
+    first_treat="first_treat",
 )
 print(report.summary())
 ```

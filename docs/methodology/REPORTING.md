@@ -15,12 +15,22 @@ here rather than duplicating content.
   `DiagnosticReportResults`.
 
 Both modules dispatch by `type(results).__name__` lookup to avoid
-circular imports across the 16 result classes. They perform no new
-statistical computation; every reported number is read from the fitted
-result or computed by an existing diff-diff utility
+circular imports across the 16 result classes. They do no estimator
+fitting and do not re-derive any variance from raw data; every effect,
+SE, p-value, CI, and sensitivity bound is either read from the fitted
+result or produced by an existing diff-diff utility
 (`compute_honest_did`, `HonestDiD.sensitivity`, `bacon_decompose`,
 `check_parallel_trends`, `compute_deff_diagnostics`,
-`compute_pretrends_power`).
+`compute_pretrends_power`). The report layer **does** compose a few
+cross-period summary statistics from per-period inputs already
+produced by the estimator — specifically the joint-Wald / Bonferroni
+pre-trends p-value from pre-period event-study coefficients (see
+`_pt_event_study`), the MDV-to-ATT ratio for power-tier selection,
+and the heterogeneity dispersion block (CV / range / sign-
+consistency over post-treatment group / event-study / group-time
+effects, pre-period and reference-marker rows excluded). These are
+reporting-layer aggregations of inputs already in the result object,
+not new inference.
 
 ## Design deviations
 
