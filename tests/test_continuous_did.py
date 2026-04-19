@@ -181,12 +181,35 @@ class TestBSplineDerivativeDegenerateBasis:
         # Message must name the failed basis indices so the user can debug.
         assert "[1, 3]" in msg, f"Expected indices [1, 3] in warning; got: {msg}"
         assert "2 of" in msg, f"Expected failure count '2 of ...' in warning; got: {msg}"
-        # Affected columns should be zero; others should be non-zero-ish.
+        # Affected columns should be zero.
         # With include_intercept=True, column 0 is always zero (intercept
         # derivative) and basis index j is at dB column j (the drop-first
         # then prepend-zeros logic keeps the same per-j mapping for j>=1).
         np.testing.assert_array_equal(dB[:, 1], np.zeros(len(x)))  # failed basis j=1
         np.testing.assert_array_equal(dB[:, 3], np.zeros(len(x)))  # failed basis j=3
+
+        # Unaffected columns must match the un-patched baseline exactly
+        # (except columns 1 and 3 which were forced to zero). This guards
+        # a regression that would zero or corrupt the entire derivative
+        # matrix on any ValueError.
+        dB_baseline = bspline_derivative_design_matrix(
+            x, knots, degree=deg, include_intercept=True
+        )
+        for col in range(dB.shape[1]):
+            if col in (1, 3):
+                continue
+            np.testing.assert_array_equal(
+                dB[:, col],
+                dB_baseline[:, col],
+                err_msg=f"Unaffected column {col} diverges from baseline",
+            )
+        # At least one non-intercept, non-failed column must be non-zero,
+        # confirming the function still produces meaningful derivatives.
+        non_failed_cols = [c for c in range(1, dB.shape[1]) if c not in (1, 3)]
+        assert any(np.any(dB[:, c] != 0) for c in non_failed_cols), (
+            "Expected at least one unaffected non-intercept column to have "
+            "non-zero derivatives; got all-zero dB outside failed cols."
+        )
 
     def test_clean_knots_emit_no_warning(self):
         """Well-formed knot vector → no ValueError path taken → no
