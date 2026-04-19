@@ -6,7 +6,10 @@ the 8-step Baker workflow: Bacon -> CS fit -> event-study pre-trend
 inspection -> HonestDiD M-grid -> SunAbraham + ImputationDiD robustness
 -> with/without-covariates refit -> practitioner_next_steps.
 
-Data shape: 150 DMAs x 26 weekly periods, 2 staggered cohorts, 2 covariates.
+Three scales:
+  - small  (150 units x 26 periods): Tutorial 02 / GeoLift DMA panel
+  - medium (500 units x 26 periods): pooled-DMA or multi-year sub-DMA
+  - large  (1500 units x 26 periods): county-level staggered policy
 """
 
 import numpy as np
@@ -25,9 +28,17 @@ from diff_diff.prep import generate_staggered_data
 from bench_shared import run_scenario
 
 
-def build_data(seed=42):
+SCALES = {
+    "small":  {"n_units": 150,  "n_periods": 26, "cohort_periods": [9, 14]},
+    "medium": {"n_units": 500,  "n_periods": 26, "cohort_periods": [9, 14, 19]},
+    "large":  {"n_units": 1500, "n_periods": 26, "cohort_periods": [9, 14, 19]},
+}
+
+
+def build_data(n_units, n_periods, cohort_periods, seed=42):
     df = generate_staggered_data(
-        n_units=150, n_periods=26, cohort_periods=[9, 14],
+        n_units=n_units, n_periods=n_periods,
+        cohort_periods=cohort_periods,
         never_treated_frac=0.3, treatment_effect=3.0,
         dynamic_effects=True, effect_growth=0.1, seed=seed,
     )
@@ -41,16 +52,7 @@ def build_data(seed=42):
     return df
 
 
-def main():
-    data = build_data()
-    covars = ["log_pop", "baseline_spend"]
-    fit_kwargs = dict(
-        data=data, outcome="outcome", unit="unit", time="period",
-        first_treat="first_treat",
-    )
-
-    results = {}
-
+def make_phases(data, results, covars, fit_kwargs):
     def bacon():
         results["bacon"] = BaconDecomposition().fit(
             data, outcome="outcome", unit="unit", time="period",
@@ -98,7 +100,7 @@ def main():
     def next_steps():
         results["guidance"] = practitioner_next_steps(results["cs"])
 
-    phases = [
+    return [
         ("1_bacon_decomposition", bacon),
         ("2_cs_fit_with_covariates_bootstrap999", cs_fit),
         ("3_inspect_pretrends", inspect_pretrends),
@@ -109,15 +111,39 @@ def main():
         ("8_practitioner_next_steps", next_steps),
     ]
 
+
+def run_scale(scale, config):
+    data = build_data(**config)
+    covars = ["log_pop", "baseline_spend"]
+    fit_kwargs = dict(
+        data=data, outcome="outcome", unit="unit", time="period",
+        first_treat="first_treat",
+    )
+    results = {}
+    phases = make_phases(data, results, covars, fit_kwargs)
+
     run_scenario(
-        "campaign_staggered",
+        f"campaign_staggered_{scale}",
         phases,
         metadata={
-            "n_units": 150, "n_periods": 26, "n_cohorts": 2,
-            "covariates": covars, "n_bootstrap": 999,
-            "aggregate": "all", "estimation_method": "dr",
+            "scale": scale,
+            "n_units": config["n_units"],
+            "n_periods": config["n_periods"],
+            "n_cohorts": len(config["cohort_periods"]),
+            "n_obs": int(len(data)),
+            "covariates": covars,
+            "n_bootstrap": 999,
+            "aggregate": "all",
+            "estimation_method": "dr",
         },
     )
+
+
+def main():
+    for scale, config in SCALES.items():
+        print(f"\n{'='*60}\n  campaign_staggered / scale={scale} "
+              f"(n_units={config['n_units']})\n{'='*60}")
+        run_scale(scale, config)
 
 
 if __name__ == "__main__":

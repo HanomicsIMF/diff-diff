@@ -8,136 +8,120 @@ This document outlines the strategy for improving diff-diff's performance on lar
 
 Earlier sections of this document (v1.4.0, v2.0.3) measured isolated `fit()`
 calls on synthetic panels for R-parity. This section measures **end-to-end
-practitioner chains** — Bacon decomposition, fit, event-study pre-trend
+practitioner chains** - Bacon decomposition, fit, event-study pre-trend
 inspection, HonestDiD sensitivity grids, cross-estimator robustness refits,
-and reporting — at data shapes anchored to applied-econ papers and industry
+and reporting - at data shapes anchored to applied-econ papers and industry
 writeups. The six scenarios are defined in
 [`docs/performance-scenarios.md`](performance-scenarios.md); scripts live in
 `benchmarks/speed_review/bench_*.py`; raw results in
-`benchmarks/results/*.json` and flame profiles in
-`benchmarks/results/profiles/`.
+`benchmarks/speed_review/baselines/*.json` and flame profiles in
+`benchmarks/speed_review/baselines/profiles/`.
 
 Environment: macOS darwin 25.3 on Apple Silicon M4, Python 3.9,
-numpy 2.x, diff_diff 3.1.3. Each scenario runs under
-`DIFF_DIFF_BACKEND=python` and `DIFF_DIFF_BACKEND=rust`.
+numpy 2.x, diff_diff 3.1.3. Each multi-scale scenario runs at three data
+scales under both `DIFF_DIFF_BACKEND=python` and `DIFF_DIFF_BACKEND=rust`.
 
-### Per-scenario wall-clock totals
+### Scale sweep - end-to-end wall-clock
 
-| Scenario | Python (s) | Rust (s) | Rust speedup | Dominant phase |
-|---|---:|---:|---:|---|
-| 1. Staggered campaign (CS + 8-step chain) | 0.48 | 0.48 | 1.0x | ImputationDiD robustness (53%) |
-| 2. Brand awareness survey (DiD + SurveyDesign) | 0.18 | 0.20 | 0.9x | Multi-outcome loop + HonestDiD (~70% combined) |
-| 3. BRFSS microdata -> CS panel | 1.58 | 1.58 | 1.0x | `aggregate_survey` (93%) |
-| 4. Geo-experiment few markets (SDiD) | 2.96 | 0.04 | **76x** | SDiD Frank-Wolfe weight solver |
-| 5. Reversible treatment (dCDH L_max=3 + TSL) | 0.49 | 0.55 | 0.9x | dCDH fit (58%) + heterogeneity refit (40%) |
-| 6. Pricing dose-response (CDiD spline) | 0.57 | 0.58 | 1.0x | Four spline variants, ~25% each |
+Four of the six scenarios run at three scales (small / medium / large). The
+small scale matches tutorial data shapes; medium reflects typical
+practitioner workloads; large stretches toward the upper end of what an
+analyst might bring (1M-row BRFSS microdata, 1,500-unit county-level
+staggered panel, 1,000-unit multi-region brand survey, 500-unit zip-level
+geo-experiment). Dose-response and reversible-dCDH run at a single mid-range
+scale.
 
-At practitioner-realistic scales, the full 8-step Baker chain runs in under
-two seconds for 5 of 6 scenarios with or without the Rust backend. The Rust
-backend provides dramatic uplift only for SDiD; elsewhere it is at parity
-(or marginally slower on small data due to the Python/Rust FFI crossing
-overhead).
+| Scenario | Scale | Data shape | Python (s) | Rust (s) | Py/Rust |
+|---|---|---|---:|---:|---:|
+| **1. Staggered campaign** | small | 150 units × 26 periods | 0.48 | 0.49 | 1.0x |
+| (CS + 8-step chain, bootstrap 999) | medium | 500 units × 26 periods | 0.72 | 0.87 | 0.8x |
+|  | large | 1,500 units × 26 periods | 1.24 | 1.22 | 1.0x |
+| **2. Brand awareness survey** | small | 200 units × 12 periods | 0.15 | 0.20 | 0.8x |
+| (DiD + SurveyDesign + replicate weights) | medium | 500 units × 12 periods | 0.49 | 0.54 | 0.9x |
+|  | large | 1,000 units × 12 periods | 0.79 | 0.83 | 1.0x |
+| **3. BRFSS microdata → CS panel** | small | 50K rows → 500 cells | 1.59 | 1.61 | 1.0x |
+| (`aggregate_survey` + CS + HonestDiD) | medium | 250K rows → 500 cells | 6.11 | 6.20 | 1.0x |
+|  | large | **1M rows → 500 cells** | **23.96** | **24.37** | **1.0x** |
+| **4. Geo-experiment few markets (SDiD)** | small | 80 units, 5 treated | 3.05 | 0.04 | **76x** |
+| (jackknife + bootstrap + sensitivity chain) | medium | 200 units, 15 treated | 3.65 | 0.12 | **31x** |
+|  | large | 500 units, 30 treated | skip | 0.26 | - |
+| 5. Reversible dCDH (L_max=3 + TSL) | (single) | 120 groups × 10 periods | 0.55 | 0.53 | 1.0x |
+| 6. Pricing dose-response (CDiD spline) | (single) | 500 units × 6 periods | 0.58 | 0.59 | 1.0x |
 
-### Top hotspots ranked by total-time contribution
+### Scaling findings
 
-| # | Location | Scenario | Time | Recommended action |
+**Three findings invert at large scale relative to the tutorial-scale pass:**
+
+1. **BRFSS `aggregate_survey` becomes the dominant practitioner pain point.**
+   Scales near-linearly with microdata row count - 50K → 1M rows (20x)
+   costs 15x runtime (1.5s → 24s). At 1M rows, 97% of runtime is inside
+   `_compute_stratified_psu_meat`, called once per output cell. This is a
+   concrete 20-second cost hit on any realistic pooled multi-year BRFSS
+   study, and Rust does not touch it (aggregate_survey is entirely Python).
+2. **Staggered CS chain remains cheap across scales.** 150 → 1,500 units
+   (10x) increases total by only 2.6x (0.48s → 1.24s). ImputationDiD stays
+   the dominant phase (46-62%) but scales well; absolute time at
+   practitioner scale is still under 1 second.
+3. **SDiD Rust gap is stable, not emergent.** Python SDiD at 80 units is
+   already 3 seconds; at 200 units it is 3.7 seconds. The cost is
+   dominated by fixed-overhead-per-jackknife-refit rather than data size;
+   Rust stays sub-second through 500 units. The 76x headline at small scale
+   is driven by Python having ~3s of baseline cost, not by bad scaling.
+
+**Two findings hold across scales:**
+
+4. Brand-awareness survey chain scales sub-linearly (0.15s → 0.79s for a
+   5x unit increase); TSL + replicate-weight paths are well-vectorized
+   even with 40 replicate columns.
+5. Rust backend gives measurable uplift only for SDiD; for everything else
+   backend choice is within noise because the bottlenecks are in Python
+   (`aggregate_survey`) or already well-vectorized (CS bootstrap, ImputationDiD,
+   Survey TSL/replicate).
+
+### Top hotspots ranked by total-time contribution (at largest measured scale)
+
+| # | Location | Scenario + scale | Time | Recommended action |
 |---|---|---|---:|---|
-| 1 | `diff_diff/survey.py:1160` `_compute_stratified_psu_meat` | BRFSS | 1.0s self + 1.4s inclusive per 50K microdata | **Algorithmic fix** — loop runs per (state, year) cell; precompute stratum scaffolding once at top of `aggregate_survey` and reuse |
-| 2 | `diff_diff/utils.py:1434` `_sc_weight_fw_numpy` | Geo few markets (python) | 0.46s | **Already ported to Rust.** Python fallback acceptable for n < 50; document the python-backend ceiling rather than re-optimizing |
-| 3 | `diff_diff/imputation.py` ImputationDiD fit chain | Staggered campaign | 0.24s | **Investigate** — 4x slower than CS with `n_bootstrap=999` on identical data; unexpected given CS has the heavier bootstrap and same influence-function path. Likely imputation loop is not vectorized. |
-| 4 | `diff_diff/chaisemartin_dhaultfoeuille.py` dCDH fit (`L_max=3` + TSL) | Reversible | 0.32s main + 0.22s heterogeneity refit | **Cache/precompute** — heterogeneity refit repeats TSL setup and data prep already done by main fit. Pass shared precomputed structures through. |
-| 5 | `diff_diff/continuous_did.py` CDiD bootstrap loop | Dose response | 0.14s per fit, 4 variants = 0.56s | **Leave alone** — linear scaling with spline variants is expected; total well under practitioner-perceptible threshold |
+| 1 | `diff_diff/survey.py:1160` `_compute_stratified_psu_meat` | BRFSS @ 1M rows | **20.7s self + 22.6s inclusive** | **Algorithmic fix, raised priority.** Function called once per (state, year) cell (500 calls); per-call work scales with cell size and rebuilds stratum-PSU scaffolding every time. Precompute stratum indexes once at `aggregate_survey` top-level and reuse. Upside at practitioner scale is now 15-20 seconds, not 1.5 seconds. |
+| 2 | `diff_diff/imputation.py` ImputationDiD fit | Staggered CS @ 1,500 units | 0.66s (53%) | **Investigate if/when BRFSS fix lands.** Stayed the dominant phase across scales but total chain is ~1.2s at large - not P0. Still a candidate follow-up once the higher-value fix is in. |
+| 3 | `diff_diff/utils.py:1434` `_sc_weight_fw_numpy` | SDiD python @ any scale | 3s fixed overhead + scaling | **Already ported to Rust.** Python fallback acceptable as a teaching/safety path; document as non-production for n > 100. Python skipped at n=500 because jackknife 500 refits × ~500ms/refit would exceed 4 minutes. |
+| 4 | `diff_diff/chaisemartin_dhaultfoeuille.py` dCDH fit + heterogeneity | Reversible (single scale) | 0.32s main + 0.22s heterogeneity | **Cache/precompute** - heterogeneity refit rebuilds TSL scaffolding the main fit already computed. Not P0 - total is ~550ms - but newer code path (v3.1) never optimization-reviewed. |
+| 5 | `diff_diff/continuous_did.py` CDiD spline bootstrap | Dose-response (single scale) | 0.14s per fit × 4 variants | **Leave alone** - linear in variant count, all well under perceptible threshold. |
 
-### Per-scenario findings
+### Per-scenario phase rankings at each scale
 
-**Scenario 1 — Staggered campaign (CS + 8-step chain)**
+**Scenario 1 - Staggered campaign (CS + 8-step chain).**
+ImputationDiD robustness remains the single dominant phase at every scale
+(0.30s / 0.33s / 0.66s for small / medium / large). SunAbraham scales at
+similar rate. The CS fit with `n_bootstrap=999` at 1,500 units is 0.18s
+(15%) - well-vectorized. Action: investigate ImputationDiD only after
+higher-upside items land.
 
-Top 5 phases (python-backend, ordered by time):
+**Scenario 2 - Brand awareness survey.**
+At small scale HonestDiD dominates (54%); at medium the multi-outcome loop
+takes over (36%); at large the replicate-weight BRR path becomes the top
+phase (43%, 0.34s). Replicate-weight path scales with both n × n_replicates,
+as expected. All absolute times are practitioner-acceptable. Action: leave
+alone; confirm BRR path scales linearly with a future n_replicates sweep
+if needed.
 
-1. `6_imputation_did_robustness` — 234 ms (49%) — **investigate**
-2. `5_sun_abraham_robustness` — 149 ms (31%) — expected; SA saturated TWFE
-3. `2_cs_fit_with_covariates_bootstrap999` — 59 ms (12%) — expected
-4. `7_cs_without_covariates` — 29 ms (6%) — expected
-5. `1_bacon_decomposition` — 7 ms (1%) — negligible
+**Scenario 3 - BRFSS microdata → CS panel.**
+`aggregate_survey` share of total grows with scale: 94% at 50K → 99% at 250K →
+100% at 1M. Everything downstream (CS fit, SunAbraham, HonestDiD) stays
+under 500 ms combined. Action: fix `aggregate_survey` per-cell loop. This
+is now the single most impactful optimization identified.
 
-Action: flag ImputationDiD for a focused profile comparison against CS on
-the same data; total scenario is otherwise already cheap enough.
+**Scenario 4 - Geo-experiment few markets (SDiD).**
+`sensitivity_to_zeta_omega` and `in_time_placebo` are the dominant
+python-backend phases at every scale (together ~70%); Rust eliminates both.
+Action: no further optimization needed - Rust port ships the answer.
 
-**Scenario 2 — Brand awareness survey**
+**Scenario 5 - Reversible treatment (dCDH L_max=3 + TSL).**
+Unchanged from single-scale pass: main fit 58% + heterogeneity refit 40%,
+both rebuilding shared TSL scaffolding.
 
-Top 5 phases (python-backend, ordered by time):
-
-1. `4_multi_outcome_loop_3_metrics` — 64 ms (36%) — expected; linear in outcome count
-2. `7_event_study_plus_honest_did` — 62 ms (35%) — expected; MP fit + 3x HonestDiD
-3. `6_placebo_refit_pre_period` — 24 ms (13%) — expected
-4. `3_replicate_weights_brr` — 12 ms (7%) — expected; 40 replicate columns
-5. `5_check_parallel_trends` — 9 ms (5%) — expected
-
-Action: **leave alone.** Full survey chain is ~200 ms end-to-end.
-
-**Scenario 3 — BRFSS microdata -> CS panel**
-
-Top 5 phases (python-backend, ordered by time):
-
-1. `1_aggregate_survey_microdata_to_panel` — 1480 ms (94%) — **algorithmic fix**
-2. `5_sun_abraham_robustness` — 81 ms (5%) — expected
-3. `2_cs_fit_with_stage2_survey_design` — 15 ms (1%) — expected
-4. `4_honest_did_grid` — 4 ms — negligible
-5. `6_practitioner_next_steps` — <1 ms — negligible
-
-Action: **fix `aggregate_survey` per-cell loop.** Profile confirmed the
-self-time is concentrated in `_compute_stratified_psu_meat` being called
-once per output cell (500 cells for 50 states x 10 years) with redundant
-stratum-scaffolding reconstruction per call. A single precomputation of
-stratum indexes at the top of `aggregate_survey` should eliminate most of
-the 1s self-time without changing numerical output.
-
-**Scenario 4 — Geo-experiment few markets (SDiD)**
-
-Top 5 phases (python vs rust):
-
-| Phase | Python | Rust |
-|---|---:|---:|
-| `5_sensitivity_to_zeta_omega` | 1059 ms | 11 ms |
-| `3_in_time_placebo` | 954 ms | 8 ms |
-| `2_sdid_bootstrap_variance_200` | 475 ms | 12 ms |
-| `1_sdid_jackknife_variance` | 472 ms | 7 ms |
-
-Profile of python fit: 99% of time is in `_sc_weight_fw_numpy` Frank-Wolfe
-solver, split ~evenly between unit-weight and time-weight solves.
-`_fw_step` convergence check (`np.allclose`) is half the inner-loop cost.
-
-Action: **no further optimization needed.** Rust port is shipped and
-provides 76x on the full chain. The practitioner path defaults to Rust when
-available; the python fallback is a developer-safety path and the
-performance ceiling is acceptable for the teaching scale
-(40-80 units) but documented as non-production for larger n.
-
-**Scenario 5 — Reversible treatment (dCDH L_max=3 + TSL)**
-
-Top 5 phases:
-
-1. `1_dcdh_fit_Lmax3_survey_TSL` — 316 ms (64% python / 58% rust) — **cache candidate**
-2. `4_heterogeneity_refit` — 174 ms (35%) — **cache candidate**
-3. `3_honest_did_on_placebo` — 4-13 ms — expected
-
-The main fit and heterogeneity refit each independently rebuild TSL
-scaffolding (stratum-PSU indexes, influence-function allocators, design-
-matrix reshaping). Because heterogeneity always follows an unconditional
-fit, the scaffolding is shared and can be passed through.
-
-Action: **investigate shared precomputation.** Not a P0 — total is ~550 ms
-end-to-end — but this is a newer code path (v3.1) and has not been
-optimization-reviewed.
-
-**Scenario 6 — Pricing dose-response (ContinuousDiD)**
-
-Four spline fits (cubic bootstrap 199, event-study, linear bootstrap 199,
-cubic num_knots=2 bootstrap 199) account for ~99% of runtime, ~140 ms each.
-Linear scaling in variant count is expected.
-
-Action: **leave alone.** Bootstrap 199 on 500 units x 6 periods with cubic
-splines at 140 ms per fit is well within practitioner-acceptable latency.
+**Scenario 6 - Pricing dose-response (ContinuousDiD).**
+Unchanged: four spline fits ~140ms each, ~99% of total.
 
 ### Correctness-adjacent observations (not P0, route separately)
 
@@ -166,7 +150,7 @@ or in the silent-failures audit; logging here for awareness.
 - Scaling: each scenario runs at a single data shape. We do not know how
   end-to-end time scales with n, periods, or cohorts. If scaling becomes a
   decision input, add a small per-scenario scale sweep (e.g., n_units in
-  {100, 500, 1000}) — the scripts are parameterised to support this.
+  {100, 500, 1000}) - the scripts are parameterised to support this.
 - Memory: no memory-ceiling measurement. If memory becomes a concern,
   `pyinstrument --output-memory` or `memray` can be wrapped into
   `bench_shared.run_scenario` without restructuring.

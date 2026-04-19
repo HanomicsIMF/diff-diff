@@ -8,8 +8,10 @@ DifferenceInDifferences + SurveyDesign under two variance paths:
 Chains: naive fit (for SE-inflation comparison) -> TSL -> replicate -> multi-
 outcome refit loop -> check_parallel_trends -> placebo -> HonestDiD grid.
 
-Data shape: 40 regions x 8 quarters x ~100 respondents per cell =
-~32K respondent rows, 10 strata, 4 PSUs/stratum.
+Three scales:
+  - small  (200 units x 12 periods): Tutorial 17 analog
+  - medium (500 units x 12 periods): realistic CPG quarterly brand-tracking wave
+  - large  (1000 units x 12 periods): multi-region brand tracking at scale
 """
 
 import numpy as np
@@ -26,12 +28,19 @@ from diff_diff.prep import generate_survey_did_data
 from bench_shared import run_scenario
 
 
-def build_data(seed=42):
+SCALES = {
+    "small":  {"n_units": 200,  "n_periods": 12, "n_strata": 10, "psu_per_stratum": 4},
+    "medium": {"n_units": 500,  "n_periods": 12, "n_strata": 15, "psu_per_stratum": 6},
+    "large":  {"n_units": 1000, "n_periods": 12, "n_strata": 20, "psu_per_stratum": 8},
+}
+
+
+def build_data(n_units, n_periods, n_strata, psu_per_stratum, seed=42):
     df = generate_survey_did_data(
-        n_units=200, n_periods=12, cohort_periods=[7],
+        n_units=n_units, n_periods=n_periods, cohort_periods=[7],
         never_treated_frac=0.5, treatment_effect=2.0,
         dynamic_effects=True, effect_growth=0.2,
-        n_strata=10, psu_per_stratum=4,
+        n_strata=n_strata, psu_per_stratum=psu_per_stratum,
         weight_variation="high", psu_re_sd=1.5,
         include_replicate_weights=True, panel=True, seed=seed,
     )
@@ -39,19 +48,11 @@ def build_data(seed=42):
     df["consideration"] = df["outcome"] + rng.normal(0, 0.4, size=len(df))
     df["purchase_intent"] = df["outcome"] * 0.6 + rng.normal(0, 0.3, size=len(df))
     df["post"] = (df["period"] >= 7).astype(int)
-    # Unit-level treatment indicator (for pre-period placebo and
-    # parallel-trends check — `treated` is row-level and zero in the pre-
-    # period, which those diagnostics can't use).
     df["treat_unit"] = (df["first_treat"] > 0).astype(int)
     return df
 
 
-def main():
-    data = build_data()
-    rw_cols = [c for c in data.columns if c.startswith("rep_")]
-
-    results = {}
-
+def make_phases(data, results, rw_cols):
     def naive_fit():
         did = DifferenceInDifferences(robust=True, cluster="psu")
         results["naive"] = did.fit(
@@ -135,7 +136,7 @@ def main():
                 out[M] = f"{type(e).__name__}: {e}"
         results["honest"] = out
 
-    phases = [
+    return [
         ("1_naive_fit_no_survey_design", naive_fit),
         ("2_tsl_strata_psu_fpc", tsl_fit),
         ("3_replicate_weights_brr", replicate_fit),
@@ -145,16 +146,34 @@ def main():
         ("7_event_study_plus_honest_did", honest_did_grid),
     ]
 
+
+def run_scale(scale, config):
+    data = build_data(**config)
+    rw_cols = [c for c in data.columns if c.startswith("rep_")]
+    results = {}
+    phases = make_phases(data, results, rw_cols)
+
     run_scenario(
-        "brand_awareness_survey",
+        f"brand_awareness_survey_{scale}",
         phases,
         metadata={
-            "n_units": 200, "n_periods": 12, "n_obs": int(len(data)),
-            "n_strata": 10, "n_psu_per_stratum": 4,
+            "scale": scale,
+            "n_units": config["n_units"],
+            "n_periods": config["n_periods"],
+            "n_obs": int(len(data)),
+            "n_strata": config["n_strata"],
+            "n_psu_per_stratum": config["psu_per_stratum"],
             "n_replicate_weights": len(rw_cols),
             "outcomes": ["outcome", "consideration", "purchase_intent"],
         },
     )
+
+
+def main():
+    for scale, config in SCALES.items():
+        print(f"\n{'='*60}\n  brand_awareness_survey / scale={scale} "
+              f"(n_units={config['n_units']})\n{'='*60}")
+        run_scale(scale, config)
 
 
 if __name__ == "__main__":

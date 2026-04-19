@@ -38,15 +38,15 @@ separately and routed to the silent-failures audit, not folded into a perf PR.
 
 Each scenario in section 4 defines:
 
-- **Persona / domain** — who runs this and why
-- **Data shape** — n_units, n_periods, n_covariates, survey PSUs/strata,
+- **Persona / domain** - who runs this and why
+- **Data shape** - n_units, n_periods, n_covariates, survey PSUs/strata,
   microdata rows if relevant
-- **Estimator + params** — including `covariates`, `n_bootstrap`,
+- **Estimator + params** - including `covariates`, `n_bootstrap`,
   `survey_design`, `aggregate`, any non-default knobs
-- **Operation chain** — fit() is one step; the flow usually includes Bacon
+- **Operation chain** - fit() is one step; the flow usually includes Bacon
   decomposition, parallel-trends inspection, sensitivity analysis, aggregation,
   and cross-estimator robustness. We time the **chain**, not just fit().
-- **Source anchor** — which tutorial, paper, or industry reference the
+- **Source anchor** - which tutorial, paper, or industry reference the
   shape/workflow comes from
 
 For each scenario, `benchmarks/speed_review/` hosts a script
@@ -79,24 +79,26 @@ serves a different purpose: R-parity accuracy). They complement it.
   not belong here.
 - **Time includes I/O and prep.** The stopwatch starts at the first library
   call a practitioner would write in their notebook and ends at the last
-  result-reporting call — `practitioner_next_steps()` or a `summary()`. Data
+  result-reporting call - `practitioner_next_steps()` or a `summary()`. Data
   generation (synthetic) is outside the stopwatch; data load
   (`load_mpdta()`, CSV read) is inside.
 
 ## Scenarios
 
-### 1. Staggered Marketing Campaign — CS + Event Study + HonestDiD
+### 1. Staggered Marketing Campaign - CS + Event Study + HonestDiD
 
 - **Persona / domain.** Growth / performance-marketing data scientist at a
   tech or e-commerce company. A brand campaign rolls out to DMAs in two
   waves; analyst needs overall lift, event-study dynamics, and a sensitivity
   bound for the VP.
-- **Data shape.** 150 units (DMAs) x 26 periods (weekly), 2 staggered
-  cohorts (wave 1 at period 9, wave 2 at period 14), ~30% never-treated,
-  2 covariates (`log_pop`, `baseline_spend`). This is deliberately larger
-  than the 80-DMA Tutorial 18 shape to stress the CS influence-function path;
-  GeoLift experiments commonly sit in the 50-200 DMA range when aggregated
-  at the DMA level per Meta's methodology docs.
+- **Data shape (scale sweep).** 26-period weekly panel, ~30% never-treated,
+  2 covariates (`log_pop`, `baseline_spend`). Three scales:
+    - **small** - 150 units, 2 cohorts (GeoLift DMA-panel analog; US DMAs
+      cap at 210).
+    - **medium** - 500 units, 3 cohorts (pooled multi-region or multi-year
+      DMA panel).
+    - **large** - 1,500 units, 3 cohorts (county-level staggered policy
+      study; US has ~3,100 counties).
 - **Estimator + params.**
   ```python
   CallawaySantAnna(
@@ -121,17 +123,20 @@ serves a different purpose: R-parity accuracy). They complement it.
   `diff_diff/guides/llms-practitioner.txt`, GeoLift methodology docs for
   DMA panel conventions.
 
-### 2. Brand Awareness Survey DiD — 2x2 with Survey Design
+### 2. Brand Awareness Survey DiD - 2x2 with Survey Design
 
 - **Persona / domain.** Brand / market-research analytics lead at a CPG
   or agency. Runs a pre/post awareness survey across test and control
   markets with complex sampling (strata + PSU clusters + unequal weights).
   Needs design-correct SEs or the CI is too narrow.
-- **Data shape.** 40 regions x 8 quarterly waves x ~100 respondents per
-  region-wave = ~32,000 respondent rows (pre-aggregation). 10 strata, 4
-  PSUs per stratum (40 PSUs total), weight coefficient of variation ~1.0.
-  This is the Tutorial 17 shape scaled up from its demonstration
-  200 x 8 cells to a size where design effects meaningfully dominate runtime.
+- **Data shape (scale sweep).** 12-period quarterly panel, high weight
+  variation, 40 BRR replicate weights. Three scales:
+    - **small** - 200 units, 10 strata × 4 PSUs (Tutorial 17 analog).
+    - **medium** - 500 units, 15 strata × 6 PSUs (typical CPG
+      quarterly brand-tracking wave).
+    - **large** - 1,000 units, 20 strata × 8 PSUs (multi-region brand
+      tracking at scale, e.g. a national awareness study with 50+ sub-
+      markets).
 - **Estimator + params.** Two variants in the same script:
   ```python
   # (a) Analytical TSL path
@@ -163,12 +168,16 @@ serves a different purpose: R-parity accuracy). They complement it.
   of a staggered state policy (e.g., Medicaid expansion, smoking ban) on
   a design-correct outcome using `aggregate_survey()` to collapse microdata
   to a state-year panel, then a modern staggered estimator.
-- **Data shape.** 50,000 microdata rows (~50 states x 10 years x ~100
-  respondents per state-year subsample — scaled to reflect the BRFSS 2024
-  ~458K-record universe filtered to a substate analytic population, per
-  CDC overview docs). 10 strata, 200 PSUs overall. Collapses via
-  `aggregate_survey` to 500-cell state-year panel. 5 adoption cohorts
-  staggered over the window.
+- **Data shape (scale sweep).** 50 states × 10 years × N respondents per
+  state-year cell, 5 adoption cohorts staggered over the window. Three scales:
+    - **small** - 50,000 rows (100/cell, 10 strata × 200 PSUs). Substate
+      analytic slice of a single year.
+    - **medium** - 250,000 rows (500/cell, 15 strata × 600 PSUs). Pooled
+      substate analytic slice across multiple years.
+    - **large** - 1,000,000 rows (2,000/cell, 20 strata × 1,000 PSUs).
+      A realistic pooled 10-year multi-state analysis - comparable to the
+      kind of panel built from BRFSS 2024's ~458K-record universe filtered
+      and pooled across years. This is where practitioners actually live.
 - **Estimator + params.**
   ```python
   panel, stage2 = aggregate_survey(
@@ -182,7 +191,7 @@ serves a different purpose: R-parity accuracy). They complement it.
   )
   compute_honest_did(results, method="relative_magnitude", M=[0.5, 1.0, 1.5])
   ```
-- **Operation chain.** (1) `aggregate_survey()` — the microdata-to-panel
+- **Operation chain.** (1) `aggregate_survey()` - the microdata-to-panel
   collapse; (2) CS fit with staged second-stage SurveyDesign
   (`weight_type="pweight"`) and bootstrap at PSU level; (3) event-study
   pre-trend inspection; (4) HonestDiD sensitivity grid; (5) SunAbraham
@@ -194,21 +203,29 @@ serves a different purpose: R-parity accuracy). They complement it.
   docstring + `docs/survey-roadmap.md`, CS paper for staggered ATT(g,t)
   inference.
 
-### 4. Geo-Experiment Few Markets — SyntheticDiD + Jackknife
+### 4. Geo-Experiment Few Markets - SyntheticDiD + Jackknife
 
 - **Persona / domain.** Growth marketing analyst running a small-market
-  campaign test (3-5 treated DMAs) against a pool of 30-80 control DMAs.
-  Too few treated for asymptotic CS SE; uses SyntheticDiD with
-  jackknife variance and a breakdown diagnostic for the VP.
-- **Data shape.** 80 DMAs x 12 weekly periods, 5 treated, 2 latent factors
-  driving the pre-period outcomes (factor-model DGP to stress the
-  optimization). This is the Tutorial 18 shape.
+  campaign test against a pool of control markets. Too few treated for
+  asymptotic CS SE; uses SyntheticDiD with jackknife variance and a
+  breakdown diagnostic for the VP.
+- **Data shape (scale sweep).** 12 weekly periods (6 pre, 6 post),
+  2 latent factors. Three scales:
+    - **small** - 80 units, 5 treated (Tutorial 18 analog, DMA-scale
+      geo-experiment).
+    - **medium** - 200 units, 15 treated (zip-cluster-scale or
+      multi-DMA geo experiment).
+    - **large** - 500 units, 30 treated (zip-level or large-scale geo
+      experiment; **Python backend skipped at this scale** because the
+      pure-numpy Frank-Wolfe solver plus jackknife would need ~500 per-unit
+      refits and exceed 4 minutes per run without adding signal beyond what
+      medium scale already shows).
 - **Estimator + params.**
   ```python
   SyntheticDiD(variance_method="jackknife", n_bootstrap=0).fit(...)
   # then also variance_method="bootstrap", n_bootstrap=200 for comparison
   ```
-- **Operation chain.** (1) SDiD fit with `variance_method="jackknife"` —
+- **Operation chain.** (1) SDiD fit with `variance_method="jackknife"` -
   exercises the leave-one-out refit loop (80 full refits); (2) SDiD fit
   with `variance_method="bootstrap"`, `n_bootstrap=200` for SE comparison;
   (3) `results.in_time_placebo()`; (4) `results.get_loo_effects_df()`;
@@ -219,10 +236,10 @@ serves a different purpose: R-parity accuracy). They complement it.
 - **Source anchor.** `docs/tutorials/18_geo_experiments.ipynb`,
   Arkhangelsky et al. (2021), Mercado Libre geo-experiment writeup
   (medium.com/mercadolibre-tech), Meta GeoLift methodology docs
-  (facebookincubator.github.io/GeoLift — 10-treated / 10-20-control
+  (facebookincubator.github.io/GeoLift - 10-treated / 10-20-control
   convention).
 
-### 5. Reversible Treatment — dCDH with L_max and Survey TSL
+### 5. Reversible Treatment - dCDH with L_max and Survey TSL
 
 - **Persona / domain.** Marketing analyst measuring an always-on-with-
   dark-periods campaign, or a health-policy researcher studying a policy
@@ -253,7 +270,7 @@ serves a different purpose: R-parity accuracy). They complement it.
   `DIDmultiplegtDYN` as methodological reference, `docs/methodology/REGISTRY.md`
   dCDH section, `project_dcdh_shipped.md` for v3.1 feature set.
 
-### 6. Pricing Dose-Response — ContinuousDiD Cubic Spline
+### 6. Pricing Dose-Response - ContinuousDiD Cubic Spline
 
 - **Persona / domain.** Pricing / promo analyst at a retailer. Stores
   received varying discount levels; analyst wants the dose-response curve
@@ -269,7 +286,7 @@ serves a different purpose: R-parity accuracy). They complement it.
       dose="dose", aggregate="dose",
   )
   ```
-- **Operation chain.** (1) CDiD fit with `aggregate="dose"` — produces
+- **Operation chain.** (1) CDiD fit with `aggregate="dose"` - produces
   overall ATT, overall ACRT, and the dose-response curves; (2)
   `results.to_dataframe(level="dose_response")`; (3)
   `results.to_dataframe(level="event_study")` for pre-trend diagnostics;
@@ -321,4 +338,4 @@ output. Scripts filter this warning so profiles stay clean.
 - Raw results: `benchmarks/speed_review/baselines/<scenario>_<backend>.json`
 - Flame profiles: `benchmarks/speed_review/baselines/profiles/<scenario>_<backend>.html`
 - Findings doc: `docs/performance-plan.md` ("Practitioner Workflow Baseline"
-  section — per-scenario top-5 hot phases + recommended action category)
+  section - per-scenario top-5 hot phases + recommended action category)

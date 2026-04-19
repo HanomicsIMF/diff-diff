@@ -1,0 +1,64 @@
+{
+  "scenario": "campaign_staggered_small",
+  "backend": "rust",
+  "has_rust_backend": true,
+  "total_seconds": 0.4882878749999999,
+  "phases": {
+    "1_bacon_decomposition": {
+      "seconds": 0.0071254580000000844,
+      "ok": true,
+      "error": null
+    },
+    "2_cs_fit_with_covariates_bootstrap999": {
+      "seconds": 0.06050545900000004,
+      "ok": true,
+      "error": null
+    },
+    "3_inspect_pretrends": {
+      "seconds": 2.8330000000353905e-06,
+      "ok": true,
+      "error": null
+    },
+    "4_honest_did_M_grid": {
+      "seconds": 0.004818417000000075,
+      "ok": true,
+      "error": null
+    },
+    "5_sun_abraham_robustness": {
+      "seconds": 0.13427262500000003,
+      "ok": true,
+      "error": null
+    },
+    "6_imputation_did_robustness": {
+      "seconds": 0.2511277919999999,
+      "ok": true,
+      "error": null
+    },
+    "7_cs_without_covariates": {
+      "seconds": 0.03038112500000012,
+      "ok": true,
+      "error": null
+    },
+    "8_practitioner_next_steps": {
+      "seconds": 4.8000000000048004e-05,
+      "ok": true,
+      "error": null
+    }
+  },
+  "metadata": {
+    "scale": "small",
+    "n_units": 150,
+    "n_periods": 26,
+    "n_cohorts": 2,
+    "n_obs": 3900,
+    "covariates": [
+      "log_pop",
+      "baseline_spend"
+    ],
+    "n_bootstrap": 999,
+    "aggregate": "all",
+    "estimation_method": "dr"
+  },
+  "diff_diff_version": "3.1.3",
+  "numpy_version": "2.0.2"
+}

@@ -1,4 +1,4 @@
-# Speed Review — Practitioner Workflow Benchmarks
+# Speed Review - Practitioner Workflow Benchmarks
 
 Scenario-driven performance measurement for end-to-end practitioner chains,
 as distinct from `benchmarks/run_benchmarks.py` which measures R-parity on
@@ -47,19 +47,25 @@ to regenerate the full flame when needed.
 # One-time install
 pip install pyinstrument
 
-# All scenarios, both backends
+# All scenarios, both backends, all scales
 python benchmarks/speed_review/run_all.py
 
-# One scenario, one backend
+# One scenario, one backend (the script runs its full scale sweep internally)
 DIFF_DIFF_BACKEND=rust python benchmarks/speed_review/bench_campaign_staggered.py
 
 # Subset
 python benchmarks/speed_review/run_all.py --scenarios brfss_panel geo_few_markets
 ```
 
+Multi-scale scenarios write per-scale outputs
+(e.g. `campaign_staggered_small_rust.json`, `..._medium_rust.json`,
+`..._large_rust.json`). Single-scale scenarios write the scale-free form
+(e.g. `dose_response_rust.json`). Full runtime for all scales × both
+backends is ~90 seconds on Apple Silicon M4.
+
 ## Where to look for findings
 
-[`docs/performance-plan.md`](../../docs/performance-plan.md) — "Practitioner
+[`docs/performance-plan.md`](../../docs/performance-plan.md) - "Practitioner
 Workflow Baseline (v3.1.3)" section holds per-scenario hot-phase rankings
 and action recommendations. The scenarios here are the measurement surface;
 the findings doc is the decision output.

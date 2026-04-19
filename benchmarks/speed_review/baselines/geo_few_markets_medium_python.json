@@ -1,44 +1,46 @@
 {
-  "scenario": "geo_few_markets",
-  "backend": "rust",
-  "has_rust_backend": true,
-  "total_seconds": 0.03952049999999996,
+  "scenario": "geo_few_markets_medium",
+  "backend": "python",
+  "has_rust_backend": false,
+  "total_seconds": 3.6490506659999995,
   "phases": {
     "1_sdid_jackknife_variance": {
-      "seconds": 0.00735379199999997,
+      "seconds": 0.3422396250000004,
       "ok": true,
       "error": null
     },
     "2_sdid_bootstrap_variance_200": {
-      "seconds": 0.012488166000000023,
+      "seconds": 0.3464741250000003,
       "ok": true,
       "error": null
     },
     "3_in_time_placebo": {
-      "seconds": 0.008124790999999965,
+      "seconds": 1.3339607080000002,
       "ok": true,
       "error": null
     },
     "4_get_loo_effects_df": {
-      "seconds": 0.0006939590000000218,
+      "seconds": 0.0006264169999994351,
       "ok": true,
       "error": null
     },
     "5_sensitivity_to_zeta_omega": {
-      "seconds": 0.010841416999999964,
+      "seconds": 1.6257209160000006,
       "ok": true,
       "error": null
     },
     "6_weight_concentration": {
-      "seconds": 1.5958999999954315e-05,
+      "seconds": 2.4749999999684746e-05,
       "ok": true,
       "error": null
     }
   },
   "metadata": {
-    "n_units": 80,
-    "n_periods": 12,
-    "n_treated": 5,
+    "scale": "medium",
+    "n_units": 200,
+    "n_pre": 6,
+    "n_post": 6,
+    "n_treated": 15,
     "n_factors": 2
   },
   "diff_diff_version": "3.1.3",

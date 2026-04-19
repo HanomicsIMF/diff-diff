@@ -1,13 +1,24 @@
 """
 Scenario 4: Geo-experiment with few treated markets (SyntheticDiD).
 
-Chains: SDiD with jackknife variance (80 LOO refits) -> SDiD with bootstrap
+Chains: SDiD with jackknife variance (N LOO refits) -> SDiD with bootstrap
 variance for SE comparison -> in_time_placebo -> get_loo_effects_df ->
 sensitivity_to_zeta_omega -> weight-concentration diagnostic.
 
-Data shape: 80 markets x 12 weekly periods (6 pre, 6 post), 5 treated,
-2 latent factors. Matches Tutorial 18's geo-experiment walkthrough.
+Three scales:
+  - small  (80 units,  5 treated):  Tutorial 18 DMA panel
+  - medium (200 units, 15 treated): zip-cluster or large geo-experiment
+  - large  (500 units, 30 treated): zip-level or multi-market at scale
+                                    (Python backend skipped at this scale;
+                                    Python FW solver scales poorly)
+
+The python backend is skipped at "large" because the pure-numpy Frank-Wolfe
+solver plus jackknife (500 LOO refits x ~0.5s each) would take tens of
+minutes without providing additional signal; the medium scale already
+establishes the Python-vs-Rust gap.
 """
+
+import os
 
 from diff_diff import SyntheticDiD
 from diff_diff.prep import generate_factor_data
@@ -15,27 +26,24 @@ from diff_diff.prep import generate_factor_data
 from bench_shared import run_scenario
 
 
-def build_data(seed=42):
+SCALES = {
+    "small":  {"n_units": 80,  "n_pre": 6, "n_post": 6, "n_treated": 5},
+    "medium": {"n_units": 200, "n_pre": 6, "n_post": 6, "n_treated": 15},
+    "large":  {"n_units": 500, "n_pre": 6, "n_post": 6, "n_treated": 30},
+}
+SKIP_PYTHON_AT = {"large"}
+
+
+def build_data(n_units, n_pre, n_post, n_treated, seed=42):
     return generate_factor_data(
-        n_units=80, n_pre=6, n_post=6, n_treated=5,
+        n_units=n_units, n_pre=n_pre, n_post=n_post, n_treated=n_treated,
         n_factors=2, treatment_effect=2.0,
         factor_strength=1.0, treated_loading_shift=0.5,
         seed=seed,
     )
 
 
-def main():
-    data = build_data()
-    # `treat` is the unit-level (block) indicator; `treated` is row-level.
-    # SyntheticDiD requires block treatment, and post_periods identifies the
-    # treatment window among treated units.
-    post_periods = sorted(
-        data.loc[(data["treat"] == 1) & (data["treated"] == 1),
-                 "period"].unique().tolist(),
-    )
-
-    results = {}
-
+def make_phases(data, post_periods, results):
     def sdid_jackknife():
         sdid = SyntheticDiD(variance_method="jackknife", seed=123)
         results["jk"] = sdid.fit(
@@ -76,7 +84,7 @@ def main():
             raise RuntimeError("get_weight_concentration not available")
         results["wc"] = fn()
 
-    phases = [
+    return [
         ("1_sdid_jackknife_variance", sdid_jackknife),
         ("2_sdid_bootstrap_variance_200", sdid_bootstrap),
         ("3_in_time_placebo", in_time_placebo),
@@ -85,14 +93,42 @@ def main():
         ("6_weight_concentration", weight_concentration),
     ]
 
+
+def run_scale(scale, config):
+    backend_env = os.environ.get("DIFF_DIFF_BACKEND", "auto").lower()
+    if scale in SKIP_PYTHON_AT and backend_env == "python":
+        print(f"  [skip] geo_few_markets/{scale} backend=python "
+              f"(Python FW solver scales poorly)")
+        return
+
+    data = build_data(**config)
+    post_periods = sorted(
+        data.loc[(data["treat"] == 1) & (data["treated"] == 1),
+                 "period"].unique().tolist(),
+    )
+    results = {}
+    phases = make_phases(data, post_periods, results)
+
     run_scenario(
-        "geo_few_markets",
+        f"geo_few_markets_{scale}",
         phases,
         metadata={
-            "n_units": 80, "n_periods": 12, "n_treated": 5,
+            "scale": scale,
+            "n_units": config["n_units"],
+            "n_pre": config["n_pre"],
+            "n_post": config["n_post"],
+            "n_treated": config["n_treated"],
             "n_factors": 2,
         },
     )
+
+
+def main():
+    for scale, config in SCALES.items():
+        print(f"\n{'='*60}\n  geo_few_markets / scale={scale} "
+              f"(n_units={config['n_units']}, "
+              f"n_treated={config['n_treated']})\n{'='*60}")
+        run_scale(scale, config)
 
 
 if __name__ == "__main__":

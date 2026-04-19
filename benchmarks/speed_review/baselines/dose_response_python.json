@@ -2,35 +2,35 @@
   "scenario": "dose_response",
   "backend": "python",
   "has_rust_backend": false,
-  "total_seconds": 0.5864091250000001,
+  "total_seconds": 0.583888167,
   "phases": {
     "1_cdid_cubic_spline_bootstrap199": {
-      "seconds": 0.14782820799999996,
+      "seconds": 0.148716792,
       "ok": true,
       "error": null
     },
     "2_extract_dose_response_dataframes": {
-      "seconds": 0.0007271249999999396,
+      "seconds": 0.0007523750000000273,
       "ok": true,
       "error": null
     },
     "3_cdid_event_study_pretrend": {
-      "seconds": 0.1467172499999999,
+      "seconds": 0.147467083,
       "ok": true,
       "error": null
     },
     "4_binarized_did_comparison": {
-      "seconds": 0.0014637920000000193,
+      "seconds": 0.0015002499999999808,
       "ok": true,
       "error": null
     },
     "5_spline_sensitivity_degree1": {
-      "seconds": 0.14299950000000006,
+      "seconds": 0.141884625,
       "ok": true,
       "error": null
     },
     "6_spline_sensitivity_num_knots2": {
-      "seconds": 0.14666895800000002,
+      "seconds": 0.14356270800000015,
       "ok": true,
       "error": null
     }

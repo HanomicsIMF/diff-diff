@@ -1,54 +1,56 @@
 {
-  "scenario": "campaign_staggered",
-  "backend": "rust",
-  "has_rust_backend": true,
-  "total_seconds": 0.484783125,
+  "scenario": "campaign_staggered_small",
+  "backend": "python",
+  "has_rust_backend": false,
+  "total_seconds": 0.48264691700000006,
   "phases": {
     "1_bacon_decomposition": {
-      "seconds": 0.006965292000000067,
+      "seconds": 0.00833841600000007,
       "ok": true,
       "error": null
     },
     "2_cs_fit_with_covariates_bootstrap999": {
-      "seconds": 0.060481958,
+      "seconds": 0.06103824999999996,
       "ok": true,
       "error": null
     },
     "3_inspect_pretrends": {
-      "seconds": 2.9169999999911767e-06,
+      "seconds": 3.042000000008649e-06,
       "ok": true,
       "error": null
     },
     "4_honest_did_M_grid": {
-      "seconds": 0.004540166999999928,
+      "seconds": 0.00554720799999997,
       "ok": true,
       "error": null
     },
     "5_sun_abraham_robustness": {
-      "seconds": 0.12357962499999997,
+      "seconds": 0.07744641600000002,
       "ok": true,
       "error": null
     },
     "6_imputation_did_robustness": {
-      "seconds": 0.25805591699999986,
+      "seconds": 0.30062641700000003,
       "ok": true,
       "error": null
     },
     "7_cs_without_covariates": {
-      "seconds": 0.031115375000000167,
+      "seconds": 0.02960395800000004,
       "ok": true,
       "error": null
     },
     "8_practitioner_next_steps": {
-      "seconds": 3.6332999999943993e-05,
+      "seconds": 3.195800000010962e-05,
       "ok": true,
       "error": null
     }
   },
   "metadata": {
+    "scale": "small",
     "n_units": 150,
     "n_periods": 26,
     "n_cohorts": 2,
+    "n_obs": 3900,
     "covariates": [
       "log_pop",
       "baseline_spend"

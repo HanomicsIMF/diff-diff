@@ -5,10 +5,10 @@ Chains: aggregate_survey (microdata -> state-year panel) -> CS fit with
 stage-2 SurveyDesign + bootstrap at PSU -> event-study pre-trends ->
 HonestDiD grid -> SunAbraham robustness refit -> practitioner_next_steps.
 
-Data shape: ~50K microdata rows scaled to a ~50-state x 10-year study
-population (reflects BRFSS 2024's ~458K universe filtered to a substate
-analytic slice). 10 strata, 200 PSUs. Collapses to a 500-cell panel.
-5 adoption cohorts staggered across the window.
+Three scales, grounded in BRFSS 2024 (~458K records total):
+  - small  (50K rows):  single-year / single-state substudy slice
+  - medium (250K rows): multi-year multi-state analytic slice
+  - large  (1M rows):   pooled 10-year BRFSS-scale panel
 """
 
 import numpy as np
@@ -26,8 +26,17 @@ from diff_diff import (
 from bench_shared import run_scenario
 
 
-def build_microdata(seed=42, n_states=50, n_years=10, n_per_cell=100,
-                   n_strata=10, n_psu=200):
+SCALES = {
+    "small":  {"n_states": 50, "n_years": 10, "n_per_cell": 100,
+               "n_strata": 10, "n_psu": 200},
+    "medium": {"n_states": 50, "n_years": 10, "n_per_cell": 500,
+               "n_strata": 15, "n_psu": 600},
+    "large":  {"n_states": 50, "n_years": 10, "n_per_cell": 2000,
+               "n_strata": 20, "n_psu": 1000},
+}
+
+
+def build_microdata(n_states, n_years, n_per_cell, n_strata, n_psu, seed=42):
     rng = np.random.default_rng(seed)
     n_rows = n_states * n_years * n_per_cell
     state = np.repeat(np.arange(n_states), n_years * n_per_cell)
@@ -54,19 +63,14 @@ def build_microdata(seed=42, n_states=50, n_years=10, n_per_cell=100,
         + 3.0 * treated.astype(float)
         + rng.normal(0, 0.2, size=n_rows) * state
     )
-    df = pd.DataFrame({
+    return pd.DataFrame({
         "state": state, "year": year,
         "strata": stratum, "psu": psu, "finalwt": weight,
         "y": y, "first_treat": first_treat,
     })
-    return df
 
 
-def main():
-    micro = build_microdata()
-
-    results = {}
-
+def make_phases(micro, results):
     def aggregate():
         sd = SurveyDesign(
             weights="finalwt", strata="strata", psu="psu",
@@ -120,7 +124,7 @@ def main():
     def guidance():
         results["guidance"] = practitioner_next_steps(results["cs"])
 
-    phases = [
+    return [
         ("1_aggregate_survey_microdata_to_panel", aggregate),
         ("2_cs_fit_with_stage2_survey_design", cs_fit),
         ("3_inspect_pretrends", inspect_pretrends),
@@ -129,10 +133,16 @@ def main():
         ("6_practitioner_next_steps", guidance),
     ]
 
+
+def run_scale(scale, config):
+    micro = build_microdata(**config)
+    results = {}
+    phases = make_phases(micro, results)
     run_scenario(
-        "brfss_panel",
+        f"brfss_panel_{scale}",
         phases,
         metadata={
+            "scale": scale,
             "n_microdata_rows": int(len(micro)),
             "n_states": int(micro["state"].nunique()),
             "n_years": int(micro["year"].nunique()),
@@ -141,6 +151,15 @@ def main():
             "n_bootstrap": 199,
         },
     )
+
+
+def main():
+    for scale, config in SCALES.items():
+        n_rows = (config["n_states"] * config["n_years"]
+                  * config["n_per_cell"])
+        print(f"\n{'='*60}\n  brfss_panel / scale={scale} "
+              f"({n_rows:,} microdata rows)\n{'='*60}")
+        run_scale(scale, config)
 
 
 if __name__ == "__main__":
