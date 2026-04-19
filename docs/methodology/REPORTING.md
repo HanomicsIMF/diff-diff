@@ -29,8 +29,19 @@ pretest via `EfficientDiD.hausman_pretest`).
 
 The `design_effect` section of `DiagnosticReport.to_dict()` is a
 read-only surface: it echoes `survey_metadata.design_effect` and
-`effective_n` from the fitted result along with a plain-English band
-label. It does not call `compute_deff_diagnostics` (that helper
+`effective_n` from the fitted result along with a `band_label` enum
+classifying the deviation from 1. The enum values are:
+
+- `"improves_precision"` for `deff < 0.95` (effective N is LARGER
+  than nominal N — a precision-improving design);
+- `"trivial"` for `0.95 <= deff < 1.05` (effectively no effect on
+  inference);
+- `"slightly_reduces"` for `1.05 <= deff < 2`;
+- `"materially_reduces"` for `2 <= deff < 5`;
+- `"large_warning"` for `deff >= 5`;
+- `None` when `deff` is missing or non-finite.
+
+The section does not call `compute_deff_diagnostics` (that helper
 needs per-fit internals the result objects do not expose). The report layer **does** compose a few
 cross-period summary statistics from per-period inputs already
 produced by the estimator — specifically the joint-Wald / Bonferroni

@@ -1571,11 +1571,16 @@ class DiagnosticReport:
         only emitting the numeric fields plus ``is_trivial``).
 
         Bands (per REPORTING.md):
-          * ``deff < 1.05`` -> ``"trivial"``;
+          * ``deff < 0.95`` -> ``"improves_precision"`` (effective N
+            is LARGER than nominal N — a precision-improving design;
+            round-35 split this out from the old ``trivial`` bucket);
+          * ``0.95 <= deff < 1.05`` -> ``"trivial"`` (effectively no
+            effect on inference);
           * ``1.05 <= deff < 2`` -> ``"slightly_reduces"``;
           * ``2 <= deff < 5`` -> ``"materially_reduces"``;
           * ``deff >= 5`` -> ``"large_warning"``.
-        ``None`` deff -> ``band_label=None`` (no classification).
+        ``None`` deff (or non-finite) -> ``band_label=None`` (no
+        classification).
         """
         sm = getattr(self._results, "survey_metadata", None)
         if sm is None:

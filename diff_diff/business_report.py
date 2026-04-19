@@ -713,6 +713,15 @@ def _lift_pre_trends(dr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "joint_p_value": pt.get("joint_p_value"),
         "verdict": pt.get("verdict"),
         "n_pre_periods": pt.get("n_pre_periods"),
+        # Preserve DR's inconclusive-PT provenance on the BR schema so
+        # downstream consumers (and BR's own summary renderer) see the
+        # undefined-row count and DR's detailed reason without having
+        # to re-consult the DR schema (round-39 P3 CI review on PR
+        # #318). These fields are populated only when
+        # ``verdict == "inconclusive"`` per ``_pt_event_study``'s
+        # inconclusive branch (``diagnostic_report.py:999``).
+        "n_dropped_undefined": pt.get("n_dropped_undefined"),
+        "reason": pt.get("reason"),
         # Carry the denominator df through when the survey F-reference
         # branch was used so BR consumers can flag the finite-sample
         # correction without re-consulting the DR schema (round-28 P3

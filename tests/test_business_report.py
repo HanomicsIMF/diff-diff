@@ -1288,6 +1288,52 @@ class TestAnticipationPersistsOnRealResults:
         assert a["anticipation_periods"] == 1
 
 
+class TestInconclusivePTProvenancePreservedOnBRSchema:
+    """Round-39 P3 CI review on PR #318: DR's ``_pt_event_study`` emits
+    ``n_dropped_undefined`` and a detailed ``reason`` on the
+    inconclusive PT block (undefined pre-period inference — NaN
+    per-period p-value or zero / negative SE). BR's ``_lift_pre_trends``
+    was dropping both fields at the lift boundary, so the BR schema
+    and BR's summary renderer lost the provenance DR had already
+    computed. Preserve both so BR consumers see the exact count of
+    undefined rows and the same reason without re-consulting the DR
+    schema.
+    """
+
+    def test_n_dropped_undefined_and_reason_land_on_br_pre_trends(self):
+        class StackedDiDResults:
+            pass
+
+        obj = StackedDiDResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.2
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 400
+        obj.n_treated_units = 100
+        obj.n_control_units = 300
+        obj.survey_metadata = None
+        obj.event_study_effects = {
+            -2: {"effect": 0.1, "se": 0.2, "p_value": 0.62, "n_obs": 400},
+            -1: {"effect": 0.05, "se": 0.3, "p_value": float("nan"), "n_obs": 400},
+        }
+
+        br = BusinessReport(obj)
+        pt = br.to_dict()["pre_trends"]
+        # Status and verdict reflect the inconclusive outcome.
+        assert pt["verdict"] == "inconclusive"
+        # The provenance fields are present on the BR schema.
+        assert pt["n_dropped_undefined"] == 1
+        assert isinstance(pt.get("reason"), str) and pt["reason"]
+        # And the summary renderer quotes the count (the existing
+        # inconclusive branch in ``_render_summary`` reads
+        # ``pt.get("n_dropped_undefined")``; before this fix that lookup
+        # returned ``None`` because the lift had dropped it).
+        summary = br.summary()
+        assert "1 pre-period row had undefined inference" in summary
+
+
 class TestStaggeredTripleDiffNeverTreatedFixedComparison:
     """Round-37 P1 CI review on PR #318: ``StaggeredTripleDiffResults``
     stores ``n_control_units`` as a composite total that also includes
