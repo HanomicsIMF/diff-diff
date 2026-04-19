@@ -5958,20 +5958,44 @@ def _survey_se_from_group_if(
             if leaked.size > 0 and bool(
                 np.any(np.abs(leaked) > 1e-12)
             ):
+                # Branch the wording on replicate-vs-TSL so replicate
+                # ATT users debugging this error are not misdirected
+                # to "within-group-varying PSU" (replicate designs
+                # have no PSU structure). Core mechanics and the
+                # pre-processing workaround are shared.
+                is_replicate = bool(
+                    getattr(resolved, "uses_replicate_variance", False)
+                )
+                path_name = (
+                    "Rao-Wu replicate-weight ATT variance"
+                    if is_replicate
+                    else "Analytical Binder TSL survey SE"
+                )
+                trigger_detail = (
+                    "terminal missingness on a replicate-weight "
+                    "design (replicate ATT unconditionally uses the "
+                    "cell-period allocator per the Class A contract; "
+                    "PSU structure is not involved)"
+                    if is_replicate
+                    else "terminal missingness combined with within-"
+                    "group-varying PSU (the Binder TSL cell-period "
+                    "allocator cannot allocate leaked mass to any "
+                    "observation)"
+                )
                 raise ValueError(
-                    "Analytical survey SE cannot be computed on this "
-                    "panel: cohort-recentered IF mass landed on (g, t) "
-                    "cells with no positive-weight observations "
-                    "(W_{g, t} = 0). This typically occurs when "
-                    "terminal missingness combines with within-group-"
-                    "varying PSU: _cohort_recenter_per_period subtracts "
-                    "column means across the full period grid, so a "
-                    "group with no observation at period t acquires "
-                    "non-zero centered mass there, which the cell-level "
-                    "analytical expansion cannot allocate to any "
-                    "observation. Pre-process the panel to remove "
-                    "terminal missingness (drop late-exit groups or "
-                    "trim to a balanced sub-panel) before fitting."
+                    f"{path_name} cannot be computed on this panel: "
+                    "cohort-recentered IF mass landed on (g, t) cells "
+                    "with no positive-weight observations "
+                    f"(W_{{g, t}} = 0). This typically occurs with "
+                    f"{trigger_detail}: _cohort_recenter_per_period "
+                    "subtracts cohort column means across the full "
+                    "period grid, so a group with no observation at "
+                    "period t acquires non-zero centered mass there, "
+                    "which the cell-period allocator cannot allocate "
+                    "to any observation. Pre-process the panel to "
+                    "remove terminal missingness (drop late-exit "
+                    "groups or trim to a balanced sub-panel) before "
+                    "fitting."
                 )
         # Lookup U_centered_per_period and W_cell per row.
         u_obs_cell = np.zeros(w_eff.shape[0], dtype=np.float64)
