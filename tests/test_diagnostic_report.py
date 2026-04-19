@@ -2093,6 +2093,44 @@ class TestSurveyDesignThreading:
         pt = dr.to_dict()["parallel_trends"]
         assert pt["status"] == "skipped"
 
+    def test_survey_backed_did_skips_2x2_pt_even_when_survey_design_supplied(self):
+        """Round-41 P3 regression: supplying ``survey_design`` does NOT
+        unlock the simple 2x2 PT helper. ``utils.check_parallel_trends``
+        has no survey-aware variant, so the helper cannot consume the
+        design even when it is available; the check is skipped
+        unconditionally on a survey-backed ``DiDResults`` and the skip
+        reason must point the user at the precomputed-PT opt-in rather
+        than imply that ``survey_design`` would have helped.
+        """
+        import pandas as pd
+
+        obj = self._did_with_survey()
+        panel = pd.DataFrame(
+            {
+                "outcome": [1.0, 2.0, 1.1, 2.2],
+                "post": [0, 1, 0, 1],
+                "treated": [0, 0, 1, 1],
+            }
+        )
+        sentinel_design = object()
+        dr = DiagnosticReport(
+            obj,
+            data=panel,
+            outcome="outcome",
+            time="post",
+            treatment="treated",
+            survey_design=sentinel_design,
+        )
+        # Supplying survey_design does not unlock 2x2 PT.
+        assert "parallel_trends" not in dr.applicable_checks
+        reason = dr.skipped_checks["parallel_trends"]
+        # Reason must point at the precomputed-PT opt-in and must not
+        # claim ``survey_design`` fixes this path.
+        assert "precomputed" in reason.lower()
+        assert "parallel_trends" in reason.lower()
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "skipped"
+
     def test_survey_backed_did_with_precomputed_pt_runs(self):
         """When the user supplies ``precomputed={'parallel_trends': ...}``
         on a survey-backed DiDResults, DR must honor the override rather

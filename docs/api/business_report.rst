@@ -28,9 +28,13 @@ For survey-weighted fits (any result carrying
 ``survey_design=<design>``. It is threaded through to
 ``bacon_decompose`` for a fit-faithful Goodman-Bacon replay. When
 ``survey_metadata`` is set but ``survey_design`` is not supplied,
-Bacon and the simple 2x2 parallel-trends check are skipped with an
-explicit reason so the report never emits an unweighted decomposition
-or PT verdict for a design that differs from the estimate.
+Bacon is skipped with an explicit reason so the report never emits
+an unweighted decomposition for a design that differs from the
+estimate. The simple 2x2 parallel-trends helper has no survey-aware
+variant and is skipped unconditionally on a survey-backed
+``DiDResults`` regardless of ``survey_design``; supply
+``precomputed={'parallel_trends': ...}`` with a survey-aware
+pretest to opt in.
 
 Methodology deviations (no traffic-light gates, pre-trends verdict
 thresholds, power-aware phrasing, unit-translation policy, schema

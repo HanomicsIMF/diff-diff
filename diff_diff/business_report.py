@@ -131,10 +131,14 @@ class BusinessReport:
         estimator. Forwarded to the auto-constructed ``DiagnosticReport``
         for fit-faithful Goodman-Bacon replay. When the fit carries
         ``survey_metadata`` but ``survey_design`` is not supplied, Bacon
-        and the simple 2x2 parallel-trends check are skipped with an
-        explicit reason rather than replaying an unweighted decomposition
-        for a design that does not match the estimate. See
-        ``docs/methodology/REPORTING.md``.
+        is skipped with an explicit reason rather than replaying an
+        unweighted decomposition for a design that does not match the
+        estimate. The simple 2x2 parallel-trends helper
+        (``utils.check_parallel_trends``) has no survey-aware variant;
+        on a survey-backed ``DiDResults`` it is skipped unconditionally
+        regardless of ``survey_design``. Supply
+        ``precomputed={'parallel_trends': ...}`` with a survey-aware
+        pretest to opt in. See ``docs/methodology/REPORTING.md``.
     """
 
     def __init__(

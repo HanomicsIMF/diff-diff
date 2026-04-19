@@ -80,22 +80,28 @@ not new inference.
   Wald statistic (or Bonferroni fallback when `vcov` is missing). This
   mirrors the guidance in `practitioner._parallel_trends_step(staggered=True)`.
 
-- **Note:** Survey-design threading for fit-faithful replay. When the
-  fitted result carries `survey_metadata`, Goodman-Bacon replay and
-  the simple 2x2 parallel-trends helper require the original
-  `SurveyDesign` object to produce a diagnostic that matches the
-  estimate. `DiagnosticReport(survey_design=...)` and
-  `BusinessReport(survey_design=...)` accept it and forward to
-  `bacon_decompose(survey_design=...)`. When `survey_metadata` is set
-  but `survey_design` is not supplied, both checks skip with an
-  explicit reason rather than replaying an unweighted decomposition
-  / PT verdict for a design that differs from the weighted estimate.
-  Users can alternatively pass `precomputed={'bacon': ...}` /
-  `precomputed={'parallel_trends': ...}` with a survey-aware result.
-  Event-study PT on staggered estimators already reads the weighted
-  pre-period coefficients directly off the fitted result (so does not
-  need a second replay) and uses the finite-df reference described
-  below.
+- **Note:** Survey-design threading for fit-faithful Bacon replay.
+  `DiagnosticReport(survey_design=...)` and
+  `BusinessReport(survey_design=...)` accept the original
+  `SurveyDesign` object and forward it to
+  `bacon_decompose(survey_design=...)` so the Goodman-Bacon
+  decomposition is computed under the same design as the weighted
+  estimate. When `survey_metadata` is set but `survey_design` is not
+  supplied, Bacon skips with an explicit reason rather than replaying
+  an unweighted decomposition for a design that differs from the
+  weighted estimate; users can alternatively pass
+  `precomputed={'bacon': ...}` with a survey-aware result.
+
+  The simple 2x2 parallel-trends helper (`utils.check_parallel_trends`)
+  has no survey-aware variant. On a survey-backed `DiDResults` the
+  check is skipped **unconditionally**, regardless of whether
+  `survey_design` is supplied, because the helper cannot consume the
+  design even when it is available. Users must pass
+  `precomputed={'parallel_trends': ...}` with a survey-aware pretest
+  result to opt in. Event-study PT on staggered estimators is
+  unaffected — it reads the weighted pre-period coefficients directly
+  off the fitted result and uses the finite-df reference described
+  below, so no second replay is needed.
 
 - **Note:** Survey finite-df PT policy. When the fitted result carries
   a finite `survey_metadata.df_survey`, `_pt_event_study` computes
