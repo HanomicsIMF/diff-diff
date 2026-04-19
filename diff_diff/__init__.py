@@ -213,6 +213,16 @@ from diff_diff.visualization import (
     plot_synth_weights,
 )
 from diff_diff.practitioner import practitioner_next_steps
+from diff_diff.business_report import (
+    BUSINESS_REPORT_SCHEMA_VERSION,
+    BusinessContext,
+    BusinessReport,
+)
+from diff_diff.diagnostic_report import (
+    DIAGNOSTIC_REPORT_SCHEMA_VERSION,
+    DiagnosticReport,
+    DiagnosticReportResults,
+)
 from diff_diff._guides_api import get_llm_guide
 from diff_diff.datasets import (
     clear_cache,
@@ -427,6 +437,12 @@ __all__ = [
     "clear_cache",
     # Practitioner guidance
     "practitioner_next_steps",
+    "BusinessReport",
+    "BusinessContext",
+    "BUSINESS_REPORT_SCHEMA_VERSION",
+    "DiagnosticReport",
+    "DiagnosticReportResults",
+    "DIAGNOSTIC_REPORT_SCHEMA_VERSION",
     # LLM guide accessor
     "get_llm_guide",
 ]

@@ -482,6 +482,36 @@ sources:
       - path: docs/tutorials/07_pretrends_power.ipynb
         type: tutorial
 
+  diff_diff/business_report.py:
+    drift_risk: medium
+    docs:
+      - path: docs/methodology/REPORTING.md
+        type: methodology
+        note: "Phrasing rules, pre-trends verdict thresholds, unit-translation policy, schema stability."
+      - path: docs/api/business_report.rst
+        type: api_reference
+      - path: README.md
+        section: "BusinessReport"
+        type: user_guide
+      - path: diff_diff/guides/llms-full.txt
+        section: "BusinessReport"
+        type: user_guide
+
+  diff_diff/diagnostic_report.py:
+    drift_risk: medium
+    docs:
+      - path: docs/methodology/REPORTING.md
+        type: methodology
+        note: "Applicability matrix, opt-in placebo rationale, native-diagnostic routing, no-traffic-lights decision."
+      - path: docs/api/diagnostic_report.rst
+        type: api_reference
+      - path: README.md
+        section: "DiagnosticReport"
+        type: user_guide
+      - path: diff_diff/guides/llms-full.txt
+        section: "DiagnosticReport"
+        type: user_guide
+
   diff_diff/power.py:
     drift_risk: low
     docs:

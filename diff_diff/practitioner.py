@@ -388,7 +388,12 @@ def _handle_sa(results: Any):
                 "# sa_alt = SunAbraham(control_group='not_yet_treated')"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # DR's sensitivity section runs HonestDiD, not specification
+            # variation; tagging this as ``sensitivity`` caused
+            # ``_collect_next_steps`` to suppress it after HonestDiD ran.
+            # Use ``specification_comparison`` so the recommendation
+            # persists alongside a completed HonestDiD sensitivity check.
+            step_name="specification_comparison",
         ),
         _step(
             baker_step=7,
@@ -431,7 +436,10 @@ def _handle_imputation(results: Any):
                 "# Leave-one-cohort-out sensitivity analysis"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # See note on SA handler: DR completes ``sensitivity`` when
+            # HonestDiD runs, which is unrelated to this specification-
+            # variation recommendation. Tag separately.
+            step_name="specification_comparison",
         ),
         _robustness_compare_step("CS, SA, or Gardner"),
         _covariates_step(),
@@ -457,7 +465,10 @@ def _handle_two_stage(results: Any):
                 "# Leave-one-cohort-out sensitivity analysis"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # See note on SA handler: DR completes ``sensitivity`` when
+            # HonestDiD runs, which is unrelated to this specification-
+            # variation recommendation. Tag separately.
+            step_name="specification_comparison",
         ),
         _robustness_compare_step("CS, BJS, or SA"),
         _covariates_step(),
@@ -482,7 +493,10 @@ def _handle_stacked(results: Any):
                 "# stacked_alt = StackedDiD(clean_control='not_yet_treated')"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # See note on SA handler: DR completes ``sensitivity`` when
+            # HonestDiD runs, which does not replay ``clean_control``
+            # variation. Tag separately.
+            step_name="specification_comparison",
         ),
         _step(
             baker_step=7,
@@ -556,7 +570,16 @@ def _handle_synthetic(results: Any):
                 "          'with positive effective support.')"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # DR's SyntheticDiD native battery covers pre-treatment fit,
+            # weight concentration, in-time placebo, and zeta-omega
+            # sensitivity, but NOT the jackknife LOO workflow (which
+            # requires a separate ``variance_method='jackknife'`` fit
+            # via ``get_loo_effects_df``). Tagging this recommendation
+            # as ``sensitivity`` caused ``_collect_next_steps`` to
+            # suppress it as soon as the native block ran, even though
+            # the jackknife was never executed. Round-24 P2 CI review
+            # on PR #318; same class as round-20 Hausman mistag.
+            step_name="loo_jackknife",
         ),
         _step(
             baker_step=6,
@@ -624,7 +647,12 @@ def _handle_trop(results: Any):
                 "# Leave-one-out: drop each treated unit and re-estimate"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # TROP's estimator-native diagnostics surface factor-model fit
+            # metrics, not in-time or in-space placebos; DR does not run
+            # placebos on TROP. Tag separately from ``sensitivity`` so the
+            # recommendation persists after DR marks the TROP native
+            # battery complete.
+            step_name="placebo",
         ),
         _robustness_compare_step("SyntheticDiD or CS"),
     ]
@@ -648,7 +676,12 @@ def _handle_efficient(results: Any):
                 "# edid_alt = EfficientDiD(control_group='last_cohort')"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # See note on SA handler: DR completes ``sensitivity`` when
+            # HonestDiD runs, which does not re-estimate with an
+            # alternative control_group. Tag separately so this
+            # recommendation persists alongside a completed HonestDiD
+            # block.
+            step_name="specification_comparison",
         ),
         _step(
             baker_step=7,
@@ -663,7 +696,16 @@ def _handle_efficient(results: Any):
                 "pretest = EfficientDiD.hausman_pretest(\n"
                 "    data, outcome='y', unit='id', time='t', first_treat='g')"
             ),
-            step_name="heterogeneity",
+            # The Hausman pretest is a parallel-trends diagnostic per
+            # REGISTRY.md §EfficientDiD: it tests whether the stronger
+            # PT-All regime is tenable relative to PT-Post. ``DiagnosticReport``
+            # treats a ran Hausman block as ``parallel_trends`` completion
+            # (``_check_pt_hausman``), so tagging this practitioner step as
+            # ``parallel_trends`` keeps ``_collect_next_steps()`` from
+            # recommending a check the report already executed. Round-20 P2
+            # CI review on PR #318 flagged the earlier ``heterogeneity`` tag
+            # as a mismatched-step-name bug.
+            step_name="parallel_trends",
         ),
         _robustness_compare_step("CS, SA, or BJS"),
         _covariates_step(),

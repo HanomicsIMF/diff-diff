@@ -57,6 +57,7 @@ See [Survey Design Support](docs/choosing_estimator.rst#survey-design-support) f
 
 Major landings since the prior roadmap revision. See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
+- **`BusinessReport` and `DiagnosticReport`** - practitioner-ready output layer. Plain-English stakeholder summaries + unified diagnostic runner with a stable AI-legible `to_dict()` schema. `BusinessReport` auto-constructs `DiagnosticReport` by default so summaries mention pre-trends, robustness, and design-effect findings in one call. Estimator-native validation surfaces are routed through: SyntheticDiD uses `pre_treatment_fit` / `in_time_placebo` / `sensitivity_to_zeta_omega`; EfficientDiD uses its native `hausman_pretest`; TROP exposes factor-model fit metrics. See `docs/methodology/REPORTING.md` for methodology deviations including no-traffic-light gates, pre-trends verdict thresholds, and power-aware phrasing.
 - **ChaisemartinDHaultfoeuille (dCDH)** - full feature set: `DID_M` contemporaneous-switch, multi-horizon `DID_l` event study, analytical SE, multiplier bootstrap, TWFE decomposition diagnostic, dynamic placebos, normalized estimator, cost-benefit aggregate, sup-t bands, covariate adjustment (`DID^X`), group-specific linear trends (`DID^{fd}`), state-set-specific trends, heterogeneity testing, non-binary treatment, HonestDiD integration, and survey support (TSL + pweight).
 - **SyntheticDiD jackknife variance** (`variance_method='jackknife'`) with survey-weighted jackknife.
 - **SyntheticDiD validation diagnostics**.
@@ -78,8 +79,7 @@ Queued work, ordered by expected leverage. Each item is its own PR. Ordering is 
 
 ### Practitioner-ready output
 
-- **`BusinessReport` class.** Plain-English summaries of any estimator's results with markdown export. Optional rich formatting via a `[reporting]` extra; core remains numpy/pandas/scipy only. Turns raw coefficients into stakeholder-ready artifacts.
-- **`DiagnosticReport` with context-aware `practitioner_next_steps()`.** Unified diagnostic runner that bundles parallel-trends, placebo, HonestDiD, Bacon decomposition, DEFF, EPV, and power diagnostics into one plain-English report. `practitioner_next_steps()` substitutes actual column names from fitted results instead of generic placeholders.
+- **Context-aware `practitioner_next_steps()`.** Substitutes actual column names from fitted results instead of generic placeholders, so next-step guidance is executable rather than illustrative. (Standalone follow-up to the `BusinessReport` / `DiagnosticReport` landing below; tracked under the AI-Agent Track too.)
 
 ### Practitioner tutorials
 

@@ -93,6 +93,38 @@ Measuring campaign lift? Evaluating a product launch? diff-diff handles the caus
 - **[Brand awareness survey tutorial](docs/tutorials/17_brand_awareness_survey.ipynb)** - Full example with complex survey design, brand funnel analysis, and staggered rollouts
 - **Have BRFSS/ACS/CPS individual records?** Use [`aggregate_survey()`](docs/api/prep.rst) to roll respondent-level microdata into a geographic-period panel with inverse-variance precision weights. The returned second-stage design uses analytic weights (`aweight`), so it works directly with `DifferenceInDifferences`, `TwoWayFixedEffects`, `MultiPeriodDiD`, `SunAbraham`, `ContinuousDiD`, and `EfficientDiD` (estimators marked **Full** in the [survey support matrix](docs/choosing_estimator.rst))
 
+### Experimental preview: `BusinessReport` and `DiagnosticReport`
+
+diff-diff ships two preview classes, `BusinessReport` and `DiagnosticReport`, that produce plain-English output and a structured `to_dict()` schema from any fitted result. **Both are experimental in this release** — wording, verdict thresholds, and schema shape will change as the library learns from real practitioner usage. Do not anchor downstream tooling on the schema yet; the experimental flag is noted in the CHANGELOG.
+
+```python
+from diff_diff import CallawaySantAnna, BusinessReport
+
+cs = CallawaySantAnna(base_period="universal").fit(
+    df, outcome="revenue", unit="store", time="month",
+    first_treat="first_treat", aggregate="event_study",
+)
+report = BusinessReport(
+    cs,
+    outcome_label="Revenue per store",
+    outcome_unit="$",
+    business_question="Did the loyalty program lift revenue?",
+    treatment_label="the loyalty program",
+    # Optional: pass the panel + column names so the auto-constructed
+    # DiagnosticReport can run data-dependent checks (2x2 pre-trends,
+    # Goodman-Bacon decomposition, EfficientDiD Hausman pretest).
+    # Without these the auto path still runs but skips those checks.
+    data=df,
+    outcome="revenue",
+    unit="store",
+    time="month",
+    first_treat="first_treat",
+)
+print(report.summary())
+```
+
+`BusinessReport` auto-constructs a `DiagnosticReport` so the summary mentions pre-trends, sensitivity, and design-effect findings in one call. Methodology (phrasing rules, verdict thresholds, schema stability) is documented in [docs/methodology/REPORTING.md](docs/methodology/REPORTING.md). Feedback on wording, applicability, and missing diagnostics is welcome — this is the part of the library most likely to evolve in the next few releases.
+
 Already know DiD? The [academic quickstart](docs/quickstart.rst) and [estimator guide](docs/choosing_estimator.rst) cover the full technical details.
 
 ## Features

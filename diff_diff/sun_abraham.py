@@ -79,6 +79,12 @@ class SunAbrahamResults:
     n_control_units: int
     alpha: float = 0.05
     control_group: str = "never_treated"
+    # Anticipation periods (``k``) used at fit time. Persisted so
+    # downstream diagnostics (``BusinessReport`` / ``DiagnosticReport``
+    # / ``compute_pretrends_power``) can classify pre-period vs
+    # anticipation-window coefficients without re-plumbing the kwarg
+    # through every caller.
+    anticipation: int = 0
     bootstrap_results: Optional["SABootstrapResults"] = field(default=None, repr=False)
     cohort_effects: Optional[Dict[Tuple[Any, int], Dict[str, Any]]] = field(
         default=None, repr=False
@@ -893,6 +899,7 @@ class SunAbraham:
             n_control_units=n_control_units,
             alpha=self.alpha,
             control_group=self.control_group,
+            anticipation=self.anticipation,
             bootstrap_results=bootstrap_results,
             cohort_effects=cohort_effects_storage,
             survey_metadata=survey_metadata,

@@ -135,6 +135,7 @@ class ImputationDiDResults:
     n_treated_units: int
     n_control_units: int
     alpha: float = 0.05
+    anticipation: int = 0
     pretrend_results: Optional[Dict[str, Any]] = field(default=None, repr=False)
     bootstrap_results: Optional[ImputationBootstrapResults] = field(default=None, repr=False)
     # Internal: stores data needed for pretrend_test()
