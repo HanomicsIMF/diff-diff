@@ -325,6 +325,13 @@ def local_linear_fit(
             f"d and y must have the same shape; got {d.shape} and {y.shape}"
         )
 
+    # Explicit NaN / Inf validation at the API boundary so the caller gets a
+    # targeted error rather than a downstream failure inside the kernel or OLS.
+    if not np.all(np.isfinite(d)):
+        raise ValueError("d contains non-finite values (NaN or Inf)")
+    if not np.all(np.isfinite(y)):
+        raise ValueError("y contains non-finite values (NaN or Inf)")
+
     if weights is None:
         user_w = np.ones_like(d)
     else:
@@ -334,6 +341,8 @@ def local_linear_fit(
                 f"weights must have the same shape as d; got "
                 f"{user_w.shape} vs {d.shape}"
             )
+        if not np.all(np.isfinite(user_w)):
+            raise ValueError("weights contains non-finite values (NaN or Inf)")
         if np.any(user_w < 0):
             raise ValueError("weights must be nonnegative")
 
@@ -363,10 +372,7 @@ def local_linear_fit(
     # frequency weights so the unweighted-OLS formulas apply with w-scaled X.
     # We only need the coefficients and residuals, not a vcov for the fit
     # itself (Phase 1c will build its own bias-aware variance).
-    # The `weights`/`weight_type` kwargs are missing from solve_ols's @overload
-    # stubs (linalg.py:338-383); the implementation supports them. Fixed when
-    # vcov_type is threaded through solve_ols in a follow-up edit.
-    coef, residuals, _ = solve_ols(  # type: ignore[call-overload]
+    coef, residuals, _ = solve_ols(
         design,
         y_in,
         cluster_ids=None,

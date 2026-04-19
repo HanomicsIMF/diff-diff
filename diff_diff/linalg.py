@@ -929,6 +929,60 @@ def _solve_ols_numpy(
 _VALID_VCOV_TYPES = frozenset({"classical", "hc1", "hc2", "hc2_bm"})
 
 
+def resolve_vcov_type(
+    robust: bool = True,
+    vcov_type: Optional[str] = None,
+) -> str:
+    """Resolve the effective ``vcov_type`` from the ``robust``/``vcov_type`` pair.
+
+    Single source of truth for the alias and conflict rules shared by
+    :class:`LinearRegression` and :class:`~diff_diff.estimators.DifferenceInDifferences`
+    (and any future caller that needs to validate the pair). Keeping the resolution
+    in one place prevents ``__init__``/``set_params`` drift.
+
+    Rules (per the Phase 1a plan):
+
+    - If ``vcov_type`` is ``None``: map ``robust=True`` to ``"hc1"`` and
+      ``robust=False`` to ``"classical"``.
+    - If ``vcov_type`` is supplied: it must be one of
+      ``{"classical", "hc1", "hc2", "hc2_bm"}``.
+    - If ``robust=False`` is supplied together with a non-``"classical"`` ``vcov_type``,
+      raise ``ValueError`` - the combination is ambiguous.
+
+    Parameters
+    ----------
+    robust : bool, default True
+        Legacy alias. ``True`` == HC1; ``False`` == classical OLS SEs.
+    vcov_type : str, optional
+        Explicit variance family. Overrides ``robust`` unless the pair is contradictory.
+
+    Returns
+    -------
+    str
+        One of ``"classical"``, ``"hc1"``, ``"hc2"``, ``"hc2_bm"``.
+
+    Raises
+    ------
+    ValueError
+        If ``vcov_type`` is not one of the allowed values, or if
+        ``robust=False`` conflicts with an explicit non-classical ``vcov_type``.
+    """
+    if vcov_type is None:
+        return "hc1" if robust else "classical"
+    if vcov_type not in _VALID_VCOV_TYPES:
+        raise ValueError(
+            f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; "
+            f"got {vcov_type!r}"
+        )
+    if robust is False and vcov_type != "classical":
+        raise ValueError(
+            f"robust=False conflicts with vcov_type={vcov_type!r}. "
+            "Pass vcov_type='classical' for non-robust SEs, or drop "
+            "`robust=` and rely on vcov_type alone."
+        )
+    return vcov_type
+
+
 def compute_robust_vcov(
     X: np.ndarray,
     residuals: np.ndarray,
@@ -954,11 +1008,14 @@ def compute_robust_vcov(
       ``sum_i (u_i^2 / (1 - h_ii)) x_i x_i'`` where ``h_ii`` are hat-matrix
       diagonals. No DOF adjustment beyond ``n - k``. One-way only; errors with
       ``cluster_ids``.
-    - ``"hc2_bm"``: HC2 meat plus Imbens-Kolesar (2016) Bell-McCaffrey
-      Satterthwaite degrees of freedom per coefficient. Required by the
+    - ``"hc2_bm"``: one-way HC2 meat plus Imbens-Kolesar (2016) Bell-McCaffrey
+      Satterthwaite degrees of freedom per coefficient when ``cluster_ids`` is
+      ``None``. When ``cluster_ids`` is supplied, dispatches to the
+      Pustejovsky-Tipton (2018) CR2 Bell-McCaffrey cluster-robust estimator
+      (matches R ``clubSandwich::vcovCR(..., type="CR2")``). Required by the
       Pierce-Schott (2016) TWFE application in de Chaisemartin et al. (2026)
-      with ``G=103``. One-way only in this implementation; cluster-robust CR2
-      Bell-McCaffrey is queued as a follow-up.
+      with ``G=103``. Weighted clustered CR2 is the Phase 2+ follow-up and
+      raises ``NotImplementedError``.
 
     Parameters
     ----------
@@ -967,9 +1024,10 @@ def compute_robust_vcov(
     residuals : ndarray of shape (n,)
         OLS residuals.
     cluster_ids : ndarray of shape (n,), optional
-        Cluster identifiers. Only valid with ``vcov_type="hc1"`` (dispatches to
-        CR1). Combining with ``hc2``, ``hc2_bm``, or ``classical`` raises
-        ``ValueError``.
+        Cluster identifiers. Valid with ``vcov_type="hc1"`` (dispatches to CR1)
+        and ``vcov_type="hc2_bm"`` (dispatches to CR2 Bell-McCaffrey).
+        Combining with ``classical`` or ``hc2`` raises ``ValueError``.
+        Combining with ``hc2_bm`` AND ``weights`` raises ``NotImplementedError``.
     weights : ndarray of shape (n,), optional
         Observation weights. If provided, computes weighted sandwich estimator.
     weight_type : str, default "pweight"
@@ -2124,16 +2182,8 @@ class LinearRegression:
         self.weights = weights
         self.weight_type = weight_type
         self.survey_design = survey_design  # ResolvedSurveyDesign or None
-        # Resolve vcov_type from the legacy `robust` alias when not supplied.
-        # `robust=True` -> "hc1" (current default); `robust=False` -> "classical".
-        if vcov_type is None:
-            vcov_type = "hc1" if robust else "classical"
-        elif vcov_type not in _VALID_VCOV_TYPES:
-            raise ValueError(
-                f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; "
-                f"got {vcov_type!r}"
-            )
-        self.vcov_type = vcov_type
+        # Resolve vcov_type from the legacy `robust` alias via the shared helper.
+        self.vcov_type = resolve_vcov_type(robust, vcov_type)
 
         # Fitted attributes (set by fit())
         self.coefficients_: Optional[np.ndarray] = None

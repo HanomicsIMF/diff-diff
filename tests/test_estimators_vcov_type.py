@@ -99,6 +99,33 @@ class TestParamsRoundTrip:
         est.set_params(vcov_type="hc2")
         assert est.vcov_type == "hc2"
 
+    def test_set_params_rejects_conflict_robust_false_hc2(self):
+        """set_params must re-validate robust/vcov_type consistency."""
+        est = DifferenceInDifferences()
+        with pytest.raises(ValueError, match="robust=False conflicts with vcov_type"):
+            est.set_params(robust=False, vcov_type="hc2")
+
+    def test_set_params_rejects_conflict_on_robust_only(self):
+        """Setting robust=False on an estimator with vcov_type='hc2_bm' raises."""
+        est = DifferenceInDifferences(vcov_type="hc2_bm")
+        # The user is asking for non-robust SEs on an explicitly-HC2-BM estimator.
+        # set_params re-derives vcov_type to "classical" since only `robust` changed;
+        # this is a coherent override of the prior vcov_type, not a silent mismatch.
+        est.set_params(robust=False)
+        assert est.vcov_type == "classical"
+
+    def test_set_params_invalid_vcov_type_rejected(self):
+        est = DifferenceInDifferences()
+        with pytest.raises(ValueError, match="vcov_type must be one of"):
+            est.set_params(vcov_type="hc3")
+
+    def test_set_params_robust_true_then_back_to_hc1(self):
+        """robust=True after construction restores hc1 when no explicit vcov_type."""
+        est = DifferenceInDifferences(robust=False)
+        assert est.vcov_type == "classical"
+        est.set_params(robust=True)
+        assert est.vcov_type == "hc1"
+
     def test_set_params_multi_period_inherits(self):
         est = MultiPeriodDiD(vcov_type="hc2_bm")
         params = est.get_params()

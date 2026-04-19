@@ -305,6 +305,25 @@ class TestLocalLinearFit:
                 d, y, bandwidth=0.5, boundary=0.0, weights=w
             )
 
+    def test_non_finite_d_raises(self):
+        d = np.array([0.1, np.nan, 0.3, 0.4])
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        with pytest.raises(ValueError, match="d contains non-finite"):
+            local_linear_fit(d, y, bandwidth=0.5, boundary=0.0)
+
+    def test_non_finite_y_raises(self):
+        d = np.array([0.1, 0.2, 0.3, 0.4])
+        y = np.array([1.0, 2.0, np.inf, 4.0])
+        with pytest.raises(ValueError, match="y contains non-finite"):
+            local_linear_fit(d, y, bandwidth=0.5, boundary=0.0)
+
+    def test_non_finite_weights_raises(self):
+        d = np.array([0.1, 0.2, 0.3, 0.4])
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        w = np.array([1.0, np.nan, 1.0, 1.0])
+        with pytest.raises(ValueError, match="weights contains non-finite"):
+            local_linear_fit(d, y, bandwidth=0.5, boundary=0.0, weights=w)
+
     def test_nonzero_boundary(self):
         """Evaluation at d0 != 0 works (for Design 1 continuous-near-d_lower)."""
         rng = np.random.default_rng(11)
