@@ -155,6 +155,14 @@ class DifferenceInDifferences:
         self.robust = robust
         self.cluster = cluster
         self.vcov_type = resolve_vcov_type(robust, vcov_type)
+        # Track whether the user supplied `vcov_type` explicitly. When it
+        # was implicit (alias-derived) and a cluster structure is present
+        # at fit time, `_resolve_effective_vcov_type` remaps implicit
+        # `"classical"` to `"hc1"` to preserve the legacy behavior where
+        # `robust=False` + `cluster=...` silently produced CR1 cluster-
+        # robust SEs rather than raising. Set only in __init__ so
+        # set_params drives the flag transitions there.
+        self._vcov_type_explicit = vcov_type is not None
         self.alpha = alpha
         self.inference = inference
         self.n_bootstrap = n_bootstrap
@@ -406,16 +414,22 @@ class DifferenceInDifferences:
         if _uses_replicate and absorbed_vars:
             _lr_survey = None
 
+        # Remap implicit "classical" + cluster to CR1 for legacy-alias
+        # backward compatibility (see `_resolve_effective_vcov_type`).
+        _fit_vcov_type = self._resolve_effective_vcov_type(effective_cluster_ids)
+        # Don't forward `robust=self.robust` when the vcov_type has been
+        # remapped; `robust=False + vcov_type="hc1"` would otherwise trip
+        # the conflict check inside `LinearRegression.__init__`. The
+        # remapped vcov_type is the single source of truth for this call.
         reg = LinearRegression(
             include_intercept=False,  # Intercept already in X
-            robust=self.robust,
             cluster_ids=effective_cluster_ids if self.inference != "wild_bootstrap" else None,
             alpha=self.alpha,
             rank_deficient_action=self.rank_deficient_action,
             weights=survey_weights,
             weight_type=survey_weight_type,
             survey_design=_lr_survey,
-            vcov_type=self.vcov_type,
+            vcov_type=_fit_vcov_type,
         ).fit(X, y, df_adjustment=n_absorbed_effects)
 
         coefficients = reg.coefficients_
@@ -533,7 +547,10 @@ class DifferenceInDifferences:
             n_bootstrap=n_bootstrap_used,
             n_clusters=n_clusters_used,
             survey_metadata=survey_metadata,
-            vcov_type=self.vcov_type,
+            # Report the family that actually produced the SE, which may be
+            # the remapped "hc1" (CR1) under the legacy alias path, not the
+            # stored `self.vcov_type`.
+            vcov_type=_fit_vcov_type,
             cluster_name=self.cluster,
         )
 
@@ -844,7 +861,54 @@ class DifferenceInDifferences:
         for key, value in params.items():
             setattr(self, key, value)
         self.vcov_type = resolved_vcov
+        # Update the explicit-vs-alias flag: `vcov_type=` in the call marks
+        # the stored value as explicit; `robust=` alone re-derives via the
+        # alias and must clear the flag so a subsequent cluster fit can
+        # remap the implicit "classical" back to CR1.
+        if "vcov_type" in params:
+            self._vcov_type_explicit = True
+        elif "robust" in params:
+            self._vcov_type_explicit = False
         return self
+
+    def _resolve_effective_vcov_type(self, effective_cluster_ids) -> str:
+        """Pick the ``vcov_type`` to use for a given fit given cluster context.
+
+        Returns ``self.vcov_type`` unchanged in nearly every case. The one
+        exception is the legacy-alias path: if the user supplied
+        ``robust=False`` (or nothing) without an explicit ``vcov_type=``,
+        ``resolve_vcov_type`` stored ``"classical"`` at ``__init__``.
+        But ``"classical"`` is one-way only and the linalg validator
+        rejects it with ``cluster_ids`` set, so calls like
+        ``DifferenceInDifferences(robust=False, cluster="unit")`` that
+        previously produced CR1 inference would now fail. To preserve that
+        contract, when the stored vcov_type is implicit ``"classical"``
+        and a cluster structure is present at fit time, remap to ``"hc1"``
+        (which dispatches to CR1 cluster-robust). Emit a UserWarning so
+        the remap is not silent.
+
+        Callers should always route ``vcov_type`` through this method
+        before passing it into ``solve_ols``/``compute_robust_vcov`` so
+        subclasses (and survey-PSU-injected cluster ids) get the same
+        backward-compatible treatment.
+        """
+        if (
+            self.vcov_type == "classical"
+            and not self._vcov_type_explicit
+            and effective_cluster_ids is not None
+        ):
+            warnings.warn(
+                "robust=False with cluster=... (or an auto-injected "
+                "cluster from survey/TWFE) now maps to vcov_type='hc1' "
+                "to preserve the legacy CR1 cluster-robust behavior. "
+                "Pass vcov_type='classical' explicitly to request "
+                "non-robust SEs, or vcov_type='hc1' to silence this "
+                "warning.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return "hc1"
+        return self.vcov_type
 
     def summary(self) -> str:
         """
@@ -1360,6 +1424,9 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 "Liang-Zeger cluster-robust)."
             )
 
+        # Remap implicit "classical" + cluster to CR1 (legacy backward compat).
+        _fit_vcov_type = self._resolve_effective_vcov_type(effective_cluster_ids)
+
         # Note: Wild bootstrap for multi-period effects is complex (multiple coefficients)
         # For now, we use analytical inference even if inference="wild_bootstrap"
         coefficients, residuals, fitted, vcov = solve_ols(
@@ -1372,7 +1439,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
             rank_deficient_action=self.rank_deficient_action,
             weights=survey_weights,
             weight_type=survey_weight_type,
-            vcov_type=self.vcov_type,
+            vcov_type=_fit_vcov_type,
         )
 
         # Compute survey vcov if applicable
@@ -1655,7 +1722,9 @@ class MultiPeriodDiD(DifferenceInDifferences):
             reference_period=reference_period,
             interaction_indices=interaction_indices,
             survey_metadata=survey_metadata,
-            vcov_type=self.vcov_type,
+            # Report the family that actually produced the SE; may be the
+            # remapped hc1 under the legacy alias path, not self.vcov_type.
+            vcov_type=_fit_vcov_type,
             cluster_name=self.cluster,
             n_clusters=(
                 len(np.unique(effective_cluster_ids)) if effective_cluster_ids is not None else None

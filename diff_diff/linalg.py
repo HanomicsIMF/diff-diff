@@ -2271,6 +2271,28 @@ class LinearRegression:
         self.survey_design = survey_design  # ResolvedSurveyDesign or None
         # Resolve vcov_type from the legacy `robust` alias via the shared helper.
         self.vcov_type = resolve_vcov_type(robust, vcov_type)
+        # Legacy compatibility: `robust=False` + `cluster_ids=...` historically
+        # produced CR1 cluster-robust SEs (the cluster structure silently
+        # overrode the non-robust flag). The new `resolve_vcov_type` maps
+        # `robust=False` to `"classical"` eagerly, which the linalg validator
+        # rejects alongside `cluster_ids`. When `vcov_type` was implicit
+        # (alias-derived) and a cluster structure is present, remap to
+        # `"hc1"` so the fit dispatches to CR1 instead of raising. Emit a
+        # UserWarning so the remap is not silent. Users who genuinely want
+        # non-robust SEs can pass `vcov_type="classical"` explicitly (and
+        # then not set `cluster_ids`).
+        if vcov_type is None and self.vcov_type == "classical" and cluster_ids is not None:
+            warnings.warn(
+                "LinearRegression(robust=False, cluster_ids=...) historically "
+                "produced CR1 cluster-robust SEs. To preserve that behavior, "
+                "vcov_type has been remapped from 'classical' to 'hc1'. Pass "
+                "vcov_type='hc1' explicitly to silence this warning, or "
+                "vcov_type='classical' (with cluster_ids=None) for non-robust "
+                "SEs.",
+                UserWarning,
+                stacklevel=2,
+            )
+            self.vcov_type = "hc1"
 
         # Fitted attributes (set by fit())
         self.coefficients_: Optional[np.ndarray] = None

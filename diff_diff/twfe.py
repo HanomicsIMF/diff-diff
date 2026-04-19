@@ -191,20 +191,25 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         # explicitly provided. But the one-way ``classical`` family is by
         # construction not cluster-robust and the validator in
         # ``compute_robust_vcov`` rejects ``cluster_ids + vcov_type=="classical"``.
-        # When the user explicitly asks for ``classical`` analytical inference
-        # and does NOT set ``cluster=``, honor that choice by disabling the
-        # auto-cluster.
+        # When the user EXPLICITLY asks for ``classical`` analytical inference
+        # (via ``vcov_type="classical"``) and does NOT set ``cluster=``,
+        # honor that choice by disabling the auto-cluster.
         #
-        # Exception: wild-bootstrap inference uses the cluster structure to
-        # resample residuals, not the analytical sandwich. Dropping the
-        # auto-cluster here would break ``inference="wild_bootstrap"`` with
-        # no explicit cluster (a supported combination), so we keep the unit
-        # auto-cluster whenever the bootstrap path will consume it.
-        # ``hc2``/``hc2_bm`` don't reach this block — they are rejected above.
+        # When ``"classical"`` is IMPLICIT (from the legacy alias
+        # ``robust=False``), keep the unit auto-cluster so
+        # ``_resolve_effective_vcov_type`` below can remap it to ``"hc1"``
+        # and preserve the historical CR1-at-unit behavior. Wild-bootstrap
+        # inference also keeps the unit auto-cluster regardless (bootstrap
+        # consumes cluster structure for resampling). ``hc2``/``hc2_bm``
+        # don't reach this block — they are rejected above.
         if self.cluster is not None:
             cluster_var: Optional[str] = self.cluster
-        elif self.vcov_type == "classical" and self.inference == "analytical":
-            # One-way classical + analytical inference: drop the auto-cluster
+        elif (
+            self.vcov_type == "classical"
+            and self._vcov_type_explicit
+            and self.inference == "analytical"
+        ):
+            # Explicit classical + analytical inference: drop the auto-cluster
             # so the validator doesn't reject ``cluster_ids + classical``.
             cluster_var = None
         else:
@@ -285,17 +290,24 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         # from computing replicate vcov on already-demeaned data (demeaning depends
         # on weights, so replicate refits must re-demean at the estimator level).
         _lr_survey_twfe = None if _uses_replicate_twfe else resolved_survey
+        # Remap implicit "classical" + cluster to CR1 for legacy-alias
+        # backward compatibility. TWFE auto-clusters at unit when the user
+        # doesn't set cluster, so `robust=False` without an explicit
+        # vcov_type historically produced CR1 at unit; we preserve that.
+        # Don't forward `robust=self.robust` to LinearRegression when the
+        # remapped vcov_type disagrees; the remapped `vcov_type` is the
+        # single source of truth.
+        _fit_vcov_type = self._resolve_effective_vcov_type(survey_cluster_ids)
         if self.rank_deficient_action == "error":
             reg = LinearRegression(
                 include_intercept=False,
-                robust=self.robust,
                 cluster_ids=survey_cluster_ids if self.inference != "wild_bootstrap" else None,
                 alpha=self.alpha,
                 rank_deficient_action="error",
                 weights=survey_weights,
                 weight_type=survey_weight_type,
                 survey_design=_lr_survey_twfe,
-                vcov_type=self.vcov_type,
+                vcov_type=_fit_vcov_type,
             ).fit(X, y, df_adjustment=df_adjustment)
         else:
             # Suppress generic warning, TWFE provides context-specific messages below
@@ -303,7 +315,6 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                 warnings.filterwarnings("ignore", message="Rank-deficient design matrix")
                 reg = LinearRegression(
                     include_intercept=False,
-                    robust=self.robust,
                     cluster_ids=(
                         survey_cluster_ids if self.inference != "wild_bootstrap" else None
                     ),
@@ -312,7 +323,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                     weights=survey_weights,
                     weight_type=survey_weight_type,
                     survey_design=_lr_survey_twfe,
-                    vcov_type=self.vcov_type,
+                    vcov_type=_fit_vcov_type,
                 ).fit(X, y, df_adjustment=df_adjustment)
 
         coefficients = reg.coefficients_
@@ -477,7 +488,9 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             n_bootstrap=n_bootstrap_used,
             n_clusters=n_clusters_used,
             survey_metadata=survey_metadata,
-            vcov_type=self.vcov_type,
+            # Report the family that actually produced the SE; may be the
+            # remapped hc1 under the legacy alias path, not self.vcov_type.
+            vcov_type=_fit_vcov_type,
             cluster_name=_twfe_cluster_label,
         )
 

@@ -192,6 +192,111 @@ class TestParamsRoundTrip:
 
 
 class TestFitBehavior:
+    def test_robust_false_with_cluster_preserves_cr1(self):
+        """Legacy alias backward-compat: `robust=False` + `cluster=...` must
+        still produce CR1 cluster-robust SEs, not raise on `classical + cluster`.
+
+        Previously (pre-vcov_type), the cluster structure silently overrode
+        the non-robust flag. The vcov_type threading made `robust=False`
+        eagerly resolve to `"classical"`, which the linalg validator rejects
+        alongside `cluster_ids`. Fix: track `_vcov_type_explicit` and remap
+        implicit `"classical"` + cluster to `"hc1"` (CR1) at fit time with a
+        UserWarning.
+        """
+        data = _make_did_panel(n_units=20)
+        est = DifferenceInDifferences(robust=False, cluster="unit")
+        with pytest.warns(UserWarning, match="robust=False with cluster"):
+            res = est.fit(data, outcome="y", treatment="treated", time="time")
+        assert np.isfinite(res.att)
+        assert np.isfinite(res.se)
+        # The effective vcov_type in the result reflects the remap.
+        assert res.vcov_type == "hc1"
+        # The stored value on the estimator is unchanged (it tracks what the
+        # user configured).
+        assert est.vcov_type == "classical"
+        assert "CR1 cluster-robust at unit" in res.summary()
+
+    def test_explicit_classical_with_cluster_still_raises(self):
+        """When the user explicitly asks for `vcov_type="classical"` with a
+        cluster, the validator should still reject. The remap only applies
+        when vcov_type was implicit (alias-derived).
+        """
+        data = _make_did_panel(n_units=20)
+        est = DifferenceInDifferences(vcov_type="classical", cluster="unit")
+        assert est._vcov_type_explicit is True
+        with pytest.raises(ValueError, match="classical SEs are one-way only"):
+            est.fit(data, outcome="y", treatment="treated", time="time")
+
+    def test_twfe_robust_false_preserves_cr1_via_autocluster(self):
+        """TWFE auto-clusters at unit; `robust=False` on TWFE historically
+        produced CR1 at unit. Same implicit-alias remap must apply.
+        """
+        data = _make_did_panel(n_units=20)
+        est = TwoWayFixedEffects(robust=False)
+        with pytest.warns(UserWarning, match="robust=False with cluster"):
+            res = est.fit(data, outcome="y", treatment="treated", time="time", unit="unit")
+        assert np.isfinite(res.att) and np.isfinite(res.se)
+        assert res.vcov_type == "hc1"
+        assert "CR1 cluster-robust at unit" in res.summary()
+
+    def test_multi_period_robust_false_with_cluster_preserves_cr1(self):
+        """MultiPeriodDiD(robust=False, cluster=...) must also preserve CR1."""
+        rng = np.random.default_rng(20260420)
+        n_units, n_time = 30, 4
+        rows = []
+        for i in range(n_units):
+            treated = int(i >= n_units // 2)
+            for t in range(n_time):
+                y = rng.normal(0.0, 1.0) + 0.3 * treated + 0.5 * treated * (t >= 2)
+                rows.append({"unit": i, "time": t, "treated": treated, "y": y})
+        data = pd.DataFrame(rows)
+
+        est = MultiPeriodDiD(robust=False, cluster="unit")
+        with pytest.warns(UserWarning, match="robust=False with cluster"):
+            res = est.fit(data, outcome="y", treatment="treated", time="time", unit="unit")
+        assert np.isfinite(res.avg_att) and np.isfinite(res.avg_se)
+        assert res.vcov_type == "hc1"
+
+    def test_linear_regression_robust_false_with_cluster_preserves_cr1(self):
+        """Direct LinearRegression API: same remap must apply at __init__."""
+        from diff_diff.linalg import LinearRegression
+
+        rng = np.random.default_rng(1)
+        n = 100
+        # Single predictor; LinearRegression adds an intercept by default, so
+        # passing just the predictor keeps the design full-rank.
+        X = rng.normal(size=(n, 1))
+        y = 1.0 + 0.5 * X[:, 0] + rng.normal(scale=0.3, size=n)
+        cluster_ids = np.repeat(np.arange(10), 10)
+
+        with pytest.warns(UserWarning, match="historically produced CR1"):
+            reg = LinearRegression(robust=False, cluster_ids=cluster_ids).fit(X, y)
+        # Remapped to hc1; CR1 dispatches on cluster_ids.
+        assert reg.vcov_type == "hc1"
+        assert reg.coefficients_ is not None
+        inf = reg.get_inference(1)  # index 1 is the predictor (0 is intercept)
+        assert np.isfinite(inf.se) and inf.se > 0
+
+    def test_robust_false_without_cluster_stays_classical(self):
+        """No remap when no cluster is present: `robust=False` without cluster
+        should still produce classical non-robust SEs."""
+        data = _make_did_panel(n_units=20)
+        est = DifferenceInDifferences(robust=False)
+        res = est.fit(data, outcome="y", treatment="treated", time="time")
+        assert res.vcov_type == "classical"
+        assert "Classical OLS" in res.summary()
+
+    def test_set_params_robust_false_then_cluster_preserves_cr1(self):
+        """set_params path: after `est.set_params(robust=False)` the flag is
+        cleared to False, so a subsequent cluster-bearing fit remaps."""
+        data = _make_did_panel(n_units=20)
+        est = DifferenceInDifferences()
+        est.set_params(robust=False, cluster="unit")
+        assert est._vcov_type_explicit is False  # robust= only, no vcov_type
+        with pytest.warns(UserWarning, match="robust=False with cluster"):
+            res = est.fit(data, outcome="y", treatment="treated", time="time")
+        assert res.vcov_type == "hc1"
+
     def test_hc1_fit_and_summary_contain_expected_fields(self):
         data = _make_did_panel()
         est = DifferenceInDifferences(vcov_type="hc1")
@@ -414,11 +519,15 @@ class TestFitBehavior:
         assert "Classical OLS" in summary
         assert "CR1 cluster-robust" not in summary
 
-    def test_twfe_honors_robust_false_without_autocluster(self):
-        """`robust=False` on TWFE maps to vcov_type='classical' and must
-        likewise disable the auto-cluster."""
+    def test_twfe_explicit_classical_without_autocluster(self):
+        """`vcov_type="classical"` EXPLICIT on TWFE disables the auto-cluster
+        (the user is deliberately asking for one-way non-robust SEs). The
+        implicit ``robust=False`` path instead preserves CR1 at unit via the
+        backward-compat remap — covered by
+        ``test_twfe_robust_false_preserves_cr1_via_autocluster``.
+        """
         data = _make_did_panel(n_units=20)
-        res = TwoWayFixedEffects(robust=False).fit(
+        res = TwoWayFixedEffects(vcov_type="classical").fit(
             data, outcome="y", treatment="treated", time="time", unit="unit"
         )
         assert res.vcov_type == "classical"
