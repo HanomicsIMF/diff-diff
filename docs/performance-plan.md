@@ -107,11 +107,11 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
 Per-scenario phase narrative (cross-check against the table above after
 any rerun):
 
-- **Staggered campaign.** ImputationDiD robustness is the dominant phase
-  under Python at every scale. Under Rust at large scale it is tied with
-  SunAbraham (both ~30-40%); the Rust backend shifts relative shares
-  more than totals. CS fit with `n_bootstrap=999` is well-vectorized and
-  sits well below both in the ranking.
+- **Staggered campaign.** ImputationDiD robustness is the dominant
+  phase under both backends at every scale. Under Rust at large scale
+  SunAbraham narrows the gap but ImputationDiD still leads. CS fit with
+  `n_bootstrap=999` (both with and without covariates) is well-
+  vectorized and sits well below both in the ranking.
 - **Brand awareness survey.** At small scale HonestDiD dominates. From
   medium onwards the JK1 replicate-weight path is the clear top phase
   under both backends (2-3x the multi-outcome loop on Python at medium;
@@ -127,7 +127,10 @@ any rerun):
   are the dominant Python-backend phases at every scale; Rust eliminates
   both.
 - **Reversible dCDH.** Main fit and heterogeneity refit split the time
-  ~60/40, both rebuilding shared TSL scaffolding.
+  roughly evenly (45-52% each; under Python the heterogeneity refit
+  edges out the main fit slightly). Both fits run under the same
+  `SurveyDesign` and rebuild shared TSL scaffolding - that is the
+  optimization opportunity.
 - **Pricing dose-response.** Four spline fits account for essentially all
   runtime; linear scaling in variant count.
 
@@ -136,9 +139,9 @@ any rerun):
 | # | Location | Scenario + scale | Signal | Recommended action |
 |---|---|---|---|---|
 | 1 | `diff_diff/survey.py:1160` `_compute_stratified_psu_meat` | BRFSS @ 1M rows | dominates BRFSS chain at all scales, ~100% at 1M rows | **Algorithmic fix, highest priority.** Function called once per (state, year) cell (500 calls); per-call work rebuilds stratum-PSU scaffolding every time. Precompute stratum indexes once at `aggregate_survey` top-level and reuse. |
-| 2 | `diff_diff/imputation.py` ImputationDiD fit | Staggered CS @ 1,500 units | dominant phase of the CS chain under Python at all scales; tied with SunAbraham under Rust at large | **Investigate only after BRFSS fix lands.** Total chain is well under practitioner-perceptible threshold; candidate follow-up. |
+| 2 | `diff_diff/imputation.py` ImputationDiD fit | Staggered CS @ 1,500 units | dominant phase of the CS chain under both backends at all scales; SunAbraham narrows the gap under Rust at large but ImputationDiD still leads | **Investigate only after BRFSS fix lands.** Total chain is well under practitioner-perceptible threshold; candidate follow-up. |
 | 3 | `diff_diff/utils.py:1434` `_sc_weight_fw_numpy` | SDiD python @ any scale | dominates Python SDiD at all scales | **Already ported to Rust.** Python fallback acceptable as a teaching/safety path; non-production for n > 100. Python skipped at n=500 (jackknife cost would exceed 4 minutes per run). |
-| 4 | `diff_diff/chaisemartin_dhaultfoeuille.py` dCDH fit + heterogeneity | Reversible (single scale) | main fit + heterogeneity refit each rebuild TSL scaffolding | **Cache/precompute** - heterogeneity refit duplicates the main fit's TSL setup. Not P0; newer code path (v3.1) never optimization-reviewed. |
+| 4 | `diff_diff/chaisemartin_dhaultfoeuille.py` dCDH fit + heterogeneity | Reversible (single scale) | main fit and survey-aware heterogeneity refit each rebuild TSL scaffolding; heterogeneity phase is as expensive as the main fit | **Cache/precompute** - heterogeneity refit duplicates the main fit's TSL setup under the same `SurveyDesign`. Not P0; newer code path (v3.1) never optimization-reviewed. |
 | 5 | `diff_diff/continuous_did.py` CDiD spline bootstrap | Dose-response (single scale) | four spline fits ~equal, linear in variant count | **Leave alone** - well under perceptible threshold. |
 
 ### Memory analysis
