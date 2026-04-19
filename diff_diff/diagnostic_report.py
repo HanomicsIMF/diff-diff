@@ -2540,7 +2540,21 @@ def _pt_subject_phrase(method: Optional[str]) -> str:
         return "The pre-period slope-difference test"
     if method == "hausman":
         return "The Hausman PT-All vs PT-Post pretest"
-    if method in {"joint_wald", "joint_wald_event_study", "joint_wald_no_vcov", "bonferroni"}:
+    if method in {
+        "joint_wald",
+        "joint_wald_event_study",
+        "joint_wald_no_vcov",
+        "bonferroni",
+        # Survey-aware event-study PT variants use an F(k, df_survey)
+        # reference rather than chi-square(k); the subject is still the
+        # pre-period event-study coefficient vector — only the
+        # reference distribution changes (round-28 / round-29 CI
+        # review on PR #318). Recognizing the ``_survey`` suffix here
+        # lets DR prose match the BR prose and the REPORTING.md
+        # contract.
+        "joint_wald_survey",
+        "joint_wald_event_study_survey",
+    }:
         return "Pre-treatment event-study coefficients"
     if method == "synthetic_fit":
         return "The synthetic-control pre-treatment fit"
@@ -2555,9 +2569,19 @@ def _pt_stat_label(method: Optional[str]) -> Optional[str]:
     Wald / Bonferroni paths take a joint p-value (``joint p``); the 2x2
     slope-difference and Hausman paths are single-statistic tests
     (``p``). Design-enforced paths return ``None`` so the sentence
-    omits a statistic.
+    omits a statistic. Survey F-reference variants remain joint tests
+    on the pre-period coefficient vector and keep the ``joint p``
+    label — the correction is a different reference distribution, not
+    a different test.
     """
-    if method in {"joint_wald", "joint_wald_event_study", "joint_wald_no_vcov", "bonferroni"}:
+    if method in {
+        "joint_wald",
+        "joint_wald_event_study",
+        "joint_wald_no_vcov",
+        "bonferroni",
+        "joint_wald_survey",
+        "joint_wald_event_study_survey",
+    }:
         return "joint p"
     if method in {"slope_difference", "hausman"}:
         return "p"

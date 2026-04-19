@@ -120,7 +120,10 @@ not new inference.
   `ChaisemartinDHaultfoeuilleResults`) do not yet have a power
   adapter and therefore render the `no_detected_violation` tier as
   `underpowered` with the fallback reason recorded in
-  `schema["pre_trends"]["power_status"]`. BusinessReport then reads
+  `schema["pre_trends"]["power_reason"]` (plain-English explanation)
+  while `schema["pre_trends"]["power_status"]` carries the
+  machine-readable enum (`"ran"` / `"skipped"` / `"error"` /
+  `"not_applicable"`). BusinessReport then reads
   `mdv_share_of_att = mdv / abs(att)` and selects a tier:
 
   - `< 0.25` &rarr; `well_powered` &mdash; "the test has 80% power to

@@ -887,6 +887,35 @@ class TestJointWaldAlignment:
         assert pt["df_denom"] == 20.0
         assert pt["df"] == 3
 
+    def test_dr_prose_uses_event_study_subject_for_survey_pt(self):
+        """Round-29 P3 regression: DR's own ``_pt_subject_phrase`` /
+        ``_pt_stat_label`` helpers previously didn't recognize the
+        ``_survey`` variants, so summary / full_report prose fell
+        through to the generic "Pre-treatment data" wording — BR's
+        helpers were fixed last round but DR's were not. The survey
+        variants must render with the event-study subject and the
+        ``joint p`` label; the F-reference correction is a different
+        reference distribution, not a different test.
+        """
+        from diff_diff.diagnostic_report import (
+            _pt_stat_label,
+            _pt_subject_phrase,
+        )
+
+        for method in (
+            "joint_wald_survey",
+            "joint_wald_event_study_survey",
+        ):
+            assert (
+                _pt_subject_phrase(method)
+                == "Pre-treatment event-study coefficients"
+            ), (
+                f"DR subject for {method!r} must match the non-survey "
+                f"event-study phrasing; got "
+                f"{_pt_subject_phrase(method)!r}"
+            )
+            assert _pt_stat_label(method) == "joint p"
+
     def test_joint_wald_ignores_non_finite_survey_df(self):
         """If ``df_survey`` is NaN / inf / non-positive, fall back to
         chi-square (no finite-sample correction available).

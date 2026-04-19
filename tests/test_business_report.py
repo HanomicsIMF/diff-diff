@@ -2506,6 +2506,42 @@ class TestSurveyPTProsePropagation:
         assert lifted["method"] == "joint_wald_event_study_survey"
         assert lifted["df_denom"] == 30.0
 
+    def test_lift_pre_trends_exposes_power_reason(self):
+        """Round-29 P3 regression: when ``compute_pretrends_power`` cannot
+        run, REPORTING.md lines 118-125 promise the fallback reason is
+        recorded in the BR pre-trends block. Previously only the enum
+        status surfaced and the reason was dropped at the lift
+        boundary; the new ``power_reason`` field carries the
+        plain-English explanation alongside the existing enum
+        ``power_status``.
+        """
+        from diff_diff.business_report import _lift_pre_trends
+
+        fake_dr = {
+            "parallel_trends": {
+                "status": "ran",
+                "method": "joint_wald_event_study",
+                "joint_p_value": 0.35,
+                "n_pre_periods": 3,
+                "verdict": "no_detected_violation",
+            },
+            "pretrends_power": {
+                "status": "not_applicable",
+                "reason": (
+                    "StackedDiDResults does not yet have a "
+                    "compute_pretrends_power adapter."
+                ),
+            },
+        }
+        lifted = _lift_pre_trends(fake_dr)
+        # Machine-readable status preserved.
+        assert lifted["power_status"] == "not_applicable"
+        # Plain-English reason now exposed on the schema.
+        assert lifted["power_reason"] == (
+            "StackedDiDResults does not yet have a "
+            "compute_pretrends_power adapter."
+        )
+
     def test_survey_pt_method_stat_label_uses_joint_p(self):
         from diff_diff.business_report import (
             _pt_method_stat_label,

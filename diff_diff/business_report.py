@@ -704,6 +704,15 @@ def _lift_pre_trends(dr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         # CI review on PR #318).
         "df_denom": pt.get("df_denom"),
         "power_status": pp.get("status"),
+        # Dedicated reason field so schema consumers see the fallback
+        # explanation when ``compute_pretrends_power`` cannot run
+        # (``status in {"skipped", "error", "not_applicable"}``).
+        # REPORTING.md lines 118-125 promise this provenance; round-29
+        # P3 CI review on PR #318 flagged that only the enum status was
+        # being exposed and the reason was dropped at the lift boundary.
+        # ``power_status`` stays the machine-readable enum; ``power_reason``
+        # carries the plain-English explanation.
+        "power_reason": pp.get("reason"),
         "power_tier": pp.get("tier"),
         "mdv": pp.get("mdv"),
         "mdv_share_of_att": pp.get("mdv_share_of_att"),
