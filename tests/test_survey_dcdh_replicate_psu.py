@@ -170,6 +170,184 @@ class TestReplicateClassA:
         assert np.isfinite(res.overall_se)
         assert res.overall_se > 0
 
+    def test_att_raises_on_terminal_missingness_replicate_path(self):
+        """Replicate ATT + terminal missingness: the Class A replicate
+        path uses the cell-period allocator unconditionally (per the
+        PR #323 contract), so cohort-recentering leakage onto missing
+        cells hits the `_survey_se_from_group_if` sentinel-mass guard
+        regardless of PSU structure (replicate designs do not carry
+        `resolved.psu`). Unlike Binder TSL, replicate has no
+        `psu=<group_col>` fallback — the documented workaround is to
+        pre-process the panel. Locks this user-facing failure mode.
+        """
+        import warnings as _w
+        rows = []
+        for g in range(10):
+            if g < 5:
+                d_pattern = [0, 0, 0, 1, 1, 1]
+            elif g < 8:
+                d_pattern = [1, 1, 1, 1, 0, 0]
+            else:
+                d_pattern = [0, 0, 0, 0, 0, 0]
+            for t in range(6):
+                if g == 2 and t >= 4:
+                    continue  # terminal missingness for group 2
+                d = d_pattern[t]
+                y = float(g) + 0.1 * t + 1.0 * d
+                row = {
+                    "group": int(g),
+                    "period": int(t),
+                    "treatment": int(d),
+                    "outcome": y,
+                    "pw": 1.0,
+                }
+                # Attach 5 replicate-weight columns (per-row
+                # Rademacher-like draws; SDR is the simplest method
+                # that does not require a replicate_strata schedule).
+                for r in range(5):
+                    row[f"rep{r}"] = 0.5 if (g + t + r) % 2 == 0 else 1.5
+                rows.append(row)
+        df_ = pd.DataFrame(rows)
+        sd = SurveyDesign(
+            weights="pw",
+            replicate_weights=[f"rep{r}" for r in range(5)],
+            replicate_method="SDR",
+        )
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")  # terminal-missingness UserWarning
+            with pytest.raises(
+                ValueError, match="no positive-weight observations",
+            ):
+                ChaisemartinDHaultfoeuille(seed=1).fit(
+                    df_,
+                    outcome="outcome",
+                    group="group",
+                    time="period",
+                    treatment="treatment",
+                    survey_design=sd,
+                    L_max=1,
+                )
+
+    def test_att_cell_allocator_with_varying_replicate_ratios(
+        self, base_panel, replicate_design, monkeypatch,
+    ):
+        """Class A ATT replicate contract: `_survey_se_from_group_if`
+        dispatches replicate fits through the cell-period allocator
+        (`U_centered_per_period`-based psi_obs), not the legacy
+        group-level expansion. Under per-row replicate matrices where
+        ratios vary within group, the two allocators produce
+        different Rao-Wu variances (obs-level `theta_r = sum_i
+        ratio_ir * psi_i` is not PSU-telescoping — same observation
+        as PR #329's heterogeneity non-invariance guard).
+
+        Locks the contract by spying on `compute_replicate_if_variance`
+        to capture the psi_obs actually passed during the fit,
+        reconstructing the legacy group-level counterpart via the
+        row-sum identity, and asserting:
+          (a) fit's `overall_se**2` matches the captured cell-allocator
+              psi_obs fed back through the helper;
+          (b) the legacy-reconstructed psi_obs yields a materially
+              different Rao-Wu variance, i.e. a future refactor that
+              switches Class A to the legacy allocator would drift
+              the fit's SE.
+        """
+        import numpy as _np
+        import diff_diff.survey as _survey_mod
+
+        R = 20
+        df = replicate_design(base_panel, R=R, method="SDR")
+        sd = _build_replicate_design(R, "SDR")
+
+        # Spy on compute_replicate_if_variance to capture each
+        # psi_obs the fit passes. Pass through to the real helper so
+        # fit completes normally.
+        original_repvar = _survey_mod.compute_replicate_if_variance
+        captured_psi: list = []
+
+        def _spy(psi, resolved):
+            captured_psi.append(_np.asarray(psi).copy())
+            return original_repvar(psi, resolved)
+
+        monkeypatch.setattr(
+            _survey_mod, "compute_replicate_if_variance", _spy
+        )
+
+        res = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+            survey_design=sd,
+        )
+        assert np.isfinite(res.overall_se) and res.overall_se > 0
+        assert captured_psi, (
+            "Spy captured no psi_obs — the fit did not route through "
+            "compute_replicate_if_variance. Did the replicate "
+            "dispatch change?"
+        )
+
+        # The first capture corresponds to the overall DID_M target
+        # (called from the `_compute_se`→`_survey_se_from_group_if`
+        # chain for the overall surface).
+        psi_obs_actual = captured_psi[0]
+
+        resolved = sd.resolve(df)
+        obs_group = df["group"].values
+        w = resolved.weights.astype(_np.float64)
+        n_obs = len(w)
+
+        # Row-sum identity on the cell-allocator psi_obs: summing
+        # over obs in group g recovers U_centered[g]. Use this to
+        # reconstruct the legacy group-level expansion on the SAME
+        # fitted U_centered.
+        unique_gids = _np.unique(obs_group)
+        g_to_idx = {g: i for i, g in enumerate(unique_gids)}
+        U_centered_recon = _np.zeros(len(unique_gids), dtype=_np.float64)
+        W_g = _np.zeros(len(unique_gids), dtype=_np.float64)
+        for i in range(n_obs):
+            gi = g_to_idx[obs_group[i]]
+            U_centered_recon[gi] += psi_obs_actual[i]
+            W_g[gi] += w[i]
+        psi_obs_legacy = _np.zeros_like(w)
+        for i in range(n_obs):
+            gi = g_to_idx[obs_group[i]]
+            if W_g[gi] > 0:
+                psi_obs_legacy[i] = (
+                    U_centered_recon[gi] * w[i] / W_g[gi]
+                )
+
+        # (a) Fit's overall_se^2 must match the variance recomputed
+        # from the captured psi_obs. Trivial sanity check — the fit
+        # computed it from this exact psi_obs via the spy pass-through.
+        var_cell_recompute, _ = original_repvar(psi_obs_actual, resolved)
+        assert float(res.overall_se) ** 2 == pytest.approx(
+            var_cell_recompute, rel=1e-12,
+        ), (
+            f"Fit's overall_se^2 does not match the recomputed "
+            f"variance on the captured psi_obs — spy / dispatch "
+            f"misalignment."
+        )
+
+        # (b) Legacy-reconstructed psi_obs yields a different Rao-Wu
+        # variance on this fixture. Locks the allocator-sensitivity
+        # contract: if a future refactor routes Class A replicate
+        # ATT through the legacy group-level allocator, the fit's
+        # overall_se would silently match var_legacy instead — and
+        # this assertion would fail, surfacing the regression.
+        var_legacy, _ = original_repvar(psi_obs_legacy, resolved)
+        assert not _np.isclose(
+            var_cell_recompute, var_legacy, rtol=1e-6,
+        ), (
+            f"Expected cell-allocator variance to differ from legacy "
+            f"group-level variance on this fixture (per-row "
+            f"replicate matrix varies within group). Got "
+            f"cell={var_cell_recompute}, legacy={var_legacy}. Either "
+            f"the fixture no longer exercises the allocator "
+            f"sensitivity, OR the fit's allocator has silently "
+            f"reverted to legacy."
+        )
+
     @pytest.mark.parametrize("method", REPLICATE_METHODS)
     def test_inference_fields_finite(self, base_panel, replicate_design, method):
         R = 20
