@@ -233,7 +233,22 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         # (e.g., pure non-binary panels where N_S=0), but continue
         # to process multi_horizon_inputs and placebo_horizon_inputs.
         if divisor_overall > 0:
-            if psu_varies and u_per_period_overall is not None:
+            if psu_varies:
+                # Contract: when the cell-level path is required
+                # (psu_varies=True), the caller MUST provide the
+                # target's per-cell IF tensor. Silent fallback to the
+                # group-level allocator would under-cluster the
+                # bootstrap by collapsing multi-PSU group
+                # contributions to one PSU.
+                if u_per_period_overall is None:
+                    raise ValueError(
+                        "Cell-level bootstrap requires "
+                        "u_per_period_overall when PSU varies "
+                        "within group, got None. Caller must "
+                        "thread the cohort-recentered per-cell IF "
+                        "tensor (U_centered_pp_overall) from the "
+                        "analytical TSL path."
+                    )
                 u_boot_overall, map_boot_overall = _unroll_target_to_cells(
                     u_per_period_overall, psu_codes_per_cell,
                 )
@@ -276,7 +291,13 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         if joiners_inputs is not None:
             u_j, n_j, eff_j, u_pp_j = joiners_inputs
             if u_j.size > 0 and n_j > 0:
-                if psu_varies and u_pp_j is not None:
+                if psu_varies:
+                    if u_pp_j is None:
+                        raise ValueError(
+                            "Cell-level bootstrap requires joiners' "
+                            "per-cell IF tensor (U_centered_pp_joiners) "
+                            "when PSU varies within group, got None."
+                        )
                     u_boot_j, map_boot_j = _unroll_target_to_cells(
                         u_pp_j, psu_codes_per_cell,
                     )
@@ -305,7 +326,13 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         if leavers_inputs is not None:
             u_l, n_l, eff_l, u_pp_l = leavers_inputs
             if u_l.size > 0 and n_l > 0:
-                if psu_varies and u_pp_l is not None:
+                if psu_varies:
+                    if u_pp_l is None:
+                        raise ValueError(
+                            "Cell-level bootstrap requires leavers' "
+                            "per-cell IF tensor (U_centered_pp_leavers) "
+                            "when PSU varies within group, got None."
+                        )
                     u_boot_l, map_boot_l = _unroll_target_to_cells(
                         u_pp_l, psu_codes_per_cell,
                     )
@@ -430,7 +457,15 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                             f"shared PSU draws onto the horizon's own "
                             f"ordering via `_map_for_target`."
                         )
-                    if psu_varies and u_pp_h is not None and shared_psu_weights is not None:
+                    if psu_varies:
+                        if u_pp_h is None:
+                            raise ValueError(
+                                f"Cell-level bootstrap requires "
+                                f"per-cell IF tensor for multi-horizon "
+                                f"target l={l_h} when PSU varies "
+                                f"within group, got None."
+                            )
+                        assert shared_psu_weights is not None
                         # Cell-level: unroll this horizon's cells and
                         # broadcast the shared PSU weights.
                         u_cell_h, psu_cell_h = _unroll_target_to_cells(
@@ -489,7 +524,14 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
 
             for l_h, (u_h, n_h, eff_h, u_pp_h) in sorted(placebo_horizon_inputs.items()):
                 if u_h.size > 0 and n_h > 0:
-                    if psu_varies and u_pp_h is not None:
+                    if psu_varies:
+                        if u_pp_h is None:
+                            raise ValueError(
+                                f"Cell-level bootstrap requires "
+                                f"per-cell IF tensor for placebo-"
+                                f"horizon target l={l_h} when PSU "
+                                f"varies within group, got None."
+                            )
                         u_boot_plh, map_boot_plh = _unroll_target_to_cells(
                             u_pp_h, psu_codes_per_cell,
                         )
@@ -571,6 +613,15 @@ def _unroll_target_to_cells(
         raise ValueError(
             "_unroll_target_to_cells requires psu_codes_per_cell; "
             "caller should only invoke this on the cell-level path."
+        )
+    if u_per_period_target.shape != psu_codes_per_cell.shape:
+        raise ValueError(
+            "Cell-level bootstrap shape mismatch: target per-period "
+            f"IF tensor has shape {u_per_period_target.shape} but "
+            f"psu_codes_per_cell has shape {psu_codes_per_cell.shape}. "
+            "The dCDH bootstrap contract requires every target's "
+            "per-cell tensor to align with the (n_eligible_groups, "
+            "n_periods) layout of psu_codes_per_cell."
         )
     flat_u = u_per_period_target.ravel()
     flat_psu = psu_codes_per_cell.ravel()

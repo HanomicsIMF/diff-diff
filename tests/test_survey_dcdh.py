@@ -1879,6 +1879,93 @@ class TestBootstrapCellPeriod:
             f"bit-identical to the legacy group-level bootstrap."
         )
 
+    def test_bootstrap_cell_level_raises_on_missing_overall_tensor(self):
+        """Contract: when PSU varies within group, the bootstrap
+        dispatcher must NOT silently fall back to group-level for any
+        target. Invoking _compute_dcdh_bootstrap directly with a
+        varying `psu_codes_per_cell` but `u_per_period_overall=None`
+        must raise ValueError (not silently under-cluster).
+        """
+        est = ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1)
+        # Minimal group-level IF inputs; matches arbitrary 2-group setup.
+        u_overall = np.array([0.5, -0.3], dtype=np.float64)
+        eligible_group_ids = np.array([0, 1])
+        group_id_to_psu_code = {0: 0, 1: 1}
+        # Varying PSU: row 0 has two distinct PSU codes.
+        psu_codes_per_cell = np.array(
+            [[0, 1], [0, 0]], dtype=np.int64,
+        )
+        with pytest.raises(ValueError, match="u_per_period_overall"):
+            est._compute_dcdh_bootstrap(
+                n_groups_for_overall=2,
+                u_centered_overall=u_overall,
+                divisor_overall=4,
+                original_overall=0.1,
+                group_id_to_psu_code=group_id_to_psu_code,
+                eligible_group_ids=eligible_group_ids,
+                u_per_period_overall=None,  # missing — must raise
+                psu_codes_per_cell=psu_codes_per_cell,
+            )
+
+    def test_bootstrap_cell_level_raises_on_shape_mismatch(self):
+        """Contract: _unroll_target_to_cells rejects shape mismatches
+        between `u_per_period_target` and `psu_codes_per_cell` — a
+        silent misalignment would put PSU codes on the wrong cells.
+        """
+        est = ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1)
+        u_overall = np.array([0.5, -0.3], dtype=np.float64)
+        eligible_group_ids = np.array([0, 1])
+        group_id_to_psu_code = {0: 0, 1: 1}
+        psu_codes_per_cell = np.array(
+            [[0, 1], [0, 0]], dtype=np.int64,
+        )
+        # Wrong shape — 3 columns instead of 2.
+        u_pp_wrong = np.array(
+            [[0.25, 0.25, 0.0], [-0.15, -0.15, 0.0]], dtype=np.float64,
+        )
+        with pytest.raises(ValueError, match="shape mismatch"):
+            est._compute_dcdh_bootstrap(
+                n_groups_for_overall=2,
+                u_centered_overall=u_overall,
+                divisor_overall=4,
+                original_overall=0.1,
+                group_id_to_psu_code=group_id_to_psu_code,
+                eligible_group_ids=eligible_group_ids,
+                u_per_period_overall=u_pp_wrong,
+                psu_codes_per_cell=psu_codes_per_cell,
+            )
+
+    def test_bootstrap_cell_level_raises_on_missing_horizon_tensor(self):
+        """Contract: when PSU varies within group, each multi-horizon
+        target must supply its per-cell IF tensor; missing one raises
+        ValueError rather than degrading the sup-t joint distribution.
+        """
+        est = ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1)
+        u_overall = np.array([0.5, -0.3], dtype=np.float64)
+        u_pp_overall = np.array(
+            [[0.25, 0.25], [-0.15, -0.15]], dtype=np.float64,
+        )
+        eligible_group_ids = np.array([0, 1])
+        group_id_to_psu_code = {0: 0, 1: 1}
+        psu_codes_per_cell = np.array(
+            [[0, 1], [0, 0]], dtype=np.int64,
+        )
+        # Horizon tuple missing its per-cell tensor (4th slot = None).
+        u_h = np.array([0.4, -0.2], dtype=np.float64)
+        mh_inputs = {1: (u_h, 4, 0.1, None)}
+        with pytest.raises(ValueError, match="multi-horizon.*l=1"):
+            est._compute_dcdh_bootstrap(
+                n_groups_for_overall=2,
+                u_centered_overall=u_overall,
+                divisor_overall=4,
+                original_overall=0.1,
+                multi_horizon_inputs=mh_inputs,
+                group_id_to_psu_code=group_id_to_psu_code,
+                eligible_group_ids=eligible_group_ids,
+                u_per_period_overall=u_pp_overall,
+                psu_codes_per_cell=psu_codes_per_cell,
+            )
+
     def test_bootstrap_cell_level_with_all_zero_weight_group_does_not_crash(self):
         """When one eligible group has all zero-weight observations,
         every entry of its `psu_codes_per_cell` row is the sentinel

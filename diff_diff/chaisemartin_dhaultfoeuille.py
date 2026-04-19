@@ -5529,14 +5529,14 @@ def _strata_psu_vary_within_group(
 ) -> Tuple[bool, bool]:
     """Return (strata_varies_within_group, psu_varies_within_group).
 
-    Diagnostic helper used at ``fit()`` time to gate the remaining
-    out-of-scope combination for the cell-period IF allocator:
-    ``n_bootstrap > 0`` still uses a group-level PSU map and raises
-    ``NotImplementedError`` when PSU varies within group. The
-    heterogeneity WLS path supports within-group-varying PSU/strata
-    via the cell-period allocator (shipped in the PR that lifted the
-    previous gate). Zero-weight rows are excluded from the check
-    (subpopulation contract).
+    Diagnostic helper. No longer used to gate any out-of-scope
+    combination in ``fit()`` — the analytical TSL path, the
+    heterogeneity WLS path, and the PSU-level wild multiplier
+    bootstrap all support within-group-varying PSU/strata via the
+    cell-period allocator. The helper is retained for callers that
+    need to branch on the regime (e.g., documentation, diagnostic
+    warnings). Zero-weight rows are excluded (subpopulation
+    contract).
     """
     if resolved is None:
         return False, False
