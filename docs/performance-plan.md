@@ -69,7 +69,9 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
    (`aggregate_survey` is entirely Python).
 2. **Staggered CS chain stays cheap across scales.** A 10x unit increase
    (150 -> 1,500) is a small-single-digit multiplier on total time.
-   ImputationDiD is consistently the dominant phase but scales well.
+   ImputationDiD is the dominant phase at most (scale, backend)
+   combinations; SunAbraham takes the top spot at Rust medium but the
+   two phases together consistently account for ~70-80% of the chain.
 3. **SDiD Rust gap is stable across scales, not emergent.** Python SDiD
    has a fixed per-jackknife-refit overhead that dominates even at small
    n. Rust stays sub-second through 500 units.
@@ -132,11 +134,14 @@ any rerun):
   effectively 100% of runtime at 1M rows. Downstream phases (CS fit,
   SunAbraham, HonestDiD) are a fraction of a second combined.
 - **SDiD few markets.** `sensitivity_to_zeta_omega` and
-  `in_time_placebo` are the two largest phases under both backends at
-  every scale - they together account for roughly ~70% of the chain.
-  The difference is absolute: under Python they drive a multi-second
-  chain, under Rust they stay the top phases but of a sub-second total
-  runtime. That is the Python-vs-Rust story for this scenario.
+  `in_time_placebo` are the two largest phases under Python at every
+  scale and under Rust at medium/large (together ~70% of the chain).
+  At Rust small the absolute cost collapses so far that per-phase
+  fixed overhead dominates and `2_sdid_bootstrap_variance_200` slightly
+  edges the other two. The difference across backends is absolute:
+  under Python these phases drive a multi-second chain, under Rust
+  they stay in the top ranks but of a sub-second total runtime. That
+  is the Python-vs-Rust story for this scenario.
 - **Reversible dCDH.** Main fit and heterogeneity refit are the two
   largest phases by design - together effectively the whole chain. The
   split is not stable across backends: under Python the main fit is
@@ -152,7 +157,7 @@ any rerun):
 | # | Location | Scenario + scale | Signal | Recommended action |
 |---|---|---|---|---|
 | 1 | `diff_diff/survey.py:1160` `_compute_stratified_psu_meat` | BRFSS @ 1M rows | dominates BRFSS chain at all scales, ~100% at 1M rows | **Algorithmic fix, highest priority.** Function called once per (state, year) cell (500 calls); per-call work rebuilds stratum-PSU scaffolding every time. Precompute stratum indexes once at `aggregate_survey` top-level and reuse. |
-| 2 | `diff_diff/imputation.py` ImputationDiD fit | Staggered CS @ 1,500 units | dominant phase of the CS chain under both backends at all scales; SunAbraham narrows the gap under Rust at large but ImputationDiD still leads | **Investigate only after BRFSS fix lands.** Total chain is well under practitioner-perceptible threshold; candidate follow-up. |
+| 2 | `diff_diff/imputation.py` ImputationDiD fit | Staggered CS @ 1,500 units | dominant phase under Python at every scale and under Rust at small/large; at Rust medium SunAbraham takes the top spot. Together ImputationDiD + SunAbraham are ~70-80% of the chain at every scale | **Investigate only after BRFSS fix lands.** Total chain is well under practitioner-perceptible threshold; candidate follow-up. |
 | 3 | `diff_diff/utils.py:1434` `_sc_weight_fw_numpy` | SDiD python @ any scale | dominates Python SDiD at all scales | **Already ported to Rust.** Python fallback acceptable as a teaching/safety path; non-production for n > 100. Python skipped at n=500 (jackknife cost would exceed 4 minutes per run). |
 | 4 | `diff_diff/chaisemartin_dhaultfoeuille.py` dCDH fit + heterogeneity | Reversible (single scale) | main fit and survey-aware heterogeneity refit each rebuild TSL scaffolding; heterogeneity phase is as expensive as the main fit | **Cache/precompute** - heterogeneity refit duplicates the main fit's TSL setup under the same `SurveyDesign`. Not P0; newer code path (v3.1) never optimization-reviewed. |
 | 5 | `diff_diff/continuous_did.py` CDiD spline bootstrap | Dose-response (single scale) | four spline fits ~equal, linear in variant count | **Leave alone** - well under perceptible threshold. |

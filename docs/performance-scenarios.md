@@ -201,11 +201,12 @@ serves a different purpose: R-parity accuracy). They complement it.
   compute_honest_did(results, method="relative_magnitude", M=[0.5, 1.0, 1.5])
   ```
 - **Operation chain.** (1) `aggregate_survey()` - the microdata-to-panel
-  collapse; (2) CS fit with staged second-stage SurveyDesign
-  (`weight_type="pweight"`, analytical TSL via strata + PSU) and bootstrap
-  at PSU level; (3) event-study pre-trend inspection; (4) HonestDiD
-  sensitivity grid; (5) SunAbraham robustness refit using the same
-  second-stage pweight SurveyDesign; (6) `practitioner_next_steps()`.
+  collapse; (2) CS fit with the second-stage SurveyDesign returned by
+  `aggregate_survey` (pweight + geographic PSU clustering; `aggregate_survey`
+  does not stratify the collapsed cell panel) and bootstrap at PSU level;
+  (3) event-study pre-trend inspection; (4) HonestDiD sensitivity grid;
+  (5) SunAbraham robustness refit using the same second-stage pweight
+  SurveyDesign; (6) `practitioner_next_steps()`.
 - **Source anchor.** `docs/practitioner_getting_started.rst` ("What If
   You Have Survey Data?" section), CDC BRFSS 2024 overview
   (cdc.gov/brfss/annual_data/2024), `diff_diff.prep.aggregate_survey`
