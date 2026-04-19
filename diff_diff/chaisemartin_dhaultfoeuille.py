@@ -667,18 +667,23 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             contributing cells to multiple PSUs receives independent
             multiplier draws per PSU (see the Survey + bootstrap
             contract Note in REGISTRY.md). **Scope note (terminal
-            missingness + within-group-varying PSU):** on panels
-            where a terminally-missing group is in a cohort whose
-            other groups still contribute at the missing period,
-            **both** the cell-level bootstrap and the analytical TSL
-            path raise a targeted ``ValueError``. Cohort-recentering
-            leaks centered IF mass onto cells with no positive-
-            weight obs, which the cell-period allocator cannot
-            allocate to any observation or PSU. Pre-process the
-            panel (drop late-exit groups or trim to a balanced
-            sub-panel), or use an explicit ``psu=<group_col>`` so
-            the dispatcher routes through the legacy group-level
-            path. **Replicate weights with ``n_bootstrap > 0``
+            missingness under any cell-period-allocator path):** on
+            panels where a terminally-missing group is in a cohort
+            whose other groups still contribute at the missing
+            period, every survey variance path that uses the cell-
+            period allocator raises a targeted ``ValueError``:
+            Binder TSL with within-group-varying PSU, Rao-Wu
+            replicate-weight ATT (which always uses the cell
+            allocator), and the cell-level wild PSU bootstrap.
+            Cohort-recentering leaks centered IF mass onto cells
+            with no positive-weight obs, which the cell-period
+            allocator cannot allocate to any observation or PSU.
+            Pre-process the panel (drop late-exit groups or trim to
+            a balanced sub-panel), or — for Binder TSL only — use
+            an explicit ``psu=<group_col>`` so the analytical path
+            routes through the legacy group-level allocator.
+            Replicate ATT and within-group-varying-PSU bootstrap
+            have no such allocator fallback. **Replicate weights with ``n_bootstrap > 0``
             raises ``NotImplementedError``** (replicate variance is
             closed-form; bootstrap would double-count variance). See
             REGISTRY.md ``ChaisemartinDHaultfoeuille`` Notes for the

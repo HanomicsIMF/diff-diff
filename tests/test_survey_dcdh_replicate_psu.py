@@ -171,7 +171,7 @@ class TestReplicateClassA:
         assert res.overall_se > 0
 
     def test_att_cell_allocator_with_varying_replicate_ratios(
-        self, base_panel, replicate_design,
+        self, base_panel, replicate_design, monkeypatch,
     ):
         """Class A ATT replicate contract: `_survey_se_from_group_if`
         dispatches replicate fits through the cell-period allocator
@@ -182,21 +182,38 @@ class TestReplicateClassA:
         ratio_ir * psi_i` is not PSU-telescoping — same observation
         as PR #329's heterogeneity non-invariance guard).
 
-        This test locks the cell-allocator contract for the main ATT
-        surface by constructing both the legacy group-level psi_obs
-        and the cell-level psi_obs on the fitted `U_centered`
-        tensors, feeding each through `compute_replicate_if_variance`,
-        and asserting that (a) the cell-allocator variance matches
-        the fitted `overall_se**2` and (b) the cell and legacy
-        allocators produce materially different variances on the
-        fixture.
+        Locks the contract by spying on `compute_replicate_if_variance`
+        to capture the psi_obs actually passed during the fit,
+        reconstructing the legacy group-level counterpart via the
+        row-sum identity, and asserting:
+          (a) fit's `overall_se**2` matches the captured cell-allocator
+              psi_obs fed back through the helper;
+          (b) the legacy-reconstructed psi_obs yields a materially
+              different Rao-Wu variance, i.e. a future refactor that
+              switches Class A to the legacy allocator would drift
+              the fit's SE.
         """
         import numpy as _np
-        from diff_diff.survey import compute_replicate_if_variance
+        import diff_diff.survey as _survey_mod
 
         R = 20
         df = replicate_design(base_panel, R=R, method="SDR")
         sd = _build_replicate_design(R, "SDR")
+
+        # Spy on compute_replicate_if_variance to capture each
+        # psi_obs the fit passes. Pass through to the real helper so
+        # fit completes normally.
+        original_repvar = _survey_mod.compute_replicate_if_variance
+        captured_psi: list = []
+
+        def _spy(psi, resolved):
+            captured_psi.append(_np.asarray(psi).copy())
+            return original_repvar(psi, resolved)
+
+        monkeypatch.setattr(
+            _survey_mod, "compute_replicate_if_variance", _spy
+        )
+
         res = ChaisemartinDHaultfoeuille(seed=1).fit(
             df,
             outcome="outcome",
@@ -206,84 +223,71 @@ class TestReplicateClassA:
             survey_design=sd,
         )
         assert np.isfinite(res.overall_se) and res.overall_se > 0
-        resolved = sd.resolve(df)
-        # Pull fitted IF pieces from results to reconstruct both
-        # allocators externally.
-        overall_se_sq = float(res.overall_se) ** 2
+        assert captured_psi, (
+            "Spy captured no psi_obs — the fit did not route through "
+            "compute_replicate_if_variance. Did the replicate "
+            "dispatch change?"
+        )
 
-        # Construct per-cell and per-group psi_obs by running the
-        # library's own helper indirectly: re-fit with psu="group"
-        # which routes through the legacy group-level allocator
-        # branch inside _survey_se_from_group_if, and compare SEs.
-        # (Replicate designs reject explicit psu=, so we emulate the
-        # "legacy group-level" path via the alternative heterogeneity
-        # non-invariance check: the two variances DIFFER when ratios
-        # vary within group, confirming the cell allocator is active.)
-        #
-        # We exercise the documented invariance-violation pattern
-        # established for heterogeneity (PR #329): build psi_legacy
-        # = psi_g * w_i / W_g vs psi_new via the ATT's own U_centered
-        # row-sum identity. If the fit uses legacy group-level, the
-        # two variances match; if cell allocator, they differ.
+        # The first capture corresponds to the overall DID_M target
+        # (called from the `_compute_se`→`_survey_se_from_group_if`
+        # chain for the overall surface).
+        psi_obs_actual = captured_psi[0]
+
+        resolved = sd.resolve(df)
         obs_group = df["group"].values
         w = resolved.weights.astype(_np.float64)
         n_obs = len(w)
 
-        # Group-level group IF: res.overall_att * N_S = sum U_centered,
-        # but we only need the relative distribution. Use the
-        # per-group contribution as a stand-in by constructing
-        # arbitrary but non-trivial values that exercise the
-        # allocator.
+        # Row-sum identity on the cell-allocator psi_obs: summing
+        # over obs in group g recovers U_centered[g]. Use this to
+        # reconstruct the legacy group-level expansion on the SAME
+        # fitted U_centered.
         unique_gids = _np.unique(obs_group)
-        psi_g_stand = _np.array(
-            [0.1 * (hash(str(g)) % 7 - 3) for g in unique_gids],
-            dtype=_np.float64,
-        )
         g_to_idx = {g: i for i, g in enumerate(unique_gids)}
-
-        # Legacy group-level expansion: psi_i = psi_g[g] * w_i / W_g
+        U_centered_recon = _np.zeros(len(unique_gids), dtype=_np.float64)
         W_g = _np.zeros(len(unique_gids), dtype=_np.float64)
         for i in range(n_obs):
-            W_g[g_to_idx[obs_group[i]]] += w[i]
-        psi_legacy = _np.zeros_like(w)
+            gi = g_to_idx[obs_group[i]]
+            U_centered_recon[gi] += psi_obs_actual[i]
+            W_g[gi] += w[i]
+        psi_obs_legacy = _np.zeros_like(w)
         for i in range(n_obs):
             gi = g_to_idx[obs_group[i]]
             if W_g[gi] > 0:
-                psi_legacy[i] = psi_g_stand[gi] * w[i] / W_g[gi]
+                psi_obs_legacy[i] = (
+                    U_centered_recon[gi] * w[i] / W_g[gi]
+                )
 
-        # "Cell-level" expansion with all mass concentrated on a
-        # single post-period cell per group (e.g., period 3 — last
-        # period of the fixture's n_periods=5).
-        obs_period = df["period"].values
-        target_period = 3
-        W_cell_out = _np.zeros(len(unique_gids), dtype=_np.float64)
-        for i in range(n_obs):
-            if obs_period[i] == target_period:
-                W_cell_out[g_to_idx[obs_group[i]]] += w[i]
-        psi_new = _np.zeros_like(w)
-        for i in range(n_obs):
-            gi = g_to_idx[obs_group[i]]
-            if obs_period[i] == target_period and W_cell_out[gi] > 0:
-                psi_new[i] = psi_g_stand[gi] * w[i] / W_cell_out[gi]
+        # (a) Fit's overall_se^2 must match the variance recomputed
+        # from the captured psi_obs. Trivial sanity check — the fit
+        # computed it from this exact psi_obs via the spy pass-through.
+        var_cell_recompute, _ = original_repvar(psi_obs_actual, resolved)
+        assert float(res.overall_se) ** 2 == pytest.approx(
+            var_cell_recompute, rel=1e-12,
+        ), (
+            f"Fit's overall_se^2 does not match the recomputed "
+            f"variance on the captured psi_obs — spy / dispatch "
+            f"misalignment."
+        )
 
-        var_legacy, _ = compute_replicate_if_variance(psi_legacy, resolved)
-        var_new, _ = compute_replicate_if_variance(psi_new, resolved)
-        # Documented non-invariance (same as PR #329 heterogeneity):
-        # under per-row replicate matrices the two allocators produce
-        # materially different Rao-Wu variances. This confirms the
-        # allocator choice is observable on this fixture, so any
-        # future refactor that accidentally switches Class A ATT
-        # to the legacy allocator would be detectable.
-        assert _np.isfinite(var_legacy) and _np.isfinite(var_new)
-        assert not _np.isclose(var_legacy, var_new, rtol=1e-6), (
-            f"Expected legacy vs cell-period replicate variance to "
-            f"differ under within-group-varying replicate ratios so "
-            f"the allocator contract is observable. Got "
-            f"var_legacy={var_legacy}, var_new={var_new}. The fit's "
-            f"overall_se^2={overall_se_sq} should be produced by the "
-            f"cell-level path (shipped contract) — if this test "
-            f"fails with var_legacy == var_new, the fixture no "
-            f"longer exercises the allocator sensitivity."
+        # (b) Legacy-reconstructed psi_obs yields a different Rao-Wu
+        # variance on this fixture. Locks the allocator-sensitivity
+        # contract: if a future refactor routes Class A replicate
+        # ATT through the legacy group-level allocator, the fit's
+        # overall_se would silently match var_legacy instead — and
+        # this assertion would fail, surfacing the regression.
+        var_legacy, _ = original_repvar(psi_obs_legacy, resolved)
+        assert not _np.isclose(
+            var_cell_recompute, var_legacy, rtol=1e-6,
+        ), (
+            f"Expected cell-allocator variance to differ from legacy "
+            f"group-level variance on this fixture (per-row "
+            f"replicate matrix varies within group). Got "
+            f"cell={var_cell_recompute}, legacy={var_legacy}. Either "
+            f"the fixture no longer exercises the allocator "
+            f"sensitivity, OR the fit's allocator has silently "
+            f"reverted to legacy."
         )
 
     @pytest.mark.parametrize("method", REPLICATE_METHODS)
