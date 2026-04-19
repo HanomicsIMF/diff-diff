@@ -687,10 +687,14 @@ def _unroll_target_to_cells(
     bootstrap contribution. The analytical TSL path shares the same
     cell-period allocator and fires a matching guard in
     ``_survey_se_from_group_if``, so both paths reject this regime
-    consistently. Documented workarounds: pre-process the panel
-    (drop late-exit groups or trim to a balanced sub-panel), or use
-    an explicit ``psu=<group_col>`` so both analytical and bootstrap
-    paths route through the legacy group-level allocator.
+    consistently. **Documented workaround (bootstrap path):**
+    pre-process the panel to remove terminal missingness (drop
+    late-exit groups or trim to a balanced sub-panel). The within-
+    group-varying-PSU bootstrap has no allocator fallback — unlike
+    Binder TSL, where using an explicit ``psu=<group_col>`` routes
+    the analytical path through the legacy group-level allocator;
+    that fallback is not available on the bootstrap side because
+    the cell-level wild PSU bootstrap IS the varying-PSU regime.
 
     Returns ``(u_cell, psu_cell)`` of shape
     ``(n_valid_cells_in_target,)`` each.
@@ -738,8 +742,11 @@ def _unroll_target_to_cells(
             "the same regime, so both paths reject this panel "
             "consistently. Pre-process the panel to remove terminal "
             "missingness (drop late-exit groups or trim to a balanced "
-            "sub-panel), or use an explicit `psu=<group_col>` so both "
-            "paths route through the legacy group-level allocator."
+            "sub-panel). The within-group-varying-PSU bootstrap has "
+            "no allocator fallback — unlike Binder TSL, switching to "
+            "`psu=<group_col>` does not help here because the varying-"
+            "PSU bootstrap IS the cell-level path, not an analytical "
+            "surface with a legacy-allocator alternative."
         )
     return flat_u[mask], flat_psu[mask].astype(np.int64, copy=False)
 

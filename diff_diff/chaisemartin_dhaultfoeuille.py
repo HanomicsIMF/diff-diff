@@ -2125,22 +2125,27 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         "instead of replicate weights."
                     )
 
-                # Warning fires only when PSU is strictly coarser than
-                # group (multiple eligible groups share a PSU label).
-                # Under auto-inject psu=group or PSU that varies within
-                # group (each group contributes to >= 1 PSU), the
-                # warning should NOT fire because the Hall-Mammen
-                # wild PSU bootstrap is either identical to a group-
-                # level multiplier bootstrap (PSU=group) or finer-than-
-                # group (varying PSU; the cell-level allocator honors
-                # the per-cell PSU structure). Count unique PSUs
-                # across ALL positive-weight obs of eligible groups,
-                # not just the first label per group — under varying
-                # PSU a group spans multiple PSUs.
+                # Warning fires only when PSU is **strictly coarser
+                # than group** on an otherwise within-group-constant
+                # design (multiple eligible groups share a PSU label
+                # but no group spans more than one PSU). Two regimes
+                # are explicitly excluded:
+                # - PSU=group (auto-inject default): identity-map
+                #   fast path — no warning needed.
+                # - Within-group-varying PSU: the cell-level
+                #   allocator honors the per-cell PSU structure;
+                #   "n_psu < n_groups" is expected whenever cells
+                #   of a group share a PSU with cells of another
+                #   group, which does not indicate coarser-than-group
+                #   clustering in the Hall-Mammen sense.
+                # Count unique PSUs across ALL positive-weight obs of
+                # eligible groups AND detect within-group-varying
+                # PSU; suppress the warning in that regime.
                 psu_arr_warn = getattr(resolved_survey, "psu", None)
                 if psu_arr_warn is None or _obs_survey_info is None:
                     # No PSU info — can't compare to group count.
                     n_psu_eff_warn, n_groups_eff_warn = -1, -1
+                    psu_varies_within_warn = False
                 else:
                     obs_gids_warn = np.asarray(_obs_survey_info["group_ids"])
                     obs_ws_warn = np.asarray(
@@ -2148,9 +2153,6 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     )
                     pos_mask_warn = obs_ws_warn > 0
                     psu_codes_warn = np.asarray(psu_arr_warn)
-                    # Restrict to positive-weight obs whose group is
-                    # variance-eligible, then count unique PSU labels
-                    # across that full set (not first-per-group).
                     eligible_gid_set = set(_eligible_group_ids)
                     elig_obs_mask_warn = pos_mask_warn & np.array(
                         [g in eligible_gid_set for g in obs_gids_warn],
@@ -2162,9 +2164,26 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             len(np.unique(elig_psu_labels_arr))
                         )
                         n_groups_eff_warn = len(_eligible_group_ids)
+                        # Detect within-group-varying PSU on the
+                        # eligible subset so we can suppress the
+                        # "strictly coarser PSU" warning there.
+                        psu_varies_within_warn = bool(
+                            pd.DataFrame({
+                                "g": obs_gids_warn[elig_obs_mask_warn],
+                                "p": elig_psu_labels_arr,
+                            })
+                            .groupby("g")["p"]
+                            .nunique()
+                            .gt(1)
+                            .any()
+                        )
                     else:
                         n_psu_eff_warn, n_groups_eff_warn = -1, -1
-                if 0 <= n_psu_eff_warn < n_groups_eff_warn:
+                        psu_varies_within_warn = False
+                if (
+                    0 <= n_psu_eff_warn < n_groups_eff_warn
+                    and not psu_varies_within_warn
+                ):
                     warnings.warn(
                         f"Bootstrap with survey_design uses Hall-Mammen "
                         f"wild multiplier weights at the PSU level "
