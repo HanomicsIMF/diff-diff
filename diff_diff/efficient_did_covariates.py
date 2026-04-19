@@ -172,7 +172,15 @@ def estimate_propensity_ratio_sieve(
 
     Selects K via AIC/BIC: ``IC(K) = 2*loss(K) + C_n*K/n``.
 
-    On singular basis: tries lower K.  Short-circuits r_{g,g}(X) = 1.
+    Precondition check per K: if ``cond(Psi_{g'}' W Psi_{g'}) > 1/sqrt(eps)``
+    (≈ 6.7e7), that K is skipped. LinAlgError on the `np.linalg.solve` call
+    or a non-finite beta skips as well. If at least one K succeeds but
+    others were skipped, emits a ``UserWarning`` listing the skipped K
+    values (silent-failure audit PR, axis-A finding #18). If every K is
+    skipped, the caller falls back to a constant ratio of 1 with a
+    separate "estimation failed for all K values" warning.
+
+    Short-circuits ``r_{g,g}(X) = 1`` for same-cohort comparisons (PT-All).
 
     Parameters
     ----------
@@ -354,6 +362,14 @@ def estimate_inverse_propensity_sieve(
     This is the same structure as the ratio estimator but with all
     units on the RHS (not just group g), following the paper's
     algorithm step 4.
+
+    Precondition check per K: if ``cond(Psi_{g'}' W Psi_{g'}) > 1/sqrt(eps)``
+    (≈ 6.7e7), that K is skipped. LinAlgError on the `np.linalg.solve` call
+    or a non-finite beta skips as well. If at least one K succeeds but
+    others were skipped, emits a ``UserWarning`` listing the skipped K
+    values (silent-failure audit PR, axis-A finding #18). If every K is
+    skipped, the caller falls back to unconditional ``n/n_group`` scaling
+    with a separate "estimation failed for all K values" warning.
 
     Parameters
     ----------

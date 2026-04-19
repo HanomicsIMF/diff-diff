@@ -301,6 +301,7 @@ This matches the behavior of R's `fixest::feols()` with absorbed FE.
 - Requires never-treated units as comparison group (identified by `first_treat=0` or `never_treated=True`)
 - Warns if no never-treated units exist (suggests alternative comparison strategies)
 - Limited pre-treatment periods reduce ability to test parallel trends
+- **Note:** The analytical SE paths call `_safe_inv()` on the propensity-score Hessian (`H_psi`) and outcome-regression bread (`X'WX`) across every `(g, t)` cell. When these matrices are rank deficient, `np.linalg.solve` raises `LinAlgError` and `_safe_inv()` falls back to `np.linalg.lstsq`. Previously silent; now `fit()` emits ONE aggregate `UserWarning` at the end of the fit reporting the number of fallbacks and the max condition number, so a rank-deficient analytical SE path can't quietly ship degraded standard errors. Sibling of axis-A finding #17 in the Phase 2 silent-failures audit.
 
 *Estimator equation (as implemented):*
 

@@ -92,11 +92,29 @@ def _linear_regression(
     return beta, residuals
 
 
-def _safe_inv(A: np.ndarray) -> np.ndarray:
-    """Invert a square matrix with lstsq fallback for near-singular cases."""
+def _safe_inv(
+    A: np.ndarray,
+    tracker: Optional[list] = None,
+) -> np.ndarray:
+    """Invert a square matrix with lstsq fallback for near-singular cases.
+
+    Parameters
+    ----------
+    A : np.ndarray
+        Square matrix to invert.
+    tracker : list, optional
+        When provided, one condition-number sample of ``A`` is appended on
+        every LinAlgError fallback. ``CallawaySantAnna.fit()`` initializes
+        a list and emits a single aggregate `UserWarning` after the fit
+        finishes, rather than surfacing a separate warning per fallback.
+        Sibling of finding #17 in the Phase 2 silent-failures audit.
+    """
     try:
         return np.linalg.solve(A, np.eye(A.shape[0]))
     except np.linalg.LinAlgError:
+        if tracker is not None:
+            with np.errstate(invalid="ignore", over="ignore"):
+                tracker.append(float(np.linalg.cond(A)))
         return np.linalg.lstsq(A, np.eye(A.shape[0]), rcond=None)[0]
 
 
@@ -1436,6 +1454,12 @@ class CallawaySantAnna(
         # Reset stale state from prior fit (prevents leaking event-study VCV)
         self._event_study_vcov = None
 
+        # Tracker for _safe_inv lstsq fallbacks across all analytical SE
+        # paths (PS Hessian, OR bread, event-study bread, etc.). Emit ONE
+        # aggregate warning at the end of fit rather than fanning out per
+        # cell. Sibling of PR #9 finding #17.
+        self._safe_inv_tracker: List[float] = []
+
         if not self.panel:
             warnings.warn(
                 "panel=False uses repeated cross-section DRDID estimators "
@@ -1976,6 +2000,26 @@ class CallawaySantAnna(
                         eff_data["effect"] + cband_crit_value * se_val,
                     )
 
+        # Consolidated _safe_inv lstsq-fallback warning (sibling of PR #9
+        # finding #17). Rank-deficient PS Hessian / OR bread matrices in the
+        # analytical SE paths previously fell back to np.linalg.lstsq
+        # silently per cell. Now aggregated here into ONE UserWarning so
+        # a bad design surface doesn't quietly degrade analytical SEs.
+        if self._safe_inv_tracker:
+            n_fallbacks = len(self._safe_inv_tracker)
+            finite_conds = [c for c in self._safe_inv_tracker if np.isfinite(c)]
+            max_cond = max(finite_conds) if finite_conds else float("inf")
+            warnings.warn(
+                f"Rank-deficient matrix encountered {n_fallbacks} time(s) "
+                f"in analytical SE paths (propensity-score Hessian or "
+                f"outcome-regression bread); fell back to np.linalg.lstsq. "
+                f"Max condition number of affected matrix: {max_cond:.2e}. "
+                f"Analytical SEs may be numerically unstable; consider "
+                f"dropping collinear covariates or using n_bootstrap > 0.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Store results
         # Retrieve event-study VCV from aggregation mixin (Phase 7d).
         # Clear it when bootstrap overwrites event-study SEs to prevent
@@ -2276,7 +2320,7 @@ class CallawaySantAnna(
                         W_ps = W_ps * sw_all
                     # R: Hessian.ps = crossprod(X * sqrt(W)) / n
                     H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
-                    H_psi_inv = _safe_inv(H_psi)
+                    H_psi_inv = _safe_inv(H_psi, tracker=self._safe_inv_tracker)
 
                     D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
                     score_ps = (D_all - pscore_all)[:, None] * X_all_int
@@ -2562,7 +2606,7 @@ class CallawaySantAnna(
                         if sw_all is not None:
                             W_ps = W_ps * sw_all
                         H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
-                        H_psi_inv = _safe_inv(H_psi)
+                        H_psi_inv = _safe_inv(H_psi, tracker=self._safe_inv_tracker)
 
                         D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
                         score_ps = (D_all - pscore_all)[:, None] * X_all_int
@@ -2584,7 +2628,7 @@ class CallawaySantAnna(
                     X_c_int = X_control_with_intercept
                     W_diag = sw_control if sw_control is not None else np.ones(n_c)
                     XtWX = X_c_int.T @ (W_diag[:, None] * X_c_int)
-                    bread = _safe_inv(XtWX)
+                    bread = _safe_inv(XtWX, tracker=self._safe_inv_tracker)
 
                     # M1: dATT/dbeta — gradient of DR ATT w.r.t. OR parameters
                     X_t_int = X_treated_with_intercept
@@ -2628,7 +2672,7 @@ class CallawaySantAnna(
 
                         W_ps = pscore_all * (1 - pscore_all)
                         H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all_panel
-                        H_psi_inv = _safe_inv(H_psi)
+                        H_psi_inv = _safe_inv(H_psi, tracker=self._safe_inv_tracker)
 
                         D_all = np.concatenate([np.ones(n_t), np.zeros(n_c)])
                         score_ps = (D_all - pscore_all)[:, None] * X_all_int
@@ -2645,7 +2689,7 @@ class CallawaySantAnna(
                     # --- OR IF correction ---
                     X_c_int = X_control_with_intercept
                     XtX = X_c_int.T @ X_c_int
-                    bread = _safe_inv(XtX)
+                    bread = _safe_inv(XtX, tracker=self._safe_inv_tracker)
 
                     X_t_int = X_treated_with_intercept
                     M1 = (
@@ -3204,8 +3248,14 @@ class CallawaySantAnna(
         # R's colMeans (= sum/n_all) for M1, matching the product exactly.
         W_ct = sw_ct if sw_ct is not None else np.ones(n_ct)
         W_cs = sw_cs if sw_cs is not None else np.ones(n_cs)
-        bread_t = _safe_inv(X_ct_int.T @ (W_ct[:, None] * X_ct_int))
-        bread_s = _safe_inv(X_cs_int.T @ (W_cs[:, None] * X_cs_int))
+        bread_t = _safe_inv(
+            X_ct_int.T @ (W_ct[:, None] * X_ct_int),
+            tracker=self._safe_inv_tracker,
+        )
+        bread_s = _safe_inv(
+            X_cs_int.T @ (W_cs[:, None] * X_cs_int),
+            tracker=self._safe_inv_tracker,
+        )
 
         # R: M1 = colMeans(w.cont * out.x) = sum(w_D * X) / n_all
         M1 = (
@@ -3407,7 +3457,7 @@ class CallawaySantAnna(
                 W_ps = W_ps * sw_all
             # R: Hessian.ps = crossprod(X * sqrt(W)) / n
             H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all
-            H_psi_inv = _safe_inv(H_psi)
+            H_psi_inv = _safe_inv(H_psi, tracker=self._safe_inv_tracker)
 
             score_ps = (D_all - pscore)[:, None] * X_all_int
             if sw_all is not None:
@@ -3744,7 +3794,7 @@ class CallawaySantAnna(
                 W_ps = W_ps * sw_all
             # R: Hessian.ps = crossprod(X * sqrt(W)) / n
             H_psi = X_all_int.T @ (W_ps[:, None] * X_all_int) / n_all
-            H_psi_inv = _safe_inv(H_psi)
+            H_psi_inv = _safe_inv(H_psi, tracker=self._safe_inv_tracker)
 
             score_ps = (D_all - pscore)[:, None] * X_all_int
             if sw_all is not None:
@@ -3779,8 +3829,14 @@ class CallawaySantAnna(
         # =====================================================================
         W_ct_vals = sw_ct if sw_ct is not None else np.ones(n_ct)
         W_cs_vals = sw_cs if sw_cs is not None else np.ones(n_cs)
-        bread_ct = _safe_inv(X_ct_int.T @ (W_ct_vals[:, None] * X_ct_int))
-        bread_cs = _safe_inv(X_cs_int.T @ (W_cs_vals[:, None] * X_cs_int))
+        bread_ct = _safe_inv(
+            X_ct_int.T @ (W_ct_vals[:, None] * X_ct_int),
+            tracker=self._safe_inv_tracker,
+        )
+        bread_cs = _safe_inv(
+            X_cs_int.T @ (W_cs_vals[:, None] * X_cs_int),
+            tracker=self._safe_inv_tracker,
+        )
 
         # R: asy.lin.rep.ols  (per-obs OLS score * bread)
         asy_lin_rep_ct = (W_ct_vals * resid_ct)[:, None] * X_ct_int @ bread_ct
@@ -3818,8 +3874,14 @@ class CallawaySantAnna(
         # =====================================================================
         W_gt_vals = sw_gt if sw_gt is not None else np.ones(n_gt)
         W_gs_vals = sw_gs if sw_gs is not None else np.ones(n_gs)
-        bread_gt = _safe_inv(X_gt_int.T @ (W_gt_vals[:, None] * X_gt_int))
-        bread_gs = _safe_inv(X_gs_int.T @ (W_gs_vals[:, None] * X_gs_int))
+        bread_gt = _safe_inv(
+            X_gt_int.T @ (W_gt_vals[:, None] * X_gt_int),
+            tracker=self._safe_inv_tracker,
+        )
+        bread_gs = _safe_inv(
+            X_gs_int.T @ (W_gs_vals[:, None] * X_gs_int),
+            tracker=self._safe_inv_tracker,
+        )
 
         asy_lin_rep_gt = (W_gt_vals * resid_gt)[:, None] * X_gt_int @ bread_gt
         asy_lin_rep_gs = (W_gs_vals * resid_gs)[:, None] * X_gs_int @ bread_gs
