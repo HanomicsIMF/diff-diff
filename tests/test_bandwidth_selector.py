@@ -214,6 +214,45 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="bwcheck"):
             lpbwselect_mse_dpi(y, d, eval_point=0.0, bwcheck=-1)
 
+    def test_public_wrapper_fixes_vce_nn_nnmatch_3(self):
+        """Pin the public API scope restriction documented in
+        REGISTRY.md and the mse_optimal_bandwidth docstring.
+
+        The wrapper hard-codes vce='nn', nnmatch=3 for Phase 1b; users
+        needing other variance modes must go through the private port.
+        This test ensures the behavior is frozen: changing it would be
+        a scope expansion that should update REGISTRY.md and the
+        docstring in lockstep.
+        """
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        rng = np.random.default_rng(20260419)
+        G = 2000
+        d = rng.uniform(0, 1, size=G)
+        y = d + d**2 + rng.normal(0, 0.5, size=G)
+        via_wrapper = mse_optimal_bandwidth(
+            d, y, kernel="epanechnikov", return_diagnostics=True
+        )
+        via_port_nn = lpbwselect_mse_dpi(
+            y,
+            d,
+            eval_point=0.0,
+            p=1,
+            q=2,
+            deriv=0,
+            kernel="epa",
+            bwcheck=21,
+            bwregul=1.0,
+            vce="nn",
+            nnmatch=3,
+            interior=False,
+        )
+        # vce/nnmatch/interior/p/deriv chosen by the wrapper must match
+        # what the port call explicitly sets.
+        assert via_wrapper.h_mse == via_port_nn.h_mse_dpi
+        assert via_wrapper.b_mse == via_port_nn.b_mse_dpi
+        assert via_wrapper.c_bw == via_port_nn.c_bw
+
     def test_bwcheck_none_on_tiny_sample_does_not_index_error(self):
         """bwcheck=None should skip the NN floor.
 

@@ -512,6 +512,18 @@ def mse_optimal_bandwidth(
     ``bw_mp2``, ``bw_mp3``, ``b_mse``, ``h_mse``); see
     ``BandwidthResult`` for full diagnostics.
 
+    **Public API scope (Phase 1b of HAD).** This wrapper is intentionally
+    restricted to the HAD configuration: ``p=1`` (local-linear),
+    ``deriv=0`` (mean regression), ``interior=False`` (boundary eval
+    point), ``vce="nn"`` (nearest-neighbor variance), and ``nnmatch=3``
+    are hard-coded. The underlying ``diff_diff._nprobust_port`` supports
+    additional ``vce`` modes (``hc0`` / ``hc1`` / ``hc2`` / ``hc3``),
+    interior evaluation, and higher polynomial orders, but those paths
+    are NOT parity-tested against ``nprobust`` and are deferred to Phase
+    1c / Phase 2. Do not rely on this public wrapper for anything
+    outside HAD Phase 1b; use the port directly if you need the broader
+    surface and accept that parity has not been separately verified.
+
     Parameters
     ----------
     d : np.ndarray, shape (G,)
