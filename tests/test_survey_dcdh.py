@@ -2003,16 +2003,21 @@ class TestBootstrapCellPeriod:
         assert np.isfinite(res.bootstrap_results.overall_se)
 
     def test_bootstrap_zero_weight_group_equivalent_to_removing_it(self):
-        """Fixture A: 9 groups (1 all-zero-weighted + 8 positive).
-        Fixture B: 8 groups (same panel without the zero-weight
-        group). Under the fix, an eligible group that has no
-        positive-weight cells contributes nothing to the bootstrap
-        (its `psu_codes_per_cell` row is all sentinel). Both fits
-        therefore produce byte-identical bootstrap SE at the same
-        seed. Without the fix, the `valid_map` gate in fit() would
-        disable the entire PSU-aware path when any row is all
-        sentinel, silently dropping to unclustered group-level for
-        the other groups.
+        """Fixture A: 9 groups (1 all-zero-weighted + 8 positive)
+        with **within-group-varying PSU** so the dispatcher routes
+        through the cell-level path. Fixture B: 8 groups (same panel
+        without the zero-weight group), same varying PSU. Under the
+        fix, an eligible group with no positive-weight cells
+        contributes nothing to the bootstrap (its row of
+        `psu_codes_per_cell` is all sentinel), so both fits produce
+        byte-identical bootstrap SE at the same seed. Without the
+        fix, the `valid_map` gate disabled the entire PSU-aware
+        path — silently dropping fixture A to unclustered group-
+        level bootstrap while fixture B correctly ran the cell-
+        level path. Using `psu=group` (a within-group-constant PSU)
+        would not exercise this regression because the buggy and
+        correct paths collapse to the same identity-draw structure
+        under PSU=group — we deliberately use varying PSU here.
         """
         def _make(include_zero_group: bool) -> pd.DataFrame:
             rows = []
@@ -2023,13 +2028,16 @@ class TestBootstrapCellPeriod:
                     pw = 0.0 if (include_zero_group and g == 8) else 1.0
                     d = 1 if (f is not None and t >= f) else 0
                     y = float(g) + 0.1 * t + 1.0 * d
+                    # Within-group-varying PSU (period parity per
+                    # group) — exercises the cell-level dispatcher.
+                    psu = int(g) * 2 + (int(t) % 2)
                     rows.append({
                         "group": int(g),
                         "period": int(t),
                         "treatment": int(d),
                         "outcome": y,
                         "pw": pw,
-                        "psu": int(g),  # PSU=group, constant path
+                        "psu": psu,
                     })
             return pd.DataFrame(rows)
 
@@ -2053,8 +2061,9 @@ class TestBootstrapCellPeriod:
         assert np.isfinite(se_a) and np.isfinite(se_b)
         assert se_a == pytest.approx(se_b, rel=0.0, abs=1e-15), (
             f"Bootstrap SE must match when a zero-weight eligible "
-            f"group is added (fix P0 #1 — no silent dropback to "
-            f"unclustered group-level). Got SE_with_zero={se_a!r}, "
+            f"group is added under within-group-varying PSU (fix "
+            f"P0 #1 — no silent dropback to unclustered group-"
+            f"level). Got SE_with_zero={se_a!r}, "
             f"SE_without_zero={se_b!r}."
         )
 

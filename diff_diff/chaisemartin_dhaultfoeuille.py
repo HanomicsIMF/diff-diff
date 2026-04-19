@@ -2109,16 +2109,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     )
 
                 # Warning fires only when PSU is strictly coarser than
-                # group. Under auto-inject psu=group (or explicit
-                # psu=<group_col>), groups and PSUs coincide so
-                # Hall-Mammen wild PSU bootstrap equals group-level
-                # multiplier bootstrap — no need to warn.
-                # Count groups/PSUs on the POST-FILTER eligible set
-                # (`_eligible_group_ids`) — the same set the bootstrap
-                # map is built from below. Using raw positive-weight
-                # groups here would emit a misleading warning on
-                # panels where upstream dCDH filtering drops groups
-                # that happen to share PSUs with kept groups.
+                # group (multiple eligible groups share a PSU label).
+                # Under auto-inject psu=group or PSU that varies within
+                # group (each group contributes to >= 1 PSU), the
+                # warning should NOT fire because the Hall-Mammen
+                # wild PSU bootstrap is either identical to a group-
+                # level multiplier bootstrap (PSU=group) or finer-than-
+                # group (varying PSU; the cell-level allocator honors
+                # the per-cell PSU structure). Count unique PSUs
+                # across ALL positive-weight obs of eligible groups,
+                # not just the first label per group — under varying
+                # PSU a group spans multiple PSUs.
                 psu_arr_warn = getattr(resolved_survey, "psu", None)
                 if psu_arr_warn is None or _obs_survey_info is None:
                     # No PSU info — can't compare to group count.
@@ -2130,24 +2131,22 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     )
                     pos_mask_warn = obs_ws_warn > 0
                     psu_codes_warn = np.asarray(psu_arr_warn)
-                    # Collect the PSU label for each variance-eligible
-                    # group. PSU that varies within group is rejected
-                    # for the bootstrap path upstream (NotImplementedError
-                    # gate), so the first positive-weight label
-                    # represents the whole group here.
-                    eligible_psu_labels: List[Any] = []
-                    for gid in _eligible_group_ids:
-                        mask_g = (obs_gids_warn == gid) & pos_mask_warn
-                        if mask_g.any():
-                            eligible_psu_labels.append(
-                                psu_codes_warn[mask_g][0]
-                            )
-                    n_groups_eff_warn = len(eligible_psu_labels)
-                    n_psu_eff_warn = (
-                        int(len(np.unique(np.asarray(eligible_psu_labels))))
-                        if eligible_psu_labels
-                        else -1
+                    # Restrict to positive-weight obs whose group is
+                    # variance-eligible, then count unique PSU labels
+                    # across that full set (not first-per-group).
+                    eligible_gid_set = set(_eligible_group_ids)
+                    elig_obs_mask_warn = pos_mask_warn & np.array(
+                        [g in eligible_gid_set for g in obs_gids_warn],
+                        dtype=bool,
                     )
+                    if elig_obs_mask_warn.any():
+                        elig_psu_labels_arr = psu_codes_warn[elig_obs_mask_warn]
+                        n_psu_eff_warn = int(
+                            len(np.unique(elig_psu_labels_arr))
+                        )
+                        n_groups_eff_warn = len(_eligible_group_ids)
+                    else:
+                        n_psu_eff_warn, n_groups_eff_warn = -1, -1
                 if 0 <= n_psu_eff_warn < n_groups_eff_warn:
                     warnings.warn(
                         f"Bootstrap with survey_design uses Hall-Mammen "
