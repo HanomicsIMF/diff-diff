@@ -1853,7 +1853,10 @@ raw data — every effect, SE, p-value, CI, and sensitivity bound is
 read from the fitted result or produced by an existing diff-diff
 utility (may call `check_parallel_trends`, `bacon_decompose`, or
 `EfficientDiD.hausman_pretest` when the panel + column kwargs are
-supplied). Report-layer cross-period aggregations are enumerated in
+supplied). The `design_effect` section is read-only: it echoes
+`survey_metadata.design_effect` / `effective_n` from the fitted
+result rather than calling `compute_deff_diagnostics`. Report-layer
+cross-period aggregations are enumerated in
 `docs/methodology/REPORTING.md`. Both schemas are experimental in the
 current release; see that document for phrasing rules, the
 no-traffic-light decision, unit-translation policy, and schema

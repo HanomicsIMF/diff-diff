@@ -1100,6 +1100,83 @@ class TestHausmanPretestPropagatesCluster:
         ), f"cluster column must propagate from fit to Hausman pretest; got {captured}"
 
 
+class TestWooldridgeResultsRouting:
+    """Round-16 P1 regression: the collectors must accept
+    ``WooldridgeDiDResults`` payloads, which use ``att`` (not
+    ``effect``). Without this, PT and heterogeneity silently skip on
+    Wooldridge fits. Also, Wooldridge aggregation keeps ``t >= g`` and
+    ignores the ``anticipation`` shift used by CS / SA / EfficientDiD
+    (REGISTRY.md §Wooldridge lines 1351-1352).
+    """
+
+    def _wooldridge_stub(self, *, anticipation: int = 0):
+        class WooldridgeDiDResults:
+            pass
+
+        stub = WooldridgeDiDResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.anticipation = anticipation
+        # Event study: Wooldridge payloads use ``att`` not ``effect``.
+        stub.event_study_effects = {
+            -2: {"att": -0.05, "se": 0.1, "p_value": 0.62},
+            -1: {"att": 0.04, "se": 0.1, "p_value": 0.69},
+            0: {"att": 1.00, "se": 0.1, "p_value": 0.001},
+            1: {"att": 1.20, "se": 0.1, "p_value": 0.001},
+            2: {"att": 1.40, "se": 0.1, "p_value": 0.001},
+        }
+        return stub
+
+    def test_pre_period_collector_reads_att_payload(self):
+        from diff_diff.diagnostic_report import _collect_pre_period_coefs
+
+        stub = self._wooldridge_stub()
+        pre = _collect_pre_period_coefs(stub)
+        keys = sorted(row[0] for row in pre)
+        assert keys == [
+            -2,
+            -1,
+        ], f"pre-period collector must read Wooldridge ``att`` payloads; got {keys}"
+        effects = {row[0]: row[1] for row in pre}
+        assert effects[-2] == pytest.approx(-0.05)
+        assert effects[-1] == pytest.approx(0.04)
+
+    def test_heterogeneity_reads_att_payload(self):
+        from diff_diff import DiagnosticReport
+
+        stub = self._wooldridge_stub()
+        dr = DiagnosticReport(stub)
+        effects = sorted(dr._collect_effect_scalars())
+        # Event-study post-only: rel >= 0 → {1.00, 1.20, 1.40}.
+        assert effects == pytest.approx([1.00, 1.20, 1.40])
+
+    def test_wooldridge_ignores_anticipation_shift_on_pre_periods(self):
+        from diff_diff.diagnostic_report import _collect_pre_period_coefs
+
+        stub = self._wooldridge_stub(anticipation=1)
+        pre = _collect_pre_period_coefs(stub)
+        keys = sorted(row[0] for row in pre)
+        # Wooldridge keeps rel < 0 regardless of anticipation.
+        assert keys == [-2, -1]
+
+    def test_wooldridge_ignores_anticipation_shift_on_heterogeneity(self):
+        from diff_diff import DiagnosticReport
+
+        stub = self._wooldridge_stub(anticipation=1)
+        dr = DiagnosticReport(stub)
+        effects = sorted(dr._collect_effect_scalars())
+        # Anticipation window (rel=-1) must not leak into the post set
+        # for Wooldridge even with anticipation=1.
+        assert effects == pytest.approx([1.00, 1.20, 1.40])
+
+
 class TestAnticipationAwareHorizonClassification:
     """Round-15 P1 regression: on anticipation-aware fits (CS / SA /
     EfficientDiD with ``anticipation > 0``), the report layer must

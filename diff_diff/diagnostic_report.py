@@ -1644,15 +1644,24 @@ class DiagnosticReport:
                     try:
                         g_num = float(g_t[0])
                         t_num = float(g_t[1])
-                        # Anticipation-aware post cutoff for (g, t) cells:
-                        # a fit with ``anticipation=k`` treats cells with
-                        # ``t >= g - k`` as treatment-affected (the
-                        # anticipation window is post-announcement).
-                        anticipation = getattr(r, "anticipation", 0) or 0
-                        try:
-                            anticipation = int(anticipation)
-                        except (TypeError, ValueError):
+                        # Estimator-specific post cutoff. CS /
+                        # EfficientDiD / SA treat ``t >= g - anticipation``
+                        # as treatment-affected (anticipation window is
+                        # post-announcement). Wooldridge aggregation is
+                        # documented as ``t >= g`` with the anticipation
+                        # window rendered as placebos, not post-
+                        # treatment effects (REGISTRY.md §Wooldridge
+                        # lines 1351-1352). Round-16 CI review flagged
+                        # the blanket anticipation shift as Wooldridge-
+                        # unfaithful.
+                        if type(r).__name__ == "WooldridgeDiDResults":
                             anticipation = 0
+                        else:
+                            anticipation = getattr(r, "anticipation", 0) or 0
+                            try:
+                                anticipation = int(anticipation)
+                            except (TypeError, ValueError):
+                                anticipation = 0
                         if t_num < g_num - anticipation:
                             continue
                     except (TypeError, ValueError):
@@ -1988,13 +1997,18 @@ def _extract_scalar_headline(
 
 
 def _extract_scalar_effect(val: Any) -> Optional[float]:
-    """Pull a scalar ``effect`` out of the many shapes results expose.
+    """Pull a scalar effect out of the many shapes results expose.
 
-    Handles: ``PeriodEffect`` / ``GroupTimeEffect`` objects (``.effect`` attr),
-    dicts with an ``"effect"`` key, and bare scalars.
+    Handles: ``PeriodEffect`` / ``GroupTimeEffect`` objects (``.effect``
+    or ``.att`` attr), dicts with an ``"effect"`` or ``"att"`` key, and
+    bare scalars. Wooldridge stores ``att`` in its ``group_time_effects``
+    / ``group_effects`` / ``event_study_effects`` payloads rather than
+    ``effect`` (round-16 CI review on PR #318).
     """
     if isinstance(val, dict):
         eff = val.get("effect")
+        if eff is None:
+            eff = val.get("att")
         if eff is None:
             return None
         try:
@@ -2002,6 +2016,8 @@ def _extract_scalar_effect(val: Any) -> Optional[float]:
         except (TypeError, ValueError):
             return None
     eff_attr = getattr(val, "effect", None)
+    if eff_attr is None:
+        eff_attr = getattr(val, "att", None)
     if eff_attr is not None:
         try:
             return float(eff_attr)
@@ -2052,7 +2068,15 @@ def _pre_post_boundary(results: Any) -> int:
 
     Round-15 CI review on PR #318 flagged the hard-coded ``rel < 0``
     rule as a methodology mismatch on anticipation fits.
+
+    Estimator-specific override: Wooldridge aggregation keeps
+    ``t >= g`` and treats anticipation-window cells as placebos, not
+    post-treatment effects (REGISTRY.md §Wooldridge lines 1351-1352).
+    The boundary for ``WooldridgeDiDResults`` is therefore ``0``
+    regardless of the ``anticipation`` value stored on the result.
     """
+    if type(results).__name__ == "WooldridgeDiDResults":
+        return 0
     anticipation = getattr(results, "anticipation", 0)
     try:
         k = int(anticipation)
@@ -2158,7 +2182,11 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
             # and joint-Wald index are not inflated by non-informative rows.
             if entry.get("n_groups") == 0 or entry.get("n_obs") == 0:
                 continue
+            # Wooldridge stores ``att`` rather than ``effect`` in its
+            # event-study payloads; accept either (round-16 CI review).
             eff = entry.get("effect")
+            if eff is None:
+                eff = entry.get("att")
             se = entry.get("se")
             p = entry.get("p_value")
             if eff is None or se is None:

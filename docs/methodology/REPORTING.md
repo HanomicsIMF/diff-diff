@@ -20,12 +20,18 @@ fitting and do not re-derive any variance from raw data; every effect,
 SE, p-value, CI, and sensitivity bound is either read from the fitted
 result or produced by an existing diff-diff utility
 (`compute_honest_did`, `HonestDiD.sensitivity`, `bacon_decompose`,
-`check_parallel_trends`, `compute_deff_diagnostics`,
-`compute_pretrends_power`). When the caller passes the raw panel +
-column kwargs, `DiagnosticReport` may call those utilities on the
-supplied data (2x2 PT via `check_parallel_trends`, Goodman-Bacon
-decomposition via `bacon_decompose`, and the EfficientDiD Hausman
-PT-All vs PT-Post pretest via `EfficientDiD.hausman_pretest`). The report layer **does** compose a few
+`check_parallel_trends`, `compute_pretrends_power`). When the caller
+passes the raw panel + column kwargs, `DiagnosticReport` may call
+those utilities on the supplied data (2x2 PT via
+`check_parallel_trends`, Goodman-Bacon decomposition via
+`bacon_decompose`, and the EfficientDiD Hausman PT-All vs PT-Post
+pretest via `EfficientDiD.hausman_pretest`).
+
+The `design_effect` section of `DiagnosticReport.to_dict()` is a
+read-only surface: it echoes `survey_metadata.design_effect` and
+`effective_n` from the fitted result along with a plain-English band
+label. It does not call `compute_deff_diagnostics` (that helper
+needs per-fit internals the result objects do not expose). The report layer **does** compose a few
 cross-period summary statistics from per-period inputs already
 produced by the estimator — specifically the joint-Wald / Bonferroni
 pre-trends p-value from pre-period event-study coefficients (see
