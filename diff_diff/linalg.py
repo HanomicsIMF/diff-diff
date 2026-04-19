@@ -2271,28 +2271,13 @@ class LinearRegression:
         self.survey_design = survey_design  # ResolvedSurveyDesign or None
         # Resolve vcov_type from the legacy `robust` alias via the shared helper.
         self.vcov_type = resolve_vcov_type(robust, vcov_type)
-        # Legacy compatibility: `robust=False` + `cluster_ids=...` historically
-        # produced CR1 cluster-robust SEs (the cluster structure silently
-        # overrode the non-robust flag). The new `resolve_vcov_type` maps
-        # `robust=False` to `"classical"` eagerly, which the linalg validator
-        # rejects alongside `cluster_ids`. When `vcov_type` was implicit
-        # (alias-derived) and a cluster structure is present, remap to
-        # `"hc1"` so the fit dispatches to CR1 instead of raising. Emit a
-        # UserWarning so the remap is not silent. Users who genuinely want
-        # non-robust SEs can pass `vcov_type="classical"` explicitly (and
-        # then not set `cluster_ids`).
-        if vcov_type is None and self.vcov_type == "classical" and cluster_ids is not None:
-            warnings.warn(
-                "LinearRegression(robust=False, cluster_ids=...) historically "
-                "produced CR1 cluster-robust SEs. To preserve that behavior, "
-                "vcov_type has been remapped from 'classical' to 'hc1'. Pass "
-                "vcov_type='hc1' explicitly to silence this warning, or "
-                "vcov_type='classical' (with cluster_ids=None) for non-robust "
-                "SEs.",
-                UserWarning,
-                stacklevel=2,
-            )
-            self.vcov_type = "hc1"
+        # Track whether `vcov_type` was supplied explicitly. Used at fit
+        # time to decide whether to remap implicit ``"classical"`` to
+        # ``"hc1"`` under the legacy ``robust=False`` + cluster
+        # backward-compat rule. Resolved in ``fit()`` (not ``__init__``)
+        # so the remap also fires when the caller uses the documented
+        # ``fit(cluster_ids=...)`` override rather than the constructor.
+        self._vcov_type_explicit = vcov_type is not None
 
         # Fitted attributes (set by fit())
         self.coefficients_: Optional[np.ndarray] = None
@@ -2351,6 +2336,38 @@ class LinearRegression:
 
         # Use provided cluster_ids or fall back to instance-level
         effective_cluster_ids = cluster_ids if cluster_ids is not None else self.cluster_ids
+
+        # Legacy-alias backward compat: when the user supplied
+        # ``robust=False`` without an explicit ``vcov_type`` and a cluster
+        # structure is present at fit time (either via the constructor
+        # ``cluster_ids`` or the documented ``fit(cluster_ids=...)``
+        # override), remap the implicit ``"classical"`` to ``"hc1"`` so
+        # the call dispatches to CR1 instead of raising
+        # ``classical SEs are one-way only``. The estimator classes
+        # (DifferenceInDifferences / MultiPeriodDiD / TwoWayFixedEffects)
+        # apply the same remap at their respective fit-time call sites;
+        # this block is the public-API equivalent for direct
+        # ``LinearRegression`` callers. Users who genuinely want non-
+        # robust SEs can pass ``vcov_type="classical"`` explicitly.
+        # Store the per-fit effective vcov_type on a local so a later
+        # ``fit()`` call with different cluster context re-evaluates.
+        if (
+            not self._vcov_type_explicit
+            and self.vcov_type == "classical"
+            and effective_cluster_ids is not None
+        ):
+            warnings.warn(
+                "LinearRegression(robust=False) with clustered fit "
+                "(cluster_ids=...) historically produced CR1 cluster-"
+                "robust SEs. To preserve that behavior, vcov_type has "
+                "been remapped from 'classical' to 'hc1'. Pass "
+                "vcov_type='hc1' explicitly to silence this warning, or "
+                "vcov_type='classical' (with cluster_ids=None) for non-"
+                "robust SEs.",
+                UserWarning,
+                stacklevel=2,
+            )
+            self.vcov_type = "hc1"
 
         # Determine if survey vcov should be used
         _use_survey_vcov = False

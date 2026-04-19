@@ -258,7 +258,7 @@ class TestFitBehavior:
         assert res.vcov_type == "hc1"
 
     def test_linear_regression_robust_false_with_cluster_preserves_cr1(self):
-        """Direct LinearRegression API: same remap must apply at __init__."""
+        """Direct LinearRegression API: constructor-time cluster remap."""
         from diff_diff.linalg import LinearRegression
 
         rng = np.random.default_rng(1)
@@ -275,6 +275,33 @@ class TestFitBehavior:
         assert reg.vcov_type == "hc1"
         assert reg.coefficients_ is not None
         inf = reg.get_inference(1)  # index 1 is the predictor (0 is intercept)
+        assert np.isfinite(inf.se) and inf.se > 0
+
+    def test_linear_regression_robust_false_fit_time_cluster_preserves_cr1(self):
+        """LinearRegression(robust=False).fit(cluster_ids=...) override path.
+
+        Regression guard for the reviewer's P1: constructor-time cluster
+        remap alone isn't enough — users often pass cluster_ids via the
+        documented fit() override. The remap must fire there too.
+        """
+        from diff_diff.linalg import LinearRegression
+
+        rng = np.random.default_rng(2)
+        n = 100
+        X = rng.normal(size=(n, 1))
+        y = 1.0 + 0.5 * X[:, 0] + rng.normal(scale=0.3, size=n)
+        cluster_ids = np.repeat(np.arange(10), 10)
+
+        # Construct WITHOUT cluster_ids; supply them only at fit time.
+        reg = LinearRegression(robust=False)
+        assert reg.vcov_type == "classical"  # constructor-resolved alias
+
+        with pytest.warns(UserWarning, match="historically produced CR1"):
+            reg.fit(X, y, cluster_ids=cluster_ids)
+        # Remapped at fit time.
+        assert reg.vcov_type == "hc1"
+        assert reg.coefficients_ is not None
+        inf = reg.get_inference(1)
         assert np.isfinite(inf.se) and inf.se > 0
 
     def test_robust_false_without_cluster_stays_classical(self):
