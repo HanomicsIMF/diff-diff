@@ -1068,6 +1068,17 @@ class DiagnosticReport:
             cov_source = "full_pre_period_vcov"
 
         tier = _power_tier(ratio)
+        # Central diagonal-fallback downgrade. When the helper used the
+        # diagonal-SE approximation while the full ``event_study_vcov``
+        # was available, a ``well_powered`` verdict can be optimistic
+        # because off-diagonal pre-period correlations are ignored.
+        # REPORTING.md's conservative deviation says to downgrade in
+        # that case. Doing it here (once) ensures every downstream
+        # surface — BR ``summary()``, BR ``full_report()``, BR schema,
+        # DR ``summary()`` — reads the same adjusted tier (round-14
+        # CI review flagged per-surface divergence).
+        if tier == "well_powered" and cov_source == "diag_fallback_available_full_vcov_unused":
+            tier = "moderately_powered"
         return {
             "status": "ran",
             "method": "compute_pretrends_power",

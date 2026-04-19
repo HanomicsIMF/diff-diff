@@ -1280,17 +1280,12 @@ def _render_summary(schema: Dict[str, Any]) -> str:
     if pt.get("status") == "computed":
         jp = pt.get("joint_p_value")
         verdict = pt.get("verdict")
+        # ``tier`` already incorporates the diagonal-fallback downgrade —
+        # ``DiagnosticReport._check_pretrends_power`` applies it centrally
+        # so every report surface (BR summary, BR full_report, BR schema,
+        # DR summary) reads the same adjusted value (round-14 CI review).
         tier = pt.get("power_tier")
         method = pt.get("method")
-        # ``compute_pretrends_power`` currently falls back to ``np.diag(ses**2)``
-        # for CS / SA / ImputationDiD / Stacked / etc., even when the full
-        # ``event_study_vcov`` is available. Downgrade any "well_powered" tier
-        # to "moderately_powered" when we know the diagonal approximation was
-        # the only input — a diagonal-only MDV can be optimistic because it
-        # ignores correlations across pre-periods.
-        cov_source = pt.get("power_covariance_source")
-        if tier == "well_powered" and cov_source == "diag_fallback_available_full_vcov_unused":
-            tier = "moderately_powered"
         subject = _pt_method_subject(method)
         stat_label = _pt_method_stat_label(method)
         jp_phrase = (

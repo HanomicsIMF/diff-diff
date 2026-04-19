@@ -1100,6 +1100,126 @@ class TestHausmanPretestPropagatesCluster:
         ), f"cluster column must propagate from fit to Hausman pretest; got {captured}"
 
 
+class TestDiagFallbackDowngradeAppliedCentrally:
+    """Round-14 regression: when ``compute_pretrends_power`` fell back to
+    a diagonal-SE approximation while the full ``event_study_vcov`` was
+    available, the ``well_powered`` tier must be downgraded to
+    ``moderately_powered`` on **every** report surface (BR summary, BR
+    full_report, BR schema, DR summary), not just inside one of them.
+    Centralize the downgrade in ``_check_pretrends_power`` so every
+    consumer reads the same adjusted tier. REPORTING.md lines 126-139.
+    """
+
+    def test_br_schema_tier_is_downgraded(self):
+        """Smoke-check that the centralized downgrade lands in the DR
+        schema when ``covariance_source`` is the flagged fallback value."""
+        # Build a hand-crafted DR schema exactly as the centralized
+        # downgrade would emit it — mdv ratio < 0.25 (so the pre-
+        # downgrade tier is ``well_powered``), cov_source is the
+        # diag-fallback-with-full-vcov-available sentinel.
+        from diff_diff.diagnostic_report import DiagnosticReportResults
+
+        schema = {
+            "schema_version": "1.0",
+            "estimator": "CallawaySantAnnaResults",
+            "headline_metric": {"name": "overall_att", "value": 1.0},
+            "parallel_trends": {
+                "status": "ran",
+                "method": "joint_wald_event_study",
+                "joint_p_value": 0.40,
+                "verdict": "no_detected_violation",
+            },
+            "pretrends_power": {
+                "status": "ran",
+                "method": "compute_pretrends_power",
+                "mdv": 0.10,
+                "mdv_share_of_att": 0.10,
+                # Central downgrade: tier already reflects the cov-source.
+                "tier": "moderately_powered",
+                "covariance_source": "diag_fallback_available_full_vcov_unused",
+            },
+            "sensitivity": {"status": "not_applicable"},
+            "placebo": {"status": "skipped", "reason": "opt-in"},
+            "bacon": {"status": "not_applicable"},
+            "design_effect": {"status": "not_applicable"},
+            "heterogeneity": {"status": "not_applicable"},
+            "epv": {"status": "not_applicable"},
+            "estimator_native_diagnostics": {"status": "not_applicable"},
+            "skipped": {},
+            "warnings": [],
+            "overall_interpretation": "",
+            "next_steps": [],
+        }
+
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+
+        dr_results = DiagnosticReportResults(
+            schema=schema,
+            interpretation="",
+            applicable_checks=("parallel_trends", "pretrends_power"),
+            skipped_checks={},
+            warnings=(),
+        )
+        br = BusinessReport(stub, diagnostics=dr_results)
+        br_schema = br.to_dict()
+        pt_block = br_schema["pre_trends"]
+        assert pt_block["power_tier"] == "moderately_powered"
+        # All three prose surfaces must reflect the downgraded tier —
+        # none should render the well-powered phrasing ("likely have
+        # been detected" / well-powered adjective).
+        summary = br.summary()
+        full = br.full_report()
+        for text in (summary, full):
+            assert "well-powered" not in text.lower()
+            assert "likely have" not in text
+        # Positive check: moderately-informative phrasing appears in BR
+        # prose and BR's overall-interpretation pass-through.
+        assert (
+            "moderately informative" in summary
+            or "moderately informative" in full
+            or "moderately-informative" in summary
+        )
+
+    def test_center_downgrade_fires_on_real_cs_fit(self, cs_fit):
+        """On a real CS fit the central downgrade should land in the DR
+        schema when the helper used the diagonal fallback — no separate
+        BR-side downgrade is needed."""
+        from diff_diff import DiagnosticReport
+
+        fit, sdf = cs_fit
+        dr = DiagnosticReport(
+            fit,
+            data=sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        pp = dr.to_dict()["pretrends_power"]
+        if pp.get("status") != "ran":
+            pytest.skip("pretrends_power did not run on this fixture")
+        cov = pp.get("covariance_source")
+        if cov != "diag_fallback_available_full_vcov_unused":
+            pytest.skip(
+                "fixture did not trigger the diag_fallback_available path; " "nothing to downgrade"
+            )
+        # When the flagged cov_source fires, tier must never be
+        # ``well_powered`` — centralized downgrade guarantees this.
+        assert pp["tier"] != "well_powered"
+
+
 class TestCSNotYetTreatedControlGroupSemantics:
     """Round-13 P1 regression: ``BusinessReport`` must not relabel
     ``n_control_units`` as generic "control" for a
