@@ -751,6 +751,29 @@ class TestEdgeCases:
         ):
             est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
 
+    def test_nan_first_treat_raises_with_row_count(self):
+        """NaN `first_treat` must raise ValueError with the row count. Without
+        this guard, NaN rows survive preprocessing but match neither the
+        treated (g > 0) nor never-treated (g == 0) mask, so the affected
+        units would be silently excluded."""
+        rows = []
+        for unit in range(4):
+            # Unit 0 has NaN first_treat across all 3 periods (3 NaN rows).
+            ft = np.nan if unit == 0 else 0.0
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": 0.0,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with pytest.raises(
+            ValueError,
+            match=r"3 row\(s\) have NaN 'first_treat' values",
+        ):
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+
     def test_positive_inf_warning_silent_when_no_inf(self):
         """+inf warning is gated on +inf rows only; panels with only valid
         non-negative values (including just 0 and positive periods) must

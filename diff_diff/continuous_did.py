@@ -235,6 +235,19 @@ class ContinuousDiD:
         # existing `.replace([np.inf, float("inf")], 0)` semantics on the
         # next line).
         first_treat_vals = df[first_treat].values
+        # Reject NaN first_treat explicitly. NaN survives preprocessing but
+        # satisfies neither the treated (g > 0) nor never-treated (g == 0)
+        # mask, so affected units would be silently excluded from the
+        # estimator (same silent-failure shape as `first_treat < 0`).
+        nan_mask = pd.isna(df[first_treat])
+        n_nan_first_treat = int(nan_mask.sum())
+        if n_nan_first_treat > 0:
+            raise ValueError(
+                f"{n_nan_first_treat} row(s) have NaN '{first_treat}' "
+                f"values. Valid values are 0 (never-treated) or a positive "
+                f"treatment period; such units would otherwise be silently "
+                f"excluded from both treated and control pools."
+            )
         inf_mask = np.isposinf(first_treat_vals)
         n_inf_first_treat = int(inf_mask.sum())
         if n_inf_first_treat > 0:

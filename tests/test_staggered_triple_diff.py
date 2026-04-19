@@ -397,12 +397,23 @@ class TestStaggeredTripleDiffEdgeCases:
             est.fit(simple_data, "outcome", "unit", "period", "nonexistent", "eligibility")
 
     def test_inf_first_treat_works(self):
-        """Never-enabled units encoded as inf should work."""
+        """Never-enabled units encoded as inf should be recoded to 0, and the
+        recoding must surface a UserWarning with the affected row count
+        (axis-E silent coercion, mirroring the StaggeredDiD behavior)."""
         data = generate_staggered_ddd_data(n_units=100, seed=33)
         data["first_treat"] = data["first_treat"].astype(float)
-        data.loc[data["first_treat"] == 0, "first_treat"] = np.inf
+        inf_mask = data["first_treat"] == 0
+        n_inf_rows = int(inf_mask.sum())
+        data.loc[inf_mask, "first_treat"] = np.inf
         est = StaggeredTripleDifference()
-        res = est.fit(data, "outcome", "unit", "period", "first_treat", "eligibility")
+
+        with pytest.warns(
+            UserWarning,
+            match=rf"{n_inf_rows} row\(s\) have first_treat=inf; recoding to 0",
+        ):
+            res = est.fit(
+                data, "outcome", "unit", "period", "first_treat", "eligibility"
+            )
         assert np.isfinite(res.overall_att)
 
     def test_survey_design_invalid_type_raises(self, simple_data):

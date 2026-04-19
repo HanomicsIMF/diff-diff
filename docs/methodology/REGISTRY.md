@@ -1692,6 +1692,7 @@ Balanced panel. Key variables:
 - `Q_i` (`eligibility`): binary, time-invariant eligibility indicator
 - Treatment: `D_{i,t} = 1{t >= S_i AND Q_i = 1}` (absorbing)
 - Covariates `X_i`: time-invariant (first observation per unit used)
+- **Note:** `first_treat=inf` (R-style never-enabled marker) is accepted and normalized to `0` internally. The recoding now emits a `UserWarning` reporting the affected row count so the reclassification is not silent (axis-E silent coercion under the Phase 2 audit, mirroring the StaggeredDiD behavior). Pass `first_treat=0` directly to avoid the warning.
 
 *Estimator equation (Equation 4.1 in paper, as implemented):*
 
