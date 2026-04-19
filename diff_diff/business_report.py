@@ -477,25 +477,34 @@ class BusinessReport:
         n_control_units = _safe_int(getattr(r, "n_control", getattr(r, "n_control_units", None)))
 
         # Control-group semantics. For estimators that expose a
-        # ``control_group`` kwarg (CS, EfficientDiD), the meaning of
-        # ``n_control_units`` depends on it. On CallawaySantAnna with
-        # ``control_group="not_yet_treated"``, ``n_control_units`` counts
-        # only the never-treated subset, so the actual dynamic
-        # comparison group can be non-empty even when this count is 0.
-        # Label the exposed count as never-treated and record the
-        # active control-group mode so prose can surface the dynamic-
-        # comparison context instead of misreporting "0 control"
-        # (round-13 CI review on PR #318).
+        # ``control_group`` kwarg (CS, EfficientDiD, ContinuousDiD,
+        # StaggeredTripleDiff, ...), the meaning of ``n_control_units``
+        # depends on it. When the mode is "not-yet-treated" (dynamic
+        # comparison set), the fixed tally stored on the result is only
+        # the fully-untreated subset — the actual comparison set varies
+        # by (g, t) cell. Label the exposed count accordingly so prose
+        # surfaces the dynamic context instead of misreporting
+        # "0 control" (round-13 / round-17 / round-18 CI review).
         #
-        # Estimator-specific exception (round-17 CI review): Wooldridge
-        # stores ``n_control_units`` as the total eligible comparison
-        # set (never-treated plus future-treated units that contribute
-        # valid not-yet-treated comparisons). Re-labeling that total as
-        # ``n_never_treated`` would overstate never-treated availability.
-        # Keep the fixed-count labeling for Wooldridge in that mode.
+        # Canonicalize both ``"not_yet_treated"`` (CS / EfficientDiD /
+        # ContinuousDiD / Wooldridge) and ``"notyettreated"``
+        # (StaggeredTripleDiff) as the same dynamic mode.
+        #
+        # Per-estimator fixed-subset field:
+        #   * CS / SA / Imputation / TwoStage / Stacked / EfficientDiD /
+        #     dCDH / ContinuousDiD — ``n_control_units`` is the
+        #     never-treated tally; surface as ``n_never_treated``.
+        #   * StaggeredTripleDiff — ``n_control_units`` is a composite
+        #     total; the fixed subset is ``n_never_enabled`` (stored
+        #     separately on the result).
+        #   * Wooldridge — ``n_control_units`` is total eligible
+        #     comparisons (never-treated + future-treated) and does not
+        #     map to a never-treated count. Keep on the fixed-count
+        #     path even in dynamic mode.
         control_group = getattr(r, "control_group", None)
         name = type(r).__name__
         n_never_treated: Optional[int] = None
+        n_never_enabled: Optional[int] = None
         n_control: Optional[int] = n_control_units
         _never_treated_count_contract = name in {
             "CallawaySantAnnaResults",
@@ -504,30 +513,36 @@ class BusinessReport:
             "TwoStageDiDResults",
             "StackedDiDResults",
             "EfficientDiDResults",
-            "StaggeredTripleDiffResults",
             "ChaisemartinDHaultfoeuilleResults",
+            "ContinuousDiDResults",
         }
-        if (
-            isinstance(control_group, str)
-            and control_group == "not_yet_treated"
-            and _never_treated_count_contract
-        ):
-            n_never_treated = n_control_units
-            # Do not populate a fixed ``n_control`` for this mode: the
-            # comparison set is dynamic and varies by (g, t) cell.
-            n_control = None
+        _canonical_control = (
+            control_group.replace("_", "").lower() if isinstance(control_group, str) else None
+        )
+        is_dynamic_control = _canonical_control == "notyettreated"
+        if is_dynamic_control:
+            if name == "StaggeredTripleDiffResults":
+                n_never_enabled = _safe_int(getattr(r, "n_never_enabled", None))
+                n_control = None
+            elif _never_treated_count_contract:
+                n_never_treated = n_control_units
+                n_control = None
 
-        return {
+        sample_block: Dict[str, Any] = {
             "n_obs": _safe_int(getattr(r, "n_obs", None)),
             "n_treated": n_treated,
             "n_control": n_control,
             "n_never_treated": n_never_treated,
             "control_group": control_group if isinstance(control_group, str) else None,
+            "dynamic_control": is_dynamic_control,
             "n_periods": _safe_int(getattr(r, "n_periods", None)),
             "pre_periods": _safe_list_len(getattr(r, "pre_periods", None)),
             "post_periods": _safe_list_len(getattr(r, "post_periods", None)),
             "survey": survey,
         }
+        if n_never_enabled is not None:
+            sample_block["n_never_enabled"] = n_never_enabled
+        return sample_block
 
     def _extract_survey_block(self) -> Optional[Dict[str, Any]]:
         sm = getattr(self._results, "survey_metadata", None)
@@ -1460,29 +1475,33 @@ def _render_summary(schema: Dict[str, Any]) -> str:
                 f"pre-period variation."
             )
 
-    # Sample sentence. For CS ``control_group="not_yet_treated"`` the
-    # fixed control count is suppressed because the comparison group is
-    # dynamic; narrate the mode explicitly rather than misreporting a
-    # never-treated-only tally as "control" (round-13 CI review).
+    # Sample sentence. For fits with a dynamic not-yet-treated
+    # comparison set (CS / ContinuousDiD / StaggeredTripleDiff /
+    # EfficientDiD) the fixed control count is suppressed because the
+    # comparison group varies by (g, t) cell; narrate the mode
+    # explicitly rather than misreporting a fixed-subset tally as
+    # "control" (rounds 13 / 17 / 18 CI review).
     sample = schema.get("sample", {}) or {}
     n_obs = sample.get("n_obs")
     n_t = sample.get("n_treated")
     n_c = sample.get("n_control")
     n_nt = sample.get("n_never_treated")
-    control_mode = sample.get("control_group")
+    n_ne = sample.get("n_never_enabled")
+    is_dynamic = sample.get("dynamic_control")
     if isinstance(n_obs, int):
         if isinstance(n_t, int) and isinstance(n_c, int):
             sentences.append(f"Sample: {n_obs:,} observations ({n_t:,} treated, {n_c:,} control).")
-        elif control_mode == "not_yet_treated" and isinstance(n_t, int):
-            extra = (
-                f"; {n_nt:,} never-treated units are also present"
-                if isinstance(n_nt, int) and n_nt > 0
-                else ""
-            )
+        elif is_dynamic and isinstance(n_t, int):
+            if isinstance(n_ne, int) and n_ne > 0:
+                subset_clause = f"; {n_ne:,} never-enabled units are also present"
+            elif isinstance(n_nt, int) and n_nt > 0:
+                subset_clause = f"; {n_nt:,} never-treated units are also present"
+            else:
+                subset_clause = ""
             sentences.append(
                 f"Sample: {n_obs:,} observations ({n_t:,} treated) with a "
                 "dynamic not-yet-treated comparison group (the control set "
-                f"varies by cohort and period){extra}."
+                f"varies by cohort and period){subset_clause}."
             )
         else:
             sentences.append(f"Sample: {n_obs:,} observations.")
@@ -1610,13 +1629,20 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
     if isinstance(sample.get("n_treated"), int):
         lines.append(f"- Treated: {sample['n_treated']:,}")
     # ``n_control`` is only populated for estimators whose control set
-    # is a fixed tally. For CS ``control_group="not_yet_treated"`` the
-    # comparison group is dynamic per (g, t); report the never-treated
-    # count (when non-zero) and the dynamic-comparison mode explicitly.
+    # is a fixed tally. For dynamic not-yet-treated modes (CS /
+    # ContinuousDiD / StaggeredTripleDiff / EfficientDiD) the
+    # comparison group is dynamic per (g, t); report the estimator-
+    # specific fixed subset (``n_never_enabled`` for triple-difference;
+    # ``n_never_treated`` elsewhere) when non-zero, then name the
+    # dynamic-comparison mode explicitly.
     if isinstance(sample.get("n_control"), int):
         lines.append(f"- Control: {sample['n_control']:,}")
-    elif sample.get("control_group") == "not_yet_treated":
-        if isinstance(sample.get("n_never_treated"), int) and sample["n_never_treated"] > 0:
+    elif sample.get("dynamic_control"):
+        if isinstance(sample.get("n_never_enabled"), int) and sample["n_never_enabled"] > 0:
+            lines.append(
+                f"- Never-enabled units present in the panel: {sample['n_never_enabled']:,}"
+            )
+        elif isinstance(sample.get("n_never_treated"), int) and sample["n_never_treated"] > 0:
             lines.append(
                 f"- Never-treated units present in the panel: {sample['n_never_treated']:,}"
             )

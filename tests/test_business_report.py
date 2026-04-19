@@ -1187,6 +1187,92 @@ class TestAnticipationAwareAssumptionBlock:
         assert "not strict no-anticipation" not in a["description"]
 
 
+class TestContinuousDiDDynamicControlSample:
+    """Round-18 P1 regression: ContinuousDiD with
+    ``control_group="not_yet_treated"`` must take the dynamic-control
+    path in ``to_dict()``, ``summary()``, and ``full_report()``. The
+    stored ``n_control_units`` is only the fully-untreated ``D=0``
+    tally; the actual comparison set includes future-treated cohorts
+    beyond the anticipation window.
+    """
+
+    def test_continuous_did_not_yet_treated_surfaces_dynamic_mode(self):
+        class ContinuousDiDResults:
+            pass
+
+        stub = ContinuousDiDResults()
+        stub.overall_att = 1.0
+        stub.overall_att_se = 0.2
+        stub.overall_att_p_value = 0.001
+        stub.overall_att_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 120
+        stub.n_treated = 50
+        stub.n_control = 70  # D=0 (never-treated) count only.
+        stub.survey_metadata = None
+        stub.control_group = "not_yet_treated"
+
+        br = BusinessReport(stub, auto_diagnostics=False)
+        sample = br.to_dict()["sample"]
+        assert sample["n_control"] is None
+        assert sample["n_never_treated"] == 70
+        assert sample["dynamic_control"] is True
+
+        summary = br.summary()
+        assert " control)" not in summary
+        assert "dynamic not-yet-treated" in summary
+
+        full = br.full_report()
+        assert "- Control: 70" not in full
+        assert "dynamic not-yet-treated" in full
+
+
+class TestStaggeredTripleDiffDynamicControlSample:
+    """Round-18 P1 regression: StaggeredTripleDifference with
+    ``control_group="notyettreated"`` (no underscore per the estimator
+    contract) must also take the dynamic-control path. Its fixed
+    subset is ``n_never_enabled`` (separate field) rather than a
+    never-treated count.
+    """
+
+    def test_notyettreated_surfaces_n_never_enabled(self):
+        class StaggeredTripleDiffResults:
+            pass
+
+        stub = StaggeredTripleDiffResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 200
+        stub.n_treated = 80
+        stub.n_control = 120  # Composite total (ignored in this mode).
+        stub.n_never_enabled = 30  # Fixed subset exposed in this mode.
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.inference_method = "analytical"
+        stub.control_group = "notyettreated"  # No underscore.
+
+        br = BusinessReport(stub, auto_diagnostics=False)
+        sample = br.to_dict()["sample"]
+        assert sample["n_control"] is None
+        assert sample["dynamic_control"] is True
+        assert sample["n_never_enabled"] == 30
+        assert sample["n_never_treated"] is None, (
+            "StaggeredTripleDiff must expose n_never_enabled, not " "n_never_treated"
+        )
+
+        summary = br.summary()
+        assert " control)" not in summary
+        assert "dynamic not-yet-treated" in summary
+        assert "30 never-enabled" in summary
+
+        full = br.full_report()
+        assert "- Control:" not in full
+        assert "Never-enabled units present in the panel: 30" in full
+
+
 class TestWooldridgeSampleNotYetTreatedSemantics:
     """Round-17 P1 regression: Wooldridge's ``n_control_units`` is the
     total eligible comparison set (never-treated plus future-treated
