@@ -46,6 +46,36 @@ def _format_survey_block(sm, width: int) -> list:
     return lines
 
 
+def _format_vcov_label(
+    vcov_type: str,
+    *,
+    cluster_name: Optional[str],
+    n_clusters: Optional[int],
+    n_obs: Optional[int],
+) -> Optional[str]:
+    """Compose a human-readable variance-family label for summary output.
+
+    Returns None when vcov_type is not recognized so the caller can skip the
+    line silently (backward-compat).
+    """
+    if vcov_type == "classical":
+        return "Classical OLS SEs (non-robust)"
+    if vcov_type == "hc1":
+        if cluster_name:
+            suffix = f", G={n_clusters}" if n_clusters else ""
+            return f"CR1 cluster-robust at {cluster_name}{suffix}"
+        return "HC1 heteroskedasticity-robust"
+    if vcov_type == "hc2":
+        return "HC2 leverage-corrected"
+    if vcov_type == "hc2_bm":
+        if cluster_name:
+            suffix = f", G={n_clusters}" if n_clusters else ""
+            return f"CR2 Bell-McCaffrey cluster-robust at {cluster_name}{suffix}"
+        suffix = f", n={n_obs}" if n_obs else ""
+        return f"HC2 + Bell-McCaffrey DOF (one-way{suffix})"
+    return None
+
+
 @dataclass
 class DiDResults:
     """
@@ -95,6 +125,11 @@ class DiDResults:
     bootstrap_distribution: Optional[np.ndarray] = field(default=None, repr=False)
     # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
     survey_metadata: Optional[Any] = field(default=None)
+    # Variance-covariance family: "classical" | "hc1" | "hc2" | "hc2_bm".
+    # Plus cluster_name when cluster-robust. Used by summary() to label the
+    # SE family in the output.
+    vcov_type: Optional[str] = field(default=None)
+    cluster_name: Optional[str] = field(default=None)
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -156,6 +191,29 @@ class DiDResults:
                 lines.append(f"{'Bootstrap replications:':<25} {self.n_bootstrap:>10}")
             if self.n_clusters is not None:
                 lines.append(f"{'Number of clusters:':<25} {self.n_clusters:>10}")
+
+        # Add variance family label (vcov_type) only when inference was analytical
+        # AND no survey design is in play. For wild-bootstrap the reported SE/CI
+        # come from resampling, so the analytical variance family would mislabel
+        # the actual inference source. Survey fits use Taylor linearization or
+        # replicate-weight variance instead of the analytical HC/CR sandwich;
+        # _format_survey_block above already surfaces the survey inference
+        # details (weight type, strata/PSU counts, replicate method), so a
+        # parallel "Variance: HC1/..." line would be misleading. The survey
+        # suppression also covers MultiPeriodDiDResults.
+        if (
+            self.vcov_type is not None
+            and self.inference_method == "analytical"
+            and self.survey_metadata is None
+        ):
+            label = _format_vcov_label(
+                self.vcov_type,
+                cluster_name=self.cluster_name,
+                n_clusters=self.n_clusters,
+                n_obs=self.n_obs,
+            )
+            if label is not None:
+                lines.append(f"{'Variance:':<25} {label:>40}")
 
         lines.extend(
             [
@@ -380,6 +438,14 @@ class MultiPeriodDiDResults:
     interaction_indices: Optional[Dict[Any, int]] = field(default=None, repr=False)
     # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
     survey_metadata: Optional[Any] = field(default=None)
+    # Inference method (always "analytical" today for MultiPeriodDiD; included for
+    # symmetry with DiDResults and so summary() can gate the Variance label).
+    inference_method: str = field(default="analytical")
+    n_bootstrap: Optional[int] = field(default=None)
+    n_clusters: Optional[int] = field(default=None)
+    # Variance-covariance family and cluster column for summary() labeling.
+    vcov_type: Optional[str] = field(default=None)
+    cluster_name: Optional[str] = field(default=None)
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -446,6 +512,24 @@ class MultiPeriodDiDResults:
         if self.survey_metadata is not None:
             sm = self.survey_metadata
             lines.extend(_format_survey_block(sm, 80))
+
+        # Variance family label (only when inference was analytical AND not survey).
+        # Survey fits use Taylor linearization or replicate-weight variance, which
+        # _format_survey_block already surfaces above; a parallel analytical label
+        # would mislabel the actual inference source.
+        if (
+            self.vcov_type is not None
+            and self.inference_method == "analytical"
+            and self.survey_metadata is None
+        ):
+            label = _format_vcov_label(
+                self.vcov_type,
+                cluster_name=self.cluster_name,
+                n_clusters=self.n_clusters,
+                n_obs=self.n_obs,
+            )
+            if label is not None:
+                lines.append(f"{'Variance:':<25} {label:>50}")
 
         # Pre-period effects (parallel trends test)
         pre_effects = {p: pe for p, pe in self.period_effects.items() if p in self.pre_periods}
@@ -1044,11 +1128,7 @@ class SyntheticDiDResults:
                 "Re-fit with SyntheticDiD(variance_method='jackknife') to "
                 "obtain per-unit leave-one-out estimates."
             )
-        if (
-            self._loo_unit_ids is None
-            or self._loo_roles is None
-            or self.placebo_effects is None
-        ):
+        if self._loo_unit_ids is None or self._loo_roles is None or self.placebo_effects is None:
             raise ValueError(
                 "Leave-one-out estimates are unavailable (jackknife returned "
                 "NaN or an empty array). See prior warnings from fit() for the "
@@ -1068,9 +1148,9 @@ class SyntheticDiDResults:
         # Sort by |delta| descending. NaN rows sort to the end so the most
         # influential real units appear first.
         df["_abs_delta"] = df["delta_from_full"].abs()
-        df = df.sort_values(
-            by="_abs_delta", ascending=False, na_position="last"
-        ).drop(columns="_abs_delta")
+        df = df.sort_values(by="_abs_delta", ascending=False, na_position="last").drop(
+            columns="_abs_delta"
+        )
         df = df.reset_index(drop=True)
         return df
 
@@ -1139,12 +1219,8 @@ class SyntheticDiDResults:
         snap = self._fit_snapshot
         pre_periods = snap.pre_periods
         n_pre = len(pre_periods)
-        zeta_omega = (
-            zeta_omega_override if zeta_omega_override is not None else self.zeta_omega
-        )
-        zeta_lambda = (
-            zeta_lambda_override if zeta_lambda_override is not None else self.zeta_lambda
-        )
+        zeta_omega = zeta_omega_override if zeta_omega_override is not None else self.zeta_omega
+        zeta_lambda = zeta_lambda_override if zeta_lambda_override is not None else self.zeta_lambda
         if zeta_omega is None or zeta_lambda is None:
             raise ValueError(
                 "in_time_placebo() needs zeta_omega and zeta_lambda from the "
@@ -1408,7 +1484,7 @@ class SyntheticDiDResults:
             )
             synthetic_pre_n = Y_pre_control_n @ omega_eff
             pre_fit_n = float(np.sqrt(np.mean((y_pre_t_mean_n - synthetic_pre_n) ** 2)))
-            herf = float(np.sum(omega_eff ** 2))
+            herf = float(np.sum(omega_eff**2))
             rows.append(
                 {
                     "zeta_omega": z,
@@ -1455,9 +1531,7 @@ class SyntheticDiDResults:
             If ``top_k`` is negative.
         """
         if top_k < 0:
-            raise ValueError(
-                f"top_k must be non-negative (got {top_k})."
-            )
+            raise ValueError(f"top_k must be non-negative (got {top_k}).")
         weights = np.asarray(list(self.unit_weights.values()), dtype=float)
         if weights.size == 0:
             return {
@@ -1466,7 +1540,7 @@ class SyntheticDiDResults:
                 "top_k_share": float("nan"),
                 "top_k": 0,
             }
-        herfindahl = float(np.sum(weights ** 2))
+        herfindahl = float(np.sum(weights**2))
         effective_n = float("nan") if herfindahl == 0 else 1.0 / herfindahl
         k = min(int(top_k), weights.size)
         if k <= 0:

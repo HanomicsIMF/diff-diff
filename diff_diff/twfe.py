@@ -35,6 +35,15 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         If None, automatically clusters at the unit level (the `unit`
         parameter passed to `fit()`). This differs from
         DifferenceInDifferences where cluster=None means no clustering.
+
+        **Exception:** when ``vcov_type="classical"`` and
+        ``inference="analytical"``, the unit auto-cluster is dropped
+        because the classical family is by construction one-way only and
+        the validator rejects ``cluster_ids + classical``. The user's
+        explicit choice of the classical family wins over the TWFE default
+        in that narrow analytical-inference case. Under
+        ``inference="wild_bootstrap"`` the auto-cluster is preserved (the
+        bootstrap uses the cluster structure to resample residuals).
     alpha : float, default=0.05
         Significance level for confidence intervals.
 
@@ -45,6 +54,18 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         Y_it = α_i + γ_t + β*(D_i × Post_t) + X_it'δ + ε_it
 
     where α_i are unit fixed effects and γ_t are time fixed effects.
+
+    **HC2 / Bell-McCaffrey are not available on TWFE.** Because TWFE uses
+    within-transformation (demeaning) to absorb the fixed effects, the
+    reduced design's hat matrix is not the full FE projection; HC2 leverage
+    and CR2 Bell-McCaffrey corrections on the demeaned design would produce
+    silently-wrong small-sample SEs (FWL preserves coefficients, not the
+    hat matrix). ``vcov_type in {"hc2","hc2_bm"}`` therefore raises
+    ``NotImplementedError`` with workarounds: use ``vcov_type="hc1"`` (HC1/
+    CR1 survive FWL), or switch to ``DifferenceInDifferences(fixed_effects=
+    [...])`` where the dummies appear in the full design. Tracked in
+    ``TODO.md`` under Methodology/Correctness; also documented in
+    ``docs/methodology/REGISTRY.md``.
 
     Warning: TWFE can be biased with staggered treatment timing
     and heterogeneous treatment effects. Consider using
@@ -93,6 +114,35 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         if unit not in data.columns:
             raise ValueError(f"Unit column '{unit}' not found in data")
 
+        # Reject HC2 / HC2 + Bell-McCaffrey on TWFE (and any absorbed-FE fit).
+        # TWFE demeans outcomes and regressors via within-transformation before
+        # solving OLS, and passes only the reduced (already-residualized)
+        # regressor matrix into ``LinearRegression``. The HC2 leverage
+        # correction ``h_ii = x_i' (X'X)^{-1} x_i`` and the CR2 Bell-McCaffrey
+        # adjustment matrix ``A_g = (I - H_gg)^{-1/2}`` both depend on the
+        # FULL fixed-effects hat matrix, not the residualized one: FWL
+        # preserves coefficients but NOT the hat matrix, so applying HC2 or
+        # CR2 to the demeaned design produces the wrong leverage and the
+        # wrong Bell-McCaffrey DOF. The correct fix (compute leverage from
+        # the full absorbed projection) is deferred to a follow-up PR; until
+        # then, reject fast rather than ship silently-wrong small-sample SEs.
+        # HC1 and CR1 are unaffected (no leverage term, meat uses only the
+        # residuals which FWL preserves). Tracked in TODO.md.
+        if self.vcov_type in ("hc2", "hc2_bm"):
+            raise NotImplementedError(
+                f"TwoWayFixedEffects(vcov_type={self.vcov_type!r}) is not "
+                "yet supported: TWFE uses within-transformation (demeaning) "
+                "before OLS, and the HC2 leverage correction / CR2 Bell-"
+                "McCaffrey DOF depend on the full FE hat matrix, not the "
+                "residualized one (FWL preserves coefficients but not "
+                "leverage). Applying HC2/CR2-BM to the demeaned design "
+                "would produce silently-wrong small-sample inference. Use "
+                "vcov_type='hc1' (HC1/CR1 preserve correctly under FWL), or "
+                "switch to fixed_effects= dummies on DifferenceInDifferences "
+                "for a full-dummy design where HC2/CR2-BM are computed on "
+                "the full projection."
+            )
+
         # Check for staggered treatment timing and warn if detected
         self._check_staggered_treatment(data, treatment, time, unit)
 
@@ -137,8 +187,33 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                 "estimation."
             )
 
-        # Use unit-level clustering if not specified (use local variable to avoid mutation)
-        cluster_var = self.cluster if self.cluster is not None else unit
+        # Unit-level clustering is the TWFE default when `cluster` is not
+        # explicitly provided. But the one-way ``classical`` family is by
+        # construction not cluster-robust and the validator in
+        # ``compute_robust_vcov`` rejects ``cluster_ids + vcov_type=="classical"``.
+        # When the user EXPLICITLY asks for ``classical`` analytical inference
+        # (via ``vcov_type="classical"``) and does NOT set ``cluster=``,
+        # honor that choice by disabling the auto-cluster.
+        #
+        # When ``"classical"`` is IMPLICIT (from the legacy alias
+        # ``robust=False``), keep the unit auto-cluster so
+        # ``_resolve_effective_vcov_type`` below can remap it to ``"hc1"``
+        # and preserve the historical CR1-at-unit behavior. Wild-bootstrap
+        # inference also keeps the unit auto-cluster regardless (bootstrap
+        # consumes cluster structure for resampling). ``hc2``/``hc2_bm``
+        # don't reach this block — they are rejected above.
+        if self.cluster is not None:
+            cluster_var: Optional[str] = self.cluster
+        elif (
+            self.vcov_type == "classical"
+            and self._vcov_type_explicit
+            and self.inference == "analytical"
+        ):
+            # Explicit classical + analytical inference: drop the auto-cluster
+            # so the validator doesn't reject ``cluster_ids + classical``.
+            cluster_var = None
+        else:
+            cluster_var = unit
 
         # Create treatment × post interaction from raw data before demeaning.
         # This must be within-transformed alongside the outcome and covariates
@@ -176,8 +251,10 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         df_adjustment = n_units + n_times - 2
 
         # Always use LinearRegression for initial fit (unified code path)
-        # For wild bootstrap, we don't need cluster SEs from the initial fit
-        cluster_ids = data[cluster_var].values
+        # For wild bootstrap, we don't need cluster SEs from the initial fit.
+        # cluster_var may be None when the user selected a one-way vcov_type
+        # (``classical``/``hc2``) without setting ``cluster=``; honor it.
+        cluster_ids = data[cluster_var].values if cluster_var is not None else None
 
         # When survey PSU is present, it overrides cluster for variance estimation
         effective_cluster_ids = _resolve_effective_cluster(
@@ -213,16 +290,24 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         # from computing replicate vcov on already-demeaned data (demeaning depends
         # on weights, so replicate refits must re-demean at the estimator level).
         _lr_survey_twfe = None if _uses_replicate_twfe else resolved_survey
+        # Remap implicit "classical" + cluster to CR1 for legacy-alias
+        # backward compatibility. TWFE auto-clusters at unit when the user
+        # doesn't set cluster, so `robust=False` without an explicit
+        # vcov_type historically produced CR1 at unit; we preserve that.
+        # Don't forward `robust=self.robust` to LinearRegression when the
+        # remapped vcov_type disagrees; the remapped `vcov_type` is the
+        # single source of truth.
+        _fit_vcov_type = self._resolve_effective_vcov_type(survey_cluster_ids)
         if self.rank_deficient_action == "error":
             reg = LinearRegression(
                 include_intercept=False,
-                robust=True,
                 cluster_ids=survey_cluster_ids if self.inference != "wild_bootstrap" else None,
                 alpha=self.alpha,
                 rank_deficient_action="error",
                 weights=survey_weights,
                 weight_type=survey_weight_type,
                 survey_design=_lr_survey_twfe,
+                vcov_type=_fit_vcov_type,
             ).fit(X, y, df_adjustment=df_adjustment)
         else:
             # Suppress generic warning, TWFE provides context-specific messages below
@@ -230,7 +315,6 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                 warnings.filterwarnings("ignore", message="Rank-deficient design matrix")
                 reg = LinearRegression(
                     include_intercept=False,
-                    robust=True,
                     cluster_ids=(
                         survey_cluster_ids if self.inference != "wild_bootstrap" else None
                     ),
@@ -239,6 +323,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                     weights=survey_weights,
                     weight_type=survey_weight_type,
                     survey_design=_lr_survey_twfe,
+                    vcov_type=_fit_vcov_type,
                 ).fit(X, y, df_adjustment=df_adjustment)
 
         coefficients = reg.coefficients_
@@ -304,7 +389,12 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                 data_nz = data[nz].copy()
                 w_nz = w_r[nz]
                 data_dem_r = _within_transform_util(
-                    data_nz, _all_vars_twfe, unit, time, suffix="_demeaned", weights=w_nz,
+                    data_nz,
+                    _all_vars_twfe,
+                    unit,
+                    time,
+                    suffix="_demeaned",
+                    weights=w_nz,
                 )
                 y_r = data_dem_r[f"{outcome}_demeaned"].values
                 X_list_r = [data_dem_r["_treatment_post_demeaned"].values]
@@ -312,13 +402,17 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                     X_list_r.append(data_dem_r[f"{cov_}_demeaned"].values)
                 X_r = np.column_stack([np.ones(len(y_r))] + X_list_r)
                 coef_r, _, _ = solve_ols(
-                    X_r[:, _id_cols_twfe], y_r,
-                    weights=w_nz, weight_type=survey_weight_type,
-                    rank_deficient_action="silent", return_vcov=False,
+                    X_r[:, _id_cols_twfe],
+                    y_r,
+                    weights=w_nz,
+                    weight_type=survey_weight_type,
+                    rank_deficient_action="silent",
+                    return_vcov=False,
                 )
                 return coef_r
 
             from diff_diff.linalg import _expand_vcov_with_nan as _expand_twfe
+
             vcov_reduced, _n_valid_rep_twfe = compute_replicate_refit_variance(
                 _refit_twfe, coefficients[_id_mask_twfe], resolved_survey
             )
@@ -362,6 +456,19 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             n_bootstrap_used = self._bootstrap_results.n_bootstrap
             n_clusters_used = self._bootstrap_results.n_clusters
 
+        # Cluster label for summary: TWFE auto-clusters at unit level when
+        # `self.cluster is None` AND the vcov family is cluster-compatible.
+        # One-way families (`classical`, `hc2`) disable the auto-cluster (see
+        # the `cluster_var` block above); report None so summary() labels the
+        # one-way family instead of "CR1 cluster-robust at unit".
+        if self.cluster is not None:
+            _twfe_cluster_label: Optional[str] = self.cluster
+        elif cluster_var is None:
+            # One-way family path: auto-cluster was intentionally dropped.
+            _twfe_cluster_label = None
+        else:
+            _twfe_cluster_label = unit
+
         self.results_ = DiDResults(
             att=att,
             se=se,
@@ -381,6 +488,10 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             n_bootstrap=n_bootstrap_used,
             n_clusters=n_clusters_used,
             survey_metadata=survey_metadata,
+            # Report the family that actually produced the SE; may be the
+            # remapped hc1 under the legacy alias path, not self.vcov_type.
+            vcov_type=_fit_vcov_type,
+            cluster_name=_twfe_cluster_label,
         )
 
         self.is_fitted_ = True

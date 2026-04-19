@@ -43,6 +43,15 @@ from diff_diff.linalg import (
     InferenceResult,
     LinearRegression,
 )
+from diff_diff.local_linear import (
+    KERNELS,
+    LocalLinearFit,
+    epanechnikov_kernel,
+    kernel_moments,
+    local_linear_fit,
+    triangular_kernel,
+    uniform_kernel,
+)
 from diff_diff.estimators import (
     DifferenceInDifferences,
     MultiPeriodDiD,
@@ -395,6 +404,14 @@ __all__ = [
     # Linear algebra helpers
     "LinearRegression",
     "InferenceResult",
+    # Local-linear regression infrastructure (Phase 1a for HeterogeneousAdoptionDiD)
+    "KERNELS",
+    "LocalLinearFit",
+    "epanechnikov_kernel",
+    "kernel_moments",
+    "local_linear_fit",
+    "triangular_kernel",
+    "uniform_kernel",
     # Datasets
     "load_card_krueger",
     "load_castle_doctrine",

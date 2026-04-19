@@ -48,9 +48,27 @@ class DifferenceInDifferences:
         R-style formula for the model (e.g., "outcome ~ treated * post").
         If provided, overrides column name parameters.
     robust : bool, default=True
-        Whether to use heteroskedasticity-robust standard errors (HC1).
+        Legacy alias for ``vcov_type``. ``robust=True`` maps to
+        ``vcov_type="hc1"``; ``robust=False`` maps to ``vcov_type="classical"``.
+        Explicit ``vcov_type`` overrides ``robust`` unless the pair is
+        contradictory (e.g. ``robust=False, vcov_type="hc2"`` raises).
     cluster : str, optional
-        Column name for cluster-robust standard errors.
+        Column name for cluster-robust standard errors. Combined with
+        ``vcov_type``: with ``"hc1"`` dispatches to CR1 (Liang-Zeger); with
+        ``"hc2_bm"`` dispatches to CR2 Bell-McCaffrey (Pustejovsky-Tipton 2018
+        symmetric-sqrt + Satterthwaite DOF).
+    vcov_type : {"classical", "hc1", "hc2", "hc2_bm"}, optional
+        Variance-covariance family. Defaults to the ``robust`` alias.
+
+        - ``"classical"``: non-robust OLS SEs, ``sigma_hat^2 * (X'X)^{-1}``.
+        - ``"hc1"``: heteroskedasticity-robust HC1 with ``n/(n-k)`` adjustment
+          (library default). With ``cluster=``, uses CR1 (Liang-Zeger).
+        - ``"hc2"``: leverage-corrected meat (one-way only). Errors with
+          ``cluster=``; use ``"hc2_bm"`` for clustered Bell-McCaffrey.
+        - ``"hc2_bm"``: one-way HC2 + Imbens-Kolesar (2016) Satterthwaite DOF;
+          with ``cluster=``, Pustejovsky-Tipton (2018) CR2 cluster-robust.
+          (Note: ``MultiPeriodDiD`` does NOT yet support ``cluster=`` with
+          ``"hc2_bm"`` — see ``MultiPeriodDiD`` docstring and REGISTRY.md.)
     alpha : float, default=0.05
         Significance level for confidence intervals.
     inference : str, default="analytical"
@@ -122,6 +140,7 @@ class DifferenceInDifferences:
         self,
         robust: bool = True,
         cluster: Optional[str] = None,
+        vcov_type: Optional[str] = None,
         alpha: float = 0.05,
         inference: str = "analytical",
         n_bootstrap: int = 999,
@@ -129,8 +148,21 @@ class DifferenceInDifferences:
         seed: Optional[int] = None,
         rank_deficient_action: str = "warn",
     ):
+        # Resolve vcov_type from the legacy `robust` alias via the shared
+        # helper so __init__ and set_params use identical validation logic.
+        from diff_diff.linalg import resolve_vcov_type
+
         self.robust = robust
         self.cluster = cluster
+        self.vcov_type = resolve_vcov_type(robust, vcov_type)
+        # Preserve the raw constructor arg (possibly None) alongside the
+        # resolved `vcov_type`. `get_params()` returns the raw arg so
+        # sklearn clones preserve the implicit-vs-explicit distinction
+        # (and therefore the backward-compat remap). Set only in __init__
+        # and updated in ``set_params`` so the flag transitions match the
+        # user-visible parameter state.
+        self._vcov_type_arg = vcov_type
+        self._vcov_type_explicit = vcov_type is not None
         self.alpha = alpha
         self.inference = inference
         self.n_bootstrap = n_bootstrap
@@ -240,9 +272,7 @@ class DifferenceInDifferences:
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, self.inference)
         )
-        _uses_replicate = (
-            resolved_survey is not None and resolved_survey.uses_replicate_variance
-        )
+        _uses_replicate = resolved_survey is not None and resolved_survey.uses_replicate_variance
         if _uses_replicate and self.inference == "wild_bootstrap":
             raise ValueError(
                 "Cannot use inference='wild_bootstrap' with replicate-weight "
@@ -276,6 +306,25 @@ class DifferenceInDifferences:
                 "fixed_effects dummies, violating the FWL theorem. "
                 "Use absorb alone (for high-dimensional FE) "
                 "or fixed_effects alone (for low-dimensional FE)."
+            )
+
+        # Reject HC2 / HC2 + Bell-McCaffrey on absorbed-FE fits.
+        # `absorb=` demeans regressors via within-transformation before OLS,
+        # and the HC2 leverage correction / CR2 Bell-McCaffrey DOF depend on
+        # the FULL FE hat matrix, not the residualized one (FWL preserves
+        # coefficients but not the hat matrix). Applying HC2/CR2-BM to the
+        # demeaned design would produce silently-wrong small-sample SEs.
+        # HC1 and CR1 are unaffected (no leverage term). Tracked in TODO.md.
+        if absorb and self.vcov_type in ("hc2", "hc2_bm"):
+            raise NotImplementedError(
+                f"DifferenceInDifferences(absorb=..., "
+                f"vcov_type={self.vcov_type!r}) is not yet supported: "
+                "absorbed fixed effects are handled by demeaning, and the "
+                "HC2 / CR2 Bell-McCaffrey leverage corrections depend on "
+                "the full FE hat matrix, not the residualized one. Use "
+                "vcov_type='hc1' with absorb=, or switch to "
+                "fixed_effects= dummies for a full-dummy design where "
+                "HC2/CR2-BM are computed on the full projection."
             )
 
         if absorb:
@@ -365,15 +414,22 @@ class DifferenceInDifferences:
         if _uses_replicate and absorbed_vars:
             _lr_survey = None
 
+        # Remap implicit "classical" + cluster to CR1 for legacy-alias
+        # backward compatibility (see `_resolve_effective_vcov_type`).
+        _fit_vcov_type = self._resolve_effective_vcov_type(effective_cluster_ids)
+        # Don't forward `robust=self.robust` when the vcov_type has been
+        # remapped; `robust=False + vcov_type="hc1"` would otherwise trip
+        # the conflict check inside `LinearRegression.__init__`. The
+        # remapped vcov_type is the single source of truth for this call.
         reg = LinearRegression(
             include_intercept=False,  # Intercept already in X
-            robust=self.robust,
             cluster_ids=effective_cluster_ids if self.inference != "wild_bootstrap" else None,
             alpha=self.alpha,
             rank_deficient_action=self.rank_deficient_action,
             weights=survey_weights,
             weight_type=survey_weight_type,
             survey_design=_lr_survey,
+            vcov_type=_fit_vcov_type,
         ).fit(X, y, df_adjustment=n_absorbed_effects)
 
         coefficients = reg.coefficients_
@@ -399,8 +455,8 @@ class DifferenceInDifferences:
                 nz = w_r > 0
                 wd = data[nz].copy()
                 w_nz = w_r[nz]
-                wd["_treat_time"] = (
-                    wd[treatment].values.astype(float) * wd[time].values.astype(float)
+                wd["_treat_time"] = wd[treatment].values.astype(float) * wd[time].values.astype(
+                    float
                 )
                 vars_dm = [outcome, treatment, time, "_treat_time"] + (covariates or [])
                 for ab_var in _absorb_list:
@@ -414,9 +470,12 @@ class DifferenceInDifferences:
                     for cov in covariates:
                         X_r = np.column_stack([X_r, wd[cov].values.astype(float)])
                 coef_r, _, _ = solve_ols(
-                    X_r[:, _id_cols], y_r,
-                    weights=w_nz, weight_type=survey_weight_type,
-                    rank_deficient_action="silent", return_vcov=False,
+                    X_r[:, _id_cols],
+                    y_r,
+                    weights=w_nz,
+                    weight_type=survey_weight_type,
+                    rank_deficient_action="silent",
+                    return_vcov=False,
                 )
                 return coef_r
 
@@ -434,9 +493,7 @@ class DifferenceInDifferences:
                 _df_rep = _n_valid_rep - 1 if _n_valid_rep > 1 else 0
             if survey_metadata is not None:
                 survey_metadata.df_survey = _df_rep if _df_rep > 0 else None
-            t_stat, p_value, conf_int = safe_inference(
-                att, se, alpha=self.alpha, df=_df_rep
-            )
+            t_stat, p_value, conf_int = safe_inference(att, se, alpha=self.alpha, df=_df_rep)
         elif self.inference == "wild_bootstrap" and self.cluster is not None:
             # Override with wild cluster bootstrap inference
             se, p_value, conf_int, t_stat, vcov, _ = self._run_wild_bootstrap_inference(
@@ -490,6 +547,11 @@ class DifferenceInDifferences:
             n_bootstrap=n_bootstrap_used,
             n_clusters=n_clusters_used,
             survey_metadata=survey_metadata,
+            # Report the family that actually produced the SE, which may be
+            # the remapped "hc1" (CR1) under the legacy alias path, not the
+            # stored `self.vcov_type`.
+            vcov_type=_fit_vcov_type,
+            cluster_name=self.cluster,
         )
 
         self._coefficients = coefficients
@@ -732,14 +794,25 @@ class DifferenceInDifferences:
         """
         Get estimator parameters (sklearn-compatible).
 
+        Returns the *raw* user input for ``vcov_type`` (``None`` when
+        the value was alias-derived from ``robust``). This preserves
+        the backward-compat remap semantics across clones: a clone of
+        ``DifferenceInDifferences(robust=False, cluster="unit")`` must
+        behave the same as the original on a clustered fit, which
+        requires the clone's ``__init__`` to see ``vcov_type=None`` (so
+        it flags ``_vcov_type_explicit=False``) rather than the
+        alias-resolved ``"classical"`` (which would mark it explicit
+        and skip the CR1 remap).
+
         Returns
         -------
         Dict[str, Any]
-            Estimator parameters.
+            Estimator parameters suitable for passing to ``__init__``.
         """
         return {
             "robust": self.robust,
             "cluster": self.cluster,
+            "vcov_type": self._vcov_type_arg,  # raw, possibly None
             "alpha": self.alpha,
             "inference": self.inference,
             "n_bootstrap": self.n_bootstrap,
@@ -752,6 +825,12 @@ class DifferenceInDifferences:
         """
         Set estimator parameters (sklearn-compatible).
 
+        After assignment, the ``robust``/``vcov_type`` pair is re-validated via
+        the same :func:`diff_diff.linalg.resolve_vcov_type` helper used by
+        ``__init__``. Invalid combinations (e.g. ``robust=False`` with
+        ``vcov_type="hc2"``) raise ``ValueError`` instead of leaving the
+        object in an inconsistent state.
+
         Parameters
         ----------
         **params
@@ -761,12 +840,87 @@ class DifferenceInDifferences:
         -------
         self
         """
-        for key, value in params.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
+        from diff_diff.linalg import resolve_vcov_type
+
+        # Validate BEFORE mutating `self`. A failing call must leave the
+        # estimator unchanged so callers that catch `ValueError` can keep
+        # reasoning about the object; half-mutated state from an earlier
+        # partial assignment defeats that guarantee. Compute the resolved
+        # `vcov_type` on local variables, then apply all mutations atomically.
+        pending_robust = params.get("robust", self.robust)
+        pending_vcov_type = params.get("vcov_type", self.vcov_type)
+
+        # First pass: validate that every incoming key is a known attribute
+        # so we don't partially apply a batch that ends in "Unknown parameter".
+        for key in params:
+            if not hasattr(self, key):
                 raise ValueError(f"Unknown parameter: {key}")
+
+        # Second pass: resolve the robust/vcov_type pair. When the user passes
+        # only `robust=` alongside a previously-set non-aliasing `vcov_type`,
+        # re-derive `vcov_type` from the new `robust` value for internal
+        # consistency (matching the prior behavior, but now on locals).
+        if "vcov_type" in params:
+            resolved_vcov = resolve_vcov_type(pending_robust, pending_vcov_type)
+        elif "robust" in params:
+            resolved_vcov = resolve_vcov_type(pending_robust, None)
+        else:
+            resolved_vcov = self.vcov_type  # no-op if neither changed
+
+        # All validation passed — apply mutations atomically.
+        for key, value in params.items():
+            setattr(self, key, value)
+        self.vcov_type = resolved_vcov
+        # Update the raw-vs-resolved tracking. `vcov_type=` in the call
+        # updates `_vcov_type_arg` to whatever the user passed (including
+        # None); `robust=` alone clears the raw arg since the resolution
+        # re-derives from the alias. The `_vcov_type_explicit` flag is
+        # True iff the raw arg is non-None.
+        if "vcov_type" in params:
+            self._vcov_type_arg = params["vcov_type"]
+        elif "robust" in params:
+            self._vcov_type_arg = None
+        self._vcov_type_explicit = self._vcov_type_arg is not None
         return self
+
+    def _resolve_effective_vcov_type(self, effective_cluster_ids) -> str:
+        """Pick the ``vcov_type`` to use for a given fit given cluster context.
+
+        Returns ``self.vcov_type`` unchanged in nearly every case. The one
+        exception is the legacy-alias path: if the user supplied
+        ``robust=False`` (or nothing) without an explicit ``vcov_type=``,
+        ``resolve_vcov_type`` stored ``"classical"`` at ``__init__``.
+        But ``"classical"`` is one-way only and the linalg validator
+        rejects it with ``cluster_ids`` set, so calls like
+        ``DifferenceInDifferences(robust=False, cluster="unit")`` that
+        previously produced CR1 inference would now fail. To preserve that
+        contract, when the stored vcov_type is implicit ``"classical"``
+        and a cluster structure is present at fit time, remap to ``"hc1"``
+        (which dispatches to CR1 cluster-robust). Emit a UserWarning so
+        the remap is not silent.
+
+        Callers should always route ``vcov_type`` through this method
+        before passing it into ``solve_ols``/``compute_robust_vcov`` so
+        subclasses (and survey-PSU-injected cluster ids) get the same
+        backward-compatible treatment.
+        """
+        if (
+            self.vcov_type == "classical"
+            and not self._vcov_type_explicit
+            and effective_cluster_ids is not None
+        ):
+            warnings.warn(
+                "robust=False with cluster=... (or an auto-injected "
+                "cluster from survey/TWFE) now maps to vcov_type='hc1' "
+                "to preserve the legacy CR1 cluster-robust behavior. "
+                "Pass vcov_type='classical' explicitly to request "
+                "non-robust SEs, or vcov_type='hc1' to silence this "
+                "warning.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return "hc1"
+        return self.vcov_type
 
     def summary(self) -> str:
         """
@@ -798,9 +952,33 @@ class MultiPeriodDiD(DifferenceInDifferences):
     Parameters
     ----------
     robust : bool, default=True
-        Whether to use heteroskedasticity-robust standard errors (HC1).
+        Legacy alias for ``vcov_type``. ``robust=True`` maps to
+        ``vcov_type="hc1"``; ``robust=False`` maps to ``vcov_type="classical"``.
+        Explicit ``vcov_type`` overrides ``robust`` unless the pair is
+        contradictory (e.g. ``robust=False, vcov_type="hc2"`` raises).
     cluster : str, optional
-        Column name for cluster-robust standard errors.
+        Column name for cluster-robust standard errors. With ``vcov_type="hc1"``
+        dispatches to CR1 (Liang-Zeger).
+
+        **Not supported with** ``vcov_type="hc2_bm"``: the cluster-aware CR2
+        Bell-McCaffrey contrast DOF for the post-period-average ATT is not
+        yet implemented, and pairing CR2 SEs with one-way Imbens-Kolesar DOF
+        would be a broken hybrid, so the combination raises
+        ``NotImplementedError`` with a pointer to workarounds. Tracked in
+        ``TODO.md``; also documented as a Note in
+        ``docs/methodology/REGISTRY.md`` under the HeterogeneousAdoptionDiD
+        requirements-checklist block.
+    vcov_type : {"classical", "hc1", "hc2", "hc2_bm"}, optional
+        Variance-covariance family. Defaults to the ``robust`` alias.
+
+        - ``"classical"``: non-robust OLS SEs, ``sigma_hat^2 * (X'X)^{-1}``.
+        - ``"hc1"``: heteroskedasticity-robust HC1 with ``n/(n-k)`` adjustment
+          (library default). With ``cluster=``, uses CR1 (Liang-Zeger).
+        - ``"hc2"``: leverage-corrected meat (one-way only). Errors with
+          ``cluster=``; use ``"hc2_bm"`` without cluster for Bell-McCaffrey.
+        - ``"hc2_bm"``: one-way HC2 + Imbens-Kolesar (2016) Satterthwaite DOF
+          per coefficient plus a contrast-aware DOF for the post-period-average
+          ATT. **Unsupported with** ``cluster=`` — see ``cluster`` above.
     alpha : float, default=0.05
         Significance level for confidence intervals.
 
@@ -1079,9 +1257,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, effective_inference)
         )
-        _uses_replicate_mp = (
-            resolved_survey is not None and resolved_survey.uses_replicate_variance
-        )
+        _uses_replicate_mp = resolved_survey is not None and resolved_survey.uses_replicate_variance
         if _uses_replicate_mp and effective_inference == "wild_bootstrap":
             raise ValueError(
                 "Cannot use inference='wild_bootstrap' with replicate-weight "
@@ -1114,6 +1290,21 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 "fixed_effects dummies, violating the FWL theorem. "
                 "Use absorb alone (for high-dimensional FE) "
                 "or fixed_effects alone (for low-dimensional FE)."
+            )
+
+        # Reject HC2 / HC2 + Bell-McCaffrey on absorbed-FE fits (see the
+        # matching guard in DifferenceInDifferences.fit / twfe.py for the
+        # methodology reasoning: HC2/CR2 leverage corrections depend on the
+        # full FE hat matrix, not the residualized design from within-
+        # transformation). Tracked in TODO.md.
+        if absorb and self.vcov_type in ("hc2", "hc2_bm"):
+            raise NotImplementedError(
+                f"MultiPeriodDiD(absorb=..., vcov_type={self.vcov_type!r}) "
+                "is not yet supported: absorbed fixed effects are handled "
+                "by demeaning, and the HC2 / CR2 Bell-McCaffrey leverage "
+                "corrections depend on the full FE hat matrix, not the "
+                "residualized one. Use vcov_type='hc1' with absorb=, or "
+                "switch to fixed_effects= dummies for a full-dummy design."
             )
 
         # Pre-compute non_ref_periods (needed for absorb demeaning)
@@ -1224,6 +1415,30 @@ class MultiPeriodDiD(DifferenceInDifferences):
         # Determine if survey vcov should be used
         _use_survey_vcov = resolved_survey is not None and resolved_survey.needs_survey_vcov
 
+        # Reject cluster + vcov_type="hc2_bm": `_compute_cr2_bm` produces CR2
+        # per-coefficient DOF, but the post-period-average contrast needs a
+        # cluster-aware contrast-BM DOF that isn't implemented yet. Pairing
+        # CR2 SEs with one-way BM DOF would be a broken hybrid — reject with
+        # a clear error until the cluster-aware contrast DOF is in place.
+        # Tracked in TODO.md. Users can drop cluster for one-way HC2+BM, or
+        # drop vcov_type for CR1 cluster-robust.
+        if (
+            self.vcov_type == "hc2_bm"
+            and effective_cluster_ids is not None
+            and not _use_survey_vcov
+        ):
+            raise NotImplementedError(
+                "MultiPeriodDiD(cluster=..., vcov_type='hc2_bm') is not yet "
+                "supported: the cluster-aware CR2 Bell-McCaffrey contrast DOF "
+                "for the post-period average has not been implemented. "
+                "Workarounds: use vcov_type='hc2_bm' without cluster (one-way "
+                "HC2 + BM DOF), or use vcov_type='hc1' with cluster (CR1 "
+                "Liang-Zeger cluster-robust)."
+            )
+
+        # Remap implicit "classical" + cluster to CR1 (legacy backward compat).
+        _fit_vcov_type = self._resolve_effective_vcov_type(effective_cluster_ids)
+
         # Note: Wild bootstrap for multi-period effects is complex (multiple coefficients)
         # For now, we use analytical inference even if inference="wild_bootstrap"
         coefficients, residuals, fitted, vcov = solve_ols(
@@ -1236,6 +1451,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
             rank_deficient_action=self.rank_deficient_action,
             weights=survey_weights,
             weight_type=survey_weight_type,
+            vcov_type=_fit_vcov_type,
         )
 
         # Compute survey vcov if applicable
@@ -1271,9 +1487,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 d_r = wd["_did_treatment"].values.astype(float)
                 X_r = np.column_stack([np.ones(len(y_r)), d_r])
                 for period_ in non_ref_periods:
-                    X_r = np.column_stack(
-                        [X_r, wd[f"_did_period_{period_}"].values.astype(float)]
-                    )
+                    X_r = np.column_stack([X_r, wd[f"_did_period_{period_}"].values.astype(float)])
                 for period_ in non_ref_periods:
                     X_r = np.column_stack(
                         [X_r, wd[f"_did_interact_{period_}"].values.astype(float)]
@@ -1282,9 +1496,12 @@ class MultiPeriodDiD(DifferenceInDifferences):
                     for cov_ in covariates:
                         X_r = np.column_stack([X_r, wd[cov_].values.astype(float)])
                 coef_r, _, _ = solve_ols(
-                    X_r[:, _id_cols_mp], y_r,
-                    weights=w_nz, weight_type=survey_weight_type,
-                    rank_deficient_action="silent", return_vcov=False,
+                    X_r[:, _id_cols_mp],
+                    y_r,
+                    weights=w_nz,
+                    weight_type=survey_weight_type,
+                    rank_deficient_action="silent",
+                    return_vcov=False,
                 )
                 return coef_r
 
@@ -1301,7 +1518,10 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 kept_cols = np.where(~nan_mask)[0]
                 if len(kept_cols) > 0:
                     vcov_reduced, _n_valid_rep_mp = compute_replicate_vcov(
-                        X[:, kept_cols], y, coefficients[kept_cols], resolved_survey,
+                        X[:, kept_cols],
+                        y,
+                        coefficients[kept_cols],
+                        resolved_survey,
                         weight_type=survey_weight_type,
                     )
                     vcov = _expand_vcov_with_nan(vcov_reduced, X.shape[1], kept_cols)
@@ -1310,7 +1530,11 @@ class MultiPeriodDiD(DifferenceInDifferences):
                     _n_valid_rep_mp = 0
             else:
                 vcov, _n_valid_rep_mp = compute_replicate_vcov(
-                    X, y, coefficients, resolved_survey, weight_type=survey_weight_type,
+                    X,
+                    y,
+                    coefficients,
+                    resolved_survey,
+                    weight_type=survey_weight_type,
                 )
         elif _use_survey_vcov:
             from diff_diff.survey import compute_survey_vcov
@@ -1356,25 +1580,64 @@ class MultiPeriodDiD(DifferenceInDifferences):
             )
             df = None
 
-        # For non-robust, non-clustered case, we need homoskedastic vcov
-        # solve_ols returns HC1 by default, so compute homoskedastic if needed
-        if not self.robust and self.cluster is None and survey_weights is None:
-            n = len(y)
-            mse = np.sum(residuals**2) / (n - k_effective)
-            # Use solve() instead of inv() for numerical stability
-            # Only compute for identified columns (non-NaN coefficients)
-            identified_mask = ~np.isnan(coefficients)
-            if np.all(identified_mask):
-                vcov = np.linalg.solve(X.T @ X, mse * np.eye(X.shape[1]))
-            else:
-                # For rank-deficient case, compute vcov on reduced matrix then expand
-                X_reduced = X[:, identified_mask]
-                vcov_reduced = np.linalg.solve(
-                    X_reduced.T @ X_reduced, mse * np.eye(X_reduced.shape[1])
+        # Note: the prior homoskedastic-vcov fallback conditioned on
+        # `not self.robust` has been subsumed by the vcov_type dispatch in
+        # solve_ols above, which routes vcov_type="classical" through
+        # compute_robust_vcov's classical branch (identical math). The
+        # explicit branch is no longer needed; vcov above already matches the
+        # requested variance family.
+
+        # For hc2_bm with a non-survey fit, compute per-coefficient and
+        # per-contrast Bell-McCaffrey Satterthwaite DOF so period-specific
+        # effects and the post-period average use correct small-sample DOF
+        # rather than the shared n-k fallback.
+        _bm_dof_per_coef: Optional[np.ndarray] = None
+        _bm_dof_avg: Optional[float] = None
+        if (
+            self.vcov_type == "hc2_bm"
+            and not _use_survey_vcov
+            and vcov is not None
+            and not np.all(np.isnan(coefficients))
+        ):
+            from diff_diff.linalg import (
+                _compute_bm_dof_from_contrasts,
+                _compute_hat_diagonals,
+            )
+
+            _identified = ~np.isnan(coefficients)
+            _kept = np.where(_identified)[0]
+            if len(_kept) > 0:
+                X_kept = X[:, _kept]
+                bread_kept = X_kept.T @ (
+                    X_kept * survey_weights[:, np.newaxis] if survey_weights is not None else X_kept
                 )
-                # Expand to full size with NaN for dropped columns
-                vcov = np.full((X.shape[1], X.shape[1]), np.nan)
-                vcov[np.ix_(identified_mask, identified_mask)] = vcov_reduced
+                h_diag_kept = _compute_hat_diagonals(X_kept, bread_kept, weights=survey_weights)
+                # Build the contrast matrix: one column per identified coefficient
+                # plus one column for the post-period average contrast (1/n_post
+                # on each post-period interaction column, 0 elsewhere).
+                n_kept = len(_kept)
+                # Post-period contrast in full-width k dims, then subset to kept
+                post_contrast_full = np.zeros(X.shape[1])
+                _n_post = len(post_periods)
+                if _n_post > 0:
+                    for _p in post_periods:
+                        post_contrast_full[interaction_indices[_p]] = 1.0 / _n_post
+                post_contrast_kept = post_contrast_full[_kept]
+                contrasts = np.column_stack([np.eye(n_kept), post_contrast_kept[:, np.newaxis]])
+                _dof_all = _compute_bm_dof_from_contrasts(
+                    X_kept,
+                    bread_kept,
+                    h_diag_kept,
+                    contrasts,
+                    weights=survey_weights,
+                )
+                # Expand per-coefficient DOF back to full width (NaN for dropped).
+                _bm_dof_per_coef = np.full(X.shape[1], np.nan)
+                _bm_dof_per_coef[_kept] = _dof_all[:n_kept]
+                # Post-period average: last contrast column.
+                # Only meaningful if all post-period coefs are identified.
+                if np.all(_identified[[interaction_indices[p] for p in post_periods]]):
+                    _bm_dof_avg = float(_dof_all[-1])
 
         # Extract period-specific treatment effects for ALL non-reference periods
         period_effects = {}
@@ -1386,7 +1649,12 @@ class MultiPeriodDiD(DifferenceInDifferences):
             idx = interaction_indices[period]
             effect = coefficients[idx]
             se = np.sqrt(vcov[idx, idx])
-            t_stat, p_value, conf_int = safe_inference(effect, se, alpha=self.alpha, df=df)
+            # Prefer per-coefficient BM DOF when available (hc2_bm path);
+            # otherwise fall back to the shared analytical df.
+            period_df = df
+            if _bm_dof_per_coef is not None and np.isfinite(_bm_dof_per_coef[idx]):
+                period_df = float(_bm_dof_per_coef[idx])
+            t_stat, p_value, conf_int = safe_inference(effect, se, alpha=self.alpha, df=period_df)
 
             period_effects[period] = PeriodEffect(
                 period=period,
@@ -1430,8 +1698,11 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 avg_conf_int = (np.nan, np.nan)
             else:
                 avg_se = float(np.sqrt(avg_var))
+                # Prefer the contrast-specific BM DOF for the post-period average
+                # when hc2_bm is in use; otherwise fall back to the shared df.
+                _avg_df = _bm_dof_avg if _bm_dof_avg is not None else df
                 avg_t_stat, avg_p_value, avg_conf_int = safe_inference(
-                    avg_att, avg_se, alpha=self.alpha, df=df
+                    avg_att, avg_se, alpha=self.alpha, df=_avg_df
                 )
 
         # Count observations (use raw counts to avoid demeaned values from absorb)
@@ -1463,6 +1734,13 @@ class MultiPeriodDiD(DifferenceInDifferences):
             reference_period=reference_period,
             interaction_indices=interaction_indices,
             survey_metadata=survey_metadata,
+            # Report the family that actually produced the SE; may be the
+            # remapped hc1 under the legacy alias path, not self.vcov_type.
+            vcov_type=_fit_vcov_type,
+            cluster_name=self.cluster,
+            n_clusters=(
+                len(np.unique(effective_cluster_ids)) if effective_cluster_ids is not None else None
+            ),
         )
 
         self._coefficients = coefficients

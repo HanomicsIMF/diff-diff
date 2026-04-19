@@ -34,7 +34,7 @@ This is controlled by the `rank_deficient_action` parameter:
 
 import warnings
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Tuple, Union, overload
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 import numpy as np
 import pandas as pd
@@ -347,6 +347,9 @@ def solve_ols(
     rank_deficient_action: str = ...,
     column_names: Optional[List[str]] = ...,
     skip_rank_check: bool = ...,
+    weights: Optional[np.ndarray] = ...,
+    weight_type: str = ...,
+    vcov_type: str = ...,
 ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]: ...
 
 
@@ -362,6 +365,9 @@ def solve_ols(
     rank_deficient_action: str = ...,
     column_names: Optional[List[str]] = ...,
     skip_rank_check: bool = ...,
+    weights: Optional[np.ndarray] = ...,
+    weight_type: str = ...,
+    vcov_type: str = ...,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]: ...
 
 
@@ -377,6 +383,9 @@ def solve_ols(
     rank_deficient_action: str = ...,
     column_names: Optional[List[str]] = ...,
     skip_rank_check: bool = ...,
+    weights: Optional[np.ndarray] = ...,
+    weight_type: str = ...,
+    vcov_type: str = ...,
 ) -> Union[
     Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]],
     Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]],
@@ -430,6 +439,7 @@ def solve_ols(
     skip_rank_check: bool = False,
     weights: Optional[np.ndarray] = None,
     weight_type: str = "pweight",
+    vcov_type: str = "hc1",
 ) -> Union[
     Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]],
     Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]],
@@ -479,6 +489,21 @@ def solve_ols(
         Type of weights: "pweight" (inverse selection probability),
         "fweight" (frequency), or "aweight" (inverse variance).
         Affects variance estimation but not coefficient computation.
+    vcov_type : {"classical", "hc1", "hc2", "hc2_bm"}, default "hc1"
+        Variance-covariance family forwarded to :func:`compute_robust_vcov`:
+
+        - ``"classical"``: non-robust OLS SE, ``sigma_hat^2 * (X'X)^{-1}``.
+          One-way only; raises if ``cluster_ids`` is also passed.
+        - ``"hc1"``: heteroskedasticity-robust HC1 with ``n/(n-k)`` adjustment
+          (default). With ``cluster_ids``, dispatches to CR1 (Liang-Zeger).
+        - ``"hc2"``: leverage-corrected meat. One-way only; raises with
+          ``cluster_ids`` (use ``"hc2_bm"`` for clustered Bell-McCaffrey).
+        - ``"hc2_bm"``: HC2 + Imbens-Kolesar (2016) Satterthwaite DOF one-way;
+          Pustejovsky-Tipton (2018) CR2 Bell-McCaffrey with ``cluster_ids``.
+          **Not supported with weights** (either one-way or clustered):
+          raises ``NotImplementedError`` because the BM DOF helper is
+          inconsistent with ``solve_ols``'s WLS transform. Tracked in
+          ``TODO.md``.
 
     Returns
     -------
@@ -594,7 +619,12 @@ def solve_ols(
     result = None  # Will hold the tuple from backend functions
 
     if skip_rank_check:
-        if HAS_RUST_BACKEND and _rust_solve_ols is not None and weights is None:
+        if (
+            HAS_RUST_BACKEND
+            and _rust_solve_ols is not None
+            and weights is None
+            and vcov_type == "hc1"
+        ):
             result = _solve_ols_rust(
                 X,
                 y,
@@ -613,6 +643,7 @@ def solve_ols(
                 rank_deficient_action=rank_deficient_action,
                 column_names=column_names,
                 _skip_rank_check=True,
+                vcov_type=vcov_type,
             )
     else:
         # Check for rank deficiency using fast pivoted QR decomposition.
@@ -622,14 +653,15 @@ def solve_ols(
         is_rank_deficient = len(dropped_cols) > 0
 
         # Routing strategy:
-        # - Full-rank + Rust available + no weights → fast Rust backend
-        # - Weighted or rank-deficient → Python backend
+        # - Full-rank + Rust available + no weights + HC1 vcov_type → fast Rust
+        # - Weighted or rank-deficient or non-HC1 vcov_type → Python backend
         # - Rust numerical instability → Python fallback (via None return)
         if (
             HAS_RUST_BACKEND
             and _rust_solve_ols is not None
             and not is_rank_deficient
             and weights is None
+            and vcov_type == "hc1"
         ):
             result = _solve_ols_rust(
                 X,
@@ -660,6 +692,7 @@ def solve_ols(
                 rank_deficient_action=rank_deficient_action,
                 column_names=column_names,
                 _precomputed_rank_info=(rank, dropped_cols, pivot),
+                vcov_type=vcov_type,
             )
 
     # Back-transform residuals and compute weighted vcov on original-scale data.
@@ -691,6 +724,7 @@ def solve_ols(
                         cluster_ids,
                         weights=weights,
                         weight_type=weight_type,
+                        vcov_type=vcov_type,
                     )
                     vcov_out = _expand_vcov_with_nan(vcov_reduced, _original_X.shape[1], kept_cols)
                 else:
@@ -702,6 +736,7 @@ def solve_ols(
                     cluster_ids,
                     weights=weights,
                     weight_type=weight_type,
+                    vcov_type=vcov_type,
                 )
 
         if return_fitted:
@@ -724,6 +759,7 @@ def _solve_ols_numpy(
     column_names: Optional[List[str]] = ...,
     _precomputed_rank_info: Optional[Tuple[int, np.ndarray, np.ndarray]] = ...,
     _skip_rank_check: bool = ...,
+    vcov_type: str = ...,
 ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]: ...
 
 
@@ -739,6 +775,7 @@ def _solve_ols_numpy(
     column_names: Optional[List[str]] = ...,
     _precomputed_rank_info: Optional[Tuple[int, np.ndarray, np.ndarray]] = ...,
     _skip_rank_check: bool = ...,
+    vcov_type: str = ...,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]: ...
 
 
@@ -754,6 +791,7 @@ def _solve_ols_numpy(
     column_names: Optional[List[str]] = ...,
     _precomputed_rank_info: Optional[Tuple[int, np.ndarray, np.ndarray]] = ...,
     _skip_rank_check: bool = ...,
+    vcov_type: str = ...,
 ) -> Union[
     Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]],
     Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]],
@@ -771,6 +809,7 @@ def _solve_ols_numpy(
     column_names: Optional[List[str]] = None,
     _precomputed_rank_info: Optional[Tuple[int, np.ndarray, np.ndarray]] = None,
     _skip_rank_check: bool = False,
+    vcov_type: str = "hc1",
 ) -> Union[
     Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]],
     Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]],
@@ -877,6 +916,7 @@ def _solve_ols_numpy(
                 X_reduced,
                 residuals,
                 cluster_ids,
+                vcov_type=vcov_type,
             )
             vcov = _expand_vcov_with_nan(vcov_reduced, k, kept_cols)
     else:
@@ -891,12 +931,144 @@ def _solve_ols_numpy(
         # Compute variance-covariance matrix if requested
         vcov = None
         if return_vcov:
-            vcov = _compute_robust_vcov_numpy(X, residuals, cluster_ids)
+            vcov = _compute_robust_vcov_numpy(X, residuals, cluster_ids, vcov_type=vcov_type)
 
     if return_fitted:
         return coefficients, residuals, fitted, vcov
     else:
         return coefficients, residuals, vcov
+
+
+_VALID_VCOV_TYPES = frozenset({"classical", "hc1", "hc2", "hc2_bm"})
+
+
+def _validate_vcov_args(
+    vcov_type: str,
+    cluster_ids: Optional[np.ndarray],
+    weights: Optional[np.ndarray],
+) -> None:
+    """Shared validation for ``vcov_type`` / ``cluster_ids`` / ``weights`` combinations.
+
+    Called from both the public :func:`compute_robust_vcov` and the internal
+    :func:`_compute_robust_vcov_numpy` so that any call path reaches the same
+    raise. Validation was previously only in the public wrapper, which meant
+    direct calls from ``solve_ols`` / ``_solve_ols_numpy`` could silently
+    reach an unsupported code path with one-way formulas or drop weights.
+    Reviewer P0: prevent that class of silent wrong inference.
+
+    Raises
+    ------
+    ValueError
+        If ``vcov_type`` is not in the allowed set, or if ``cluster_ids`` is
+        combined with a ``vcov_type`` that is one-way only (``classical``,
+        ``hc2``).
+    NotImplementedError
+        If ``vcov_type == "hc2_bm"`` is combined with ``weights`` (with OR
+        without ``cluster_ids``). The weighted Bell-McCaffrey DOF requires
+        re-deriving the Satterthwaite ratio on the WLS-transformed design
+        ``X* = sqrt(w) X`` to match ``solve_ols``'s residual convention;
+        until that derivation is in place, the path raises rather than
+        shipping silently-inconsistent small-sample p-values. Tracked in
+        ``TODO.md``.
+    """
+    if vcov_type not in _VALID_VCOV_TYPES:
+        raise ValueError(
+            f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; " f"got {vcov_type!r}"
+        )
+    if vcov_type in ("classical", "hc2") and cluster_ids is not None:
+        msg = {
+            "classical": (
+                "classical SEs are one-way only; pass vcov_type='hc1' or "
+                "'hc2_bm' for cluster-robust."
+            ),
+            "hc2": (
+                "hc2 is one-way only. Use vcov_type='hc2_bm' for " "cluster-robust Bell-McCaffrey."
+            ),
+        }[vcov_type]
+        raise ValueError(msg)
+    if vcov_type == "hc2_bm" and weights is not None:
+        # Weighted Bell-McCaffrey (both one-way and cluster) is deferred to
+        # Phase 2+. The current `_compute_bm_dof_from_contrasts` builds the
+        # hat matrix from the unscaled design via `X (X'WX)^{-1} X' W`, but
+        # `solve_ols` solves the weighted problem by transforming to
+        # `X* = sqrt(w) X`, `y* = sqrt(w) y` and computing residuals on that
+        # transformed system. The transformed hat matrix
+        # `H* = sqrt(W) X (X'WX)^{-1} X' sqrt(W)` is symmetric idempotent and
+        # is the correct residual-maker for the Satterthwaite ratio
+        # `(tr G)^2 / tr(G^2)`; the asymmetric `H = X (X'WX)^{-1} X' W`
+        # currently produced here is not, so the BM DOF it yields is
+        # internally inconsistent with `solve_ols`'s WLS convention. Rather
+        # than ship silently-wrong small-sample p-values, we fail fast.
+        # Tracked in TODO.md under Methodology/Correctness (rederive the BM
+        # DOF on the transformed WLS design + add weighted parity tests).
+        if cluster_ids is not None:
+            raise NotImplementedError(
+                "vcov_type='hc2_bm' with both cluster_ids and weights is a "
+                "Phase 2+ follow-up. Use vcov_type='hc1' for weighted cluster-"
+                "robust, or drop weights for CR2 Bell-McCaffrey."
+            )
+        raise NotImplementedError(
+            "vcov_type='hc2_bm' with weights is a Phase 2+ follow-up: the "
+            "Bell-McCaffrey DOF helper builds the hat matrix on the "
+            "unscaled design, which is inconsistent with solve_ols's WLS "
+            "transformation (X* = sqrt(w) X). Shipping in this state would "
+            "produce silently-wrong small-sample p-values. Use vcov_type="
+            "'hc1' for weighted HC1, or drop weights for one-way HC2 + "
+            "Bell-McCaffrey. Tracked in TODO.md."
+        )
+
+
+def resolve_vcov_type(
+    robust: bool = True,
+    vcov_type: Optional[str] = None,
+) -> str:
+    """Resolve the effective ``vcov_type`` from the ``robust``/``vcov_type`` pair.
+
+    Single source of truth for the alias and conflict rules shared by
+    :class:`LinearRegression` and :class:`~diff_diff.estimators.DifferenceInDifferences`
+    (and any future caller that needs to validate the pair). Keeping the resolution
+    in one place prevents ``__init__``/``set_params`` drift.
+
+    Rules (per the Phase 1a plan):
+
+    - If ``vcov_type`` is ``None``: map ``robust=True`` to ``"hc1"`` and
+      ``robust=False`` to ``"classical"``.
+    - If ``vcov_type`` is supplied: it must be one of
+      ``{"classical", "hc1", "hc2", "hc2_bm"}``.
+    - If ``robust=False`` is supplied together with a non-``"classical"`` ``vcov_type``,
+      raise ``ValueError`` - the combination is ambiguous.
+
+    Parameters
+    ----------
+    robust : bool, default True
+        Legacy alias. ``True`` == HC1; ``False`` == classical OLS SEs.
+    vcov_type : str, optional
+        Explicit variance family. Overrides ``robust`` unless the pair is contradictory.
+
+    Returns
+    -------
+    str
+        One of ``"classical"``, ``"hc1"``, ``"hc2"``, ``"hc2_bm"``.
+
+    Raises
+    ------
+    ValueError
+        If ``vcov_type`` is not one of the allowed values, or if
+        ``robust=False`` conflicts with an explicit non-classical ``vcov_type``.
+    """
+    if vcov_type is None:
+        return "hc1" if robust else "classical"
+    if vcov_type not in _VALID_VCOV_TYPES:
+        raise ValueError(
+            f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; " f"got {vcov_type!r}"
+        )
+    if robust is False and vcov_type != "classical":
+        raise ValueError(
+            f"robust=False conflicts with vcov_type={vcov_type!r}. "
+            "Pass vcov_type='classical' for non-robust SEs, or drop "
+            "`robust=` and rely on vcov_type alone."
+        )
+    return vcov_type
 
 
 def compute_robust_vcov(
@@ -905,11 +1077,33 @@ def compute_robust_vcov(
     cluster_ids: Optional[np.ndarray] = None,
     weights: Optional[np.ndarray] = None,
     weight_type: str = "pweight",
-) -> np.ndarray:
+    vcov_type: str = "hc1",
+    return_dof: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
-    Compute heteroskedasticity-robust or cluster-robust variance-covariance matrix.
+    Compute variance-covariance matrix under one of four `vcov_type` variants.
 
-    Uses the sandwich estimator: (X'X)^{-1} * meat * (X'X)^{-1}
+    Uses the sandwich estimator: (X'X)^{-1} * meat * (X'X)^{-1}, with the meat
+    matrix determined by the ``vcov_type`` dispatch:
+
+    - ``"classical"``: non-robust OLS SE. ``vcov = sigma_hat^2 * (X'X)^{-1}``
+      with ``sigma_hat^2 = sum(u_i^2) / (n - k)``. Useful as a baseline and for
+      backward compatibility with ``robust=False``.
+    - ``"hc1"`` (default): heteroskedasticity-robust HC1, meat
+      ``sum_i (u_i^2) x_i x_i'`` with DOF factor ``n / (n - k)``. With
+      ``cluster_ids``, switches to CR1 (Liang-Zeger) cluster-robust.
+    - ``"hc2"``: leverage-corrected meat
+      ``sum_i (u_i^2 / (1 - h_ii)) x_i x_i'`` where ``h_ii`` are hat-matrix
+      diagonals. No DOF adjustment beyond ``n - k``. One-way only; errors with
+      ``cluster_ids``.
+    - ``"hc2_bm"``: one-way HC2 meat plus Imbens-Kolesar (2016) Bell-McCaffrey
+      Satterthwaite degrees of freedom per coefficient when ``cluster_ids`` is
+      ``None``. When ``cluster_ids`` is supplied, dispatches to the
+      Pustejovsky-Tipton (2018) CR2 Bell-McCaffrey cluster-robust estimator
+      (matches R ``clubSandwich::vcovCR(..., type="CR2")``). Required by the
+      Pierce-Schott (2016) TWFE application in de Chaisemartin et al. (2026)
+      with ``G=103``. Weighted clustered CR2 is the Phase 2+ follow-up and
+      raises ``NotImplementedError``.
 
     Parameters
     ----------
@@ -918,16 +1112,28 @@ def compute_robust_vcov(
     residuals : ndarray of shape (n,)
         OLS residuals.
     cluster_ids : ndarray of shape (n,), optional
-        Cluster identifiers. If None, computes HC1 robust SEs.
+        Cluster identifiers. Valid with ``vcov_type="hc1"`` (dispatches to CR1)
+        and ``vcov_type="hc2_bm"`` (dispatches to CR2 Bell-McCaffrey).
+        Combining with ``classical`` or ``hc2`` raises ``ValueError``.
+        Combining with ``hc2_bm`` AND ``weights`` raises ``NotImplementedError``.
     weights : ndarray of shape (n,), optional
         Observation weights. If provided, computes weighted sandwich estimator.
     weight_type : str, default "pweight"
         Weight type: "pweight", "fweight", or "aweight".
+    vcov_type : str, default "hc1"
+        One of ``"classical"``, ``"hc1"``, ``"hc2"``, ``"hc2_bm"``.
+    return_dof : bool, default False
+        When True, returns ``(vcov, dof_vec)`` tuple. ``dof_vec`` is a length-k
+        array of per-coefficient degrees of freedom. For ``classical``,
+        ``hc1``, ``hc2``: every element is ``n_eff - k``. For ``hc2_bm``
+        one-way: Imbens-Kolesar (2016) Satterthwaite DOF per contrast.
 
     Returns
     -------
     vcov : ndarray of shape (k, k)
         Variance-covariance matrix.
+    dof_vec : ndarray of shape (k,), optional
+        Only returned when ``return_dof=True``.
 
     Notes
     -----
@@ -937,19 +1143,32 @@ def compute_robust_vcov(
         aweight/unweighted: meat = X' diag(u²) X
         adjustment = n / (n - k)  (fweight uses n_eff = sum(w))
 
-    For cluster-robust:
+    For cluster-robust (CR1, Liang-Zeger):
         meat = sum_g (X_g' u_g)(X_g' u_g)'
         adjustment = (G / (G-1)) * ((n-1) / (n-k))
 
-    The cluster-robust computation is vectorized using pandas groupby,
-    which is much faster than a Python loop over clusters.
+    For HC2 one-way (weighted per review MEDIUM #3):
+        h_ii = w_i * x_i' * (X'WX)^{-1} * x_i  (unweighted: w_i = 1)
+        meat = sum_i (u_i^2 / (1 - h_ii)) x_i x_i'
+        Guards against h_ii > 1 - eps with a fall-back to HC1 plus warning.
+
+    For HC2 + Bell-McCaffrey one-way DOF (per Imbens-Kolesar 2016):
+        For each coefficient j, let q_j = X (X'X)^{-1} e_j, let M = I - H.
+        DOF_j = (sum_i q_j_i^2)^2 / (a_j' (M^2) a_j) where
+        a_j(i) = q_j_i^2 / (1 - h_ii) and M^2 denotes elementwise square.
+
+    The cluster-robust CR1 computation is vectorized using pandas groupby.
     """
+    _validate_vcov_args(vcov_type, cluster_ids, weights)
+
     # Validate weights before dispatching to backend
     if weights is not None:
         weights = _validate_weights(weights, weight_type, X.shape[0])
 
-    # Use Rust backend if available AND no weights (Rust doesn't support weights yet)
-    if HAS_RUST_BACKEND and weights is None:
+    # Use Rust backend if available AND no weights AND the requested path is
+    # the unchanged HC1/CR1 dispatch AND the caller does not need DOF. Any
+    # other combination falls through to the NumPy implementation below.
+    if HAS_RUST_BACKEND and weights is None and vcov_type == "hc1" and not return_dof:
         X = np.ascontiguousarray(X, dtype=np.float64)
         residuals = np.ascontiguousarray(residuals, dtype=np.float64)
 
@@ -982,6 +1201,8 @@ def compute_robust_vcov(
                     cluster_ids,
                     weights=weights,
                     weight_type=weight_type,
+                    vcov_type=vcov_type,
+                    return_dof=return_dof,
                 )
             raise
 
@@ -992,7 +1213,267 @@ def compute_robust_vcov(
         cluster_ids,
         weights=weights,
         weight_type=weight_type,
+        vcov_type=vcov_type,
+        return_dof=return_dof,
     )
+
+
+def _compute_hat_diagonals(
+    X: np.ndarray,
+    bread_matrix: np.ndarray,
+    weights: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Compute hat-matrix diagonals ``h_ii`` for HC2 leverage correction.
+
+    For unweighted OLS: ``h_ii = x_i' (X'X)^{-1} x_i``.
+    For weighted OLS (``W = diag(w_i)``): the weighted hat matrix is
+    ``H = W^{1/2} X (X'WX)^{-1} X' W^{1/2}``, so the diagonals are
+    ``h_ii = w_i * x_i' (X'WX)^{-1} x_i``. This is the same convention as
+    ``sandwich::vcovHC(..., type="HC2")`` in R and matches the per-observation
+    effective leverage under WLS.
+
+    Returns an ``(n,)`` array. Values are clamped to ``[0, 1 - 1e-10]`` to
+    guard against numerical `` h_ii > 1`` from near-singular designs.
+    """
+    # Compute x_i' (X'WX)^{-1} x_i via a single solve rather than per-row.
+    # np.linalg.solve(bread, X.T) has shape (k, n); multiplying element-wise by
+    # X.T and summing over k gives the per-observation quadratic form.
+    try:
+        proj = np.linalg.solve(bread_matrix, X.T)
+    except np.linalg.LinAlgError as e:
+        if "Singular" in str(e):
+            raise ValueError(
+                "Design matrix is rank-deficient (singular X'X matrix). "
+                "This indicates perfect multicollinearity. Check your fixed effects "
+                "and covariates for linear dependencies."
+            ) from e
+        raise
+    h_diag = np.einsum("ij,ji->i", X, proj)
+    if weights is not None:
+        h_diag = weights * h_diag
+    # Numerical guard. Do not silently clip values materially exceeding 1 — that
+    # indicates a real design pathology; the caller warns and falls back.
+    return np.asarray(h_diag, dtype=np.float64)
+
+
+def _cr2_adjustment_matrix(I_minus_H_gg: np.ndarray, tol: float = 1e-10) -> np.ndarray:
+    """Symmetric matrix square root of ``(I - H_gg)^{-1}`` via eigendecomposition.
+
+    For a real symmetric positive-semidefinite ``I - H_gg``, eigendecompose as
+    ``U diag(s) U'`` and return ``U diag(s^{-1/2}) U'`` with pseudoinverse
+    handling: eigenvalues below ``tol`` are treated as zero (Moore-Penrose).
+    Handles singleton clusters, absorbed cluster FEs (``H_gg`` has eigenvalue
+    1), and general rank-deficient cluster blocks. Matches the convention of
+    R ``clubSandwich::vcovCR(..., type="CR2")``.
+    """
+    # Ensure symmetric — the bread_inv arithmetic can leave tiny asymmetry.
+    sym = 0.5 * (I_minus_H_gg + I_minus_H_gg.T)
+    eigvals, eigvecs = np.linalg.eigh(sym)
+    inv_sqrt = np.where(eigvals > tol, 1.0 / np.sqrt(np.maximum(eigvals, tol)), 0.0)
+    return (eigvecs * inv_sqrt) @ eigvecs.T
+
+
+def _compute_cr2_bm(
+    X: np.ndarray,
+    residuals: np.ndarray,
+    cluster_ids: np.ndarray,
+    bread_matrix: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """CR2 Bell-McCaffrey cluster-robust variance with per-coefficient DOF.
+
+    Implements the formula of Bell-McCaffrey (2002) as refined by
+    Pustejovsky-Tipton (2018) / `clubSandwich::vcovCR(..., type="CR2")`.
+
+    For each cluster ``g``:
+      - ``H_gg = X_g bread_inv X_g'`` (n_g x n_g).
+      - ``A_g = (I - H_gg)^{-1/2}`` via symmetric eigendecomposition with
+        pseudoinverse handling (see :func:`_cr2_adjustment_matrix`).
+      - Per-cluster score ``s_g = X_g' A_g u_g``.
+    Meat = ``sum_g s_g s_g'``; VCOV = ``bread_inv meat bread_inv``.
+
+    Per-coefficient Satterthwaite DOF for contrast ``c_j = e_j``:
+
+        omega_g = A_g X_g bread_inv c_j  (length n_g)
+        trace(B) = sum_i (X_i' bread_inv c_j)^2
+        trace(B^2) = sum_{g, h} (omega_g' M_{g, h} omega_h)^2
+
+    where ``M = I - X bread_inv X'``. DOF_j = trace(B)^2 / trace(B^2).
+
+    Returns
+    -------
+    vcov : ndarray of shape (k, k)
+    dof_vec : ndarray of shape (k,)
+
+    Notes
+    -----
+    Unweighted only. Weighted CR2 is a Phase 2+ follow-up; the signature would
+    need to thread ``weights`` through the hat-matrix and residual rebalancing
+    (per clubSandwich's WLS handling). The call site in
+    :func:`_compute_robust_vcov_numpy` raises before dispatching when weights
+    are present alongside ``vcov_type="hc2_bm"`` + cluster.
+    """
+    n, k = X.shape
+    cluster_ids_arr = np.asarray(cluster_ids)
+    unique_clusters = np.unique(cluster_ids_arr)
+    G = len(unique_clusters)
+    if G < 2:
+        raise ValueError(f"Need at least 2 clusters for cluster-robust SEs, got {G}")
+
+    try:
+        bread_inv = np.linalg.solve(bread_matrix, np.eye(k))
+    except np.linalg.LinAlgError as e:
+        if "Singular" in str(e):
+            raise ValueError(
+                "Design matrix is rank-deficient (singular X'X matrix). "
+                "Cannot compute CR2 Bell-McCaffrey variance."
+            ) from e
+        raise
+
+    # Precompute the full residual-maker M = I - H (n x n). O(n^2 k) build.
+    # For CR2 BM DOF, we need M_{g, h} blocks across cluster pairs, so the
+    # full matrix is the cleanest representation. Note: n should be small
+    # to modest for cluster-robust DiD use cases.
+    H = X @ bread_inv @ X.T
+    M = np.eye(n) - H
+
+    # Per-cluster indices and adjustment matrices. Compute once, reuse for
+    # meat assembly and DOF loop.
+    cluster_idx = {g: np.where(cluster_ids_arr == g)[0] for g in unique_clusters}
+    A_g_matrices: Dict[Any, np.ndarray] = {}
+    for g in unique_clusters:
+        idx_g = cluster_idx[g]
+        H_gg = H[np.ix_(idx_g, idx_g)]
+        I_g = np.eye(len(idx_g))
+        A_g_matrices[g] = _cr2_adjustment_matrix(I_g - H_gg)
+
+    # --- VCOV (meat) ---
+    # Adjusted per-cluster scores, stacked as a (G, k) matrix so the meat is
+    # cluster_scores.T @ cluster_scores.
+    cluster_scores = np.zeros((G, k))
+    for gi, g in enumerate(unique_clusters):
+        idx_g = cluster_idx[g]
+        u_g = residuals[idx_g]
+        A_g = A_g_matrices[g]
+        # X_g' @ (A_g @ u_g) = score of shape (k,)
+        cluster_scores[gi] = X[idx_g].T @ (A_g @ u_g)
+    meat = cluster_scores.T @ cluster_scores
+    temp = np.linalg.solve(bread_matrix, meat)
+    vcov = np.linalg.solve(bread_matrix, temp.T).T
+
+    # --- Per-coefficient Bell-McCaffrey cluster DOF ---
+    # omega_g(c) = A_g @ X_g @ bread_inv @ c  (length n_g)
+    # trace(B) = sum_i (X_i' bread_inv c)^2
+    # trace(B^2) = sum_{g, h} (omega_g' M_{g, h} omega_h)^2
+    dof_vec = np.empty(k)
+    # Precompute X bread_inv (n x k) so contrast-specific q = X_bi[:, j].
+    X_bi = X @ bread_inv
+    # Precompute A_g @ X_g @ bread_inv per cluster (A_g_X_bi shape n_g x k)
+    A_g_Xbi = {g: A_g_matrices[g] @ X[cluster_idx[g]] @ bread_inv for g in unique_clusters}
+    for j in range(k):
+        q = X_bi[:, j]  # length n
+        trace_B = float(np.sum(q * q))
+        # trace(B^2) = sum_{g, h} (omega_g' M_{g, h} omega_h)^2
+        trace_B2 = 0.0
+        # Cache omega_g for this contrast
+        omega_cache = {g: A_g_Xbi[g][:, j] for g in unique_clusters}
+        for g in unique_clusters:
+            idx_g = cluster_idx[g]
+            omega_g = omega_cache[g]
+            for h in unique_clusters:
+                idx_h = cluster_idx[h]
+                omega_h = omega_cache[h]
+                M_gh = M[np.ix_(idx_g, idx_h)]
+                val = float(omega_g @ M_gh @ omega_h)
+                trace_B2 += val * val
+        dof_vec[j] = (trace_B * trace_B) / trace_B2 if trace_B2 > 0 else np.nan
+
+    return vcov, dof_vec
+
+
+def _compute_bm_dof_from_contrasts(
+    X: np.ndarray,
+    bread_matrix: np.ndarray,
+    h_diag: np.ndarray,
+    contrasts: np.ndarray,
+    weights: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Per-contrast Bell-McCaffrey (Imbens-Kolesar 2016) Satterthwaite DOF.
+
+    For each column ``c`` of ``contrasts`` (shape ``(k, m)``), define
+    ``q = X (X'WX)^{-1} c`` (length ``n``). Under a homoskedastic null, the
+    HC2 variance estimator for ``c' beta`` has a weighted-chi-squared
+    distribution; matching mean and variance via Satterthwaite gives
+
+        DOF(c) = (sum_i q(i)^2)^2 / sum_{i, k} a(i) a(k) M_{ik}^2
+
+    where ``M = I - H`` and ``a(i) = q(i)^2 / (1 - h_ii)``. Using the idempotent
+    identity ``M^2 = M``, ``trace(B) = sum_i q(i)^2`` matches the numerator.
+
+    Allocates an ``(n, n)`` temporary for ``M`` so the cost is ``O(n^2 k)`` for
+    the hat build plus ``O(n^2 m)`` for the per-contrast sums. Practical for
+    ``n < 10_000``; larger designs should switch to a scores-based formulation
+    (tracked in TODO.md).
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, k)
+    bread_matrix : ndarray of shape (k, k) == (X'WX) or (X'X)
+    h_diag : ndarray of shape (n,), hat-matrix diagonals (already weighted)
+    contrasts : ndarray of shape (k, m). Pass ``np.eye(k)`` for per-coefficient DOF.
+    weights : optional weights (shape ``(n,)``) used to build the weighted hat
+        matrix. When ``None``, unweighted.
+
+    Returns
+    -------
+    ndarray of shape (m,) of Satterthwaite DOF per contrast column. NaN when
+    ``den <= 0`` (degenerate case).
+    """
+    n, k = X.shape
+    if contrasts.ndim != 2 or contrasts.shape[0] != k:
+        raise ValueError(f"contrasts must have shape (k={k}, m); got {contrasts.shape}")
+    try:
+        bread_inv_c = np.linalg.solve(bread_matrix, contrasts)
+    except np.linalg.LinAlgError as e:
+        if "Singular" in str(e):
+            raise ValueError(
+                "Design matrix is rank-deficient (singular X'X matrix). "
+                "Cannot compute Bell-McCaffrey DOF."
+            ) from e
+        raise
+    # q has shape (n, m); column j is X @ (bread_inv @ contrasts[:, j]).
+    q = X @ bread_inv_c
+    # Build the weighted residual-maker M = I - H once.
+    if weights is not None:
+        H = X @ np.linalg.solve(bread_matrix, (X * weights[:, np.newaxis]).T)
+    else:
+        H = X @ np.linalg.solve(bread_matrix, X.T)
+    M = np.eye(n) - H
+    M_sq = M * M  # elementwise square
+    one_minus_h = np.maximum(1.0 - h_diag, 1e-10)
+    m = contrasts.shape[1]
+    dof = np.empty(m)
+    for j in range(m):
+        qj_sq = q[:, j] * q[:, j]
+        num = qj_sq.sum() ** 2
+        a_j = qj_sq / one_minus_h
+        den = float(a_j @ M_sq @ a_j)
+        dof[j] = num / den if den > 0 else np.nan
+    return dof
+
+
+def _compute_bm_dof_oneway(
+    X: np.ndarray,
+    bread_matrix: np.ndarray,
+    h_diag: np.ndarray,
+    weights: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Per-coefficient Bell-McCaffrey DOF vector (Imbens-Kolesar 2016).
+
+    Thin wrapper over :func:`_compute_bm_dof_from_contrasts` with
+    ``contrasts = I_k``, so each column picks out one coefficient.
+    """
+    k = X.shape[1]
+    return _compute_bm_dof_from_contrasts(X, bread_matrix, h_diag, np.eye(k), weights=weights)
 
 
 def _compute_robust_vcov_numpy(
@@ -1001,42 +1482,21 @@ def _compute_robust_vcov_numpy(
     cluster_ids: Optional[np.ndarray] = None,
     weights: Optional[np.ndarray] = None,
     weight_type: str = "pweight",
-) -> np.ndarray:
+    vcov_type: str = "hc1",
+    return_dof: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     NumPy fallback implementation of compute_robust_vcov.
 
-    Computes HC1 (heteroskedasticity-robust) or cluster-robust variance-covariance
-    matrix using the sandwich estimator.
-
-    Parameters
-    ----------
-    X : np.ndarray
-        Design matrix of shape (n, k).
-    residuals : np.ndarray
-        OLS residuals of shape (n,).
-    cluster_ids : np.ndarray, optional
-        Cluster identifiers. If None, uses HC1. If provided, uses
-        cluster-robust with G/(G-1) small-sample adjustment.
-    weights : np.ndarray, optional
-        Observation weights. If provided, computes weighted sandwich estimator.
-    weight_type : str, default "pweight"
-        Weight type: "pweight", "fweight", or "aweight".
-
-    Returns
-    -------
-    vcov : np.ndarray
-        Variance-covariance matrix of shape (k, k).
-
-    Notes
-    -----
-    Uses vectorized groupby aggregation for cluster-robust SEs to avoid
-    the O(n * G) loop that would be required with explicit iteration.
-
-    Weight type affects the meat computation:
-    - pweight: scores = w_i * X_i * u_i (HC1 meat = Σ s_i s_i' = X'diag(w²u²)X)
-    - fweight: scores = w_i * X_i * u_i (weighted scores), df = sum(w) - k
-    - aweight: scores = X_i * u_i (no weight in meat; after WLS, errors ~homoskedastic)
+    See :func:`compute_robust_vcov` for parameter and return semantics.
     """
+    # Re-run the shared validation here too. The public wrapper validates
+    # before dispatch, but solve_ols / _solve_ols_numpy call this function
+    # directly and previously bypassed the raise, letting unsupported
+    # combinations (cluster + classical, cluster + hc2, cluster + weights +
+    # hc2_bm) silently produce wrong inference. Reviewer P0 fix.
+    _validate_vcov_args(vcov_type, cluster_ids, weights)
+
     n, k = X.shape
 
     # Bread: (X'WX) or (X'X) depending on whether weights present
@@ -1056,6 +1516,116 @@ def _compute_robust_vcov_numpy(
             n_eff = int(round(np.sum(weights)))
         elif np.any(weights == 0):
             n_eff = int(np.count_nonzero(weights > 0))
+
+    # ------------------------------------------------------------------
+    # Classical (non-robust) OLS SE.
+    # ------------------------------------------------------------------
+    if vcov_type == "classical":
+        # sigma_hat^2 = sum(w * u^2) / (n_eff - k) for pweight/aweight; for
+        # fweight, divide by (sum_w - k).
+        if weights is not None:
+            if weight_type == "fweight":
+                sse = float(np.sum(weights * residuals**2))
+            elif weight_type == "pweight":
+                sse = float(np.sum(weights * residuals**2))
+            else:  # aweight
+                sse = float(np.sum(weights * residuals**2))
+        else:
+            sse = float(np.sum(residuals**2))
+        sigma2 = sse / (n_eff - k)
+        try:
+            bread_inv = np.linalg.solve(bread_matrix, np.eye(k))
+        except np.linalg.LinAlgError as e:
+            if "Singular" in str(e):
+                raise ValueError(
+                    "Design matrix is rank-deficient (singular X'X matrix). "
+                    "This indicates perfect multicollinearity. Check your fixed effects "
+                    "and covariates for linear dependencies."
+                ) from e
+            raise
+        vcov = sigma2 * bread_inv
+        if return_dof:
+            dof_vec = np.full(k, n_eff - k, dtype=np.float64)
+            return vcov, dof_vec
+        return vcov
+
+    # ------------------------------------------------------------------
+    # CR2 Bell-McCaffrey cluster-robust (vcov_type="hc2_bm" + cluster).
+    # ------------------------------------------------------------------
+    if vcov_type == "hc2_bm" and cluster_ids is not None:
+        # Weighted CR2 is Phase 2+; the public wrapper guards against it.
+        vcov_cr2, dof_cr2 = _compute_cr2_bm(X, residuals, cluster_ids, bread_matrix)
+        if return_dof:
+            return vcov_cr2, dof_cr2
+        return vcov_cr2
+
+    # ------------------------------------------------------------------
+    # HC2 / HC2+BM one-way (no cluster).
+    # ------------------------------------------------------------------
+    if vcov_type in ("hc2", "hc2_bm"):
+        # cluster path handled above; here cluster_ids is None by construction.
+        h_diag = _compute_hat_diagonals(X, bread_matrix, weights=weights)
+        if np.any(h_diag > 1.0 + 1e-6):
+            warnings.warn(
+                f"Hat-matrix diagonal exceeds 1 (max={h_diag.max():.6f}); "
+                "the design is near-singular. Falling back to HC1.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return _compute_robust_vcov_numpy(
+                X,
+                residuals,
+                cluster_ids=None,
+                weights=weights,
+                weight_type=weight_type,
+                vcov_type="hc1",
+                return_dof=return_dof,
+            )
+        one_minus_h = np.maximum(1.0 - h_diag, 1e-10)
+        # HC2 meat: sum_i (u_i^2 / (1 - h_ii)) x_i x_i', with pweight scaling
+        # matching the HC1 convention (w_i * u_i / sqrt(1 - h_ii) as score).
+        if weights is not None and weight_type == "fweight":
+            factor = weights * (residuals**2) / one_minus_h
+            meat = X.T @ (X * factor[:, np.newaxis])
+        elif weights is not None and weight_type == "pweight":
+            # pweight scores carry w in the score, so meat = sum (w u / sqrt(1-h))^2 x x'
+            scaled = weights * residuals / np.sqrt(one_minus_h)
+            scores_hc2 = X * scaled[:, np.newaxis]
+            meat = scores_hc2.T @ scores_hc2
+        else:
+            # aweight / unweighted: meat = sum_i (u_i^2 / (1 - h_ii)) x_i x_i'
+            factor = (residuals**2) / one_minus_h
+            # Zero out zero-weight rows under aweight (subpopulation invariance)
+            if weights is not None and np.any(weights == 0):
+                factor = factor * (weights > 0)
+            meat = X.T @ (X * factor[:, np.newaxis])
+
+        # Sandwich without DOF adjustment for HC2 (matches sandwich::vcovHC
+        # type="HC2" convention: no (n/(n-k)) factor).
+        try:
+            temp = np.linalg.solve(bread_matrix, meat)
+            vcov = np.linalg.solve(bread_matrix, temp.T).T
+        except np.linalg.LinAlgError as e:
+            if "Singular" in str(e):
+                raise ValueError(
+                    "Design matrix is rank-deficient (singular X'X matrix). "
+                    "This indicates perfect multicollinearity. Check your fixed effects "
+                    "and covariates for linear dependencies."
+                ) from e
+            raise
+
+        if not return_dof:
+            return vcov
+        if vcov_type == "hc2":
+            dof_vec = np.full(k, n_eff - k, dtype=np.float64)
+        else:  # hc2_bm
+            dof_vec = _compute_bm_dof_oneway(X, bread_matrix, h_diag, weights=weights)
+        return vcov, dof_vec
+
+    # ------------------------------------------------------------------
+    # HC1 / CR1 (original behavior).
+    # ------------------------------------------------------------------
+    assert vcov_type == "hc1"
 
     # Compute weighted scores for cluster-robust meat (outer product of sums).
     # pweight/fweight multiply by w; aweight and unweighted use raw residuals.
@@ -1115,6 +1685,9 @@ def _compute_robust_vcov_numpy(
             ) from e
         raise
 
+    if return_dof:
+        dof_vec = np.full(k, n_eff - k, dtype=np.float64)
+        return vcov, dof_vec
     return vcov
 
 
@@ -1616,6 +2189,18 @@ class LinearRegression:
         Resolved survey design for Taylor Series Linearization variance
         estimation. When provided, weights and weight_type are canonicalized
         from this object.
+    vcov_type : {"classical", "hc1", "hc2", "hc2_bm"}, optional
+        Variance-covariance family. Defaults to the ``robust`` alias
+        (``robust=True`` -> ``"hc1"``, ``robust=False`` -> ``"classical"``).
+        Passing an explicit ``vcov_type`` overrides ``robust`` unless the
+        two conflict (e.g. ``robust=False, vcov_type="hc2"``), in which
+        case ``__init__`` raises. See :func:`solve_ols` for the per-family
+        semantics and unsupported combinations. For ``"hc2_bm"``: when
+        ``cluster_ids`` is provided, dispatches to CR2 Bell-McCaffrey; with
+        ``weights``, raises ``NotImplementedError`` (the BM DOF path is
+        currently inconsistent with the WLS transform). On top of the
+        sandwich, the class stores per-coefficient BM Satterthwaite DOF
+        (``self._bm_dof``) and threads it into ``get_inference``.
 
     Attributes
     ----------
@@ -1674,6 +2259,7 @@ class LinearRegression:
         weights: Optional[np.ndarray] = None,
         weight_type: str = "pweight",
         survey_design: object = None,
+        vcov_type: Optional[str] = None,
     ):
         self.include_intercept = include_intercept
         self.robust = robust
@@ -1683,6 +2269,18 @@ class LinearRegression:
         self.weights = weights
         self.weight_type = weight_type
         self.survey_design = survey_design  # ResolvedSurveyDesign or None
+        # Resolve vcov_type from the legacy `robust` alias via the shared helper.
+        self.vcov_type = resolve_vcov_type(robust, vcov_type)
+        # Preserve the raw constructor arg (possibly None) so `fit()` can
+        # distinguish "alias-derived classical" from "explicit classical".
+        # This is the single source of truth for backward-compat remap
+        # decisions (robust=False + cluster -> CR1). `fit()` treats the
+        # configured state as IMMUTABLE and computes all effective fit-
+        # time values as locals, so repeat fits with different cluster
+        # or survey context produce the correct result without state
+        # drift between calls.
+        self._vcov_type_arg = vcov_type
+        self._vcov_type_explicit = vcov_type is not None
 
         # Fitted attributes (set by fit())
         self.coefficients_: Optional[np.ndarray] = None
@@ -1696,6 +2294,9 @@ class LinearRegression:
         self.n_params_effective_: Optional[int] = None
         self.df_: Optional[int] = None
         self.survey_df_: Optional[int] = None
+        # Per-coefficient Bell-McCaffrey DOF vector when vcov_type="hc2_bm".
+        # None for all other vcov_types; preserves df_ as the fallback.
+        self._bm_dof: Optional[np.ndarray] = None
 
     def fit(
         self,
@@ -1739,6 +2340,34 @@ class LinearRegression:
         # Use provided cluster_ids or fall back to instance-level
         effective_cluster_ids = cluster_ids if cluster_ids is not None else self.cluster_ids
 
+        # Resolve the effective fit-time vcov_type WITHOUT mutating self.
+        # Legacy-alias backward compat: when the user supplied
+        # ``robust=False`` without an explicit ``vcov_type`` and a cluster
+        # structure is present at fit time, remap the implicit
+        # ``"classical"`` to ``"hc1"`` so the call dispatches to CR1
+        # instead of raising. Per-fit local only; the configured
+        # ``self.vcov_type`` is left untouched so a subsequent unclustered
+        # fit continues to use classical SEs.
+        _fit_vcov_type = self.vcov_type
+        if (
+            not self._vcov_type_explicit
+            and _fit_vcov_type == "classical"
+            and effective_cluster_ids is not None
+        ):
+            warnings.warn(
+                "LinearRegression(robust=False) with clustered fit "
+                "(cluster_ids=...) historically produced CR1 cluster-"
+                "robust SEs. To preserve that behavior, vcov_type has "
+                "been remapped from 'classical' to 'hc1' for THIS fit "
+                "only (configured state on `self` is preserved). Pass "
+                "vcov_type='hc1' explicitly to silence this warning, or "
+                "vcov_type='classical' (with cluster_ids=None) for "
+                "non-robust SEs.",
+                UserWarning,
+                stacklevel=2,
+            )
+            _fit_vcov_type = "hc1"
+
         # Determine if survey vcov should be used
         _use_survey_vcov = False
         if self.survey_design is not None:
@@ -1747,7 +2376,9 @@ class LinearRegression:
             if isinstance(self.survey_design, ResolvedSurveyDesign):
                 _use_survey_vcov = self.survey_design.needs_survey_vcov
                 # Canonicalize weights from survey_design to ensure consistency
-                # between coefficient estimation and survey vcov computation
+                # between coefficient estimation and survey vcov computation.
+                # Locals only — configured self.weights / self.weight_type
+                # are preserved.
                 if self.weights is not None and self.weights is not self.survey_design.weights:
                     warnings.warn(
                         "Explicit weights= differ from survey_design.weights. "
@@ -1757,11 +2388,21 @@ class LinearRegression:
                         UserWarning,
                         stacklevel=2,
                     )
-                self.weights = self.survey_design.weights
-                self.weight_type = self.survey_design.weight_type
 
-        if self.weights is not None:
-            self.weights = _validate_weights(self.weights, self.weight_type, X.shape[0])
+        # Resolve effective fit-time weights/weight_type WITHOUT mutating
+        # self. When a survey design is present, canonicalize weights from
+        # the design so coefficient estimation and survey vcov agree.
+        # Otherwise use what the user configured.
+        _fit_weights = self.weights
+        _fit_weight_type = self.weight_type
+        if self.survey_design is not None:
+            from diff_diff.survey import ResolvedSurveyDesign as _RSD2
+
+            if isinstance(self.survey_design, _RSD2):
+                _fit_weights = self.survey_design.weights
+                _fit_weight_type = self.survey_design.weight_type
+        if _fit_weights is not None:
+            _fit_weights = _validate_weights(_fit_weights, _fit_weight_type, X.shape[0])
 
         # Inject cluster as PSU for survey variance when no PSU specified.
         # Use a local variable to avoid mutating self.survey_design, which
@@ -1780,7 +2421,7 @@ class LinearRegression:
                     _effective_survey_design, effective_cluster_ids
                 )
 
-        if self.robust or effective_cluster_ids is not None:
+        if _fit_vcov_type != "classical" or effective_cluster_ids is not None:
             # Use solve_ols with robust/cluster SEs
             # When survey vcov will be used, skip standard vcov computation
             coefficients, residuals, fitted, vcov = solve_ols(
@@ -1790,9 +2431,53 @@ class LinearRegression:
                 return_fitted=True,
                 return_vcov=not _use_survey_vcov,
                 rank_deficient_action=self.rank_deficient_action,
-                weights=self.weights,
-                weight_type=self.weight_type,
+                weights=_fit_weights,
+                weight_type=_fit_weight_type,
+                vcov_type=_fit_vcov_type,
             )
+            # For hc2_bm, compute per-coefficient Bell-McCaffrey DOF. Both
+            # the one-way HC2+BM case and the cluster CR2 case are supported;
+            # the weighted cluster path (guarded in compute_robust_vcov) is
+            # Phase 2+ and is skipped here (falls through to self._bm_dof = None).
+            if (
+                _fit_vcov_type == "hc2_bm"
+                and not _use_survey_vcov
+                and vcov is not None
+                and not np.all(np.isnan(coefficients))
+                and not (effective_cluster_ids is not None and _fit_weights is not None)
+            ):
+                # Identified columns for DOF (rank-deficient case sets NaN coefs).
+                nan_mask = np.isnan(coefficients)
+                if not np.any(nan_mask):
+                    _, self._bm_dof = compute_robust_vcov(
+                        X,
+                        residuals,
+                        cluster_ids=effective_cluster_ids,
+                        weights=_fit_weights,
+                        weight_type=_fit_weight_type,
+                        vcov_type="hc2_bm",
+                        return_dof=True,
+                    )
+                else:
+                    # Per-coef DOF only for identified coefficients; set NaN for dropped.
+                    kept = np.where(~nan_mask)[0]
+                    if len(kept) > 0:
+                        _, dof_kept = compute_robust_vcov(
+                            X[:, kept],
+                            residuals,
+                            cluster_ids=effective_cluster_ids,
+                            weights=_fit_weights,
+                            weight_type=_fit_weight_type,
+                            vcov_type="hc2_bm",
+                            return_dof=True,
+                        )
+                        full = np.full(X.shape[1], np.nan)
+                        full[kept] = dof_kept
+                        self._bm_dof = full
+                    else:
+                        self._bm_dof = np.full(X.shape[1], np.nan)
+            else:
+                self._bm_dof = None
         else:
             # Classical OLS - compute vcov separately
             coefficients, residuals, fitted, _ = solve_ols(
@@ -1801,8 +2486,8 @@ class LinearRegression:
                 return_fitted=True,
                 return_vcov=False,
                 rank_deficient_action=self.rank_deficient_action,
-                weights=self.weights,
-                weight_type=self.weight_type,
+                weights=_fit_weights,
+                weight_type=_fit_weight_type,
             )
             # Compute classical OLS variance-covariance matrix
             # Handle rank-deficient case: use effective rank for df
@@ -1813,11 +2498,11 @@ class LinearRegression:
             # Effective n for df: fweights use sum(w), pweight/aweight with
             # zeros use positive-weight count (zero-weight rows don't contribute)
             n_eff_df = n
-            if self.weights is not None:
-                if self.weight_type == "fweight":
-                    n_eff_df = int(round(np.sum(self.weights)))
-                elif np.any(self.weights == 0):
-                    n_eff_df = int(np.count_nonzero(self.weights > 0))
+            if _fit_weights is not None:
+                if _fit_weight_type == "fweight":
+                    n_eff_df = int(round(np.sum(_fit_weights)))
+                elif np.any(_fit_weights == 0):
+                    n_eff_df = int(np.count_nonzero(_fit_weights > 0))
 
             if k_effective == 0:
                 # All coefficients dropped - no valid inference
@@ -1826,9 +2511,9 @@ class LinearRegression:
                 # Rank-deficient: compute vcov for identified coefficients only
                 kept_cols = np.where(~nan_mask)[0]
                 X_reduced = X[:, kept_cols]
-                if self.weights is not None:
+                if _fit_weights is not None:
                     # Weighted classical vcov: use weighted RSS and X'WX
-                    w = self.weights
+                    w = _fit_weights
                     mse = np.sum(w * residuals**2) / (n_eff_df - k_effective)
                     XtWX_reduced = X_reduced.T @ (X_reduced * w[:, np.newaxis])
                     try:
@@ -1847,9 +2532,9 @@ class LinearRegression:
                 vcov = _expand_vcov_with_nan(vcov_reduced, k, kept_cols)
             else:
                 # Full rank: standard computation
-                if self.weights is not None:
+                if _fit_weights is not None:
                     # Weighted classical vcov: use weighted RSS and X'WX
-                    w = self.weights
+                    w = _fit_weights
                     mse = np.sum(w * residuals**2) / (n_eff_df - k)
                     XtWX = X.T @ (X * w[:, np.newaxis])
                     try:
@@ -1884,7 +2569,7 @@ class LinearRegression:
                             y,
                             coefficients[kept_cols],
                             _effective_survey_design,
-                            weight_type=self.weight_type,
+                            weight_type=_fit_weight_type,
                         )
                         vcov = _expand_vcov_with_nan(vcov_reduced, X.shape[1], kept_cols)
                     else:
@@ -1896,7 +2581,7 @@ class LinearRegression:
                         y,
                         coefficients,
                         _effective_survey_design,
-                        weight_type=self.weight_type,
+                        weight_type=_fit_weight_type,
                     )
                 # Store effective replicate df only when replicates were dropped
                 if _n_valid_rep < _effective_survey_design.n_replicates:
@@ -1928,6 +2613,15 @@ class LinearRegression:
         self._X = X
         self.n_obs_ = X.shape[0]
         self.n_params_ = X.shape[1]
+        # Preserve the effective fit-time weights / weight_type / vcov_type
+        # as fitted attributes so downstream helpers (e.g., compute_deff)
+        # can read what was actually used without needing to re-derive
+        # from the configured state. These are per-fit values; a repeat
+        # fit overwrites them. Sklearn convention: fitted attrs end in
+        # `_` (so they are distinguishable from config).
+        self._fit_weights_ = _fit_weights
+        self._fit_weight_type_ = _fit_weight_type
+        self._fit_vcov_type_ = _fit_vcov_type
 
         # Compute effective number of parameters (excluding dropped columns)
         # This is needed for correct degrees of freedom in inference
@@ -1936,11 +2630,11 @@ class LinearRegression:
         # Effective n for df: fweights use sum(w), pweight/aweight with
         # zeros use positive-weight count (matches compute_robust_vcov)
         n_eff_df = self.n_obs_
-        if self.weights is not None:
-            if self.weight_type == "fweight":
-                n_eff_df = int(round(np.sum(self.weights)))
-            elif np.any(self.weights == 0):
-                n_eff_df = int(np.count_nonzero(self.weights > 0))
+        if _fit_weights is not None:
+            if _fit_weight_type == "fweight":
+                n_eff_df = int(round(np.sum(_fit_weights)))
+            elif np.any(_fit_weights == 0):
+                n_eff_df = int(np.count_nonzero(_fit_weights > 0))
         self.df_ = n_eff_df - self.n_params_effective_ - df_adjustment
 
         # Survey degrees of freedom: n_PSU - n_strata (overrides standard df)
@@ -1990,15 +2684,20 @@ class LinearRegression:
                     survey_se=nan_arr.copy(),
                     coefficient_names=coefficient_names,
                 )
-            # Compute on kept columns only
+            # Compute on kept columns only. Use fit-time effective weights
+            # (captured in `self._fit_weights_`) so survey-canonicalized
+            # weights are used for the DEFF computation, not the
+            # user-configured state.
             X_kept = self._X[:, kept]
             vcov_kept = self.vcov_[np.ix_(kept, kept)]
+            _deff_weights = getattr(self, "_fit_weights_", self.weights)
+            _deff_weight_type = getattr(self, "_fit_weight_type_", self.weight_type)
             deff_kept = compute_deff_diagnostics(
                 X_kept,
                 self.residuals_,
                 vcov_kept,
-                self.weights,
-                weight_type=self.weight_type,
+                _deff_weights,
+                weight_type=_deff_weight_type,
             )
             # Expand back to full size with NaN for dropped
             k = len(self.coefficients_)
@@ -2020,12 +2719,14 @@ class LinearRegression:
                 coefficient_names=coefficient_names,
             )
 
+        _deff_weights = getattr(self, "_fit_weights_", self.weights)
+        _deff_weight_type = getattr(self, "_fit_weight_type_", self.weight_type)
         return compute_deff_diagnostics(
             self._X,
             self.residuals_,
             self.vcov_,
-            self.weights,
-            weight_type=self.weight_type,
+            _deff_weights,
+            weight_type=_deff_weight_type,
             coefficient_names=coefficient_names,
         )
 
@@ -2116,12 +2817,15 @@ class LinearRegression:
         # Use instance alpha if not provided
         effective_alpha = alpha if alpha is not None else self.alpha
 
-        # Use survey df if available, otherwise fitted df
+        # Use survey df if available, otherwise per-coef BM DOF (hc2_bm), then fitted df.
         # Note: df=None means use normal distribution
         if df is not None:
             effective_df = df
         elif self.survey_df_ is not None:
             effective_df = self.survey_df_
+        elif self._bm_dof is not None and 0 <= index < len(self._bm_dof):
+            bm_val = self._bm_dof[index]
+            effective_df = None if (not np.isfinite(bm_val)) else float(bm_val)
         elif (
             hasattr(self, "survey_design")
             and self.survey_design is not None
