@@ -585,6 +585,18 @@ class BusinessReport:
                 n_never_treated = n_control_units
                 n_control = None
 
+        # Panel-vs-RCS count semantics. CallawaySantAnnaResults stores
+        # treated/control counts as OBSERVATIONS (not units) when the
+        # fit used ``panel=False`` — ``staggered_results.py L183-L184``
+        # renders those counts as "obs:" rather than "units:". BR
+        # previously labeled them as "units" / "present in the panel",
+        # which misstates the sample composition for repeated cross-
+        # section fits. Carry the flag into the schema so rendering can
+        # branch. Round-28 P2 CI review on PR #318.
+        count_unit = (
+            "observations" if getattr(r, "panel", True) is False else "units"
+        )
+
         sample_block: Dict[str, Any] = {
             "n_obs": _safe_int(getattr(r, "n_obs", None)),
             "n_treated": n_treated,
@@ -595,6 +607,7 @@ class BusinessReport:
             "n_periods": _safe_int(getattr(r, "n_periods", None)),
             "pre_periods": _safe_list_len(getattr(r, "pre_periods", None)),
             "post_periods": _safe_list_len(getattr(r, "post_periods", None)),
+            "count_unit": count_unit,
             "survey": survey,
         }
         if n_never_enabled is not None:
@@ -685,6 +698,11 @@ def _lift_pre_trends(dr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "joint_p_value": pt.get("joint_p_value"),
         "verdict": pt.get("verdict"),
         "n_pre_periods": pt.get("n_pre_periods"),
+        # Carry the denominator df through when the survey F-reference
+        # branch was used so BR consumers can flag the finite-sample
+        # correction without re-consulting the DR schema (round-28 P3
+        # CI review on PR #318).
+        "df_denom": pt.get("df_denom"),
         "power_status": pp.get("status"),
         "power_tier": pp.get("tier"),
         "mdv": pp.get("mdv"),
@@ -1356,7 +1374,19 @@ def _pt_method_subject(method: Optional[str]) -> str:
         return "The pre-period slope-difference test"
     if method == "hausman":
         return "The Hausman PT-All vs PT-Post pretest"
-    if method in {"joint_wald", "joint_wald_event_study", "joint_wald_no_vcov", "bonferroni"}:
+    if method in {
+        "joint_wald",
+        "joint_wald_event_study",
+        "joint_wald_no_vcov",
+        "bonferroni",
+        # Survey-aware event-study PT variants use an F reference
+        # distribution with denominator df = ``survey_metadata.df_survey``
+        # (round-27 P1 fix, documented in REPORTING.md). The subject
+        # remains the pre-period event-study coefficients; prose elsewhere
+        # flags the finite-sample correction via ``df_denom``.
+        "joint_wald_survey",
+        "joint_wald_event_study_survey",
+    }:
         return "Pre-treatment event-study coefficients"
     if method == "synthetic_fit":
         return "The synthetic-control pre-treatment fit"
@@ -1368,11 +1398,21 @@ def _pt_method_subject(method: Optional[str]) -> str:
 def _pt_method_stat_label(method: Optional[str]) -> Optional[str]:
     """Return the joint-statistic label appropriate to the PT method.
 
-    Returns ``"joint p"`` for Wald / Bonferroni paths, ``"p"`` for the
-    2x2 slope-difference and Hausman paths (which are single-statistic
-    tests), and ``None`` for design-enforced paths that have no p-value.
+    Returns ``"joint p"`` for Wald / Bonferroni paths (including the
+    survey-aware F-reference variants, which remain joint tests on the
+    pre-period coefficient vector — only the reference distribution
+    changes), ``"p"`` for the 2x2 slope-difference and Hausman paths
+    (single-statistic tests), and ``None`` for design-enforced paths
+    that have no p-value.
     """
-    if method in {"joint_wald", "joint_wald_event_study", "joint_wald_no_vcov", "bonferroni"}:
+    if method in {
+        "joint_wald",
+        "joint_wald_event_study",
+        "joint_wald_no_vcov",
+        "bonferroni",
+        "joint_wald_survey",
+        "joint_wald_event_study_survey",
+    }:
         return "joint p"
     if method in {"slope_difference", "hausman"}:
         return "p"
@@ -1716,14 +1756,22 @@ def _render_summary(schema: Dict[str, Any]) -> str:
     n_ne = sample.get("n_never_enabled")
     is_dynamic = sample.get("dynamic_control")
     cg = sample.get("control_group")
+    # Panel-vs-RCS count-unit label. For repeated cross-section fits
+    # (``panel=False`` on CallawaySantAnna), treated / never-treated
+    # tallies are observation counts, not unit counts. Keep the
+    # "N treated" phrasing (the N is still correct), but adjust the
+    # never-treated clause so it does not claim "units present in
+    # the panel" for an RCS sample.
+    count_unit = sample.get("count_unit", "units")
+    ne_unit_word = "observations" if count_unit == "observations" else "units"
     if isinstance(n_obs, int):
         if isinstance(n_t, int) and isinstance(n_c, int):
             sentences.append(f"Sample: {n_obs:,} observations ({n_t:,} treated, {n_c:,} control).")
         elif is_dynamic and isinstance(n_t, int):
             if isinstance(n_ne, int) and n_ne > 0:
-                subset_clause = f"; {n_ne:,} never-enabled units are also present"
+                subset_clause = f"; {n_ne:,} never-enabled {ne_unit_word} are also present"
             elif isinstance(n_nt, int) and n_nt > 0:
-                subset_clause = f"; {n_nt:,} never-treated units are also present"
+                subset_clause = f"; {n_nt:,} never-treated {ne_unit_word} are also present"
             else:
                 subset_clause = ""
             # Estimator-specific dynamic-comparison phrasing. StackedDiD
@@ -1904,16 +1952,28 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
         estimator_block.get("class_name") if isinstance(estimator_block, dict) else None
     )
     cg = sample.get("control_group")
+    # Panel-vs-RCS count-unit label for the full report. Mirrors the
+    # summary path: CallawaySantAnna's ``panel=False`` mode stores
+    # counts as observations, not units (round-28 P2).
+    md_count_unit = sample.get("count_unit", "units")
+    md_ne_unit_word = "observations" if md_count_unit == "observations" else "units"
+    md_sample_location = (
+        "in the repeated cross-section sample"
+        if md_count_unit == "observations"
+        else "in the panel"
+    )
     if isinstance(sample.get("n_control"), int):
         lines.append(f"- Control: {sample['n_control']:,}")
     elif sample.get("dynamic_control"):
         if isinstance(sample.get("n_never_enabled"), int) and sample["n_never_enabled"] > 0:
             lines.append(
-                f"- Never-enabled units present in the panel: {sample['n_never_enabled']:,}"
+                f"- Never-enabled {md_ne_unit_word} present "
+                f"{md_sample_location}: {sample['n_never_enabled']:,}"
             )
         elif isinstance(sample.get("n_never_treated"), int) and sample["n_never_treated"] > 0:
             lines.append(
-                f"- Never-treated units present in the panel: {sample['n_never_treated']:,}"
+                f"- Never-treated {md_ne_unit_word} present "
+                f"{md_sample_location}: {sample['n_never_treated']:,}"
             )
         if estimator_name == "StackedDiDResults":
             n_distinct = sample.get("n_distinct_controls_trimmed")

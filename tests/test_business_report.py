@@ -2396,6 +2396,137 @@ class TestSpecificationComparisonStepTagPersistsAfterSensitivityRuns:
         )
 
 
+class TestCSRepeatedCrossSectionCountLabels:
+    """Round-28 P2 CI review on PR #318: ``CallawaySantAnna(panel=False)``
+    stores treated / control counts as OBSERVATIONS, not units
+    (``staggered_results.py L183-L184`` renders them as "obs:" in that
+    mode). BR previously labeled them as "units" / "present in the
+    panel", which misstates the sample composition on repeated-cross-
+    section fits. The schema now carries a ``count_unit`` flag and the
+    rendering branches on it.
+    """
+
+    @staticmethod
+    def _stub(panel: bool):
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 1000
+        stub.n_treated_units = 200
+        stub.n_control_units = 800
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.control_group = "not_yet_treated"
+        stub.panel = panel
+        return stub
+
+    def test_schema_exposes_count_unit(self):
+        for panel, expected in [(True, "units"), (False, "observations")]:
+            sample = BusinessReport(
+                self._stub(panel), auto_diagnostics=False
+            ).to_dict()["sample"]
+            assert sample["count_unit"] == expected
+
+    def test_panel_true_renders_unit_wording(self):
+        br = BusinessReport(self._stub(panel=True), auto_diagnostics=False)
+        summary = br.summary()
+        md = br.full_report()
+        assert "never-treated units" in summary
+        assert "present in the panel" in md
+        assert "repeated cross-section sample" not in md
+
+    def test_panel_false_renders_rcs_wording(self):
+        br = BusinessReport(self._stub(panel=False), auto_diagnostics=False)
+        summary = br.summary()
+        md = br.full_report()
+        # RCS-specific wording in both surfaces.
+        assert "never-treated observations" in summary
+        assert "repeated cross-section sample" in md
+        # No misleading "units" or "panel" claims.
+        assert "never-treated units" not in summary
+        assert "present in the panel" not in md
+
+
+class TestTROPApplicableChecksExcludesParallelTrends:
+    """Round-28 P2 CI review on PR #318: TROP identification is
+    factor-model-based; its native PT handler returns
+    ``status="not_applicable"``. Advertising ``parallel_trends`` in
+    ``DiagnosticReport.applicable_checks`` for TROP was a contract
+    mismatch for callers using that set to gate workflows or UI.
+    """
+
+    def test_trop_applicable_checks_omits_parallel_trends(self):
+        from diff_diff import DiagnosticReport
+
+        class TROPResults:
+            pass
+
+        stub = TROPResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.alpha = 0.05
+        stub.n_obs = 100
+
+        dr = DiagnosticReport(stub)
+        assert "parallel_trends" not in dr.applicable_checks, (
+            "TROP PT routes to factor-model diagnostics and is "
+            "not_applicable; it must not appear in applicable_checks."
+        )
+
+
+class TestSurveyPTProsePropagation:
+    """Round-28 P3 CI review on PR #318: the survey F-reference PT
+    variants (``joint_wald_survey``, ``joint_wald_event_study_survey``)
+    must carry through BR's method-aware label helpers so prose uses
+    "joint p" (not the fall-through default) and preserves the
+    ``df_denom`` provenance in the BR schema.
+    """
+
+    def test_lift_pre_trends_preserves_df_denom(self):
+        from diff_diff.business_report import _lift_pre_trends
+
+        fake_dr = {
+            "parallel_trends": {
+                "status": "ran",
+                "method": "joint_wald_event_study_survey",
+                "joint_p_value": 0.35,
+                "df_denom": 30.0,
+                "n_pre_periods": 3,
+                "verdict": "no_detected_violation",
+            },
+            "pretrends_power": {"status": "not_applicable"},
+        }
+        lifted = _lift_pre_trends(fake_dr)
+        assert lifted["method"] == "joint_wald_event_study_survey"
+        assert lifted["df_denom"] == 30.0
+
+    def test_survey_pt_method_stat_label_uses_joint_p(self):
+        from diff_diff.business_report import (
+            _pt_method_stat_label,
+            _pt_method_subject,
+        )
+
+        for method in ("joint_wald_survey", "joint_wald_event_study_survey"):
+            assert _pt_method_stat_label(method) == "joint p", (
+                f"Survey PT variant {method!r} must map to 'joint p' "
+                f"(the joint test remains; only the reference "
+                f"distribution changes)."
+            )
+            assert (
+                _pt_method_subject(method)
+                == "Pre-treatment event-study coefficients"
+            ), (
+                f"Survey PT variant {method!r} must use the event-study "
+                f"subject phrase, not the generic fall-through."
+            )
+
+
 class TestSDiDJackknifeStepPersistsAfterNativeSensitivity:
     """Round-24 P2 CI review on PR #318: the SyntheticDiD practitioner
     step "Leave-one-out influence (jackknife)" must persist after

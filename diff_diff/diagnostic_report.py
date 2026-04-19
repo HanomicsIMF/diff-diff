@@ -141,8 +141,14 @@ _APPLICABILITY: Dict[str, FrozenSet[str]] = {
         {"parallel_trends", "sensitivity", "design_effect", "estimator_native"}
     ),
     "TROPResults": frozenset(
+        # TROP identification is factor-model-based, not parallel-trends-
+        # based: the estimator native ``_pt_factor()`` handler returns
+        # ``status="not_applicable"``, and REPORTING.md routes TROP PT
+        # to factor-model diagnostics instead. Exposing PT in
+        # ``applicable_checks`` advertised a handler that never runs —
+        # round-28 P2 CI review on PR #318 flagged the contract mismatch
+        # for callers who gate workflows on ``applicable_checks``.
         {
-            "parallel_trends",
             "sensitivity",
             "design_effect",
             "heterogeneity",
@@ -2113,6 +2119,13 @@ class DiagnosticReport:
             out["test_statistic"] = test_statistic
         if df is not None:
             out["df"] = df
+        # Preserve the survey-F denominator df when replaying a schema-
+        # shaped PT block from the default path (round-28 P3 CI review
+        # on PR #318). Without this, the finite-sample correction
+        # recorded on the source block is silently dropped at replay.
+        df_denom = _to_python_float(_read("df_denom"))
+        if df_denom is not None:
+            out["df_denom"] = df_denom
         return out
 
     # -- Headline metric extraction ----------------------------------------

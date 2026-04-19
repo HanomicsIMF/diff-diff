@@ -864,6 +864,29 @@ class TestJointWaldAlignment:
         # back to chi-square.
         assert expected_p_survey > expected_p_chi2
 
+    def test_precomputed_survey_pt_replay_preserves_df_denom(self, cs_fit):
+        """Round-28 P3 regression: a schema-shaped PT block carrying the
+        survey ``df_denom`` and ``_survey`` method suffix must round-trip
+        through ``precomputed={"parallel_trends": ...}`` without losing
+        the finite-sample provenance. Previously ``_format_precomputed_pt``
+        dropped ``df_denom``, so replaying a survey-aware DR block
+        silently demoted it to a chi-square-style passthrough.
+        """
+        fit, _ = cs_fit
+        survey_pt = {
+            "method": "joint_wald_event_study_survey",
+            "joint_p_value": 0.18,
+            "test_statistic": 5.2,
+            "df": 3,
+            "df_denom": 20.0,
+        }
+        dr = DiagnosticReport(fit, precomputed={"parallel_trends": survey_pt})
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran"
+        assert pt["method"] == "joint_wald_event_study_survey"
+        assert pt["df_denom"] == 20.0
+        assert pt["df"] == 3
+
     def test_joint_wald_ignores_non_finite_survey_df(self):
         """If ``df_survey`` is NaN / inf / non-positive, fall back to
         chi-square (no finite-sample correction available).
