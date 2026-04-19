@@ -2102,16 +2102,19 @@ class TestBootstrapCellPeriod:
             f"SE_without_zero={se_b!r}."
         )
 
-    def test_bootstrap_fit_raises_on_terminal_missingness_with_varying_psu(self):
+    def test_fit_raises_on_terminal_missingness_with_varying_psu(self):
         """End-to-end `fit()` regression: when a survey panel has a
         terminally-missing group in a cohort whose other groups still
         contribute at the missing period, combined with within-group-
-        varying PSU and `n_bootstrap > 0`, the cell-level bootstrap
-        must raise the documented `ValueError` — cohort-recentering
+        varying PSU, both the analytical TSL path and the cell-level
+        bootstrap path must raise `ValueError` — cohort-recentering
         leaks non-zero centered IF mass onto cells with no positive-
-        weight obs. Analytical TSL (`n_bootstrap=0`) on the same
-        panel must succeed (documented contract: terminal missingness
-        is supported on the analytical path).
+        weight obs, and both paths (`_survey_se_from_group_if` for
+        analytical, `_unroll_target_to_cells` for bootstrap) use the
+        cell-period allocator and therefore cannot allocate leaked
+        mass to any observation or PSU. Pre-processing the panel
+        (dropping late-exit groups or trimming to a balanced sub-
+        panel) is the documented workaround.
         """
         rows = []
         # 10 groups. Joiners at period 3 (cohort A): groups 0-4.
@@ -2153,11 +2156,27 @@ class TestBootstrapCellPeriod:
         df_ = pd.DataFrame(rows)
         sd = SurveyDesign(weights="pw", psu="psu")
 
-        # n_bootstrap > 0: cell-level bootstrap must raise on the
-        # sentinel-mass leak documented above.
         import warnings as _w
+        # Analytical path (n_bootstrap=0): the sentinel-mass guard in
+        # `_survey_se_from_group_if` raises on the same leakage the
+        # bootstrap guard rejects — both paths use the cell-period
+        # allocator and cannot allocate leaked mass to any
+        # observation.
         with _w.catch_warnings():
             _w.simplefilter("ignore")  # terminal-missingness UserWarning
+            with pytest.raises(
+                ValueError, match="no positive-weight observations",
+            ):
+                ChaisemartinDHaultfoeuille(n_bootstrap=0, seed=1).fit(
+                    df_, outcome="outcome", group="group",
+                    time="period", treatment="treatment",
+                    survey_design=sd, L_max=1,
+                )
+
+        # Bootstrap path (n_bootstrap > 0): same sentinel-mass guard
+        # fires via `_unroll_target_to_cells`.
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")
             with pytest.raises(
                 ValueError, match="no positive-weight observations",
             ):
@@ -2166,18 +2185,6 @@ class TestBootstrapCellPeriod:
                     time="period", treatment="treatment",
                     survey_design=sd, L_max=1,
                 )
-
-        # n_bootstrap=0: analytical TSL variance supports this regime
-        # (documented in the "terminal missingness retained" Note).
-        with _w.catch_warnings():
-            _w.simplefilter("ignore")
-            res = ChaisemartinDHaultfoeuille(n_bootstrap=0, seed=1).fit(
-                df_, outcome="outcome", group="group",
-                time="period", treatment="treatment",
-                survey_design=sd, L_max=1,
-            )
-        assert np.isfinite(res.overall_att)
-        assert np.isfinite(res.overall_se) and res.overall_se >= 0.0
 
     def test_bootstrap_dense_codes_under_singleton_baseline_excluded_group(self):
         """Regression for P0 #2: when a group is singleton-baseline-

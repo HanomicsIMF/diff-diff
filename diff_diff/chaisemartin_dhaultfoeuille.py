@@ -667,13 +667,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             contributing cells to multiple PSUs receives independent
             multiplier draws per PSU (see the Survey + bootstrap
             contract Note in REGISTRY.md). **Scope note (terminal
-            missingness):** on panels with terminally-missing groups
-            (early exit / right-censoring) combined with within-group-
-            varying PSU, the cell-level bootstrap raises
-            ``ValueError`` because cohort-recentering leaks centered
-            IF mass onto cells with no positive-weight obs. Use
-            ``n_bootstrap=0`` for analytical TSL variance on those
-            panels. **Replicate weights with ``n_bootstrap > 0``
+            missingness + within-group-varying PSU):** on panels
+            where a terminally-missing group is in a cohort whose
+            other groups still contribute at the missing period,
+            **both** the cell-level bootstrap and the analytical TSL
+            path raise a targeted ``ValueError``. Cohort-recentering
+            leaks centered IF mass onto cells with no positive-
+            weight obs, which the cell-period allocator cannot
+            allocate to any observation or PSU. Pre-process the
+            panel (drop late-exit groups or trim to a balanced
+            sub-panel), or use an explicit ``psu=<group_col>`` so
+            the dispatcher routes through the legacy group-level
+            path. **Replicate weights with ``n_bootstrap > 0``
             raises ``NotImplementedError``** (replicate variance is
             closed-form; bootstrap would double-count variance). See
             REGISTRY.md ``ChaisemartinDHaultfoeuille`` Notes for the
@@ -5885,6 +5890,37 @@ def _survey_se_from_group_if(
             (elig_idx_eff[valid_cell], col_idx_eff[valid_cell]),
             w_eff[valid_cell],
         )
+        # Sentinel-mass guard (mirror of `_unroll_target_to_cells` on
+        # the bootstrap path). Under terminal missingness,
+        # `_cohort_recenter_per_period` subtracts cohort column means
+        # across the full period grid, so a group with no observation
+        # at period t can acquire non-zero centered mass at that cell.
+        # The cell-level expansion `psi_i = U[g,t] * (w_i / W_{g,t})`
+        # has no observation to attach that mass to (W_{g,t} = 0), so
+        # silently dropping it would understate the SE. Raise a
+        # targeted ValueError instead (consistent with the cell-level
+        # bootstrap's `_unroll_target_to_cells` guard).
+        missing_cell_mask = W_cell == 0
+        if missing_cell_mask.any():
+            leaked = U_centered_per_period[missing_cell_mask]
+            if leaked.size > 0 and bool(
+                np.any(np.abs(leaked) > 1e-12)
+            ):
+                raise ValueError(
+                    "Analytical survey SE cannot be computed on this "
+                    "panel: cohort-recentered IF mass landed on (g, t) "
+                    "cells with no positive-weight observations "
+                    "(W_{g, t} = 0). This typically occurs when "
+                    "terminal missingness combines with within-group-"
+                    "varying PSU: _cohort_recenter_per_period subtracts "
+                    "column means across the full period grid, so a "
+                    "group with no observation at period t acquires "
+                    "non-zero centered mass there, which the cell-level "
+                    "analytical expansion cannot allocate to any "
+                    "observation. Pre-process the panel to remove "
+                    "terminal missingness (drop late-exit groups or "
+                    "trim to a balanced sub-panel) before fitting."
+                )
         # Lookup U_centered_per_period and W_cell per row.
         u_obs_cell = np.zeros(w_eff.shape[0], dtype=np.float64)
         u_obs_cell[valid_cell] = U_centered_per_period[
