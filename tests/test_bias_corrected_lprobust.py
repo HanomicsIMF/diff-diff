@@ -388,6 +388,114 @@ class TestEndToEnd:
 
 
 # =============================================================================
+# NaN-safe CI (CI review PR #340 P0)
+# =============================================================================
+
+
+class TestNaNSafeCI:
+    """``bias_corrected_local_linear`` must route the CI through
+    ``safe_inference`` so degenerate cases with ``se_robust <= 0`` or
+    non-finite ``se_robust`` surface as ``ci_low = ci_high = NaN`` rather
+    than a misleading zero-width or infinite CI."""
+
+    def test_constant_y_returns_nan_ci(self):
+        """Constant y makes residuals zero; se_robust collapses to 0. CI
+        must be (NaN, NaN), not a finite zero-width CI."""
+        d = np.linspace(0.0, 1.0, 200)
+        y = np.full_like(d, 1.5)  # zero residuals everywhere
+        fit = bias_corrected_local_linear(d, y, h=0.3, b=0.3)
+        assert fit.se_robust == 0.0 or not np.isfinite(fit.se_robust)
+        assert np.isnan(fit.ci_low)
+        assert np.isnan(fit.ci_high)
+
+    def test_near_zero_se_returns_nan_ci(self):
+        """Near-constant y produces a tiny se_robust; the NaN-safe gate
+        fires when it hits zero exactly (covers the exact-fit edge case
+        the CI review flagged without tripping a pre-existing Phase 1b
+        ZeroDivisionError in the auto-bandwidth selector on truly
+        constant y, which is tracked separately)."""
+        rng = np.random.default_rng(0)
+        d = np.linspace(0.0, 1.0, 500)
+        # Residuals near machine epsilon; tau_bc stays finite.
+        y = 0.1 * np.ones_like(d) + rng.normal(0, 1e-300, size=d.shape)
+        fit = bias_corrected_local_linear(d, y, h=0.3, b=0.3)
+        # Either the inference should be fully valid, OR the CI gate has
+        # correctly fired. The contract is: se_rb <= 0 / non-finite =>
+        # NaN CI.
+        if not (np.isfinite(fit.se_robust) and fit.se_robust > 0):
+            assert np.isnan(fit.ci_low)
+            assert np.isnan(fit.ci_high)
+
+
+# =============================================================================
+# Auto-bandwidth parameter forwarding (CI review PR #340 P1)
+# =============================================================================
+
+
+class TestAutoBandwidthForwardsParameters:
+    """Auto-bandwidth must forward ``cluster``, ``vce``, and ``nnmatch`` to
+    the bandwidth selector. Calling the public ``mse_optimal_bandwidth``
+    wrapper would hard-code ``cluster=None, vce="nn", nnmatch=3`` and
+    silently mismatch the downstream ``lprobust`` fit — a methodology
+    bug. These tests pin the correct wiring."""
+
+    def _smoke_data(self, seed=33):
+        rng = np.random.default_rng(seed)
+        G = 600
+        d = rng.uniform(0.0, 1.0, G)
+        y = d + d ** 2 + rng.normal(0, 0.3, G)
+        return d, y
+
+    def test_auto_cluster_returns_finite(self):
+        """Auto-bandwidth with cluster produces a finite BiasCorrectedFit.
+
+        No R parity anchor (nprobust's internal lpbwselect has a
+        singleton-cluster bug on the pilot fits); this test pins that the
+        Python path completes and uses the clustered bandwidth downstream,
+        not the unclustered one.
+        """
+        d, y = self._smoke_data()
+        cluster = np.repeat(np.arange(30), 20)
+        fit_cluster = bias_corrected_local_linear(d, y, cluster=cluster)
+        fit_uncluster = bias_corrected_local_linear(d, y)
+        assert fit_cluster.bandwidth_source == "auto"
+        assert np.isfinite(fit_cluster.estimate_bias_corrected)
+        assert np.isfinite(fit_cluster.se_robust)
+        # The clustered bandwidth should differ from the unclustered one
+        # (different residual meat feeds into Stage-2/3 AMSE minimization).
+        # If the wrapper were silently passing cluster=None, these would
+        # be identical to bit-parity.
+        assert fit_cluster.h != fit_uncluster.h
+
+    def test_auto_vce_hc1_returns_finite(self):
+        """Auto-bandwidth with non-default vce must use the requested vce
+        during bandwidth selection, not silently fall back to nn."""
+        d, y = self._smoke_data()
+        fit_hc1 = bias_corrected_local_linear(d, y, vce="hc1")
+        fit_nn = bias_corrected_local_linear(d, y, vce="nn")
+        assert fit_hc1.bandwidth_source == "auto"
+        assert np.isfinite(fit_hc1.estimate_bias_corrected)
+        assert np.isfinite(fit_hc1.se_robust)
+        # Different residual definitions yield different stage-2/3 AMSE
+        # and therefore different bandwidths. Bit-identity would indicate
+        # the selector silently ignored vce.
+        assert fit_hc1.h != fit_nn.h
+
+    def test_auto_nnmatch_non_default_returns_finite(self):
+        """Auto-bandwidth with non-default nnmatch must forward it to the
+        selector, not silently use the hard-coded default of 3."""
+        d, y = self._smoke_data()
+        fit_nn5 = bias_corrected_local_linear(d, y, nnmatch=5)
+        fit_nn3 = bias_corrected_local_linear(d, y, nnmatch=3)
+        assert fit_nn5.bandwidth_source == "auto"
+        assert np.isfinite(fit_nn5.estimate_bias_corrected)
+        # nnmatch controls the NN residual construction; different values
+        # give different meat matrices and therefore different stage
+        # bandwidths.
+        assert fit_nn5.h != fit_nn3.h
+
+
+# =============================================================================
 # Validator idempotence (regression gate for the Phase 1b extraction)
 # =============================================================================
 

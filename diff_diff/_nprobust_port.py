@@ -519,12 +519,18 @@ def lprobust_bw(
             dups_B = dups[ind1] if dups is not None else None
             dupsid_B = dupsid[ind1] if dupsid is not None else None
         if vce in ("hc0", "hc1", "hc2", "hc3"):
-            predicts_B = R_B1 @ beta_B1
-            if vce in ("hc2", "hc3"):
-                hii_B = np.empty(n_B1, dtype=np.float64)
-                RW1 = R_B1 * eW1[:, None]
-                for i in range(n_B1):
-                    hii_B[i] = R_B1[i, :] @ invG_B1 @ RW1[i, :]
+            # Suppress spurious BLAS FPE warnings (numpy issue #21432
+            # pattern); matmul on some platforms (Accelerate / OpenBLAS)
+            # sets divide/overflow flags on SIMD intermediates even when
+            # input and output are finite.
+            with np.errstate(divide="ignore", over="ignore",
+                             invalid="ignore", under="ignore"):
+                predicts_B = R_B1 @ beta_B1
+                if vce in ("hc2", "hc3"):
+                    hii_B = np.empty(n_B1, dtype=np.float64)
+                    RW1 = R_B1 * eW1[:, None]
+                    for i in range(n_B1):
+                        hii_B[i] = R_B1[i, :] @ invG_B1 @ RW1[i, :]
         res_B = lprobust_res(
             eX1,
             eY1,

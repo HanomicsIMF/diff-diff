@@ -1073,16 +1073,59 @@ def bias_corrected_local_linear(
     # bandwidth_diagnostics.b_mse for callers that want to inspect or
     # override. The paper (de Chaisemartin et al. 2026) likewise uses a
     # single h*_G throughout Equation 8.
+    #
+    # In auto mode, cluster / vce / nnmatch are forwarded to
+    # ``lpbwselect_mse_dpi`` so bandwidth selection reflects the same
+    # estimator the final ``lprobust`` call will use. Calling
+    # ``mse_optimal_bandwidth`` (the public wrapper) instead would hard-code
+    # ``cluster=None, vce="nn", nnmatch=3`` and silently mismatch the
+    # downstream fit — a methodology bug (CI review PR #340 P1).
     bw_source: str
     bw_diag: Optional[BandwidthResult] = None
     if h is None and b is None:
-        bw_diag = mse_optimal_bandwidth(
-            d=d,
+        # Defer heavy import to call time to avoid import-cycle risk.
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        stages = lpbwselect_mse_dpi(
             y=y,
-            boundary=boundary,
+            x=d,
+            cluster=cluster_arr,
+            eval_point=float(boundary),
+            p=1,
+            q=2,
+            deriv=0,
+            kernel=nprobust_kernel,
+            bwcheck=21,
+            bwregul=1.0,
+            vce=vce,
+            nnmatch=nnmatch,
+            interior=False,
+        )
+        bw_diag = BandwidthResult(
+            h_mse=stages.h_mse_dpi,
+            b_mse=stages.b_mse_dpi,
+            c_bw=stages.c_bw,
+            bw_mp2=stages.bw_mp2,
+            bw_mp3=stages.bw_mp3,
+            stage_d1_V=stages.stage_d1.V,
+            stage_d1_B1=stages.stage_d1.B1,
+            stage_d1_B2=stages.stage_d1.B2,
+            stage_d1_R=stages.stage_d1.R,
+            stage_d2_V=stages.stage_d2.V,
+            stage_d2_B1=stages.stage_d2.B1,
+            stage_d2_B2=stages.stage_d2.B2,
+            stage_d2_R=stages.stage_d2.R,
+            stage_b_V=stages.stage_b.V,
+            stage_b_B1=stages.stage_b.B1,
+            stage_b_B2=stages.stage_b.B2,
+            stage_b_R=stages.stage_b.R,
+            stage_h_V=stages.stage_h.V,
+            stage_h_B1=stages.stage_h.B1,
+            stage_h_B2=stages.stage_h.B2,
+            stage_h_R=stages.stage_h.R,
+            n=int(d.shape[0]),
             kernel=kernel,
-            weights=None,  # already validated
-            return_diagnostics=True,
+            boundary=float(boundary),
         )
         h_val = float(bw_diag.h_mse)
         b_val = h_val  # rho=1 default to match nprobust
@@ -1125,14 +1168,21 @@ def bias_corrected_local_linear(
         bwcheck=21,
     )
 
-    # --- Bias-corrected CI (lprobust summary.lprobust:420-421) ---
-    # z_{1 - alpha/2}; Python uses scipy.stats.norm.ppf. For parity with R
-    # on the golden tests, the golden JSON stores R's qnorm value.
-    from scipy.stats import norm as _norm
+    # --- Bias-corrected CI via safe_inference (NaN-safe gate) ---
+    # When se_robust is zero, negative, or non-finite (e.g., exact-fit
+    # cases where the residual vector collapses), ALL inference fields —
+    # including the CI — must return NaN. This enforces the repo-wide
+    # inference contract (CLAUDE.md Key Design Pattern #6; CI review
+    # PR #340 P0) rather than returning a misleading zero-width or infinite
+    # CI. safe_inference also handles the R z = qnorm(1 - alpha/2) critical
+    # value via scipy.stats.norm.ppf (the golden JSON stores R's z so
+    # parity tests consume R's value directly and drift is pure
+    # tau.bc + z * se.rb arithmetic).
+    from diff_diff.utils import safe_inference
 
-    z = float(_norm.ppf(1.0 - alpha / 2.0))
-    ci_low = result.tau_bc - z * result.se_rb
-    ci_high = result.tau_bc + z * result.se_rb
+    _, _, (ci_low, ci_high) = safe_inference(
+        result.tau_bc, result.se_rb, alpha=float(alpha)
+    )
 
     return BiasCorrectedFit(
         estimate_classical=result.tau_cl,
