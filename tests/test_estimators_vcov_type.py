@@ -140,6 +140,51 @@ class TestParamsRoundTrip:
         est = TwoWayFixedEffects(vcov_type="hc2")
         assert est.vcov_type == "hc2"
 
+    def test_set_params_conflict_leaves_estimator_unchanged(self):
+        """A rejected set_params() call must leave the estimator unchanged.
+
+        Previously `set_params` mutated attributes via `setattr` BEFORE
+        re-validating the robust/vcov_type pair. A failing call left the
+        estimator in exactly the half-configured state the alias/conflict
+        check is supposed to prevent, which defeats callers that catch
+        `ValueError` and try to keep using the object. This test pins the
+        atomic behavior: on failure, no attribute moves.
+        """
+        est = DifferenceInDifferences(
+            robust=True,
+            vcov_type="hc1",
+            cluster=None,
+            alpha=0.05,
+        )
+        before_robust = est.robust
+        before_vcov = est.vcov_type
+        before_cluster = est.cluster
+        before_alpha = est.alpha
+        with pytest.raises(ValueError, match="robust=False conflicts with"):
+            # Conflict: robust=False + vcov_type="hc2". The side-effect here is
+            # the regression target — set_params must NOT apply cluster=/alpha=
+            # (or anything else in the batch) when validation fails.
+            est.set_params(robust=False, vcov_type="hc2", cluster="unit", alpha=0.1)
+        assert est.robust == before_robust
+        assert est.vcov_type == before_vcov
+        assert est.cluster == before_cluster
+        assert est.alpha == before_alpha
+
+    def test_set_params_unknown_key_leaves_estimator_unchanged(self):
+        """Unknown-key rejections must be atomic too, not partial.
+
+        Regression guard for the first-pass validator: when one key in the
+        params batch is unknown, no keys in the batch should have been
+        applied by the time we raise.
+        """
+        est = DifferenceInDifferences(vcov_type="hc1", alpha=0.05)
+        with pytest.raises(ValueError, match="Unknown parameter"):
+            # vcov_type is valid but `not_a_real_param` is not — reject the
+            # whole batch and leave vcov_type at "hc1".
+            est.set_params(vcov_type="hc2_bm", not_a_real_param=1)
+        assert est.vcov_type == "hc1"
+        assert est.alpha == 0.05
+
 
 # =============================================================================
 # End-to-end fit() behavior
@@ -349,6 +394,67 @@ class TestFitBehavior:
         summary = res.summary()
         # TWFE auto-clusters at the unit column when cluster=None.
         assert "CR1 cluster-robust at unit" in summary
+
+    def test_twfe_honors_classical_without_autocluster(self):
+        """TWFE with vcov_type='classical' must skip its unit auto-cluster.
+
+        Classical SEs are one-way only and would be rejected by the linalg
+        validator if TWFE still injected unit-level clustering. The fix
+        drops the auto-cluster when the user explicitly asks for a one-way
+        family.
+        """
+        data = _make_did_panel(n_units=20)
+        res = TwoWayFixedEffects(vcov_type="classical").fit(
+            data, outcome="y", treatment="treated", time="time", unit="unit"
+        )
+        assert np.isfinite(res.att)
+        assert np.isfinite(res.se)
+        assert res.se > 0
+        assert res.vcov_type == "classical"
+        # Without an explicit cluster and with a one-way family, TWFE should
+        # NOT have injected unit as the auto-cluster.
+        assert res.cluster_name is None
+        summary = res.summary()
+        # Summary must label the one-way family, not CR1 cluster-robust.
+        assert "Classical OLS" in summary
+        assert "CR1 cluster-robust" not in summary
+
+    def test_twfe_honors_robust_false_without_autocluster(self):
+        """`robust=False` on TWFE maps to vcov_type='classical' and must
+        likewise disable the auto-cluster."""
+        data = _make_did_panel(n_units=20)
+        res = TwoWayFixedEffects(robust=False).fit(
+            data, outcome="y", treatment="treated", time="time", unit="unit"
+        )
+        assert res.vcov_type == "classical"
+        assert res.cluster_name is None
+        assert "CR1 cluster-robust" not in res.summary()
+
+    def test_twfe_honors_hc2_one_way(self):
+        """TWFE with vcov_type='hc2' (leverage-corrected, one-way only) must
+        also skip the auto-cluster; otherwise the linalg validator raises."""
+        data = _make_did_panel(n_units=20)
+        res = TwoWayFixedEffects(vcov_type="hc2").fit(
+            data, outcome="y", treatment="treated", time="time", unit="unit"
+        )
+        assert np.isfinite(res.att)
+        assert np.isfinite(res.se)
+        assert res.vcov_type == "hc2"
+        assert res.cluster_name is None
+        assert "HC2 leverage-corrected" in res.summary()
+
+    def test_twfe_explicit_cluster_still_clusters_under_hc2_bm(self):
+        """Regression guard: when the user explicitly passes `cluster=`, the
+        auto-cluster bypass does NOT apply. With vcov_type='hc2_bm' this is
+        the only way to reach the CR2 Bell-McCaffrey path on TWFE.
+        """
+        data = _make_did_panel(n_units=20)
+        res = TwoWayFixedEffects(vcov_type="hc2_bm", cluster="unit").fit(
+            data, outcome="y", treatment="treated", time="time", unit="unit"
+        )
+        assert np.isfinite(res.att)
+        assert np.isfinite(res.se)
+        assert "CR2 Bell-McCaffrey" in res.summary()
 
     def test_summary_suppresses_variance_line_under_wild_bootstrap(self):
         """When inference_method='wild_bootstrap', the Variance label is omitted.

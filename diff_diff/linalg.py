@@ -916,9 +916,7 @@ def _solve_ols_numpy(
         # Compute variance-covariance matrix if requested
         vcov = None
         if return_vcov:
-            vcov = _compute_robust_vcov_numpy(
-                X, residuals, cluster_ids, vcov_type=vcov_type
-            )
+            vcov = _compute_robust_vcov_numpy(X, residuals, cluster_ids, vcov_type=vcov_type)
 
     if return_fitted:
         return coefficients, residuals, fitted, vcov
@@ -950,13 +948,17 @@ def _validate_vcov_args(
         combined with a ``vcov_type`` that is one-way only (``classical``,
         ``hc2``).
     NotImplementedError
-        If ``vcov_type == "hc2_bm"`` is combined with both ``cluster_ids`` and
-        ``weights`` (weighted cluster CR2 Bell-McCaffrey is Phase 2+).
+        If ``vcov_type == "hc2_bm"`` is combined with ``weights`` (with OR
+        without ``cluster_ids``). The weighted Bell-McCaffrey DOF requires
+        re-deriving the Satterthwaite ratio on the WLS-transformed design
+        ``X* = sqrt(w) X`` to match ``solve_ols``'s residual convention;
+        until that derivation is in place, the path raises rather than
+        shipping silently-inconsistent small-sample p-values. Tracked in
+        ``TODO.md``.
     """
     if vcov_type not in _VALID_VCOV_TYPES:
         raise ValueError(
-            f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; "
-            f"got {vcov_type!r}"
+            f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; " f"got {vcov_type!r}"
         )
     if vcov_type in ("classical", "hc2") and cluster_ids is not None:
         msg = {
@@ -965,20 +967,39 @@ def _validate_vcov_args(
                 "'hc2_bm' for cluster-robust."
             ),
             "hc2": (
-                "hc2 is one-way only. Use vcov_type='hc2_bm' for "
-                "cluster-robust Bell-McCaffrey."
+                "hc2 is one-way only. Use vcov_type='hc2_bm' for " "cluster-robust Bell-McCaffrey."
             ),
         }[vcov_type]
         raise ValueError(msg)
-    if (
-        vcov_type == "hc2_bm"
-        and cluster_ids is not None
-        and weights is not None
-    ):
+    if vcov_type == "hc2_bm" and weights is not None:
+        # Weighted Bell-McCaffrey (both one-way and cluster) is deferred to
+        # Phase 2+. The current `_compute_bm_dof_from_contrasts` builds the
+        # hat matrix from the unscaled design via `X (X'WX)^{-1} X' W`, but
+        # `solve_ols` solves the weighted problem by transforming to
+        # `X* = sqrt(w) X`, `y* = sqrt(w) y` and computing residuals on that
+        # transformed system. The transformed hat matrix
+        # `H* = sqrt(W) X (X'WX)^{-1} X' sqrt(W)` is symmetric idempotent and
+        # is the correct residual-maker for the Satterthwaite ratio
+        # `(tr G)^2 / tr(G^2)`; the asymmetric `H = X (X'WX)^{-1} X' W`
+        # currently produced here is not, so the BM DOF it yields is
+        # internally inconsistent with `solve_ols`'s WLS convention. Rather
+        # than ship silently-wrong small-sample p-values, we fail fast.
+        # Tracked in TODO.md under Methodology/Correctness (rederive the BM
+        # DOF on the transformed WLS design + add weighted parity tests).
+        if cluster_ids is not None:
+            raise NotImplementedError(
+                "vcov_type='hc2_bm' with both cluster_ids and weights is a "
+                "Phase 2+ follow-up. Use vcov_type='hc1' for weighted cluster-"
+                "robust, or drop weights for CR2 Bell-McCaffrey."
+            )
         raise NotImplementedError(
-            "vcov_type='hc2_bm' with both cluster_ids and weights is a "
-            "Phase 2+ follow-up. Use vcov_type='hc1' for weighted cluster-"
-            "robust, or drop weights for CR2 Bell-McCaffrey."
+            "vcov_type='hc2_bm' with weights is a Phase 2+ follow-up: the "
+            "Bell-McCaffrey DOF helper builds the hat matrix on the "
+            "unscaled design, which is inconsistent with solve_ols's WLS "
+            "transformation (X* = sqrt(w) X). Shipping in this state would "
+            "produce silently-wrong small-sample p-values. Use vcov_type="
+            "'hc1' for weighted HC1, or drop weights for one-way HC2 + "
+            "Bell-McCaffrey. Tracked in TODO.md."
         )
 
 
@@ -1024,8 +1045,7 @@ def resolve_vcov_type(
         return "hc1" if robust else "classical"
     if vcov_type not in _VALID_VCOV_TYPES:
         raise ValueError(
-            f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; "
-            f"got {vcov_type!r}"
+            f"vcov_type must be one of {sorted(_VALID_VCOV_TYPES)}; " f"got {vcov_type!r}"
         )
     if robust is False and vcov_type != "classical":
         raise ValueError(
@@ -1133,12 +1153,7 @@ def compute_robust_vcov(
     # Use Rust backend if available AND no weights AND the requested path is
     # the unchanged HC1/CR1 dispatch AND the caller does not need DOF. Any
     # other combination falls through to the NumPy implementation below.
-    if (
-        HAS_RUST_BACKEND
-        and weights is None
-        and vcov_type == "hc1"
-        and not return_dof
-    ):
+    if HAS_RUST_BACKEND and weights is None and vcov_type == "hc1" and not return_dof:
         X = np.ascontiguousarray(X, dtype=np.float64)
         residuals = np.ascontiguousarray(residuals, dtype=np.float64)
 
@@ -1205,7 +1220,6 @@ def _compute_hat_diagonals(
     Returns an ``(n,)`` array. Values are clamped to ``[0, 1 - 1e-10]`` to
     guard against numerical `` h_ii > 1`` from near-singular designs.
     """
-    n = X.shape[0]
     # Compute x_i' (X'WX)^{-1} x_i via a single solve rather than per-row.
     # np.linalg.solve(bread, X.T) has shape (k, n); multiplying element-wise by
     # X.T and summing over k gives the per-observation quadratic form.
@@ -1288,9 +1302,7 @@ def _compute_cr2_bm(
     unique_clusters = np.unique(cluster_ids_arr)
     G = len(unique_clusters)
     if G < 2:
-        raise ValueError(
-            f"Need at least 2 clusters for cluster-robust SEs, got {G}"
-        )
+        raise ValueError(f"Need at least 2 clusters for cluster-robust SEs, got {G}")
 
     try:
         bread_inv = np.linalg.solve(bread_matrix, np.eye(k))
@@ -1341,19 +1353,14 @@ def _compute_cr2_bm(
     # Precompute X bread_inv (n x k) so contrast-specific q = X_bi[:, j].
     X_bi = X @ bread_inv
     # Precompute A_g @ X_g @ bread_inv per cluster (A_g_X_bi shape n_g x k)
-    A_g_Xbi = {
-        g: A_g_matrices[g] @ X[cluster_idx[g]] @ bread_inv
-        for g in unique_clusters
-    }
+    A_g_Xbi = {g: A_g_matrices[g] @ X[cluster_idx[g]] @ bread_inv for g in unique_clusters}
     for j in range(k):
         q = X_bi[:, j]  # length n
         trace_B = float(np.sum(q * q))
         # trace(B^2) = sum_{g, h} (omega_g' M_{g, h} omega_h)^2
         trace_B2 = 0.0
         # Cache omega_g for this contrast
-        omega_cache = {
-            g: A_g_Xbi[g][:, j] for g in unique_clusters
-        }
+        omega_cache = {g: A_g_Xbi[g][:, j] for g in unique_clusters}
         for g in unique_clusters:
             idx_g = cluster_idx[g]
             omega_g = omega_cache[g]
@@ -1408,9 +1415,7 @@ def _compute_bm_dof_from_contrasts(
     """
     n, k = X.shape
     if contrasts.ndim != 2 or contrasts.shape[0] != k:
-        raise ValueError(
-            f"contrasts must have shape (k={k}, m); got {contrasts.shape}"
-        )
+        raise ValueError(f"contrasts must have shape (k={k}, m); got {contrasts.shape}")
     try:
         bread_inv_c = np.linalg.solve(bread_matrix, contrasts)
     except np.linalg.LinAlgError as e:
@@ -1453,9 +1458,7 @@ def _compute_bm_dof_oneway(
     ``contrasts = I_k``, so each column picks out one coefficient.
     """
     k = X.shape[1]
-    return _compute_bm_dof_from_contrasts(
-        X, bread_matrix, h_diag, np.eye(k), weights=weights
-    )
+    return _compute_bm_dof_from_contrasts(X, bread_matrix, h_diag, np.eye(k), weights=weights)
 
 
 def _compute_robust_vcov_numpy(
@@ -1507,13 +1510,13 @@ def _compute_robust_vcov_numpy(
         # fweight, divide by (sum_w - k).
         if weights is not None:
             if weight_type == "fweight":
-                sse = float(np.sum(weights * residuals ** 2))
+                sse = float(np.sum(weights * residuals**2))
             elif weight_type == "pweight":
-                sse = float(np.sum(weights * residuals ** 2))
+                sse = float(np.sum(weights * residuals**2))
             else:  # aweight
-                sse = float(np.sum(weights * residuals ** 2))
+                sse = float(np.sum(weights * residuals**2))
         else:
-            sse = float(np.sum(residuals ** 2))
+            sse = float(np.sum(residuals**2))
         sigma2 = sse / (n_eff - k)
         try:
             bread_inv = np.linalg.solve(bread_matrix, np.eye(k))
@@ -1536,9 +1539,7 @@ def _compute_robust_vcov_numpy(
     # ------------------------------------------------------------------
     if vcov_type == "hc2_bm" and cluster_ids is not None:
         # Weighted CR2 is Phase 2+; the public wrapper guards against it.
-        vcov_cr2, dof_cr2 = _compute_cr2_bm(
-            X, residuals, cluster_ids, bread_matrix
-        )
+        vcov_cr2, dof_cr2 = _compute_cr2_bm(X, residuals, cluster_ids, bread_matrix)
         if return_dof:
             return vcov_cr2, dof_cr2
         return vcov_cr2
@@ -1569,7 +1570,7 @@ def _compute_robust_vcov_numpy(
         # HC2 meat: sum_i (u_i^2 / (1 - h_ii)) x_i x_i', with pweight scaling
         # matching the HC1 convention (w_i * u_i / sqrt(1 - h_ii) as score).
         if weights is not None and weight_type == "fweight":
-            factor = weights * (residuals ** 2) / one_minus_h
+            factor = weights * (residuals**2) / one_minus_h
             meat = X.T @ (X * factor[:, np.newaxis])
         elif weights is not None and weight_type == "pweight":
             # pweight scores carry w in the score, so meat = sum (w u / sqrt(1-h))^2 x x'
@@ -1578,7 +1579,7 @@ def _compute_robust_vcov_numpy(
             meat = scores_hc2.T @ scores_hc2
         else:
             # aweight / unweighted: meat = sum_i (u_i^2 / (1 - h_ii)) x_i x_i'
-            factor = (residuals ** 2) / one_minus_h
+            factor = (residuals**2) / one_minus_h
             # Zero out zero-weight rows under aweight (subpopulation invariance)
             if weights is not None and np.any(weights == 0):
                 factor = factor * (weights > 0)
@@ -1603,9 +1604,7 @@ def _compute_robust_vcov_numpy(
         if vcov_type == "hc2":
             dof_vec = np.full(k, n_eff - k, dtype=np.float64)
         else:  # hc2_bm
-            dof_vec = _compute_bm_dof_oneway(
-                X, bread_matrix, h_diag, weights=weights
-            )
+            dof_vec = _compute_bm_dof_oneway(X, bread_matrix, h_diag, weights=weights)
         return vcov, dof_vec
 
     # ------------------------------------------------------------------

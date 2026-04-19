@@ -796,28 +796,35 @@ class DifferenceInDifferences:
         """
         from diff_diff.linalg import resolve_vcov_type
 
-        # Apply assignments first, defaulting to current values for untouched
-        # knobs so the alias/conflict check sees the final resolved pair.
+        # Validate BEFORE mutating `self`. A failing call must leave the
+        # estimator unchanged so callers that catch `ValueError` can keep
+        # reasoning about the object; half-mutated state from an earlier
+        # partial assignment defeats that guarantee. Compute the resolved
+        # `vcov_type` on local variables, then apply all mutations atomically.
         pending_robust = params.get("robust", self.robust)
         pending_vcov_type = params.get("vcov_type", self.vcov_type)
 
-        for key, value in params.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
+        # First pass: validate that every incoming key is a known attribute
+        # so we don't partially apply a batch that ends in "Unknown parameter".
+        for key in params:
+            if not hasattr(self, key):
                 raise ValueError(f"Unknown parameter: {key}")
 
-        # Re-resolve the pair to enforce consistency after mutation. When the
-        # user passes only `robust=` with a previously-set non-aliasing
-        # `vcov_type`, treat the explicit `vcov_type` as authoritative unless
-        # the user also passed it in this call.
+        # Second pass: resolve the robust/vcov_type pair. When the user passes
+        # only `robust=` alongside a previously-set non-aliasing `vcov_type`,
+        # re-derive `vcov_type` from the new `robust` value for internal
+        # consistency (matching the prior behavior, but now on locals).
         if "vcov_type" in params:
-            # Explicit vcov_type -> resolve_vcov_type handles conflict with robust.
-            self.vcov_type = resolve_vcov_type(pending_robust, pending_vcov_type)
+            resolved_vcov = resolve_vcov_type(pending_robust, pending_vcov_type)
         elif "robust" in params:
-            # Only robust changed -> re-derive vcov_type from the new value,
-            # overriding any previously-set vcov_type for internal consistency.
-            self.vcov_type = resolve_vcov_type(pending_robust, None)
+            resolved_vcov = resolve_vcov_type(pending_robust, None)
+        else:
+            resolved_vcov = self.vcov_type  # no-op if neither changed
+
+        # All validation passed — apply mutations atomically.
+        for key, value in params.items():
+            setattr(self, key, value)
+        self.vcov_type = resolved_vcov
         return self
 
     def summary(self) -> str:

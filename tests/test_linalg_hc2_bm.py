@@ -24,7 +24,6 @@ from diff_diff.linalg import (
     solve_ols,
 )
 
-
 # =============================================================================
 # Fixtures: deterministic OLS datasets with hand-computable properties
 # =============================================================================
@@ -62,7 +61,7 @@ class TestClassicalVcov:
         X, y = small_ols_dataset
         n, k = X.shape
         coef, resid, bread = _fit_unweighted(X, y)
-        sigma2 = float(np.sum(resid ** 2) / (n - k))
+        sigma2 = float(np.sum(resid**2) / (n - k))
         expected = sigma2 * np.linalg.inv(bread)
 
         got = compute_robust_vcov(X, resid, vcov_type="classical")
@@ -80,9 +79,7 @@ class TestClassicalVcov:
         _, resid, _ = _fit_unweighted(X, y)
         cluster_ids = np.arange(X.shape[0]) % 3
         with pytest.raises(ValueError, match="classical SEs are one-way only"):
-            compute_robust_vcov(
-                X, resid, cluster_ids=cluster_ids, vcov_type="classical"
-            )
+            compute_robust_vcov(X, resid, cluster_ids=cluster_ids, vcov_type="classical")
 
 
 # =============================================================================
@@ -111,7 +108,7 @@ class TestHC2Oneway:
         _, resid, bread = _fit_unweighted(X, y)
         h_diag = _compute_hat_diagonals(X, bread)
         one_minus_h = 1.0 - h_diag
-        factor = (resid ** 2) / one_minus_h
+        factor = (resid**2) / one_minus_h
         meat = X.T @ (X * factor[:, np.newaxis])
         bread_inv = np.linalg.inv(bread)
         expected = bread_inv @ meat @ bread_inv
@@ -142,9 +139,7 @@ class TestHC2Oneway:
         _, resid, _ = _fit_unweighted(X, y)
         cluster_ids = np.arange(X.shape[0]) % 3
         with pytest.raises(ValueError, match="hc2 is one-way only"):
-            compute_robust_vcov(
-                X, resid, cluster_ids=cluster_ids, vcov_type="hc2"
-            )
+            compute_robust_vcov(X, resid, cluster_ids=cluster_ids, vcov_type="hc2")
 
     def test_hc2_return_dof_yields_n_minus_k(self, small_ols_dataset):
         X, y = small_ols_dataset
@@ -181,9 +176,7 @@ class TestHC2BMOneway:
     def test_bm_dof_shape_and_positive(self, small_ols_dataset):
         X, y = small_ols_dataset
         _, resid, _ = _fit_unweighted(X, y)
-        vcov, dof_vec = compute_robust_vcov(
-            X, resid, vcov_type="hc2_bm", return_dof=True
-        )
+        vcov, dof_vec = compute_robust_vcov(X, resid, vcov_type="hc2_bm", return_dof=True)
         assert dof_vec.shape == (X.shape[1],)
         assert np.all(dof_vec > 0)
         assert np.all(np.isfinite(dof_vec))
@@ -192,9 +185,7 @@ class TestHC2BMOneway:
         """Bell-McCaffrey DOF should be conservative (<= n-k)."""
         X, y = small_ols_dataset
         _, resid, _ = _fit_unweighted(X, y)
-        _, dof_vec = compute_robust_vcov(
-            X, resid, vcov_type="hc2_bm", return_dof=True
-        )
+        _, dof_vec = compute_robust_vcov(X, resid, vcov_type="hc2_bm", return_dof=True)
         n_minus_k = X.shape[0] - X.shape[1]
         assert np.all(dof_vec <= n_minus_k + 1e-10)
 
@@ -222,9 +213,10 @@ class TestHC2BMOneway:
         M = np.eye(n) - H
         bread_inv = np.linalg.inv(bread)
         for j in range(k):
-            c = np.zeros(k); c[j] = 1.0
+            c = np.zeros(k)
+            c[j] = 1.0
             q = X @ (bread_inv @ c)
-            a = (q ** 2) / (1.0 - h_diag)
+            a = (q**2) / (1.0 - h_diag)
             # B = M diag(a) M
             B = M @ np.diag(a) @ M
             expected = (np.trace(B)) ** 2 / np.trace(B @ B)
@@ -244,9 +236,7 @@ class TestHC2BMOneway:
             X = np.column_stack([np.ones(n), rng.uniform(0.0, 1.0, size=n)])
             y = X @ np.array([1.0, 0.5]) + rng.normal(0.0, 0.1, size=n)
             _, resid, _ = _fit_unweighted(X, y)
-            _, dof_vec = compute_robust_vcov(
-                X, resid, vcov_type="hc2_bm", return_dof=True
-            )
+            _, dof_vec = compute_robust_vcov(X, resid, vcov_type="hc2_bm", return_dof=True)
             dofs_by_n[n] = dof_vec
         # Scaling check: doubling n doubles BM DOF to ~5%.
         ratio = dofs_by_n[500] / dofs_by_n[250]
@@ -276,9 +266,7 @@ class TestHC1Unchanged:
         result = compute_robust_vcov(X, resid, vcov_type="hc1")
         assert isinstance(result, np.ndarray)
         # With return_dof=True it's a tuple.
-        result_tuple = compute_robust_vcov(
-            X, resid, vcov_type="hc1", return_dof=True
-        )
+        result_tuple = compute_robust_vcov(X, resid, vcov_type="hc1", return_dof=True)
         assert isinstance(result_tuple, tuple)
         assert len(result_tuple) == 2
 
@@ -287,9 +275,7 @@ class TestHC1Unchanged:
         _, resid, _ = _fit_unweighted(X, y)
         cluster_ids = np.arange(X.shape[0]) % 5
         default = compute_robust_vcov(X, resid, cluster_ids=cluster_ids)
-        explicit = compute_robust_vcov(
-            X, resid, cluster_ids=cluster_ids, vcov_type="hc1"
-        )
+        explicit = compute_robust_vcov(X, resid, cluster_ids=cluster_ids, vcov_type="hc1")
         np.testing.assert_array_equal(default, explicit)
 
     def test_hc2_bm_weighted_cluster_not_implemented(self, small_ols_dataset):
@@ -306,6 +292,44 @@ class TestHC1Unchanged:
                 vcov_type="hc2_bm",
                 weights=w,
                 weight_type="pweight",
+            )
+
+    def test_hc2_bm_weighted_one_way_not_implemented(self, small_ols_dataset):
+        """Weighted one-way Bell-McCaffrey is also deferred.
+
+        The BM DOF helper (`_compute_bm_dof_from_contrasts`) builds its hat
+        matrix from the unscaled design as `X (X'WX)^{-1} X' W`, but
+        `solve_ols` solves weighted regression by transforming to
+        `X* = sqrt(w) X`, `y* = sqrt(w) y`. The symmetric-idempotent residual
+        maker `M* = I - H*` with `H* = sqrt(W) X (X'WX)^{-1} X' sqrt(W)` is
+        the correct one for the Satterthwaite ratio; the asymmetric
+        `X (X'WX)^{-1} X' W` currently produced is neither the transformed
+        nor the original-scale formula. Rather than ship silently-wrong
+        small-sample p-values, `_validate_vcov_args` fails fast.
+        """
+        X, y = small_ols_dataset
+        _, resid, _ = _fit_unweighted(X, y)
+        w = np.ones(X.shape[0])
+        with pytest.raises(NotImplementedError, match="weights"):
+            compute_robust_vcov(
+                X,
+                resid,
+                vcov_type="hc2_bm",
+                weights=w,
+                weight_type="pweight",
+            )
+        # The failure must also hit the internal entry point so callers that
+        # reach the numpy backend directly via `solve_ols` do not bypass it.
+        from diff_diff.linalg import _compute_robust_vcov_numpy
+
+        with pytest.raises(NotImplementedError, match="weights"):
+            _compute_robust_vcov_numpy(
+                X,
+                resid,
+                None,
+                weights=w,
+                weight_type="pweight",
+                vcov_type="hc2_bm",
             )
 
 
@@ -344,9 +368,7 @@ class TestSolveOlsValidationBypass:
         y = X @ np.array([1.0, 0.5]) + rng.normal(0, 0.1, n)
         cluster_ids = np.arange(n) % 4
         with pytest.raises(ValueError, match="classical SEs are one-way only"):
-            solve_ols(
-                X, y, cluster_ids=cluster_ids, vcov_type="classical"
-            )
+            solve_ols(X, y, cluster_ids=cluster_ids, vcov_type="classical")
 
     def test_solve_ols_rejects_cluster_plus_hc2(self):
         rng = np.random.default_rng(2)
@@ -355,9 +377,7 @@ class TestSolveOlsValidationBypass:
         y = X @ np.array([1.0, 0.5]) + rng.normal(0, 0.1, n)
         cluster_ids = np.arange(n) % 4
         with pytest.raises(ValueError, match="hc2 is one-way only"):
-            solve_ols(
-                X, y, cluster_ids=cluster_ids, vcov_type="hc2"
-            )
+            solve_ols(X, y, cluster_ids=cluster_ids, vcov_type="hc2")
 
     def test_solve_ols_rejects_cluster_weights_hc2_bm(self):
         rng = np.random.default_rng(3)
@@ -386,9 +406,7 @@ class TestSolveOlsValidationBypass:
         y = rng.normal(0, 1, n)
         cluster_ids = np.arange(n) % 4
         with pytest.raises(ValueError, match="hc2 is one-way only"):
-            LinearRegression(
-                cluster_ids=cluster_ids, vcov_type="hc2"
-            ).fit(X, y)
+            LinearRegression(cluster_ids=cluster_ids, vcov_type="hc2").fit(X, y)
 
 
 # =============================================================================
@@ -505,10 +523,7 @@ class TestCR2BMCluster:
         from pathlib import Path
 
         golden_path = (
-            Path(__file__).parent.parent
-            / "benchmarks"
-            / "data"
-            / "clubsandwich_cr2_golden.json"
+            Path(__file__).parent.parent / "benchmarks" / "data" / "clubsandwich_cr2_golden.json"
         )
         if not golden_path.exists():
             pytest.skip("Golden JSON not present; run the R script to generate.")
@@ -528,11 +543,15 @@ class TestCR2BMCluster:
             expected_vcov = np.array(d["vcov_cr2"]).reshape(d["vcov_shape"])
             expected_dof = np.array(d["dof_bm"])
             np.testing.assert_allclose(
-                vcov, expected_vcov, atol=1e-6,
+                vcov,
+                expected_vcov,
+                atol=1e-6,
                 err_msg=f"VCOV mismatch on dataset '{name}'",
             )
             np.testing.assert_allclose(
-                dof_vec, expected_dof, atol=1e-6,
+                dof_vec,
+                expected_dof,
+                atol=1e-6,
                 err_msg=f"BM DOF mismatch on dataset '{name}'",
             )
 
@@ -577,7 +596,5 @@ class TestHC2Weighted:
         bread_inv = np.linalg.inv(XtWX)
         expected = bread_inv @ meat @ bread_inv
 
-        got = compute_robust_vcov(
-            X, resid, vcov_type="hc2", weights=w, weight_type="pweight"
-        )
+        got = compute_robust_vcov(X, resid, vcov_type="hc2", weights=w, weight_type="pweight")
         np.testing.assert_allclose(got, expected, atol=1e-10)

@@ -35,6 +35,14 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         If None, automatically clusters at the unit level (the `unit`
         parameter passed to `fit()`). This differs from
         DifferenceInDifferences where cluster=None means no clustering.
+
+        **Exception:** when ``vcov_type`` is a one-way-only family
+        (``"classical"`` or ``"hc2"``), the unit auto-cluster is dropped
+        because those families are by construction incompatible with
+        clustering. The user's explicit choice of a one-way family wins
+        over the TWFE default. To get clustered SEs under HC2 leverage
+        correction, pass ``vcov_type="hc2_bm"`` (which dispatches to CR2
+        Bell-McCaffrey when a cluster is present).
     alpha : float, default=0.05
         Significance level for confidence intervals.
 
@@ -137,8 +145,23 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                 "estimation."
             )
 
-        # Use unit-level clustering if not specified (use local variable to avoid mutation)
-        cluster_var = self.cluster if self.cluster is not None else unit
+        # Unit-level clustering is the TWFE default when `cluster` is not
+        # explicitly provided. But one-way variance families (``classical``,
+        # ``hc2``) are by construction not cluster-robust and the validator
+        # in ``compute_robust_vcov`` rejects ``cluster_ids + vcov_type in
+        # {"classical", "hc2"}``. When the user explicitly selects one of
+        # those families and does NOT set ``cluster=``, honor the one-way
+        # choice by disabling the auto-cluster. If the user wants clustered
+        # SEs together with those families, the right fix is to pick a
+        # cluster-aware family (``hc1`` -> CR1, ``hc2_bm`` -> CR2 BM);
+        # mixing is rejected at the linalg layer.
+        _oneway_families = {"classical", "hc2"}
+        if self.cluster is not None:
+            cluster_var: Optional[str] = self.cluster
+        elif self.vcov_type in _oneway_families:
+            cluster_var = None
+        else:
+            cluster_var = unit
 
         # Create treatment × post interaction from raw data before demeaning.
         # This must be within-transformed alongside the outcome and covariates
@@ -176,8 +199,10 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         df_adjustment = n_units + n_times - 2
 
         # Always use LinearRegression for initial fit (unified code path)
-        # For wild bootstrap, we don't need cluster SEs from the initial fit
-        cluster_ids = data[cluster_var].values
+        # For wild bootstrap, we don't need cluster SEs from the initial fit.
+        # cluster_var may be None when the user selected a one-way vcov_type
+        # (``classical``/``hc2``) without setting ``cluster=``; honor it.
+        cluster_ids = data[cluster_var].values if cluster_var is not None else None
 
         # When survey PSU is present, it overrides cluster for variance estimation
         effective_cluster_ids = _resolve_effective_cluster(
@@ -306,7 +331,12 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                 data_nz = data[nz].copy()
                 w_nz = w_r[nz]
                 data_dem_r = _within_transform_util(
-                    data_nz, _all_vars_twfe, unit, time, suffix="_demeaned", weights=w_nz,
+                    data_nz,
+                    _all_vars_twfe,
+                    unit,
+                    time,
+                    suffix="_demeaned",
+                    weights=w_nz,
                 )
                 y_r = data_dem_r[f"{outcome}_demeaned"].values
                 X_list_r = [data_dem_r["_treatment_post_demeaned"].values]
@@ -314,13 +344,17 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                     X_list_r.append(data_dem_r[f"{cov_}_demeaned"].values)
                 X_r = np.column_stack([np.ones(len(y_r))] + X_list_r)
                 coef_r, _, _ = solve_ols(
-                    X_r[:, _id_cols_twfe], y_r,
-                    weights=w_nz, weight_type=survey_weight_type,
-                    rank_deficient_action="silent", return_vcov=False,
+                    X_r[:, _id_cols_twfe],
+                    y_r,
+                    weights=w_nz,
+                    weight_type=survey_weight_type,
+                    rank_deficient_action="silent",
+                    return_vcov=False,
                 )
                 return coef_r
 
             from diff_diff.linalg import _expand_vcov_with_nan as _expand_twfe
+
             vcov_reduced, _n_valid_rep_twfe = compute_replicate_refit_variance(
                 _refit_twfe, coefficients[_id_mask_twfe], resolved_survey
             )
@@ -365,8 +399,17 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             n_clusters_used = self._bootstrap_results.n_clusters
 
         # Cluster label for summary: TWFE auto-clusters at unit level when
-        # self.cluster is None, so report that explicitly.
-        _twfe_cluster_label = self.cluster if self.cluster is not None else unit
+        # `self.cluster is None` AND the vcov family is cluster-compatible.
+        # One-way families (`classical`, `hc2`) disable the auto-cluster (see
+        # the `cluster_var` block above); report None so summary() labels the
+        # one-way family instead of "CR1 cluster-robust at unit".
+        if self.cluster is not None:
+            _twfe_cluster_label: Optional[str] = self.cluster
+        elif cluster_var is None:
+            # One-way family path: auto-cluster was intentionally dropped.
+            _twfe_cluster_label = None
+        else:
+            _twfe_cluster_label = unit
 
         self.results_ = DiDResults(
             att=att,
