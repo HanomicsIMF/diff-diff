@@ -1931,6 +1931,25 @@ def _render_summary(schema: Dict[str, Any]) -> str:
                     "dynamic not-yet-treated comparison group (the control set "
                     f"varies by cohort and period){subset_clause}."
                 )
+        elif (
+            estimator == "StaggeredTripleDiffResults"
+            and isinstance(n_t, int)
+            and isinstance(n_ne, int)
+            and n_ne > 0
+        ):
+            # Round-38 P2 CI review on PR #318: StaggeredTripleDiff
+            # under fixed ``control_group="never_treated"`` had the
+            # schema moved to ``n_never_enabled`` (round-37) but the
+            # renderers fell through to the generic
+            # ``Sample: N observations.`` sentence because the
+            # ``is_dynamic_control`` branch didn't fire. REGISTRY.md
+            # §StaggeredTripleDifference line 1730 names the
+            # never-enabled cohort as the valid fixed comparison on
+            # this path; the prose must say so.
+            sentences.append(
+                f"Sample: {n_obs:,} observations ({n_t:,} treated, "
+                f"{n_ne:,} never-enabled)."
+            )
         else:
             sentences.append(f"Sample: {n_obs:,} observations.")
         survey = sample.get("survey")
@@ -2106,6 +2125,23 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
     )
     if isinstance(sample.get("n_control"), int):
         lines.append(f"- Control: {sample['n_control']:,}")
+    elif (
+        estimator_name == "StaggeredTripleDiffResults"
+        and isinstance(sample.get("n_never_enabled"), int)
+        and sample["n_never_enabled"] > 0
+        and not sample.get("dynamic_control")
+    ):
+        # Round-38 P2 CI review on PR #318: fixed
+        # ``control_group="never_treated"`` on StaggeredTripleDiff
+        # clears ``n_control`` (composite total) and populates
+        # ``n_never_enabled`` (the valid fixed comparison cohort per
+        # REGISTRY.md line 1730). The full report must render that
+        # fixed count — the dynamic-control branch below would not
+        # fire on this path.
+        lines.append(
+            f"- Never-enabled units (fixed comparison cohort): "
+            f"{sample['n_never_enabled']:,}"
+        )
     elif sample.get("dynamic_control"):
         if isinstance(sample.get("n_never_enabled"), int) and sample["n_never_enabled"] > 0:
             lines.append(

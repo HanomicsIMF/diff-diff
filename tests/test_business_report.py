@@ -1333,18 +1333,38 @@ class TestStaggeredTripleDiffNeverTreatedFixedComparison:
         )
         assert sample["n_never_enabled"] == 300
 
-    def test_never_treated_mode_summary_does_not_narrate_composite_as_control(self):
+    def test_never_treated_mode_summary_renders_never_enabled_count(self):
+        """Round-38 P3 strengthened regression: the summary must
+        POSITIVELY surface the valid fixed comparison cohort
+        (``300 never-enabled``), not merely avoid the wrong
+        ``500 control`` phrasing.
+        """
+        import re
+
         summary = BusinessReport(
             self._stub("never_treated"), auto_diagnostics=False
         ).summary()
-        # The composite total must not appear as "500 control" in prose.
-        import re
-
-        assert not re.search(r"\b500\s+control", summary), (
-            f"BR summary must not narrate the composite n_control_units "
-            f"total as 'control' on StaggeredTripleDiff(control_group="
+        # Old wrong phrasing absent.
+        assert not re.search(r"\b500\s+control", summary), summary
+        # New fixed cohort present.
+        assert "300 never-enabled" in summary, (
+            f"BR summary must render the valid fixed never-enabled "
+            f"comparison cohort on StaggeredTripleDiff(control_group="
             f"'never_treated'); got: {summary!r}"
         )
+        # And the generic no-comparison fallback must not fire.
+        assert "Sample: 800 observations." not in summary
+
+    def test_never_treated_mode_full_report_renders_never_enabled_count(self):
+        md = BusinessReport(
+            self._stub("never_treated"), auto_diagnostics=False
+        ).full_report()
+        sample_section = md.split("## Sample", 1)[1].split("\n## ", 1)[0]
+        assert "never-enabled" in sample_section.lower()
+        assert "300" in sample_section
+        # No bare "- Control: 500" line (composite total) should appear
+        # on this path.
+        assert "- Control: 500" not in sample_section
 
 
 class TestBRHeadlineOmitsBrokenCIOnUndefinedInference:
