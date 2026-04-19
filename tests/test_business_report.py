@@ -2948,6 +2948,150 @@ class TestHeterogeneityLiftAlwaysReturnsDict:
         assert "status" in het
 
 
+class TestSDiDTROPRejectPrecomputedPretrendsPower:
+    """Round-32 P1 CI review on PR #318: round-21 rejected
+    ``precomputed["sensitivity"]`` / ``precomputed["parallel_trends"]``
+    on SDiD / TROP because the native-routing contract makes those
+    methodology-incompatible. Round-31's broadening of the
+    applicability gate exposed a parallel hole — ``precomputed[
+    "pretrends_power"]`` was not in the rejection set, so a Roth-
+    style power verdict could surface on a report whose PT is
+    design-enforced (SDiD) or factor-model (TROP). The guard now
+    rejects all three precomputed keys uniformly on the native-
+    routed estimator families.
+    """
+
+    @staticmethod
+    def _dummy_power_object():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            mdv=0.1,
+            violation_type="linear",
+            alpha=0.05,
+            target_power=0.80,
+            violation_magnitude=0.1,
+            power=0.80,
+            n_pre_periods=2,
+        )
+
+    def test_dr_rejects_precomputed_pretrends_power_on_sdid(self, sdid_fit):
+        from diff_diff import DiagnosticReport
+
+        fit, _ = sdid_fit
+        with pytest.raises(ValueError, match="estimator_native_diagnostics"):
+            DiagnosticReport(
+                fit, precomputed={"pretrends_power": self._dummy_power_object()}
+            )
+
+    def test_dr_rejects_precomputed_pretrends_power_on_trop(self):
+        from diff_diff import DiagnosticReport
+
+        class TROPResults:
+            pass
+
+        stub = TROPResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        with pytest.raises(ValueError, match="estimator_native_diagnostics"):
+            DiagnosticReport(
+                stub, precomputed={"pretrends_power": self._dummy_power_object()}
+            )
+
+
+class TestHeterogeneityOmittedFromFullReportWhenNotRan:
+    """Round-32 P2 CI review on PR #318: round-31 made
+    ``_lift_heterogeneity`` always return a dict (stable schema
+    contract), but the full-report renderer's ``if het:`` truthiness
+    guard then entered the Heterogeneity section on every fit and
+    printed ``Source: None`` / ``N effects: None`` / ``Sign
+    consistent: None``. Renderer now gates on ``status == "ran"``.
+    """
+
+    def test_full_report_omits_heterogeneity_section_when_skipped(self):
+        class DiDResults:
+            pass
+
+        stub = DiDResults()
+        stub.att = 1.0
+        stub.se = 0.2
+        stub.p_value = 0.001
+        stub.conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 200
+        stub.n_treated = 100
+        stub.n_control = 100
+        stub.survey_metadata = None
+
+        md = BusinessReport(stub, auto_diagnostics=True).full_report()
+        # The section header is only emitted when status == "ran".
+        # Plain DiD does not have heterogeneity in its applicability
+        # row, so the section should NOT appear.
+        assert "## Heterogeneity" not in md, (
+            f"Heterogeneity section must be omitted when it did not "
+            f"run; rendering ``Source: None`` / ``N effects: None`` "
+            f"is worse than omitting. Got markdown:\n{md}"
+        )
+        # Specifically, none of the placeholder ``None`` lines may
+        # appear anywhere in the rendered report.
+        assert "Source: `None`" not in md
+        assert "N effects: None" not in md
+        assert "Sign consistent: None" not in md
+
+
+class TestDesignEffectBandLabel:
+    """Round-32 P2 CI review on PR #318: REPORTING.md promises a
+    plain-English band label on the ``design_effect`` section, but the
+    implementation only emitted numeric fields plus ``is_trivial``.
+    Add a stable ``band_label`` enum aligned with the REPORTING.md
+    threshold rule.
+    """
+
+    @staticmethod
+    def _stub_with_deff(deff: float):
+        from types import SimpleNamespace
+
+        from diff_diff import DiagnosticReport
+
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 500
+        stub.n_treated = 100
+        stub.n_control_units = 400
+        stub.event_study_effects = None
+        stub.survey_metadata = SimpleNamespace(
+            design_effect=deff,
+            effective_n=500.0 / max(deff, 1e-9),
+            weight_type="pweight",
+            n_strata=None,
+            n_psu=None,
+            df_survey=None,
+            replicate_method=None,
+        )
+        return DiagnosticReport(stub).to_dict()["design_effect"]
+
+    def test_trivial_band_under_1_05(self):
+        assert self._stub_with_deff(1.01)["band_label"] == "trivial"
+
+    def test_slightly_reduces_band_under_2(self):
+        assert self._stub_with_deff(1.5)["band_label"] == "slightly_reduces"
+
+    def test_materially_reduces_band_under_5(self):
+        assert self._stub_with_deff(3.2)["band_label"] == "materially_reduces"
+
+    def test_large_warning_band_at_or_above_5(self):
+        assert self._stub_with_deff(7.5)["band_label"] == "large_warning"
+
+
 class TestSDiDTROPRejectIncompatiblePrecomputedInputs:
     """Round-21 P1 CI review on PR #318: ``precomputed={"sensitivity":
     ...}`` and ``BusinessReport(honest_did_results=...)`` previously

@@ -371,13 +371,26 @@ class DiagnosticReport:
                 _incompatible_keys.append("sensitivity")
             if "parallel_trends" in self._precomputed:
                 _incompatible_keys.append("parallel_trends")
+            # Round-32 P1 CI review on PR #318: ``pretrends_power`` is a
+            # Roth-style power analysis on pre-period event-study
+            # coefficients under the PT identifying contract. SDiD's PT
+            # analogue is design-enforced pre-treatment fit and TROP uses
+            # factor-model identification (PT not applicable); surfacing
+            # a Roth-style power tier on either would bypass the native-
+            # routing contract. Round-21's guard covered ``sensitivity``
+            # and ``parallel_trends`` but not ``pretrends_power``, so the
+            # round-31 ``_compute_applicable_checks`` broadening exposed
+            # it.
+            if "pretrends_power" in self._precomputed:
+                _incompatible_keys.append("pretrends_power")
             if _incompatible_keys:
                 raise ValueError(
                     f"{_result_name} routes robustness and pre-trends "
                     "diagnostics to ``estimator_native_diagnostics`` — "
-                    "generic HonestDiD and parallel-trends precomputed "
-                    "passthroughs are methodology-incompatible with this "
-                    f"estimator. Rejected precomputed keys: {sorted(_incompatible_keys)}. "
+                    "generic HonestDiD, parallel-trends, and pre-trends "
+                    "power precomputed passthroughs are methodology-"
+                    "incompatible with this estimator. Rejected "
+                    f"precomputed keys: {sorted(_incompatible_keys)}. "
                     "Use the native diagnostics on the result object "
                     "(SDiD: ``in_time_placebo``, ``sensitivity_to_zeta_omega``, "
                     "``pre_treatment_fit``; TROP: ``effective_rank``, "
@@ -1481,7 +1494,22 @@ class DiagnosticReport:
         }
 
     def _check_design_effect(self) -> Dict[str, Any]:
-        """Read survey design-effect from ``results.survey_metadata``."""
+        """Read survey design-effect from ``results.survey_metadata``.
+
+        Emits a plain-English ``band_label`` alongside the numeric
+        fields so downstream prose can classify the correction without
+        re-deriving the threshold rule. REPORTING.md describes the
+        band breakpoints (round-32 P2 CI review on PR #318 flagged
+        that the docs advertised the label but the implementation was
+        only emitting the numeric fields plus ``is_trivial``).
+
+        Bands (per REPORTING.md):
+          * ``deff < 1.05`` -> ``"trivial"``;
+          * ``1.05 <= deff < 2`` -> ``"slightly_reduces"``;
+          * ``2 <= deff < 5`` -> ``"materially_reduces"``;
+          * ``deff >= 5`` -> ``"large_warning"``.
+        ``None`` deff -> ``band_label=None`` (no classification).
+        """
         sm = getattr(self._results, "survey_metadata", None)
         if sm is None:
             return {
@@ -1491,6 +1519,16 @@ class DiagnosticReport:
         deff = _to_python_float(getattr(sm, "design_effect", None))
         eff_n = _to_python_float(getattr(sm, "effective_n", None))
         is_trivial = deff is not None and 0.95 <= deff <= 1.05
+        if deff is None or not np.isfinite(deff):
+            band_label: Optional[str] = None
+        elif deff < 1.05:
+            band_label = "trivial"
+        elif deff < 2.0:
+            band_label = "slightly_reduces"
+        elif deff < 5.0:
+            band_label = "materially_reduces"
+        else:
+            band_label = "large_warning"
         return {
             "status": "ran",
             "deff": deff,
@@ -1501,6 +1539,7 @@ class DiagnosticReport:
             "df_survey": _to_python_scalar(getattr(sm, "df_survey", None)),
             "replicate_method": getattr(sm, "replicate_method", None),
             "is_trivial": is_trivial,
+            "band_label": band_label,
         }
 
     def _check_heterogeneity(self) -> Dict[str, Any]:

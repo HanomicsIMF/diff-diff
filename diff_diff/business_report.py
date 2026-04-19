@@ -2076,8 +2076,13 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
                 lines.append(f"- Effective N: {eff_n:,.0f}")
     lines.append("")
 
-    # Heterogeneity
-    if het:
+    # Heterogeneity — only render the populated section when the check
+    # actually ran. Round-32 P2 CI review on PR #318: round-31 changed
+    # ``_lift_heterogeneity`` to always return a dict (stable schema
+    # contract), but the renderer's ``if het:`` truthiness guard then
+    # entered the block on every fit and printed ``Source: None``,
+    # ``N effects: None``, etc. Gate on the ``status`` enum instead.
+    if isinstance(het, dict) and het.get("status") == "ran":
         lines.append("## Heterogeneity")
         lines.append("")
         lines.append(f"- Source: `{het.get('source')}`")
