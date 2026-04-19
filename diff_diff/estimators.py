@@ -67,6 +67,8 @@ class DifferenceInDifferences:
           ``cluster=``; use ``"hc2_bm"`` for clustered Bell-McCaffrey.
         - ``"hc2_bm"``: one-way HC2 + Imbens-Kolesar (2016) Satterthwaite DOF;
           with ``cluster=``, Pustejovsky-Tipton (2018) CR2 cluster-robust.
+          (Note: ``MultiPeriodDiD`` does NOT yet support ``cluster=`` with
+          ``"hc2_bm"`` — see ``MultiPeriodDiD`` docstring and REGISTRY.md.)
     alpha : float, default=0.05
         Significance level for confidence intervals.
     inference : str, default="analytical"
@@ -262,9 +264,7 @@ class DifferenceInDifferences:
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, self.inference)
         )
-        _uses_replicate = (
-            resolved_survey is not None and resolved_survey.uses_replicate_variance
-        )
+        _uses_replicate = resolved_survey is not None and resolved_survey.uses_replicate_variance
         if _uses_replicate and self.inference == "wild_bootstrap":
             raise ValueError(
                 "Cannot use inference='wild_bootstrap' with replicate-weight "
@@ -422,8 +422,8 @@ class DifferenceInDifferences:
                 nz = w_r > 0
                 wd = data[nz].copy()
                 w_nz = w_r[nz]
-                wd["_treat_time"] = (
-                    wd[treatment].values.astype(float) * wd[time].values.astype(float)
+                wd["_treat_time"] = wd[treatment].values.astype(float) * wd[time].values.astype(
+                    float
                 )
                 vars_dm = [outcome, treatment, time, "_treat_time"] + (covariates or [])
                 for ab_var in _absorb_list:
@@ -437,9 +437,12 @@ class DifferenceInDifferences:
                     for cov in covariates:
                         X_r = np.column_stack([X_r, wd[cov].values.astype(float)])
                 coef_r, _, _ = solve_ols(
-                    X_r[:, _id_cols], y_r,
-                    weights=w_nz, weight_type=survey_weight_type,
-                    rank_deficient_action="silent", return_vcov=False,
+                    X_r[:, _id_cols],
+                    y_r,
+                    weights=w_nz,
+                    weight_type=survey_weight_type,
+                    rank_deficient_action="silent",
+                    return_vcov=False,
                 )
                 return coef_r
 
@@ -457,9 +460,7 @@ class DifferenceInDifferences:
                 _df_rep = _n_valid_rep - 1 if _n_valid_rep > 1 else 0
             if survey_metadata is not None:
                 survey_metadata.df_survey = _df_rep if _df_rep > 0 else None
-            t_stat, p_value, conf_int = safe_inference(
-                att, se, alpha=self.alpha, df=_df_rep
-            )
+            t_stat, p_value, conf_int = safe_inference(att, se, alpha=self.alpha, df=_df_rep)
         elif self.inference == "wild_bootstrap" and self.cluster is not None:
             # Override with wild cluster bootstrap inference
             se, p_value, conf_int, t_stat, vcov, _ = self._run_wild_bootstrap_inference(
@@ -854,10 +855,17 @@ class MultiPeriodDiD(DifferenceInDifferences):
         Explicit ``vcov_type`` overrides ``robust`` unless the pair is
         contradictory (e.g. ``robust=False, vcov_type="hc2"`` raises).
     cluster : str, optional
-        Column name for cluster-robust standard errors. Combined with
-        ``vcov_type``: with ``"hc1"`` dispatches to CR1 (Liang-Zeger); with
-        ``"hc2_bm"`` dispatches to CR2 Bell-McCaffrey (Pustejovsky-Tipton 2018
-        symmetric-sqrt + Satterthwaite DOF).
+        Column name for cluster-robust standard errors. With ``vcov_type="hc1"``
+        dispatches to CR1 (Liang-Zeger).
+
+        **Not supported with** ``vcov_type="hc2_bm"``: the cluster-aware CR2
+        Bell-McCaffrey contrast DOF for the post-period-average ATT is not
+        yet implemented, and pairing CR2 SEs with one-way Imbens-Kolesar DOF
+        would be a broken hybrid, so the combination raises
+        ``NotImplementedError`` with a pointer to workarounds. Tracked in
+        ``TODO.md``; also documented as a Note in
+        ``docs/methodology/REGISTRY.md`` under the HeterogeneousAdoptionDiD
+        requirements-checklist block.
     vcov_type : {"classical", "hc1", "hc2", "hc2_bm"}, optional
         Variance-covariance family. Defaults to the ``robust`` alias.
 
@@ -865,9 +873,10 @@ class MultiPeriodDiD(DifferenceInDifferences):
         - ``"hc1"``: heteroskedasticity-robust HC1 with ``n/(n-k)`` adjustment
           (library default). With ``cluster=``, uses CR1 (Liang-Zeger).
         - ``"hc2"``: leverage-corrected meat (one-way only). Errors with
-          ``cluster=``; use ``"hc2_bm"`` for clustered Bell-McCaffrey.
-        - ``"hc2_bm"``: one-way HC2 + Imbens-Kolesar (2016) Satterthwaite DOF;
-          with ``cluster=``, Pustejovsky-Tipton (2018) CR2 cluster-robust.
+          ``cluster=``; use ``"hc2_bm"`` without cluster for Bell-McCaffrey.
+        - ``"hc2_bm"``: one-way HC2 + Imbens-Kolesar (2016) Satterthwaite DOF
+          per coefficient plus a contrast-aware DOF for the post-period-average
+          ATT. **Unsupported with** ``cluster=`` — see ``cluster`` above.
     alpha : float, default=0.05
         Significance level for confidence intervals.
 
@@ -1146,9 +1155,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, effective_inference)
         )
-        _uses_replicate_mp = (
-            resolved_survey is not None and resolved_survey.uses_replicate_variance
-        )
+        _uses_replicate_mp = resolved_survey is not None and resolved_survey.uses_replicate_variance
         if _uses_replicate_mp and effective_inference == "wild_bootstrap":
             raise ValueError(
                 "Cannot use inference='wild_bootstrap' with replicate-weight "
@@ -1360,9 +1367,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 d_r = wd["_did_treatment"].values.astype(float)
                 X_r = np.column_stack([np.ones(len(y_r)), d_r])
                 for period_ in non_ref_periods:
-                    X_r = np.column_stack(
-                        [X_r, wd[f"_did_period_{period_}"].values.astype(float)]
-                    )
+                    X_r = np.column_stack([X_r, wd[f"_did_period_{period_}"].values.astype(float)])
                 for period_ in non_ref_periods:
                     X_r = np.column_stack(
                         [X_r, wd[f"_did_interact_{period_}"].values.astype(float)]
@@ -1371,9 +1376,12 @@ class MultiPeriodDiD(DifferenceInDifferences):
                     for cov_ in covariates:
                         X_r = np.column_stack([X_r, wd[cov_].values.astype(float)])
                 coef_r, _, _ = solve_ols(
-                    X_r[:, _id_cols_mp], y_r,
-                    weights=w_nz, weight_type=survey_weight_type,
-                    rank_deficient_action="silent", return_vcov=False,
+                    X_r[:, _id_cols_mp],
+                    y_r,
+                    weights=w_nz,
+                    weight_type=survey_weight_type,
+                    rank_deficient_action="silent",
+                    return_vcov=False,
                 )
                 return coef_r
 
@@ -1390,7 +1398,10 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 kept_cols = np.where(~nan_mask)[0]
                 if len(kept_cols) > 0:
                     vcov_reduced, _n_valid_rep_mp = compute_replicate_vcov(
-                        X[:, kept_cols], y, coefficients[kept_cols], resolved_survey,
+                        X[:, kept_cols],
+                        y,
+                        coefficients[kept_cols],
+                        resolved_survey,
                         weight_type=survey_weight_type,
                     )
                     vcov = _expand_vcov_with_nan(vcov_reduced, X.shape[1], kept_cols)
@@ -1399,7 +1410,11 @@ class MultiPeriodDiD(DifferenceInDifferences):
                     _n_valid_rep_mp = 0
             else:
                 vcov, _n_valid_rep_mp = compute_replicate_vcov(
-                    X, y, coefficients, resolved_survey, weight_type=survey_weight_type,
+                    X,
+                    y,
+                    coefficients,
+                    resolved_survey,
+                    weight_type=survey_weight_type,
                 )
         elif _use_survey_vcov:
             from diff_diff.survey import compute_survey_vcov
@@ -1474,13 +1489,9 @@ class MultiPeriodDiD(DifferenceInDifferences):
             if len(_kept) > 0:
                 X_kept = X[:, _kept]
                 bread_kept = X_kept.T @ (
-                    X_kept * survey_weights[:, np.newaxis]
-                    if survey_weights is not None
-                    else X_kept
+                    X_kept * survey_weights[:, np.newaxis] if survey_weights is not None else X_kept
                 )
-                h_diag_kept = _compute_hat_diagonals(
-                    X_kept, bread_kept, weights=survey_weights
-                )
+                h_diag_kept = _compute_hat_diagonals(X_kept, bread_kept, weights=survey_weights)
                 # Build the contrast matrix: one column per identified coefficient
                 # plus one column for the post-period average contrast (1/n_post
                 # on each post-period interaction column, 0 elsewhere).
@@ -1492,9 +1503,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
                     for _p in post_periods:
                         post_contrast_full[interaction_indices[_p]] = 1.0 / _n_post
                 post_contrast_kept = post_contrast_full[_kept]
-                contrasts = np.column_stack(
-                    [np.eye(n_kept), post_contrast_kept[:, np.newaxis]]
-                )
+                contrasts = np.column_stack([np.eye(n_kept), post_contrast_kept[:, np.newaxis]])
                 _dof_all = _compute_bm_dof_from_contrasts(
                     X_kept,
                     bread_kept,
@@ -1525,9 +1534,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
             period_df = df
             if _bm_dof_per_coef is not None and np.isfinite(_bm_dof_per_coef[idx]):
                 period_df = float(_bm_dof_per_coef[idx])
-            t_stat, p_value, conf_int = safe_inference(
-                effect, se, alpha=self.alpha, df=period_df
-            )
+            t_stat, p_value, conf_int = safe_inference(effect, se, alpha=self.alpha, df=period_df)
 
             period_effects[period] = PeriodEffect(
                 period=period,
@@ -1610,9 +1617,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
             vcov_type=self.vcov_type,
             cluster_name=self.cluster,
             n_clusters=(
-                len(np.unique(effective_cluster_ids))
-                if effective_cluster_ids is not None
-                else None
+                len(np.unique(effective_cluster_ids)) if effective_cluster_ids is not None else None
             ),
         )
 

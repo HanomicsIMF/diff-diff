@@ -192,10 +192,20 @@ class DiDResults:
             if self.n_clusters is not None:
                 lines.append(f"{'Number of clusters:':<25} {self.n_clusters:>10}")
 
-        # Add variance family label (vcov_type) only when inference was analytical.
-        # For wild-bootstrap etc. the reported SE/CI come from resampling, so the
-        # analytical variance family would mislabel the actual inference source.
-        if self.vcov_type is not None and self.inference_method == "analytical":
+        # Add variance family label (vcov_type) only when inference was analytical
+        # AND no survey design is in play. For wild-bootstrap the reported SE/CI
+        # come from resampling, so the analytical variance family would mislabel
+        # the actual inference source. Survey fits use Taylor linearization or
+        # replicate-weight variance instead of the analytical HC/CR sandwich;
+        # _format_survey_block above already surfaces the survey inference
+        # details (weight type, strata/PSU counts, replicate method), so a
+        # parallel "Variance: HC1/..." line would be misleading. The survey
+        # suppression also covers MultiPeriodDiDResults.
+        if (
+            self.vcov_type is not None
+            and self.inference_method == "analytical"
+            and self.survey_metadata is None
+        ):
             label = _format_vcov_label(
                 self.vcov_type,
                 cluster_name=self.cluster_name,
@@ -503,8 +513,15 @@ class MultiPeriodDiDResults:
             sm = self.survey_metadata
             lines.extend(_format_survey_block(sm, 80))
 
-        # Variance family label (only when inference was analytical).
-        if self.vcov_type is not None and self.inference_method == "analytical":
+        # Variance family label (only when inference was analytical AND not survey).
+        # Survey fits use Taylor linearization or replicate-weight variance, which
+        # _format_survey_block already surfaces above; a parallel analytical label
+        # would mislabel the actual inference source.
+        if (
+            self.vcov_type is not None
+            and self.inference_method == "analytical"
+            and self.survey_metadata is None
+        ):
             label = _format_vcov_label(
                 self.vcov_type,
                 cluster_name=self.cluster_name,
@@ -1105,11 +1122,7 @@ class SyntheticDiDResults:
                 "Re-fit with SyntheticDiD(variance_method='jackknife') to "
                 "obtain per-unit leave-one-out estimates."
             )
-        if (
-            self._loo_unit_ids is None
-            or self._loo_roles is None
-            or self.placebo_effects is None
-        ):
+        if self._loo_unit_ids is None or self._loo_roles is None or self.placebo_effects is None:
             raise ValueError(
                 "Leave-one-out estimates are unavailable (jackknife returned "
                 "NaN or an empty array). See prior warnings from fit() for the "
@@ -1129,9 +1142,9 @@ class SyntheticDiDResults:
         # Sort by |delta| descending. NaN rows sort to the end so the most
         # influential real units appear first.
         df["_abs_delta"] = df["delta_from_full"].abs()
-        df = df.sort_values(
-            by="_abs_delta", ascending=False, na_position="last"
-        ).drop(columns="_abs_delta")
+        df = df.sort_values(by="_abs_delta", ascending=False, na_position="last").drop(
+            columns="_abs_delta"
+        )
         df = df.reset_index(drop=True)
         return df
 
@@ -1200,12 +1213,8 @@ class SyntheticDiDResults:
         snap = self._fit_snapshot
         pre_periods = snap.pre_periods
         n_pre = len(pre_periods)
-        zeta_omega = (
-            zeta_omega_override if zeta_omega_override is not None else self.zeta_omega
-        )
-        zeta_lambda = (
-            zeta_lambda_override if zeta_lambda_override is not None else self.zeta_lambda
-        )
+        zeta_omega = zeta_omega_override if zeta_omega_override is not None else self.zeta_omega
+        zeta_lambda = zeta_lambda_override if zeta_lambda_override is not None else self.zeta_lambda
         if zeta_omega is None or zeta_lambda is None:
             raise ValueError(
                 "in_time_placebo() needs zeta_omega and zeta_lambda from the "
@@ -1307,9 +1316,7 @@ class SyntheticDiDResults:
                 lambda_fake,
             )
             synthetic_pre_fake = Y_pre_c @ omega_eff_fake
-            pre_fit = float(
-                np.sqrt(np.mean((y_pre_t_mean - synthetic_pre_fake) ** 2))
-            )
+            pre_fit = float(np.sqrt(np.mean((y_pre_t_mean - synthetic_pre_fake) ** 2)))
             row["att"] = float(att_fake)
             row["pre_fit_rmse"] = pre_fit
             rows.append(row)
@@ -1391,12 +1398,8 @@ class SyntheticDiDResults:
         min_decrease = 1e-5 * noise_level if noise_level > 0 else 1e-5
 
         if snap.w_treated is not None:
-            y_pre_t_mean = np.average(
-                snap.Y_pre_treated, axis=1, weights=snap.w_treated
-            )
-            y_post_t_mean = np.average(
-                snap.Y_post_treated, axis=1, weights=snap.w_treated
-            )
+            y_pre_t_mean = np.average(snap.Y_pre_treated, axis=1, weights=snap.w_treated)
+            y_post_t_mean = np.average(snap.Y_post_treated, axis=1, weights=snap.w_treated)
         else:
             y_pre_t_mean = np.mean(snap.Y_pre_treated, axis=1)
             y_post_t_mean = np.mean(snap.Y_post_treated, axis=1)
@@ -1448,7 +1451,7 @@ class SyntheticDiDResults:
             )
             synthetic_pre = snap.Y_pre_control @ omega_eff
             pre_fit = float(np.sqrt(np.mean((y_pre_t_mean - synthetic_pre) ** 2)))
-            herf = float(np.sum(omega_eff ** 2))
+            herf = float(np.sum(omega_eff**2))
             rows.append(
                 {
                     "zeta_omega": z,
@@ -1493,9 +1496,7 @@ class SyntheticDiDResults:
             If ``top_k`` is negative.
         """
         if top_k < 0:
-            raise ValueError(
-                f"top_k must be non-negative (got {top_k})."
-            )
+            raise ValueError(f"top_k must be non-negative (got {top_k}).")
         weights = np.asarray(list(self.unit_weights.values()), dtype=float)
         if weights.size == 0:
             return {
@@ -1504,7 +1505,7 @@ class SyntheticDiDResults:
                 "top_k_share": float("nan"),
                 "top_k": 0,
             }
-        herfindahl = float(np.sum(weights ** 2))
+        herfindahl = float(np.sum(weights**2))
         effective_n = float("nan") if herfindahl == 0 else 1.0 / herfindahl
         k = min(int(top_k), weights.size)
         if k <= 0:

@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from diff_diff import SurveyDesign
 from diff_diff.estimators import DifferenceInDifferences, MultiPeriodDiD
 from diff_diff.twfe import TwoWayFixedEffects
 
@@ -397,3 +398,160 @@ class TestFitBehavior:
         )
         res = est.fit(data, outcome="y", treatment="treated", time="time")
         assert np.isfinite(res.se)
+
+
+# =============================================================================
+# Survey-fit summary labeling (P2 fix from CI review on PR #327)
+# =============================================================================
+
+
+def _make_survey_panel(seed: int = 20260420) -> pd.DataFrame:
+    """Two-period DiD panel with strata/PSU/weight columns for survey fits.
+
+    40 units, 4 strata (10 units each), 8 PSUs nested within strata (2 PSUs
+    per stratum, 5 units each). Treatment is 20 vs 20; PSU labels are
+    globally unique so SurveyDesign.resolve does not raise.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    n_units = 40
+    for i in range(n_units):
+        treated = int(i >= n_units // 2)
+        stratum = i // 10  # 4 strata, 10 units each
+        psu = i // 5  # 8 PSUs globally (2 per stratum)
+        wt = 1.0 + 0.25 * stratum
+        for t in (0, 1):
+            y = rng.normal(0.0, 1.0) + 0.5 * treated + 1.0 * treated * t
+            rows.append(
+                {
+                    "unit": i,
+                    "time": t,
+                    "treated": treated,
+                    "stratum": stratum,
+                    "psu": psu,
+                    "weight": wt,
+                    "y": y,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+class TestSummarySurveyLabeling:
+    """When a SurveyDesign drives inference, the analytical `Variance:` line
+    must be suppressed: the reported SEs come from Taylor linearization or
+    replicate-weight variance, not from the analytical HC/CR sandwich. The
+    survey inference block (weight_type, strata/PSU counts, replicate method)
+    already surfaces the actual inference source; a parallel
+    `Variance: HC1/...` line would mislabel what produced the SEs.
+
+    These tests pin the P2 fix flagged by CI review on PR #327.
+    """
+
+    def test_survey_taylor_suppresses_analytical_variance_label(self):
+        """SurveyDesign with PSU/strata (no replicate weights) uses Taylor
+        linearization; the analytical `Variance:` line must not appear.
+        """
+        data = _make_survey_panel()
+        sd = SurveyDesign(
+            weights="weight",
+            strata="stratum",
+            psu="psu",
+            weight_type="pweight",
+        )
+        # Explicit vcov_type="hc1" to make the regression meaningful: if the
+        # suppression wasn't in place, the summary would print "HC1
+        # heteroskedasticity-robust" even though the SE came from survey
+        # Taylor linearization.
+        est = DifferenceInDifferences(vcov_type="hc1")
+        res = est.fit(
+            data,
+            outcome="y",
+            treatment="treated",
+            time="time",
+            survey_design=sd,
+        )
+        assert res.survey_metadata is not None
+        summary = res.summary()
+        # The analytical Variance: label must not appear; the survey design
+        # line(s) already surface the actual inference source.
+        assert "Variance:" not in summary
+        # And the summary must still show the survey design block so the
+        # user can see where the SEs came from.
+        assert (
+            "pweight" in summary
+            or "Weight type" in summary
+            or "n_psu" in summary.lower()
+            or "psu" in summary.lower()
+        )
+
+    def test_survey_replicate_weights_suppresses_analytical_variance_label(self):
+        """SurveyDesign with replicate_weights (BRR) drives replicate-variance
+        inference; the analytical `Variance:` line must not appear.
+        """
+        data = _make_survey_panel()
+        # Attach 10 BRR replicate-weight columns.
+        rng = np.random.default_rng(12345)
+        rep_cols = [f"rep{r}" for r in range(10)]
+        for col in rep_cols:
+            data[col] = rng.choice([0.5, 1.5], size=len(data))
+
+        sd = SurveyDesign(
+            weights="weight",
+            replicate_weights=rep_cols,
+            replicate_method="BRR",
+            weight_type="pweight",
+        )
+        est = DifferenceInDifferences(vcov_type="hc2_bm")
+        res = est.fit(
+            data,
+            outcome="y",
+            treatment="treated",
+            time="time",
+            survey_design=sd,
+        )
+        assert res.survey_metadata is not None
+        summary = res.summary()
+        # The analytical HC2+BM label must not appear for a replicate-weight
+        # fit: the actual SEs come from the BRR replicates.
+        assert "Variance:" not in summary
+        assert "HC2 + Bell-McCaffrey" not in summary
+        # Survey metadata should surface the replicate method.
+        assert "BRR" in summary or "replicate" in summary.lower()
+
+    def test_multi_period_survey_taylor_suppresses_variance_label(self):
+        """Same survey suppression holds for `MultiPeriodDiDResults.summary()`.
+
+        MultiPeriodDiD has its own summary block and its own gating logic; the
+        P2 fix applies there too.
+        """
+        data = _make_survey_panel()
+        sd = SurveyDesign(
+            weights="weight",
+            strata="stratum",
+            psu="psu",
+            weight_type="pweight",
+        )
+        est = MultiPeriodDiD(vcov_type="hc1")
+        res = est.fit(
+            data,
+            outcome="y",
+            treatment="treated",
+            time="time",
+            unit="unit",
+            survey_design=sd,
+        )
+        assert res.survey_metadata is not None
+        summary = res.summary()
+        assert "Variance:" not in summary
+
+    def test_non_survey_fit_still_prints_variance_label(self):
+        """Regression guard: the survey-only suppression must not break the
+        non-survey path, which should still print the analytical Variance: line.
+        """
+        data = _make_did_panel(n_units=30)
+        est = DifferenceInDifferences(vcov_type="hc1")
+        res = est.fit(data, outcome="y", treatment="treated", time="time")
+        assert res.survey_metadata is None
+        summary = res.summary()
+        assert "Variance:" in summary
+        assert "HC1" in summary
