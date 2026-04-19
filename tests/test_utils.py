@@ -871,7 +871,7 @@ class TestComputeOutcomeChanges:
 
         with pytest.warns(
             UserWarning,
-            match=r"check_parallel_trends dropped \d+ row\(s\).*first-period-per-unit",
+            match=r"check_parallel_trends dropped \d+ row\(s\).*additional NaN first-differences",
         ):
             _compute_outcome_changes(
                 df, outcome="outcome", time="period",

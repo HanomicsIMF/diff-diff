@@ -675,6 +675,36 @@ class TestEdgeCases:
         inf_warnings = [x for x in w if "inf in 'first_treat'" in str(x.message)]
         assert inf_warnings == []
 
+    def test_inf_first_treat_warning_counts_rows_not_units(self):
+        """The warning counts affected rows (not units). On a panel with
+        multiple periods per unit, each inf row must count separately so the
+        message surface matches the per-row semantics of `.replace(inf, 0)`."""
+        # Build a 4-unit, 3-period panel (12 rows). 2 units have inf across
+        # all 3 periods → 6 inf rows, 2 units, so row-count != unit-count.
+        rows = []
+        for unit in range(4):
+            ft = np.inf if unit < 2 else 2.0
+            dose = 0.0 if unit < 2 else 1.0
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": dose,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with pytest.warns(
+            UserWarning,
+            match=r"6 row\(s\) have inf in 'first_treat'",
+        ):
+            try:
+                est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+            except Exception:
+                # Downstream validation may reject this minimal panel (too few
+                # treated for OLS). We only care that the inf-row warning fires
+                # with the correct row count.
+                pass
+
     def test_custom_dvals(self):
         data = generate_continuous_did_data(n_units=100, n_periods=3, seed=42)
         custom_grid = np.array([1.0, 2.0, 3.0])

@@ -936,8 +936,9 @@ def _compute_outcome_changes(
             warnings.warn(
                 f"check_parallel_trends dropped {n_dropped} row(s) with NaN "
                 f"first-differences; {n_units_observed} are the expected "
-                f"first-period-per-unit drops, and {n_unexpected_drops} came "
-                f"from gaps or NaN outcomes. Parallel-trend statistics are "
+                f"first-period-per-unit drops, and {n_unexpected_drops} are "
+                f"additional NaN first-differences (e.g. NaN outcomes or "
+                f"unit-period gaps upstream). Parallel-trend statistics are "
                 f"computed on the remaining rows.",
                 UserWarning,
                 stacklevel=3,
