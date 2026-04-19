@@ -421,6 +421,38 @@ class DiagnosticReport:
                     "``pre_treatment_fit``; TROP: ``effective_rank``, "
                     "``loocv_score``) — DR surfaces these automatically."
                 )
+
+        # Round-44 P1 CI review on PR #318: mirror the SDiD/TROP
+        # __init__ rejection pattern for ``CallawaySantAnna`` with
+        # ``base_period != "universal"``. HonestDiD bounds are not
+        # valid for interpretation on consecutive-comparison
+        # (``base_period='varying'``) pre-period surfaces (REGISTRY.md
+        # §CallawaySantAnna line 410 plus §HonestDiD line 2458).
+        # ``precomputed["sensitivity"]`` would otherwise bypass the
+        # applicability-gate guard (which already existed for the auto
+        # path) and let BR/DR narrate the Rambachan-Roth bounds as
+        # ordinary robustness on a displayed fit whose interpretation
+        # does not match the bounds' provenance. Reject at
+        # construction so users get the error up-front rather than a
+        # late skip in the schema.
+        if _result_name == "CallawaySantAnnaResults" and "sensitivity" in self._precomputed:
+            _base_period = getattr(self._results, "base_period", "universal")
+            if _base_period != "universal":
+                raise ValueError(
+                    "precomputed['sensitivity'] on "
+                    "CallawaySantAnnaResults requires "
+                    "``base_period='universal'`` on the displayed fit — "
+                    "HonestDiD Rambachan-Roth bounds are not valid for "
+                    "interpretation on the consecutive-comparison "
+                    "pre-period surface produced by "
+                    f"``base_period={_base_period!r}``. Narrating the "
+                    "bounds as robustness alongside a varying-base fit "
+                    "mixes provenance the bounds don't support. Re-fit "
+                    "the main estimator with "
+                    "``CallawaySantAnna(base_period='universal')`` "
+                    "before passing precomputed sensitivity."
+                )
+
         self._outcome_label = outcome_label
         self._treatment_label = treatment_label
         self._cached: Optional[DiagnosticReportResults] = None
@@ -697,16 +729,20 @@ class DiagnosticReport:
             # Native SDiD/TROP paths substitute for HonestDiD.
             if name in {"SyntheticDiDResults", "TROPResults"}:
                 return None
-            # Precomputed sensitivity always unlocks this check.
-            if "sensitivity" in self._precomputed:
-                return None
-            # CallawaySantAnna with ``base_period='varying'`` (the default)
-            # produces consecutive-comparison pre-period coefficients;
-            # HonestDiD explicitly warns those bounds are not valid for
-            # interpreted sensitivity. Skip at the applicability gate so
-            # BR/DR do not narrate the grid as robustness. Users opting
-            # in can pass ``precomputed={'sensitivity': ...}`` or re-fit
-            # with ``base_period='universal'``.
+            # Round-44 P1 CI review on PR #318: the CS varying-base
+            # guard MUST fire before the precomputed early-return.
+            # Previously, ``precomputed["sensitivity"]`` unlocked this
+            # check unconditionally, letting BR/DR narrate the
+            # Rambachan-Roth bounds as ordinary robustness even though
+            # HonestDiD explicitly warns those bounds are not valid
+            # for interpretation on consecutive-comparison
+            # (``base_period='varying'``) pre-period surfaces
+            # (REGISTRY.md §CallawaySantAnna line 410, §HonestDiD line
+            # 2458). The previous skip message also mis-pointed users
+            # at ``precomputed`` as the opt-in; that path now routes
+            # through the same guard, so the correct remediation is to
+            # re-fit the main estimator with ``base_period='universal'``
+            # or to consult HonestDiD outside the report layer.
             if name == "CallawaySantAnnaResults":
                 base_period = getattr(r, "base_period", "universal")
                 if base_period != "universal":
@@ -716,9 +752,22 @@ class DiagnosticReport:
                         "(Rambachan-Roth bounds are not comparable across the "
                         "consecutive pre-period comparisons produced by "
                         f"``base_period={base_period!r}``). Re-fit with "
-                        "``CallawaySantAnna(base_period='universal')`` or pass "
-                        "``precomputed={'sensitivity': ...}`` to opt in."
+                        "``CallawaySantAnna(base_period='universal')``; "
+                        "``precomputed={'sensitivity': ...}`` is rejected here "
+                        "because the precomputed bounds would be narrated as "
+                        "robustness for a displayed fit whose pre-period "
+                        "surface has a different interpretation than the one "
+                        "the bounds were computed against."
                     )
+            # Precomputed sensitivity unlocks this check for every
+            # other estimator (SDiD/TROP were already rejected at DR
+            # __init__; CS varying-base is gated above). The CS
+            # guard above runs on the *displayed fit*, not on the
+            # provenance of the precomputed bounds; it protects
+            # against narrating bounds whose interpretation is
+            # incompatible with the fit being summarized.
+            if "sensitivity" in self._precomputed:
+                return None
             # dCDH uses ``placebo_event_study`` as its pre-period surface,
             # which HonestDiD consumes via a dedicated branch. Accept the
             # fit when that attribute is populated.

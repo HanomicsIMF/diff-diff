@@ -216,6 +216,46 @@ class BusinessReport:
                 "automatically under ``estimator_native_diagnostics``."
             )
 
+        # Round-44 P1 CI review on PR #318: mirror the SDiD/TROP
+        # rejection pattern for ``CallawaySantAnna`` fits with
+        # ``base_period != "universal"``. HonestDiD Rambachan-Roth
+        # bounds are not valid for interpretation on the consecutive-
+        # comparison pre-period surface produced by ``varying`` base,
+        # so narrating precomputed sensitivity (whether passed as
+        # ``honest_did_results`` or ``precomputed['sensitivity']``)
+        # alongside a displayed varying-base fit mixes provenance the
+        # bounds don't support. DR enforces the same guard at
+        # construction; BR duplicates the check so the error fires
+        # before the auto-DR is built, matching the existing
+        # SDiD/TROP UX. REGISTRY.md §CallawaySantAnna line 410,
+        # §HonestDiD line 2458.
+        _cs_with_varying_base = type(results).__name__ == "CallawaySantAnnaResults" and (
+            getattr(results, "base_period", "universal") != "universal"
+        )
+        if _cs_with_varying_base:
+            _rejected_inputs: List[str] = []
+            if honest_did_results is not None:
+                _rejected_inputs.append("honest_did_results")
+            if precomputed is not None and "sensitivity" in precomputed:
+                _rejected_inputs.append("precomputed['sensitivity']")
+            if _rejected_inputs:
+                _base_period = getattr(results, "base_period", "universal")
+                raise ValueError(
+                    f"CallawaySantAnnaResults with "
+                    f"``base_period={_base_period!r}`` cannot be "
+                    "summarized alongside a precomputed HonestDiD "
+                    "sensitivity object. The Rambachan-Roth bounds are "
+                    "not valid for interpretation on the consecutive-"
+                    "comparison pre-period surface this base yields "
+                    "(REGISTRY.md §CallawaySantAnna / §HonestDiD). "
+                    "Rejected inputs: " + ", ".join(_rejected_inputs) + ". "
+                    "Re-fit the main estimator with "
+                    "``CallawaySantAnna(base_period='universal')`` "
+                    "before passing precomputed sensitivity, or drop "
+                    "the sensitivity passthrough to let BR skip the "
+                    "section with a methodology-critical reason."
+                )
+
         self._results = results
         self._honest_did_results = honest_did_results
         self._auto_diagnostics = auto_diagnostics

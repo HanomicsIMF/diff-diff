@@ -3876,6 +3876,105 @@ class TestCSVaryingBaseSensitivitySkipped:
         )
 
 
+class TestCSVaryingBaseSensitivityRejectsPrecomputed:
+    """Round-44 P1 CI review on PR #318: ``precomputed['sensitivity']``
+    (and BR's ``honest_did_results`` shorthand) previously bypassed the
+    varying-base CS guard — the applicability gate's precomputed early-
+    return unlocked the sensitivity section and BR/DR narrated the
+    Rambachan-Roth bounds as ordinary robustness on a displayed fit
+    whose consecutive-comparison pre-period surface has a different
+    interpretation than the bounds' provenance (REGISTRY.md
+    §CallawaySantAnna line 410, §HonestDiD line 2458). DR and BR must
+    reject at construction."""
+
+    def _cs_varying_base_stub(self):
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.3
+        stub.overall_p_value = 0.01
+        stub.overall_conf_int = (0.4, 1.6)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.event_study_vcov = None
+        stub.event_study_vcov_index = None
+        stub.vcov = None
+        stub.interaction_indices = None
+        stub.base_period = "varying"
+        stub.inference_method = "analytical"
+        return stub
+
+    def _dummy_sens_object(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            M_values=[0.5, 1.0],
+            bounds=[(0.1, 2.0), (-0.2, 2.5)],
+            robust_cis=[(0.05, 2.1), (-0.3, 2.6)],
+            breakdown_M=0.75,
+            method="relative_magnitude",
+            original_estimate=1.0,
+            original_se=0.2,
+            alpha=0.05,
+        )
+
+    def test_dr_rejects_precomputed_sensitivity_on_varying_base_cs(self):
+        from diff_diff import DiagnosticReport
+
+        stub = self._cs_varying_base_stub()
+        with pytest.raises(ValueError, match="base_period='universal'"):
+            DiagnosticReport(stub, precomputed={"sensitivity": self._dummy_sens_object()})
+
+    def test_dr_allows_precomputed_sensitivity_on_universal_base_cs(self):
+        """Universal-base CS + precomputed sensitivity is the supported
+        path — must not be rejected."""
+        from diff_diff import DiagnosticReport
+
+        stub = self._cs_varying_base_stub()
+        stub.base_period = "universal"
+        # Should not raise.
+        DiagnosticReport(stub, precomputed={"sensitivity": self._dummy_sens_object()})
+
+    def test_br_rejects_precomputed_sensitivity_on_varying_base_cs(self):
+        stub = self._cs_varying_base_stub()
+        with pytest.raises(ValueError, match="base_period='varying'"):
+            BusinessReport(
+                stub,
+                precomputed={"sensitivity": self._dummy_sens_object()},
+            )
+
+    def test_br_rejects_honest_did_results_on_varying_base_cs(self):
+        """BR's ``honest_did_results`` shorthand must hit the same
+        rejection — it becomes ``precomputed['sensitivity']`` under the
+        hood, and the methodology problem is identical."""
+        stub = self._cs_varying_base_stub()
+        with pytest.raises(ValueError, match="honest_did_results"):
+            BusinessReport(
+                stub,
+                honest_did_results=self._dummy_sens_object(),
+            )
+
+    def test_br_rejects_both_passthrough_inputs_names_them(self):
+        """When both passthrough inputs are supplied, the error must
+        name both so the user knows every input that was rejected."""
+        stub = self._cs_varying_base_stub()
+        with pytest.raises(ValueError) as excinfo:
+            BusinessReport(
+                stub,
+                honest_did_results=self._dummy_sens_object(),
+                precomputed={"sensitivity": self._dummy_sens_object()},
+            )
+        msg = str(excinfo.value)
+        assert "honest_did_results" in msg
+        assert "precomputed['sensitivity']" in msg
+
+
 class TestBusinessReportSurveyDesignPassthrough:
     """Round-40 P1 CI review on PR #318: ``BusinessReport`` must accept
     ``survey_design`` and forward it to the auto-constructed
