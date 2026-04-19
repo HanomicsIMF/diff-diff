@@ -5,6 +5,8 @@ Provides basis construction, evaluation, and derivative computation for
 the dose-response curve estimation in ContinuousDiD.
 """
 
+import warnings
+
 import numpy as np
 from scipy.interpolate import BSpline
 
@@ -140,9 +142,12 @@ def bspline_derivative_design_matrix(x, knots, degree, include_intercept=True):
 
     # Check if knot vector is degenerate (all identical, e.g. single dose)
     if knots[0] == knots[-1]:
-        # All knots identical: derivatives are all zero
+        # All knots identical: derivatives are all zero — this is a
+        # mathematically well-defined degenerate case (single dose value
+        # means no dose variation to differentiate), handled silently.
         pass
     else:
+        failed_basis_indices = []
         for j in range(n_basis):
             c = np.zeros(n_basis)
             c[j] = 1.0
@@ -151,8 +156,28 @@ def bspline_derivative_design_matrix(x, knots, degree, include_intercept=True):
                 deriv_j = spline_j.derivative()
                 dB[:, j] = deriv_j(x_clamped)
             except ValueError:
-                # Degenerate knot vector: derivative is zero
-                pass
+                # Finding #12 (axis C, silent-failures audit): silent pass
+                # on ValueError meant a malformed knot vector (too few
+                # knots for the degree, non-monotonic, etc.) quietly set
+                # whole columns of the derivative design matrix to zero.
+                # Downstream ContinuousDiD inference then used a silently
+                # biased dPsi matrix. Track affected basis indices so we
+                # can surface ONE aggregate warning.
+                failed_basis_indices.append(j)
+
+        if failed_basis_indices:
+            warnings.warn(
+                f"B-spline derivative construction failed for "
+                f"{len(failed_basis_indices)} of {n_basis} basis function(s) "
+                f"(indices {failed_basis_indices}); their derivative columns "
+                f"are zero. This typically indicates a malformed knot vector "
+                f"(too few knots for the chosen degree, non-monotonic, or "
+                f"repeated interior knots). ContinuousDiD inference may be "
+                f"biased; consider increasing the number of distinct doses "
+                f"or reducing the B-spline degree.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     if include_intercept:
         # Drop first column (intercept derivative = 0), prepend zeros

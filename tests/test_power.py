@@ -2827,3 +2827,69 @@ class TestSurveyPower:
     def test_survey_config_validation_fpc_nan(self):
         with pytest.raises(ValueError, match="fpc_per_stratum must be finite"):
             SurveyPowerConfig(fpc_per_stratum=np.inf)
+
+
+# ---------------------------------------------------------------------------
+# Finding #28 (axis J, silent-failures audit). `_build_survey_design`
+# previously cached the resolved design in ``self._cached_survey_design``
+# on first call and never invalidated; mutating ``config.survey_design``
+# after ``__init__`` silently returned the stale cache. The fix drops the
+# cache — construction is microseconds — so every call reflects live
+# state.
+# ---------------------------------------------------------------------------
+
+
+class TestSurveyPowerConfigDesignStaleness:
+    def test_mutating_survey_design_after_first_call_picks_up_new(self):
+        """Reassigning config.survey_design after initial _build_survey_design
+        must be reflected on the next call."""
+        from diff_diff.survey import SurveyDesign
+
+        cfg = SurveyPowerConfig()
+        first = cfg._build_survey_design()
+        # Sanity: default is the expected column-name convention.
+        assert first.weights == "weight"
+        assert first.strata == "stratum"
+
+        replacement = SurveyDesign(
+            weights="my_weight", strata="my_stratum", psu="my_psu", fpc="my_fpc"
+        )
+        cfg.survey_design = replacement
+
+        second = cfg._build_survey_design()
+        assert second is replacement, (
+            "After mutating config.survey_design, _build_survey_design must "
+            "return the new design, not the cached default."
+        )
+        assert second.weights == "my_weight"
+
+    def test_clearing_survey_design_falls_back_to_default(self):
+        """Reassigning config.survey_design back to None after a non-None
+        initialization must fall back to the default construction."""
+        from diff_diff.survey import SurveyDesign
+
+        initial = SurveyDesign(
+            weights="w0", strata="s0", psu="p0", fpc="f0"
+        )
+        cfg = SurveyPowerConfig(survey_design=initial)
+        first = cfg._build_survey_design()
+        assert first is initial
+
+        cfg.survey_design = None
+        second = cfg._build_survey_design()
+        assert second is not initial
+        assert second.weights == "weight"
+        assert second.strata == "stratum"
+
+    def test_repeat_calls_produce_equivalent_output(self):
+        """Regression guard: no-mutation case must still work — two
+        consecutive calls on an untouched config return consistent
+        SurveyDesign column names (identity equality is not guaranteed
+        since we dropped the cache; equivalence is what matters)."""
+        cfg = SurveyPowerConfig()
+        first = cfg._build_survey_design()
+        second = cfg._build_survey_design()
+        assert first.weights == second.weights
+        assert first.strata == second.strata
+        assert first.psu == second.psu
+        assert first.fpc == second.fpc

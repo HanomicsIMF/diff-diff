@@ -102,6 +102,109 @@ class TestBSplineBasis:
         assert B.shape[1] == 2  # intercept + 1 basis fn
 
 
+# ---------------------------------------------------------------------------
+# Finding #12 (axis C, silent-failures audit). Previously
+# `bspline_derivative_design_matrix` silently swallowed ValueError in the
+# per-basis derivative loop, leaving affected columns of the derivative
+# design matrix as zero with no user-visible signal. ContinuousDiD's
+# analytical inference then fed a biased dPsi into downstream SE
+# computation. The fix aggregates failed-basis indices and emits ONE
+# UserWarning naming them.
+# ---------------------------------------------------------------------------
+
+
+class TestBSplineDerivativeDegenerateBasis:
+    def test_single_dose_is_silent(self):
+        """All-identical knots (single dose value) is a well-defined
+        degenerate case — derivatives are mathematically zero and the
+        function returns silently. Regression-guard the existing contract."""
+        x = np.array([3.0, 3.0, 3.0, 3.0])
+        knots = np.array([3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0])  # all identical
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            dB = bspline_derivative_design_matrix(x, knots, degree=3, include_intercept=True)
+        deriv_warnings = [
+            w for w in caught if "B-spline derivative construction failed" in str(w.message)
+        ]
+        assert deriv_warnings == [], (
+            "All-identical knots should be handled silently (mathematically "
+            "well-defined zero-derivative case); warning fired unexpectedly: "
+            f"{[str(w.message) for w in deriv_warnings]}"
+        )
+        np.testing.assert_array_equal(dB, np.zeros_like(dB))
+
+    def test_valueerror_from_bspline_emits_aggregate_warning(self):
+        """When BSpline construction raises ValueError for some basis
+        functions (malformed knot vector, etc.), the new aggregate
+        UserWarning must fire naming the affected indices."""
+        from unittest.mock import patch
+
+        import diff_diff.continuous_did_bspline as bspline_mod
+
+        dose = np.linspace(1, 5, 30)
+        knots, deg = build_bspline_basis(dose, degree=3, num_knots=1)
+        x = np.linspace(1.5, 4.5, 20)
+
+        # Force ValueError on basis indices 1 and 3 only; the rest run
+        # through normally. This is the partial-failure mode the audit
+        # called out.
+        real_bspline = bspline_mod.BSpline
+        call_counter = {"n": 0}
+
+        def flaky_bspline(knots, c, degree):
+            # c is a one-hot vector; the index set to 1 is the basis j
+            j = int(np.argmax(c))
+            call_counter["n"] += 1
+            if j in (1, 3):
+                raise ValueError(f"forced test failure for basis j={j}")
+            return real_bspline(knots, c, degree)
+
+        import warnings as _w
+
+        with patch.object(bspline_mod, "BSpline", side_effect=flaky_bspline):
+            with _w.catch_warnings(record=True) as caught:
+                _w.simplefilter("always")
+                dB = bspline_derivative_design_matrix(
+                    x, knots, degree=deg, include_intercept=True
+                )
+
+        deriv_warnings = [
+            w for w in caught if "B-spline derivative construction failed" in str(w.message)
+        ]
+        assert len(deriv_warnings) == 1, (
+            f"Expected exactly one aggregate warning, got {len(deriv_warnings)}: "
+            f"{[str(w.message) for w in deriv_warnings]}"
+        )
+        msg = str(deriv_warnings[0].message)
+        # Message must name the failed basis indices so the user can debug.
+        assert "[1, 3]" in msg, f"Expected indices [1, 3] in warning; got: {msg}"
+        assert "2 of" in msg, f"Expected failure count '2 of ...' in warning; got: {msg}"
+        # Affected columns should be zero; others should be non-zero-ish.
+        # With include_intercept=True, column 0 is always zero (intercept
+        # derivative) and basis index j is at dB column j (the drop-first
+        # then prepend-zeros logic keeps the same per-j mapping for j>=1).
+        np.testing.assert_array_equal(dB[:, 1], np.zeros(len(x)))  # failed basis j=1
+        np.testing.assert_array_equal(dB[:, 3], np.zeros(len(x)))  # failed basis j=3
+
+    def test_clean_knots_emit_no_warning(self):
+        """Well-formed knot vector → no ValueError path taken → no
+        warning. Regression-guard the happy path."""
+        dose = np.linspace(1, 5, 50)
+        knots, deg = build_bspline_basis(dose, degree=3, num_knots=2)
+        x = np.linspace(1.5, 4.5, 30)
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            bspline_derivative_design_matrix(x, knots, deg, include_intercept=True)
+        deriv_warnings = [
+            w for w in caught if "B-spline derivative construction failed" in str(w.message)
+        ]
+        assert deriv_warnings == []
+
+
 class TestDoseGrid:
     """Test dose grid computation."""
 
