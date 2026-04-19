@@ -19,7 +19,7 @@ at data shapes anchored to applied-econ conventions.
 ```
 benchmarks/speed_review/
 ├── README.md                           # this file
-├── bench_shared.py                     # timing + pyinstrument harness
+├── bench_shared.py                     # timing + pyinstrument + RSS harness
 ├── run_all.py                          # orchestrator (both backends)
 ├── bench_campaign_staggered.py         # Scenario 1: CS + 8-step chain
 ├── bench_brand_awareness_survey.py     # Scenario 2: DiD + SurveyDesign
@@ -27,13 +27,22 @@ benchmarks/speed_review/
 ├── bench_geo_few_markets.py            # Scenario 4: SDiD + jackknife
 ├── bench_reversible_dcdh.py            # Scenario 5: dCDH L_max + TSL
 ├── bench_dose_response.py              # Scenario 6: ContinuousDiD splines
+├── mem_profile_brfss.py                # tracemalloc allocator attribution
+│                                       #   for BRFSS-1M (standalone)
 ├── bench_callaway.py                   # pre-existing CS scaling sweep
 ├── baseline_results.json               # pre-existing CS baseline
 └── baselines/                          # this effort's output
-    ├── <scenario>_<backend>.json       # phase-level wall-clock (committed)
+    ├── <scenario>_<backend>.json       # phase-level wall-clock + peak RSS
+    ├── mem_profile_brfss_large_<backend>.txt   # tracemalloc top-N sites
     └── profiles/                       # flame HTMLs (gitignored)
         └── <scenario>_<backend>.html   # pyinstrument flame output
 ```
+
+Each JSON baseline records both timing (per-phase wall-clock) and memory
+(start/peak/growth from a psutil background sampler at 10 ms). The
+`mem_profile_brfss.py` script does a separate tracemalloc pass on the
+BRFSS-1M scenario - this is kept out of the main timing harness because
+tracemalloc has 2-5x overhead and would contaminate wall-clock baselines.
 
 **Note on profile HTMLs.** pyinstrument flames are ~500KB-1.2MB each and are
 regenerated on every run; they live under `baselines/profiles/` which is
@@ -77,6 +86,7 @@ the findings doc is the decision output.
 2. Add `bench_<name>.py` following the existing scripts: build data, define
    `phases` as a list of `(label, callable)` tuples, call `run_scenario`.
 3. Register it in `run_all.py`'s `SCRIPTS` dict.
-4. Run under both backends, commit the refreshed `baselines/*.json` and the
-   corresponding `baselines/profiles/*.html`.
+4. Run under both backends and commit the refreshed `baselines/*.json`.
+   The `baselines/profiles/*.html` flame HTMLs are gitignored and
+   regenerated per run - do not commit them.
 5. Add a per-scenario finding paragraph to `docs/performance-plan.md`.

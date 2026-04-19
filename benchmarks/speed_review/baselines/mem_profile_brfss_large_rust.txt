@@ -1,0 +1,29 @@
+# BRFSS-1M aggregate_survey allocation attribution
+# backend: rust
+# input microdata rows: 1,000,000
+# input microdata memory: 45.8 MB
+# output panel cells: 500
+
+# tracemalloc totals during aggregate_survey
+# net allocated (end - start): 0.1 MB (top site)
+# python peak traced: 84.2 MB
+# python current retained: 0.6 MB
+
+# top 15 allocation sites by size delta
+#      size diff (MB)   count diff  location
+--------------------------------------------------------------------------------
+1                0.15         1521  /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/linecache.py:148
+2                0.04            7  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/internals/blocks.py:822
+3                0.02          440  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/sorting.py:637
+4                0.01           63  /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/abc.py:123
+5                0.00            2  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/frame.py:12710
+6                0.00            2  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/frame.py:698
+7                0.00           16  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/indexes/base.py:5372
+8                0.00           51  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/groupby/ops.py:427
+9                0.00           55  /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/sre_parse.py:529
+10               0.00           43  /Users/igerber/diff-diff-perf-review/diff_diff/prep.py:1618
+11               0.00            2  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/internals/construction.py:237
+12               0.00            2  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/groupby/grouper.py:846
+13               0.00            2  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/construction.py:517
+14               0.00            2  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/indexes/base.py:475
+15               0.00           35  /Users/igerber/diff-diff-perf-review/.venv/lib/python3.9/site-packages/pandas/core/internals/managers.py:1500

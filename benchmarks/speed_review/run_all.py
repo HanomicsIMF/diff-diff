@@ -2,10 +2,14 @@
 """
 Run every practitioner-workflow scenario under both backends.
 
-Writes per-scenario JSON + pyinstrument HTML to ``benchmarks/results/`` and
-``benchmarks/results/profiles/``. See ``docs/performance-scenarios.md`` for
-scenario definitions and ``docs/performance-plan.md`` for the derived
-findings.
+Writes per-scenario JSON + pyinstrument HTML under
+``benchmarks/speed_review/baselines/`` (and ``.../baselines/profiles/``).
+See ``docs/performance-scenarios.md`` for scenario definitions and
+``docs/performance-plan.md`` for the derived findings.
+
+Exit status is nonzero if any scenario subprocess exits nonzero. Scenario
+scripts themselves exit 1 on any phase failure (see ``bench_shared.py``),
+so this orchestrator reliably surfaces failures.
 
 Usage:
 

@@ -130,13 +130,15 @@ serves a different purpose: R-parity accuracy). They complement it.
   markets with complex sampling (strata + PSU clusters + unequal weights).
   Needs design-correct SEs or the CI is too narrow.
 - **Data shape (scale sweep).** 12-period quarterly panel, high weight
-  variation, 40 BRR replicate weights. Three scales:
-    - **small** - 200 units, 10 strata × 4 PSUs (Tutorial 17 analog).
-    - **medium** - 500 units, 15 strata × 6 PSUs (typical CPG
-      quarterly brand-tracking wave).
-    - **large** - 1,000 units, 20 strata × 8 PSUs (multi-region brand
-      tracking at scale, e.g. a national awareness study with 50+ sub-
-      markets).
+  variation, JK1 delete-one-PSU replicate weights (replicate count equals
+  the PSU count). Three scales:
+    - **small** - 200 units, 10 strata × 4 PSUs = 40 replicate columns
+      (Tutorial 17 analog).
+    - **medium** - 500 units, 15 strata × 6 PSUs = 90 replicate columns
+      (typical CPG quarterly brand-tracking wave).
+    - **large** - 1,000 units, 20 strata × 8 PSUs = 160 replicate columns
+      (multi-region brand tracking at scale, e.g. a national awareness
+      study with 50+ sub-markets).
 - **Estimator + params.** Two variants in the same script:
   ```python
   # (a) Analytical TSL path
@@ -145,9 +147,10 @@ serves a different purpose: R-parity accuracy). They complement it.
       survey_design=SurveyDesign(weights="w", strata="stratum",
                                  psu="cluster", fpc="fpc"),
   )
-  # (b) Replicate-weight path (BRR-style, ~160 replicate columns)
-  SurveyDesign(weights="w", replicate_weights=[f"rw{i}" for i in range(160)],
-               replicate_method="brr")
+  # (b) Replicate-weight path (JK1 delete-one-PSU weights produced by
+  #     generate_survey_did_data(include_replicate_weights=True))
+  SurveyDesign(weights="w", replicate_weights=rep_cols,
+               replicate_method="JK1")
   ```
 - **Operation chain.** (1) naive `DifferenceInDifferences()` with no survey
   design (for SE-inflation comparison); (2) `SurveyDesign.resolve()`;

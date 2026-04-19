@@ -1,9 +1,10 @@
 """
-Scenario 2: Brand awareness survey DiD — 2x2 with survey design.
+Scenario 2: Brand awareness survey DiD - 2x2 with survey design.
 
 DifferenceInDifferences + SurveyDesign under two variance paths:
   (a) analytical Taylor-series linearization (strata + PSU + FPC)
-  (b) replicate-weight bootstrap (BRR-style, ~160 replicate columns)
+  (b) replicate-weight bootstrap (JK1 delete-one-PSU weights; count equals
+      the number of PSUs, so 40/90/160 at small/medium/large)
 
 Chains: naive fit (for SE-inflation comparison) -> TSL -> replicate -> multi-
 outcome refit loop -> check_parallel_trends -> placebo -> HonestDiD grid.
@@ -75,7 +76,7 @@ def make_phases(data, results, rw_cols):
             raise RuntimeError("replicate weights not generated")
         sd = SurveyDesign(
             weights="weight", replicate_weights=rw_cols,
-            replicate_method="BRR",
+            replicate_method="JK1",
         )
         did = DifferenceInDifferences(robust=True)
         results["replicate"] = did.fit(
@@ -139,7 +140,7 @@ def make_phases(data, results, rw_cols):
     return [
         ("1_naive_fit_no_survey_design", naive_fit),
         ("2_tsl_strata_psu_fpc", tsl_fit),
-        ("3_replicate_weights_brr", replicate_fit),
+        ("3_replicate_weights_jk1", replicate_fit),
         ("4_multi_outcome_loop_3_metrics", multi_outcome_loop),
         ("5_check_parallel_trends", pretrends),
         ("6_placebo_refit_pre_period", placebo_refit),
