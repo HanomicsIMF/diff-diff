@@ -1075,9 +1075,10 @@ class TestSurveyWithinGroupValidation:
     """Cell-period IF allocator contract: strata and PSU may vary ACROSS
     cells of a group, but must be constant WITHIN each (g, t) cell. In
     canonical one-obs-per-cell panels the cell-level constancy check is
-    trivially satisfied. Out-of-scope combinations (heterogeneity +
-    within-group-varying PSU; n_bootstrap > 0 + within-group-varying
-    PSU) raise NotImplementedError with a pointer to the follow-up PR.
+    trivially satisfied. Heterogeneity + within-group-varying PSU is
+    supported via the cell-period allocator. The remaining out-of-scope
+    combination is n_bootstrap > 0 + within-group-varying PSU, which
+    still raises NotImplementedError with a pointer to the follow-up PR.
     """
 
     def test_accepts_varying_psu_within_group(self, base_data):
@@ -1700,3 +1701,81 @@ class TestHeterogeneityCellPeriod:
         var_new = compute_survey_if_variance(psi_new, resolved)
         assert np.isfinite(var_legacy) and np.isfinite(var_new)
         assert var_legacy == pytest.approx(var_new, rel=1e-14, abs=1e-14)
+
+    def test_replicate_variance_non_invariance_under_varying_ratios(self):
+        """When replicate-weight ratios vary within group,
+        compute_replicate_if_variance is NOT PSU-telescoping — its
+        theta_r = sum_i ratio_ir * psi_i reads psi at observation
+        level, so redistributing mass across cells of g changes the
+        replicate variance. This is why the heterogeneity path keeps
+        the legacy group-level allocator on the replicate branch
+        (only Binder TSL uses the cell-period allocator). Regression
+        guard for the CI-review P1 on PR #329.
+        """
+        from diff_diff.survey import (
+            SurveyDesign,
+            compute_replicate_if_variance,
+        )
+
+        # Minimal reproduction of the reviewer's counterexample: one
+        # group with two obs (ref and post-period cells), replicate
+        # ratios that vary within the group. legacy allocator spreads
+        # psi_g across both obs; new cell-period allocator puts it
+        # all on the post-period cell. Replicate variance differs.
+        rows = []
+        for g in range(2):
+            for t in range(2):
+                rows.append({
+                    "group": int(g),
+                    "period": int(t),
+                    "pw": 1.0,
+                    # Non-PSU-aligned replicate columns: vary within
+                    # each group so sum_i ratio_ir * psi_i sees a
+                    # different weighted average of psi mass under
+                    # the two allocators.
+                    "rep0": 0.5 if t == 0 else 1.5,
+                    "rep1": 1.5 if t == 0 else 0.5,
+                })
+        df_ = pd.DataFrame(rows)
+        sd = SurveyDesign(
+            weights="pw",
+            replicate_weights=["rep0", "rep1"],
+            replicate_method="SDR",
+        )
+        resolved = sd.resolve(df_)
+
+        # Arbitrary non-zero psi_g per group; out_idx = 1 for each.
+        psi_g = np.array([0.75, -1.25], dtype=np.float64)
+        obs_group = df_["group"].values.astype(np.int64)
+        obs_period = df_["period"].values.astype(np.int64)
+        w = df_["pw"].to_numpy(dtype=np.float64)
+
+        # Legacy group-level expansion (what the replicate branch now
+        # uses inside _compute_heterogeneity_test after the PR-329 fix).
+        W_g = np.zeros(2, dtype=np.float64)
+        np.add.at(W_g, obs_group, w)
+        psi_legacy = np.zeros_like(w)
+        for i in range(len(w)):
+            if W_g[obs_group[i]] > 0:
+                psi_legacy[i] = psi_g[obs_group[i]] * (
+                    w[i] / W_g[obs_group[i]]
+                )
+
+        # New cell-period single-cell expansion (what the Binder TSL
+        # branch uses). All mass lands on obs at t == 1.
+        psi_new = np.zeros_like(w)
+        for i in range(len(w)):
+            if obs_period[i] == 1:
+                psi_new[i] = psi_g[obs_group[i]]  # W_{g,out_idx}=1
+
+        var_legacy, _ = compute_replicate_if_variance(psi_legacy, resolved)
+        var_new, _ = compute_replicate_if_variance(psi_new, resolved)
+        assert np.isfinite(var_legacy) and np.isfinite(var_new)
+        # Documented non-invariance: replicate variance differs
+        # materially between the two allocators on this fixture.
+        assert not np.isclose(var_legacy, var_new, rtol=1e-6), (
+            f"Expected legacy vs cell-period replicate variance to "
+            f"differ when replicate ratios vary within group "
+            f"(counterexample from PR #329 CI review). Got "
+            f"var_legacy={var_legacy}, var_new={var_new}."
+        )
