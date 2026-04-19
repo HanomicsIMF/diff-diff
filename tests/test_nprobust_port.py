@@ -346,3 +346,71 @@ class TestLpbwselectMseDpiValidation:
         )
         with pytest.raises(ValueError, match="missing values"):
             lpbwselect_mse_dpi(y, x, cluster=cluster, eval_point=0.0)
+
+
+# =============================================================================
+# lprobust_vce clustered branch: port fidelity vs R source
+# =============================================================================
+
+
+class TestLprobustVceClustered:
+    """Pin the clustered lprobust_vce result against the R source
+    formula. R's lprobust.vce (npfunctions.R:165-185) returns M (the
+    sum over clusters of outer products of sum-of-scores), NOT a
+    finite-sample-scaled M. An earlier port mistakenly returned
+    ``w * M``; this test is the regression anchor."""
+
+    def test_clustered_meat_matches_unscaled_sum(self):
+        from diff_diff._nprobust_port import lprobust_vce
+
+        rng = np.random.default_rng(123)
+        n, k = 40, 3
+        RX = rng.normal(size=(n, k))
+        res = rng.normal(size=(n, 1))
+        cluster = np.repeat(np.arange(10), 4)
+
+        # Manual computation: M = sum_g (X_g' r_g) outer (X_g' r_g),
+        # with NO ((n-1)/(n-k))*(g/(g-1)) scaling.
+        expected = np.zeros((k, k), dtype=np.float64)
+        for c in np.unique(cluster):
+            ind = cluster == c
+            v = RX[ind].T @ res[ind].ravel()
+            expected += np.outer(v, v)
+
+        actual = lprobust_vce(RX, res, cluster)
+        np.testing.assert_allclose(actual, expected, atol=1e-14, rtol=1e-14)
+
+    def test_clustered_is_symmetric(self):
+        """The meat is a sum of outer products of rank-1 vectors and
+        must be symmetric."""
+        from diff_diff._nprobust_port import lprobust_vce
+
+        rng = np.random.default_rng(7)
+        n, k = 30, 4
+        RX = rng.normal(size=(n, k))
+        res = rng.normal(size=(n, 1))
+        cluster = np.array([0] * 10 + [1] * 10 + [2] * 10)
+        M = lprobust_vce(RX, res, cluster)
+        np.testing.assert_allclose(M, M.T, atol=1e-14, rtol=1e-14)
+
+    def test_clustered_end_to_end_through_lprobust_bw(self):
+        """Smoke test: a clustered call through lpbwselect_mse_dpi
+        completes and returns finite stage bandwidths. Pins that the
+        clustered DPI path exercises lprobust_vce -> lprobust_bw ->
+        driver without rank / shape / indexing crashes."""
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        rng = np.random.default_rng(20260419)
+        G = 500
+        d = rng.uniform(0.0, 1.0, size=G)
+        y = d + d**2 + rng.normal(0, 0.3, size=G)
+        # 50 clusters, balanced.
+        cluster = np.repeat(np.arange(50), G // 50)
+        res = lpbwselect_mse_dpi(
+            y, d, cluster=cluster, eval_point=0.0,
+            p=1, deriv=0, kernel="epa", vce="nn",
+        )
+        assert np.isfinite(res.h_mse_dpi)
+        assert res.h_mse_dpi > 0.0
+        assert np.isfinite(res.c_bw)
+        assert res.c_bw > 0.0

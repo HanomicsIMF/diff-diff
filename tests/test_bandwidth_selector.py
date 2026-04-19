@@ -334,11 +334,11 @@ class TestInputValidation:
 
     def test_boundary_zero_with_data_far_from_zero_rejected(self):
         """boundary=0 with d.min() substantially positive fails the
-        Design 1' support check (d.min() > 1% of median(|d|)). The
+        Design 1' support check (d.min() > 5% of median(|d|)). The
         caller must either pass boundary=float(d.min()) for the
         continuous-near-d_lower path or confirm Design 1' applicability."""
         rng = np.random.default_rng(2026)
-        d = rng.uniform(0.5, 1.0, size=1500)  # d.min() ~ 0.5 >> 1% of median
+        d = rng.uniform(0.5, 1.0, size=1500)  # d.min() ~ 0.5 >> 5% of median
         y = d + rng.normal(0, 0.3, size=1500)
         with pytest.raises(ValueError, match="Design 1'"):
             mse_optimal_bandwidth(d, y, boundary=0.0)

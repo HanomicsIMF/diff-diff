@@ -328,7 +328,6 @@ def lprobust_vce(
     np.ndarray, shape (k, k)
         Meat matrix.
     """
-    n = RX.shape[0]
     k = RX.shape[1]
     r = res.reshape(-1)
 
@@ -337,8 +336,6 @@ def lprobust_vce(
         return rRX.T @ rRX
 
     clusters = np.unique(cluster)
-    g = clusters.shape[0]
-    w = ((n - 1) / (n - k)) * (g / (g - 1))
     M = np.zeros((k, k), dtype=np.float64)
     for c in clusters:
         ind = cluster == c
@@ -348,7 +345,10 @@ def lprobust_vce(
         # crossprod(Xi, ri) is a (k,) vector = Xi.T @ ri
         v = Xi.T @ ri
         M = M + np.outer(v, v)
-    return w * M
+    # nprobust's lprobust.vce computes w = ((n-1)/(n-k))*(g/(g-1))
+    # but does NOT apply it to the returned M (npfunctions.R:183;
+    # w is dead code in the R source). Match the R return exactly.
+    return M
 
 
 # =============================================================================
