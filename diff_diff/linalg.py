@@ -489,6 +489,21 @@ def solve_ols(
         Type of weights: "pweight" (inverse selection probability),
         "fweight" (frequency), or "aweight" (inverse variance).
         Affects variance estimation but not coefficient computation.
+    vcov_type : {"classical", "hc1", "hc2", "hc2_bm"}, default "hc1"
+        Variance-covariance family forwarded to :func:`compute_robust_vcov`:
+
+        - ``"classical"``: non-robust OLS SE, ``sigma_hat^2 * (X'X)^{-1}``.
+          One-way only; raises if ``cluster_ids`` is also passed.
+        - ``"hc1"``: heteroskedasticity-robust HC1 with ``n/(n-k)`` adjustment
+          (default). With ``cluster_ids``, dispatches to CR1 (Liang-Zeger).
+        - ``"hc2"``: leverage-corrected meat. One-way only; raises with
+          ``cluster_ids`` (use ``"hc2_bm"`` for clustered Bell-McCaffrey).
+        - ``"hc2_bm"``: HC2 + Imbens-Kolesar (2016) Satterthwaite DOF one-way;
+          Pustejovsky-Tipton (2018) CR2 Bell-McCaffrey with ``cluster_ids``.
+          **Not supported with weights** (either one-way or clustered):
+          raises ``NotImplementedError`` because the BM DOF helper is
+          inconsistent with ``solve_ols``'s WLS transform. Tracked in
+          ``TODO.md``.
 
     Returns
     -------
@@ -2174,6 +2189,18 @@ class LinearRegression:
         Resolved survey design for Taylor Series Linearization variance
         estimation. When provided, weights and weight_type are canonicalized
         from this object.
+    vcov_type : {"classical", "hc1", "hc2", "hc2_bm"}, optional
+        Variance-covariance family. Defaults to the ``robust`` alias
+        (``robust=True`` -> ``"hc1"``, ``robust=False`` -> ``"classical"``).
+        Passing an explicit ``vcov_type`` overrides ``robust`` unless the
+        two conflict (e.g. ``robust=False, vcov_type="hc2"``), in which
+        case ``__init__`` raises. See :func:`solve_ols` for the per-family
+        semantics and unsupported combinations. For ``"hc2_bm"``: when
+        ``cluster_ids`` is provided, dispatches to CR2 Bell-McCaffrey; with
+        ``weights``, raises ``NotImplementedError`` (the BM DOF path is
+        currently inconsistent with the WLS transform). On top of the
+        sandwich, the class stores per-coefficient BM Satterthwaite DOF
+        (``self._bm_dof``) and threads it into ``get_inference``.
 
     Attributes
     ----------
