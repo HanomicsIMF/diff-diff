@@ -554,10 +554,32 @@ class BusinessReport:
         _canonical_control = (
             control_group.replace("_", "").lower() if isinstance(control_group, str) else None
         )
-        is_dynamic_control = _canonical_control == "notyettreated"
+        # Stacked has two dynamic (sub-experiment-specific) modes:
+        # ``not_yet_treated`` (A_s > a + kappa_post) and ``strict``
+        # (A_s > a + kappa_post + kappa_pre). Only ``never_treated``
+        # (A_s = infinity) is a fixed never-treated pool. Round-22 P1
+        # CI review on PR #318 flagged that ``strict`` was being
+        # misrendered as a fixed control design.
+        is_stacked_dynamic = (
+            name == "StackedDiDResults"
+            and _canonical_control in {"notyettreated", "strict"}
+        )
+        is_dynamic_control = (
+            _canonical_control == "notyettreated" or is_stacked_dynamic
+        )
         if is_dynamic_control:
             if name == "StaggeredTripleDiffResults":
                 n_never_enabled = _safe_int(getattr(r, "n_never_enabled", None))
+                n_control = None
+            elif name == "StackedDiDResults":
+                # ``n_control_units`` is "distinct control units across
+                # the trimmed set" (stacked_did_results.py L59-62) which
+                # includes future-treated controls by construction under
+                # both dynamic modes. Do NOT relabel as
+                # ``n_never_treated``; instead surface the count under
+                # ``n_distinct_controls_trimmed`` (sub-experiment-
+                # specific context) and clear ``n_control`` so the
+                # report does not narrate a fixed control pool.
                 n_control = None
             elif _never_treated_count_contract:
                 n_never_treated = n_control_units
@@ -577,6 +599,12 @@ class BusinessReport:
         }
         if n_never_enabled is not None:
             sample_block["n_never_enabled"] = n_never_enabled
+        # Stacked-specific: surface the distinct-control-units tally on a
+        # dedicated key so agents see the sub-experiment-specific
+        # comparison count without misreading it as a never-treated
+        # subset (round-21 / round-22 CI review).
+        if name == "StackedDiDResults":
+            sample_block["n_distinct_controls_trimmed"] = n_control_units
         return sample_block
 
     def _extract_survey_block(self) -> Optional[Dict[str, Any]]:
@@ -1023,12 +1051,64 @@ def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, 
         if isinstance(control_group, str):
             block["control_group"] = control_group
         return block
+    if estimator_name == "StackedDiDResults":
+        # Wing, Freedman & Hollingsworth (2024) — identification is
+        # sub-experiment common trends plus the IC1 (event window fits
+        # within the data range) and IC2 (clean controls exist for the
+        # event) inclusion conditions, NOT the generic "group-time ATT
+        # parallel trends" clause used for CS / SA / etc. (round-22 P1
+        # CI review on PR #318). The active ``clean_control`` rule
+        # determines which units qualify as valid controls for each
+        # adoption event. REGISTRY.md §StackedDiD lines 1189-1193
+        # (identification) and 1234-1256 (clean-control rules).
+        clean_control = getattr(results, "clean_control", None)
+        if clean_control == "never_treated":
+            control_clause = (
+                "controls are restricted to units that are never treated "
+                "over the panel (``A_s = infinity``)"
+            )
+        elif clean_control == "strict":
+            control_clause = (
+                "controls for event ``a`` are units satisfying the strict "
+                "rule ``A_s > a + kappa_post + kappa_pre`` (strictly "
+                "untreated across the full pre- and post-event window)"
+            )
+        else:
+            # Default: "not_yet_treated" — A_s > a + kappa_post.
+            control_clause = (
+                "controls for event ``a`` are units satisfying ``A_s > a + "
+                "kappa_post`` (not yet treated through the end of the "
+                "event's post-window, so future-treated units can serve "
+                "as controls for earlier events)"
+            )
+        block: Dict[str, Any] = {
+            "parallel_trends_variant": "stacked_sub_experiment",
+            "no_anticipation": True,
+            "description": (
+                "Identification under Stacked DiD (Wing, Freedman & "
+                "Hollingsworth 2024): within each stacked sub-experiment "
+                "parallel trends holds between the treated cohort and the "
+                "corresponding clean-control set over the event window "
+                "``[-kappa_pre, +kappa_post]``; "
+                + control_clause
+                + ". Sub-experiments are restricted by IC1 (the event "
+                "window fits within the available time range) and IC2 "
+                "(at least one clean control exists). The aggregate ATT is "
+                "a weighted sum over sub-experiments, so the common-trends "
+                "assumption is sub-experiment-specific, not a single "
+                "panel-wide group-time ATT condition. Also assumes no "
+                "anticipation."
+            ),
+        }
+        if isinstance(clean_control, str):
+            block["control_group"] = clean_control
+            block["clean_control"] = clean_control
+        return block
     if estimator_name in {
         "CallawaySantAnnaResults",
         "SunAbrahamResults",
         "ImputationDiDResults",
         "TwoStageDiDResults",
-        "StackedDiDResults",
         "WooldridgeDiDResults",
     }:
         return {
@@ -1615,19 +1695,27 @@ def _render_summary(schema: Dict[str, Any]) -> str:
                 f"pre-period variation."
             )
 
-    # Sample sentence. For fits with a dynamic not-yet-treated
-    # comparison set (CS / ContinuousDiD / StaggeredTripleDiff /
-    # EfficientDiD) the fixed control count is suppressed because the
-    # comparison group varies by (g, t) cell; narrate the mode
-    # explicitly rather than misreporting a fixed-subset tally as
-    # "control" (rounds 13 / 17 / 18 CI review).
+    # Sample sentence. For fits with a dynamic comparison set (CS /
+    # ContinuousDiD / StaggeredTripleDiff / EfficientDiD /
+    # StackedDiD under ``clean_control in {"not_yet_treated",
+    # "strict"}``) the fixed control count is suppressed because the
+    # comparison group varies by cohort/sub-experiment; narrate the
+    # mode explicitly rather than misreporting a fixed-subset tally as
+    # "control" (rounds 13 / 17 / 18 / 22 CI review).
     sample = schema.get("sample", {}) or {}
+    # ``schema["estimator"]`` is a dict with ``class_name``; unwrap it
+    # for the per-estimator dynamic-control phrasing branch below.
+    estimator_block = schema.get("estimator") or {}
+    estimator = (
+        estimator_block.get("class_name") if isinstance(estimator_block, dict) else None
+    )
     n_obs = sample.get("n_obs")
     n_t = sample.get("n_treated")
     n_c = sample.get("n_control")
     n_nt = sample.get("n_never_treated")
     n_ne = sample.get("n_never_enabled")
     is_dynamic = sample.get("dynamic_control")
+    cg = sample.get("control_group")
     if isinstance(n_obs, int):
         if isinstance(n_t, int) and isinstance(n_c, int):
             sentences.append(f"Sample: {n_obs:,} observations ({n_t:,} treated, {n_c:,} control).")
@@ -1638,11 +1726,32 @@ def _render_summary(schema: Dict[str, Any]) -> str:
                 subset_clause = f"; {n_nt:,} never-treated units are also present"
             else:
                 subset_clause = ""
-            sentences.append(
-                f"Sample: {n_obs:,} observations ({n_t:,} treated) with a "
-                "dynamic not-yet-treated comparison group (the control set "
-                f"varies by cohort and period){subset_clause}."
-            )
+            # Estimator-specific dynamic-comparison phrasing. StackedDiD
+            # uses sub-experiment-specific clean controls (IC1/IC2
+            # trimming) rather than a not-yet-treated rollout; the
+            # generic phrasing misstates the identification setup.
+            if estimator == "StackedDiDResults":
+                cc_label = cg if isinstance(cg, str) else "clean_control"
+                n_distinct = sample.get("n_distinct_controls_trimmed")
+                distinct_clause = (
+                    f" across {n_distinct:,} distinct control units in the trimmed stack"
+                    if isinstance(n_distinct, int)
+                    else ""
+                )
+                sentences.append(
+                    f"Sample: {n_obs:,} observations ({n_t:,} treated) with a "
+                    f"sub-experiment-specific clean-control comparison "
+                    f"(``clean_control='{cc_label}'``): each adoption event is "
+                    f"compared against the units satisfying the rule relative "
+                    f"to that event's window, not a single fixed control "
+                    f"group{distinct_clause}{subset_clause}."
+                )
+            else:
+                sentences.append(
+                    f"Sample: {n_obs:,} observations ({n_t:,} treated) with a "
+                    "dynamic not-yet-treated comparison group (the control set "
+                    f"varies by cohort and period){subset_clause}."
+                )
         else:
             sentences.append(f"Sample: {n_obs:,} observations.")
         survey = sample.get("survey")
@@ -1769,12 +1878,19 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
     if isinstance(sample.get("n_treated"), int):
         lines.append(f"- Treated: {sample['n_treated']:,}")
     # ``n_control`` is only populated for estimators whose control set
-    # is a fixed tally. For dynamic not-yet-treated modes (CS /
-    # ContinuousDiD / StaggeredTripleDiff / EfficientDiD) the
-    # comparison group is dynamic per (g, t); report the estimator-
+    # is a fixed tally. For dynamic modes (CS / ContinuousDiD /
+    # StaggeredTripleDiff / EfficientDiD / StackedDiD under
+    # ``clean_control in {"not_yet_treated", "strict"}``) the comparison
+    # group is dynamic per cohort/sub-experiment; report the estimator-
     # specific fixed subset (``n_never_enabled`` for triple-difference;
-    # ``n_never_treated`` elsewhere) when non-zero, then name the
-    # dynamic-comparison mode explicitly.
+    # ``n_never_treated`` elsewhere; ``n_distinct_controls_trimmed`` for
+    # Stacked) when available, then name the dynamic-comparison mode
+    # explicitly.
+    estimator_block = schema.get("estimator") or {}
+    estimator_name = (
+        estimator_block.get("class_name") if isinstance(estimator_block, dict) else None
+    )
+    cg = sample.get("control_group")
     if isinstance(sample.get("n_control"), int):
         lines.append(f"- Control: {sample['n_control']:,}")
     elif sample.get("dynamic_control"):
@@ -1786,10 +1902,24 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
             lines.append(
                 f"- Never-treated units present in the panel: {sample['n_never_treated']:,}"
             )
-        lines.append(
-            "- Comparison group: dynamic not-yet-treated units "
-            "(varies by cohort and period; no fixed control count)"
-        )
+        if estimator_name == "StackedDiDResults":
+            n_distinct = sample.get("n_distinct_controls_trimmed")
+            if isinstance(n_distinct, int):
+                lines.append(
+                    f"- Distinct control units in trimmed stack: {n_distinct:,}"
+                )
+            cc_label = cg if isinstance(cg, str) else "clean_control"
+            lines.append(
+                f"- Comparison group: sub-experiment-specific clean controls "
+                f"(``clean_control='{cc_label}'``; each adoption event is "
+                "compared against units satisfying the rule relative to that "
+                "event's window, not a single fixed control group)"
+            )
+        else:
+            lines.append(
+                "- Comparison group: dynamic not-yet-treated units "
+                "(varies by cohort and period; no fixed control count)"
+            )
     survey = sample.get("survey")
     if survey:
         if survey.get("is_trivial"):

@@ -1200,7 +1200,13 @@ class TestStackedCleanControlSurfacesInSampleBlock:
     all-eventually-treated panel).
     """
 
-    def test_stacked_not_yet_treated_surfaces_without_never_treated_relabel(self):
+    def test_stacked_not_yet_treated_surfaces_as_dynamic_without_never_treated_relabel(self):
+        """``clean_control='not_yet_treated'`` is a dynamic, sub-
+        experiment-specific comparison set (``A_s > a + kappa_post``);
+        ``n_control`` is cleared (not a fixed tally), ``n_never_treated``
+        is NOT relabeled, and the distinct-controls tally is surfaced
+        under the dedicated ``n_distinct_controls_trimmed`` key.
+        """
         from diff_diff import StackedDiD
 
         sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
@@ -1209,19 +1215,42 @@ class TestStackedCleanControlSurfacesInSampleBlock:
         )
         assert getattr(st, "clean_control", None) == "not_yet_treated"
         sample = BusinessReport(st, auto_diagnostics=False).to_dict()["sample"]
-        # clean_control normalizes into control_group.
         assert sample["control_group"] == "not_yet_treated"
         assert sample["dynamic_control"] is True
-        # n_control_units is "distinct control units in the trimmed set";
-        # that count includes future-treated controls and must not be
-        # relabeled as n_never_treated.
         assert sample["n_never_treated"] is None, (
             "StackedDiDResults.n_control_units is the distinct-control-"
             "units tally of the trimmed set (includes future-treated "
             "controls); it must not be surfaced as n_never_treated."
         )
-        # The count stays on the n_control path.
-        assert sample["n_control"] == int(st.n_control_units)
+        # Round-22 correction: ``n_control`` must be cleared under
+        # dynamic modes so the report does not narrate a fixed control
+        # tally. The underlying count is surfaced under the dedicated
+        # Stacked key.
+        assert sample["n_control"] is None
+        assert sample["n_distinct_controls_trimmed"] == int(st.n_control_units)
+
+    def test_stacked_strict_clean_control_surfaces_as_dynamic(self):
+        """``clean_control='strict'`` (``A_s > a + kappa_post + kappa_pre``)
+        is also a sub-experiment-specific rule — stricter than
+        ``not_yet_treated`` but still NOT a fixed never-treated pool
+        (round-22 P1 CI review on PR #318).
+        """
+        from diff_diff import StackedDiD
+
+        sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
+        st = StackedDiD(clean_control="strict").fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        sample = BusinessReport(st, auto_diagnostics=False).to_dict()["sample"]
+        assert sample["control_group"] == "strict"
+        assert sample["dynamic_control"] is True, (
+            "clean_control='strict' is sub-experiment-specific (rule "
+            "A_s > a + kappa_post + kappa_pre) and must be marked dynamic "
+            "so the report does not claim a fixed never-treated control "
+            "pool."
+        )
+        assert sample["n_control"] is None
+        assert sample["n_never_treated"] is None
 
     def test_stacked_never_treated_surfaces_as_fixed_control(self):
         from diff_diff import StackedDiD
@@ -1267,6 +1296,107 @@ class TestStackedCleanControlSurfacesInSampleBlock:
             "must not surface any never-treated count; the trimmed stack "
             "contains only future-treated controls."
         )
+
+
+class TestStackedDiDAssumptionBlock:
+    """Round-22 P1 regression: ``StackedDiDResults`` must get a
+    dedicated assumption description reflecting Wing-Freedman-
+    Hollingsworth (2024) identification — sub-experiment common trends
+    plus IC1 (event window fits) and IC2 (clean controls exist) — not
+    the generic "group-time ATT" clause used for CS / SA / etc. The
+    active ``clean_control`` rule must be named in the description.
+    """
+
+    @staticmethod
+    def _stub(clean_control: str):
+        class StackedDiDResults:
+            pass
+
+        stub = StackedDiDResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 400
+        stub.n_treated = 50
+        stub.n_control_units = 300
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.clean_control = clean_control
+        return stub
+
+    def test_not_yet_treated_names_subexperiment_contract(self):
+        br = BusinessReport(self._stub("not_yet_treated"), auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a["parallel_trends_variant"] == "stacked_sub_experiment"
+        desc = a["description"]
+        assert "Wing, Freedman & Hollingsworth 2024" in desc
+        assert "sub-experiment" in desc
+        assert "IC1" in desc and "IC2" in desc
+        assert "A_s > a + kappa_post" in desc
+        assert "not_yet_treated" not in desc or "``A_s > a + kappa_post``" in desc
+        # The active clean_control is carried on the block explicitly for
+        # consumers that want structured access.
+        assert a["clean_control"] == "not_yet_treated"
+
+    def test_strict_names_strict_rule(self):
+        desc = BusinessReport(
+            self._stub("strict"), auto_diagnostics=False
+        ).to_dict()["assumption"]["description"]
+        assert "A_s > a + kappa_post + kappa_pre" in desc
+
+    def test_never_treated_names_fixed_pool(self):
+        desc = BusinessReport(
+            self._stub("never_treated"), auto_diagnostics=False
+        ).to_dict()["assumption"]["description"]
+        assert "never treated" in desc.lower()
+        assert "A_s = infinity" in desc
+
+
+class TestStackedRenderingNarratesDynamicControl:
+    """Round-22 P1 regression: BR ``summary()`` / ``full_report()`` must
+    narrate Stacked dynamic clean-control designs as sub-experiment-
+    specific comparisons, not as fixed "N treated / M control" samples.
+    Previously the ``n_control`` branch fired first and misrendered both
+    ``clean_control='not_yet_treated'`` and ``'strict'``.
+    """
+
+    def test_summary_does_not_narrate_stacked_dynamic_as_fixed_control(self):
+        from diff_diff import StackedDiD
+
+        sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
+        st = StackedDiD(clean_control="not_yet_treated").fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        summary = BusinessReport(st, auto_diagnostics=False).summary()
+        # Must NOT render a "X treated, Y control" clause (that narration
+        # implies a fixed comparison pool).
+        import re
+
+        assert not re.search(r"\d[\d,]*\s+treated,\s+\d[\d,]*\s+control", summary), (
+            f"Stacked with dynamic clean-control must not be narrated "
+            f"as fixed treated/control counts. Got: {summary!r}"
+        )
+        # Must narrate the sub-experiment-specific clean-control contract.
+        assert "sub-experiment-specific clean-control" in summary
+        assert "clean_control='not_yet_treated'" in summary
+
+    def test_full_report_names_sub_experiment_comparison_for_stacked_strict(self):
+        from diff_diff import StackedDiD
+
+        sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
+        st = StackedDiD(clean_control="strict").fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        md = BusinessReport(st, auto_diagnostics=False).full_report()
+        # Must NOT emit a bare "Control: N" line.
+        assert "- Control:" not in md or "- Control: " not in md.split("## Sample")[1].split("##")[0], (
+            "Stacked with dynamic clean-control must not render a fixed "
+            "'- Control: N' line in the Sample section."
+        )
+        assert "sub-experiment-specific clean controls" in md
+        assert "clean_control='strict'" in md
 
 
 class TestDCDHPhase3AssumptionClause:

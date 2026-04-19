@@ -412,6 +412,59 @@ class TestPrecomputed:
         # Downgrade must apply: pre-tier is well_powered, post-tier is moderately_powered.
         assert block["tier"] == "moderately_powered"
 
+    def test_precomputed_parallel_trends_bypasses_applicability_gate(self, cs_fit):
+        """Round-22 P1 regression: ``precomputed["parallel_trends"]`` was
+        documented as supported but ``_instance_skip_reason`` skipped the
+        PT check on applicability grounds (missing raw panel / columns
+        for the event-study replay, non-replayable EfficientDiD fits,
+        etc.) BEFORE the precomputed runner could fire. The fix
+        short-circuits the gate when the precomputed key is present so
+        advertised passthroughs actually land on the runner.
+        """
+        fit, _ = cs_fit
+        precomputed_pt = {
+            "status": "ran",
+            "method": "event_study",
+            "joint_p_value": 0.42,
+            "n_pre_periods": 3,
+            "verdict": "no_detected_violation",
+        }
+
+        # Without passing ``data`` + column kwargs, the applicability
+        # gate would previously have marked PT as skipped. With the
+        # precomputed override, it must land on the formatter instead.
+        dr = DiagnosticReport(fit, precomputed={"parallel_trends": precomputed_pt})
+        pt_block = dr.to_dict()["parallel_trends"]
+        assert pt_block["status"] == "ran", (
+            f"precomputed parallel_trends must bypass the applicability gate. "
+            f"Got status={pt_block.get('status')}, reason={pt_block.get('reason')}"
+        )
+
+    def test_precomputed_bacon_bypasses_applicability_gate(self, cs_fit):
+        """Round-22 P1 regression: ``precomputed["bacon"]`` was
+        documented as supported but ``_instance_skip_reason`` skipped
+        Bacon on applicability grounds (``data`` / column kwargs missing)
+        before the runner could fire. Users with an already-computed
+        ``BaconDecompositionResults`` must be able to pass it through
+        without re-supplying the raw panel.
+        """
+        from types import SimpleNamespace
+
+        fit, _ = cs_fit
+        precomputed_bacon = SimpleNamespace(
+            weights=None,
+            att=1.2,
+            comparison_types={},
+            total_weight_later_vs_earlier=0.02,
+        )
+
+        dr = DiagnosticReport(fit, precomputed={"bacon": precomputed_bacon})
+        bacon_block = dr.to_dict()["bacon"]
+        assert bacon_block["status"] == "ran", (
+            f"precomputed bacon must bypass the applicability gate. "
+            f"Got status={bacon_block.get('status')}, reason={bacon_block.get('reason')}"
+        )
+
     def test_precomputed_single_m_sensitivity_exposes_original_estimate_and_se(self, cs_fit):
         """Pre-emptive audit regression: ``_format_precomputed_sensitivity``
         used to drop ``original_estimate`` and ``original_se`` on the

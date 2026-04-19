@@ -494,6 +494,15 @@ class DiagnosticReport:
                 return "Estimator did not produce results.epv_diagnostics for this fit."
             return None
         if check == "parallel_trends":
+            # Precomputed parallel-trends always unlocks this check. The
+            # EfficientDiD Hausman skip message already points users at
+            # ``precomputed={'parallel_trends': ...}`` when replay fails
+            # (DR / survey fits), so applicability must honor the
+            # override before the replay-gate below fires. Round-22 P1
+            # CI review on PR #318 flagged that PT precomputed was
+            # advertised but skipped before use.
+            if "parallel_trends" in self._precomputed:
+                return None
             method = _PT_METHOD.get(name)
             if method == "two_x_two":
                 # Mirror the full argument contract of ``_pt_two_x_two``:
@@ -644,6 +653,15 @@ class DiagnosticReport:
                 return "HonestDiD requires at least one pre-period coefficient."
             return None
         if check == "bacon":
+            # Precomputed Bacon always unlocks this check. Users with an
+            # already-computed ``BaconDecompositionResults`` (e.g., run
+            # separately against a stored panel that isn't available at
+            # report time) need the passthrough to land on the Bacon
+            # runner instead of being skipped for missing column kwargs.
+            # Round-22 P1 CI review on PR #318 flagged that Bacon
+            # precomputed was advertised but skipped before use.
+            if "bacon" in self._precomputed:
+                return None
             # ``BaconDecompositionResults`` carries the decomposition
             # directly; no data/column kwargs needed.
             if name == "BaconDecompositionResults":
