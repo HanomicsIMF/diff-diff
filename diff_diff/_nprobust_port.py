@@ -564,14 +564,35 @@ def lpbwselect_mse_dpi(
 ) -> MseDpiStages:
     """Port of ``lpbwselect.mse.dpi`` (npfunctions.R:498-607).
 
-    For the HAD use case we call this with ``p=1, deriv=0, interior=False``,
-    which triggers the ``even=True`` branch: every stage bandwidth comes
-    from an ``optimize()`` minimization rather than the closed-form
-    ``C.d1$bw`` / ``C.b$bw`` shortcuts.
+    The R source computes ``even = (p - deriv) %% 2 == 0`` and dispatches
+    each stage via ``if (even == FALSE | interior == TRUE) bw <- C$bw
+    else bw <- optimize(...)$minimum``. For the HAD use case
+    (``p=1, deriv=0``), ``(p - deriv) %% 2 == 1``, so ``even == FALSE`` and
+    every stage bandwidth comes from the closed-form ``C$bw`` expression
+    inside ``lprobust.bw``; the ``optimize()`` branch is taken only when
+    ``(p - deriv)`` is even AND ``interior == FALSE``.
 
     Parameters match the R signature. See the R source comments for
     semantics.
+
+    Raises
+    ------
+    ValueError
+        If ``bwcheck`` is supplied and falls outside the valid range
+        ``[1, len(x)]``.
     """
+    N = x.shape[0] if hasattr(x, "shape") else len(x)
+    if bwcheck is not None:
+        if bwcheck < 1:
+            raise ValueError(
+                f"bwcheck must be a positive integer (>= 1); got {bwcheck}"
+            )
+        if bwcheck > N:
+            raise ValueError(
+                f"bwcheck={bwcheck} exceeds sample size N={N}. Either "
+                f"reduce bwcheck or increase sample size; pass "
+                f"bwcheck=None to skip the nearest-neighbor floor."
+            )
     if kernel not in _VALID_KERNELS:
         raise ValueError(f"Unknown kernel {kernel!r}. Expected one of {_VALID_KERNELS}.")
     if vce not in _VALID_VCE:

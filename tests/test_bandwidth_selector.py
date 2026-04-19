@@ -186,6 +186,53 @@ class TestInputValidation:
         with pytest.raises(NotImplementedError, match="weights"):
             mse_optimal_bandwidth(d, y, weights=w)
 
+    def test_bwcheck_exceeds_sample_size_raises(self):
+        """bwcheck > N would cause IndexError inside the selector; guard it."""
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        d = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+        y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        with pytest.raises(ValueError, match="bwcheck"):
+            # Default bwcheck=21 exceeds N=5.
+            lpbwselect_mse_dpi(y, d, eval_point=0.0, bwcheck=21)
+
+    def test_bwcheck_zero_raises(self):
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        rng = np.random.default_rng(0)
+        d = rng.uniform(size=100)
+        y = rng.normal(size=100)
+        with pytest.raises(ValueError, match="bwcheck"):
+            lpbwselect_mse_dpi(y, d, eval_point=0.0, bwcheck=0)
+
+    def test_bwcheck_negative_raises(self):
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        rng = np.random.default_rng(0)
+        d = rng.uniform(size=100)
+        y = rng.normal(size=100)
+        with pytest.raises(ValueError, match="bwcheck"):
+            lpbwselect_mse_dpi(y, d, eval_point=0.0, bwcheck=-1)
+
+    def test_bwcheck_none_on_tiny_sample_does_not_index_error(self):
+        """bwcheck=None should skip the NN floor.
+
+        The selector may still fail inside lprobust.bw on very small
+        samples (rank-deficient design), but any failure must be a
+        linear-algebra error, not an indexing crash in the bwcheck
+        clipping logic.
+        """
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        d = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+        y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        try:
+            lpbwselect_mse_dpi(y, d, eval_point=0.0, bwcheck=None)
+        except IndexError as exc:  # pragma: no cover - regression sentinel
+            pytest.fail(f"Unexpected IndexError from bwcheck path: {exc}")
+        except Exception:
+            pass
+
 
 class TestKernelDispatch:
     """Different kernels produce different bandwidths."""
