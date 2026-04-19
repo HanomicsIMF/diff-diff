@@ -268,6 +268,15 @@ class DiagnosticReport:
         HonestDiD restriction type.
     alpha : float, default 0.05
         Significance level used across checks.
+    survey_design : SurveyDesign, optional
+        The ``SurveyDesign`` object used to fit a survey-weighted
+        estimator. Required for fit-faithful replay of Goodman-Bacon on a
+        survey-backed fit; threaded to ``bacon_decompose(survey_design=...)``.
+        When the fit carries ``survey_metadata`` but ``survey_design`` is
+        not supplied, Bacon and the simple 2x2 parallel-trends check are
+        skipped with an explicit reason rather than replaying an
+        unweighted decomposition for a design that does not match the
+        estimate. See ``docs/methodology/REPORTING.md``.
     precomputed : dict, optional
         Map of check name to a pre-computed result object. Accepted keys
         (this is the full implemented list; unsupported keys raise
@@ -312,6 +321,7 @@ class DiagnosticReport:
         sensitivity_M_grid: Tuple[float, ...] = (0.5, 1.0, 1.5, 2.0),
         sensitivity_method: str = "relative_magnitude",
         alpha: float = 0.05,
+        survey_design: Optional[Any] = None,
         precomputed: Optional[Dict[str, Any]] = None,
         outcome_label: Optional[str] = None,
         treatment_label: Optional[str] = None,
@@ -339,6 +349,17 @@ class DiagnosticReport:
         self._sensitivity_M_grid = tuple(sensitivity_M_grid)
         self._sensitivity_method = sensitivity_method
         self._alpha = float(alpha)
+        # Round-40 P1 CI review on PR #318: survey-backed fits need the
+        # ``SurveyDesign`` object threaded through to ``bacon_decompose``
+        # for a fit-faithful Goodman-Bacon replay, and the unweighted
+        # 2x2 parallel-trends helper (``utils.check_parallel_trends``)
+        # cannot be called on a survey-weighted DiDResults without
+        # silently reporting an unweighted verdict for a weighted fit.
+        # When the fit carries ``survey_metadata`` but the caller did
+        # not supply ``survey_design``, both checks skip with an
+        # explicit reason instead of replaying a different design than
+        # the estimate. See REPORTING.md "Survey-backed fits".
+        self._survey_design = survey_design
         self._precomputed = dict(precomputed or {})
         # Validate precomputed keys against the actually-implemented passthrough
         # set so advertised contracts do not silently diverge from behavior.
@@ -569,6 +590,26 @@ class DiagnosticReport:
                         + ", ".join(two_x_two_missing)
                         + "."
                     )
+                # Round-40 P1 CI review on PR #318: the simple 2x2 helper
+                # ``utils.check_parallel_trends`` is unweighted — it has
+                # no ``survey_design`` parameter and cannot faithfully
+                # diagnose the pre-period trajectory of a survey-
+                # weighted DiDResults. Rather than silently emitting
+                # an unweighted verdict alongside the weighted estimate,
+                # skip with an explicit reason. Users can supply
+                # ``precomputed={'parallel_trends': ...}`` with a
+                # survey-aware pretest result if they have one.
+                if getattr(r, "survey_metadata", None) is not None:
+                    return (
+                        "Original fit used a survey design; the simple "
+                        "2x2 parallel-trends check (``utils."
+                        "check_parallel_trends``) is unweighted and "
+                        "would diagnose a different design than the "
+                        "weighted estimate. Supply a survey-aware "
+                        "pretest via "
+                        "``precomputed={'parallel_trends': ...}`` to "
+                        "opt in."
+                    )
             if method == "event_study":
                 pre_coefs, _ = _collect_pre_period_coefs(r)
                 if not pre_coefs:
@@ -729,6 +770,27 @@ class DiagnosticReport:
                 return (
                     "Bacon decomposition needs panel data + outcome / time "
                     "/ unit / first_treat column names. Missing: " + ", ".join(bacon_missing) + "."
+                )
+            # Round-40 P1 CI review on PR #318: ``bacon_decompose``
+            # supports a ``survey_design`` kwarg for survey-weighted
+            # decomposition. When the fitted result carries
+            # ``survey_metadata`` but the caller did not supply a
+            # ``survey_design`` object, replaying with defaults would
+            # produce an unweighted decomposition for a different
+            # design than the weighted estimate. Skip with an explicit
+            # reason; users can pass ``survey_design=<design>`` on
+            # ``DiagnosticReport`` / ``BusinessReport`` or supply
+            # ``precomputed={'bacon': ...}`` with a survey-aware
+            # decomposition.
+            if getattr(r, "survey_metadata", None) is not None and self._survey_design is None:
+                return (
+                    "Original fit used a survey design; Goodman-Bacon "
+                    "replay under defaults would produce an unweighted "
+                    "decomposition for a different design than the "
+                    "weighted estimate. Pass ``survey_design=<SurveyDesign>`` "
+                    "on DiagnosticReport / BusinessReport, or supply "
+                    "``precomputed={'bacon': ...}`` with a survey-aware "
+                    "decomposition."
                 )
             return None
         if check == "heterogeneity":
@@ -963,6 +1025,26 @@ class DiagnosticReport:
                 "reason": "Requires treatment=<column name> identifying the "
                 "treated-group indicator; not supplied.",
             }
+        # Round-40 P1 CI review on PR #318: defense-in-depth. The
+        # instance-level applicability gate should have already returned
+        # a skip reason when ``results.survey_metadata`` is non-None and
+        # no precomputed PT was supplied, but ``_pt_two_x_two`` is also
+        # reachable directly from ``_check_parallel_trends`` if future
+        # callers add method dispatch overrides. Guard at the runner
+        # too to prevent ``utils.check_parallel_trends`` from emitting
+        # an unweighted verdict for a weighted fit.
+        if getattr(self._results, "survey_metadata", None) is not None:
+            return {
+                "status": "skipped",
+                "reason": (
+                    "Original fit used a survey design; the simple 2x2 "
+                    "parallel-trends helper (``utils.check_parallel_trends``) "
+                    "is unweighted and cannot faithfully diagnose a "
+                    "survey-weighted DiDResults. Supply a survey-aware "
+                    "pretest via ``precomputed={'parallel_trends': ...}`` "
+                    "to opt in."
+                ),
+            }
         try:
             raw = check_parallel_trends(
                 self._data,
@@ -1156,9 +1238,7 @@ class DiagnosticReport:
             nan_p_count = sum(
                 1
                 for p in per_period
-                if not (
-                    isinstance(p["p_value"], (int, float)) and np.isfinite(p["p_value"])
-                )
+                if not (isinstance(p["p_value"], (int, float)) and np.isfinite(p["p_value"]))
             )
             if nan_p_count > 0:
                 return {
@@ -1517,6 +1597,24 @@ class DiagnosticReport:
                 "reason": "Bacon decomposition requires data + outcome + unit + time "
                 "+ first_treat on DiagnosticReport; not all supplied.",
             }
+        # Round-40 P1 CI review on PR #318: defense-in-depth. The
+        # instance-level applicability gate should have already returned
+        # a skip when the result carries ``survey_metadata`` but no
+        # ``survey_design`` is available to thread through. Guard at
+        # the runner too in case a future caller bypasses the gate.
+        if getattr(r, "survey_metadata", None) is not None and self._survey_design is None:
+            return {
+                "status": "skipped",
+                "reason": (
+                    "Original fit used a survey design; Goodman-Bacon "
+                    "replay under defaults would produce an unweighted "
+                    "decomposition for a different design than the "
+                    "weighted estimate. Pass ``survey_design=<SurveyDesign>`` "
+                    "on DiagnosticReport / BusinessReport, or supply "
+                    "``precomputed={'bacon': ...}`` with a survey-aware "
+                    "decomposition."
+                ),
+            }
 
         try:
             from diff_diff.bacon import bacon_decompose
@@ -1527,6 +1625,7 @@ class DiagnosticReport:
                 unit=unit,
                 time=time,
                 first_treat=first_treat,
+                survey_design=self._survey_design,
             )
         except Exception as exc:  # noqa: BLE001
             return {
@@ -2217,12 +2316,9 @@ class DiagnosticReport:
         #     as its distinguishing fields.
         method = _read("method")
         if method is None:
-            hausman_markers = (
-                _read("statistic") is not None
-                and any(
-                    _read(tag) is not None
-                    for tag in ("att_all", "att_post", "recommendation", "reject")
-                )
+            hausman_markers = _read("statistic") is not None and any(
+                _read(tag) is not None
+                for tag in ("att_all", "att_post", "recommendation", "reject")
             )
             slope_markers = any(
                 _read(tag) is not None
@@ -2797,16 +2893,10 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
         ci_finite = (
             isinstance(ci, (list, tuple))
             and len(ci) == 2
-            and all(
-                isinstance(v, (int, float)) and np.isfinite(v) for v in ci
-            )
+            and all(isinstance(v, (int, float)) and np.isfinite(v) for v in ci)
         )
         ci_str = f" ({ci_level}% CI: {ci[0]:.3g} to {ci[1]:.3g})" if ci_finite else ""
-        p_str = (
-            f", p = {p:.3g}"
-            if isinstance(p, (int, float)) and np.isfinite(p)
-            else ""
-        )
+        p_str = f", p = {p:.3g}" if isinstance(p, (int, float)) and np.isfinite(p) else ""
         sentences.append(
             f"On {est}, {treatment} {direction} {outcome} by {val:.3g}{ci_str}{p_str}."
         )

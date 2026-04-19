@@ -472,9 +472,9 @@ class TestPrecomputed:
         pt = dr.to_dict()["parallel_trends"]
         assert pt["status"] == "ran"
         assert pt["method"] == "hausman"
-        assert pt["joint_p_value"] == 0.42, (
-            f"joint_p_value must survive formatting; got {pt.get('joint_p_value')}"
-        )
+        assert (
+            pt["joint_p_value"] == 0.42
+        ), f"joint_p_value must survive formatting; got {pt.get('joint_p_value')}"
         assert pt["test_statistic"] == 5.6
         assert pt["df"] == 3
         # Verdict must be derived from the surviving p-value, not None.
@@ -590,8 +590,7 @@ class TestPrecomputed:
         pt = dr.to_dict()["parallel_trends"]
         assert pt["status"] == "ran"
         assert pt["method"] == "hausman", (
-            f"Native Hausman-like object must infer method='hausman'; "
-            f"got {pt.get('method')!r}"
+            f"Native Hausman-like object must infer method='hausman'; " f"got {pt.get('method')!r}"
         )
         assert pt["test_statistic"] == 4.5
         assert pt["joint_p_value"] == 0.21
@@ -633,9 +632,7 @@ class TestPrecomputed:
         neither) while catching obviously-wrong inputs.
         """
         fit, _ = cs_fit
-        dr = DiagnosticReport(
-            fit, precomputed={"parallel_trends": {"method": "event_study"}}
-        )
+        dr = DiagnosticReport(fit, precomputed={"parallel_trends": {"method": "event_study"}})
         pt = dr.to_dict()["parallel_trends"]
         assert pt["status"] == "error"
         assert "joint_p_value" in pt["reason"] or "p_value" in pt["reason"]
@@ -690,9 +687,9 @@ class TestPrecomputed:
             alpha=0.05,
         )
 
-        block = DiagnosticReport(
-            fit, precomputed={"sensitivity": single_m}
-        ).to_dict()["sensitivity"]
+        block = DiagnosticReport(fit, precomputed={"sensitivity": single_m}).to_dict()[
+            "sensitivity"
+        ]
         assert block["status"] == "ran"
         assert block["conclusion"] == "single_M_precomputed"
         # Parity with the grid branch: these fields must be present and
@@ -826,7 +823,8 @@ class TestJointWaldAlignment:
         """
         from types import SimpleNamespace
 
-        from scipy.stats import chi2, f as f_dist
+        from scipy.stats import chi2
+        from scipy.stats import f as f_dist
 
         # Same fixture as ``test_joint_wald_runs_when_keys_align`` but with
         # a survey_metadata carrying a finite df_survey.
@@ -906,10 +904,7 @@ class TestJointWaldAlignment:
             "joint_wald_survey",
             "joint_wald_event_study_survey",
         ):
-            assert (
-                _pt_subject_phrase(method)
-                == "Pre-treatment event-study coefficients"
-            ), (
+            assert _pt_subject_phrase(method) == "Pre-treatment event-study coefficients", (
                 f"DR subject for {method!r} must match the non-survey "
                 f"event-study phrasing; got "
                 f"{_pt_subject_phrase(method)!r}"
@@ -1128,8 +1123,9 @@ class TestReferenceMarkerAndNaNFiltering:
         "parallel trends hold" verdict from a partially-undefined
         pre-period surface.
         """
-        import numpy as np
         from types import SimpleNamespace
+
+        import numpy as np
 
         class MultiPeriodDiDResults:
             pass
@@ -1181,7 +1177,6 @@ class TestReferenceMarkerAndNaNFiltering:
         ``to_dict()["overall_interpretation"]`` must now emit an
         explicit estimation-failure sentence instead.
         """
-        import numpy as np
 
         class DiDResults:
             pass
@@ -1205,18 +1200,18 @@ class TestReferenceMarkerAndNaNFiltering:
         for label, prose in [("summary", summary), ("overall_interpretation", interp)]:
             lower = prose.lower()
             # Must NOT render directional / numeric prose on a NaN fit.
-            assert "did not change" not in lower, (
-                f"{label} rendered 'did not change' on a NaN fit; got: {prose!r}"
-            )
-            assert "nan" not in lower, (
-                f"{label} rendered 'nan' in the stakeholder-facing prose; got: {prose!r}"
-            )
+            assert (
+                "did not change" not in lower
+            ), f"{label} rendered 'did not change' on a NaN fit; got: {prose!r}"
+            assert (
+                "nan" not in lower
+            ), f"{label} rendered 'nan' in the stakeholder-facing prose; got: {prose!r}"
             assert "by nan" not in lower
             assert "ci: nan" not in lower
             # Must name the non-finite state explicitly.
-            assert "non-finite" in lower or "did not produce" in lower, (
-                f"{label} must emit an estimation-failure sentence; got: {prose!r}"
-            )
+            assert (
+                "non-finite" in lower or "did not produce" in lower
+            ), f"{label} must emit an estimation-failure sentence; got: {prose!r}"
 
     def test_summary_prose_surfaces_inconclusive_pt_explicitly(self):
         """Round-35 P1 regression: when pre-trends is inconclusive
@@ -1246,9 +1241,7 @@ class TestReferenceMarkerAndNaNFiltering:
             -1: {"effect": 0.05, "se": 0.3, "p_value": float("nan"), "n_obs": 400},
         }
 
-        dr_summary = DiagnosticReport(
-            obj, run_sensitivity=False, run_bacon=False
-        ).summary()
+        dr_summary = DiagnosticReport(obj, run_sensitivity=False, run_bacon=False).summary()
         br_summary = BusinessReport(obj).summary()
 
         # Both summaries must explicitly name the inconclusive state.
@@ -1388,9 +1381,9 @@ class TestReferenceMarkerAndNaNFiltering:
         obj.n_control = 50
         obj.survey_metadata = None
 
-        pt = DiagnosticReport(
-            obj, run_sensitivity=False, run_bacon=False
-        ).to_dict()["parallel_trends"]
+        pt = DiagnosticReport(obj, run_sensitivity=False, run_bacon=False).to_dict()[
+            "parallel_trends"
+        ]
         assert pt["verdict"] == "inconclusive"
         assert pt["method"] == "inconclusive"
         assert pt["n_dropped_undefined"] >= 1
@@ -1401,7 +1394,6 @@ class TestReferenceMarkerAndNaNFiltering:
         ``np.isfinite(se)`` so the power analysis never includes rows
         whose per-period SE collapsed.
         """
-        from types import SimpleNamespace
 
         import numpy as np
 
@@ -1996,6 +1988,211 @@ class TestHeterogeneityPostTreatmentOnly:
         assert het["min"] == pytest.approx(1.0)
         assert het["max"] == pytest.approx(2.0)
         assert het["sign_consistent"] is True
+
+
+# ---------------------------------------------------------------------------
+# Round-40 P1: survey-design threading for fit-faithful replay
+# ---------------------------------------------------------------------------
+class TestSurveyDesignThreading:
+    """Round-40 P1 CI review on PR #318: when a fitted result carries
+    ``survey_metadata``, Goodman-Bacon and the simple 2x2 PT helper
+    cannot be faithfully replayed without the original ``SurveyDesign``.
+
+    DR must:
+      * accept a ``survey_design`` kwarg;
+      * thread it to ``bacon_decompose(survey_design=...)`` when the
+        user supplies it;
+      * skip Bacon with an explicit reason when ``survey_metadata`` is
+        set but ``survey_design`` is not supplied;
+      * skip the simple 2x2 PT check with an explicit reason on
+        survey-backed ``DiDResults`` (the helper has no
+        ``survey_design`` parameter).
+    """
+
+    def _did_with_survey(self):
+        from types import SimpleNamespace
+
+        class DiDResults:
+            pass
+
+        obj = DiDResults()
+        obj.att = 1.0
+        obj.se = 0.2
+        obj.t_stat = 5.0
+        obj.p_value = 0.001
+        obj.conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 400
+        obj.n_treated = 100
+        obj.n_control = 300
+        obj.survey_metadata = SimpleNamespace(
+            design_effect=1.25,
+            effective_n=320.0,
+            weight_type="pweight",
+            n_strata=None,
+            n_psu=None,
+            df_survey=20.0,
+            replicate_method=None,
+        )
+        obj.inference_method = "analytical"
+        return obj
+
+    def _staggered_stub_with_survey(self):
+        """Lightweight CS-like stub carrying survey_metadata for Bacon gating."""
+        from types import SimpleNamespace
+
+        class CallawaySantAnnaResults:
+            pass
+
+        obj = CallawaySantAnnaResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.2
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 600
+        obj.n_treated = 200
+        obj.n_control_units = 400
+        obj.survey_metadata = SimpleNamespace(
+            design_effect=1.5,
+            effective_n=400.0,
+            weight_type="pweight",
+            n_strata=None,
+            n_psu=None,
+            df_survey=30.0,
+            replicate_method=None,
+        )
+        obj.event_study_effects = None
+        return obj
+
+    def test_survey_backed_did_skips_2x2_pt_with_reason(self):
+        """Survey-backed ``DiDResults`` must skip the 2x2 PT helper
+        (``utils.check_parallel_trends`` is unweighted) and produce a
+        skip reason naming the survey-design replay requirement.
+        """
+        obj = self._did_with_survey()
+        import pandas as pd
+
+        panel = pd.DataFrame(
+            {
+                "outcome": [1.0, 2.0, 1.1, 2.2],
+                "post": [0, 1, 0, 1],
+                "treated": [0, 0, 1, 1],
+            }
+        )
+        dr = DiagnosticReport(
+            obj,
+            data=panel,
+            outcome="outcome",
+            time="post",
+            treatment="treated",
+        )
+        assert "parallel_trends" not in dr.applicable_checks
+        reason = dr.skipped_checks["parallel_trends"]
+        assert "survey design" in reason.lower()
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "skipped"
+
+    def test_survey_backed_did_with_precomputed_pt_runs(self):
+        """When the user supplies ``precomputed={'parallel_trends': ...}``
+        on a survey-backed DiDResults, DR must honor the override rather
+        than skip with the survey-design reason.
+        """
+        obj = self._did_with_survey()
+        precomputed_pt = {
+            "p_value": 0.42,
+            "treated_trend": 0.05,
+            "control_trend": 0.04,
+            "trend_difference": 0.01,
+            "t_statistic": 0.8,
+        }
+        dr = DiagnosticReport(
+            obj,
+            precomputed={"parallel_trends": precomputed_pt},
+        )
+        assert "parallel_trends" in dr.applicable_checks
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran"
+
+    def test_survey_backed_staggered_skips_bacon_without_survey_design(self):
+        """CS-like survey-backed fit: Bacon replay must skip with a
+        reason naming the survey-design requirement rather than produce
+        an unweighted decomposition for a weighted estimate.
+        """
+        obj = self._staggered_stub_with_survey()
+        import pandas as pd
+
+        panel = pd.DataFrame(
+            {
+                "outcome": [1.0, 2.0, 1.1, 2.2, 1.2, 2.3, 1.3, 2.4],
+                "unit": [1, 1, 2, 2, 3, 3, 4, 4],
+                "period": [1, 2, 1, 2, 1, 2, 1, 2],
+                "first_treat": [0, 0, 0, 0, 2, 2, 2, 2],
+            }
+        )
+        dr = DiagnosticReport(
+            obj,
+            data=panel,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        assert "bacon" not in dr.applicable_checks
+        reason = dr.skipped_checks["bacon"]
+        assert "survey design" in reason.lower()
+        assert "survey_design" in reason or "SurveyDesign" in reason
+        bacon = dr.to_dict()["bacon"]
+        assert bacon["status"] == "skipped"
+
+    def test_survey_backed_staggered_threads_survey_design_to_bacon(self):
+        """When ``survey_design`` is supplied, Bacon applicability flips
+        back to runnable and ``bacon_decompose`` is invoked with the
+        survey design. Assert via ``unittest.mock.patch`` that the
+        kwarg is forwarded.
+        """
+        from unittest.mock import MagicMock, patch
+
+        obj = self._staggered_stub_with_survey()
+        import pandas as pd
+
+        panel = pd.DataFrame(
+            {
+                "outcome": [1.0, 2.0, 1.1, 2.2, 1.2, 2.3, 1.3, 2.4],
+                "unit": [1, 1, 2, 2, 3, 3, 4, 4],
+                "period": [1, 2, 1, 2, 1, 2, 1, 2],
+                "first_treat": [0, 0, 0, 0, 2, 2, 2, 2],
+            }
+        )
+
+        sentinel_design = object()
+        fake_decomp = MagicMock()
+        fake_decomp.total_weight_treated_vs_never = 0.9
+        fake_decomp.total_weight_earlier_vs_later = 0.05
+        fake_decomp.total_weight_later_vs_earlier = 0.05
+        fake_decomp.twfe_estimate = 1.1
+        fake_decomp.n_timing_groups = 2
+
+        with patch("diff_diff.bacon.bacon_decompose", return_value=fake_decomp) as m:
+            dr = DiagnosticReport(
+                obj,
+                data=panel,
+                outcome="outcome",
+                unit="unit",
+                time="period",
+                first_treat="first_treat",
+                survey_design=sentinel_design,
+            )
+            # Applicability gate passes since survey_design is supplied.
+            assert "bacon" in dr.applicable_checks
+            bacon = dr.to_dict()["bacon"]
+            assert bacon["status"] == "ran"
+            # The survey_design must be threaded through to
+            # bacon_decompose as a kwarg so the replayed decomposition
+            # matches the fitted design.
+            assert m.called, "bacon_decompose was not called"
+            _, kwargs = m.call_args
+            assert kwargs.get("survey_design") is sentinel_design
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,15 @@ to the auto-constructed ``DiagnosticReport``. Without these kwargs,
 those specific checks are skipped with an explicit reason while the
 rest of the report still renders.
 
+For survey-weighted fits (any result carrying
+``survey_metadata``) pass the original ``SurveyDesign`` via
+``survey_design=<design>``. It is threaded through to
+``bacon_decompose`` for a fit-faithful Goodman-Bacon replay. When
+``survey_metadata`` is set but ``survey_design`` is not supplied,
+Bacon and the simple 2x2 parallel-trends check are skipped with an
+explicit reason so the report never emits an unweighted decomposition
+or PT verdict for a design that differs from the estimate.
+
 Methodology deviations (no traffic-light gates, pre-trends verdict
 thresholds, power-aware phrasing, unit-translation policy, schema
 stability) are documented in :doc:`../methodology/REPORTING`.

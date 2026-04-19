@@ -1006,9 +1006,7 @@ class TestFullReportMethodAwarePTLabel:
 
     def test_full_report_hausman_uses_single_p_label(self):
         stub, fake_dr = self._stub_result_with_method("hausman")
-        section = self._pt_section(
-            BusinessReport(stub, diagnostics=fake_dr).full_report()
-        )
+        section = self._pt_section(BusinessReport(stub, diagnostics=fake_dr).full_report())
         assert "joint p" not in section, (
             f"EfficientDiD Hausman is a single-statistic test and must "
             f"not be labeled ``joint p`` in the markdown. Got: {section!r}"
@@ -1017,9 +1015,7 @@ class TestFullReportMethodAwarePTLabel:
 
     def test_full_report_synthetic_fit_omits_p_label(self):
         stub, fake_dr = self._stub_result_with_method("synthetic_fit")
-        section = self._pt_section(
-            BusinessReport(stub, diagnostics=fake_dr).full_report()
-        )
+        section = self._pt_section(BusinessReport(stub, diagnostics=fake_dr).full_report())
         # No p-value of any kind for design-enforced SDiD PT analogue.
         assert "joint p" not in section
         assert "p = " not in section
@@ -1367,9 +1363,9 @@ class TestStaggeredTripleDiffNeverTreatedFixedComparison:
         return stub
 
     def test_never_treated_mode_surfaces_never_enabled_not_composite_total(self):
-        sample = BusinessReport(
-            self._stub("never_treated"), auto_diagnostics=False
-        ).to_dict()["sample"]
+        sample = BusinessReport(self._stub("never_treated"), auto_diagnostics=False).to_dict()[
+            "sample"
+        ]
         # Composite total must not be surfaced as the fixed control
         # count on the ``nevertreated`` path.
         assert sample["n_control"] is None, (
@@ -1387,9 +1383,7 @@ class TestStaggeredTripleDiffNeverTreatedFixedComparison:
         """
         import re
 
-        summary = BusinessReport(
-            self._stub("never_treated"), auto_diagnostics=False
-        ).summary()
+        summary = BusinessReport(self._stub("never_treated"), auto_diagnostics=False).summary()
         # Old wrong phrasing absent.
         assert not re.search(r"\b500\s+control", summary), summary
         # New fixed cohort present.
@@ -1402,9 +1396,7 @@ class TestStaggeredTripleDiffNeverTreatedFixedComparison:
         assert "Sample: 800 observations." not in summary
 
     def test_never_treated_mode_full_report_renders_never_enabled_count(self):
-        md = BusinessReport(
-            self._stub("never_treated"), auto_diagnostics=False
-        ).full_report()
+        md = BusinessReport(self._stub("never_treated"), auto_diagnostics=False).full_report()
         sample_section = md.split("## Sample", 1)[1].split("\n## ", 1)[0]
         assert "never-enabled" in sample_section.lower()
         assert "300" in sample_section
@@ -1444,9 +1436,7 @@ class TestBRHeadlineOmitsBrokenCIOnUndefinedInference:
         return stub
 
     def test_summary_does_not_render_undefined_ci_interval(self):
-        summary = BusinessReport(
-            self._stub_nan_ci(), auto_diagnostics=False
-        ).summary()
+        summary = BusinessReport(self._stub_nan_ci(), auto_diagnostics=False).summary()
         lower = summary.lower()
         # Must not render the broken CI interval fragment.
         assert "undefined to undefined" not in lower, summary
@@ -1455,9 +1445,7 @@ class TestBRHeadlineOmitsBrokenCIOnUndefinedInference:
         assert "inference unavailable" in lower
 
     def test_full_report_does_not_render_undefined_ci_interval(self):
-        md = BusinessReport(
-            self._stub_nan_ci(), auto_diagnostics=False
-        ).full_report()
+        md = BusinessReport(self._stub_nan_ci(), auto_diagnostics=False).full_report()
         lower = md.lower()
         assert "undefined to undefined" not in lower
         assert "95% ci: nan" not in lower
@@ -1551,7 +1539,6 @@ class TestStackedCleanControlSurfacesInSampleBlock:
         never-treated units, because every unit is eventually treated
         (the round-21 reviewer example).
         """
-        import pandas as pd
 
         from diff_diff import StackedDiD
 
@@ -1567,9 +1554,7 @@ class TestStackedCleanControlSurfacesInSampleBlock:
         # Sanity: the fixture has no never-treated units.
         assert sdf[sdf["first_treat"] == 0].empty
 
-        st = StackedDiD(
-            clean_control="not_yet_treated", kappa_pre=1, kappa_post=1
-        ).fit(
+        st = StackedDiD(clean_control="not_yet_treated", kappa_pre=1, kappa_post=1).fit(
             sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
         )
         sample = BusinessReport(st, auto_diagnostics=False).to_dict()["sample"]
@@ -1623,15 +1608,15 @@ class TestStackedDiDAssumptionBlock:
         assert a["clean_control"] == "not_yet_treated"
 
     def test_strict_names_strict_rule(self):
-        desc = BusinessReport(
-            self._stub("strict"), auto_diagnostics=False
-        ).to_dict()["assumption"]["description"]
+        desc = BusinessReport(self._stub("strict"), auto_diagnostics=False).to_dict()["assumption"][
+            "description"
+        ]
         assert "A_s > a + kappa_post + kappa_pre" in desc
 
     def test_never_treated_names_fixed_pool(self):
-        desc = BusinessReport(
-            self._stub("never_treated"), auto_diagnostics=False
-        ).to_dict()["assumption"]["description"]
+        desc = BusinessReport(self._stub("never_treated"), auto_diagnostics=False).to_dict()[
+            "assumption"
+        ]["description"]
         assert "never treated" in desc.lower()
         assert "A_s = infinity" in desc
 
@@ -1673,7 +1658,9 @@ class TestStackedRenderingNarratesDynamicControl:
         )
         md = BusinessReport(st, auto_diagnostics=False).full_report()
         # Must NOT emit a bare "Control: N" line.
-        assert "- Control:" not in md or "- Control: " not in md.split("## Sample")[1].split("##")[0], (
+        assert (
+            "- Control:" not in md or "- Control: " not in md.split("## Sample")[1].split("##")[0]
+        ), (
             "Stacked with dynamic clean-control must not render a fixed "
             "'- Control: N' line in the Sample section."
         )
@@ -1817,9 +1804,7 @@ class TestAnticipationStripsStrictNoAnticipationClause:
         assert "PT-Post" in block["description"]
 
     def test_stacked_did_strips_strict_clause(self):
-        stub = self._stub(
-            "StackedDiDResults", clean_control="not_yet_treated"
-        )
+        stub = self._stub("StackedDiDResults", clean_control="not_yet_treated")
         block = BusinessReport(stub, auto_diagnostics=False).to_dict()["assumption"]
         self._assert_no_strict_contract(block["description"])
         # Stacked sub-experiment identifying content preserved.
@@ -1832,9 +1817,7 @@ class TestAnticipationStripsStrictNoAnticipationClause:
         """
         stub = self._stub("CallawaySantAnnaResults")
         md = BusinessReport(stub, auto_diagnostics=False).full_report()
-        assumption_section = md.split("## Identifying Assumption", 1)[1].split(
-            "\n## ", 1
-        )[0]
+        assumption_section = md.split("## Identifying Assumption", 1)[1].split("\n## ", 1)[0]
         for pat in self._STRICT_PATTERNS:
             assert pat not in assumption_section, (
                 f"Rendered assumption section must not carry the strict "
@@ -2561,12 +2544,8 @@ class TestEfficientDiDHausmanStepTaggedAsParallelTrends:
 
         # Without any completed steps, the Hausman pretest is included.
         baseline = practitioner_next_steps(stub, verbose=False)["next_steps"]
-        hausman_in_baseline = any(
-            "Hausman pretest" in s.get("label", "") for s in baseline
-        )
-        assert hausman_in_baseline, (
-            "EfficientDiD workflow must include the Hausman pretest step"
-        )
+        hausman_in_baseline = any("Hausman pretest" in s.get("label", "") for s in baseline)
+        assert hausman_in_baseline, "EfficientDiD workflow must include the Hausman pretest step"
 
         # After marking ``parallel_trends`` complete (which DR does when
         # ``_check_pt_hausman`` runs), the Hausman step must be filtered
@@ -2575,9 +2554,7 @@ class TestEfficientDiDHausmanStepTaggedAsParallelTrends:
         filtered = practitioner_next_steps(
             stub, completed_steps=["parallel_trends"], verbose=False
         )["next_steps"]
-        assert not any(
-            "Hausman pretest" in s.get("label", "") for s in filtered
-        ), (
+        assert not any("Hausman pretest" in s.get("label", "") for s in filtered), (
             "Hausman step must be tagged as 'parallel_trends' (REGISTRY.md "
             "§EfficientDiD classifies it as a PT diagnostic) so that "
             "DR's _collect_next_steps() suppresses it after running the same "
@@ -2623,17 +2600,15 @@ class TestSpecificationComparisonStepTagPersistsAfterSensitivityRuns:
 
         return [
             s.get("label", "")
-            for s in practitioner_next_steps(
-                stub, completed_steps=completed, verbose=False
-            )["next_steps"]
+            for s in practitioner_next_steps(stub, completed_steps=completed, verbose=False)[
+                "next_steps"
+            ]
         ]
 
     def test_sa_specification_falsification_persists_after_sensitivity_runs(self):
         stub = self._build_stub("SunAbrahamResults")
         labels = self._step_labels_after_completed(stub, completed=["sensitivity"])
-        assert any(
-            "Specification-based falsification" in lab for lab in labels
-        ), (
+        assert any("Specification-based falsification" in lab for lab in labels), (
             "SA's 'Specification-based falsification' step must persist "
             "after DR marks sensitivity complete — HonestDiD does not run "
             "control_group / anticipation variation."
@@ -2700,9 +2675,7 @@ class TestCSRepeatedCrossSectionCountLabels:
 
     def test_schema_exposes_count_unit(self):
         for panel, expected in [(True, "units"), (False, "observations")]:
-            sample = BusinessReport(
-                self._stub(panel), auto_diagnostics=False
-            ).to_dict()["sample"]
+            sample = BusinessReport(self._stub(panel), auto_diagnostics=False).to_dict()["sample"]
             assert sample["count_unit"] == expected
 
     def test_panel_true_renders_unit_wording(self):
@@ -2800,8 +2773,7 @@ class TestSurveyPTProsePropagation:
             "pretrends_power": {
                 "status": "not_applicable",
                 "reason": (
-                    "StackedDiDResults does not yet have a "
-                    "compute_pretrends_power adapter."
+                    "StackedDiDResults does not yet have a " "compute_pretrends_power adapter."
                 ),
             },
         }
@@ -2810,8 +2782,7 @@ class TestSurveyPTProsePropagation:
         assert lifted["power_status"] == "not_applicable"
         # Plain-English reason now exposed on the schema.
         assert lifted["power_reason"] == (
-            "StackedDiDResults does not yet have a "
-            "compute_pretrends_power adapter."
+            "StackedDiDResults does not yet have a " "compute_pretrends_power adapter."
         )
 
     def test_survey_pt_method_stat_label_uses_joint_p(self):
@@ -2826,10 +2797,7 @@ class TestSurveyPTProsePropagation:
                 f"(the joint test remains; only the reference "
                 f"distribution changes)."
             )
-            assert (
-                _pt_method_subject(method)
-                == "Pre-treatment event-study coefficients"
-            ), (
+            assert _pt_method_subject(method) == "Pre-treatment event-study coefficients", (
                 f"Survey PT variant {method!r} must use the event-study "
                 f"subject phrase, not the generic fall-through."
             )
@@ -2873,13 +2841,11 @@ class TestSDiDJackknifeStepPersistsAfterNativeSensitivity:
 
         labels = [
             s.get("label", "")
-            for s in practitioner_next_steps(
-                stub, completed_steps=["sensitivity"], verbose=False
-            )["next_steps"]
+            for s in practitioner_next_steps(stub, completed_steps=["sensitivity"], verbose=False)[
+                "next_steps"
+            ]
         ]
-        assert any(
-            "Leave-one-out influence (jackknife)" in lab for lab in labels
-        ), (
+        assert any("Leave-one-out influence (jackknife)" in lab for lab in labels), (
             "SDiD jackknife recommendation must persist after DR marks "
             "sensitivity complete — the SDiD native battery does not run "
             "the jackknife LOO workflow (requires a separate "
@@ -2935,13 +2901,11 @@ class TestTROPInTimePlaceboStepTaggedAsPlacebo:
 
         labels = [
             s.get("label", "")
-            for s in practitioner_next_steps(
-                stub, completed_steps=["sensitivity"], verbose=False
-            )["next_steps"]
+            for s in practitioner_next_steps(stub, completed_steps=["sensitivity"], verbose=False)[
+                "next_steps"
+            ]
         ]
-        assert any(
-            "In-time or in-space placebo" in lab for lab in labels
-        ), (
+        assert any("In-time or in-space placebo" in lab for lab in labels), (
             "TROP's placebo recommendation must persist after DR marks "
             "sensitivity complete (SDiD/TROP native battery) — factor-"
             "model diagnostics are not a placebo substitute."
@@ -2982,7 +2946,6 @@ class TestPrecomputedSensitivityHonoredOnAllCompatibleEstimators:
 
     @staticmethod
     def _stub(class_name: str, **extras):
-        from diff_diff.prep_dgp import generate_staggered_data
 
         # For estimator types that have fits, we'd use real fits; but
         # several of these need specific setup. Stub with minimal
@@ -3016,8 +2979,7 @@ class TestPrecomputedSensitivityHonoredOnAllCompatibleEstimators:
         dr = DiagnosticReport(stub, precomputed={"sensitivity": self._fake_grid_sens()})
         sens = dr.to_dict()["sensitivity"]
         assert sens["status"] == "ran", (
-            f"precomputed sensitivity on SunAbrahamResults must be honored; "
-            f"got {sens!r}"
+            f"precomputed sensitivity on SunAbrahamResults must be honored; " f"got {sens!r}"
         )
         assert sens.get("precomputed") is True
         assert sens["breakdown_M"] == 1.25
@@ -3044,8 +3006,7 @@ class TestPrecomputedSensitivityHonoredOnAllCompatibleEstimators:
         br = BusinessReport(stub, honest_did_results=self._fake_grid_sens())
         sens = br.to_dict()["sensitivity"]
         assert sens["status"] == "computed", (
-            f"honest_did_results on ImputationDiDResults must be honored "
-            f"by BR; got {sens!r}"
+            f"honest_did_results on ImputationDiDResults must be honored " f"by BR; got {sens!r}"
         )
         assert sens["breakdown_M"] == 1.25
 
@@ -3156,9 +3117,7 @@ class TestSDiDTROPRejectPrecomputedPretrendsPower:
 
         fit, _ = sdid_fit
         with pytest.raises(ValueError, match="estimator_native_diagnostics"):
-            DiagnosticReport(
-                fit, precomputed={"pretrends_power": self._dummy_power_object()}
-            )
+            DiagnosticReport(fit, precomputed={"pretrends_power": self._dummy_power_object()})
 
     def test_dr_rejects_precomputed_pretrends_power_on_trop(self):
         from diff_diff import DiagnosticReport
@@ -3172,9 +3131,7 @@ class TestSDiDTROPRejectPrecomputedPretrendsPower:
         stub.alpha = 0.05
         stub.n_obs = 100
         with pytest.raises(ValueError, match="estimator_native_diagnostics"):
-            DiagnosticReport(
-                stub, precomputed={"pretrends_power": self._dummy_power_object()}
-            )
+            DiagnosticReport(stub, precomputed={"pretrends_power": self._dummy_power_object()})
 
 
 class TestHeterogeneityOmittedFromFullReportWhenNotRan:
@@ -3298,9 +3255,7 @@ class TestSDiDTROPRejectIncompatiblePrecomputedInputs:
     def _dummy_pt_object():
         from types import SimpleNamespace
 
-        return SimpleNamespace(
-            joint_p_value=0.2, n_pre_periods=3, method="event_study"
-        )
+        return SimpleNamespace(joint_p_value=0.2, n_pre_periods=3, method="event_study")
 
     def test_dr_rejects_precomputed_sensitivity_on_sdid(self, sdid_fit):
         from diff_diff import DiagnosticReport
@@ -3758,3 +3713,173 @@ class TestCSVaryingBaseSensitivitySkipped:
         assert "sensitivity_skipped" in topics, (
             "BR must surface varying-base sensitivity skip as a caveat; " f"got topics {topics}"
         )
+
+
+class TestBusinessReportSurveyDesignPassthrough:
+    """Round-40 P1 CI review on PR #318: ``BusinessReport`` must accept
+    ``survey_design`` and forward it to the auto-constructed
+    ``DiagnosticReport``, so Bacon replay on survey-backed fits is
+    fit-faithful and the simple 2x2 PT path skips with an explicit
+    reason rather than reporting an unweighted verdict for a weighted
+    estimate."""
+
+    def _did_with_survey(self):
+        from types import SimpleNamespace
+
+        class DiDResults:
+            pass
+
+        obj = DiDResults()
+        obj.att = 1.0
+        obj.se = 0.2
+        obj.t_stat = 5.0
+        obj.p_value = 0.001
+        obj.conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 400
+        obj.n_treated = 100
+        obj.n_control = 300
+        obj.survey_metadata = SimpleNamespace(
+            design_effect=1.25,
+            effective_n=320.0,
+            weight_type="pweight",
+            n_strata=None,
+            n_psu=None,
+            df_survey=20.0,
+            replicate_method=None,
+        )
+        obj.inference_method = "analytical"
+        return obj
+
+    def _staggered_stub_with_survey(self):
+        from types import SimpleNamespace
+
+        class CallawaySantAnnaResults:
+            pass
+
+        obj = CallawaySantAnnaResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.2
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 600
+        obj.n_treated = 200
+        obj.n_control_units = 400
+        obj.survey_metadata = SimpleNamespace(
+            design_effect=1.5,
+            effective_n=400.0,
+            weight_type="pweight",
+            n_strata=None,
+            n_psu=None,
+            df_survey=30.0,
+            replicate_method=None,
+        )
+        obj.event_study_effects = None
+        return obj
+
+    def test_survey_backed_did_br_rolls_up_pt_skip(self):
+        """BR's auto-constructed DR must skip the 2x2 PT helper on a
+        survey-backed DiDResults. BR's schema then surfaces the
+        skipped PT block with the survey-design reason (no unweighted
+        verdict leaks into the narrative)."""
+        import pandas as pd
+
+        panel = pd.DataFrame(
+            {
+                "outcome": [1.0, 2.0, 1.1, 2.2],
+                "post": [0, 1, 0, 1],
+                "treated": [0, 0, 1, 1],
+            }
+        )
+        obj = self._did_with_survey()
+        br = BusinessReport(
+            obj,
+            outcome_label="Revenue",
+            outcome_unit="$",
+            data=panel,
+            outcome="outcome",
+            time="post",
+            treatment="treated",
+        )
+        schema = br.to_dict()
+        diag = schema.get("diagnostics", {})
+        dr_schema = diag.get("schema", {}) if isinstance(diag, dict) else {}
+        pt_block = dr_schema.get("parallel_trends", {}) if isinstance(dr_schema, dict) else {}
+        # Round-40 schema: parallel_trends skipped with a survey-design
+        # reason rather than emitting an unweighted verdict. BR's auto
+        # path must honor the skip.
+        assert pt_block.get("status") == "skipped"
+        reason = (pt_block.get("reason") or "").lower()
+        assert "survey design" in reason
+
+    def test_survey_backed_staggered_br_forwards_survey_design_to_bacon(self):
+        """BR must forward ``survey_design`` to the auto-constructed
+        DR, which in turn threads it to ``bacon_decompose``. Verify via
+        ``unittest.mock.patch`` that the kwarg reaches the decomposer.
+        """
+        from unittest.mock import MagicMock, patch
+
+        import pandas as pd
+
+        panel = pd.DataFrame(
+            {
+                "outcome": [1.0, 2.0, 1.1, 2.2, 1.2, 2.3, 1.3, 2.4],
+                "unit": [1, 1, 2, 2, 3, 3, 4, 4],
+                "period": [1, 2, 1, 2, 1, 2, 1, 2],
+                "first_treat": [0, 0, 0, 0, 2, 2, 2, 2],
+            }
+        )
+        obj = self._staggered_stub_with_survey()
+        sentinel_design = object()
+        fake_decomp = MagicMock()
+        fake_decomp.total_weight_treated_vs_never = 0.9
+        fake_decomp.total_weight_earlier_vs_later = 0.05
+        fake_decomp.total_weight_later_vs_earlier = 0.05
+        fake_decomp.twfe_estimate = 1.1
+        fake_decomp.n_timing_groups = 2
+        with patch("diff_diff.bacon.bacon_decompose", return_value=fake_decomp) as m:
+            br = BusinessReport(
+                obj,
+                data=panel,
+                outcome="outcome",
+                unit="unit",
+                time="period",
+                first_treat="first_treat",
+                survey_design=sentinel_design,
+            )
+            br.to_dict()  # trigger DR build
+            assert m.called, "bacon_decompose was not called"
+            _, kwargs = m.call_args
+            assert kwargs.get("survey_design") is sentinel_design
+
+    def test_survey_backed_staggered_br_skips_bacon_without_survey_design(self):
+        """Without ``survey_design``, BR's DR must skip Bacon with the
+        survey-design reason (fit-faithful replay requires it)."""
+        import pandas as pd
+
+        panel = pd.DataFrame(
+            {
+                "outcome": [1.0, 2.0, 1.1, 2.2, 1.2, 2.3, 1.3, 2.4],
+                "unit": [1, 1, 2, 2, 3, 3, 4, 4],
+                "period": [1, 2, 1, 2, 1, 2, 1, 2],
+                "first_treat": [0, 0, 0, 0, 2, 2, 2, 2],
+            }
+        )
+        obj = self._staggered_stub_with_survey()
+        br = BusinessReport(
+            obj,
+            data=panel,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+            # survey_design intentionally omitted
+        )
+        schema = br.to_dict()
+        diag = schema.get("diagnostics", {})
+        dr_schema = diag.get("schema", {}) if isinstance(diag, dict) else {}
+        bacon_block = dr_schema.get("bacon", {}) if isinstance(dr_schema, dict) else {}
+        assert bacon_block.get("status") == "skipped"
+        reason = (bacon_block.get("reason") or "").lower()
+        assert "survey design" in reason

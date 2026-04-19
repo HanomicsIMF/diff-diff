@@ -122,6 +122,19 @@ class BusinessReport:
     include_appendix : bool, default True
         Whether ``full_report()`` appends the estimator's academic
         ``results.summary()`` output under a "Technical Appendix" section.
+    data, outcome, treatment, unit, time, first_treat : optional
+        Raw panel + column names forwarded to the auto-constructed
+        ``DiagnosticReport`` so data-dependent checks (2x2 PT on simple
+        DiD, Bacon-from-scratch, EfficientDiD Hausman pretest) can run.
+    survey_design : SurveyDesign, optional
+        The ``SurveyDesign`` object used to fit a survey-weighted
+        estimator. Forwarded to the auto-constructed ``DiagnosticReport``
+        for fit-faithful Goodman-Bacon replay. When the fit carries
+        ``survey_metadata`` but ``survey_design`` is not supplied, Bacon
+        and the simple 2x2 parallel-trends check are skipped with an
+        explicit reason rather than replaying an unweighted decomposition
+        for a design that does not match the estimate. See
+        ``docs/methodology/REPORTING.md``.
     """
 
     def __init__(
@@ -144,6 +157,7 @@ class BusinessReport:
         unit: Optional[str] = None,
         time: Optional[str] = None,
         first_treat: Optional[str] = None,
+        survey_design: Optional[Any] = None,
     ):
         if type(results).__name__ == "BaconDecompositionResults":
             raise TypeError(
@@ -204,6 +218,13 @@ class BusinessReport:
         self._dr_unit = unit
         self._dr_time = time
         self._dr_first_treat = first_treat
+        # Round-40 P1 CI review on PR #318: survey-backed fits need
+        # the ``SurveyDesign`` threaded through to the auto-constructed
+        # DR so Bacon decomposition is fit-faithful and the 2x2 PT
+        # skip path triggers for DiDResults with ``survey_metadata``.
+        # Without this passthrough, the auto path silently replays an
+        # unweighted decomposition / PT verdict for a weighted fit.
+        self._dr_survey_design = survey_design
 
         resolved_alpha = alpha if alpha is not None else getattr(results, "alpha", 0.05)
         self._context = BusinessContext(
@@ -297,6 +318,7 @@ class BusinessReport:
             unit=self._dr_unit,
             time=self._dr_time,
             first_treat=self._dr_first_treat,
+            survey_design=self._dr_survey_design,
         )
         return dr.run_all()
 
@@ -561,13 +583,11 @@ class BusinessReport:
         # (A_s = infinity) is a fixed never-treated pool. Round-22 P1
         # CI review on PR #318 flagged that ``strict`` was being
         # misrendered as a fixed control design.
-        is_stacked_dynamic = (
-            name == "StackedDiDResults"
-            and _canonical_control in {"notyettreated", "strict"}
-        )
-        is_dynamic_control = (
-            _canonical_control == "notyettreated" or is_stacked_dynamic
-        )
+        is_stacked_dynamic = name == "StackedDiDResults" and _canonical_control in {
+            "notyettreated",
+            "strict",
+        }
+        is_dynamic_control = _canonical_control == "notyettreated" or is_stacked_dynamic
         # StaggeredTripleDiff comparison-group contract:
         # ``n_control_units`` is a composite total that also includes
         # the eligibility-denied / larger-cohort cells. Regardless of
@@ -608,9 +628,7 @@ class BusinessReport:
         # which misstates the sample composition for repeated cross-
         # section fits. Carry the flag into the schema so rendering can
         # branch. Round-28 P2 CI review on PR #318.
-        count_unit = (
-            "observations" if getattr(r, "panel", True) is False else "units"
-        )
+        count_unit = "observations" if getattr(r, "panel", True) is False else "units"
 
         sample_block: Dict[str, Any] = {
             "n_obs": _safe_int(getattr(r, "n_obs", None)),
@@ -1042,16 +1060,13 @@ def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, 
             "treatment-onset cohort."
         )
         has_controls = (
-            results is not None
-            and getattr(results, "covariate_residuals", None) is not None
+            results is not None and getattr(results, "covariate_residuals", None) is not None
         )
         has_trends = (
-            results is not None
-            and getattr(results, "linear_trends_effects", None) is not None
+            results is not None and getattr(results, "linear_trends_effects", None) is not None
         )
         has_heterogeneity = (
-            results is not None
-            and getattr(results, "heterogeneity_effects", None) is not None
+            results is not None and getattr(results, "heterogeneity_effects", None) is not None
         )
         active_parts: List[str] = []
         if has_controls and has_trends:
@@ -1074,9 +1089,7 @@ def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, 
                 "linear pre-trends"
             )
         if has_heterogeneity:
-            active_parts.append(
-                "heterogeneity tests ``beta^{het}_l`` are reported per horizon"
-            )
+            active_parts.append("heterogeneity tests ``beta^{het}_l`` are reported per horizon")
         if active_parts:
             phase3_clause = " Phase-3 configuration: " + "; ".join(active_parts) + "."
             base_description = base_description + phase3_clause
@@ -1886,9 +1899,7 @@ def _render_summary(schema: Dict[str, Any]) -> str:
     # ``schema["estimator"]`` is a dict with ``class_name``; unwrap it
     # for the per-estimator dynamic-control phrasing branch below.
     estimator_block = schema.get("estimator") or {}
-    estimator = (
-        estimator_block.get("class_name") if isinstance(estimator_block, dict) else None
-    )
+    estimator = estimator_block.get("class_name") if isinstance(estimator_block, dict) else None
     n_obs = sample.get("n_obs")
     n_t = sample.get("n_treated")
     n_c = sample.get("n_control")
@@ -1956,8 +1967,7 @@ def _render_summary(schema: Dict[str, Any]) -> str:
             # never-enabled cohort as the valid fixed comparison on
             # this path; the prose must say so.
             sentences.append(
-                f"Sample: {n_obs:,} observations ({n_t:,} treated, "
-                f"{n_ne:,} never-enabled)."
+                f"Sample: {n_obs:,} observations ({n_t:,} treated, " f"{n_ne:,} never-enabled)."
             )
         else:
             sentences.append(f"Sample: {n_obs:,} observations.")
@@ -2148,8 +2158,7 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
         # fixed count — the dynamic-control branch below would not
         # fire on this path.
         lines.append(
-            f"- Never-enabled units (fixed comparison cohort): "
-            f"{sample['n_never_enabled']:,}"
+            f"- Never-enabled units (fixed comparison cohort): " f"{sample['n_never_enabled']:,}"
         )
     elif sample.get("dynamic_control"):
         if isinstance(sample.get("n_never_enabled"), int) and sample["n_never_enabled"] > 0:
@@ -2165,9 +2174,7 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
         if estimator_name == "StackedDiDResults":
             n_distinct = sample.get("n_distinct_controls_trimmed")
             if isinstance(n_distinct, int):
-                lines.append(
-                    f"- Distinct control units in trimmed stack: {n_distinct:,}"
-                )
+                lines.append(f"- Distinct control units in trimmed stack: {n_distinct:,}")
             cc_label = cg if isinstance(cg, str) else "clean_control"
             lines.append(
                 f"- Comparison group: sub-experiment-specific clean controls "
