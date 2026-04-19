@@ -31,9 +31,12 @@ variance and bias estimator will also compose these helpers.
 
 Deviations from nprobust (documented):
 
-* ``weights=`` is not supported here (nprobust's ``lpbwselect`` has no
-  weight argument). Weighted data can be handled by the public wrapper
-  or via the user's own design matrix.
+* ``weights=`` is not supported here or in the public wrapper
+  (nprobust's ``lpbwselect`` has no weight argument, so Phase 1b has
+  no parity anchor). Weighted-data support is queued for Phase 2+
+  (survey-design adaptation). The public wrapper
+  ``mse_optimal_bandwidth`` raises ``NotImplementedError`` when a
+  ``weights`` array is passed.
 * ``vce="nn"`` is the default and is fully ported. ``vce in
   {"hc0", "hc1", "hc2", "hc3"}`` is implemented in ``lprobust_res`` /
   ``lprobust_vce`` but has not been separately golden-tested; use at

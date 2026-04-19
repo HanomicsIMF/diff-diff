@@ -332,17 +332,24 @@ class TestInputValidation:
         assert np.isfinite(h)
         assert h > 0.0
 
-    def test_boundary_zero_with_data_far_from_zero_fails_gracefully(self):
-        """boundary=0 passes the boundary-validation and mass-point
-        checks but then hits the per-stage count guard deeper in the
-        selector because the kernel window is empty (d ~ U(0.5, 1.0)
-        has no data near 0). Must surface a clear ValueError, not an
-        opaque failure."""
+    def test_boundary_zero_with_data_far_from_zero_rejected(self):
+        """boundary=0 with d.min() substantially positive fails the
+        Design 1' support check (d.min() > 1% of median(|d|)). The
+        caller must either pass boundary=float(d.min()) for the
+        continuous-near-d_lower path or confirm Design 1' applicability."""
         rng = np.random.default_rng(2026)
-        d = rng.uniform(0.5, 1.0, size=1500)  # d.min() ~ 0.5, no mass
+        d = rng.uniform(0.5, 1.0, size=1500)  # d.min() ~ 0.5 >> 1% of median
         y = d + rng.normal(0, 0.3, size=1500)
-        with pytest.raises(ValueError, match="lprobust_bw"):
+        with pytest.raises(ValueError, match="Design 1'"):
             mse_optimal_bandwidth(d, y, boundary=0.0)
+
+    def test_empty_input_rejected(self):
+        """Empty d/y must raise a targeted ValueError up front, not
+        leak a NumPy reduction error from d.min()."""
+        d = np.array([], dtype=np.float64)
+        y = np.array([], dtype=np.float64)
+        with pytest.raises(ValueError, match="non-empty"):
+            mse_optimal_bandwidth(d, y)
 
     def test_boundary_zero_with_d_min_mass_point_rejected(self):
         """boundary=0 with d.min() > 0 AND mass at d.min() is a

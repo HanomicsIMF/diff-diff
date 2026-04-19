@@ -615,6 +615,11 @@ def mse_optimal_bandwidth(
     y = np.asarray(y, dtype=np.float64).ravel()
     if d.shape != y.shape:
         raise ValueError(f"d and y must have the same shape; got {d.shape} and {y.shape}")
+    if d.size == 0:
+        raise ValueError(
+            "d and y must be non-empty; the selector cannot estimate a "
+            "bandwidth from zero observations."
+        )
     if not np.all(np.isfinite(d)):
         raise ValueError("d contains non-finite values (NaN or Inf)")
     if not np.all(np.isfinite(y)):
@@ -668,13 +673,15 @@ def mse_optimal_bandwidth(
         )
 
     # Mass-point design check (paper Section 3.2.4, REGISTRY 2% rule).
-    # When d_min > 0 and there is bunching at d_min, Design 1 requires
-    # the 2SLS sample-average path (Phase 2), not the CCF nonparametric
-    # selector. The check applies independently of the boundary the
-    # user supplied: mass-point data is never appropriate for this
-    # wrapper. The check explicitly excludes d_min ~ 0, which is the
-    # Design 1' "untreated units present" subcase that the paper's
-    # simulations and the Garrett et al. (2020) application accept.
+    # Must fire BEFORE the Design 1' support check: mass-point data is
+    # never appropriate for the CCF nonparametric selector regardless
+    # of the boundary the caller supplied. The correct remediation is
+    # the 2SLS sample-average path (Phase 2), not a boundary
+    # reclassification.
+    #
+    # The check explicitly excludes d_min ~ 0 (the Design 1'
+    # "untreated units present" subcase that the paper's simulations
+    # and the Garrett et al. (2020) application accept).
     _MASS_POINT_THRESHOLD = 0.02  # REGISTRY rule: > 2% modal-min
     if d_min > _boundary_tol:
         eps_eq = 1e-12 * max(1.0, abs(d_min))
@@ -693,6 +700,37 @@ def mse_optimal_bandwidth(
                 f"near-d_lower designs (modal fraction <= "
                 f"{_MASS_POINT_THRESHOLD:.2f}), this wrapper is "
                 f"applicable."
+            )
+
+    # Design 1' support check: boundary ~ 0 requires the realized
+    # sample minimum to be compatible with a population support
+    # infimum at 0. Otherwise the selector calibrates ``h_mse`` at
+    # an off-support limit.
+    #
+    # Rule: when boundary ~ 0 (not also at d.min()), require
+    # d.min() <= 5% * median(|d|). The 5% threshold is generous
+    # enough to accept Design 1' samples with vanishing boundary
+    # density (Beta(2,2): d.min/median ~ 3%) while rejecting samples
+    # substantially off-support (U(0.5, 1): d.min/median ~ 1.0).
+    # Samples just between these (e.g. U(0.05, 1), d.min/median ~ 10%)
+    # are directed to boundary=float(d.min()) for the continuous-
+    # near-d_lower path.
+    _DESIGN_1_PRIME_RATIO = 0.05
+    if _at_zero and not _at_d_min:
+        d_median_abs = float(np.median(np.abs(d)))
+        effective_threshold = _DESIGN_1_PRIME_RATIO * max(d_median_abs, 1e-12)
+        if d_min > effective_threshold:
+            raise ValueError(
+                f"boundary ~ 0 selected but d.min()={d_min!r} is not "
+                f"compatible with a Design 1' support infimum at 0 "
+                f"(rule: d.min() <= "
+                f"{_DESIGN_1_PRIME_RATIO} * median(|d|) = "
+                f"{effective_threshold!r}). This sample is not "
+                f"Design 1'. Either: (a) pass boundary=float(d.min()) "
+                f"for the Design 1 continuous-near-d_lower path, or "
+                f"(b) verify the population support actually has "
+                f"infimum at 0 (in which case the realized d.min() "
+                f"would be closer to zero relative to the data scale)."
             )
 
     # Defer heavy import to call time to avoid import-cycle risk.
