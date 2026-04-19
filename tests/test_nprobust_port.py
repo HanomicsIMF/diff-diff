@@ -241,3 +241,78 @@ class TestLprobustBwStageD1:
         )
         # With scale=0, BWreg is never computed -> R stays 0.
         assert C_d1.R == 0.0
+
+
+# =============================================================================
+# lpbwselect_mse_dpi: input validation on the advanced-use entry point
+# =============================================================================
+
+
+class TestLpbwselectMseDpiValidation:
+    """The public wrapper is restricted to the HAD surface; the port is
+    the advertised advanced-use entry point. It must enforce its own
+    shape / emptiness / finiteness contract -- silently truncating a
+    longer y or cluster through sort-index reindexing would be a real
+    bug."""
+
+    def test_mismatched_shapes_raise(self):
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        x = np.array([0.1, 0.2, 0.3])
+        y = np.array([1.0, 2.0, 3.0, 4.0])  # length 4 != 3
+        with pytest.raises(ValueError, match="same 1-D shape"):
+            lpbwselect_mse_dpi(y, x, eval_point=0.0)
+
+    def test_longer_y_silent_truncation_rejected(self):
+        """Regression: len(y) > len(x) previously got truncated via
+        the sort-indexer under vce='nn'. Must now raise."""
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        rng = np.random.default_rng(0)
+        x = rng.uniform(0.0, 1.0, size=100)
+        y = rng.normal(size=200)  # twice the length
+        with pytest.raises(ValueError, match="same 1-D shape"):
+            lpbwselect_mse_dpi(y, x, eval_point=0.0, vce="nn")
+
+    def test_cluster_wrong_length_rejected(self):
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        rng = np.random.default_rng(0)
+        x = rng.uniform(0.0, 1.0, size=100)
+        y = rng.normal(size=100)
+        cluster = np.arange(50)  # wrong length
+        with pytest.raises(ValueError, match="cluster must have"):
+            lpbwselect_mse_dpi(y, x, cluster=cluster, eval_point=0.0)
+
+    def test_empty_direct_port_input_rejected(self):
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        x = np.array([], dtype=np.float64)
+        y = np.array([], dtype=np.float64)
+        with pytest.raises(ValueError, match="non-empty"):
+            lpbwselect_mse_dpi(y, x, eval_point=0.0)
+
+    def test_non_finite_x_rejected(self):
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        x = np.array([0.1, np.nan, 0.3])
+        y = np.array([1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match="x contains non-finite"):
+            lpbwselect_mse_dpi(y, x, eval_point=0.0)
+
+    def test_non_finite_y_rejected(self):
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        x = np.array([0.1, 0.2, 0.3])
+        y = np.array([1.0, np.inf, 3.0])
+        with pytest.raises(ValueError, match="y contains non-finite"):
+            lpbwselect_mse_dpi(y, x, eval_point=0.0)
+
+    def test_non_finite_eval_point_rejected(self):
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        rng = np.random.default_rng(0)
+        x = rng.uniform(0.0, 1.0, size=100)
+        y = rng.normal(size=100)
+        with pytest.raises(ValueError, match="eval_point"):
+            lpbwselect_mse_dpi(y, x, eval_point=np.nan)

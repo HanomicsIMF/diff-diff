@@ -650,10 +650,31 @@ def lpbwselect_mse_dpi(
     if vce not in _VALID_VCE:
         raise ValueError(f"Unknown vce {vce!r}. Expected one of {_VALID_VCE}.")
 
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float64).ravel()
+    y = np.asarray(y, dtype=np.float64).ravel()
+    if x.shape != y.shape:
+        raise ValueError(
+            f"x and y must have the same 1-D shape; got "
+            f"{x.shape} and {y.shape}"
+        )
+    if x.size == 0:
+        raise ValueError(
+            "x and y must be non-empty; lpbwselect_mse_dpi cannot "
+            "estimate a bandwidth from zero observations."
+        )
+    if not np.all(np.isfinite(x)):
+        raise ValueError("x contains non-finite values (NaN or Inf)")
+    if not np.all(np.isfinite(y)):
+        raise ValueError("y contains non-finite values (NaN or Inf)")
+    if not np.isfinite(eval_point):
+        raise ValueError(f"eval_point must be finite; got {eval_point}")
     if cluster is not None:
-        cluster = np.asarray(cluster)
+        cluster = np.asarray(cluster).ravel()
+        if cluster.shape != x.shape:
+            raise ValueError(
+                f"cluster must have the same shape as x; got "
+                f"{cluster.shape} and {x.shape}"
+            )
     if q is None:
         q = p + 1
 
