@@ -1963,21 +1963,83 @@ class DiagnosticReport:
         }
 
     def _format_precomputed_pt(self, obj: Any) -> Dict[str, Any]:
-        """Adapt a pre-computed PT result (from utils.check_parallel_trends) to schema shape."""
-        if not isinstance(obj, dict):
+        """Adapt a pre-computed parallel-trends result to the schema shape.
+
+        Accepted inputs (round-23 P1 CI review on PR #318):
+          * A dict from ``utils.check_parallel_trends`` with ``p_value``
+            (2x2 PT shape) — ``joint_p_value`` inherits from ``p_value``
+            when only the 2x2 key is supplied.
+          * A schema-shaped dict with ``joint_p_value`` and optional
+            ``test_statistic`` / ``df`` / ``method`` (the same shape
+            ``to_dict()["parallel_trends"]`` emits on the default path),
+            so a PT block from one DR run can be replayed into another.
+          * A native result object exposing ``p_value`` (or
+            ``joint_p_value``) plus optional ``statistic`` /
+            ``test_statistic`` and ``df`` — in particular, EfficientDiD's
+            ``HausmanPretestResult``, which is what the ``_pt_hausman``
+            skip message points users toward when replay fails on a
+            non-nocov / survey fit.
+
+        Previously the formatter rejected non-dict inputs outright and
+        only read ``p_value``, so ``HausmanPretestResult`` could not be
+        passed through at all and a schema-shaped dict silently lost its
+        ``joint_p_value`` / ``test_statistic`` / ``df`` fields.
+        """
+
+        def _read(name: str) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(name)
+            return getattr(obj, name, None)
+
+        # Accept joint_p_value preferentially, but fall back to the 2x2
+        # ``p_value`` key so ``utils.check_parallel_trends`` dicts still
+        # work as before.
+        raw_p = _read("joint_p_value")
+        if raw_p is None:
+            raw_p = _read("p_value")
+        p_value = _to_python_float(raw_p)
+
+        # ``HausmanPretestResult`` exposes ``statistic``; schema-shaped
+        # dicts and the default DR path both use ``test_statistic``.
+        raw_stat = _read("test_statistic")
+        if raw_stat is None:
+            raw_stat = _read("statistic")
+        test_statistic = _to_python_float(raw_stat)
+
+        df = _to_python_scalar(_read("df"))
+        method = _read("method") or "precomputed"
+
+        # If no recognized p-value field was supplied at all, surface an
+        # error rather than silently producing ``joint_p_value=None``.
+        # Stay permissive about dict shapes — absence of ``test_statistic``
+        # or ``df`` is fine (2x2 PT has neither), but a complete absence
+        # of a p-value / joint-p-value means the input is not a PT result.
+        if raw_p is None:
             return {
                 "status": "error",
-                "reason": "precomputed['parallel_trends'] must be a dict returned by "
-                "check_parallel_trends or compatible shape.",
+                "method": method,
+                "reason": (
+                    "precomputed['parallel_trends'] must expose either "
+                    "``joint_p_value`` (schema shape / HausmanPretestResult) or "
+                    "``p_value`` (check_parallel_trends 2x2 shape). Got an object "
+                    "with neither: pass a dict with one of those keys, or a "
+                    "native result object (e.g., HausmanPretestResult) exposing "
+                    "``p_value``."
+                ),
             }
-        p_value = _to_python_float(obj.get("p_value"))
-        return {
+
+        out: Dict[str, Any] = {
             "status": "ran",
-            "method": obj.get("method", "precomputed"),
+            "method": method,
             "joint_p_value": p_value,
             "verdict": _pt_verdict(p_value),
             "precomputed": True,
         }
+        if test_statistic is not None:
+            out["test_statistic"] = test_statistic
+        if df is not None:
+            out["df"] = df
+        return out
 
     # -- Headline metric extraction ----------------------------------------
 

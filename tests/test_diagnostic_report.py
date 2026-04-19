@@ -440,6 +440,91 @@ class TestPrecomputed:
             f"Got status={pt_block.get('status')}, reason={pt_block.get('reason')}"
         )
 
+    def test_precomputed_parallel_trends_preserves_schema_shaped_joint_p(self, cs_fit):
+        """Round-23 P1 regression: schema-shaped PT dicts with
+        ``joint_p_value`` (the key emitted by the default DR path and
+        the shape users are most likely to replay from one DR to
+        another) must land on ``joint_p_value`` in the output, not
+        silently fall through to ``None``. Prior formatter read only
+        ``p_value``, so a dict with ``joint_p_value=0.42`` was
+        degraded to ``joint_p_value=None`` / ``verdict="inconclusive"``.
+        """
+        fit, _ = cs_fit
+        dr = DiagnosticReport(
+            fit,
+            precomputed={
+                "parallel_trends": {
+                    "joint_p_value": 0.42,
+                    "test_statistic": 5.6,
+                    "df": 3,
+                    "method": "hausman",
+                }
+            },
+        )
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran"
+        assert pt["method"] == "hausman"
+        assert pt["joint_p_value"] == 0.42, (
+            f"joint_p_value must survive formatting; got {pt.get('joint_p_value')}"
+        )
+        assert pt["test_statistic"] == 5.6
+        assert pt["df"] == 3
+        # Verdict must be derived from the surviving p-value, not None.
+        assert pt["verdict"] != "inconclusive"
+
+    def test_precomputed_parallel_trends_accepts_native_hausman_result(self, cs_fit):
+        """Round-23 P1 regression: ``_pt_hausman`` tells users with
+        non-replayable EfficientDiD fits to pass a precomputed pretest
+        result, but the formatter previously rejected non-dict inputs
+        outright. The ``HausmanPretestResult`` dataclass — the exact
+        object ``EfficientDiD.hausman_pretest(...)`` returns — must
+        now pass through with ``statistic`` / ``p_value`` / ``df``
+        preserved on the schema.
+        """
+        from types import SimpleNamespace
+
+        fit, _ = cs_fit
+        # Mirror HausmanPretestResult: the key fields are ``statistic``,
+        # ``p_value``, ``df``. Uses SimpleNamespace so the test does
+        # not need EfficientDiD's construction path.
+        hausman = SimpleNamespace(
+            statistic=7.2,
+            p_value=0.065,
+            df=3,
+            reject=False,
+            alpha=0.05,
+            att_all=1.0,
+            att_post=1.05,
+            recommendation="pt_all",
+        )
+        dr = DiagnosticReport(fit, precomputed={"parallel_trends": hausman})
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran", (
+            f"Native HausmanPretestResult must be accepted; got "
+            f"status={pt.get('status')}, reason={pt.get('reason')}"
+        )
+        assert pt["joint_p_value"] == 0.065
+        # ``statistic`` on the source object maps to ``test_statistic``
+        # in the emitted schema (matches the default ``_pt_hausman``
+        # path that also exposes it as ``test_statistic``).
+        assert pt["test_statistic"] == 7.2
+        assert pt["df"] == 3
+
+    def test_precomputed_parallel_trends_rejects_input_without_p_value(self, cs_fit):
+        """Inputs without any recognized p-value field (neither
+        ``joint_p_value`` nor ``p_value``) must surface a clear error,
+        not silently land on ``joint_p_value=None``. Keeps the formatter
+        permissive about absent ``test_statistic`` / ``df`` (2x2 PT has
+        neither) while catching obviously-wrong inputs.
+        """
+        fit, _ = cs_fit
+        dr = DiagnosticReport(
+            fit, precomputed={"parallel_trends": {"method": "event_study"}}
+        )
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "error"
+        assert "joint_p_value" in pt["reason"] or "p_value" in pt["reason"]
+
     def test_precomputed_bacon_bypasses_applicability_gate(self, cs_fit):
         """Round-22 P1 regression: ``precomputed["bacon"]`` was
         documented as supported but ``_instance_skip_reason`` skipped
