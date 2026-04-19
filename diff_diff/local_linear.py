@@ -606,100 +606,57 @@ def mse_optimal_bandwidth(
         raise ValueError(f"boundary must be finite; got {boundary}")
 
     # Boundary-applicability check (Phase 1b scope).
-    # The exported wrapper is scoped to the HAD LOWER-boundary case:
-    #   - Design 1' (d_0 = 0 with support infimum at 0), or
-    #   - Design 1 continuous-near-d_lower (d_0 = d_lower = min(D_2)).
-    # In both cases ``boundary`` must lie at or below the sample minimum:
-    # no observation should fall to the left of the evaluation point,
-    # because the downstream ``local_linear_fit`` uses a one-sided kernel
-    # restricted to ``d >= d_0``. An interior or upper-boundary
-    # evaluation would silently run the boundary selector branch with a
-    # symmetric kernel (see port's ``kernel_W``) and produce a bandwidth
-    # incompatible with the fitter. Reject those inputs here until an
-    # interior-point API is documented (Phase 2+).
+    # The exported wrapper is scoped to the two documented HAD
+    # nonparametric estimands:
+    #   - Design 1' evaluates m(0) = lim_{d down 0} E[Delta Y | D_2 <= d]
+    #     with ``boundary = 0``.
+    #   - Design 1 continuous-near-d_lower evaluates m(d_lower) with
+    #     ``boundary = d_lower = min(D_2)``.
+    # Any other off-support boundary (interior, upper-boundary, or an
+    # arbitrary value between 0 and d.min()) would silently target an
+    # undocumented limit and is rejected.
     d_min = float(d.min())
-    # Allow a small numerical tolerance so boundary = min(d) passes even
-    # under floating-point noise (e.g. ``d.min()`` equals ``boundary``
-    # within 1e-12 but not bit-exact).
     _boundary_tol = 1e-12 * max(1.0, abs(d_min), abs(boundary))
-    if boundary > d_min + _boundary_tol:
+    _at_zero = abs(boundary) <= _boundary_tol
+    _at_d_min = abs(boundary - d_min) <= _boundary_tol
+    if not (_at_zero or _at_d_min):
         raise ValueError(
-            f"boundary={boundary!r} exceeds the sample minimum "
-            f"d.min()={d_min!r}. The Phase 1b wrapper is scoped to the "
-            f"HAD lower-boundary case (d_0 <= min(d)). For interior or "
-            f"upper-boundary evaluation, use "
-            f"diff_diff._nprobust_port.lpbwselect_mse_dpi directly with "
-            f"interior=True; note that the non-boundary branches are not "
-            f"separately parity-tested against nprobust."
+            f"boundary={boundary!r} is not at a supported HAD estimand. "
+            f"The Phase 1b public wrapper accepts only boundary ~ 0 "
+            f"(Design 1') or boundary ~ d.min()={d_min!r} (Design 1 "
+            f"continuous-near-d_lower). Off-support values would "
+            f"silently target an undocumented limit. For interior or "
+            f"other boundary points, use "
+            f"diff_diff._nprobust_port.lpbwselect_mse_dpi directly and "
+            f"note that those paths are not separately parity-tested."
         )
 
-    # Design classification (REGISTRY.md Phase 2 design="auto" rule
-    # plus paper Section 3.2.4 mass-point redirection):
-    #
-    #   Design 1'        <=> d_lower = inf supp(D_2) = 0
-    #   Design 1 masspt  <=> d_lower > 0, P(D_2 = d_lower) > 0
-    #   Design 1 cont    <=> d_lower > 0, D_2 continuous near d_lower
-    #
-    # The CCF nonparametric selector is appropriate for Design 1' and
-    # Design 1 continuous-near-d_lower. Mass-point Design 1 requires a
-    # 2SLS sample-average estimator (Phase 2, not Phase 1b).
+    # Mass-point design check (paper Section 3.2.4, REGISTRY 2% rule).
+    # When d_min > 0 and there is bunching at d_min, Design 1 requires
+    # the 2SLS sample-average path (Phase 2), not the CCF nonparametric
+    # selector. The check applies independently of the boundary the
+    # user supplied: mass-point data is never appropriate for this
+    # wrapper. The check explicitly excludes d_min ~ 0, which is the
+    # Design 1' "untreated units present" subcase that the paper's
+    # simulations and the Garrett et al. (2020) application accept.
     _MASS_POINT_THRESHOLD = 0.02  # REGISTRY rule: > 2% modal-min
-    eps_eq = 1e-12 * max(1.0, abs(d_min))
-    at_d_min_mask = np.abs(d - d_min) <= eps_eq
-    modal_fraction = float(np.mean(at_d_min_mask))
-
-    if boundary > _boundary_tol:
-        # User supplied boundary = d_min > 0 explicitly. This is
-        # Design 1; distinguish mass-point vs continuous-near-d_lower.
+    if d_min > _boundary_tol:
+        eps_eq = 1e-12 * max(1.0, abs(d_min))
+        at_d_min_mask = np.abs(d - d_min) <= eps_eq
+        modal_fraction = float(np.mean(at_d_min_mask))
         if modal_fraction > _MASS_POINT_THRESHOLD:
             raise NotImplementedError(
-                f"Detected mass-point design: the lower boundary "
-                f"d_lower={d_min!r} has modal fraction "
-                f"{modal_fraction:.4f} > {_MASS_POINT_THRESHOLD:.2f}. "
-                f"Per de Chaisemartin et al. (2026) Section 3.2.4 and "
-                f"the methodology registry, this case requires the 2SLS "
-                f"sample-average estimator with instrument 1{{D_2 > "
-                f"d_lower}}, not the nonparametric CCF local-polynomial "
-                f"bandwidth selector. That estimator is queued for "
+                f"Detected mass-point design at d.min()={d_min!r} "
+                f"(modal fraction {modal_fraction:.4f} > "
+                f"{_MASS_POINT_THRESHOLD:.2f}). Per de Chaisemartin et "
+                f"al. (2026) Section 3.2.4, Design 1 mass-point cases "
+                f"require the 2SLS sample-average estimator with "
+                f"instrument 1{{D_2 > d_lower}}, not the CCF "
+                f"nonparametric selector. That path is queued for "
                 f"Phase 2 (HeterogeneousAdoptionDiD). For continuous "
                 f"near-d_lower designs (modal fraction <= "
-                f"{_MASS_POINT_THRESHOLD:.2f}), this wrapper is applicable."
-            )
-    else:
-        # User passed boundary <= 0 (default). Intent is Design 1'.
-        # Apply the REGISTRY's `min(d) < 0.01 * median(d)` rule: only
-        # accept when the support infimum is effectively 0 relative to
-        # the data scale. Otherwise force the user to disambiguate.
-        d_median = float(np.median(d))
-        _DESIGN_1_PRIME_RATIO = 0.01  # REGISTRY: min(d)/median(d) < 1%
-        # Guard against pathological all-zero or all-negative median.
-        effective_threshold = _DESIGN_1_PRIME_RATIO * max(abs(d_median), 1e-12)
-        if d_min > effective_threshold:
-            if modal_fraction > _MASS_POINT_THRESHOLD:
-                # Mass-point design dressed as Design 1': same
-                # NotImplementedError as the boundary>0 branch.
-                raise NotImplementedError(
-                    f"Detected mass-point design at d.min()={d_min!r} "
-                    f"(modal fraction {modal_fraction:.4f} > "
-                    f"{_MASS_POINT_THRESHOLD:.2f}), but boundary=0 "
-                    f"implies Design 1' intent. Either: (a) pass "
-                    f"boundary=d.min() to make the mass-point "
-                    f"classification explicit (which will then raise "
-                    f"NotImplementedError directing to the 2SLS path "
-                    f"per de Chaisemartin et al. 2026 Section 3.2.4), "
-                    f"or (b) reconsider whether the data is truly "
-                    f"Design 1' (support at 0)."
-                )
-            raise ValueError(
-                f"Ambiguous design: boundary=0 but d.min()={d_min!r} "
-                f"exceeds the Design 1' threshold of "
-                f"0.01 * median(d) = {effective_threshold!r}. This "
-                f"dataset does not satisfy Design 1' (support infimum "
-                f"at 0). Either: (a) pass boundary=d.min() for the "
-                f"Design 1 continuous-near-d_lower path, or (b) verify "
-                f"the data truly has support at 0 (in which case "
-                f"d.min() would be much closer to zero relative to the "
-                f"data scale)."
+                f"{_MASS_POINT_THRESHOLD:.2f}), this wrapper is "
+                f"applicable."
             )
 
     # Defer heavy import to call time to avoid import-cycle risk.
