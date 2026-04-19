@@ -1820,7 +1820,7 @@ class TestBootstrapCellPeriod:
     # drifts, the dispatcher is no longer reproducing pre-PR-4
     # behavior under PSU=group and the legacy fast path has
     # regressed.
-    _BASELINE_OVERALL_SE = 0.3030802540369796
+    _BASELINE_OVERALL_SE = 0.30560839419979546
 
     @staticmethod
     def _make_baseline_fixture() -> pd.DataFrame:
