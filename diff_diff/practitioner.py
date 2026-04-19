@@ -570,7 +570,16 @@ def _handle_synthetic(results: Any):
                 "          'with positive effective support.')"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # DR's SyntheticDiD native battery covers pre-treatment fit,
+            # weight concentration, in-time placebo, and zeta-omega
+            # sensitivity, but NOT the jackknife LOO workflow (which
+            # requires a separate ``variance_method='jackknife'`` fit
+            # via ``get_loo_effects_df``). Tagging this recommendation
+            # as ``sensitivity`` caused ``_collect_next_steps`` to
+            # suppress it as soon as the native block ran, even though
+            # the jackknife was never executed. Round-24 P2 CI review
+            # on PR #318; same class as round-20 Hausman mistag.
+            step_name="loo_jackknife",
         ),
         _step(
             baker_step=6,

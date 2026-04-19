@@ -2290,6 +2290,74 @@ class TestSpecificationComparisonStepTagPersistsAfterSensitivityRuns:
         )
 
 
+class TestSDiDJackknifeStepPersistsAfterNativeSensitivity:
+    """Round-24 P2 CI review on PR #318: the SyntheticDiD practitioner
+    step "Leave-one-out influence (jackknife)" must persist after
+    ``DiagnosticReport`` marks ``sensitivity`` complete via the SDiD
+    native battery (pre-treatment fit, weight concentration,
+    ``in_time_placebo``, ``sensitivity_to_zeta_omega``). DR does NOT
+    run the jackknife LOO workflow — ``get_loo_effects_df`` requires a
+    separate ``variance_method='jackknife'`` fit — so suppressing the
+    recommendation when the native block fires overstates what the
+    report has already executed. Same class as round-20 Hausman and
+    pre-emptive TROP-placebo retags: step_name was coarser than DR's
+    actual coverage.
+    """
+
+    def test_sdid_jackknife_step_persists_via_practitioner_filter(self):
+        """Unit-level: ``practitioner_next_steps`` with
+        ``completed_steps=["sensitivity"]`` still surfaces the jackknife
+        recommendation because it is now tagged ``loo_jackknife``.
+        """
+        from diff_diff.practitioner import practitioner_next_steps
+
+        class SyntheticDiDResults:
+            pass
+
+        stub = SyntheticDiDResults()
+        stub.att = 1.0
+        stub.se = 0.2
+        stub.p_value = 0.001
+        stub.conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 200
+        stub.n_treated = 20
+        stub.n_control = 180
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+
+        labels = [
+            s.get("label", "")
+            for s in practitioner_next_steps(
+                stub, completed_steps=["sensitivity"], verbose=False
+            )["next_steps"]
+        ]
+        assert any(
+            "Leave-one-out influence (jackknife)" in lab for lab in labels
+        ), (
+            "SDiD jackknife recommendation must persist after DR marks "
+            "sensitivity complete — the SDiD native battery does not run "
+            "the jackknife LOO workflow (requires a separate "
+            "variance_method='jackknife' fit)."
+        )
+
+    def test_sdid_jackknife_step_persists_in_dr_next_steps(self, sdid_fit):
+        """Integration: ``DiagnosticReport(...).to_dict()["next_steps"]``
+        preserves the jackknife recommendation when only the default
+        native SDiD diagnostics ran.
+        """
+        from diff_diff import DiagnosticReport
+
+        fit, _ = sdid_fit
+        next_steps = DiagnosticReport(fit).to_dict()["next_steps"]
+        labels = [s.get("label", "") for s in next_steps]
+        assert any("Leave-one-out influence (jackknife)" in lab for lab in labels), (
+            "DR next_steps must preserve the SDiD jackknife recommendation "
+            "when the SDiD native battery ran but the jackknife workflow "
+            f"did not. Got labels: {labels}"
+        )
+
+
 class TestTROPInTimePlaceboStepTaggedAsPlacebo:
     """Pre-emptive audit regression: the TROP practitioner workflow
     step "In-time or in-space placebo" was previously tagged
