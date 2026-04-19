@@ -2007,7 +2007,43 @@ class DiagnosticReport:
         test_statistic = _to_python_float(raw_stat)
 
         df = _to_python_scalar(_read("df"))
-        method = _read("method") or "precomputed"
+
+        # Method inference (round-26 P2 CI review on PR #318). Downstream
+        # BR / DR prose keys off ``method`` to pick the right subject and
+        # statistic label (``"joint p"`` for event-study Wald /
+        # Bonferroni, ``"p"`` for the 2x2 slope-difference and Hausman
+        # single-statistic tests, no label for design-enforced paths).
+        # Defaulting to ``"precomputed"`` made raw 2x2 dicts and native
+        # Hausman objects render with the wrong subject ("Pre-treatment
+        # data") and label ("joint p"). Infer from the distinguishing
+        # fields when ``method`` is not explicit:
+        #   * ``HausmanPretestResult`` / shape: has ``statistic``, plus
+        #     at least one of ``att_all`` / ``att_post`` / ``recommendation``
+        #     (disambiguates from the schema-shaped dict which may also
+        #     carry ``test_statistic`` but does not carry the Hausman-
+        #     specific companion fields).
+        #   * ``utils.check_parallel_trends`` 2x2 dict: carries
+        #     ``trend_difference`` / ``treated_trend`` / ``control_trend``
+        #     as its distinguishing fields.
+        method = _read("method")
+        if method is None:
+            hausman_markers = (
+                _read("statistic") is not None
+                and any(
+                    _read(tag) is not None
+                    for tag in ("att_all", "att_post", "recommendation", "reject")
+                )
+            )
+            slope_markers = any(
+                _read(tag) is not None
+                for tag in ("trend_difference", "treated_trend", "control_trend")
+            )
+            if hausman_markers:
+                method = "hausman"
+            elif slope_markers:
+                method = "slope_difference"
+            else:
+                method = "precomputed"
 
         # If no recognized p-value field was supplied at all, surface an
         # error rather than silently producing ``joint_p_value=None``.

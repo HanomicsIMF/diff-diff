@@ -295,11 +295,19 @@ class TestApplicabilityMatrix:
         assert dr.skipped_checks["sensitivity"].startswith("run_sensitivity=False")
 
     def test_placebo_is_reserved_and_skipped(self, did_fit):
-        """Placebo is always in _CHECK_NAMES, always skipped in MVP."""
+        """Placebo is always in _CHECK_NAMES, always skipped in MVP.
+
+        Round-26 P3: tightened from ``status in {"skipped",
+        "not_applicable"}`` to exact ``status == "skipped"`` because
+        both REPORTING.md §MVP scope and the implementation
+        (``_compute_applicable_checks`` always seeds ``"placebo"`` into
+        ``skipped``) now pin the MVP contract to a single value.
+        """
         fit, df = did_fit
         dr = DiagnosticReport(fit, data=df, outcome="outcome", treatment="treated", time="post")
         placebo_section = dr.to_dict()["placebo"]
-        assert placebo_section["status"] in {"skipped", "not_applicable"}
+        assert placebo_section["status"] == "skipped"
+        assert isinstance(placebo_section.get("reason"), str) and placebo_section["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +517,113 @@ class TestPrecomputed:
         # path that also exposes it as ``test_statistic``).
         assert pt["test_statistic"] == 7.2
         assert pt["df"] == 3
+
+    def test_precomputed_pt_infers_slope_difference_method_for_raw_2x2_dict(self, cs_fit):
+        """Round-26 P2 regression: a raw ``utils.check_parallel_trends()``
+        dict (no ``method`` key, has ``trend_difference`` / p_value) must
+        be recognized as the slope-difference 2x2 path and render with
+        the single-statistic ``p`` label, not the generic ``joint p``
+        wording that ``"precomputed"`` falls through to.
+        """
+        from diff_diff import BusinessReport
+        from diff_diff.diagnostic_report import DiagnosticReportResults
+
+        fit, _ = cs_fit
+        raw_2x2 = {
+            "treated_trend": 0.1,
+            "treated_trend_se": 0.05,
+            "control_trend": 0.08,
+            "control_trend_se": 0.04,
+            "trend_difference": 0.02,
+            "trend_difference_se": 0.06,
+            "t_statistic": 0.33,
+            "p_value": 0.40,
+            "parallel_trends_plausible": True,
+        }
+        dr = DiagnosticReport(fit, precomputed={"parallel_trends": raw_2x2})
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran"
+        assert pt["method"] == "slope_difference", (
+            f"Raw check_parallel_trends dict must infer "
+            f"method='slope_difference'; got {pt.get('method')!r}"
+        )
+
+        # Markdown prose must use the single-statistic ``p`` label
+        # (not ``joint p``, which is Wald / Bonferroni-specific).
+        br_dr = DiagnosticReportResults(
+            schema=dr.to_dict(),
+            interpretation="",
+            applicable_checks=("parallel_trends",),
+            skipped_checks={},
+            warnings=(),
+        )
+        md = BusinessReport(fit, diagnostics=br_dr).full_report()
+        pt_section = md.split("## Pre-Trends", 1)[1].split("\n## ", 1)[0]
+        assert "joint p" not in pt_section
+        assert "p = 0.4" in pt_section
+
+    def test_precomputed_pt_infers_hausman_method_for_native_object(self, cs_fit):
+        """Round-26 P2 regression: a native Hausman-like object without
+        an explicit ``method`` tag (``HausmanPretestResult`` shape:
+        ``statistic`` + ``att_all`` / ``att_post`` / ``recommendation``)
+        must be recognized as the Hausman path and render with the
+        single-statistic ``p`` label, not ``joint p``.
+        """
+        from types import SimpleNamespace
+
+        from diff_diff import BusinessReport
+        from diff_diff.diagnostic_report import DiagnosticReportResults
+
+        fit, _ = cs_fit
+        hausman_like = SimpleNamespace(
+            statistic=4.5,
+            p_value=0.21,
+            df=3,
+            reject=False,
+            alpha=0.05,
+            att_all=1.0,
+            att_post=1.1,
+            recommendation="pt_all",
+            # Note: no ``method`` attribute — tests the inference path.
+        )
+        dr = DiagnosticReport(fit, precomputed={"parallel_trends": hausman_like})
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran"
+        assert pt["method"] == "hausman", (
+            f"Native Hausman-like object must infer method='hausman'; "
+            f"got {pt.get('method')!r}"
+        )
+        assert pt["test_statistic"] == 4.5
+        assert pt["joint_p_value"] == 0.21
+
+        # Markdown prose must use the single-statistic ``p`` label.
+        br_dr = DiagnosticReportResults(
+            schema=dr.to_dict(),
+            interpretation="",
+            applicable_checks=("parallel_trends",),
+            skipped_checks={},
+            warnings=(),
+        )
+        md = BusinessReport(fit, diagnostics=br_dr).full_report()
+        pt_section = md.split("## Pre-Trends", 1)[1].split("\n## ", 1)[0]
+        assert "joint p" not in pt_section
+        assert "p = 0.21" in pt_section
+
+    def test_precomputed_pt_explicit_method_wins_over_inference(self, cs_fit):
+        """Explicit ``method`` in the input must never be overridden by
+        the heuristic inference (defensive: e.g., a user passes a
+        schema-shaped dict labeled ``method='event_study'`` where the
+        ``trend_difference`` markers would otherwise suggest
+        slope_difference).
+        """
+        fit, _ = cs_fit
+        spoofed = {
+            "method": "event_study",
+            "joint_p_value": 0.42,
+            "trend_difference": 0.02,  # would otherwise trigger slope_difference inference
+        }
+        dr = DiagnosticReport(fit, precomputed={"parallel_trends": spoofed})
+        assert dr.to_dict()["parallel_trends"]["method"] == "event_study"
 
     def test_precomputed_parallel_trends_rejects_input_without_p_value(self, cs_fit):
         """Inputs without any recognized p-value field (neither
