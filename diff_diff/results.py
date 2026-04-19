@@ -192,8 +192,10 @@ class DiDResults:
             if self.n_clusters is not None:
                 lines.append(f"{'Number of clusters:':<25} {self.n_clusters:>10}")
 
-        # Add variance family label (vcov_type) when set.
-        if self.vcov_type is not None:
+        # Add variance family label (vcov_type) only when inference was analytical.
+        # For wild-bootstrap etc. the reported SE/CI come from resampling, so the
+        # analytical variance family would mislabel the actual inference source.
+        if self.vcov_type is not None and self.inference_method == "analytical":
             label = _format_vcov_label(
                 self.vcov_type,
                 cluster_name=self.cluster_name,
@@ -426,6 +428,14 @@ class MultiPeriodDiDResults:
     interaction_indices: Optional[Dict[Any, int]] = field(default=None, repr=False)
     # Survey design metadata (SurveyMetadata instance from diff_diff.survey)
     survey_metadata: Optional[Any] = field(default=None)
+    # Inference method (always "analytical" today for MultiPeriodDiD; included for
+    # symmetry with DiDResults and so summary() can gate the Variance label).
+    inference_method: str = field(default="analytical")
+    n_bootstrap: Optional[int] = field(default=None)
+    n_clusters: Optional[int] = field(default=None)
+    # Variance-covariance family and cluster column for summary() labeling.
+    vcov_type: Optional[str] = field(default=None)
+    cluster_name: Optional[str] = field(default=None)
 
     def __repr__(self) -> str:
         """Concise string representation."""
@@ -492,6 +502,17 @@ class MultiPeriodDiDResults:
         if self.survey_metadata is not None:
             sm = self.survey_metadata
             lines.extend(_format_survey_block(sm, 80))
+
+        # Variance family label (only when inference was analytical).
+        if self.vcov_type is not None and self.inference_method == "analytical":
+            label = _format_vcov_label(
+                self.vcov_type,
+                cluster_name=self.cluster_name,
+                n_clusters=self.n_clusters,
+                n_obs=self.n_obs,
+            )
+            if label is not None:
+                lines.append(f"{'Variance:':<25} {label:>50}")
 
         # Pre-period effects (parallel trends test)
         pre_effects = {p: pe for p, pe in self.period_effects.items() if p in self.pre_periods}

@@ -221,6 +221,145 @@ class TestFitBehavior:
         summary = res.summary()
         assert "CR1 cluster-robust at unit" in summary
 
+    def test_multi_period_fit_honors_classical(self):
+        """MultiPeriodDiD.fit with vcov_type='classical' produces non-robust SEs.
+
+        Regression test for the CI review finding: `MultiPeriodDiD` inherits
+        `vcov_type` from the base class via get_params but its `fit()` path
+        used to ignore the knob. Here we compare classical vs hc1 SEs on the
+        same data and assert they differ (i.e. the parameter actually took).
+        """
+        rng = np.random.default_rng(20260419)
+        n_units = 40
+        rows = []
+        for i in range(n_units):
+            treated = int(i >= n_units // 2)
+            for t in range(4):
+                post = int(t >= 2)
+                y = rng.normal(0.0, 1.0) + 0.3 * treated + 0.8 * treated * post
+                rows.append({"unit": i, "time": t, "treated": treated, "y": y})
+        data = pd.DataFrame(rows)
+
+        r_hc1 = MultiPeriodDiD(vcov_type="hc1").fit(
+            data, outcome="y", treatment="treated", time="time"
+        )
+        r_classical = MultiPeriodDiD(vcov_type="classical").fit(
+            data, outcome="y", treatment="treated", time="time"
+        )
+        # Point estimates identical.
+        assert r_hc1.avg_att == pytest.approx(r_classical.avg_att, abs=1e-10)
+        # SEs must differ — vcov_type actually changed the variance family.
+        assert r_hc1.avg_se != pytest.approx(r_classical.avg_se, abs=1e-10)
+
+    def test_multi_period_fit_honors_hc2_bm(self):
+        """MultiPeriodDiD.fit with vcov_type='hc2_bm' uses Bell-McCaffrey DOF.
+
+        Checks two things: (a) fit completes without error on the hc2_bm path
+        for the period-effect loop, and (b) the BM Satterthwaite DOF produces
+        a CI for avg_att with a finite width (non-degenerate case).
+        """
+        rng = np.random.default_rng(1919)
+        n_units = 50
+        rows = []
+        for i in range(n_units):
+            treated = int(i >= n_units // 2)
+            for t in range(5):
+                post = int(t >= 3)
+                y = rng.normal(0.0, 1.0) + 0.2 * treated + 0.6 * treated * post
+                rows.append({"unit": i, "time": t, "treated": treated, "y": y})
+        data = pd.DataFrame(rows)
+
+        r_hc2bm = MultiPeriodDiD(vcov_type="hc2_bm").fit(
+            data, outcome="y", treatment="treated", time="time"
+        )
+        assert np.isfinite(r_hc2bm.avg_att)
+        assert np.isfinite(r_hc2bm.avg_se)
+        assert np.isfinite(r_hc2bm.avg_conf_int[0])
+        assert np.isfinite(r_hc2bm.avg_conf_int[1])
+        # CI width is finite and positive.
+        ci_width = r_hc2bm.avg_conf_int[1] - r_hc2bm.avg_conf_int[0]
+        assert ci_width > 0
+
+    def test_twfe_fit_honors_vcov_type(self):
+        """TwoWayFixedEffects.fit with vcov_type='hc2_bm' differs from hc1.
+
+        TWFE auto-clusters at the unit level, so hc2_bm dispatches to CR2
+        Bell-McCaffrey. The SE should differ from HC1 (CR1 Liang-Zeger).
+        """
+        rng = np.random.default_rng(20260420)
+        n_units = 30
+        rows = []
+        for i in range(n_units):
+            treated = int(i >= n_units // 2)
+            for t in range(4):
+                post = int(t >= 2)
+                y = rng.normal(0.0, 1.0) + 0.4 * treated + 0.7 * treated * post
+                rows.append({"unit": i, "time": t, "treated": treated, "y": y})
+        data = pd.DataFrame(rows)
+
+        r_hc1 = TwoWayFixedEffects(vcov_type="hc1").fit(
+            data, outcome="y", treatment="treated", time="time", unit="unit"
+        )
+        r_hc2bm = TwoWayFixedEffects(vcov_type="hc2_bm").fit(
+            data, outcome="y", treatment="treated", time="time", unit="unit"
+        )
+        # Point estimates identical (weighted-OLS treatment coefficient).
+        assert r_hc1.att == pytest.approx(r_hc2bm.att, abs=1e-10)
+        # SEs differ because CR1 != CR2 in small samples.
+        assert r_hc1.se != pytest.approx(r_hc2bm.se, abs=1e-10)
+
+    def test_twfe_results_record_cluster_name(self):
+        """TWFE results should label the auto-clustered SE with the unit column."""
+        rng = np.random.default_rng(1)
+        n_units = 20
+        rows = []
+        for i in range(n_units):
+            treated = int(i >= n_units // 2)
+            for t in range(3):
+                post = int(t >= 1)
+                y = rng.normal(0.0, 1.0) + 0.5 * treated * post
+                rows.append({"unit": i, "time": t, "treated": treated, "y": y})
+        data = pd.DataFrame(rows)
+
+        res = TwoWayFixedEffects(vcov_type="hc1").fit(
+            data, outcome="y", treatment="treated", time="time", unit="unit"
+        )
+        summary = res.summary()
+        # TWFE auto-clusters at the unit column when cluster=None.
+        assert "CR1 cluster-robust at unit" in summary
+
+    def test_summary_suppresses_variance_line_under_wild_bootstrap(self):
+        """When inference_method='wild_bootstrap', the Variance label is omitted.
+
+        The wild-bootstrap path reports bootstrap SE/CI, not analytical. Printing
+        an analytical family like 'HC1 heteroskedasticity-robust' under those
+        numbers would be misleading.
+        """
+        rng = np.random.default_rng(42)
+        rows = []
+        for i in range(20):
+            treated = int(i >= 10)
+            for t in (0, 1):
+                y = rng.normal(0.0, 1.0) + 0.5 * treated * t
+                rows.append({"unit": i, "time": t, "treated": treated, "y": y})
+        data = pd.DataFrame(rows)
+
+        est = DifferenceInDifferences(
+            vcov_type="hc1",
+            inference="wild_bootstrap",
+            cluster="unit",
+            n_bootstrap=50,
+            seed=7,
+        )
+        res = est.fit(data, outcome="y", treatment="treated", time="time")
+        summary = res.summary()
+        # The bootstrap path substitutes SE/CI from resampling; the Variance:
+        # line (which labels the analytical family) must be suppressed so the
+        # displayed inference is unambiguous.
+        assert "Variance:" not in summary
+        # But the inference method should still be visible.
+        assert "wild_bootstrap" in summary
+
     def test_wild_bootstrap_preserves_vcov_type_no_error(self):
         """Wild-bootstrap inference path doesn't fight with vcov_type.
 

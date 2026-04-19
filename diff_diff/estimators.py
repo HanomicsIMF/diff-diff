@@ -1303,6 +1303,7 @@ class MultiPeriodDiD(DifferenceInDifferences):
             rank_deficient_action=self.rank_deficient_action,
             weights=survey_weights,
             weight_type=survey_weight_type,
+            vcov_type=self.vcov_type,
         )
 
         # Compute survey vcov if applicable
@@ -1423,25 +1424,70 @@ class MultiPeriodDiD(DifferenceInDifferences):
             )
             df = None
 
-        # For non-robust, non-clustered case, we need homoskedastic vcov
-        # solve_ols returns HC1 by default, so compute homoskedastic if needed
-        if not self.robust and self.cluster is None and survey_weights is None:
-            n = len(y)
-            mse = np.sum(residuals**2) / (n - k_effective)
-            # Use solve() instead of inv() for numerical stability
-            # Only compute for identified columns (non-NaN coefficients)
-            identified_mask = ~np.isnan(coefficients)
-            if np.all(identified_mask):
-                vcov = np.linalg.solve(X.T @ X, mse * np.eye(X.shape[1]))
-            else:
-                # For rank-deficient case, compute vcov on reduced matrix then expand
-                X_reduced = X[:, identified_mask]
-                vcov_reduced = np.linalg.solve(
-                    X_reduced.T @ X_reduced, mse * np.eye(X_reduced.shape[1])
+        # Note: the prior homoskedastic-vcov fallback conditioned on
+        # `not self.robust` has been subsumed by the vcov_type dispatch in
+        # solve_ols above, which routes vcov_type="classical" through
+        # compute_robust_vcov's classical branch (identical math). The
+        # explicit branch is no longer needed; vcov above already matches the
+        # requested variance family.
+
+        # For hc2_bm with a non-survey fit, compute per-coefficient and
+        # per-contrast Bell-McCaffrey Satterthwaite DOF so period-specific
+        # effects and the post-period average use correct small-sample DOF
+        # rather than the shared n-k fallback.
+        _bm_dof_per_coef: Optional[np.ndarray] = None
+        _bm_dof_avg: Optional[float] = None
+        if (
+            self.vcov_type == "hc2_bm"
+            and not _use_survey_vcov
+            and vcov is not None
+            and not np.all(np.isnan(coefficients))
+        ):
+            from diff_diff.linalg import (
+                _compute_bm_dof_from_contrasts,
+                _compute_hat_diagonals,
+            )
+
+            _identified = ~np.isnan(coefficients)
+            _kept = np.where(_identified)[0]
+            if len(_kept) > 0:
+                X_kept = X[:, _kept]
+                bread_kept = X_kept.T @ (
+                    X_kept * survey_weights[:, np.newaxis]
+                    if survey_weights is not None
+                    else X_kept
                 )
-                # Expand to full size with NaN for dropped columns
-                vcov = np.full((X.shape[1], X.shape[1]), np.nan)
-                vcov[np.ix_(identified_mask, identified_mask)] = vcov_reduced
+                h_diag_kept = _compute_hat_diagonals(
+                    X_kept, bread_kept, weights=survey_weights
+                )
+                # Build the contrast matrix: one column per identified coefficient
+                # plus one column for the post-period average contrast (1/n_post
+                # on each post-period interaction column, 0 elsewhere).
+                n_kept = len(_kept)
+                # Post-period contrast in full-width k dims, then subset to kept
+                post_contrast_full = np.zeros(X.shape[1])
+                _n_post = len(post_periods)
+                if _n_post > 0:
+                    for _p in post_periods:
+                        post_contrast_full[interaction_indices[_p]] = 1.0 / _n_post
+                post_contrast_kept = post_contrast_full[_kept]
+                contrasts = np.column_stack(
+                    [np.eye(n_kept), post_contrast_kept[:, np.newaxis]]
+                )
+                _dof_all = _compute_bm_dof_from_contrasts(
+                    X_kept,
+                    bread_kept,
+                    h_diag_kept,
+                    contrasts,
+                    weights=survey_weights,
+                )
+                # Expand per-coefficient DOF back to full width (NaN for dropped).
+                _bm_dof_per_coef = np.full(X.shape[1], np.nan)
+                _bm_dof_per_coef[_kept] = _dof_all[:n_kept]
+                # Post-period average: last contrast column.
+                # Only meaningful if all post-period coefs are identified.
+                if np.all(_identified[[interaction_indices[p] for p in post_periods]]):
+                    _bm_dof_avg = float(_dof_all[-1])
 
         # Extract period-specific treatment effects for ALL non-reference periods
         period_effects = {}
@@ -1453,7 +1499,14 @@ class MultiPeriodDiD(DifferenceInDifferences):
             idx = interaction_indices[period]
             effect = coefficients[idx]
             se = np.sqrt(vcov[idx, idx])
-            t_stat, p_value, conf_int = safe_inference(effect, se, alpha=self.alpha, df=df)
+            # Prefer per-coefficient BM DOF when available (hc2_bm path);
+            # otherwise fall back to the shared analytical df.
+            period_df = df
+            if _bm_dof_per_coef is not None and np.isfinite(_bm_dof_per_coef[idx]):
+                period_df = float(_bm_dof_per_coef[idx])
+            t_stat, p_value, conf_int = safe_inference(
+                effect, se, alpha=self.alpha, df=period_df
+            )
 
             period_effects[period] = PeriodEffect(
                 period=period,
@@ -1497,8 +1550,11 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 avg_conf_int = (np.nan, np.nan)
             else:
                 avg_se = float(np.sqrt(avg_var))
+                # Prefer the contrast-specific BM DOF for the post-period average
+                # when hc2_bm is in use; otherwise fall back to the shared df.
+                _avg_df = _bm_dof_avg if _bm_dof_avg is not None else df
                 avg_t_stat, avg_p_value, avg_conf_int = safe_inference(
-                    avg_att, avg_se, alpha=self.alpha, df=df
+                    avg_att, avg_se, alpha=self.alpha, df=_avg_df
                 )
 
         # Count observations (use raw counts to avoid demeaned values from absorb)
@@ -1530,6 +1586,13 @@ class MultiPeriodDiD(DifferenceInDifferences):
             reference_period=reference_period,
             interaction_indices=interaction_indices,
             survey_metadata=survey_metadata,
+            vcov_type=self.vcov_type,
+            cluster_name=self.cluster,
+            n_clusters=(
+                len(np.unique(effective_cluster_ids))
+                if effective_cluster_ids is not None
+                else None
+            ),
         )
 
         self._coefficients = coefficients

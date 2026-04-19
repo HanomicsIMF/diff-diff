@@ -1341,34 +1341,51 @@ def _compute_cr2_bm(
     return vcov, dof_vec
 
 
-def _compute_bm_dof_oneway(
+def _compute_bm_dof_from_contrasts(
     X: np.ndarray,
     bread_matrix: np.ndarray,
     h_diag: np.ndarray,
+    contrasts: np.ndarray,
     weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Per-coefficient Bell-McCaffrey (Imbens-Kolesar 2016) DOF vector.
+    """Per-contrast Bell-McCaffrey (Imbens-Kolesar 2016) Satterthwaite DOF.
 
-    For contrast ``c_j = e_j`` (the j-th standard basis vector), define
-    ``q_j = X (X'WX)^{-1} c_j`` (length ``n``). Under a homoskedastic null,
-    the HC2 variance estimator for ``c_j' beta`` has a weighted-chi-squared
+    For each column ``c`` of ``contrasts`` (shape ``(k, m)``), define
+    ``q = X (X'WX)^{-1} c`` (length ``n``). Under a homoskedastic null, the
+    HC2 variance estimator for ``c' beta`` has a weighted-chi-squared
     distribution; matching mean and variance via Satterthwaite gives
 
-        DOF_j = (sum_i q_j(i)^2)^2 / sum_{i,k} a_j(i) a_j(k) M_{ik}^2
+        DOF(c) = (sum_i q(i)^2)^2 / sum_{i, k} a(i) a(k) M_{ik}^2
 
-    where ``M = I - H`` and ``a_j(i) = q_j(i)^2 / (1 - h_ii)``. Using the
-    identity ``M^2 = M`` (M is idempotent), ``trace(B) = sum_i q_j(i)^2``
-    which matches the numerator.
+    where ``M = I - H`` and ``a(i) = q(i)^2 / (1 - h_ii)``. Using the idempotent
+    identity ``M^2 = M``, ``trace(B) = sum_i q(i)^2`` matches the numerator.
 
-    Allocates an ``(n, n)`` temporary for the sum and so is ``O(n^2 k)``.
-    Practical for ``n < 10_000``; larger designs should switch to a
-    scores-based formulation (tracked in TODO.md).
+    Allocates an ``(n, n)`` temporary for ``M`` so the cost is ``O(n^2 k)`` for
+    the hat build plus ``O(n^2 m)`` for the per-contrast sums. Practical for
+    ``n < 10_000``; larger designs should switch to a scores-based formulation
+    (tracked in TODO.md).
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, k)
+    bread_matrix : ndarray of shape (k, k) == (X'WX) or (X'X)
+    h_diag : ndarray of shape (n,), hat-matrix diagonals (already weighted)
+    contrasts : ndarray of shape (k, m). Pass ``np.eye(k)`` for per-coefficient DOF.
+    weights : optional weights (shape ``(n,)``) used to build the weighted hat
+        matrix. When ``None``, unweighted.
+
+    Returns
+    -------
+    ndarray of shape (m,) of Satterthwaite DOF per contrast column. NaN when
+    ``den <= 0`` (degenerate case).
     """
     n, k = X.shape
-    # q_cols[:, j] = X (bread_inv e_j) is column j of X bread_inv^T. Since
-    # bread_matrix is symmetric, bread_inv^T = bread_inv, so q_cols = X bread_inv.
+    if contrasts.ndim != 2 or contrasts.shape[0] != k:
+        raise ValueError(
+            f"contrasts must have shape (k={k}, m); got {contrasts.shape}"
+        )
     try:
-        q_cols = np.linalg.solve(bread_matrix, np.eye(k))  # (k, k), bread^{-1}
+        bread_inv_c = np.linalg.solve(bread_matrix, contrasts)
     except np.linalg.LinAlgError as e:
         if "Singular" in str(e):
             raise ValueError(
@@ -1376,32 +1393,42 @@ def _compute_bm_dof_oneway(
                 "Cannot compute Bell-McCaffrey DOF."
             ) from e
         raise
-    # q_ij = X @ bread_inv has shape (n, k)
-    q = X @ q_cols
-    # M = I - H where H = X (X'WX)^{-1} X' (or its weighted analogue). For DOF,
-    # the relevant M is the residual-maker under the same weighting used for the
-    # hat diagonals, so H_ij = w_j * x_i' (X'WX)^{-1} x_j when weights are
-    # present. Build H explicitly (O(n^2 k) memory/time).
+    # q has shape (n, m); column j is X @ (bread_inv @ contrasts[:, j]).
+    q = X @ bread_inv_c
+    # Build the weighted residual-maker M = I - H once.
     if weights is not None:
         H = X @ np.linalg.solve(bread_matrix, (X * weights[:, np.newaxis]).T)
     else:
         H = X @ np.linalg.solve(bread_matrix, X.T)
     M = np.eye(n) - H
-    M_sq = M * M  # elementwise square; also equal to M*M^T when M is symmetric
-
-    # Guard 1 - h_ii away from zero so `a` stays finite. The calling function
-    # has already warned/fallback-handled the h_ii > 1 case; this is a
-    # float-stability belt-and-suspenders.
+    M_sq = M * M  # elementwise square
     one_minus_h = np.maximum(1.0 - h_diag, 1e-10)
-    dof = np.empty(k)
-    for j in range(k):
-        qj = q[:, j]
-        qj_sq = qj * qj
+    m = contrasts.shape[1]
+    dof = np.empty(m)
+    for j in range(m):
+        qj_sq = q[:, j] * q[:, j]
         num = qj_sq.sum() ** 2
         a_j = qj_sq / one_minus_h
         den = float(a_j @ M_sq @ a_j)
         dof[j] = num / den if den > 0 else np.nan
     return dof
+
+
+def _compute_bm_dof_oneway(
+    X: np.ndarray,
+    bread_matrix: np.ndarray,
+    h_diag: np.ndarray,
+    weights: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Per-coefficient Bell-McCaffrey DOF vector (Imbens-Kolesar 2016).
+
+    Thin wrapper over :func:`_compute_bm_dof_from_contrasts` with
+    ``contrasts = I_k``, so each column picks out one coefficient.
+    """
+    k = X.shape[1]
+    return _compute_bm_dof_from_contrasts(
+        X, bread_matrix, h_diag, np.eye(k), weights=weights
+    )
 
 
 def _compute_robust_vcov_numpy(

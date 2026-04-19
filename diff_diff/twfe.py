@@ -216,13 +216,14 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         if self.rank_deficient_action == "error":
             reg = LinearRegression(
                 include_intercept=False,
-                robust=True,
+                robust=self.robust,
                 cluster_ids=survey_cluster_ids if self.inference != "wild_bootstrap" else None,
                 alpha=self.alpha,
                 rank_deficient_action="error",
                 weights=survey_weights,
                 weight_type=survey_weight_type,
                 survey_design=_lr_survey_twfe,
+                vcov_type=self.vcov_type,
             ).fit(X, y, df_adjustment=df_adjustment)
         else:
             # Suppress generic warning, TWFE provides context-specific messages below
@@ -230,7 +231,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                 warnings.filterwarnings("ignore", message="Rank-deficient design matrix")
                 reg = LinearRegression(
                     include_intercept=False,
-                    robust=True,
+                    robust=self.robust,
                     cluster_ids=(
                         survey_cluster_ids if self.inference != "wild_bootstrap" else None
                     ),
@@ -239,6 +240,7 @@ class TwoWayFixedEffects(DifferenceInDifferences):
                     weights=survey_weights,
                     weight_type=survey_weight_type,
                     survey_design=_lr_survey_twfe,
+                    vcov_type=self.vcov_type,
                 ).fit(X, y, df_adjustment=df_adjustment)
 
         coefficients = reg.coefficients_
@@ -362,6 +364,10 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             n_bootstrap_used = self._bootstrap_results.n_bootstrap
             n_clusters_used = self._bootstrap_results.n_clusters
 
+        # Cluster label for summary: TWFE auto-clusters at unit level when
+        # self.cluster is None, so report that explicitly.
+        _twfe_cluster_label = self.cluster if self.cluster is not None else unit
+
         self.results_ = DiDResults(
             att=att,
             se=se,
@@ -381,6 +387,8 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             n_bootstrap=n_bootstrap_used,
             n_clusters=n_clusters_used,
             survey_metadata=survey_metadata,
+            vcov_type=self.vcov_type,
+            cluster_name=_twfe_cluster_label,
         )
 
         self.is_fitted_ = True
