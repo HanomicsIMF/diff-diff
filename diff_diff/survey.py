@@ -1445,6 +1445,25 @@ def compute_survey_vcov(
             return np.zeros((k, k))
         return np.full((k, k), np.nan)
 
+    # Precondition check: near-singular X'WX lets np.linalg.solve return
+    # unstable values without raising (finding #19, axis A). Threshold of
+    # 1/sqrt(eps) ≈ 6.7e7 is the standard rule of thumb — above it, the
+    # sandwich bread becomes numerically unreliable and the caller should
+    # be told so.
+    with np.errstate(invalid="ignore", over="ignore"):
+        XtWX_cond = float(np.linalg.cond(XtWX))
+    cond_threshold = 1.0 / np.sqrt(np.finfo(float).eps)
+    if np.isfinite(XtWX_cond) and XtWX_cond > cond_threshold:
+        warnings.warn(
+            f"X'WX is ill-conditioned (cond={XtWX_cond:.2e}) in the "
+            f"survey sandwich variance; variance estimates may be "
+            f"numerically unstable. This typically indicates near "
+            f"multicollinearity or zero-weight strata dominating the "
+            f"bread matrix.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # Sandwich: (X'WX)^{-1} meat (X'WX)^{-1}
     try:
         temp = np.linalg.solve(XtWX, meat)

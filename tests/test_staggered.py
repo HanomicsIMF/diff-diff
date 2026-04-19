@@ -4157,3 +4157,77 @@ class TestSilentWarningAudit:
             )
         skip_warnings = [x for x in w if "could not be estimated" in str(x.message)]
         assert len(skip_warnings) > 0, "Expected skip warning for zero-mass survey cells"
+
+
+# ---------------------------------------------------------------------------
+# Silent-failure audit PR #9 follow-up: the CS analytical SE path calls
+# `_safe_inv()` in ~13 places (PS Hessian, OR bread, etc.). Previously the
+# LinAlgError → lstsq fallback was silent — a rank-deficient bread produced
+# degraded SEs with no user-visible signal. Now fit() emits ONE aggregate
+# warning tracking all fallbacks.
+# ---------------------------------------------------------------------------
+
+
+class TestCallawaySantAnnaSafeInvFallback:
+    def test_collinear_covariates_emit_safe_inv_warning(self):
+        """Perfectly collinear covariates should trigger the aggregate
+        `_safe_inv` lstsq-fallback warning across analytical SE paths."""
+        data = generate_staggered_data(
+            n_units=150, n_periods=6, n_cohorts=3, seed=55
+        )
+        rng = np.random.default_rng(0)
+        # Add a covariate and a redundant (collinear) copy — forces rank-
+        # deficient X'WX in the OR bread and the PS Hessian within at
+        # least one (g, t) cell.
+        data["x1"] = rng.normal(0, 1, len(data))
+        data["x2"] = 2.0 * data["x1"]
+        cs = CallawaySantAnna(
+            estimation_method="dr",
+            rank_deficient_action="silent",  # suppress upstream solve_ols noise
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+                covariates=["x1", "x2"],
+            )
+        fallback_warnings = [
+            w for w in caught
+            if "Rank-deficient matrix encountered" in str(w.message)
+            and "analytical SE paths" in str(w.message)
+        ]
+        assert len(fallback_warnings) == 1, (
+            f"Expected exactly one aggregate _safe_inv fallback warning; "
+            f"got {len(fallback_warnings)}: "
+            f"{[str(w.message) for w in fallback_warnings]}"
+        )
+
+    def test_well_conditioned_no_safe_inv_warning(self):
+        """Clean data should NOT trigger the aggregate warning —
+        regression-safety for the happy path."""
+        data = generate_staggered_data(
+            n_units=200, n_periods=6, n_cohorts=3, seed=42
+        )
+        cs = CallawaySantAnna(estimation_method="dr")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cs.fit(
+                data,
+                outcome="outcome",
+                unit="unit",
+                time="time",
+                first_treat="first_treat",
+            )
+        fallback_warnings = [
+            w for w in caught
+            if "Rank-deficient matrix encountered" in str(w.message)
+            and "analytical SE paths" in str(w.message)
+        ]
+        assert fallback_warnings == [], (
+            f"Unexpected _safe_inv fallback warning on clean data: "
+            f"{[str(w.message) for w in fallback_warnings]}"
+        )

@@ -534,3 +534,146 @@ class TestStaggeredTripleDiffRegressions:
         for (g, t), eff in res.group_time_effects.items():
             assert np.isfinite(eff["effect"]), f"Non-finite ATT at (g={g},t={t})"
             assert np.isfinite(eff["se"]), f"Non-finite SE at (g={g},t={t})"
+
+
+# ---------------------------------------------------------------------------
+# Silent-failure audit PR #9: finding #17 — OR influence-function solve
+# fell back to np.linalg.lstsq silently when X'WX was rank deficient. Now
+# tracked at _compute_did_panel() and aggregated into one fit-level warning.
+# ---------------------------------------------------------------------------
+
+
+class TestStaggeredTripleDiffORSolveFallback:
+    def test_collinear_covariates_emit_lstsq_fallback_warning(self):
+        """Perfectly collinear covariates should trigger the aggregate OR
+        lstsq-fallback warning. Previously this path was silent."""
+        data = generate_staggered_ddd_data(
+            n_units=200,
+            treatment_effect=3.0,
+            add_covariates=True,
+            seed=55,
+        )
+        # x3 ≡ 2·x1 makes covX = [intercept, x1, x2, x3] rank-deficient
+        # per pair, so XpX in _compute_did_panel() hits LinAlgError.
+        data["x3"] = 2.0 * data["x1"]
+        est = StaggeredTripleDifference(
+            estimation_method="dr",
+            rank_deficient_action="silent",  # silence upstream rank-def noise
+        )
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            res = est.fit(
+                data,
+                "outcome",
+                "unit",
+                "period",
+                "first_treat",
+                "eligibility",
+                covariates=["x1", "x2", "x3"],
+            )
+        or_warnings = [
+            w for w in caught
+            if "outcome-regression influence-function step" in str(w.message)
+        ]
+        assert len(or_warnings) == 1, (
+            f"Expected exactly one aggregate OR lstsq-fallback warning, "
+            f"got {len(or_warnings)}."
+        )
+        msg = str(or_warnings[0].message)
+        assert "(g, g_c, t) pair(s)" in msg
+        assert "np.linalg.lstsq" in msg
+        # Point estimates should still be finite (lstsq fallback succeeded).
+        assert np.isfinite(res.overall_att)
+
+    def test_collinear_covariates_emit_ps_hessian_warning(self):
+        """Collinear propensity-score covariates should trigger the aggregate
+        PS-Hessian lstsq-fallback warning under IPW/DR inference. Previously
+        this path was silent (sibling of the OR-side finding; surfaced by
+        PR #334 CI review)."""
+        data = generate_staggered_ddd_data(
+            n_units=200,
+            treatment_effect=3.0,
+            add_covariates=True,
+            seed=55,
+        )
+        data["x3"] = 2.0 * data["x1"]
+        est = StaggeredTripleDifference(
+            estimation_method="ipw",  # exercises PS path, skips OR projection
+            rank_deficient_action="silent",
+        )
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            est.fit(
+                data,
+                "outcome",
+                "unit",
+                "period",
+                "first_treat",
+                "eligibility",
+                covariates=["x1", "x2", "x3"],
+            )
+        ps_warnings = [
+            w for w in caught
+            if "propensity-score Hessian" in str(w.message)
+        ]
+        assert len(ps_warnings) == 1, (
+            f"Expected exactly one aggregate PS-Hessian lstsq-fallback "
+            f"warning under IPW, got {len(ps_warnings)}: "
+            f"{[str(w.message) for w in ps_warnings]}"
+        )
+        msg = str(ps_warnings[0].message)
+        assert "(g, g_c, t) pair(s)" in msg
+        assert "np.linalg.lstsq" in msg
+        assert "IPW/DR" in msg
+
+    def test_well_conditioned_covariates_emit_no_lstsq_warning(self):
+        """Clean, well-conditioned covariates should NOT trigger either
+        OR or PS-Hessian aggregate warning — regression-safety for the
+        happy path."""
+        data = generate_staggered_ddd_data(
+            n_units=300,
+            treatment_effect=3.0,
+            add_covariates=True,
+            seed=42,
+        )
+        est = StaggeredTripleDifference(estimation_method="dr")
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            est.fit(
+                data,
+                "outcome",
+                "unit",
+                "period",
+                "first_treat",
+                "eligibility",
+                covariates=["x1", "x2"],
+            )
+        lstsq_warnings = [
+            w for w in caught if "Rank-deficient X'WX" in str(w.message)
+        ]
+        assert lstsq_warnings == [], (
+            f"Unexpected lstsq-fallback warning on clean covariates: "
+            f"{[str(w.message) for w in lstsq_warnings]}"
+        )
+
+    def test_no_covariates_no_warning(self, simple_data):
+        """Without covariates both OR and PS paths are skipped, so no
+        aggregate warning should be emitted."""
+        est = StaggeredTripleDifference(estimation_method="reg")
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            est.fit(
+                simple_data, "outcome", "unit", "period", "first_treat", "eligibility"
+            )
+        lstsq_warnings = [
+            w for w in caught if "Rank-deficient X'WX" in str(w.message)
+        ]
+        assert lstsq_warnings == []

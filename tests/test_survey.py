@@ -3336,3 +3336,77 @@ class TestSilentWarningAudit:
         sd = SurveyDesign(weights="w", weight_type="aweight")
         with pytest.warns(UserWarning, match="aweight weights normalized"):
             sd.resolve(df)
+
+
+# ---------------------------------------------------------------------------
+# Silent-failure audit PR #9: finding #19 — compute_survey_vcov called
+# np.linalg.solve(XtWX, ...) with no precondition check. A near-singular
+# X'WX (zero-weight strata dominating, near-collinear X) solves without
+# raising but returns numerically unstable variance. Now warns when
+# cond(X'WX) exceeds 1/sqrt(eps).
+# ---------------------------------------------------------------------------
+
+
+class TestSurveyVcovIllConditionedWarning:
+    def test_ill_conditioned_X_warns(self):
+        """Near-collinear design matrix triggers the cond-number warning."""
+        n = 60
+        rng = np.random.default_rng(11)
+        x1 = rng.normal(0, 1, n)
+        # x2 = x1 + tiny noise → near-collinear after weighting
+        x2 = x1 + rng.normal(0, 1e-9, n)
+        X = np.column_stack([np.ones(n), x1, x2])
+        y = 1.0 + 0.5 * x1 + rng.normal(0, 0.3, n)
+        weights = np.ones(n)
+
+        # Use WLS solve to get residuals — but we need residuals that give
+        # a non-zero meat so the function reaches the vcov solve.
+        coef = np.linalg.lstsq(X, y, rcond=None)[0]
+        resid = y - X @ coef
+
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=np.arange(n),
+            fpc=None,
+            n_strata=0,
+            n_psu=n,
+            lonely_psu="remove",
+        )
+        with pytest.warns(UserWarning, match="X'WX is ill-conditioned"):
+            vcov = compute_survey_vcov(X, resid, resolved)
+        # Warning does not suppress output — the caller still gets a matrix.
+        assert vcov.shape == (3, 3)
+
+    def test_well_conditioned_X_no_warning(self):
+        """Clean design matrix should NOT trigger the warning — happy path."""
+        n = 80
+        rng = np.random.default_rng(22)
+        X = np.column_stack([np.ones(n), rng.normal(0, 1, n), rng.normal(0, 1, n)])
+        y = 1.0 + 0.5 * X[:, 1] - 0.3 * X[:, 2] + rng.normal(0, 0.3, n)
+        weights = np.ones(n)
+
+        coef, resid, _ = solve_ols(X, y, weights=weights, weight_type="pweight")
+        resolved = ResolvedSurveyDesign(
+            weights=weights,
+            weight_type="pweight",
+            strata=None,
+            psu=np.arange(n),
+            fpc=None,
+            n_strata=0,
+            n_psu=n,
+            lonely_psu="remove",
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            vcov = compute_survey_vcov(X, resid, resolved)
+        ill_cond_warnings = [
+            w for w in caught if "X'WX is ill-conditioned" in str(w.message)
+        ]
+        assert ill_cond_warnings == [], (
+            f"Unexpected cond-number warning on clean data: "
+            f"{[str(w.message) for w in ill_cond_warnings]}"
+        )
+        assert vcov.shape == (3, 3)
+        assert np.all(np.isfinite(vcov))

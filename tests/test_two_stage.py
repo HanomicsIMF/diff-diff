@@ -1435,3 +1435,114 @@ class TestSilentWarningAudit:
             warnings.simplefilter("always")
             TwoStageDiD._iterative_demean(vals, units, times, idx)
         assert not any("did not converge" in str(x.message) for x in w)
+
+
+# ---------------------------------------------------------------------------
+# Silent-failure audit PR #9: sibling of finding #17 — both the analytical
+# TSL variance (`two_stage.py`) and the multiplier-bootstrap bread
+# (`two_stage_bootstrap.py`) previously fell back to `np.linalg.lstsq`
+# silently when the Stage-2 `X'_2 W X_2` matrix was singular. They now
+# emit a `UserWarning` with the same message shape as STD #17.
+# ---------------------------------------------------------------------------
+
+
+class TestTwoStageStage2BreadWarning:
+    """Sibling of STD finding #17: the TwoStage Stage-2 bread fallback
+    (`X'_2 W X_2` singular) was silent. X_2 is built from treatment/
+    event-time/group indicators — not user covariates — so we force the
+    LinAlgError via patching `np.linalg.solve` rather than data crafting,
+    per the PR #334 CI review guidance."""
+
+    def test_analytical_bread_lstsq_fallback_warns(self):
+        """When np.linalg.solve on the Stage-2 bread raises, the analytical
+        TSL path must warn and still return a finite variance via lstsq."""
+        from unittest.mock import patch
+
+        import diff_diff.two_stage as ts_mod
+
+        data = generate_test_data(n_units=80, n_periods=6, seed=77)
+        est = TwoStageDiD()
+
+        real_solve = np.linalg.solve
+
+        def raise_for_square_eye(a, b):
+            # Identify the Stage-2 bread call by shape: b is np.eye(k)
+            # (square identity). All other solve calls in the codepath
+            # have different b shapes.
+            if (
+                isinstance(b, np.ndarray)
+                and b.ndim == 2
+                and b.shape[0] == b.shape[1]
+                and np.allclose(b, np.eye(b.shape[0]))
+            ):
+                raise np.linalg.LinAlgError("forced by test")
+            return real_solve(a, b)
+
+        with patch.object(ts_mod.np.linalg, "solve", side_effect=raise_for_square_eye):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = est.fit(
+                    data,
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                )
+        fallback = [
+            w for w in caught
+            if "TwoStageDiD TSL variance" in str(w.message)
+        ]
+        assert len(fallback) >= 1, (
+            "Expected TSL-variance bread fallback warning when np.linalg.solve "
+            f"was forced to raise; got warnings: "
+            f"{[str(w.message) for w in caught]}"
+        )
+        msg = str(fallback[0].message)
+        assert "np.linalg.lstsq" in msg
+        assert "X_2'WX_2" in msg
+        # lstsq fallback must still produce a finite SE.
+        assert np.isfinite(result.overall_se)
+
+    def test_bootstrap_bread_lstsq_fallback_warns(self):
+        """Same contract for the multiplier-bootstrap bread path."""
+        from unittest.mock import patch
+
+        import diff_diff.two_stage_bootstrap as tsb_mod
+
+        data = generate_test_data(n_units=80, n_periods=6, seed=77)
+        est = TwoStageDiD(n_bootstrap=10, seed=0)
+
+        real_solve = np.linalg.solve
+
+        def raise_for_square_eye(a, b):
+            if (
+                isinstance(b, np.ndarray)
+                and b.ndim == 2
+                and b.shape[0] == b.shape[1]
+                and np.allclose(b, np.eye(b.shape[0]))
+            ):
+                raise np.linalg.LinAlgError("forced by test")
+            return real_solve(a, b)
+
+        with patch.object(tsb_mod.np.linalg, "solve", side_effect=raise_for_square_eye):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                est.fit(
+                    data,
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                )
+        fallback = [
+            w for w in caught
+            if "TwoStageDiD multiplier bootstrap bread" in str(w.message)
+        ]
+        assert len(fallback) >= 1, (
+            "Expected bootstrap-bread fallback warning when np.linalg.solve "
+            f"was forced to raise; got warnings: "
+            f"{[str(w.message) for w in caught]}"
+        )
+        msg = str(fallback[0].message)
+        assert "np.linalg.lstsq" in msg
+        assert "X_2'WX_2" in msg

@@ -197,6 +197,21 @@ class TwoStageDiDBootstrapMixin:
         try:
             bread = np.linalg.solve(XtX_2, np.eye(k))
         except np.linalg.LinAlgError:
+            # Sibling of finding #17 (axis A) — the bootstrap bread
+            # fallback was previously silent. X_2 is the Stage-2 indicator
+            # design (treatment / horizon / group dummies), so a singular
+            # bread typically indicates a zero-weight or all-zero column.
+            warnings.warn(
+                "Rank-deficient second-stage design matrix X_2'WX_2 in "
+                "TwoStageDiD multiplier bootstrap bread; falling back to "
+                "np.linalg.lstsq. Bootstrap SEs may be numerically "
+                "unstable. The Stage-2 design is built from treatment, "
+                "event-time, or group indicators, so this typically "
+                "indicates a zero-weight or all-zero indicator column "
+                "(e.g. an aggregation path with no qualifying observations).",
+                UserWarning,
+                stacklevel=2,
+            )
             bread = np.linalg.lstsq(XtX_2, np.eye(k), rcond=None)[0]
 
         return S, bread, unique_clusters
