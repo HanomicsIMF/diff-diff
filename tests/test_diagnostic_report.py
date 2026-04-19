@@ -1168,6 +1168,56 @@ class TestReferenceMarkerAndNaNFiltering:
         assert pt["n_dropped_undefined"] == 1
         assert "undefined inference" in pt["reason"]
 
+    def test_nan_headline_yields_estimation_failure_prose_not_did_not_change(self):
+        """Round-36 P0 regression: a non-finite headline effect
+        (``NaN`` ATT from a failed fit) previously passed the ``val is
+        not None`` guard in ``_render_overall_interpretation``. Since
+        ``NaN > 0`` and ``NaN < 0`` are both false, the directional
+        branch fell through to "did not change" and rendered
+        "did not change ... by nan (p = nan, 95% CI: nan to nan)" —
+        misleading stakeholder prose on a failed fit.
+
+        Both ``DiagnosticReport.summary()`` and
+        ``to_dict()["overall_interpretation"]`` must now emit an
+        explicit estimation-failure sentence instead.
+        """
+        import numpy as np
+
+        class DiDResults:
+            pass
+
+        stub = DiDResults()
+        stub.att = float("nan")
+        stub.se = float("nan")
+        stub.t_stat = float("nan")
+        stub.p_value = float("nan")
+        stub.conf_int = (float("nan"), float("nan"))
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 50
+        stub.n_control = 50
+        stub.survey_metadata = None
+
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        summary = dr.summary()
+        interp = dr.to_dict()["overall_interpretation"]
+
+        for label, prose in [("summary", summary), ("overall_interpretation", interp)]:
+            lower = prose.lower()
+            # Must NOT render directional / numeric prose on a NaN fit.
+            assert "did not change" not in lower, (
+                f"{label} rendered 'did not change' on a NaN fit; got: {prose!r}"
+            )
+            assert "nan" not in lower, (
+                f"{label} rendered 'nan' in the stakeholder-facing prose; got: {prose!r}"
+            )
+            assert "by nan" not in lower
+            assert "ci: nan" not in lower
+            # Must name the non-finite state explicitly.
+            assert "non-finite" in lower or "did not produce" in lower, (
+                f"{label} must emit an estimation-failure sentence; got: {prose!r}"
+            )
+
     def test_summary_prose_surfaces_inconclusive_pt_explicitly(self):
         """Round-35 P1 regression: when pre-trends is inconclusive
         (undefined pre-period inference), both ``BusinessReport.summary()``

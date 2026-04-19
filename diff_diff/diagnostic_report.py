@@ -2759,11 +2759,28 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
     outcome = labels.get("outcome_label", "the outcome")
     treatment = labels.get("treatment_label", "the treatment")
 
-    # Sentence 1: headline
+    # Sentence 1: headline.
+    # Round-36 P0 CI review on PR #318: a non-finite headline value
+    # (NaN ATT from a failed fit, e.g., rank-deficient design matrix or
+    # zero effective sample) previously passed the ``val is not None``
+    # guard because ``NaN is not None``. Since ``NaN > 0`` and
+    # ``NaN < 0`` are both false, the directional branch fell through
+    # to "did not change" and the sentence rendered as "did not change
+    # ... by nan (p = nan, 95% CI: nan to nan)". BR's equivalent
+    # headline renderer already gates on ``np.isfinite(value)`` and
+    # emits an estimation-failure sentence; DR now mirrors that.
     val = headline.get("value") if isinstance(headline, dict) else None
     ci = headline.get("conf_int") if isinstance(headline, dict) else None
     p = headline.get("p_value") if isinstance(headline, dict) else None
-    if val is not None:
+    val_finite = isinstance(val, (int, float)) and np.isfinite(val)
+    if val is not None and not val_finite:
+        sentences.append(
+            f"On {est}, {treatment}'s effect on {outcome} is non-finite "
+            "(the estimation did not produce a usable point estimate). "
+            "Inspect the fit for rank deficiency, zero effective sample, "
+            "or a survey-design collapse before interpreting."
+        )
+    elif val_finite:
         direction = "increased" if val > 0 else "decreased" if val < 0 else "did not change"
         # Use the headline's own alpha rather than hardcoding 95 so prose
         # stays consistent with the rendered interval when alpha != 0.05.
@@ -2772,12 +2789,19 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
             ci_level = int(round((1.0 - headline_alpha) * 100))
         else:
             ci_level = 95
-        ci_str = (
-            f" ({ci_level}% CI: {ci[0]:.3g} to {ci[1]:.3g})"
-            if isinstance(ci, (list, tuple)) and len(ci) == 2 and None not in ci
+        ci_finite = (
+            isinstance(ci, (list, tuple))
+            and len(ci) == 2
+            and all(
+                isinstance(v, (int, float)) and np.isfinite(v) for v in ci
+            )
+        )
+        ci_str = f" ({ci_level}% CI: {ci[0]:.3g} to {ci[1]:.3g})" if ci_finite else ""
+        p_str = (
+            f", p = {p:.3g}"
+            if isinstance(p, (int, float)) and np.isfinite(p)
             else ""
         )
-        p_str = f", p = {p:.3g}" if isinstance(p, (int, float)) else ""
         sentences.append(
             f"On {est}, {treatment} {direction} {outcome} by {val:.3g}{ci_str}{p_str}."
         )
