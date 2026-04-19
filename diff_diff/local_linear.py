@@ -533,8 +533,15 @@ def mse_optimal_bandwidth(
     y : np.ndarray, shape (G,)
         Outcome values (the first-difference ``Delta Y_g`` in HAD).
     boundary : float, default=0.0
-        Evaluation point ``d_0``. For Design 1' ``d_0 = 0``; for Design 1
-        continuous-near-``d_lower`` pass ``d_0 = d_lower``.
+        Evaluation point ``d_0``. The Phase 1b wrapper accepts only
+        two values (within float tolerance): ``boundary = 0`` for
+        Design 1' or ``boundary = float(d.min())`` for Design 1
+        continuous-near-``d_lower``. Use the sample minimum
+        ``d.min()`` (not a known theoretical lower bound of the
+        support), because the downstream selector operates on the
+        realized data. Any other value -- including
+        ``boundary < d.min()``, interior points, or
+        ``boundary > d.min()`` -- raises ``ValueError``.
     kernel : str, default="epanechnikov"
         One of ``"epanechnikov"``, ``"triangular"``, ``"uniform"``.
     weights : np.ndarray or None, default=None
