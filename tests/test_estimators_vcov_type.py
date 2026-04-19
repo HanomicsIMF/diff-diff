@@ -105,12 +105,16 @@ class TestParamsRoundTrip:
         with pytest.raises(ValueError, match="robust=False conflicts with vcov_type"):
             est.set_params(robust=False, vcov_type="hc2")
 
-    def test_set_params_rejects_conflict_on_robust_only(self):
-        """Setting robust=False on an estimator with vcov_type='hc2_bm' raises."""
+    def test_set_params_robust_only_rederives_vcov_type(self):
+        """Setting robust= alone after init re-derives vcov_type from the alias.
+
+        When only ``robust`` is passed to ``set_params``, the new ``robust`` value
+        overrides the previously-set ``vcov_type`` via the alias rule:
+        ``robust=False`` -> ``"classical"``. This keeps the pair internally
+        consistent rather than leaving the estimator with ``robust=False,
+        vcov_type="hc2_bm"`` (a state that ``__init__`` forbids).
+        """
         est = DifferenceInDifferences(vcov_type="hc2_bm")
-        # The user is asking for non-robust SEs on an explicitly-HC2-BM estimator.
-        # set_params re-derives vcov_type to "classical" since only `robust` changed;
-        # this is a coherent override of the prior vcov_type, not a silent mismatch.
         est.set_params(robust=False)
         assert est.vcov_type == "classical"
 

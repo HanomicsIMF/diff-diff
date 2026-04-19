@@ -48,9 +48,25 @@ class DifferenceInDifferences:
         R-style formula for the model (e.g., "outcome ~ treated * post").
         If provided, overrides column name parameters.
     robust : bool, default=True
-        Whether to use heteroskedasticity-robust standard errors (HC1).
+        Legacy alias for ``vcov_type``. ``robust=True`` maps to
+        ``vcov_type="hc1"``; ``robust=False`` maps to ``vcov_type="classical"``.
+        Explicit ``vcov_type`` overrides ``robust`` unless the pair is
+        contradictory (e.g. ``robust=False, vcov_type="hc2"`` raises).
     cluster : str, optional
-        Column name for cluster-robust standard errors.
+        Column name for cluster-robust standard errors. Combined with
+        ``vcov_type``: with ``"hc1"`` dispatches to CR1 (Liang-Zeger); with
+        ``"hc2_bm"`` dispatches to CR2 Bell-McCaffrey (Pustejovsky-Tipton 2018
+        symmetric-sqrt + Satterthwaite DOF).
+    vcov_type : {"classical", "hc1", "hc2", "hc2_bm"}, optional
+        Variance-covariance family. Defaults to the ``robust`` alias.
+
+        - ``"classical"``: non-robust OLS SEs, ``sigma_hat^2 * (X'X)^{-1}``.
+        - ``"hc1"``: heteroskedasticity-robust HC1 with ``n/(n-k)`` adjustment
+          (library default). With ``cluster=``, uses CR1 (Liang-Zeger).
+        - ``"hc2"``: leverage-corrected meat (one-way only). Errors with
+          ``cluster=``; use ``"hc2_bm"`` for clustered Bell-McCaffrey.
+        - ``"hc2_bm"``: one-way HC2 + Imbens-Kolesar (2016) Satterthwaite DOF;
+          with ``cluster=``, Pustejovsky-Tipton (2018) CR2 cluster-robust.
     alpha : float, default=0.05
         Significance level for confidence intervals.
     inference : str, default="analytical"
@@ -833,9 +849,25 @@ class MultiPeriodDiD(DifferenceInDifferences):
     Parameters
     ----------
     robust : bool, default=True
-        Whether to use heteroskedasticity-robust standard errors (HC1).
+        Legacy alias for ``vcov_type``. ``robust=True`` maps to
+        ``vcov_type="hc1"``; ``robust=False`` maps to ``vcov_type="classical"``.
+        Explicit ``vcov_type`` overrides ``robust`` unless the pair is
+        contradictory (e.g. ``robust=False, vcov_type="hc2"`` raises).
     cluster : str, optional
-        Column name for cluster-robust standard errors.
+        Column name for cluster-robust standard errors. Combined with
+        ``vcov_type``: with ``"hc1"`` dispatches to CR1 (Liang-Zeger); with
+        ``"hc2_bm"`` dispatches to CR2 Bell-McCaffrey (Pustejovsky-Tipton 2018
+        symmetric-sqrt + Satterthwaite DOF).
+    vcov_type : {"classical", "hc1", "hc2", "hc2_bm"}, optional
+        Variance-covariance family. Defaults to the ``robust`` alias.
+
+        - ``"classical"``: non-robust OLS SEs, ``sigma_hat^2 * (X'X)^{-1}``.
+        - ``"hc1"``: heteroskedasticity-robust HC1 with ``n/(n-k)`` adjustment
+          (library default). With ``cluster=``, uses CR1 (Liang-Zeger).
+        - ``"hc2"``: leverage-corrected meat (one-way only). Errors with
+          ``cluster=``; use ``"hc2_bm"`` for clustered Bell-McCaffrey.
+        - ``"hc2_bm"``: one-way HC2 + Imbens-Kolesar (2016) Satterthwaite DOF;
+          with ``cluster=``, Pustejovsky-Tipton (2018) CR2 cluster-robust.
     alpha : float, default=0.05
         Significance level for confidence intervals.
 
