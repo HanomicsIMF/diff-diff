@@ -1699,6 +1699,7 @@ has no additional effect.
   Set `pscore_fallback="unconditional"` for legacy behavior.
 - Warns on singular GMM covariance matrix (falls back to pseudoinverse)
 - **Note:** Rank-deficient X'WX in the per-pair outcome-regression influence-function step now emits ONE aggregate `UserWarning` at `fit()` time (counting affected (g, g_c, t) cells and reporting the max condition number), instead of silently falling back to `np.linalg.lstsq`. Axis-A finding #17 in the Phase 2 silent-failures audit.
+- **Note:** The per-pair propensity-score Hessian inversion in `_compute_pscore` (used under `estimation_method` in `{ipw, dr}`) previously fell back from `np.linalg.inv(X'WX)` to `np.linalg.lstsq` silently. `fit()` now emits a sibling aggregate `UserWarning` with cell count + max condition number so rank-deficient PS designs can't quietly degrade IPW/DR influence-function corrections. Sibling of axis-A finding #17, surfaced during PR #334 CI review.
 
 *Data structure:*
 

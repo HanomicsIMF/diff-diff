@@ -1768,14 +1768,19 @@ class TwoStageDiD(TwoStageDiDBootstrapMixin):
         try:
             bread = np.linalg.solve(XtWX_2, np.eye(k))
         except np.linalg.LinAlgError:
-            # Sibling of finding #17 (axis A) — silent lstsq fallback in the
-            # TSL-variance bread was previously silent. Surface it so a
-            # rank-deficient second-stage design doesn't quietly degrade SEs.
+            # Sibling of finding #17 (axis A) — the TSL-variance bread
+            # fallback was previously silent. Note: X_2 is the Stage-2
+            # indicator design (treatment / horizon / group dummies), not
+            # user covariates, so the diagnostic guidance points at that
+            # layer.
             warnings.warn(
-                "Rank-deficient second-stage X'WX in TwoStageDiD TSL variance; "
-                "falling back to np.linalg.lstsq for the bread matrix. "
-                "Analytical SEs may be numerically unstable; consider dropping "
-                "collinear covariates.",
+                "Rank-deficient second-stage design matrix X_2'WX_2 in "
+                "TwoStageDiD TSL variance; falling back to np.linalg.lstsq "
+                "for the bread matrix. Analytical SEs may be numerically "
+                "unstable. The Stage-2 design is built from treatment, "
+                "event-time, or group indicators, so this typically "
+                "indicates a zero-weight or all-zero indicator column "
+                "(e.g. an aggregation path with no qualifying observations).",
                 UserWarning,
                 stacklevel=2,
             )

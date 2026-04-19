@@ -348,10 +348,12 @@ class StaggeredTripleDifference(
             {} if (covariates and self.estimation_method in ("ipw", "dr")) else None
         )
 
-        # Tracker for rank-deficient OR-IF solves across all (g, g_c, t) cells.
-        # _compute_did_panel appends one condition-number sample per LinAlgError
-        # so we emit ONE aggregate warning below rather than fanning out.
+        # Trackers for rank-deficient linalg solves across all (g, g_c, t)
+        # cells. `_compute_did_panel` appends to the OR-side tracker;
+        # `_compute_pscore` appends to the PS-side tracker. Both surface as
+        # ONE aggregate warning below rather than fanning out per cell.
         self._lstsq_fallback_tracker: List[float] = []
+        self._ps_lstsq_fallback_tracker: List[float] = []
 
         for g in treatment_groups:
             # In universal mode, skip the reference period (t == g-1-anticipation)
@@ -528,6 +530,27 @@ class StaggeredTripleDifference(
                 f"Max condition number of affected X'WX: {max_cond:.2e}. "
                 f"Consider dropping collinear covariates or using "
                 f"estimation_method='ipw' to avoid the OR projection.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # Consolidated PS-Hessian rank-deficiency warning (sibling of the
+        # OR path above). `_compute_pscore` previously fell back from
+        # `np.linalg.inv(X'WX)` to `np.linalg.lstsq` with no signal, so
+        # a rank-deficient propensity-score design silently degraded
+        # IPW/DR influence-function corrections.
+        if self._ps_lstsq_fallback_tracker:
+            n_cells = len(self._ps_lstsq_fallback_tracker)
+            finite_conds = [c for c in self._ps_lstsq_fallback_tracker if np.isfinite(c)]
+            max_cond = max(finite_conds) if finite_conds else float("inf")
+            warnings.warn(
+                f"Rank-deficient X'WX detected in the propensity-score "
+                f"Hessian for {n_cells} (g, g_c, t) pair(s); fell back to "
+                f"np.linalg.lstsq. Max condition number of affected X'WX: "
+                f"{max_cond:.2e}. IPW/DR influence-function corrections "
+                f"may be numerically unstable; consider dropping collinear "
+                f"propensity-score covariates or using "
+                f"estimation_method='reg' to avoid the PS path.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1467,6 +1490,14 @@ class StaggeredTripleDifference(
         try:
             hessian = np.linalg.inv(XWX) * n_pair
         except np.linalg.LinAlgError:
+            # Sibling of the OR-side LinAlgError at _compute_did_panel. Record
+            # a condition-number sample on the PS-Hessian tracker so fit()
+            # emits ONE aggregate warning covering all (g, g_c, t) cells
+            # that hit the rank-deficient PS path under IPW/DR inference.
+            ps_tracker = getattr(self, "_ps_lstsq_fallback_tracker", None)
+            if ps_tracker is not None:
+                with np.errstate(invalid="ignore", over="ignore"):
+                    ps_tracker.append(float(np.linalg.cond(XWX)))
             hessian = np.linalg.lstsq(XWX, np.eye(XWX.shape[0]), rcond=None)[0] * n_pair
 
         return pscore, hessian

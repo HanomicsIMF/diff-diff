@@ -573,22 +573,67 @@ class TestStaggeredTripleDiffORSolveFallback:
                 "eligibility",
                 covariates=["x1", "x2", "x3"],
             )
-        lstsq_warnings = [
-            w for w in caught if "Rank-deficient X'WX" in str(w.message)
+        or_warnings = [
+            w for w in caught
+            if "outcome-regression influence-function step" in str(w.message)
         ]
-        assert len(lstsq_warnings) == 1, (
+        assert len(or_warnings) == 1, (
             f"Expected exactly one aggregate OR lstsq-fallback warning, "
-            f"got {len(lstsq_warnings)}."
+            f"got {len(or_warnings)}."
         )
-        msg = str(lstsq_warnings[0].message)
+        msg = str(or_warnings[0].message)
         assert "(g, g_c, t) pair(s)" in msg
         assert "np.linalg.lstsq" in msg
         # Point estimates should still be finite (lstsq fallback succeeded).
         assert np.isfinite(res.overall_att)
 
+    def test_collinear_covariates_emit_ps_hessian_warning(self):
+        """Collinear propensity-score covariates should trigger the aggregate
+        PS-Hessian lstsq-fallback warning under IPW/DR inference. Previously
+        this path was silent (sibling of the OR-side finding; surfaced by
+        PR #334 CI review)."""
+        data = generate_staggered_ddd_data(
+            n_units=200,
+            treatment_effect=3.0,
+            add_covariates=True,
+            seed=55,
+        )
+        data["x3"] = 2.0 * data["x1"]
+        est = StaggeredTripleDifference(
+            estimation_method="ipw",  # exercises PS path, skips OR projection
+            rank_deficient_action="silent",
+        )
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            est.fit(
+                data,
+                "outcome",
+                "unit",
+                "period",
+                "first_treat",
+                "eligibility",
+                covariates=["x1", "x2", "x3"],
+            )
+        ps_warnings = [
+            w for w in caught
+            if "propensity-score Hessian" in str(w.message)
+        ]
+        assert len(ps_warnings) == 1, (
+            f"Expected exactly one aggregate PS-Hessian lstsq-fallback "
+            f"warning under IPW, got {len(ps_warnings)}: "
+            f"{[str(w.message) for w in ps_warnings]}"
+        )
+        msg = str(ps_warnings[0].message)
+        assert "(g, g_c, t) pair(s)" in msg
+        assert "np.linalg.lstsq" in msg
+        assert "IPW/DR" in msg
+
     def test_well_conditioned_covariates_emit_no_lstsq_warning(self):
-        """Clean, well-conditioned covariates should NOT trigger the
-        aggregate warning — regression-safety for the happy path."""
+        """Clean, well-conditioned covariates should NOT trigger either
+        OR or PS-Hessian aggregate warning — regression-safety for the
+        happy path."""
         data = generate_staggered_ddd_data(
             n_units=300,
             treatment_effect=3.0,
@@ -613,12 +658,12 @@ class TestStaggeredTripleDiffORSolveFallback:
             w for w in caught if "Rank-deficient X'WX" in str(w.message)
         ]
         assert lstsq_warnings == [], (
-            f"Unexpected OR lstsq-fallback warning on clean covariates: "
+            f"Unexpected lstsq-fallback warning on clean covariates: "
             f"{[str(w.message) for w in lstsq_warnings]}"
         )
 
     def test_no_covariates_no_warning(self, simple_data):
-        """Without covariates the OR path is skipped entirely, so no
+        """Without covariates both OR and PS paths are skipped, so no
         aggregate warning should be emitted."""
         est = StaggeredTripleDifference(estimation_method="reg")
         import warnings as _w

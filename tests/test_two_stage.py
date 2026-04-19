@@ -1447,73 +1447,102 @@ class TestSilentWarningAudit:
 
 
 class TestTwoStageStage2BreadWarning:
-    def _build_collinear_stage2_data(self):
-        """Panel with a perfectly collinear Stage-2 covariate pair."""
-        data = generate_test_data(n_units=120, n_periods=8, seed=77)
-        # Add a covariate + a redundant (collinear) copy — Stage 2
-        # includes both, making X'_2 W X_2 singular.
-        rng = np.random.default_rng(9)
-        data["z1"] = rng.normal(0, 1, len(data))
-        data["z2"] = 3.0 * data["z1"]
-        return data
+    """Sibling of STD finding #17: the TwoStage Stage-2 bread fallback
+    (`X'_2 W X_2` singular) was silent. X_2 is built from treatment/
+    event-time/group indicators — not user covariates — so we force the
+    LinAlgError via patching `np.linalg.solve` rather than data crafting,
+    per the PR #334 CI review guidance."""
 
     def test_analytical_bread_lstsq_fallback_warns(self):
-        """When the Stage-2 bread is singular in the analytical TSL path,
-        the new UserWarning should fire."""
-        data = self._build_collinear_stage2_data()
-        est = TwoStageDiD(rank_deficient_action="silent")
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            est.fit(
-                data,
-                outcome="outcome",
-                unit="unit",
-                time="time",
-                first_treat="first_treat",
-                covariates=["z1", "z2"],
-            )
+        """When np.linalg.solve on the Stage-2 bread raises, the analytical
+        TSL path must warn and still return a finite variance via lstsq."""
+        from unittest.mock import patch
+
+        import diff_diff.two_stage as ts_mod
+
+        data = generate_test_data(n_units=80, n_periods=6, seed=77)
+        est = TwoStageDiD()
+
+        real_solve = np.linalg.solve
+
+        def raise_for_square_eye(a, b):
+            # Identify the Stage-2 bread call by shape: b is np.eye(k)
+            # (square identity). All other solve calls in the codepath
+            # have different b shapes.
+            if (
+                isinstance(b, np.ndarray)
+                and b.ndim == 2
+                and b.shape[0] == b.shape[1]
+                and np.allclose(b, np.eye(b.shape[0]))
+            ):
+                raise np.linalg.LinAlgError("forced by test")
+            return real_solve(a, b)
+
+        with patch.object(ts_mod.np.linalg, "solve", side_effect=raise_for_square_eye):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = est.fit(
+                    data,
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                )
         fallback = [
             w for w in caught
             if "TwoStageDiD TSL variance" in str(w.message)
         ]
-        # Either the analytical path surfaces the warning (when the bread
-        # is actually hit) or upstream rank-deficiency handling dropped the
-        # collinear column before reaching the bread. We accept both — the
-        # key property is that if we *did* fall back to lstsq, we warned.
-        # So we assert: it's never silent.
-        silent = any(
-            "np.linalg.lstsq" in str(w.message)
-            and "fell back" in str(w.message).lower()
-            and not "TwoStageDiD" in str(w.message)
-            for w in caught
+        assert len(fallback) >= 1, (
+            "Expected TSL-variance bread fallback warning when np.linalg.solve "
+            f"was forced to raise; got warnings: "
+            f"{[str(w.message) for w in caught]}"
         )
-        assert not silent, "Unexpected silent lstsq fallback in TwoStage analytical bread"
-        # When the warning fires, it should have a consistent surface text.
-        for w in fallback:
-            assert "np.linalg.lstsq" in str(w.message)
+        msg = str(fallback[0].message)
+        assert "np.linalg.lstsq" in msg
+        assert "X_2'WX_2" in msg
+        # lstsq fallback must still produce a finite SE.
+        assert np.isfinite(result.overall_se)
 
     def test_bootstrap_bread_lstsq_fallback_warns(self):
         """Same contract for the multiplier-bootstrap bread path."""
-        data = self._build_collinear_stage2_data()
-        est = TwoStageDiD(
-            n_bootstrap=20,
-            rank_deficient_action="silent",
-            seed=0,
-        )
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            est.fit(
-                data,
-                outcome="outcome",
-                unit="unit",
-                time="time",
-                first_treat="first_treat",
-                covariates=["z1", "z2"],
-            )
+        from unittest.mock import patch
+
+        import diff_diff.two_stage_bootstrap as tsb_mod
+
+        data = generate_test_data(n_units=80, n_periods=6, seed=77)
+        est = TwoStageDiD(n_bootstrap=10, seed=0)
+
+        real_solve = np.linalg.solve
+
+        def raise_for_square_eye(a, b):
+            if (
+                isinstance(b, np.ndarray)
+                and b.ndim == 2
+                and b.shape[0] == b.shape[1]
+                and np.allclose(b, np.eye(b.shape[0]))
+            ):
+                raise np.linalg.LinAlgError("forced by test")
+            return real_solve(a, b)
+
+        with patch.object(tsb_mod.np.linalg, "solve", side_effect=raise_for_square_eye):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                est.fit(
+                    data,
+                    outcome="outcome",
+                    unit="unit",
+                    time="time",
+                    first_treat="first_treat",
+                )
         fallback = [
             w for w in caught
             if "TwoStageDiD multiplier bootstrap bread" in str(w.message)
         ]
-        # Same contract as above: if the fallback triggered, it must warn.
-        for w in fallback:
-            assert "np.linalg.lstsq" in str(w.message)
+        assert len(fallback) >= 1, (
+            "Expected bootstrap-bread fallback warning when np.linalg.solve "
+            f"was forced to raise; got warnings: "
+            f"{[str(w.message) for w in caught]}"
+        )
+        msg = str(fallback[0].message)
+        assert "np.linalg.lstsq" in msg
+        assert "X_2'WX_2" in msg
