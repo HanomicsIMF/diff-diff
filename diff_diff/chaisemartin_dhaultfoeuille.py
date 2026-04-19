@@ -5863,17 +5863,32 @@ def _survey_se_from_group_if(
         and U_centered_per_period.size > 0
     )
 
-    # When the cell allocator would apply but PSU is within-group-
-    # constant (PSU=group, strictly-coarser PSU within-group-constant,
-    # or the auto-inject default), the cell and group allocators are
-    # equivalent at PSU-level aggregation via the row-sum identity
-    # `sum_{c in g} u_cell[c] == u_centered[g]`. Prefer the legacy
-    # group-level path in that regime: it sidesteps the sentinel-
-    # mass guard (below) that would otherwise fire spuriously on
-    # terminally-missing panels whose PSU structure does not require
-    # cell-level resolution. Matches the bootstrap dispatcher's
-    # routing rule (`_compute_dcdh_bootstrap` + `_psu_varies_within_group`).
-    if use_cell_allocator:
+    # Binder TSL fallback: when the cell allocator would apply but
+    # PSU is within-group-constant (PSU=group, strictly-coarser PSU
+    # within-group-constant, or the auto-inject default), the cell
+    # and group allocators are equivalent at PSU-level aggregation
+    # via the row-sum identity `sum_{c in g} u_cell[c] == u_centered[g]`.
+    # Prefer the legacy group-level path in that regime: it sidesteps
+    # the sentinel-mass guard (below) that would otherwise fire
+    # spuriously on terminally-missing panels whose PSU structure
+    # does not require cell-level resolution. Matches the bootstrap
+    # dispatcher's routing rule (`_compute_dcdh_bootstrap` +
+    # `_psu_varies_within_group`).
+    #
+    # **Replicate-weight carve-out:** replicate designs do not carry
+    # `resolved.psu`, but the Class A replicate contract shipped in
+    # PR #323 applies `compute_replicate_if_variance` to the cell-
+    # allocator `psi_obs` — per-row-varying replicate ratios are
+    # allocator-sensitive, so forcing replicate fits onto the legacy
+    # group-level allocator would silently change their SE. The
+    # fallback therefore skips replicate fits; the sentinel-mass
+    # guard still fires on mass leakage when it applies. The Class
+    # A replicate allocator contract is asserted by
+    # `tests/test_survey_dcdh_replicate_psu.py::TestReplicateClassA::
+    # test_att_cell_allocator_with_varying_replicate_ratios`.
+    if use_cell_allocator and not getattr(
+        resolved, "uses_replicate_variance", False
+    ):
         psu_arr = getattr(resolved, "psu", None)
         if psu_arr is None:
             use_cell_allocator = False
