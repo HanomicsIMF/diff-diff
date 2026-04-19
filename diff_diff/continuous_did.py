@@ -233,9 +233,9 @@ class ContinuousDiD:
         # recategorization here would shift the control composition (axis-E
         # silent coercion). Only positive infinity is recoded (to match the
         # existing `.replace([np.inf, float("inf")], 0)` semantics on the
-        # next line); `-inf` is neither counted here nor recoded, so a
-        # downstream validator will reject it if present.
-        inf_mask = np.isposinf(df[first_treat].values)
+        # next line).
+        first_treat_vals = df[first_treat].values
+        inf_mask = np.isposinf(first_treat_vals)
         n_inf_first_treat = int(inf_mask.sum())
         if n_inf_first_treat > 0:
             warnings.warn(
@@ -244,6 +244,19 @@ class ContinuousDiD:
                 f"explicit never-treated marker (0) if this is not intended.",
                 UserWarning,
                 stacklevel=2,
+            )
+        # Reject negative first_treat values (including -inf) explicitly.
+        # Without this guard they would survive preprocessing but fall out of
+        # both the treated (g > 0) and never-treated (g == 0) masks, silently
+        # excluding the affected units.
+        negative_mask = first_treat_vals < 0
+        n_negative_first_treat = int(negative_mask.sum())
+        if n_negative_first_treat > 0:
+            raise ValueError(
+                f"{n_negative_first_treat} row(s) have negative '{first_treat}' "
+                f"values (including -inf). Valid values are 0 (never-treated) "
+                f"or a positive treatment period; such units would otherwise "
+                f"be silently excluded from both treated and control pools."
             )
         df[first_treat] = df[first_treat].replace([np.inf, float("inf")], 0)
 

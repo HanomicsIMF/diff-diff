@@ -849,9 +849,9 @@ class TestComputeOutcomeChanges:
                 treatment_group="treated", unit="unit",
             )
 
-        drop_warnings = [
-            x for x in w if "check_parallel_trends dropped" in str(x.message)
-        ]
+        # Generic filter on "dropped" catches both the old and new label so a
+        # regression in the label wouldn't hide a real silent-drop warning.
+        drop_warnings = [x for x in w if "dropped" in str(x.message).lower()]
         assert drop_warnings == []
 
     def test_warns_on_nan_outcomes_with_excess_drop_count(self):

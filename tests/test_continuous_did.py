@@ -723,20 +723,46 @@ class TestEdgeCases:
         ]
         assert coerce_warnings == []
 
-    def test_negative_inf_first_treat_does_not_trigger_recategorization_warning(self):
-        """-inf first_treat is NOT recoded to 0 by `.replace([inf, float("inf")], 0)`,
-        so the recategorization warning (which used to count both +inf and -inf
-        via np.isinf) must not fire for -inf rows."""
-        import warnings
+    def test_negative_first_treat_raises_with_row_count(self):
+        """Negative `first_treat` (including -inf) must raise ValueError with
+        the affected row count. Without this guard the affected units fall
+        out of both the treated (g > 0) and never-treated (g == 0) masks and
+        are silently excluded from the estimator."""
         rows = []
         for unit in range(4):
-            # Unit 0 carries -inf (not recoded, so downstream validation should
-            # see it as-is). Others are untreated with dose=0.
-            ft = -np.inf if unit == 0 else 0.0
+            # Unit 0: -inf. Unit 1: -2. Others: valid (0 or positive).
+            if unit == 0:
+                ft = -np.inf
+            elif unit == 1:
+                ft = -2.0
+            else:
+                ft = 0.0
             for t in range(1, 4):
                 rows.append({
                     "unit": unit, "period": t, "outcome": float(unit + t),
                     "first_treat": ft, "dose": 0.0,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with pytest.raises(
+            ValueError,
+            match=r"6 row\(s\) have negative 'first_treat' values",
+        ):
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+
+    def test_positive_inf_warning_silent_when_no_inf(self):
+        """+inf warning is gated on +inf rows only; panels with only valid
+        non-negative values (including just 0 and positive periods) must
+        never trigger the recategorization warning."""
+        import warnings
+        rows = []
+        for unit in range(4):
+            ft = 0.0 if unit < 2 else 2.0
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": 0.0 if unit < 2 else 1.0,
                 })
         data = pd.DataFrame(rows)
         est = ContinuousDiD()
@@ -749,9 +775,7 @@ class TestEdgeCases:
                 pass
 
         inf_warnings = [x for x in w if "inf in 'first_treat'" in str(x.message)]
-        assert inf_warnings == [], (
-            "-inf must not trigger the +inf recategorization warning"
-        )
+        assert inf_warnings == []
 
     def test_inf_first_treat_warning_counts_rows_not_units(self):
         """The warning counts affected rows (not units). On a panel with
