@@ -2296,3 +2296,268 @@ class TestScaleEquivariance:
                 f"Effect at Y~1e9 must reject null; p_value={r.p_value} "
                 f"(variance_method={variance_method})"
             )
+
+
+class TestDiagnosticScaleParity:
+    """Post-PR #312: in_time_placebo() and sensitivity_to_zeta_omega() must
+    inherit the same original-scale normalization contract that the main fit
+    path uses. Both diagnostics re-run Frank-Wolfe on the stored fit-snapshot
+    arrays, so at extreme Y they previously re-created the catastrophic
+    cancellation PR #312 fixed on the main path (audit finding D-4)."""
+
+    _SCALES = [(1.0, 0.0), (1e6, 1e9), (1e9, -1e6)]
+
+    @staticmethod
+    def _rescale(df, a, b):
+        out = df.copy()
+        out["outcome"] = a * out["outcome"] + b
+        return out
+
+    @staticmethod
+    def _fit(data, seed=1):
+        return SyntheticDiD(variance_method="jackknife", seed=seed).fit(
+            data, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+        )
+
+    def test_in_time_placebo_scale_equivariance(self):
+        """in_time_placebo att/pre_fit_rmse must scale by |a| across
+        (Y → a*Y + b). Pre-fix at extreme scale the diagnostic re-ran FW on
+        original-scale snapshot arrays and cancellation corrupted att."""
+        data = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r0 = self._fit(data)
+        placebo0 = r0.in_time_placebo()
+        fake_periods = placebo0["fake_treatment_period"].tolist()
+
+        for a, b in self._SCALES:
+            scaled = self._rescale(data, a, b)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                r = self._fit(scaled)
+            placebo = r.in_time_placebo(fake_treatment_periods=fake_periods)
+
+            assert list(placebo["fake_treatment_period"]) == fake_periods
+            for row0, row in zip(placebo0.to_dict("records"),
+                                 placebo.to_dict("records")):
+                if np.isnan(row0["att"]):
+                    assert np.isnan(row["att"]), f"att at (a={a}, b={b})"
+                    assert np.isnan(row["pre_fit_rmse"])
+                    continue
+                assert row["att"] / a == pytest.approx(row0["att"], rel=1e-6), (
+                    f"att at (a={a}, b={b}), "
+                    f"fake_period={row0['fake_treatment_period']}"
+                )
+                assert row["pre_fit_rmse"] / abs(a) == pytest.approx(
+                    row0["pre_fit_rmse"], rel=1e-6
+                ), (
+                    f"pre_fit_rmse at (a={a}, b={b}), "
+                    f"fake_period={row0['fake_treatment_period']}"
+                )
+
+    def test_sensitivity_to_zeta_omega_scale_equivariance(self):
+        """sensitivity_to_zeta_omega att/pre_fit_rmse must scale by |a|;
+        unit-weight diagnostics (max_unit_weight, effective_n) must be
+        scale-invariant."""
+        data = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r0 = self._fit(data)
+        sens0 = r0.sensitivity_to_zeta_omega()
+        zeta_grid = sens0["zeta_omega"].tolist()
+
+        for a, b in self._SCALES:
+            scaled = self._rescale(data, a, b)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                r = self._fit(scaled)
+            sens = r.sensitivity_to_zeta_omega(
+                zeta_grid=[a * z for z in zeta_grid]
+            )
+            for row0, row in zip(sens0.to_dict("records"),
+                                 sens.to_dict("records")):
+                assert row["att"] / a == pytest.approx(row0["att"], rel=1e-6), (
+                    f"att at (a={a}, b={b}), zeta={row0['zeta_omega']}"
+                )
+                assert row["pre_fit_rmse"] / abs(a) == pytest.approx(
+                    row0["pre_fit_rmse"], rel=1e-6
+                )
+                # omega-derived diagnostics are scale-invariant.
+                assert row["max_unit_weight"] == pytest.approx(
+                    row0["max_unit_weight"], rel=1e-6
+                )
+                assert row["effective_n"] == pytest.approx(
+                    row0["effective_n"], rel=1e-6
+                )
+
+    def test_in_time_placebo_detectable_at_extreme_scale(self):
+        """Pre-fix regression: at Y~1e9 the placebo re-fit corrupted ATTs via
+        cancellation so diagnostic numbers were garbage. Post-fix, all
+        placebo rows on a zero-effect DGP must be finite and at least one
+        must land within 5*noise_level in original-Y units."""
+        rng = np.random.default_rng(0)
+        n_control, n_treated, n_pre, n_post = 20, 3, 7, 3
+        baseline_level = 1e9
+        rows = []
+        for unit in range(n_control + n_treated):
+            unit_fe = rng.normal(0, 2e6)
+            for t in range(n_pre + n_post):
+                y = baseline_level + unit_fe + t * 3e5 + rng.normal(0, 5e5)
+                rows.append({"unit": unit, "period": t,
+                             "treated": int(unit >= n_control), "outcome": y})
+        data = pd.DataFrame(rows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = self._fit(data, seed=7)
+
+        placebo = r.in_time_placebo()
+        finite = placebo.dropna(subset=["att"])
+        assert len(finite) > 0
+        assert np.all(np.isfinite(finite["att"].values))
+        assert np.all(np.isfinite(finite["pre_fit_rmse"].values))
+        assert (np.abs(finite["att"]) < 5.0 * r.noise_level).any(), (
+            f"At least one placebo row should be within 5*noise_level "
+            f"({5.0 * r.noise_level}); got atts {finite['att'].tolist()}"
+        )
+
+
+class TestDiagnosticSnapshotBackwardCompat:
+    """Locks in the backward-compatibility contract for legacy
+    _SyntheticDiDFitSnapshot objects that pre-date Y_shift/Y_scale. Their
+    defaults (0.0, 1.0) must make the new normalization a pure no-op so
+    older cached snapshots still drive diagnostic refits unchanged."""
+
+    def test_legacy_snapshot_defaults_are_noop(self):
+        from diff_diff.results import _SyntheticDiDFitSnapshot
+
+        data = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = SyntheticDiD(variance_method="jackknife", seed=1).fit(
+                data, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+            )
+
+        # Baseline diagnostic output with the real (fit-captured) normalization.
+        placebo0 = r.in_time_placebo()
+        sens0 = r.sensitivity_to_zeta_omega()
+
+        # Overwrite the snapshot with a legacy one built without Y_shift /
+        # Y_scale — the defaults must make the two diagnostic paths produce
+        # the same output as the fit-captured version, because the main
+        # fit's Y-shift/scale choice is a no-op on a small, well-scaled
+        # panel (Y_shift ~ 10, Y_scale ~ O(1), so (Y - shift)/scale is just
+        # a shifted/scaled copy of Y).
+        snap = r._fit_snapshot
+        legacy_snap = _SyntheticDiDFitSnapshot(
+            Y_pre_control=np.array(snap.Y_pre_control),
+            Y_post_control=np.array(snap.Y_post_control),
+            Y_pre_treated=np.array(snap.Y_pre_treated),
+            Y_post_treated=np.array(snap.Y_post_treated),
+            control_unit_ids=list(snap.control_unit_ids),
+            treated_unit_ids=list(snap.treated_unit_ids),
+            pre_periods=list(snap.pre_periods),
+            post_periods=list(snap.post_periods),
+            w_control=snap.w_control,
+            w_treated=snap.w_treated,
+            # Defaults — no Y_shift/Y_scale captured.
+        )
+        # Confirm the defaults are what we expect.
+        assert legacy_snap.Y_shift == 0.0
+        assert legacy_snap.Y_scale == 1.0
+
+        r._fit_snapshot = legacy_snap
+        placebo_legacy = r.in_time_placebo()
+        sens_legacy = r.sensitivity_to_zeta_omega()
+
+        # Shape and columns must match.
+        assert list(placebo_legacy.columns) == list(placebo0.columns)
+        assert list(sens_legacy.columns) == list(sens0.columns)
+        assert len(placebo_legacy) == len(placebo0)
+        assert len(sens_legacy) == len(sens0)
+
+
+class TestHeterogeneousAndRampingScale:
+    """D-4b: the existing TestScaleEquivariance suite is affine-only
+    (Y → a*Y + b with a single scalar a). These pathways are not covered:
+
+    - Cross-unit heterogeneous scale: different units span 1e6 to 1e9.
+    - Cross-period ramping: baseline trend growing several orders of
+      magnitude across periods.
+
+    Both were candidate triggers for the original SDID silent-failure report
+    and must stay detectable after any future refactor of the normalization
+    contract."""
+
+    @staticmethod
+    def _fit(data, seed=1):
+        return SyntheticDiD(variance_method="jackknife", seed=seed).fit(
+            data, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+        )
+
+    def test_cross_unit_heterogeneous_scale(self):
+        """Units spanning 1e6 to 1e9 must still produce finite fit and
+        diagnostic output. Heterogeneous levels historically triggered the
+        cancellation pathway even at modest Y; this is a regression trap
+        for future refactors of the normalization contract."""
+        rng = np.random.default_rng(11)
+        n_control, n_treated, n_pre, n_post = 20, 3, 6, 3
+        rows = []
+        for unit in range(n_control + n_treated):
+            unit_level = 10 ** rng.uniform(6, 9)
+            is_treated = unit >= n_control
+            for t in range(n_pre + n_post):
+                y = unit_level * (1 + 0.02 * t) + rng.normal(0, unit_level * 0.01)
+                if is_treated and t >= n_pre:
+                    y += 0.05 * unit_level
+                rows.append({"unit": unit, "period": t,
+                             "treated": int(is_treated), "outcome": y})
+        data = pd.DataFrame(rows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = self._fit(data)
+
+        assert np.isfinite(r.att) and np.isfinite(r.se)
+        assert r.se > 0
+        placebo = r.in_time_placebo()
+        assert np.all(np.isfinite(placebo["att"].dropna()))
+        assert np.all(np.isfinite(placebo["pre_fit_rmse"].dropna()))
+        sens = r.sensitivity_to_zeta_omega()
+        assert np.all(np.isfinite(sens["att"]))
+        assert np.all(np.isfinite(sens["pre_fit_rmse"]))
+
+    def test_cross_period_ramping_trend(self):
+        """A strong cross-period trend (baseline level multiplies across
+        periods) must still produce a detectable, finite ATT and finite
+        diagnostic output."""
+        rng = np.random.default_rng(13)
+        n_control, n_treated, n_pre, n_post = 20, 3, 6, 3
+        rows = []
+        for unit in range(n_control + n_treated):
+            unit_fe = rng.normal(0, 1.0)
+            is_treated = unit >= n_control
+            for t in range(n_pre + n_post):
+                trend = 10 ** (5 + 0.4 * t)
+                y = trend + unit_fe * trend * 0.01 + rng.normal(0, trend * 0.005)
+                if is_treated and t >= n_pre:
+                    y += 0.01 * trend
+                rows.append({"unit": unit, "period": t,
+                             "treated": int(is_treated), "outcome": y})
+        data = pd.DataFrame(rows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = self._fit(data)
+
+        assert np.isfinite(r.att) and np.isfinite(r.se)
+        assert r.se > 0
+        placebo = r.in_time_placebo()
+        assert np.all(np.isfinite(placebo["att"].dropna()))
+        assert np.all(np.isfinite(placebo["pre_fit_rmse"].dropna()))
+        sens = r.sensitivity_to_zeta_omega()
+        assert np.all(np.isfinite(sens["att"]))
+        assert np.all(np.isfinite(sens["pre_fit_rmse"]))

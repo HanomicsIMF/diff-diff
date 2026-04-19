@@ -1075,9 +1075,10 @@ class TestSurveyWithinGroupValidation:
     """Cell-period IF allocator contract: strata and PSU may vary ACROSS
     cells of a group, but must be constant WITHIN each (g, t) cell. In
     canonical one-obs-per-cell panels the cell-level constancy check is
-    trivially satisfied. Out-of-scope combinations (heterogeneity +
-    within-group-varying PSU; n_bootstrap > 0 + within-group-varying
-    PSU) raise NotImplementedError with a pointer to the follow-up PR.
+    trivially satisfied. Heterogeneity + within-group-varying PSU is
+    supported via the cell-period allocator. The remaining out-of-scope
+    combination is n_bootstrap > 0 + within-group-varying PSU, which
+    still raises NotImplementedError with a pointer to the follow-up PR.
     """
 
     def test_accepts_varying_psu_within_group(self, base_data):
@@ -1138,23 +1139,35 @@ class TestSurveyWithinGroupValidation:
         assert np.isfinite(result.overall_att)
         assert np.isfinite(result.overall_se)
 
-    def test_heterogeneity_with_varying_psu_raises(self, base_data):
-        """heterogeneity= is gated under within-group-varying PSU until
-        PR 3 ships the cell-period allocator for the WLS psi_obs path.
+    def test_heterogeneity_with_varying_psu_succeeds(self, base_data):
+        """heterogeneity= is supported under within-group-varying PSU
+        via the cell-period allocator: psi_g is attributed in full to
+        the (g, out_idx) post-period cell and expanded to obs level as
+        psi_i = psi_g * (w_i / W_{g, out_idx}). All five inference
+        fields must be finite when the survey design is regular.
         """
         df_ = base_data.copy()
         df_["pw"] = 1.0
-        df_["stratum"] = 0
-        df_["psu"] = df_["period"] % 2  # varies within group
-        df_["x_het"] = np.arange(len(df_)) % 3  # categorical covariate
-        sd = SurveyDesign(weights="pw", strata="stratum", psu="psu")
-        with pytest.raises(NotImplementedError, match="heterogeneity"):
-            ChaisemartinDHaultfoeuille(seed=1).fit(
-                df_, outcome="outcome", group="group",
-                time="period", treatment="treatment",
-                heterogeneity="x_het", L_max=1,
-                survey_design=sd,
-            )
+        # Make x_het time-invariant within each group (heterogeneity
+        # test requires a group-level covariate).
+        df_["x_het"] = (df_["group"].astype(int) % 2).astype(float)
+        # Per-group PSU parity — unique per (group, parity), varies
+        # within group so the cell-period allocator is exercised.
+        df_["psu"] = df_["group"].astype(int) * 2 + (df_["period"].astype(int) % 2)
+        sd = SurveyDesign(weights="pw", psu="psu")
+        res = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            heterogeneity="x_het", L_max=1,
+            survey_design=sd,
+        )
+        assert res.heterogeneity_effects is not None
+        entry = res.heterogeneity_effects[1]
+        assert np.isfinite(entry["beta"])
+        assert np.isfinite(entry["se"]) and entry["se"] >= 0.0
+        assert np.isfinite(entry["t_stat"])
+        assert np.isfinite(entry["p_value"])
+        assert all(np.isfinite(entry["conf_int"]))
 
     def test_bootstrap_with_varying_psu_raises(self, base_data):
         """n_bootstrap > 0 is gated under within-group-varying PSU until
@@ -1211,6 +1224,59 @@ class TestSurveyWithinGroupValidation:
             r_auto.survey_metadata.df_survey
             == r_explicit.survey_metadata.df_survey
         )
+
+    def test_heterogeneity_auto_inject_with_varying_strata_nest_true_succeeds(self, base_data):
+        """PR 3 unblocks heterogeneity + SurveyDesign(strata, nest=True)
+        with auto-inject psu=group. Under nest=True the resolver
+        combines (stratum, psu) into globally-unique labels, so
+        resolved.psu varies across cells of each group and the
+        cell-period allocator handles it. Mirrors ATT coverage at
+        test_auto_inject_with_varying_strata_nest_true_succeeds.
+        """
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["stratum"] = df_["period"] % 2
+        df_["x_het"] = (df_["group"].astype(int) % 2).astype(float)
+        sd = SurveyDesign(weights="pw", strata="stratum", nest=True)
+        res = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            heterogeneity="x_het", L_max=1,
+            survey_design=sd,
+        )
+        assert res.heterogeneity_effects is not None
+        entry = res.heterogeneity_effects[1]
+        assert np.isfinite(entry["beta"])
+        assert np.isfinite(entry["se"]) and entry["se"] >= 0.0
+        assert np.isfinite(entry["t_stat"])
+        assert np.isfinite(entry["p_value"])
+        assert all(np.isfinite(entry["conf_int"]))
+
+    def test_heterogeneity_multi_horizon_varying_psu_succeeds(self, base_data):
+        """Multi-horizon heterogeneity (L_max >= 2) + within-group-
+        varying PSU — each horizon rebuilds its own (g, out_idx) cell
+        mapping, so the per-horizon allocator must produce finite
+        inference independently at every horizon.
+        """
+        df_ = base_data.copy()
+        df_["pw"] = 1.0
+        df_["x_het"] = (df_["group"].astype(int) % 2).astype(float)
+        df_["psu"] = df_["group"].astype(int) * 2 + (df_["period"].astype(int) % 2)
+        sd = SurveyDesign(weights="pw", psu="psu")
+        res = ChaisemartinDHaultfoeuille(seed=1).fit(
+            df_, outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            heterogeneity="x_het", L_max=2,
+            survey_design=sd,
+        )
+        assert res.heterogeneity_effects is not None
+        for horizon in (1, 2):
+            entry = res.heterogeneity_effects[horizon]
+            assert np.isfinite(entry["beta"]), f"beta NaN at horizon {horizon}"
+            assert np.isfinite(entry["se"]) and entry["se"] >= 0.0
+            assert np.isfinite(entry["t_stat"])
+            assert np.isfinite(entry["p_value"])
+            assert all(np.isfinite(entry["conf_int"]))
 
     def test_auto_inject_with_varying_strata_raises(self, base_data):
         """Auto-injected `psu=<group>` with nest=False cannot honor
@@ -1543,3 +1609,173 @@ class TestSurveyWithinGroupValidation:
             survey_design=sd,
         )
         assert np.isfinite(result.overall_att)
+
+
+class TestHeterogeneityCellPeriod:
+    """Unit tests for the heterogeneity cell-period allocator invariants.
+
+    Under PSU=group the new single-cell psi_obs distribution
+    (mass in the (g, out_idx) post-period cell only, scaled by
+    w_i / W_{g, out_idx}) differs from the legacy group-level
+    distribution (mass everywhere in g, scaled by w_i / W_g) at the
+    observation level. But both telescope to the same PSU-level sum
+    psi_g because compute_survey_if_variance aggregates to PSU first.
+    Binder TSL variance must therefore be byte-identical.
+    """
+
+    def test_psu_level_byte_identity_under_psu_equals_group(self):
+        """Construct both legacy and new psi_obs on a tiny fixture
+        (PSU=group, one obs per cell), feed both through
+        compute_survey_if_variance, and assert variances equal
+        within ULP — the exact invariant the REGISTRY Note claims.
+        """
+        from diff_diff.survey import (
+            SurveyDesign,
+            compute_survey_if_variance,
+        )
+
+        # Fixture: 4 groups * 4 periods = 16 obs, one obs per cell,
+        # pw=1 everywhere. PSU=group so each group is a single PSU.
+        n_groups, n_periods = 4, 4
+        rows = []
+        for g in range(n_groups):
+            for t in range(n_periods):
+                rows.append({
+                    "group": int(g),
+                    "period": int(t),
+                    "pw": 1.0,
+                })
+        df_ = pd.DataFrame(rows)
+        sd = SurveyDesign(weights="pw", psu="group")
+        resolved = sd.resolve(df_)
+
+        # Arbitrary non-zero group-level IF values + per-group out_idx
+        # (the post-period cell chosen by the heterogeneity horizon).
+        psi_g = np.array([1.0, -0.5, 2.0, -1.5], dtype=np.float64)
+        out_idx_per_group = np.array([3, 3, 2, 2], dtype=np.int64)
+
+        obs_group = df_["group"].values.astype(np.int64)
+        obs_period = df_["period"].values.astype(np.int64)
+        w = df_["pw"].to_numpy(dtype=np.float64)
+
+        # Legacy expansion: psi_i = psi_g[g_i] * w_i / W_g.
+        W_g = np.zeros(n_groups, dtype=np.float64)
+        np.add.at(W_g, obs_group, w)
+        psi_legacy = np.zeros_like(w)
+        for i in range(len(w)):
+            if W_g[obs_group[i]] > 0:
+                psi_legacy[i] = psi_g[obs_group[i]] * (w[i] / W_g[obs_group[i]])
+
+        # New expansion: psi_i = psi_g[g_i] * w_i / W_{g, out_idx}
+        # for obs in (g, out_idx), zero elsewhere.
+        W_cell_out = np.zeros(n_groups, dtype=np.float64)
+        for i in range(len(w)):
+            if obs_period[i] == out_idx_per_group[obs_group[i]]:
+                W_cell_out[obs_group[i]] += w[i]
+        psi_new = np.zeros_like(w)
+        for i in range(len(w)):
+            g_i = obs_group[i]
+            if obs_period[i] == out_idx_per_group[g_i] and W_cell_out[g_i] > 0:
+                psi_new[i] = psi_g[g_i] * (w[i] / W_cell_out[g_i])
+
+        # Distributions differ at the obs level.
+        assert not np.allclose(psi_legacy, psi_new), (
+            "fixture should exercise the mass redistribution — "
+            "legacy spreads across all obs of g, new concentrates in "
+            "(g, out_idx)."
+        )
+
+        # PSU-level sums must match — this is the invariant the
+        # REGISTRY Note claims under PSU=group.
+        assert resolved.psu is not None
+        psu_codes = np.asarray(resolved.psu, dtype=np.int64)
+        psu_sum_legacy = np.zeros(n_groups, dtype=np.float64)
+        psu_sum_new = np.zeros(n_groups, dtype=np.float64)
+        np.add.at(psu_sum_legacy, psu_codes, psi_legacy)
+        np.add.at(psu_sum_new, psu_codes, psi_new)
+        assert np.allclose(psu_sum_legacy, psu_sum_new, atol=0.0, rtol=1e-15)
+
+        # Binder TSL variances must match byte-for-byte (single stratum,
+        # each PSU sum contributes equally in both paths).
+        var_legacy = compute_survey_if_variance(psi_legacy, resolved)
+        var_new = compute_survey_if_variance(psi_new, resolved)
+        assert np.isfinite(var_legacy) and np.isfinite(var_new)
+        assert var_legacy == pytest.approx(var_new, rel=1e-14, abs=1e-14)
+
+    def test_replicate_variance_non_invariance_under_varying_ratios(self):
+        """When replicate-weight ratios vary within group,
+        compute_replicate_if_variance is NOT PSU-telescoping — its
+        theta_r = sum_i ratio_ir * psi_i reads psi at observation
+        level, so redistributing mass across cells of g changes the
+        replicate variance. This is why the heterogeneity path keeps
+        the legacy group-level allocator on the replicate branch
+        (only Binder TSL uses the cell-period allocator). Regression
+        guard for the CI-review P1 on PR #329.
+        """
+        from diff_diff.survey import (
+            SurveyDesign,
+            compute_replicate_if_variance,
+        )
+
+        # Minimal reproduction of the reviewer's counterexample: one
+        # group with two obs (ref and post-period cells), replicate
+        # ratios that vary within the group. legacy allocator spreads
+        # psi_g across both obs; new cell-period allocator puts it
+        # all on the post-period cell. Replicate variance differs.
+        rows = []
+        for g in range(2):
+            for t in range(2):
+                rows.append({
+                    "group": int(g),
+                    "period": int(t),
+                    "pw": 1.0,
+                    # Non-PSU-aligned replicate columns: vary within
+                    # each group so sum_i ratio_ir * psi_i sees a
+                    # different weighted average of psi mass under
+                    # the two allocators.
+                    "rep0": 0.5 if t == 0 else 1.5,
+                    "rep1": 1.5 if t == 0 else 0.5,
+                })
+        df_ = pd.DataFrame(rows)
+        sd = SurveyDesign(
+            weights="pw",
+            replicate_weights=["rep0", "rep1"],
+            replicate_method="SDR",
+        )
+        resolved = sd.resolve(df_)
+
+        # Arbitrary non-zero psi_g per group; out_idx = 1 for each.
+        psi_g = np.array([0.75, -1.25], dtype=np.float64)
+        obs_group = df_["group"].values.astype(np.int64)
+        obs_period = df_["period"].values.astype(np.int64)
+        w = df_["pw"].to_numpy(dtype=np.float64)
+
+        # Legacy group-level expansion (what the replicate branch now
+        # uses inside _compute_heterogeneity_test after the PR-329 fix).
+        W_g = np.zeros(2, dtype=np.float64)
+        np.add.at(W_g, obs_group, w)
+        psi_legacy = np.zeros_like(w)
+        for i in range(len(w)):
+            if W_g[obs_group[i]] > 0:
+                psi_legacy[i] = psi_g[obs_group[i]] * (
+                    w[i] / W_g[obs_group[i]]
+                )
+
+        # New cell-period single-cell expansion (what the Binder TSL
+        # branch uses). All mass lands on obs at t == 1.
+        psi_new = np.zeros_like(w)
+        for i in range(len(w)):
+            if obs_period[i] == 1:
+                psi_new[i] = psi_g[obs_group[i]]  # W_{g,out_idx}=1
+
+        var_legacy, _ = compute_replicate_if_variance(psi_legacy, resolved)
+        var_new, _ = compute_replicate_if_variance(psi_new, resolved)
+        assert np.isfinite(var_legacy) and np.isfinite(var_new)
+        # Documented non-invariance: replicate variance differs
+        # materially between the two allocators on this fixture.
+        assert not np.isclose(var_legacy, var_new, rtol=1e-6), (
+            f"Expected legacy vs cell-period replicate variance to "
+            f"differ when replicate ratios vary within group "
+            f"(counterexample from PR #329 CI review). Got "
+            f"var_legacy={var_legacy}, var_new={var_new}."
+        )

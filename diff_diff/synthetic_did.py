@@ -667,6 +667,8 @@ class SyntheticDiD(DifferenceInDifferences):
             post_periods=list(post_periods),
             w_control=w_control,
             w_treated=w_treated,
+            Y_shift=Y_shift,
+            Y_scale=Y_scale,
         )
 
         # Freeze the public diagnostic arrays so mutation via the results
