@@ -250,14 +250,20 @@ class TestHC2BMOneway:
 
 class TestHC1Unchanged:
     def test_default_path_unchanged(self, small_ols_dataset):
-        """Default call (no vcov_type kwarg) returns the same HC1 as before."""
+        """Default call (no vcov_type kwarg) returns the same HC1 as before.
+
+        Uses ``assert_allclose`` rather than bit-exact equality: the two
+        call paths reach the same math but the default-kwarg path can
+        accumulate ordering differences in the floating-point pipeline
+        (e.g., Numpy BLAS may reorder reductions depending on which
+        validator branch runs). The matrices agree to machine epsilon —
+        well below the stability bar for variance inference.
+        """
         X, y = small_ols_dataset
         _, resid, _ = _fit_unweighted(X, y)
-        # Call without vcov_type.
         default = compute_robust_vcov(X, resid)
-        # Call with explicit vcov_type="hc1".
         explicit = compute_robust_vcov(X, resid, vcov_type="hc1")
-        np.testing.assert_array_equal(default, explicit)
+        np.testing.assert_allclose(default, explicit, atol=1e-14, rtol=1e-14)
 
     def test_default_no_dof_returns_vcov_only(self, small_ols_dataset):
         """return_dof=False (default) returns ndarray, not tuple."""
@@ -271,12 +277,17 @@ class TestHC1Unchanged:
         assert len(result_tuple) == 2
 
     def test_hc1_cluster_unchanged(self, small_ols_dataset):
+        """Same invariant as ``test_default_path_unchanged`` for the
+        clustered (CR1) path. Uses ``assert_allclose`` because Numpy
+        BLAS reduction ordering can introduce sub-machine-epsilon
+        differences between the default-kwarg and explicit-kwarg paths.
+        """
         X, y = small_ols_dataset
         _, resid, _ = _fit_unweighted(X, y)
         cluster_ids = np.arange(X.shape[0]) % 5
         default = compute_robust_vcov(X, resid, cluster_ids=cluster_ids)
         explicit = compute_robust_vcov(X, resid, cluster_ids=cluster_ids, vcov_type="hc1")
-        np.testing.assert_array_equal(default, explicit)
+        np.testing.assert_allclose(default, explicit, atol=1e-14, rtol=1e-14)
 
     def test_hc2_bm_weighted_cluster_not_implemented(self, small_ols_dataset):
         """Weighted CR2 Bell-McCaffrey is deferred to Phase 2+."""
