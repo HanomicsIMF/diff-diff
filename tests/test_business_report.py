@@ -3975,6 +3975,167 @@ class TestCSVaryingBaseSensitivityRejectsPrecomputed:
         assert "precomputed['sensitivity']" in msg
 
 
+class TestBaconCaveatEstimatorAware:
+    """Round-45 P1 CI review on PR #318: Goodman-Bacon decomposes TWFE
+    weights. On fits already produced by a heterogeneity-robust
+    estimator (CS / SA / BJS / Gardner / Wooldridge / EfficientDiD /
+    Stacked / dCDH / TripleDifference / StaggeredTripleDiff / SDiD /
+    TROP), a high forbidden-weight share says "TWFE would have been
+    materially biased on this rollout", not "the displayed estimator
+    needs to be replaced" — the displayed fit is already robust.
+
+    BR's caveat must be estimator-aware: keep the "switch to a robust
+    estimator" recommendation for TWFE-style fits only.
+    """
+
+    @staticmethod
+    def _bacon_schema_with_high_forbidden_weight():
+        """Build a fake ``DiagnosticReportResults`` whose schema carries
+        a Bacon block with ``forbidden_weight > 0.10`` so BR's caveat
+        builder fires on the Bacon branch."""
+        from diff_diff.diagnostic_report import DiagnosticReportResults
+
+        schema = {
+            "schema_version": "1.0",
+            "estimator": {"class_name": "Stub", "display_name": "Stub"},
+            "headline_metric": {},
+            "parallel_trends": {"status": "skipped", "reason": "stub"},
+            "pretrends_power": {"status": "skipped", "reason": "stub"},
+            "sensitivity": {"status": "skipped", "reason": "stub"},
+            "placebo": {"status": "skipped", "reason": "stub"},
+            "bacon": {
+                "status": "ran",
+                "twfe_estimate": 1.2,
+                "weight_by_type": {
+                    "treated_vs_never": 0.5,
+                    "earlier_vs_later": 0.1,
+                    "later_vs_earlier": 0.4,
+                },
+                "forbidden_weight": 0.4,  # > 0.10 threshold
+                "verdict": "materially_contaminated",
+                "n_timing_groups": 3,
+            },
+            "design_effect": {"status": "skipped", "reason": "stub"},
+            "heterogeneity": {"status": "skipped", "reason": "stub"},
+            "epv": {"status": "skipped", "reason": "stub"},
+            "estimator_native_diagnostics": {"status": "not_applicable"},
+            "skipped": {},
+            "warnings": [],
+            "overall_interpretation": "",
+            "next_steps": [],
+        }
+        return DiagnosticReportResults(
+            schema=schema,
+            interpretation="",
+            applicable_checks=("bacon",),
+            skipped_checks={},
+            warnings=(),
+        )
+
+    @staticmethod
+    def _make_cs_like_stub(class_name: str):
+        cls = type(class_name, (), {})
+        obj = cls()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.2
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 500
+        obj.n_treated = 100
+        obj.n_control_units = 400
+        obj.survey_metadata = None
+        obj.event_study_effects = None
+        obj.inference_method = "analytical"
+        return obj
+
+    @staticmethod
+    def _make_twfe_style_stub():
+        class MultiPeriodDiDResults:
+            pass
+
+        obj = MultiPeriodDiDResults()
+        obj.avg_att = 1.0
+        obj.avg_se = 0.2
+        obj.avg_p_value = 0.001
+        obj.avg_conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 500
+        obj.n_treated = 100
+        obj.n_control = 400
+        obj.survey_metadata = None
+        obj.pre_period_effects = None
+        obj.inference_method = "analytical"
+        return obj
+
+    def test_cs_like_fit_does_not_recommend_switching_estimators(self):
+        """On an already-robust CS-style fit with high forbidden
+        Bacon weight, BR must not recommend switching to a robust
+        estimator — the displayed fit IS already robust."""
+        stub = self._make_cs_like_stub("CallawaySantAnnaResults")
+        dr = self._bacon_schema_with_high_forbidden_weight()
+        br = BusinessReport(stub, diagnostics=dr)
+        caveats = br.caveats()
+        bacon_caveats = [c for c in caveats if c.get("topic") == "bacon_contamination"]
+        assert len(bacon_caveats) == 1, (
+            f"High forbidden-weight Bacon must surface a caveat. " f"Got caveats: {caveats!r}"
+        )
+        msg = bacon_caveats[0]["message"].lower()
+        # Must NOT tell the user to switch estimators.
+        assert "re-estimate with a heterogeneity-robust" not in msg, (
+            f"CS is already heterogeneity-robust; must not recommend "
+            f"switching. Got message: {msg!r}"
+        )
+        # Must frame this as a TWFE benchmark problem / rollout-design
+        # statement, not a displayed-fit-validity problem.
+        assert (
+            "heterogeneity-robust" in msg
+            or "already" in msg
+            or "twfe benchmark" in msg
+            or "rollout design" in msg
+        ), f"CS Bacon caveat must reframe as rollout/TWFE issue. Got: {msg!r}"
+        # And the full-report rendering must reflect the softer wording.
+        md = br.full_report()
+        assert "Re-estimate with a heterogeneity-robust estimator" not in md, md
+
+    def test_other_robust_estimators_also_avoid_switch_recommendation(self):
+        """Spot-check the same rule holds for multiple
+        heterogeneity-robust estimators on the Bacon path."""
+        for class_name in (
+            "SunAbrahamResults",
+            "ImputationDiDResults",
+            "TwoStageDiDResults",
+            "StackedDiDResults",
+            "WooldridgeDiDResults",
+            "ChaisemartinDHaultfoeuilleResults",
+            "EfficientDiDResults",
+        ):
+            stub = self._make_cs_like_stub(class_name)
+            dr = self._bacon_schema_with_high_forbidden_weight()
+            br = BusinessReport(stub, diagnostics=dr)
+            msgs = [c["message"] for c in br.caveats() if c.get("topic") == "bacon_contamination"]
+            assert msgs, f"{class_name}: Bacon caveat must fire"
+            assert (
+                "Re-estimate with a heterogeneity-robust estimator" not in msgs[0]
+            ), f"{class_name} is already robust; must not recommend switching. Got: {msgs[0]!r}"
+
+    def test_twfe_style_fit_keeps_switch_recommendation(self):
+        """The switch-to-robust recommendation is load-bearing for
+        genuinely TWFE-style fits and must be preserved there."""
+        stub = self._make_twfe_style_stub()
+        dr = self._bacon_schema_with_high_forbidden_weight()
+        br = BusinessReport(stub, diagnostics=dr)
+        caveats = br.caveats()
+        bacon_caveats = [c for c in caveats if c.get("topic") == "bacon_contamination"]
+        assert len(bacon_caveats) == 1
+        msg = bacon_caveats[0]["message"]
+        # TWFE-style fit: keep the explicit switch recommendation.
+        assert "Re-estimate with a heterogeneity-robust estimator" in msg, (
+            f"MultiPeriodDiDResults (TWFE event-study) must keep the "
+            f"switch-to-robust recommendation. Got: {msg!r}"
+        )
+
+
 class TestBusinessReportSurveyDesignPassthrough:
     """Round-40 P1 CI review on PR #318: ``BusinessReport`` must accept
     ``survey_design`` and forward it to the auto-constructed

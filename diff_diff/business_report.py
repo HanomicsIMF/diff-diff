@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, FrozenSet, List, Optional, Union
 
 import numpy as np
 
@@ -1521,23 +1521,56 @@ def _build_caveats(
                 )
 
     # Bacon forbidden comparisons.
+    # Round-45 P1 CI review on PR #318: Goodman-Bacon is a
+    # decomposition of TWFE weights (see ``bacon.py`` header and
+    # Goodman-Bacon 2021). On fits already produced by a
+    # heterogeneity-robust estimator (CS / SA / BJS / Gardner /
+    # Wooldridge / EfficientDiD / Stacked / dCDH / TripleDifference /
+    # StaggeredTripleDiff / SDiD / TROP), a high forbidden-weight share
+    # says "TWFE would have been materially biased on this rollout",
+    # not "the displayed estimator needs to be replaced" — the
+    # displayed estimator is already robust to the heterogeneity that
+    # Bacon flags. DR partly preserves this with "if not already in
+    # use" prose; BR must carry the same distinction through to the
+    # caveat. The TWFE-style estimators whose results route through
+    # Bacon and for which the "switch to a robust estimator"
+    # recommendation is load-bearing are the DiDResults-type fits; all
+    # other result classes are already robust.
+    _TWFE_STYLE_RESULTS: FrozenSet[str] = frozenset(
+        {"DiDResults", "MultiPeriodDiDResults", "TwoWayFixedEffectsResults"}
+    )
     if dr_schema:
         bacon = dr_schema.get("bacon") or {}
         if bacon.get("status") == "ran":
             fw = bacon.get("forbidden_weight")
             if isinstance(fw, (int, float)) and fw > 0.10:
+                _estimator_name = type(_results).__name__
+                if _estimator_name in _TWFE_STYLE_RESULTS:
+                    bacon_message = (
+                        f"Goodman-Bacon decomposition places {fw:.0%} "
+                        "of implicit TWFE weight on 'forbidden' "
+                        "later-vs-earlier comparisons. TWFE may be "
+                        "materially biased under heterogeneous effects. "
+                        "Re-estimate with a heterogeneity-robust "
+                        "estimator (CS / SA / BJS / Gardner)."
+                    )
+                else:
+                    bacon_message = (
+                        f"Goodman-Bacon decomposition places {fw:.0%} "
+                        "of TWFE weight on 'forbidden' later-vs-earlier "
+                        "comparisons. A TWFE benchmark on this rollout "
+                        "would be materially biased under heterogeneous "
+                        "effects; the displayed estimator is already "
+                        "heterogeneity-robust, so this is a statement "
+                        "about the rollout design (avoid reporting TWFE "
+                        "alongside this fit), not about the current "
+                        "result's validity."
+                    )
                 caveats.append(
                     {
                         "severity": "warning",
                         "topic": "bacon_contamination",
-                        "message": (
-                            f"Goodman-Bacon decomposition places {fw:.0%} "
-                            "of implicit TWFE weight on 'forbidden' "
-                            "later-vs-earlier comparisons. TWFE may be "
-                            "materially biased under heterogeneous effects. "
-                            "Re-estimate with a heterogeneity-robust "
-                            "estimator (CS / SA / BJS / Gardner)."
-                        ),
+                        "message": bacon_message,
                     }
                 )
 
