@@ -675,6 +675,84 @@ class TestEdgeCases:
         inf_warnings = [x for x in w if "inf in 'first_treat'" in str(x.message)]
         assert inf_warnings == []
 
+    def test_nonzero_dose_on_never_treated_warns(self):
+        """first_treat=0 (never-treated) rows with nonzero dose must now surface
+        a UserWarning with the affected row count before the zeroing coercion.
+        Before PR #331's CI-review follow-up this was silent."""
+        # 4 units x 3 periods (12 rows). 2 units are never-treated (first_treat=0)
+        # but carry dose=1.5 on every row — 6 rows should be reported.
+        rows = []
+        for unit in range(4):
+            if unit < 2:
+                ft, dose_val = 0.0, 1.5  # never-treated with nonzero dose
+            else:
+                ft, dose_val = 2.0, 1.0  # treated
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": dose_val,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with pytest.warns(
+            UserWarning,
+            match=r"6 row\(s\) have 'first_treat'=0 \(never-treated\) but nonzero 'dose'",
+        ):
+            try:
+                est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+            except Exception:
+                # Downstream validation may reject this minimal panel (too few
+                # treated for OLS); we only care about the dose-coercion warning.
+                pass
+
+    def test_clean_never_treated_doses_silent(self):
+        """Never-treated rows with dose=0 must not trigger the coercion warning."""
+        import warnings
+        data = generate_continuous_did_data(n_units=50, n_periods=3, seed=42)
+        # generate_continuous_did_data already sets dose=0 for never-treated.
+        est = ContinuousDiD()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+
+        coerce_warnings = [
+            x for x in w
+            if "never-treated" in str(x.message) and "nonzero 'dose'" in str(x.message)
+        ]
+        assert coerce_warnings == []
+
+    def test_negative_inf_first_treat_does_not_trigger_recategorization_warning(self):
+        """-inf first_treat is NOT recoded to 0 by `.replace([inf, float("inf")], 0)`,
+        so the recategorization warning (which used to count both +inf and -inf
+        via np.isinf) must not fire for -inf rows."""
+        import warnings
+        rows = []
+        for unit in range(4):
+            # Unit 0 carries -inf (not recoded, so downstream validation should
+            # see it as-is). Others are untreated with dose=0.
+            ft = -np.inf if unit == 0 else 0.0
+            for t in range(1, 4):
+                rows.append({
+                    "unit": unit, "period": t, "outcome": float(unit + t),
+                    "first_treat": ft, "dose": 0.0,
+                })
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            try:
+                est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+            except Exception:
+                pass
+
+        inf_warnings = [x for x in w if "inf in 'first_treat'" in str(x.message)]
+        assert inf_warnings == [], (
+            "-inf must not trigger the +inf recategorization warning"
+        )
+
     def test_inf_first_treat_warning_counts_rows_not_units(self):
         """The warning counts affected rows (not units). On a panel with
         multiple periods per unit, each inf row must count separately so the

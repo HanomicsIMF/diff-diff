@@ -871,9 +871,38 @@ class TestComputeOutcomeChanges:
 
         with pytest.warns(
             UserWarning,
-            match=r"check_parallel_trends dropped \d+ row\(s\).*additional NaN first-differences",
+            match=r"parallel-trend diagnostic: dropped \d+ row\(s\).*additional NaN first-differences",
         ):
             _compute_outcome_changes(
+                df, outcome="outcome", time="period",
+                treatment_group="treated", unit="unit",
+            )
+
+    def test_warning_label_reflects_public_caller(self):
+        """`check_parallel_trends_robust` and `equivalence_test_trends` must
+        each surface the axis-E excess-drop warning under their own name so
+        users can trace the signal back to the function they called."""
+        rng = np.random.default_rng(0)
+        rows = []
+        for unit in range(10):
+            treated = int(unit >= 5)
+            for t in range(1, 5):
+                rows.append({
+                    "unit": unit, "period": t,
+                    "treated": treated, "outcome": rng.normal(),
+                })
+        df = pd.DataFrame(rows)
+        df.loc[[5, 12, 22], "outcome"] = np.nan
+
+        with pytest.warns(UserWarning, match="check_parallel_trends_robust:"):
+            check_parallel_trends_robust(
+                df, outcome="outcome", time="period",
+                treatment_group="treated", unit="unit",
+                n_permutations=100, seed=0,
+            )
+
+        with pytest.warns(UserWarning, match="equivalence_test_trends:"):
+            equivalence_test_trends(
                 df, outcome="outcome", time="period",
                 treatment_group="treated", unit="unit",
             )

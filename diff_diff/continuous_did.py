@@ -227,11 +227,15 @@ class ContinuousDiD:
                 f"Dose must be time-invariant. Units with varying dose: {bad_units[:5]}"
             )
 
-        # Normalize first_treat: inf → 0 (R-style never-treated encoding). Count
-        # rows recategorized so users can see how many units just crossed from
-        # "treated at some point" to "never treated" — silent recategorization
-        # here would shift the control composition (axis-E silent coercion).
-        inf_mask = np.isinf(df[first_treat].values)
+        # Normalize first_treat: +inf → 0 (R-style never-treated encoding).
+        # Count rows recategorized so users can see how many units just
+        # crossed from "treated at some point" to "never treated" — silent
+        # recategorization here would shift the control composition (axis-E
+        # silent coercion). Only positive infinity is recoded (to match the
+        # existing `.replace([np.inf, float("inf")], 0)` semantics on the
+        # next line); `-inf` is neither counted here nor recoded, so a
+        # downstream validator will reject it if present.
+        inf_mask = np.isposinf(df[first_treat].values)
         n_inf_first_treat = int(inf_mask.sum())
         if n_inf_first_treat > 0:
             warnings.warn(
@@ -278,9 +282,22 @@ class ContinuousDiD:
                 stacklevel=2,
             )
 
-        # Force dose=0 for never-treated units with nonzero dose
+        # Force dose=0 for never-treated units with nonzero dose. Report the
+        # affected row count via UserWarning so users can see whether their
+        # never-treated rows had unintended nonzero doses — silent zeroing
+        # here would quietly shift part of the control trajectory (axis-E
+        # silent coercion, paired with the `first_treat=inf -> 0` fix above).
         never_treated_mask = df[first_treat] == 0
-        if (df.loc[never_treated_mask, dose] != 0).any():
+        nonzero_dose_rows = never_treated_mask & (df[dose] != 0)
+        n_nonzero_dose_never_treated = int(nonzero_dose_rows.sum())
+        if n_nonzero_dose_never_treated > 0:
+            warnings.warn(
+                f"{n_nonzero_dose_never_treated} row(s) have '{first_treat}'=0 "
+                f"(never-treated) but nonzero '{dose}'; zeroing the dose. Pass "
+                f"dose=0 for never-treated rows to avoid this coercion.",
+                UserWarning,
+                stacklevel=2,
+            )
             df.loc[never_treated_mask, dose] = 0.0
 
         # Verify balanced panel
