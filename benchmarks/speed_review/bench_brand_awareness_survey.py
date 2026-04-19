@@ -54,6 +54,17 @@ def build_data(n_units, n_periods, n_strata, psu_per_stratum, seed=42):
 
 
 def make_phases(data, results, rw_cols):
+    # One analytical TSL SurveyDesign is reused across every analytical
+    # survey phase (TSL, multi-outcome, placebo, HonestDiD event-study).
+    # Keeping strata/PSU/FPC/nest constant is what the scenario spec and
+    # Tutorial 17 declare, and what the finite-population variance
+    # expressions require. The replicate-weight path (phase 3) is a
+    # different variance surface (JK1) that does not take FPC.
+    sd_tsl = SurveyDesign(
+        weights="weight", strata="stratum", psu="psu",
+        fpc="fpc", nest=True,
+    )
+
     def naive_fit():
         did = DifferenceInDifferences(robust=True, cluster="psu")
         results["naive"] = did.fit(
@@ -61,14 +72,10 @@ def make_phases(data, results, rw_cols):
         )
 
     def tsl_fit():
-        sd = SurveyDesign(
-            weights="weight", strata="stratum", psu="psu",
-            fpc="fpc", nest=True,
-        )
         did = DifferenceInDifferences(robust=True)
         results["tsl"] = did.fit(
             data, outcome="outcome", treatment="treat_unit", time="post",
-            survey_design=sd,
+            survey_design=sd_tsl,
         )
 
     def replicate_fit():
@@ -85,15 +92,12 @@ def make_phases(data, results, rw_cols):
         )
 
     def multi_outcome_loop():
-        sd = SurveyDesign(
-            weights="weight", strata="stratum", psu="psu", nest=True,
-        )
         out = {}
         for y in ("outcome", "consideration", "purchase_intent"):
             did = DifferenceInDifferences(robust=True)
             out[y] = did.fit(
                 data, outcome=y, treatment="treat_unit", time="post",
-                survey_design=sd,
+                survey_design=sd_tsl,
             )
         results["multi_outcome"] = out
 
@@ -107,24 +111,18 @@ def make_phases(data, results, rw_cols):
     def placebo_refit():
         pre = data[data["period"] < 7].copy()
         pre["placebo_post"] = (pre["period"] >= 4).astype(int)
-        sd = SurveyDesign(
-            weights="weight", strata="stratum", psu="psu", nest=True,
-        )
         did = DifferenceInDifferences(robust=True)
         results["placebo"] = did.fit(
             pre, outcome="outcome", treatment="treat_unit",
-            time="placebo_post", survey_design=sd,
+            time="placebo_post", survey_design=sd_tsl,
         )
 
     def honest_did_grid():
-        sd = SurveyDesign(
-            weights="weight", strata="stratum", psu="psu", nest=True,
-        )
         es = MultiPeriodDiD()
         es_result = es.fit(
             data, outcome="outcome", treatment="treat_unit",
             time="period", unit="unit", reference_period=6,
-            survey_design=sd,
+            survey_design=sd_tsl,
         )
         results["event_study"] = es_result
         out = {}

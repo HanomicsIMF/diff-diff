@@ -41,20 +41,20 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
 <!-- TABLE:start scale_sweep_totals -->
 | Scenario | Scale | Python (s) | Rust (s) | Py/Rust |
 |---|---|---:|---:|---:|
-| 1. Staggered campaign | small | 0.50 | 0.50 | 1.0x |
-|  | medium | 0.73 | 0.73 | 1.0x |
-|  | large | 1.28 | 1.26 | 1.0x |
-| 2. Brand awareness survey | small | 0.21 | 0.19 | 1.1x |
-|  | medium | 0.52 | 0.49 | 1.1x |
-|  | large | 0.91 | 0.81 | 1.1x |
-| 3. BRFSS microdata -> CS panel | small | 1.62 | 1.63 | 1.0x |
-|  | medium | 6.24 | 6.20 | 1.0x |
-|  | large | 24.48 | 24.17 | 1.0x |
-| 4. SDiD few markets | small | 3.80 | 0.04 | 95.0x |
-|  | medium | 4.06 | 0.12 | 35.3x |
-|  | large | skip | 0.26 | - |
-| 5. Reversible dCDH | single | 0.66 | 0.64 | 1.0x |
-| 6. Pricing dose-response | single | 0.60 | 0.59 | 1.0x |
+| 1. Staggered campaign | small | 0.52 | 0.52 | 1.0x |
+|  | medium | 0.76 | 0.76 | 1.0x |
+|  | large | 1.62 | 1.33 | 1.2x |
+| 2. Brand awareness survey | small | 0.22 | 0.23 | 1.0x |
+|  | medium | 0.79 | 0.49 | 1.6x |
+|  | large | 0.95 | 0.95 | 1.0x |
+| 3. BRFSS microdata -> CS panel | small | 1.64 | 1.74 | 0.9x |
+|  | medium | 6.44 | 6.40 | 1.0x |
+|  | large | 24.86 | 24.67 | 1.0x |
+| 4. SDiD few markets | small | 3.75 | 0.04 | 92.9x |
+|  | medium | 4.06 | 0.12 | 34.3x |
+|  | large | skip | 0.27 | - |
+| 5. Reversible dCDH | single | 0.75 | 0.66 | 1.1x |
+| 6. Pricing dose-response | single | 0.61 | 0.59 | 1.0x |
 <!-- TABLE:end scale_sweep_totals -->
 
 ### Scaling findings
@@ -80,28 +80,31 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
    the JK1 replicate path inside it scales closer to
    n_units x n_replicates - faster growth than the chain total, so it
    increasingly dominates at large n.
-5. Rust backend gives measurable uplift only for SDiD; everywhere else
-   backend choice is within noise because the bottlenecks are in Python
-   (`aggregate_survey`, JK1 replicate fit) or already well-vectorized
-   (CS bootstrap, ImputationDiD, Survey TSL).
+5. Rust backend gives large uplift only for SDiD (order-of-magnitude
+   and up). Elsewhere the gap is modest - under ~1.6x at worst on
+   brand-awareness medium, and within noise on the other scenarios
+   and scales. The primary bottlenecks live in Python code the Rust
+   backend does not touch (`aggregate_survey`, JK1 replicate fit), and
+   paths that Rust does touch (CS bootstrap, ImputationDiD, Survey
+   TSL) are already well-vectorized in Python.
 
 ### Top phases by scenario at largest measured scale
 
 <!-- TABLE:start top_phases_by_scenario -->
 | Scenario | Scale | Backend | Top phase (%) | 2nd phase (%) | 3rd phase (%) |
 |---|---|---|---|---|---|
-| 1. Staggered campaign | large | python | `6_imputation_did_robustness` (52%) | `5_sun_abraham_robustness` (23%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
-| 1. Staggered campaign | large | rust | `6_imputation_did_robustness` (43%) | `5_sun_abraham_robustness` (33%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
-| 2. Brand awareness survey | large | python | `3_replicate_weights_jk1` (50%) | `4_multi_outcome_loop_3_metrics` (25%) | `7_event_study_plus_honest_did` (14%) |
-| 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (44%) | `4_multi_outcome_loop_3_metrics` (26%) | `7_event_study_plus_honest_did` (17%) |
+| 1. Staggered campaign | large | python | `6_imputation_did_robustness` (41%) | `5_sun_abraham_robustness` (38%) | `2_cs_fit_with_covariates_bootstrap999` (11%) |
+| 1. Staggered campaign | large | rust | `6_imputation_did_robustness` (42%) | `5_sun_abraham_robustness` (34%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
+| 2. Brand awareness survey | large | python | `3_replicate_weights_jk1` (51%) | `4_multi_outcome_loop_3_metrics` (26%) | `7_event_study_plus_honest_did` (15%) |
+| 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (51%) | `4_multi_outcome_loop_3_metrics` (26%) | `7_event_study_plus_honest_did` (15%) |
 | 3. BRFSS microdata -> CS panel | large | python | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
 | 3. BRFSS microdata -> CS panel | large | rust | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
 | 4. SDiD few markets | medium | python | `5_sensitivity_to_zeta_omega` (43%) | `3_in_time_placebo` (39%) | `2_sdid_bootstrap_variance_200` (9%) |
-| 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (41%) | `3_in_time_placebo` (29%) | `1_sdid_jackknife_variance` (16%) |
-| 5. Reversible dCDH | single | python | `4_heterogeneity_refit` (52%) | `1_dcdh_fit_Lmax3_survey_TSL` (47%) | `3_honest_did_on_placebo` (1%) |
-| 5. Reversible dCDH | single | rust | `1_dcdh_fit_Lmax3_survey_TSL` (50%) | `4_heterogeneity_refit` (49%) | `3_honest_did_on_placebo` (1%) |
-| 6. Pricing dose-response | single | python | `1_cdid_cubic_spline_bootstrap199` (26%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (25%) |
-| 6. Pricing dose-response | single | rust | `1_cdid_cubic_spline_bootstrap199` (25%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (25%) |
+| 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (40%) | `3_in_time_placebo` (30%) | `1_sdid_jackknife_variance` (16%) |
+| 5. Reversible dCDH | single | python | `1_dcdh_fit_Lmax3_survey_TSL` (51%) | `4_heterogeneity_refit` (48%) | `3_honest_did_on_placebo` (1%) |
+| 5. Reversible dCDH | single | rust | `1_dcdh_fit_Lmax3_survey_TSL` (52%) | `4_heterogeneity_refit` (48%) | `3_honest_did_on_placebo` (1%) |
+| 6. Pricing dose-response | single | python | `1_cdid_cubic_spline_bootstrap199` (26%) | `3_cdid_event_study_pretrend` (25%) | `5_spline_sensitivity_degree1` (25%) |
+| 6. Pricing dose-response | single | rust | `1_cdid_cubic_spline_bootstrap199` (26%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (25%) |
 <!-- TABLE:end top_phases_by_scenario -->
 
 Per-scenario phase narrative (cross-check against the table above after
@@ -113,14 +116,14 @@ any rerun):
   `n_bootstrap=999` (both with and without covariates) is well-
   vectorized and sits well below both in the ranking.
 - **Brand awareness survey.** At small scale HonestDiD dominates. At
-  medium the top three phases are packed closely: on Python JK1 leads
-  (about 1.9x the multi-outcome loop, with HonestDiD close behind);
-  on Rust the multi-outcome loop is slightly ahead of JK1. Only at
-  large does JK1 emerge as the clearly dominant phase under both
-  backends. Python and Rust totals on this chain are within noise; the
-  JK1 replicate-fit loop is not Rust-accelerated, so the FFI crossings
-  cost approximately what they save - a neutral outcome, not a
-  regression.
+  medium the backends diverge: on Python JK1 leads clearly (about
+  2.2x the multi-outcome loop), while on Rust the multi-outcome loop
+  and JK1 come in essentially tied. Medium is also the scale where
+  Python and Rust separate the most on total time (~1.6x under
+  Python at the time of writing); the analytical TSL path with FPC
+  appears to vectorize better under Rust at that shape. At large,
+  JK1 becomes the clearly dominant phase under both backends and
+  totals re-converge.
 - **BRFSS.** `aggregate_survey` share of total grows with scale and is
   effectively 100% of runtime at 1M rows. Downstream phases (CS fit,
   SunAbraham, HonestDiD) are a fraction of a second combined.
@@ -128,10 +131,9 @@ any rerun):
   are the dominant Python-backend phases at every scale; Rust eliminates
   both.
 - **Reversible dCDH.** Main fit and heterogeneity refit split the time
-  roughly evenly (45-52% each; under Python the heterogeneity refit
-  edges out the main fit slightly). Both fits run under the same
-  `SurveyDesign` and rebuild shared TSL scaffolding - that is the
-  optimization opportunity.
+  roughly evenly (~48-52% each under both backends). Both fits run
+  under the same `SurveyDesign` and rebuild shared TSL scaffolding -
+  that is the optimization opportunity.
 - **Pricing dose-response.** Four spline fits account for essentially all
   runtime; linear scaling in variant count.
 
@@ -157,20 +159,20 @@ in `benchmarks/speed_review/baselines/mem_profile_brfss_large_<backend>.txt`.
 <!-- TABLE:start memory_by_scenario -->
 | Scenario | Scale | Py peak RSS (MB) | Py growth (MB) | Rust peak RSS (MB) | Rust growth (MB) |
 |---|---|---:|---:|---:|---:|
-| 1. Staggered campaign | small | 140 | 26 | 148 | 34 |
-|  | medium | 230 | 85 | 262 | 107 |
-|  | large | 482 | 251 | 588 | 324 |
-| 2. Brand awareness survey | small | 128 | 12 | 128 | 13 |
-|  | medium | 183 | 48 | 186 | 53 |
-|  | large | 335 | 143 | 337 | 144 |
-| 3. BRFSS microdata -> CS panel | small | 134 | 12 | 135 | 13 |
-|  | medium | 210 | 22 | 218 | 20 |
-|  | large | 426 | 30 | 431 | 30 |
-| 4. SDiD few markets | small | 124 | 10 | 115 | 1 |
-|  | medium | 153 | 8 | 117 | 0 |
+| 1. Staggered campaign | small | 143 | 29 | 151 | 36 |
+|  | medium | 232 | 86 | 256 | 100 |
+|  | large | 466 | 233 | 573 | 314 |
+| 2. Brand awareness survey | small | 127 | 12 | 129 | 14 |
+|  | medium | 186 | 52 | 187 | 51 |
+|  | large | 337 | 149 | 344 | 151 |
+| 3. BRFSS microdata -> CS panel | small | 134 | 13 | 136 | 12 |
+|  | medium | 209 | 21 | 218 | 25 |
+|  | large | 438 | 23 | 435 | 31 |
+| 4. SDiD few markets | small | 124 | 10 | 115 | 2 |
+|  | medium | 152 | 9 | 117 | 0 |
 |  | large | skip | skip | 118 | 0 |
-| 5. Reversible dCDH | single | 133 | 19 | 135 | 21 |
-| 6. Pricing dose-response | single | 120 | 7 | 121 | 7 |
+| 5. Reversible dCDH | single | 132 | 18 | 134 | 20 |
+| 6. Pricing dose-response | single | 122 | 9 | 123 | 9 |
 <!-- TABLE:end memory_by_scenario -->
 
 The ~115-130 MB floor is the Python + diff-diff + numpy import footprint;
