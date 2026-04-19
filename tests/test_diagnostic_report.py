@@ -1388,6 +1388,89 @@ class TestReferenceMarkerAndNaNFiltering:
         assert pt["method"] == "inconclusive"
         assert pt["n_dropped_undefined"] >= 1
 
+    def test_all_pre_periods_undefined_yields_inconclusive_not_skipped(self):
+        """Round-42 P1 regression: the twin of the partially-undefined
+        case. When every pre-period row is dropped by the collector
+        for undefined inference (all ``se <= 0`` or non-finite effect/SE),
+        ``_collect_pre_period_coefs`` returns ``([], n_dropped_undefined > 0)``.
+        The prior behavior routed through the empty-coefs ``skipped``
+        path ("No pre-period event-study coefficients available"),
+        which let BR drop the identifying-assumption warning and render
+        a silent-PT-absent narrative. That violates the inconclusive
+        contract documented in REPORTING.md: when any pre-row is
+        dropped for undefined inference, the joint PT test is
+        inconclusive, not skipped.
+        """
+        from diff_diff import BusinessReport
+
+        class StackedDiDResults:
+            pass
+
+        obj = StackedDiDResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.2
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 400
+        obj.n_treated_units = 100
+        obj.n_control_units = 300
+        obj.survey_metadata = None
+        # All pre-rows have ``se == 0`` — undefined inference per the
+        # safe-inference contract (``utils.py:175``). The collector's
+        # ``se > 0`` filter drops all of them, leaving pre_coefs=[]
+        # with n_dropped_undefined=2 (the R42 all-undefined case).
+        obj.event_study_effects = {
+            -2: {
+                "effect": 0.1,
+                "se": 0.0,
+                "p_value": 1.0,
+                "n_obs": 400,
+            },
+            -1: {
+                "effect": 0.05,
+                "se": 0.0,
+                "p_value": 1.0,
+                "n_obs": 400,
+            },
+        }
+
+        dr = DiagnosticReport(obj, run_sensitivity=False, run_bacon=False)
+        # Applicability gate: PT must be marked applicable (runs as
+        # inconclusive), not skipped with "no coefficients available".
+        assert "parallel_trends" in dr.applicable_checks, (
+            "All-undefined pre-period case must keep PT applicable so "
+            "the inconclusive runner can emit the explicit "
+            "n_dropped_undefined provenance. Current skipped reasons: "
+            f"{dr.skipped_checks}"
+        )
+        pt = dr.to_dict()["parallel_trends"]
+        assert pt["status"] == "ran", pt
+        assert pt["method"] == "inconclusive", (
+            f"All-undefined pre-period family must route to the "
+            f"inconclusive runner, not 'skipped'. Got status="
+            f"{pt.get('status')!r}, method={pt.get('method')!r}, "
+            f"reason={pt.get('reason')!r}"
+        )
+        assert pt["verdict"] == "inconclusive"
+        assert pt["joint_p_value"] is None
+        # All-undefined: n_dropped_undefined equals attempted pre-period
+        # count (2 rows here), and the valid subset is empty.
+        assert pt["n_dropped_undefined"] == 2
+        assert pt["n_pre_periods"] == 0
+
+        # BR must surface this as an inconclusive identifying-
+        # assumption warning, not silently omit PT. The "inconclusive"
+        # verdict phrasing is the load-bearing contract for
+        # stakeholders.
+        br_summary = BusinessReport(obj).summary().lower()
+        assert "inconclusive" in br_summary, (
+            f"All-undefined PT must surface 'inconclusive' in BR " f"summary. Got: {br_summary!r}"
+        )
+        # And must not claim PT was untested / no-coefs.
+        assert "no pre-period event-study coefficients" not in br_summary
+        assert "consistent with parallel trends" not in br_summary
+
     def test_pretrends_power_adapter_filters_zero_se_cs(self):
         """Round-33 P0 regression: CS / SA ``compute_pretrends_power``
         adapters also use the ``se > 0`` filter alongside

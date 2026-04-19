@@ -615,8 +615,17 @@ class DiagnosticReport:
                         "opt in."
                     )
             if method == "event_study":
-                pre_coefs, _ = _collect_pre_period_coefs(r)
-                if not pre_coefs:
+                pre_coefs, n_dropped_undefined = _collect_pre_period_coefs(r)
+                # Round-42 P1 CI review on PR #318: the all-undefined
+                # pre-period case (every pre-row dropped for ``se <= 0``
+                # / non-finite inference) is the twin of the partial-
+                # undefined case from round-33. It must route to the
+                # inconclusive runner rather than skip, so the explicit
+                # ``method="inconclusive"`` / ``n_dropped_undefined``
+                # provenance is surfaced through DR's schema and BR's
+                # summary emits the "inconclusive" identifying-
+                # assumption warning rather than silently dropping PT.
+                if not pre_coefs and n_dropped_undefined == 0:
                     return (
                         "No pre-period event-study coefficients are exposed on "
                         "this fit. For staggered estimators, re-fit with "
@@ -1083,20 +1092,19 @@ class DiagnosticReport:
         """
         r = self._results
         pre_coefs, n_dropped_undefined = _collect_pre_period_coefs(r)
-        if not pre_coefs:
-            return {
-                "status": "skipped",
-                "reason": "No pre-period event-study coefficients available.",
-            }
-        # Round-33 P0 CI review on PR #318: if any real pre-period was
-        # rejected for undefined inference (``se <= 0`` or non-finite
-        # ``effect`` / ``se``), the Bonferroni fallback used to silently
-        # shrink the test family on the remaining subset and publish a
-        # finite joint p-value that then lifted into clean BR prose.
-        # That violates the ``safe_inference`` contract (``se <= 0`` ->
-        # NaN downstream). Return an explicit inconclusive PT result
-        # instead — the user cannot conclude "PT holds" from a
-        # partially-undefined pre-period surface.
+        # Round-33 P0 / Round-42 P1 CI review on PR #318: undefined-
+        # inference rows must drive an explicit ``inconclusive`` PT
+        # result rather than either (a) silently shrinking the
+        # Bonferroni family on the remaining subset and publishing a
+        # finite joint p-value (R33, mixed-partial case), or (b)
+        # routing through the empty-coefs ``skipped`` path when every
+        # pre-row was rejected (R42, all-undefined case). Both violate
+        # the ``safe_inference`` contract: ``se <= 0`` / non-finite
+        # effect or SE yields NaN downstream per ``utils.py`` line
+        # 175, REGISTRY.md line 197. The inconclusive block preserves
+        # the undefined-row count on the schema so BR's summary can
+        # quote it and stakeholders see an explicit "PT could not be
+        # assessed" warning rather than a silent PT-absent narrative.
         if n_dropped_undefined > 0:
             return {
                 "status": "ran",
@@ -1118,6 +1126,11 @@ class DiagnosticReport:
                     "affected rows are a small number of cohorts, or "
                     "investigate why the per-period SE collapsed."
                 ),
+            }
+        if not pre_coefs:
+            return {
+                "status": "skipped",
+                "reason": "No pre-period event-study coefficients available.",
             }
         interaction_indices = getattr(r, "interaction_indices", None)
         vcov = getattr(r, "vcov", None)

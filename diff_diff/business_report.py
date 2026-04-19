@@ -1232,11 +1232,79 @@ def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, 
             block["control_group"] = clean_control
             block["clean_control"] = clean_control
         return block
+    if estimator_name == "ImputationDiDResults":
+        # Borusyak, Jaravel & Spiess (2024) — identification is through
+        # an untreated-potential-outcome model: unit+time FE (optionally
+        # plus covariates) fitted on untreated observations only
+        # (``Omega_0``) deliver the counterfactual ``Y_it(0)``, and the
+        # treatment effect ``tau_it`` is the residual on treated
+        # observations. Writing this as generic "group-time ATT
+        # parallel trends" misstates the identifying model — the
+        # restriction is on the UNTREATED outcome's additive FE
+        # structure, not on cohort-time ATT equality. REGISTRY.md
+        # §ImputationDiD lines 1000-1013 and Assumption 1 (parallel
+        # trends) + Assumption 2 (no anticipation on untreated
+        # observations). Round-42 P1 CI review on PR #318 flagged this
+        # source-faithfulness gap.
+        return {
+            "parallel_trends_variant": "untreated_outcome_fe_model",
+            "no_anticipation": True,
+            "description": (
+                "Identification under Imputation DiD (Borusyak, Jaravel "
+                "& Spiess 2024): the untreated potential outcome "
+                "``Y_it(0)`` follows an additive unit+time fixed-effects "
+                "model ``Y_it(0) = alpha_i + beta_t [+ X'_it * delta] + "
+                "epsilon_it``. Step 1 estimates those FE on untreated "
+                "observations only (``Omega_0`` = never-treated plus "
+                "not-yet-treated cells); Step 2 imputes the "
+                "counterfactual for treated observations from the "
+                "fitted FE; Step 3 aggregates ``tau_hat_it = Y_it - "
+                "Y_hat_it(0)`` with researcher-chosen weights. The "
+                "identifying restriction is therefore parallel trends "
+                "of the UNTREATED outcome model (Assumption 1) — "
+                "``E[Y_it(0)] = alpha_i + beta_t``, holding across all "
+                "observations — rather than equality of cohort-time "
+                "ATTs. Also assumes no anticipation on untreated "
+                "observations (Assumption 2) and absorbing treatment."
+            ),
+        }
+    if estimator_name == "TwoStageDiDResults":
+        # Gardner (2022) — identification is the same as BJS
+        # ImputationDiD (point estimates are algebraically equivalent
+        # per REGISTRY.md §TwoStageDiD line 1130): unit+time FE
+        # estimated on untreated observations only deliver the
+        # untreated potential-outcome trajectory; Stage 2 regresses
+        # the resulting residuals on treatment indicators. Writing
+        # this as generic "group-time ATT parallel trends" loses the
+        # load-bearing detail that Stage 1 operates only on untreated
+        # cells. REGISTRY.md §TwoStageDiD lines 1113-1128 and
+        # Assumption (same as ImputationDiD). Round-42 P1 CI review on
+        # PR #318 flagged this source-faithfulness gap.
+        return {
+            "parallel_trends_variant": "untreated_outcome_fe_model",
+            "no_anticipation": True,
+            "description": (
+                "Identification under Two-Stage DiD (Gardner 2022): "
+                "Stage 1 fits unit + time fixed effects on untreated "
+                "observations only (``Omega_0``), residualizing the "
+                "outcome as ``y_tilde_it = Y_it - alpha_hat_i - "
+                "beta_hat_t``; Stage 2 regresses residualized outcomes "
+                "on the treatment indicator across treated observations "
+                "to recover the ATT. The point estimates are "
+                "algebraically equivalent to Borusyak-Jaravel-Spiess "
+                "imputation (both rely on the same untreated-outcome FE "
+                "model to construct the counterfactual). The "
+                "identifying restriction is therefore parallel trends "
+                "of the UNTREATED outcome: ``E[Y_it(0)] = alpha_i + "
+                "beta_t`` for all observations (not a group-time ATT "
+                "equality across cohorts). Also assumes no anticipation "
+                "(``Y_it = Y_it(0)`` for all untreated observations) "
+                "and absorbing / irreversible treatment."
+            ),
+        }
     if estimator_name in {
         "CallawaySantAnnaResults",
         "SunAbrahamResults",
-        "ImputationDiDResults",
-        "TwoStageDiDResults",
         "WooldridgeDiDResults",
     }:
         return {

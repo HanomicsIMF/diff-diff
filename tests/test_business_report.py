@@ -750,6 +750,101 @@ class TestAssumptionBlockSourceFaithful:
         # Must NOT be the generic group-time PT text.
         assert "group-time ATT" not in desc
 
+    def test_imputation_did_assumption_uses_untreated_fe_model(self):
+        """Round-42 P1 regression: BJS (2024) identifies through the
+        untreated-outcome FE model (Step 1 estimates FE on ``Omega_0``
+        = never-treated + not-yet-treated observations, Assumption 1
+        parallel trends applies to ``E[Y_it(0)]``). The old generic
+        "group-time ATT" wording misstated this: the identifying
+        restriction is on the UNTREATED outcome's additive FE
+        structure, not on cohort-time ATT equality. REGISTRY.md
+        §ImputationDiD lines 1000-1013 and Assumption 1/2.
+        """
+
+        class ImputationDiDResults:
+            pass
+
+        obj = ImputationDiDResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.1
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 40
+        obj.n_control = 60
+        obj.survey_metadata = None
+        obj.event_study_effects = None
+        obj.inference_method = "analytical"
+        obj.anticipation = 0
+
+        br = BusinessReport(obj, auto_diagnostics=False)
+        assumption = br.to_dict()["assumption"]
+        assert assumption["parallel_trends_variant"] == "untreated_outcome_fe_model"
+        desc = assumption["description"]
+        # Registry-backed: Borusyak-Jaravel-Spiess attribution.
+        assert "Borusyak" in desc or "BJS" in desc or "2024" in desc
+        # Load-bearing source detail: untreated-observation FE model.
+        assert "untreated" in desc.lower()
+        assert "Omega_0" in desc or "fixed effect" in desc.lower()
+        # Must NOT render the pre-R42 generic group-time-ATT template
+        # that grouped BJS in with CS / SA.
+        assert (
+            "parallel trends across treatment cohorts and time periods (group-time ATT)" not in desc
+        ), (
+            "ImputationDiD identifies via untreated-outcome FE modelling "
+            "(BJS 2024 Assumption 1), not generic group-time ATT PT. The "
+            f"assumption description must not use the pre-R42 template. Got: {desc!r}"
+        )
+
+    def test_two_stage_did_assumption_uses_untreated_fe_model(self):
+        """Round-42 P1 regression: Gardner (2022) two-stage DiD shares
+        BJS's untreated-outcome FE identification (REGISTRY.md explicitly
+        states "Parallel trends (same as ImputationDiD)" and the point
+        estimates are algebraically equivalent). Stage 1 fits FE on
+        untreated observations, Stage 2 residualizes treated observations.
+        The old generic "group-time ATT" wording dropped the untreated-
+        subset detail. REGISTRY.md §TwoStageDiD lines 1113-1128.
+        """
+
+        class TwoStageDiDResults:
+            pass
+
+        obj = TwoStageDiDResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.1
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.8, 1.2)
+        obj.alpha = 0.05
+        obj.n_obs = 100
+        obj.n_treated = 40
+        obj.n_control = 60
+        obj.survey_metadata = None
+        obj.event_study_effects = None
+        obj.inference_method = "analytical"
+        obj.anticipation = 0
+
+        br = BusinessReport(obj, auto_diagnostics=False)
+        assumption = br.to_dict()["assumption"]
+        assert assumption["parallel_trends_variant"] == "untreated_outcome_fe_model"
+        desc = assumption["description"]
+        # Registry-backed: Gardner 2022 attribution.
+        assert "Gardner" in desc or "2022" in desc
+        # Load-bearing: Stage 1 operates on untreated observations.
+        assert "untreated" in desc.lower()
+        assert "Stage 1" in desc or "stage 1" in desc.lower()
+        # Must mention the two-stage procedure.
+        assert "two-stage" in desc.lower() or "Two-Stage" in desc
+        # Must NOT render the pre-R42 generic group-time-ATT template
+        # that grouped Gardner in with CS / SA.
+        assert (
+            "parallel trends across treatment cohorts and time periods (group-time ATT)" not in desc
+        ), (
+            "TwoStageDiD identifies via the same untreated-outcome FE "
+            "model as ImputationDiD (Gardner 2022); the assumption "
+            f"description must not use the pre-R42 template. Got: {desc!r}"
+        )
+
 
 class TestEfficientDiDAssumptionPtAllPtPost:
     """Round-8 regression: EfficientDiD has two distinct PT regimes
