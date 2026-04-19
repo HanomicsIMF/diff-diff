@@ -1572,6 +1572,102 @@ class TestDCDHPhase3AssumptionClause:
         assert "beta^{het}_l" in desc
 
 
+class TestAnticipationStripsStrictNoAnticipationClause:
+    """Round-30 P1 CI review on PR #318: ``_apply_anticipation_to_assumption``
+    previously only appended an anticipation clause. Several base
+    descriptions already say "plus no anticipation" or "Also assumes
+    no anticipation", so an anticipation-enabled fit would render
+    self-contradictory prose: the strict clause AND the relaxed one in
+    the same paragraph. The helper now strips the strict phrasing
+    before appending. These regressions cover every anticipation-
+    capable estimator base description that previously carried such
+    wording.
+    """
+
+    _STRICT_PATTERNS = (
+        "plus no anticipation",
+        "Also assumes no anticipation",
+    )
+
+    @staticmethod
+    def _stub(class_name: str, **extras):
+        stub_cls = type(class_name, (), {})
+        stub = stub_cls()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 400
+        stub.n_treated = 100
+        stub.n_control = 300
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.anticipation = 2
+        for k, v in extras.items():
+            setattr(stub, k, v)
+        return stub
+
+    def _assert_no_strict_contract(self, description: str):
+        assert isinstance(description, str) and description
+        for pat in self._STRICT_PATTERNS:
+            assert pat not in description, (
+                f"Anticipation-enabled fit description must not carry "
+                f"the strict phrase {pat!r}. Got: {description!r}"
+            )
+        # Must still say anticipation is allowed (relaxed contract).
+        assert "Anticipation is allowed" in description
+        assert "not strict no-anticipation" in description
+
+    def test_generic_group_time_strips_strict_clause(self):
+        # Generic CS/SA/Imputation/TwoStage/Wooldridge branch.
+        stub = self._stub("CallawaySantAnnaResults")
+        block = BusinessReport(stub, auto_diagnostics=False).to_dict()["assumption"]
+        assert block["no_anticipation"] is False
+        assert block["anticipation_periods"] == 2
+        self._assert_no_strict_contract(block["description"])
+
+    def test_efficient_did_pt_all_strips_strict_clause(self):
+        stub = self._stub("EfficientDiDResults", pt_assumption="all")
+        block = BusinessReport(stub, auto_diagnostics=False).to_dict()["assumption"]
+        self._assert_no_strict_contract(block["description"])
+        # PT-All identifying content should still be present.
+        assert "PT-All" in block["description"]
+
+    def test_efficient_did_pt_post_strips_strict_clause(self):
+        stub = self._stub("EfficientDiDResults", pt_assumption="post")
+        block = BusinessReport(stub, auto_diagnostics=False).to_dict()["assumption"]
+        self._assert_no_strict_contract(block["description"])
+        assert "PT-Post" in block["description"]
+
+    def test_stacked_did_strips_strict_clause(self):
+        stub = self._stub(
+            "StackedDiDResults", clean_control="not_yet_treated"
+        )
+        block = BusinessReport(stub, auto_diagnostics=False).to_dict()["assumption"]
+        self._assert_no_strict_contract(block["description"])
+        # Stacked sub-experiment identifying content preserved.
+        assert "IC1" in block["description"] and "IC2" in block["description"]
+
+    def test_rendered_full_report_has_no_strict_contract_for_anticipation(self):
+        """Integration: the rendered markdown's Identifying Assumption
+        section must also be free of the strict phrase on an
+        anticipation-enabled fit.
+        """
+        stub = self._stub("CallawaySantAnnaResults")
+        md = BusinessReport(stub, auto_diagnostics=False).full_report()
+        assumption_section = md.split("## Identifying Assumption", 1)[1].split(
+            "\n## ", 1
+        )[0]
+        for pat in self._STRICT_PATTERNS:
+            assert pat not in assumption_section, (
+                f"Rendered assumption section must not carry the strict "
+                f"phrase {pat!r} under anticipation > 0. Got: "
+                f"{assumption_section!r}"
+            )
+        assert "Anticipation is allowed" in assumption_section
+
+
 class TestAnticipationAwareAssumptionBlock:
     """Round-17 P1 regression: ``_describe_assumption`` must drop the
     strict "plus no anticipation" language when the fit allows

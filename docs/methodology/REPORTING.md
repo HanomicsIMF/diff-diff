@@ -139,7 +139,8 @@ not new inference.
     signal."
   - Power analysis not runnable &rarr; fall back to `underpowered`
     phrasing; the fallback reason is recorded in
-    `schema["pre_trends"]["power_status"]`.
+    `schema["pre_trends"]["power_reason"]` (plain-English explanation;
+    `power_status` carries the enum).
 
   Rationale: always-hedging phrasing under-sells well-designed
   studies; always-confident phrasing over-sells underpowered ones.

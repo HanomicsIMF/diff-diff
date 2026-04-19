@@ -36,6 +36,7 @@ experimental in v3.2.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
@@ -822,9 +823,51 @@ def _control_group_choice(results: Any) -> Optional[str]:
     return None
 
 
+_STRICT_NO_ANTICIPATION_PATTERNS = (
+    # Ordered from most specific to least specific so the first match
+    # wins on strings that could match multiple patterns. Matches are
+    # case-sensitive because every occurrence in ``_describe_assumption``
+    # is a fixed canonical phrase.
+    ", plus no anticipation",
+    "plus no anticipation",
+    " Also assumes no anticipation (Assumption NA), overlap "
+    "(Assumption O), and absorbing / irreversible treatment.",
+    " Also assumes no anticipation.",
+    "Also assumes no anticipation.",
+    " and no anticipation",
+)
+
+
+def _strip_strict_no_anticipation(desc: str) -> str:
+    """Remove any strict no-anticipation phrasing from ``desc``.
+
+    Several base assumption descriptions in ``_describe_assumption``
+    hard-code a strict "plus no anticipation" / "Also assumes no
+    anticipation" clause (CS / SA / Imputation / TwoStage / Wooldridge
+    generic, StackedDiD sub-experiment, EfficientDiD PT-Post, EfficientDiD
+    PT-All, ContinuousDiD, TripleDifference, SyntheticDiD, TROP, dCDH,
+    and the fallback unconditional branch). When a fit actually allows
+    anticipation the helper must REPLACE that wording, not append a
+    contradictory clause on top of it. Round-30 P1 CI review on PR #318.
+    """
+    if not desc:
+        return desc
+    out = desc
+    for pattern in _STRICT_NO_ANTICIPATION_PATTERNS:
+        out = out.replace(pattern, "")
+    # Collapse any doubled whitespace or dangling punctuation left by
+    # the removal (e.g., "cohorts,  with..." -> "cohorts, with...";
+    # "cohorts .  " -> "cohorts.").
+    out = re.sub(r"\s+\.", ".", out)
+    out = re.sub(r"\s+,", ",", out)
+    out = re.sub(r" {2,}", " ", out)
+    return out.strip()
+
+
 def _apply_anticipation_to_assumption(block: Dict[str, Any], results: Any) -> Dict[str, Any]:
-    """If the fit used ``anticipation > 0``, flip ``no_anticipation`` off and
-    append an anticipation clause to the description.
+    """If the fit used ``anticipation > 0``, flip ``no_anticipation`` off,
+    strip any strict no-anticipation wording from the base description,
+    and append an anticipation-aware clause.
 
     Round-17 CI review flagged the strict "plus no anticipation" language
     on anticipation-enabled fits. Per REGISTRY.md §CallawaySantAnna lines
@@ -832,7 +875,10 @@ def _apply_anticipation_to_assumption(block: Dict[str, Any], results: Any) -> Di
     EfficientDiD, a fit with ``anticipation=k`` shifts the effective
     treatment boundary by ``k`` pre-periods; the identifying assumption
     becomes "no treatment effects earlier than ``k`` periods before the
-    treatment start" rather than strict no-anticipation.
+    treatment start" rather than strict no-anticipation. Round-30 CI
+    review caught that the previous implementation only appended — the
+    resulting prose said both "strict no-anticipation holds" and
+    "anticipation is allowed" in the same paragraph.
     """
     k = _anticipation_periods(results)
     if k <= 0:
@@ -849,7 +895,7 @@ def _apply_anticipation_to_assumption(block: Dict[str, Any], results: Any) -> Di
     )
     desc = block.get("description", "")
     if isinstance(desc, str):
-        block["description"] = desc + clause
+        block["description"] = _strip_strict_no_anticipation(desc) + clause
     return block
 
 
