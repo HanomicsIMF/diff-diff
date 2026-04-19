@@ -1854,6 +1854,24 @@ def _significance_phrase(p: Optional[float], alpha: float) -> str:
     return "the confidence interval includes zero; the data are consistent with no effect"
 
 
+def _sentence_first_upper(text: str) -> str:
+    """Uppercase only the first character of ``text``, preserving all
+    other casing. Unlike ``str.capitalize()``, which lowercases every
+    character after the first, this keeps user-supplied abbreviations
+    and proper nouns intact.
+
+    Examples
+    --------
+    >>> _sentence_first_upper("the NJ minimum-wage increase")
+    'The NJ minimum-wage increase'
+    >>> _sentence_first_upper("Castle Doctrine law adoption")
+    'Castle Doctrine law adoption'
+    """
+    if not text:
+        return text
+    return text[0].upper() + text[1:]
+
+
 def _direction_verb(effect: float, outcome_direction: Optional[str]) -> str:
     """Return a direction-aware verb for the headline sentence.
 
@@ -1929,7 +1947,16 @@ def _render_headline_sentence(schema: Dict[str, Any]) -> str:
         # is not actually available.
         ci_str = " (inference unavailable: confidence interval is undefined for this fit)"
     by_clause = f" by {magnitude}" if effect != 0 else ""
-    return f"{treatment.capitalize()} {verb} {outcome}{by_clause}{ci_str}."
+    # Round-1 BR/DR canonical-validation (2026-04-19): Python's
+    # ``str.capitalize()`` lowercases everything except the first
+    # character, so ``"the NJ minimum-wage increase".capitalize()``
+    # returns ``"The nj minimum-wage increase"`` — flattening the
+    # ``NJ`` abbreviation. Real canonical datasets (Card-Krueger,
+    # Castle Doctrine) carry proper-noun / acronym tokens in the
+    # user-supplied ``treatment_label``, so preserve user casing and
+    # only ensure the first character is uppercase.
+    treatment_sentence = _sentence_first_upper(treatment)
+    return f"{treatment_sentence} {verb} {outcome}{by_clause}{ci_str}."
 
 
 def _render_summary(schema: Dict[str, Any]) -> str:
@@ -2088,11 +2115,26 @@ def _render_summary(schema: Dict[str, Any]) -> str:
                 f"pre-period variation."
             )
         elif isinstance(bkd, (int, float)):
-            sentences.append(
-                f"HonestDiD: the result is fragile — the confidence interval "
-                f"includes zero once violations reach {bkd:.2g}x the "
-                f"pre-period variation."
-            )
+            # Round-1 BR/DR canonical-validation (2026-04-19):
+            # ``breakdown_M`` at or near zero reads as "0x the
+            # pre-period variation" which is a degenerate sentence
+            # (zero-times-anything is zero). The correct wording when
+            # the CI includes zero at the smallest grid point is to
+            # say the result is fragile to essentially any nonzero
+            # violation, not to quote the ``0x`` multiplier.
+            if bkd <= 0.05:
+                sentences.append(
+                    "HonestDiD: the result is fragile — the confidence "
+                    "interval includes zero even at the smallest "
+                    "parallel-trends violations on the sensitivity "
+                    "grid."
+                )
+            else:
+                sentences.append(
+                    f"HonestDiD: the result is fragile — the confidence "
+                    f"interval includes zero once violations reach {bkd:.2g}x "
+                    f"the pre-period variation."
+                )
 
     # Sample sentence. For fits with a dynamic comparison set (CS /
     # ContinuousDiD / StaggeredTripleDiff / EfficientDiD /

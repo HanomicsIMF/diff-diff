@@ -3118,13 +3118,30 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
                 f"pre-period variation."
             )
         else:
-            sentences.append(
-                f"HonestDiD sensitivity: the result is fragile — the "
-                f"confidence interval includes zero once violations reach "
-                f"{bkd:.2g}x the pre-period variation."
-                if isinstance(bkd, (int, float))
-                else ""
-            )
+            # Round-1 BR/DR canonical-validation (2026-04-19): the
+            # "fragile — CI includes zero once violations reach 0x
+            # the pre-period variation" wording is a degenerate
+            # sentence at the ``breakdown_M == 0`` edge case
+            # surfaced by the Cheng-Hoekstra (2013) Castle Doctrine
+            # dataset. Mirror BR's fix: when the breakdown value is
+            # at or near zero, say the CI includes zero at the
+            # smallest grid point rather than quoting a ``0x``
+            # multiplier.
+            if isinstance(bkd, (int, float)):
+                if bkd <= 0.05:
+                    sentences.append(
+                        "HonestDiD sensitivity: the result is fragile — "
+                        "the confidence interval includes zero even at "
+                        "the smallest parallel-trends violations on the "
+                        "sensitivity grid."
+                    )
+                else:
+                    sentences.append(
+                        f"HonestDiD sensitivity: the result is fragile — "
+                        f"the confidence interval includes zero once "
+                        f"violations reach {bkd:.2g}x the pre-period "
+                        f"variation."
+                    )
 
     # Sentence 4: one secondary caveat if present.
     bacon = schema.get("bacon") or {}

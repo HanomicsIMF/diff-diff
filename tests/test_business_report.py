@@ -3975,6 +3975,174 @@ class TestCSVaryingBaseSensitivityRejectsPrecomputed:
         assert "precomputed['sensitivity']" in msg
 
 
+class TestCanonicalValidationSurfaceFixes:
+    """Regression coverage for issues surfaced by the first round of
+    BR/DR canonical-dataset validation (``docs/validation/
+    validate_br_dr_canonical.py``). Each test pins a wording bug
+    observed on a real published-applied-work fit.
+    """
+
+    def _cs_like_stub_with_zero_breakdown(self):
+        """CS-style result stub matching the Cheng-Hoekstra Castle
+        Doctrine fit pattern."""
+
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 0.5608
+        stub.overall_se = 0.1216
+        stub.overall_p_value = 0.0
+        stub.overall_conf_int = (0.323, 0.799)
+        stub.alpha = 0.05
+        stub.n_obs = 539
+        stub.n_treated = 22
+        stub.n_control_units = 27
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.base_period = "universal"
+        stub.inference_method = "analytical"
+        return stub
+
+    def _fragile_dr_schema(self, breakdown_m: float):
+        """Build a fake DiagnosticReportResults whose ``sensitivity``
+        block carries the given ``breakdown_M`` value."""
+        from diff_diff.diagnostic_report import DiagnosticReportResults
+
+        schema = {
+            "schema_version": "1.0",
+            "estimator": {"class_name": "CallawaySantAnnaResults", "display_name": "CS"},
+            "headline_metric": {},
+            "parallel_trends": {"status": "skipped", "reason": "stub"},
+            "pretrends_power": {"status": "skipped", "reason": "stub"},
+            "sensitivity": {
+                "status": "ran",
+                "method": "relative_magnitude",
+                "breakdown_M": breakdown_m,
+                "conclusion": "fragile",
+                "grid": [],
+            },
+            "placebo": {"status": "skipped", "reason": "stub"},
+            "bacon": {"status": "skipped", "reason": "stub"},
+            "design_effect": {"status": "skipped", "reason": "stub"},
+            "heterogeneity": {"status": "skipped", "reason": "stub"},
+            "epv": {"status": "skipped", "reason": "stub"},
+            "estimator_native_diagnostics": {"status": "not_applicable"},
+            "skipped": {},
+            "warnings": [],
+            "overall_interpretation": "",
+            "next_steps": [],
+        }
+        return DiagnosticReportResults(
+            schema=schema,
+            interpretation="",
+            applicable_checks=("sensitivity",),
+            skipped_checks={},
+            warnings=(),
+        )
+
+    def test_treatment_label_preserves_embedded_abbreviations(self):
+        """Card-Krueger use case: ``treatment_label="the NJ minimum-wage
+        increase"`` previously rendered as ``"The nj minimum-wage
+        increase"`` because ``str.capitalize()`` lowercases every
+        character after the first. The fix preserves user-supplied
+        casing and only uppercases the first character.
+        """
+
+        class DiDResults:
+            pass
+
+        stub = DiDResults()
+        stub.att = 1.47
+        stub.se = 1.93
+        stub.t_stat = 0.76
+        stub.p_value = 0.45
+        stub.conf_int = (-2.32, 5.27)
+        stub.alpha = 0.05
+        stub.n_obs = 620
+        stub.n_treated = 462
+        stub.n_control = 158
+        stub.survey_metadata = None
+        stub.inference_method = "analytical"
+        br = BusinessReport(
+            stub,
+            outcome_label="FTE employment",
+            treatment_label="the NJ minimum-wage increase",
+            auto_diagnostics=False,
+        )
+        headline = br.headline()
+        assert "The NJ minimum-wage increase" in headline, (
+            "Embedded ``NJ`` abbreviation must survive the first-word "
+            f"capitalization. Got headline: {headline!r}"
+        )
+        assert "The nj" not in headline, (
+            "Previous capitalize() bug lowercased the NJ abbreviation. " f"Got: {headline!r}"
+        )
+
+    def test_treatment_label_preserves_proper_noun_case(self):
+        """Castle Doctrine use case: ``treatment_label="Castle Doctrine
+        law adoption"`` previously rendered as ``"Castle doctrine law
+        adoption"`` because capitalize() lowercased the rest. Must
+        preserve proper-noun casing.
+        """
+        stub = self._cs_like_stub_with_zero_breakdown()
+        br = BusinessReport(
+            stub,
+            outcome_label="Homicide rate",
+            treatment_label="Castle Doctrine law adoption",
+            auto_diagnostics=False,
+        )
+        headline = br.headline()
+        assert (
+            "Castle Doctrine law adoption" in headline
+        ), f"Proper-noun casing must be preserved. Got: {headline!r}"
+
+    def test_breakdown_m_zero_uses_smallest_grid_point_wording(self):
+        """Cheng-Hoekstra Castle Doctrine produces ``breakdown_M == 0``
+        under HonestDiD. The old wording "violations reach 0x the
+        pre-period variation" reads as a degenerate zero-times-variation
+        sentence. The fix switches to "includes zero even at the
+        smallest parallel-trends violations on the sensitivity grid"
+        for breakdown values at or near zero.
+        """
+        stub = self._cs_like_stub_with_zero_breakdown()
+        dr = self._fragile_dr_schema(breakdown_m=0.0)
+        br = BusinessReport(stub, diagnostics=dr)
+        summary = br.summary()
+        assert "0x" not in summary, (
+            f"Summary must not render ``0x the pre-period variation``; "
+            f"that reads as zero-times-anything. Got: {summary!r}"
+        )
+        assert "smallest parallel-trends violations" in summary, (
+            f"Summary must use the smallest-grid-point wording at "
+            f"breakdown_M == 0. Got: {summary!r}"
+        )
+
+    def test_breakdown_m_small_positive_still_uses_smallest_grid_point_wording(self):
+        """Breakdown values just above zero (e.g., 0.03) should also
+        route through the smallest-grid-point wording — quoting
+        ``0.03x`` to a stakeholder is equally uninformative.
+        """
+        stub = self._cs_like_stub_with_zero_breakdown()
+        dr = self._fragile_dr_schema(breakdown_m=0.03)
+        br = BusinessReport(stub, diagnostics=dr)
+        summary = br.summary()
+        assert "smallest parallel-trends violations" in summary
+        assert "0.03x" not in summary
+
+    def test_breakdown_m_normal_keeps_multiplier_wording(self):
+        """Breakdown values at the usual fragile-but-nonzero range
+        (e.g., 0.3) must still quote the ``0.3x`` multiplier — the
+        smallest-grid-point wording is only for the degenerate tail.
+        """
+        stub = self._cs_like_stub_with_zero_breakdown()
+        dr = self._fragile_dr_schema(breakdown_m=0.3)
+        br = BusinessReport(stub, diagnostics=dr)
+        summary = br.summary()
+        assert "0.3x" in summary
+        assert "smallest parallel-trends violations" not in summary
+
+
 class TestBaconCaveatEstimatorAware:
     """Round-45 P1 CI review on PR #318: Goodman-Bacon decomposes TWFE
     weights. On fits already produced by a heterogeneity-robust
