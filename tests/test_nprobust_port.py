@@ -141,6 +141,11 @@ class TestLprobustBwStageD1:
             / "data"
             / "nprobust_mse_dpi_golden.json"
         )
+        if not golden_path.exists():
+            pytest.skip(
+                "Golden values file not found; "
+                "run: Rscript benchmarks/R/generate_nprobust_golden.R"
+            )
         with golden_path.open() as f:
             golden = json.load(f)
         dgp = golden["dgp1"]

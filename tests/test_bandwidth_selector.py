@@ -32,6 +32,14 @@ _PARITY_TOL = 0.01  # 1% relative error; commit criterion #4
 
 @pytest.fixture(scope="module")
 def golden():
+    """Load R-generated nprobust golden values. Skip if the file is
+    absent (e.g. in CI's isolated-install path where benchmarks/ is
+    not copied alongside tests/)."""
+    if not GOLDEN_PATH.exists():
+        pytest.skip(
+            "Golden values file not found; "
+            "run: Rscript benchmarks/R/generate_nprobust_golden.R"
+        )
     with GOLDEN_PATH.open() as f:
         return json.load(f)
 
