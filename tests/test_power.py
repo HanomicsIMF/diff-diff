@@ -626,6 +626,24 @@ class TestSimulatePower:
                 data_generator=generate_did_data,
             )
 
+    def test_simulation_all_failed_raises_runtime_error(self):
+        """All simulations failing: narrow-except path still raises RuntimeError."""
+        from diff_diff.prep import generate_did_data
+
+        class AlwaysFailingEstimator:
+            def fit(self, data, **kwargs):
+                raise ValueError("every replicate fails")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with pytest.raises(RuntimeError, match="All simulations failed"):
+                simulate_power(
+                    estimator=AlwaysFailingEstimator(),
+                    n_simulations=5,
+                    progress=False,
+                    data_generator=generate_did_data,
+                )
+
     def test_simulation_failure_counter_survives_serialization(self):
         """`n_simulation_failures` round-trips through to_dict/to_dataframe."""
         from diff_diff.prep import generate_did_data

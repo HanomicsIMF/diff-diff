@@ -1026,7 +1026,6 @@ class SimulationPowerResults:
     mean_se: float
     coverage: float
     n_simulations: int
-    n_simulation_failures: int
     effect_sizes: List[float]
     powers: List[float]
     true_effect: float
@@ -1039,6 +1038,7 @@ class SimulationPowerResults:
     survey_config: Optional[Any] = field(default=None, repr=False)
     mean_deff: Optional[float] = None
     mean_icc_realized: Optional[float] = None
+    n_simulation_failures: int = 0
 
     def __post_init__(self):
         """Compute derived statistics."""
