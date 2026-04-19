@@ -91,9 +91,13 @@ def make_phases(data, results, covars, fit_kwargs):
         results["bjs"] = bjs.fit(**fit_kwargs, aggregate="event_study")
 
     def cs_no_covariates():
+        # Match phase 2's estimator config exactly; the only axis that
+        # varies is `covariates`. This is the Baker-mandated with/without
+        # comparison - holding inference workload constant is the whole
+        # point of the comparison.
         cs = CallawaySantAnna(
-            control_group="never_treated", estimation_method="reg",
-            cluster="unit", n_bootstrap=199, seed=123,
+            control_group="never_treated", estimation_method="dr",
+            cluster="unit", n_bootstrap=999, seed=123,
         )
         results["cs_nocov"] = cs.fit(**fit_kwargs, aggregate="all")
 

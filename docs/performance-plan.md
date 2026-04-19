@@ -41,20 +41,20 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
 <!-- TABLE:start scale_sweep_totals -->
 | Scenario | Scale | Python (s) | Rust (s) | Py/Rust |
 |---|---|---:|---:|---:|
-| 1. Staggered campaign | small | 0.53 | 0.50 | 1.0x |
-|  | medium | 0.82 | 0.79 | 1.0x |
-|  | large | 1.36 | 1.57 | 0.9x |
-| 2. Brand awareness survey | small | 0.21 | 0.20 | 1.1x |
-|  | medium | 0.76 | 0.58 | 1.3x |
-|  | large | 1.03 | 1.04 | 1.0x |
-| 3. BRFSS microdata -> CS panel | small | 1.67 | 1.79 | 0.9x |
-|  | medium | 6.40 | 6.48 | 1.0x |
-|  | large | 24.75 | 25.41 | 1.0x |
-| 4. SDiD few markets | small | 3.93 | 0.04 | 94.9x |
-|  | medium | 4.09 | 0.12 | 33.9x |
-|  | large | skip | 0.27 | - |
-| 5. Reversible dCDH | single | 0.59 | 0.55 | 1.1x |
-| 6. Pricing dose-response | single | 0.60 | 0.61 | 1.0x |
+| 1. Staggered campaign | small | 0.50 | 0.50 | 1.0x |
+|  | medium | 0.73 | 0.73 | 1.0x |
+|  | large | 1.28 | 1.26 | 1.0x |
+| 2. Brand awareness survey | small | 0.21 | 0.19 | 1.1x |
+|  | medium | 0.52 | 0.49 | 1.1x |
+|  | large | 0.91 | 0.81 | 1.1x |
+| 3. BRFSS microdata -> CS panel | small | 1.62 | 1.63 | 1.0x |
+|  | medium | 6.24 | 6.20 | 1.0x |
+|  | large | 24.48 | 24.17 | 1.0x |
+| 4. SDiD few markets | small | 3.80 | 0.04 | 95.0x |
+|  | medium | 4.06 | 0.12 | 35.3x |
+|  | large | skip | 0.26 | - |
+| 5. Reversible dCDH | single | 0.66 | 0.64 | 1.0x |
+| 6. Pricing dose-response | single | 0.60 | 0.59 | 1.0x |
 <!-- TABLE:end scale_sweep_totals -->
 
 ### Scaling findings
@@ -90,18 +90,18 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
 <!-- TABLE:start top_phases_by_scenario -->
 | Scenario | Scale | Backend | Top phase (%) | 2nd phase (%) | 3rd phase (%) |
 |---|---|---|---|---|---|
-| 1. Staggered campaign | large | python | `6_imputation_did_robustness` (52%) | `5_sun_abraham_robustness` (26%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
-| 1. Staggered campaign | large | rust | `6_imputation_did_robustness` (37%) | `5_sun_abraham_robustness` (31%) | `7_cs_without_covariates` (20%) |
-| 2. Brand awareness survey | large | python | `3_replicate_weights_jk1` (56%) | `4_multi_outcome_loop_3_metrics` (21%) | `7_event_study_plus_honest_did` (13%) |
-| 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (54%) | `4_multi_outcome_loop_3_metrics` (25%) | `7_event_study_plus_honest_did` (14%) |
+| 1. Staggered campaign | large | python | `6_imputation_did_robustness` (52%) | `5_sun_abraham_robustness` (23%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
+| 1. Staggered campaign | large | rust | `6_imputation_did_robustness` (43%) | `5_sun_abraham_robustness` (33%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
+| 2. Brand awareness survey | large | python | `3_replicate_weights_jk1` (50%) | `4_multi_outcome_loop_3_metrics` (25%) | `7_event_study_plus_honest_did` (14%) |
+| 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (44%) | `4_multi_outcome_loop_3_metrics` (26%) | `7_event_study_plus_honest_did` (17%) |
 | 3. BRFSS microdata -> CS panel | large | python | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
 | 3. BRFSS microdata -> CS panel | large | rust | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
-| 4. SDiD few markets | medium | python | `5_sensitivity_to_zeta_omega` (43%) | `3_in_time_placebo` (39%) | `1_sdid_jackknife_variance` (9%) |
-| 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (40%) | `3_in_time_placebo` (29%) | `1_sdid_jackknife_variance` (16%) |
-| 5. Reversible dCDH | single | python | `1_dcdh_fit_Lmax3_survey_TSL` (62%) | `4_heterogeneity_refit` (37%) | `3_honest_did_on_placebo` (1%) |
-| 5. Reversible dCDH | single | rust | `1_dcdh_fit_Lmax3_survey_TSL` (61%) | `4_heterogeneity_refit` (38%) | `3_honest_did_on_placebo` (1%) |
+| 4. SDiD few markets | medium | python | `5_sensitivity_to_zeta_omega` (43%) | `3_in_time_placebo` (39%) | `2_sdid_bootstrap_variance_200` (9%) |
+| 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (41%) | `3_in_time_placebo` (29%) | `1_sdid_jackknife_variance` (16%) |
+| 5. Reversible dCDH | single | python | `4_heterogeneity_refit` (52%) | `1_dcdh_fit_Lmax3_survey_TSL` (47%) | `3_honest_did_on_placebo` (1%) |
+| 5. Reversible dCDH | single | rust | `1_dcdh_fit_Lmax3_survey_TSL` (50%) | `4_heterogeneity_refit` (49%) | `3_honest_did_on_placebo` (1%) |
 | 6. Pricing dose-response | single | python | `1_cdid_cubic_spline_bootstrap199` (26%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (25%) |
-| 6. Pricing dose-response | single | rust | `1_cdid_cubic_spline_bootstrap199` (26%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (25%) |
+| 6. Pricing dose-response | single | rust | `1_cdid_cubic_spline_bootstrap199` (25%) | `3_cdid_event_study_pretrend` (25%) | `6_spline_sensitivity_num_knots2` (25%) |
 <!-- TABLE:end top_phases_by_scenario -->
 
 Per-scenario phase narrative (cross-check against the table above after
@@ -153,20 +153,20 @@ in `benchmarks/speed_review/baselines/mem_profile_brfss_large_<backend>.txt`.
 <!-- TABLE:start memory_by_scenario -->
 | Scenario | Scale | Py peak RSS (MB) | Py growth (MB) | Rust peak RSS (MB) | Rust growth (MB) |
 |---|---|---:|---:|---:|---:|
-| 1. Staggered campaign | small | 141 | 27 | 148 | 34 |
-|  | medium | 233 | 84 | 264 | 108 |
-|  | large | 474 | 237 | 576 | 312 |
-| 2. Brand awareness survey | small | 131 | 16 | 131 | 16 |
-|  | medium | 194 | 58 | 190 | 54 |
-|  | large | 335 | 140 | 339 | 144 |
-| 3. BRFSS microdata -> CS panel | small | 133 | 12 | 136 | 14 |
-|  | medium | 209 | 20 | 223 | 30 |
-|  | large | 426 | 31 | 446 | 33 |
-| 4. SDiD few markets | small | 124 | 10 | 115 | 2 |
-|  | medium | 152 | 9 | 117 | 0 |
+| 1. Staggered campaign | small | 140 | 26 | 148 | 34 |
+|  | medium | 230 | 85 | 262 | 107 |
+|  | large | 482 | 251 | 588 | 324 |
+| 2. Brand awareness survey | small | 128 | 12 | 128 | 13 |
+|  | medium | 183 | 48 | 186 | 53 |
+|  | large | 335 | 143 | 337 | 144 |
+| 3. BRFSS microdata -> CS panel | small | 134 | 12 | 135 | 13 |
+|  | medium | 210 | 22 | 218 | 20 |
+|  | large | 426 | 30 | 431 | 30 |
+| 4. SDiD few markets | small | 124 | 10 | 115 | 1 |
+|  | medium | 153 | 8 | 117 | 0 |
 |  | large | skip | skip | 118 | 0 |
-| 5. Reversible dCDH | single | 132 | 19 | 135 | 21 |
-| 6. Pricing dose-response | single | 121 | 7 | 123 | 9 |
+| 5. Reversible dCDH | single | 133 | 19 | 135 | 21 |
+| 6. Pricing dose-response | single | 120 | 7 | 121 | 7 |
 <!-- TABLE:end memory_by_scenario -->
 
 The ~115-130 MB floor is the Python + diff-diff + numpy import footprint;

@@ -55,12 +55,12 @@ def main():
         data=data, outcome="outcome", group="group", time="period",
         treatment="treatment",
     )
+    sd = SurveyDesign(
+        weights="pw", strata="stratum", psu="psu",
+    )
 
     def dcdh_fit_lmax3():
         est = ChaisemartinDHaultfoeuille(seed=123)
-        sd = SurveyDesign(
-            weights="pw", strata="stratum", psu="psu",
-        )
         results["dcdh"] = est.fit(
             **fit_kwargs, L_max=3, survey_design=sd,
         )
@@ -83,9 +83,13 @@ def main():
         results["honest"] = out
 
     def heterogeneity_refit():
+        # Use the same SurveyDesign as the main fit; the scenario framing
+        # is the survey-TSL workflow, and the TSL-sharing optimization
+        # conclusion in performance-plan.md depends on both fits running
+        # under the same survey design.
         est = ChaisemartinDHaultfoeuille(seed=123)
         results["het"] = est.fit(
-            **fit_kwargs, L_max=3, heterogeneity="group",
+            **fit_kwargs, L_max=3, survey_design=sd, heterogeneity="group",
         )
 
     phases = [

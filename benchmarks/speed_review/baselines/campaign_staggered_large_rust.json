@@ -2,52 +2,52 @@
   "scenario": "campaign_staggered_large",
   "backend": "rust",
   "has_rust_backend": true,
-  "total_seconds": 1.566890625,
+  "total_seconds": 1.2563857909999998,
   "memory": {
     "available": true,
-    "start_mb": 264.23,
-    "peak_mb": 575.98,
-    "growth_mb": 311.75,
+    "start_mb": 264.81,
+    "peak_mb": 588.48,
+    "growth_mb": 323.67,
     "sampler_interval_s": 0.01
   },
   "phases": {
     "1_bacon_decomposition": {
-      "seconds": 0.019707125000000048,
+      "seconds": 0.01783779200000013,
       "ok": true,
       "error": null
     },
     "2_cs_fit_with_covariates_bootstrap999": {
-      "seconds": 0.17541550000000017,
+      "seconds": 0.16583404200000018,
       "ok": true,
       "error": null
     },
     "3_inspect_pretrends": {
-      "seconds": 4.4999999997408224e-06,
+      "seconds": 3.374999999916639e-06,
       "ok": true,
       "error": null
     },
     "4_honest_did_M_grid": {
-      "seconds": 0.002558749999999943,
+      "seconds": 0.0027218329999998403,
       "ok": true,
       "error": null
     },
     "5_sun_abraham_robustness": {
-      "seconds": 0.48181645799999995,
+      "seconds": 0.4118338749999997,
       "ok": true,
       "error": null
     },
     "6_imputation_did_robustness": {
-      "seconds": 0.5781936660000002,
+      "seconds": 0.5377156250000001,
       "ok": true,
       "error": null
     },
     "7_cs_without_covariates": {
-      "seconds": 0.309143916,
+      "seconds": 0.12039454100000002,
       "ok": true,
       "error": null
     },
     "8_practitioner_next_steps": {
-      "seconds": 4.4332999999951994e-05,
+      "seconds": 3.916700000017315e-05,
       "ok": true,
       "error": null
     }
