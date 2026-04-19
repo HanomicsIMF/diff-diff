@@ -801,6 +801,17 @@ class DiagnosticReport:
                 completed.append("parallel_trends")
             if _ran("sensitivity"):
                 completed.append("sensitivity")
+            # SDiD / TROP route their sensitivity analogue through
+            # ``estimator_native_diagnostics`` rather than HonestDiD. When
+            # that native block ran, the Baker step-6 sensitivity check
+            # has effectively been performed; treating the sensitivity
+            # section as not-run would have ``next_steps`` redundantly
+            # recommend a check the report already executed (round-19
+            # CI review on PR #318).
+            result_name = type(self._results).__name__
+            if result_name in {"SyntheticDiDResults", "TROPResults"} and _ran("estimator_native"):
+                if "sensitivity" not in completed:
+                    completed.append("sensitivity")
             if _ran("heterogeneity"):
                 completed.append("heterogeneity")
             ns = practitioner_next_steps(

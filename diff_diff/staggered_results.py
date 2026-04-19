@@ -111,6 +111,14 @@ class CallawaySantAnnaResults:
     alpha: float = 0.05
     control_group: str = "never_treated"
     base_period: str = "varying"
+    # Anticipation periods (``k``) used at fit time. Persisted on the
+    # result so downstream diagnostics (``BusinessReport`` /
+    # ``DiagnosticReport`` / ``compute_pretrends_power``) can classify
+    # pre-period vs anticipation-window coefficients without re-
+    # plumbing the kwarg through every call site. See REGISTRY.md
+    # §CallawaySantAnna lines 355-395 for the shifted-boundary
+    # contract.
+    anticipation: int = 0
     panel: bool = True
     event_study_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None)
     group_effects: Optional[Dict[Any, Dict[str, Any]]] = field(default=None)

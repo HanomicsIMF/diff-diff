@@ -1100,6 +1100,47 @@ class TestHausmanPretestPropagatesCluster:
         ), f"cluster column must propagate from fit to Hausman pretest; got {captured}"
 
 
+class TestAnticipationPersistsOnRealResults:
+    """Round-19 P1 regression: ``CallawaySantAnnaResults``,
+    ``SunAbrahamResults``, and ``StaggeredTripleDiffResults`` must
+    persist the ``anticipation`` field so the anticipation-aware
+    reporting code (round-15/17) actually fires on real fits. Stub-
+    only regressions had hidden that the result constructors were
+    dropping the value.
+    """
+
+    def test_cs_fit_persists_anticipation(self):
+        sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
+        cs = CallawaySantAnna(base_period="universal", anticipation=1).fit(
+            sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+        assert getattr(cs, "anticipation", None) == 1
+        br = BusinessReport(cs, auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        # Round-17 assumption-aware block now fires on a real fit.
+        assert a["no_anticipation"] is False
+        assert a["anticipation_periods"] == 1
+        assert "not strict no-anticipation" in a["description"]
+
+    def test_sun_abraham_fit_persists_anticipation(self):
+        from diff_diff import SunAbraham
+
+        sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
+        sa = SunAbraham(anticipation=1).fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        assert getattr(sa, "anticipation", None) == 1
+        br = BusinessReport(sa, auto_diagnostics=False)
+        a = br.to_dict()["assumption"]
+        assert a["no_anticipation"] is False
+        assert a["anticipation_periods"] == 1
+
+
 class TestAnticipationAwareAssumptionBlock:
     """Round-17 P1 regression: ``_describe_assumption`` must drop the
     strict "plus no anticipation" language when the fit allows

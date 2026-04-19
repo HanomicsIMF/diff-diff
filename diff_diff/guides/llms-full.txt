@@ -1786,11 +1786,14 @@ Status enum values: `ran | skipped | error | not_applicable | not_run | computed
 
 Unified diagnostic runner orchestrating `check_parallel_trends`,
 `compute_pretrends_power`, `HonestDiD.sensitivity`, `bacon_decompose`,
-`compute_deff_diagnostics`, `results.epv_diagnostics`, plus
-estimator-native surfaces for SyntheticDiD (`pre_treatment_fit`,
+plus estimator-native surfaces for SyntheticDiD (`pre_treatment_fit`,
 `get_weight_concentration`, `in_time_placebo`, `sensitivity_to_zeta_omega`)
 and TROP (factor-model metrics). EfficientDiD PT uses the native
-`hausman_pretest`.
+`hausman_pretest`. The `design_effect` section is read-only: it
+echoes `survey_metadata.design_effect` / `effective_n` from the
+fitted result along with a plain-English band label. The
+`epv` section is similarly read-only, reporting from
+`results.epv_diagnostics` plus `results.epv_threshold`.
 
 ```python
 from diff_diff import DiagnosticReport

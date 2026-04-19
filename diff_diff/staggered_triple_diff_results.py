@@ -74,6 +74,11 @@ class StaggeredTripleDiffResults:
     alpha: float = 0.05
     control_group: str = "notyettreated"
     base_period: str = "varying"
+    # Anticipation periods (``k``) used at fit time. Persisted so
+    # downstream diagnostics in ``BusinessReport`` / ``DiagnosticReport``
+    # can render the anticipation-aware assumption block and
+    # horizon-classification cutoffs accurately on real fits.
+    anticipation: int = 0
     estimation_method: str = "dr"
     event_study_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None)
     group_effects: Optional[Dict[Any, Dict[str, Any]]] = field(default=None)

@@ -2001,6 +2001,7 @@ class CallawaySantAnna(
             alpha=self.alpha,
             control_group=self.control_group,
             base_period=self.base_period,
+            anticipation=self.anticipation,
             event_study_effects=event_study_effects,
             group_effects=group_effects,
             bootstrap_results=bootstrap_results,

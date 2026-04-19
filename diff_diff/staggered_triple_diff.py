@@ -136,8 +136,7 @@ class StaggeredTripleDifference(
             raise ValueError(f"epv_threshold must be > 0, got {epv_threshold}")
         if pscore_fallback not in ["error", "unconditional"]:
             raise ValueError(
-                f"pscore_fallback must be 'error' or 'unconditional', "
-                f"got '{pscore_fallback}'"
+                f"pscore_fallback must be 'error' or 'unconditional', " f"got '{pscore_fallback}'"
             )
 
         self.estimation_method = estimation_method
@@ -707,6 +706,7 @@ class StaggeredTripleDifference(
             alpha=self.alpha,
             control_group=self.control_group,
             base_period=self.base_period,
+            anticipation=self.anticipation,
             estimation_method=self.estimation_method,
             event_study_effects=event_study_effects,
             group_effects=group_effects,
@@ -1379,10 +1379,7 @@ class StaggeredTripleDifference(
                 beta_clean = np.where(np.isfinite(beta_logistic), beta_logistic, 0.0)
                 pscore_cache[pscore_key] = (beta_clean, diag)
             except (np.linalg.LinAlgError, ValueError):
-                if (
-                    self.pscore_fallback == "error"
-                    or self.rank_deficient_action == "error"
-                ):
+                if self.pscore_fallback == "error" or self.rank_deficient_action == "error":
                     raise
                 ctx = f" for {context_label}" if context_label else ""
                 warnings.warn(
