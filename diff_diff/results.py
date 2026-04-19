@@ -669,6 +669,12 @@ class _SyntheticDiDFitSnapshot:
     post_periods: List[Any]
     w_control: Optional[np.ndarray] = None
     w_treated: Optional[np.ndarray] = None
+    # Normalization constants captured during fit() so diagnostic methods can
+    # reproduce the main path's centering+scaling and avoid catastrophic
+    # cancellation on extreme-Y panels. Defaults preserve behavior for
+    # snapshots built before these fields existed.
+    Y_shift: float = 0.0
+    Y_scale: float = 1.0
 
     def __post_init__(self):
         for arr in (
@@ -1144,8 +1150,17 @@ class SyntheticDiDResults:
                 "in_time_placebo() needs zeta_omega and zeta_lambda from the "
                 "original fit. Expected on the results object but found None."
             )
+        # Reproduce the main fit path's Y normalization (Y → (Y - shift) / scale)
+        # so Frank-Wolfe sees the same ~O(1) inputs it saw during fit() and the
+        # SDID double-difference does not suffer ~6-digit cancellation at
+        # extreme Y. See SyntheticDiD.fit() and REGISTRY.md §SyntheticDiD.
+        Y_shift = snap.Y_shift
+        Y_scale = snap.Y_scale
+        zeta_omega_n = zeta_omega / Y_scale
+        zeta_lambda_n = zeta_lambda / Y_scale
         noise_level = self.noise_level if self.noise_level is not None else 0.0
-        min_decrease = 1e-5 * noise_level if noise_level > 0 else 1e-5
+        noise_level_n = noise_level / Y_scale
+        min_decrease = 1e-5 * noise_level_n if noise_level_n > 0 else 1e-5
 
         # Build the list of (fake_period, position) pairs to iterate.
         period_to_idx = {p: i for i, p in enumerate(pre_periods)}
@@ -1195,29 +1210,29 @@ class SyntheticDiDResults:
                 rows.append(row)
                 continue
 
-            Y_pre_c = snap.Y_pre_control[:i, :]
-            Y_post_c = snap.Y_pre_control[i:, :]
-            Y_pre_t = snap.Y_pre_treated[:i, :]
-            Y_post_t = snap.Y_pre_treated[i:, :]
+            Y_pre_c_n = (snap.Y_pre_control[:i, :] - Y_shift) / Y_scale
+            Y_post_c_n = (snap.Y_pre_control[i:, :] - Y_shift) / Y_scale
+            Y_pre_t_n = (snap.Y_pre_treated[:i, :] - Y_shift) / Y_scale
+            Y_post_t_n = (snap.Y_pre_treated[i:, :] - Y_shift) / Y_scale
 
             if snap.w_treated is not None:
                 w_t = snap.w_treated
-                y_pre_t_mean = np.average(Y_pre_t, axis=1, weights=w_t)
-                y_post_t_mean = np.average(Y_post_t, axis=1, weights=w_t)
+                y_pre_t_mean_n = np.average(Y_pre_t_n, axis=1, weights=w_t)
+                y_post_t_mean_n = np.average(Y_post_t_n, axis=1, weights=w_t)
             else:
-                y_pre_t_mean = np.mean(Y_pre_t, axis=1)
-                y_post_t_mean = np.mean(Y_post_t, axis=1)
+                y_pre_t_mean_n = np.mean(Y_pre_t_n, axis=1)
+                y_post_t_mean_n = np.mean(Y_post_t_n, axis=1)
 
             omega_fake = compute_sdid_unit_weights(
-                Y_pre_c,
-                y_pre_t_mean,
-                zeta_omega=zeta_omega,
+                Y_pre_c_n,
+                y_pre_t_mean_n,
+                zeta_omega=zeta_omega_n,
                 min_decrease=min_decrease,
             )
             lambda_fake = compute_time_weights(
-                Y_pre_c,
-                Y_post_c,
-                zeta_lambda=zeta_lambda,
+                Y_pre_c_n,
+                Y_post_c_n,
+                zeta_lambda=zeta_lambda_n,
                 min_decrease=min_decrease,
             )
 
@@ -1231,20 +1246,22 @@ class SyntheticDiDResults:
             else:
                 omega_eff_fake = omega_fake
 
-            att_fake = compute_sdid_estimator(
-                Y_pre_c,
-                Y_post_c,
-                y_pre_t_mean,
-                y_post_t_mean,
+            att_fake_n = compute_sdid_estimator(
+                Y_pre_c_n,
+                Y_post_c_n,
+                y_pre_t_mean_n,
+                y_post_t_mean_n,
                 omega_eff_fake,
                 lambda_fake,
             )
-            synthetic_pre_fake = Y_pre_c @ omega_eff_fake
-            pre_fit = float(
-                np.sqrt(np.mean((y_pre_t_mean - synthetic_pre_fake) ** 2))
+            synthetic_pre_fake_n = Y_pre_c_n @ omega_eff_fake
+            pre_fit_n = float(
+                np.sqrt(np.mean((y_pre_t_mean_n - synthetic_pre_fake_n) ** 2))
             )
-            row["att"] = float(att_fake)
-            row["pre_fit_rmse"] = pre_fit
+            # ATT is scale-equivariant and shift-invariant in Y; RMSE is
+            # scale-equivariant. Rescale back to original-Y units.
+            row["att"] = float(att_fake_n * Y_scale)
+            row["pre_fit_rmse"] = pre_fit_n * Y_scale
             rows.append(row)
 
         return pd.DataFrame(rows)
@@ -1320,19 +1337,29 @@ class SyntheticDiDResults:
         else:
             zeta_values = [float(z) for z in zeta_grid]
 
+        # Reproduce the main fit path's Y normalization so FW sees ~O(1)
+        # inputs; see in_time_placebo() for the same pattern.
+        Y_shift = snap.Y_shift
+        Y_scale = snap.Y_scale
         noise_level = self.noise_level if self.noise_level is not None else 0.0
-        min_decrease = 1e-5 * noise_level if noise_level > 0 else 1e-5
+        noise_level_n = noise_level / Y_scale
+        min_decrease = 1e-5 * noise_level_n if noise_level_n > 0 else 1e-5
+
+        Y_pre_control_n = (snap.Y_pre_control - Y_shift) / Y_scale
+        Y_post_control_n = (snap.Y_post_control - Y_shift) / Y_scale
+        Y_pre_treated_n = (snap.Y_pre_treated - Y_shift) / Y_scale
+        Y_post_treated_n = (snap.Y_post_treated - Y_shift) / Y_scale
 
         if snap.w_treated is not None:
-            y_pre_t_mean = np.average(
-                snap.Y_pre_treated, axis=1, weights=snap.w_treated
+            y_pre_t_mean_n = np.average(
+                Y_pre_treated_n, axis=1, weights=snap.w_treated
             )
-            y_post_t_mean = np.average(
-                snap.Y_post_treated, axis=1, weights=snap.w_treated
+            y_post_t_mean_n = np.average(
+                Y_post_treated_n, axis=1, weights=snap.w_treated
             )
         else:
-            y_pre_t_mean = np.mean(snap.Y_pre_treated, axis=1)
-            y_post_t_mean = np.mean(snap.Y_post_treated, axis=1)
+            y_pre_t_mean_n = np.mean(Y_pre_treated_n, axis=1)
+            y_post_t_mean_n = np.mean(Y_post_treated_n, axis=1)
 
         columns = [
             "zeta_omega",
@@ -1348,9 +1375,9 @@ class SyntheticDiDResults:
         rows: List[Dict[str, Any]] = []
         for z in zeta_values:
             omega_fake = compute_sdid_unit_weights(
-                snap.Y_pre_control,
-                y_pre_t_mean,
-                zeta_omega=z,
+                Y_pre_control_n,
+                y_pre_t_mean_n,
+                zeta_omega=z / Y_scale,
                 min_decrease=min_decrease,
             )
             if snap.w_control is not None:
@@ -1371,22 +1398,24 @@ class SyntheticDiDResults:
             else:
                 omega_eff = omega_fake
 
-            att = compute_sdid_estimator(
-                snap.Y_pre_control,
-                snap.Y_post_control,
-                y_pre_t_mean,
-                y_post_t_mean,
+            att_n = compute_sdid_estimator(
+                Y_pre_control_n,
+                Y_post_control_n,
+                y_pre_t_mean_n,
+                y_post_t_mean_n,
                 omega_eff,
                 time_weights,
             )
-            synthetic_pre = snap.Y_pre_control @ omega_eff
-            pre_fit = float(np.sqrt(np.mean((y_pre_t_mean - synthetic_pre) ** 2)))
+            synthetic_pre_n = Y_pre_control_n @ omega_eff
+            pre_fit_n = float(np.sqrt(np.mean((y_pre_t_mean_n - synthetic_pre_n) ** 2)))
             herf = float(np.sum(omega_eff ** 2))
             rows.append(
                 {
                     "zeta_omega": z,
-                    "att": float(att),
-                    "pre_fit_rmse": pre_fit,
+                    # Unit weights are scale-invariant; ATT and RMSE are
+                    # scale-equivariant. Report original-Y units.
+                    "att": float(att_n * Y_scale),
+                    "pre_fit_rmse": pre_fit_n * Y_scale,
                     "max_unit_weight": float(np.max(omega_eff)),
                     "effective_n": float("nan") if herf == 0 else 1.0 / herf,
                 }
