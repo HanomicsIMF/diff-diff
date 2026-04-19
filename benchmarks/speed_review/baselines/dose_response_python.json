@@ -2,42 +2,42 @@
   "scenario": "dose_response",
   "backend": "python",
   "has_rust_backend": false,
-  "total_seconds": 0.6105326670000001,
+  "total_seconds": 0.5982971659999999,
   "memory": {
     "available": true,
-    "start_mb": 113.62,
-    "peak_mb": 122.28,
-    "growth_mb": 8.66,
+    "start_mb": 113.95,
+    "peak_mb": 121.86,
+    "growth_mb": 7.91,
     "sampler_interval_s": 0.01
   },
   "phases": {
     "1_cdid_cubic_spline_bootstrap199": {
-      "seconds": 0.15595683400000004,
+      "seconds": 0.152698,
       "ok": true,
       "error": null
     },
     "2_extract_dose_response_dataframes": {
-      "seconds": 0.0008087920000000581,
+      "seconds": 0.0007580830000000205,
       "ok": true,
       "error": null
     },
     "3_cdid_event_study_pretrend": {
-      "seconds": 0.15231054099999997,
+      "seconds": 0.14973008399999999,
       "ok": true,
       "error": null
     },
     "4_binarized_did_comparison": {
-      "seconds": 0.0016399580000000524,
+      "seconds": 0.001448709000000048,
       "ok": true,
       "error": null
     },
     "5_spline_sensitivity_degree1": {
-      "seconds": 0.1499262910000001,
+      "seconds": 0.14563666599999991,
       "ok": true,
       "error": null
     },
     "6_spline_sensitivity_num_knots2": {
-      "seconds": 0.14988529199999978,
+      "seconds": 0.14802162500000016,
       "ok": true,
       "error": null
     }

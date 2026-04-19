@@ -66,7 +66,12 @@ def make_phases(data, results, rw_cols):
     )
 
     def naive_fit():
-        did = DifferenceInDifferences(robust=True, cluster="psu")
+        # Truly naive comparison point: no survey design, no clustering -
+        # matches Tutorial 17's first pass where an analyst has not yet
+        # accounted for the sampling structure. The SE-inflation story
+        # only shows up if this step is as untreated-for-design as
+        # practitioners actually start.
+        did = DifferenceInDifferences(robust=True)
         results["naive"] = did.fit(
             data, outcome="outcome", treatment="treat_unit", time="post",
         )

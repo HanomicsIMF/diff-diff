@@ -2,32 +2,32 @@
   "scenario": "reversible_dcdh",
   "backend": "rust",
   "has_rust_backend": true,
-  "total_seconds": 0.658796375,
+  "total_seconds": 0.7921678750000001,
   "memory": {
     "available": true,
-    "start_mb": 113.86,
-    "peak_mb": 134.09,
-    "growth_mb": 20.23,
+    "start_mb": 113.97,
+    "peak_mb": 134.59,
+    "growth_mb": 20.62,
     "sampler_interval_s": 0.01
   },
   "phases": {
     "1_dcdh_fit_Lmax3_survey_TSL": {
-      "seconds": 0.3397157919999999,
+      "seconds": 0.3866300829999999,
       "ok": true,
       "error": null
     },
     "2_inspect_placebo_and_summary": {
-      "seconds": 1.4579999999542181e-06,
+      "seconds": 1.7920000001669933e-06,
       "ok": true,
       "error": null
     },
     "3_honest_did_on_placebo": {
-      "seconds": 0.004095290999999945,
+      "seconds": 0.004450167000000116,
       "ok": true,
       "error": null
     },
     "4_heterogeneity_refit": {
-      "seconds": 0.3149809160000001,
+      "seconds": 0.4010832499999999,
       "ok": true,
       "error": null
     }

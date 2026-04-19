@@ -2,42 +2,42 @@
   "scenario": "brfss_panel_small",
   "backend": "python",
   "has_rust_backend": false,
-  "total_seconds": 1.6372609579999997,
+  "total_seconds": 1.5694494999999997,
   "memory": {
     "available": true,
-    "start_mb": 121.05,
-    "peak_mb": 133.75,
-    "growth_mb": 12.7,
+    "start_mb": 121.31,
+    "peak_mb": 133.78,
+    "growth_mb": 12.47,
     "sampler_interval_s": 0.01
   },
   "phases": {
     "1_aggregate_survey_microdata_to_panel": {
-      "seconds": 1.563557833,
+      "seconds": 1.472794875,
       "ok": true,
       "error": null
     },
     "2_cs_fit_with_stage2_survey_design": {
-      "seconds": 0.015172458000000333,
+      "seconds": 0.014274458000000045,
       "ok": true,
       "error": null
     },
     "3_inspect_pretrends": {
-      "seconds": 2.1670000003304324e-06,
+      "seconds": 2.0410000001191975e-06,
       "ok": true,
       "error": null
     },
     "4_honest_did_grid": {
-      "seconds": 0.004001957999999917,
+      "seconds": 0.003753040999999957,
       "ok": true,
       "error": null
     },
     "5_sun_abraham_robustness": {
-      "seconds": 0.05416733400000018,
+      "seconds": 0.07832733300000028,
       "ok": true,
       "error": null
     },
     "6_practitioner_next_steps": {
-      "seconds": 0.0003555829999997151,
+      "seconds": 0.00029404099999963407,
       "ok": true,
       "error": null
     }
