@@ -827,6 +827,57 @@ class TestComputeOutcomeChanges:
         np.testing.assert_array_almost_equal(treated_changes, 2.0, decimal=5)
         np.testing.assert_array_almost_equal(control_changes, 2.0, decimal=5)
 
+    def test_silent_on_balanced_panel(self):
+        """Balanced panel: only first-period-per-unit drops, no warning."""
+        import warnings
+
+        rng = np.random.default_rng(0)
+        rows = []
+        for unit in range(10):
+            treated = int(unit >= 5)
+            for t in range(1, 5):
+                rows.append({
+                    "unit": unit, "period": t,
+                    "treated": treated, "outcome": rng.normal(),
+                })
+        df = pd.DataFrame(rows)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _compute_outcome_changes(
+                df, outcome="outcome", time="period",
+                treatment_group="treated", unit="unit",
+            )
+
+        drop_warnings = [
+            x for x in w if "check_parallel_trends dropped" in str(x.message)
+        ]
+        assert drop_warnings == []
+
+    def test_warns_on_nan_outcomes_with_excess_drop_count(self):
+        """Extra NaN-outcome rows beyond first-period drops must surface via
+        a UserWarning reporting the excess count (axis-E drop counter)."""
+        rng = np.random.default_rng(0)
+        rows = []
+        for unit in range(10):
+            treated = int(unit >= 5)
+            for t in range(1, 5):
+                rows.append({
+                    "unit": unit, "period": t,
+                    "treated": treated, "outcome": rng.normal(),
+                })
+        df = pd.DataFrame(rows)
+        df.loc[[5, 12, 22], "outcome"] = np.nan
+
+        with pytest.warns(
+            UserWarning,
+            match=r"check_parallel_trends dropped \d+ row\(s\).*first-period-per-unit",
+        ):
+            _compute_outcome_changes(
+                df, outcome="outcome", time="period",
+                treatment_group="treated", unit="unit",
+            )
+
 
 # =============================================================================
 # Tests for check_parallel_trends_robust

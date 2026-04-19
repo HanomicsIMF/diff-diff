@@ -13,6 +13,7 @@ Friosavila (2021). jwdid: Stata module. SSC s459114.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -128,7 +129,19 @@ def _filter_sample(
     (see _build_interaction_matrix).
     """
     df = data.copy()
-    # Normalise never-treated: fill NaN cohort with 0
+    # Normalise never-treated: fill NaN cohort with 0. Report the row count so
+    # callers can see how many rows were recategorized as never-treated — a
+    # silent recategorization here would quietly move units between the
+    # treated and control sides of the estimator (axis-E silent coercion).
+    n_nan_cohort = int(df[cohort].isna().sum())
+    if n_nan_cohort > 0:
+        warnings.warn(
+            f"{n_nan_cohort} row(s) have NaN cohort values; filling with 0 "
+            f"and treating the corresponding units as never-treated. Pass "
+            f"an explicit never-treated marker (0) if this is not intended.",
+            UserWarning,
+            stacklevel=3,
+        )
     df[cohort] = df[cohort].fillna(0)
 
     treated_mask = df[cohort] > 0
@@ -396,6 +409,18 @@ class WooldridgeDiD:
             ``NotImplementedError``.
         """
         df = data.copy()
+        # See `_filter_sample` for the analogous warning; fit() does its own
+        # fillna earlier in the pipeline so we warn here too to cover the
+        # direct-fit path.
+        n_nan_cohort = int(df[cohort].isna().sum())
+        if n_nan_cohort > 0:
+            warnings.warn(
+                f"{n_nan_cohort} row(s) have NaN cohort values; filling with 0 "
+                f"and treating the corresponding units as never-treated. Pass "
+                f"an explicit never-treated marker (0) if this is not intended.",
+                UserWarning,
+                stacklevel=2,
+            )
         df[cohort] = df[cohort].fillna(0)
 
         # 0a. Validate cohort is time-invariant within unit

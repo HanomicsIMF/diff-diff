@@ -227,7 +227,20 @@ class ContinuousDiD:
                 f"Dose must be time-invariant. Units with varying dose: {bad_units[:5]}"
             )
 
-        # Normalize first_treat: inf → 0
+        # Normalize first_treat: inf → 0 (R-style never-treated encoding). Count
+        # rows recategorized so users can see how many units just crossed from
+        # "treated at some point" to "never treated" — silent recategorization
+        # here would shift the control composition (axis-E silent coercion).
+        inf_mask = np.isinf(df[first_treat].values)
+        n_inf_first_treat = int(inf_mask.sum())
+        if n_inf_first_treat > 0:
+            warnings.warn(
+                f"{n_inf_first_treat} row(s) have inf in '{first_treat}'; "
+                f"treating the corresponding units as never-treated. Pass an "
+                f"explicit never-treated marker (0) if this is not intended.",
+                UserWarning,
+                stacklevel=2,
+            )
         df[first_treat] = df[first_treat].replace([np.inf, float("inf")], 0)
 
         # Drop units with positive first_treat but zero dose (R convention)

@@ -720,6 +720,7 @@ See `docs/methodology/continuous-did.md` Section 4 for full details.
 - [ ] Lowest-dose-as-control (Remark 3.1)
 - [x] Survey design support (Phase 3): weighted B-spline OLS, TSL on influence functions; bootstrap+survey supported (Phase 6)
 - **Note:** ContinuousDiD bootstrap with survey weights supported (Phase 6) via PSU-level multiplier weights
+- **Note:** The R-style convention of coding never-treated units as `first_treat=inf` is still accepted and normalized to `first_treat=0` internally, but the estimator now emits a `UserWarning` reporting the row count so the silent recategorization is surfaced (axis-E silent coercion under the Phase 2 audit). Pass `0` directly to avoid the warning.
 
 ---
 
@@ -1303,6 +1304,7 @@ The saturated ETWFE regression includes:
 The interaction coefficient `δ_{g,t}` identifies `ATT(g, t)` under parallel trends.
 - **Note:** OLS path uses iterative alternating-projection within-transformation (uniform weights) for exact FE absorption on both balanced and unbalanced panels. One-pass demeaning (`y - ȳ_i - ȳ_t + ȳ`) is only exact for balanced panels.
 - **Note:** The weighted within-transformation (`utils.within_transform` with `weights`) is invoked on every WooldridgeDiD fit (survey weights when provided, `np.ones` otherwise) and emits a `UserWarning` on non-convergence per the shared convention documented under *Absorbed Fixed Effects with Survey Weights*.
+- **Note:** NaN values in the `cohort` column are filled with 0 (treated as never-treated), both in `_filter_sample` and in `fit()`. This recategorization now emits a `UserWarning` reporting the affected row count so it is no longer silent (axis-E silent coercion under the Phase 2 audit). Pass `0` directly for never-treated units to avoid the warning.
 
 *Nonlinear extensions (Wooldridge 2023):*
 

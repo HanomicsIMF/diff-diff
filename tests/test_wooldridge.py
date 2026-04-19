@@ -1593,3 +1593,50 @@ class TestWooldridgeSurvey:
         s = r.summary()
         assert "Survey Design" in s
         assert "pweight" in s
+
+
+class TestCohortNaNWarning:
+    """Axis-E: silent recategorization of NaN cohort rows as never-treated."""
+
+    @staticmethod
+    def _make_panel_with_nan_cohort():
+        rows = []
+        for unit in range(10):
+            cohort_val = np.nan if unit < 2 else 0.0
+            for t in range(1, 5):
+                rows.append({
+                    "unit": unit, "time": t, "cohort": cohort_val,
+                    "y": unit + t + np.random.default_rng(unit).normal(0, 0.1),
+                })
+        return pd.DataFrame(rows)
+
+    def test_fit_warns_on_nan_cohort_with_count(self):
+        df = self._make_panel_with_nan_cohort()
+        est = WooldridgeDiD(method="ols")
+        with pytest.warns(UserWarning, match=r"8 row\(s\) have NaN cohort values"):
+            try:
+                est.fit(df, outcome="y", unit="unit", time="time", cohort="cohort")
+            except Exception:
+                pass
+
+    def test_fit_silent_on_clean_cohort(self):
+        import warnings
+        df = self._make_panel_with_nan_cohort()
+        df["cohort"] = df["cohort"].fillna(0)
+        est = WooldridgeDiD(method="ols")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            try:
+                est.fit(df, outcome="y", unit="unit", time="time", cohort="cohort")
+            except Exception:
+                pass
+        nan_warnings = [x for x in w if "NaN cohort values" in str(x.message)]
+        assert nan_warnings == []
+
+    def test_select_sample_helper_warns(self):
+        df = self._make_panel_with_nan_cohort()
+        with pytest.warns(UserWarning, match=r"8 row\(s\) have NaN cohort values"):
+            _filter_sample(
+                df, unit="unit", time="time", cohort="cohort",
+                control_group="never_treated", anticipation=0,
+            )

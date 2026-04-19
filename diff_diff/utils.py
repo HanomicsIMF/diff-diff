@@ -925,7 +925,23 @@ def _compute_outcome_changes(
         data_sorted = data.sort_values([unit, time])
         data_sorted["_outcome_change"] = data_sorted.groupby(unit)[outcome].diff()
 
-        # Remove NaN from first period of each unit
+        # Remove NaN from first period of each unit. The first period per unit
+        # has no prior observation to diff against, so n_units drops are
+        # expected. Anything beyond that is a silent side-effect of gaps or
+        # NaN outcomes — surface the excess via warning (axis-E drop counter).
+        n_units_observed = int(data_sorted[unit].nunique())
+        n_dropped = int(data_sorted["_outcome_change"].isna().sum())
+        n_unexpected_drops = max(0, n_dropped - n_units_observed)
+        if n_unexpected_drops > 0:
+            warnings.warn(
+                f"check_parallel_trends dropped {n_dropped} row(s) with NaN "
+                f"first-differences; {n_units_observed} are the expected "
+                f"first-period-per-unit drops, and {n_unexpected_drops} came "
+                f"from gaps or NaN outcomes. Parallel-trend statistics are "
+                f"computed on the remaining rows.",
+                UserWarning,
+                stacklevel=3,
+            )
         changes_data = data_sorted.dropna(subset=["_outcome_change"])
 
         treated_changes = changes_data[changes_data[treatment_group] == 1]["_outcome_change"].values

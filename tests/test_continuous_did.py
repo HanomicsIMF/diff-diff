@@ -641,15 +641,39 @@ class TestEdgeCases:
         assert isinstance(results, ContinuousDiDResults)
 
     def test_inf_first_treat_normalization(self):
-        """first_treat=inf should be treated as never-treated."""
+        """first_treat=inf should be treated as never-treated, and the caller
+        must receive a UserWarning reporting the affected row count so the
+        recategorization is not silent (axis-E counter)."""
         data = generate_continuous_did_data(n_units=50, n_periods=3, seed=42)
         data["first_treat"] = data["first_treat"].astype(float)
-        data.loc[data["first_treat"] == 0, "first_treat"] = np.inf
+        inf_mask = data["first_treat"] == 0
+        n_inf_rows = int(inf_mask.sum())
+        data.loc[inf_mask, "first_treat"] = np.inf
         est = ContinuousDiD()
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+
+        with pytest.warns(
+            UserWarning,
+            match=rf"{n_inf_rows} row\(s\) have inf in 'first_treat'",
+        ):
+            results = est.fit(
+                data, "outcome", "unit", "period", "first_treat", "dose"
+            )
         assert results.n_control_units > 0
+
+    def test_no_inf_first_treat_no_warning(self):
+        """No inf rows in first_treat — no recategorization warning."""
+        import warnings
+
+        data = generate_continuous_did_data(n_units=50, n_periods=3, seed=42)
+        data["first_treat"] = data["first_treat"].astype(float)
+        est = ContinuousDiD()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+
+        inf_warnings = [x for x in w if "inf in 'first_treat'" in str(x.message)]
+        assert inf_warnings == []
 
     def test_custom_dvals(self):
         data = generate_continuous_did_data(n_units=100, n_periods=3, seed=42)
