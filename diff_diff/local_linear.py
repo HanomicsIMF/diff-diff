@@ -1050,19 +1050,27 @@ def bias_corrected_local_linear(
     d, y = _validate_had_inputs(d, y, boundary)
     n_total = int(d.shape[0])
 
-    # Reject missing cluster IDs up front (Phase 1b convention).
+    # Reject missing cluster IDs up front (Phase 1b convention). Delegates
+    # to the dtype-agnostic `_cluster_has_missing` helper in the port so
+    # wrapper, port-level `lprobust`, and `lpbwselect_mse_dpi` all enforce
+    # the same missing-sentinel contract across float / object / string
+    # dtypes (CI review PR #340 P1 follow-up).
     cluster_arr: Optional[np.ndarray] = None
     if cluster is not None:
+        from diff_diff._nprobust_port import _cluster_has_missing
+
         cluster_arr = np.asarray(cluster).ravel()
         if cluster_arr.shape[0] != n_total:
             raise ValueError(
                 f"cluster length ({cluster_arr.shape[0]}) does not match "
                 f"d/y ({n_total})."
             )
-        if np.issubdtype(cluster_arr.dtype, np.floating) and not np.all(
-            np.isfinite(cluster_arr)
-        ):
-            raise ValueError("cluster contains non-finite values (NaN or Inf).")
+        if _cluster_has_missing(cluster_arr):
+            raise ValueError(
+                "cluster contains missing values (NaN / None). Filter "
+                "your data before the call or drop missing observations "
+                "explicitly."
+            )
 
     # --- Resolve (h, b) ---
     # nprobust's lprobust() with the default rho=1 sets b = h / rho = h

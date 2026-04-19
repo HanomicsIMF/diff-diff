@@ -311,11 +311,34 @@ class TestInputContract:
             bias_corrected_local_linear(d, y, h=0.3, weights=np.ones(100))
 
     def test_cluster_nan_raises(self):
+        """Float NaN in cluster IDs is rejected."""
         d = np.linspace(0.0, 1.0, 100)
         y = d.copy()
         cluster = np.repeat(np.arange(10), 10).astype(np.float64)
         cluster[5] = np.nan
-        with pytest.raises(ValueError, match="cluster contains non-finite"):
+        with pytest.raises(ValueError, match="cluster contains missing"):
+            bias_corrected_local_linear(d, y, h=0.3, cluster=cluster)
+
+    def test_cluster_object_none_raises(self):
+        """Object-dtype cluster with a ``None`` sentinel is rejected.
+        Float-only checks let this through; the dtype-agnostic helper
+        catches it (CI review PR #340 follow-up P1)."""
+        d = np.linspace(0.0, 1.0, 100)
+        y = d.copy()
+        cluster = np.array(
+            [i // 10 if i != 5 else None for i in range(100)], dtype=object
+        )
+        with pytest.raises(ValueError, match="cluster contains missing"):
+            bias_corrected_local_linear(d, y, h=0.3, cluster=cluster)
+
+    def test_cluster_object_nan_raises(self):
+        """Object-dtype cluster with np.nan is rejected."""
+        d = np.linspace(0.0, 1.0, 100)
+        y = d.copy()
+        cluster = np.array(
+            [i // 10 if i != 5 else np.nan for i in range(100)], dtype=object
+        )
+        with pytest.raises(ValueError, match="cluster contains missing"):
             bias_corrected_local_linear(d, y, h=0.3, cluster=cluster)
 
     def test_unknown_kernel_raises(self):

@@ -588,6 +588,37 @@ class TestLprobustSingleEval:
         np.testing.assert_allclose(res.se_cl, g["se_cl"], atol=1e-12, rtol=1e-12)
         np.testing.assert_allclose(res.se_rb, g["se_rb"], atol=1e-12, rtol=1e-12)
 
+    def test_lprobust_cluster_object_none_raises(self):
+        """Port-level: object-dtype cluster with None sentinel is rejected.
+        Mirror of the wrapper test; pins that `_cluster_has_missing` fires
+        inside the direct port entry point too (CI review PR #340
+        follow-up P1)."""
+        from diff_diff._nprobust_port import lprobust
+
+        rng = np.random.default_rng(0)
+        G = 200
+        d = rng.uniform(0.0, 1.0, G)
+        y = d + rng.normal(0, 0.3, G)
+        cluster = np.array(
+            [i // 10 if i != 5 else None for i in range(G)], dtype=object
+        )
+        with pytest.raises(ValueError, match="cluster contains missing"):
+            lprobust(y, d, eval_point=0.0, h=0.3, b=0.3, cluster=cluster)
+
+    def test_lprobust_cluster_object_nan_raises(self):
+        """Port-level: object-dtype cluster with np.nan is rejected."""
+        from diff_diff._nprobust_port import lprobust
+
+        rng = np.random.default_rng(0)
+        G = 200
+        d = rng.uniform(0.0, 1.0, G)
+        y = d + rng.normal(0, 0.3, G)
+        cluster = np.array(
+            [i // 10 if i != 5 else np.nan for i in range(G)], dtype=object
+        )
+        with pytest.raises(ValueError, match="cluster contains missing"):
+            lprobust(y, d, eval_point=0.0, h=0.3, b=0.3, cluster=cluster)
+
     def test_lprobust_h_gt_b_selects_h_window(self):
         """When h > b, the active window is ind.h (lprobust.R:182 conditional
         replacement), not a union of ind.h and ind.b."""

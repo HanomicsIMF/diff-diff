@@ -84,6 +84,33 @@ _VALID_KERNELS = ("epa", "uni", "tri", "gau")
 _VALID_VCE = ("nn", "hc0", "hc1", "hc2", "hc3")
 
 
+def _cluster_has_missing(cluster: np.ndarray) -> bool:
+    """Detect missing cluster IDs across float / object / string dtypes.
+
+    nprobust::lpbwselect complete-case-filters (x, y, cluster) before
+    dispatch. This port deliberately rejects missingness instead so
+    callers see it rather than silently losing rows. Used by
+    ``lpbwselect_mse_dpi`` and ``lprobust`` (and the public
+    ``bias_corrected_local_linear`` wrapper) so all three surfaces
+    honor the same contract.
+    """
+    if cluster.dtype.kind in ("f", "c"):
+        return bool(np.any(~np.isfinite(cluster)))
+    # Object / string / None-containing arrays: treat None and NaN-like
+    # sentinels as missing.
+    try:
+        if bool(np.any([v is None for v in cluster])):
+            return True
+    except TypeError:
+        pass
+    try:
+        # np.nan comparisons are False; cast to float and check finiteness.
+        cluster_f = cluster.astype(np.float64, copy=False)
+        return bool(np.any(~np.isfinite(cluster_f)))
+    except (TypeError, ValueError):
+        return False
+
+
 # =============================================================================
 # Kernel (W.fun, npfunctions.R:1-7)
 # =============================================================================
@@ -684,25 +711,9 @@ def lpbwselect_mse_dpi(
         # before dispatch; this port deliberately rejects instead so
         # callers see the missingness rather than lose rows silently.
         # The "reject" vs "filter" choice is documented in the module
-        # docstring deviations list.
-        has_missing = False
-        if cluster.dtype.kind in ("f", "c"):
-            has_missing = bool(np.any(~np.isfinite(cluster)))
-        else:
-            # object / string / None-containing arrays: treat None and
-            # NaN-like sentinels as missing.
-            try:
-                has_missing = bool(np.any([x is None for x in cluster]))
-            except TypeError:
-                has_missing = False
-            if not has_missing:
-                try:
-                    # np.nan comparisons are False; use pd-style check.
-                    cluster_f = cluster.astype(np.float64, copy=False)
-                    has_missing = bool(np.any(~np.isfinite(cluster_f)))
-                except (TypeError, ValueError):
-                    pass
-        if has_missing:
+        # docstring deviations list. Dtype-agnostic via
+        # `_cluster_has_missing`.
+        if _cluster_has_missing(cluster):
             raise ValueError(
                 "cluster contains missing values (NaN / None). Unlike "
                 "nprobust::lpbwselect which complete-case-filters "
@@ -1130,13 +1141,17 @@ def lprobust(
             raise ValueError(
                 f"cluster length ({cluster.shape[0]}) does not match x/y ({N})."
             )
-        # Reject NaN cluster IDs (Phase 1b convention: surface missingness
-        # rather than silently drop rows).
-        cluster_float = np.asarray(cluster, dtype=np.float64).ravel() if np.issubdtype(
-            cluster.dtype, np.floating
-        ) else None
-        if cluster_float is not None and np.any(~np.isfinite(cluster_float)):
-            raise ValueError("cluster contains non-finite values (NaN or Inf).")
+        # Dtype-agnostic missingness check. Float NaN/Inf, object None,
+        # and object np.nan all get rejected here (shared with
+        # `lpbwselect_mse_dpi` via `_cluster_has_missing`) so the
+        # downstream `lprobust_vce` cluster grouping on `np.unique`
+        # cannot silently treat a missing sentinel as a real cluster.
+        if _cluster_has_missing(cluster):
+            raise ValueError(
+                "cluster contains missing values (NaN / None). "
+                "Filter your data before the call or drop missing "
+                "observations explicitly."
+            )
 
     # --- vce="nn" setup: sort ascending, precompute dups ---
     dups: Optional[np.ndarray] = None
