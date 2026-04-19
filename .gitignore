@@ -72,6 +72,7 @@ target/
 .claude/settings.local.json
 .claude/reviews/
 .claude/paper-review/
+.claude/scheduled_tasks.lock
 
 # MCP configuration (may contain tokens)
 .mcp.json

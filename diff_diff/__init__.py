@@ -45,10 +45,12 @@ from diff_diff.linalg import (
 )
 from diff_diff.local_linear import (
     KERNELS,
+    BandwidthResult,
     LocalLinearFit,
     epanechnikov_kernel,
     kernel_moments,
     local_linear_fit,
+    mse_optimal_bandwidth,
     triangular_kernel,
     uniform_kernel,
 )
