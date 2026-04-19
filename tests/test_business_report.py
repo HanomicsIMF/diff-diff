@@ -1100,6 +1100,59 @@ class TestHausmanPretestPropagatesCluster:
         ), f"cluster column must propagate from fit to Hausman pretest; got {captured}"
 
 
+class TestCSNotYetTreatedControlGroupSemantics:
+    """Round-13 P1 regression: ``BusinessReport`` must not relabel
+    ``n_control_units`` as generic "control" for a
+    ``CallawaySantAnna(control_group='not_yet_treated')`` fit — that
+    field counts only never-treated units, while the actual comparison
+    group is the dynamic not-yet-treated set at each (g, t) cell.
+    """
+
+    def test_not_yet_treated_fit_does_not_render_misleading_control_count(self):
+        sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
+        # Fit with the dynamic not-yet-treated comparison mode.
+        cs = CallawaySantAnna(base_period="universal", control_group="not_yet_treated").fit(
+            sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+            aggregate="event_study",
+        )
+        br = BusinessReport(cs, auto_diagnostics=False)
+        sample = br.to_dict()["sample"]
+
+        # Fixed ``n_control`` must NOT be populated — the comparison set
+        # is dynamic per (g, t), not a fixed unit tally.
+        assert (
+            sample["n_control"] is None
+        ), f"n_control must be None for not_yet_treated; got {sample['n_control']}"
+        # The new fields surface the real semantics.
+        assert sample["control_group"] == "not_yet_treated"
+        assert sample["n_never_treated"] == getattr(cs, "n_control_units", None)
+
+        # Both summary and full_report must describe the dynamic
+        # comparison group rather than asserting a misleading "control"
+        # count.
+        summary = br.summary()
+        # No "(N treated, N control)" phrasing on this path.
+        assert " control)" not in summary
+        assert "not-yet-treated" in summary or "dynamic" in summary
+
+        full = br.full_report()
+        assert "- Control:" not in full or "not-yet-treated" in full
+        assert "dynamic not-yet-treated" in full or "not-yet-treated" in full
+
+    def test_never_treated_fit_still_shows_fixed_control_count(self, cs_fit):
+        """Default path (``control_group='never_treated'``) keeps the
+        fixed ``n_control`` tally so existing prose is unchanged."""
+        fit, _ = cs_fit  # default is never_treated
+        br = BusinessReport(fit, auto_diagnostics=False)
+        sample = br.to_dict()["sample"]
+        assert isinstance(sample["n_control"], int)
+        assert sample["control_group"] == "never_treated"
+
+
 class TestBRDataKwargsPassthroughToAutoDR:
     """Round-12 regression: ``BusinessReport`` now accepts
     ``data`` / ``outcome`` / ``treatment`` / ``unit`` / ``time`` /

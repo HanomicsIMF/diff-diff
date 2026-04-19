@@ -10,8 +10,15 @@ Design principles:
 
 - No hard pass/fail gates. Severity is conveyed by natural-language phrasing,
   not a traffic-light enum. See ``docs/methodology/REPORTING.md``.
-- No new statistical computation. Every reported number is either read from
-  ``results`` or computed by an existing diff-diff utility function.
+- No estimator fitting and no variance re-derivation from raw data. Every
+  effect, SE, p-value, CI, and sensitivity bound is either read from
+  ``results`` or produced by an existing diff-diff utility. May call
+  ``check_parallel_trends`` / ``bacon_decompose`` /
+  ``EfficientDiD.hausman_pretest`` when the caller supplies the panel +
+  column kwargs. Report-layer cross-period aggregations (joint-Wald /
+  Bonferroni pre-trends p-value, heterogeneity dispersion over
+  post-treatment effects) are enumerated in
+  ``docs/methodology/REPORTING.md``.
 - Lazy evaluation. ``DiagnosticReport(results, ...)`` is free; ``run_all()``
   triggers compute and caches.
 - Never prove a null. Pre-trends phrasing uses power information from
@@ -1750,7 +1757,7 @@ class DiagnosticReport:
                     "diagnose a different design than the estimate. "
                     "Rerun ``EfficientDiD.hausman_pretest(...)`` "
                     "manually with the original fit's kwargs or pass "
-                    "``precomputed={'sensitivity': ...}`` if you have "
+                    "``precomputed={'parallel_trends': ...}`` if you have "
                     "a pretest result."
                 ),
             }

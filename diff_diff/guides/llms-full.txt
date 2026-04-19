@@ -1848,8 +1848,13 @@ Power tier (drives BR phrasing for the `no_detected_violation` verdict):
 
 ### Methodology notes
 
-BR and DR perform no new statistical computation — every reported number
-is read from the fitted result or computed by an existing diff-diff
-utility. Both schemas are experimental in the current release; see
-`docs/methodology/REPORTING.md` for phrasing rules, the no-traffic-light
-decision, unit-translation policy, and schema stability policy.
+BR and DR do no estimator fitting and do not re-derive variance from
+raw data — every effect, SE, p-value, CI, and sensitivity bound is
+read from the fitted result or produced by an existing diff-diff
+utility (may call `check_parallel_trends`, `bacon_decompose`, or
+`EfficientDiD.hausman_pretest` when the panel + column kwargs are
+supplied). Report-layer cross-period aggregations are enumerated in
+`docs/methodology/REPORTING.md`. Both schemas are experimental in the
+current release; see that document for phrasing rules, the
+no-traffic-light decision, unit-translation policy, and schema
+stability policy.

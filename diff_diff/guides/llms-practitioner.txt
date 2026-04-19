@@ -457,13 +457,21 @@ print(dr.summary())           # overall interpretation paragraph
 dr.to_dict()                  # AI-legible structured schema
 
 # Or let BusinessReport auto-construct a DiagnosticReport and render the
-# full stakeholder narrative in one call:
+# full stakeholder narrative in one call. Pass ``data`` + the column
+# names so data-dependent checks (2x2 PT, Goodman-Bacon, EfficientDiD
+# Hausman pretest) actually run — without them the auto path still
+# produces a report but skips those checks with an explicit reason.
 br = BusinessReport(
     cs_result,
     outcome_label='Revenue per user',
     outcome_unit='$',
     business_question='Did the campaign lift revenue?',
     treatment_label='the campaign',
+    data=data,
+    outcome='y',
+    unit='id',
+    time='t',
+    first_treat='g',
 )
 print(br.summary())           # short paragraph block
 print(br.full_report())       # structured markdown
