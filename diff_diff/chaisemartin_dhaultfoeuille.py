@@ -666,11 +666,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             bootstrap uses a cell-level wild PSU allocator — a group
             contributing cells to multiple PSUs receives independent
             multiplier draws per PSU (see the Survey + bootstrap
-            contract Note in REGISTRY.md). **Replicate weights with
-            ``n_bootstrap > 0`` raises ``NotImplementedError``**
-            (replicate variance is closed-form; bootstrap would
-            double-count variance). See REGISTRY.md
-            ``ChaisemartinDHaultfoeuille`` Notes for the full contract.
+            contract Note in REGISTRY.md). **Scope note (terminal
+            missingness):** on panels with terminally-missing groups
+            (early exit / right-censoring) combined with within-group-
+            varying PSU, the cell-level bootstrap raises
+            ``ValueError`` because cohort-recentering leaks centered
+            IF mass onto cells with no positive-weight obs. Use
+            ``n_bootstrap=0`` for analytical TSL variance on those
+            panels. **Replicate weights with ``n_bootstrap > 0``
+            raises ``NotImplementedError``** (replicate variance is
+            closed-form; bootstrap would double-count variance). See
+            REGISTRY.md ``ChaisemartinDHaultfoeuille`` Notes for the
+            full contract.
 
         Returns
         -------

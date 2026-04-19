@@ -2102,6 +2102,83 @@ class TestBootstrapCellPeriod:
             f"SE_without_zero={se_b!r}."
         )
 
+    def test_bootstrap_fit_raises_on_terminal_missingness_with_varying_psu(self):
+        """End-to-end `fit()` regression: when a survey panel has a
+        terminally-missing group in a cohort whose other groups still
+        contribute at the missing period, combined with within-group-
+        varying PSU and `n_bootstrap > 0`, the cell-level bootstrap
+        must raise the documented `ValueError` — cohort-recentering
+        leaks non-zero centered IF mass onto cells with no positive-
+        weight obs. Analytical TSL (`n_bootstrap=0`) on the same
+        panel must succeed (documented contract: terminal missingness
+        is supported on the analytical path).
+        """
+        rows = []
+        # 10 groups. Joiners at period 3 (cohort A): groups 0-4.
+        # Leavers at period 4 (cohort B, D=1 at period 0): groups 5-7.
+        # Never-treated: groups 8-9.
+        # Group 2 is terminally missing at periods 4-5. It is in
+        # cohort A; at period 4 the other joiners (0, 1, 3, 4) serve
+        # as stable_1 controls (they switched on at period 3 and
+        # contribute when leavers appear at period 4). The cohort
+        # mean at period 4 is therefore non-zero, and
+        # `_cohort_recenter_per_period` leaks `-col_mean` onto
+        # group 2's missing cell — which the cell-level bootstrap
+        # cannot allocate to any PSU.
+        for g in range(10):
+            if g < 5:
+                # Joiners at period 3 (D=0 at baseline, D=1 from t=3).
+                d_pattern = [0, 0, 0, 1, 1, 1]
+            elif g < 8:
+                # Leavers at period 4 (D=1 at baseline, D=0 from t=4).
+                d_pattern = [1, 1, 1, 1, 0, 0]
+            else:
+                # Never-treated controls.
+                d_pattern = [0, 0, 0, 0, 0, 0]
+            for t in range(6):
+                if g == 2 and t >= 4:
+                    # Terminal missingness: drop rows past period 3.
+                    continue
+                d = d_pattern[t]
+                y = float(g) + 0.1 * t + 1.0 * d
+                rows.append({
+                    "group": int(g),
+                    "period": int(t),
+                    "treatment": int(d),
+                    "outcome": y,
+                    "pw": 1.0,
+                    # Within-group-varying PSU: period parity per group.
+                    "psu": int(g) * 2 + (int(t) % 2),
+                })
+        df_ = pd.DataFrame(rows)
+        sd = SurveyDesign(weights="pw", psu="psu")
+
+        # n_bootstrap > 0: cell-level bootstrap must raise on the
+        # sentinel-mass leak documented above.
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")  # terminal-missingness UserWarning
+            with pytest.raises(
+                ValueError, match="no positive-weight observations",
+            ):
+                ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1).fit(
+                    df_, outcome="outcome", group="group",
+                    time="period", treatment="treatment",
+                    survey_design=sd, L_max=1,
+                )
+
+        # n_bootstrap=0: analytical TSL variance supports this regime
+        # (documented in the "terminal missingness retained" Note).
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")
+            res = ChaisemartinDHaultfoeuille(n_bootstrap=0, seed=1).fit(
+                df_, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd, L_max=1,
+            )
+        assert np.isfinite(res.overall_att)
+        assert np.isfinite(res.overall_se) and res.overall_se >= 0.0
+
     def test_bootstrap_dense_codes_under_singleton_baseline_excluded_group(self):
         """Regression for P0 #2: when a group is singleton-baseline-
         excluded (e.g., an always-treated group whose baseline D=1
