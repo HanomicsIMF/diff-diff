@@ -134,13 +134,22 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         - the original point estimate of ``T`` (used as the centering
           point for the percentile p-value)
 
-        For each target, this method:
+        For each target, this method dispatches between two
+        allocator paths based on ``psu_codes_per_cell`` (via the
+        ``_psu_varies_within_group`` helper):
+
+        **Legacy group-level path** — runs when
+        ``psu_codes_per_cell`` is ``None`` or PSU is within-group-
+        constant (PSU=group auto-inject, strictly-coarser PSU with
+        within-group constancy, or no survey design). For each target:
 
         1. Generates an ``(n_bootstrap, n_groups_target)`` matrix of
            multiplier weights via
            :func:`~diff_diff.bootstrap_utils.generate_bootstrap_weights_batch`,
            where ``n_groups_target`` is the IF vector length (one
-           weight per contributing group).
+           weight per contributing group). When a coarser PSU map is
+           passed, weights are drawn once per PSU and broadcast to
+           groups so all groups in the same PSU share a multiplier.
         2. Computes the bootstrap distribution as
            ``W @ u_centered / divisor`` (one bootstrap replicate per
            row), where ``divisor`` is the switching-cell count
@@ -151,6 +160,34 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         3. Passes the distribution + the original point estimate through
            :func:`~diff_diff.bootstrap_utils.compute_effect_bootstrap_stats`
            to obtain ``(SE, CI, p_value)``.
+
+        **Cell-level wild PSU path** — runs when PSU varies within
+        group (any row of ``psu_codes_per_cell`` has > 1 unique non-
+        sentinel code). For each target:
+
+        1. Unrolls the target's ``u_per_period`` tensor and
+           ``psu_codes_per_cell`` to 1-D cell-level arrays via
+           :func:`_unroll_target_to_cells`, dropping cells with
+           sentinel (-1) PSU. Raises ``ValueError`` if cohort-
+           recentered mass lands on a sentinel cell (the terminal-
+           missingness guard — see REGISTRY.md).
+        2. For **single-target** branches (overall, joiners, leavers,
+           placebo-horizon-per-l), generates an
+           ``(n_bootstrap, n_cells_in_target)`` weight matrix where
+           each cell gets the multiplier of its PSU code, via
+           ``psu_weights[:, psu_cell]`` broadcast. Bootstrap
+           distribution becomes ``W_cell @ u_cell / divisor``.
+        3. For the **multi-horizon** block, draws a SINGLE shared
+           ``(n_bootstrap, n_psu)`` PSU-level weight matrix once and
+           broadcasts per-horizon via each horizon's cell-to-PSU map.
+           Preserves the sup-t simultaneous confidence band as a
+           valid joint distribution across horizons.
+
+        Under PSU=group, the row-sum identity
+        ``sum_{c in g} u_cell[c] == u_centered[g]`` makes the two
+        paths statistically equivalent; the dispatcher prefers the
+        legacy path in that regime for bit-identity with pre-PR-4
+        releases via the identity-map fast path.
 
         Parameters
         ----------
