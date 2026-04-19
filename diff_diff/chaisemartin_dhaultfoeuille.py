@@ -665,10 +665,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             clustered bootstrap. **Out-of-scope combinations raise
             ``NotImplementedError``**: (a) replicate weights with
             ``n_bootstrap > 0`` (replicate variance is closed-form;
-            bootstrap would double-count variance); (b)
-            ``heterogeneity=`` with PSU/strata that vary within group
-            (heterogeneity WLS still uses the legacy group-level IF
-            expansion; follow-up PR extends it); (c) ``n_bootstrap >
+            bootstrap would double-count variance); (b) ``n_bootstrap >
             0`` with PSU that varies within group (PSU-level bootstrap
             still uses the legacy group-level PSU map; follow-up PR
             extends it). See REGISTRY.md
@@ -828,39 +825,25 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
             # Cell-period IF allocator contract: strata and PSU must be
             # constant within each (g, t) cell, a strict relaxation of
-            # the previous within-group constancy rule. Two out-of-scope
-            # combinations are gated with NotImplementedError until the
-            # corresponding follow-up PRs extend them:
-            #   - heterogeneity= + within-group-varying PSU/strata
-            #     (PR 3: cell-period allocator for the WLS psi_obs)
+            # the previous within-group constancy rule. One out-of-scope
+            # combination remains gated with NotImplementedError until
+            # the corresponding follow-up PR extends it:
             #   - n_bootstrap > 0 + within-group-varying PSU
             #     (PR 4: cell-level Hall-Mammen wild bootstrap)
-            strata_varies, psu_varies = _strata_psu_vary_within_group(
+            _, psu_varies = _strata_psu_vary_within_group(
                 resolved_survey, data, group, survey_weights,
             )
-            if strata_varies or psu_varies:
-                if heterogeneity is not None:
-                    raise NotImplementedError(
-                        "heterogeneity= is not supported under a survey "
-                        "design whose PSU or strata vary within group. "
-                        "The heterogeneity WLS path uses the legacy "
-                        "group-level IF expansion and will be extended "
-                        "to the cell-period allocator in a follow-up "
-                        "PR. For now, either (a) set heterogeneity=None, "
-                        "or (b) collapse PSU/strata to be constant "
-                        "within each group."
-                    )
-                if self.n_bootstrap > 0:
-                    raise NotImplementedError(
-                        "n_bootstrap > 0 is not supported under a "
-                        "survey design whose PSU varies within group. "
-                        "The PSU-level Hall-Mammen wild bootstrap uses "
-                        "the legacy group-level PSU map and will be "
-                        "extended to cell-level PSU in a follow-up PR. "
-                        "For now, use n_bootstrap=0 (analytical TSL "
-                        "variance, which fully supports within-group-"
-                        "varying PSU via the cell-period allocator)."
-                    )
+            if psu_varies and self.n_bootstrap > 0:
+                raise NotImplementedError(
+                    "n_bootstrap > 0 is not supported under a "
+                    "survey design whose PSU varies within group. "
+                    "The PSU-level Hall-Mammen wild bootstrap uses "
+                    "the legacy group-level PSU map and will be "
+                    "extended to cell-level PSU in a follow-up PR. "
+                    "For now, use n_bootstrap=0 (analytical TSL "
+                    "variance, which fully supports within-group-"
+                    "varying PSU via the cell-period allocator)."
+                )
             _validate_cell_constant_strata_psu(
                 resolved_survey, data, group, time, survey_weights,
             )
@@ -3734,15 +3717,45 @@ def _compute_heterogeneity_test(
         Required when ``obs_survey_info`` is supplied.
     obs_survey_info : dict, optional
         Observation-level survey info with keys ``group_ids`` (raw per-row
-        group labels), ``weights`` (per-row survey weights), and ``resolved``
-        (ResolvedSurveyDesign). When provided, the regression uses WLS with
-        per-group weights W_g = sum of obs survey weights. SE is computed
-        via Binder TSL IF expansion through ``compute_survey_if_variance``
-        by default; under a replicate-weight design (BRR/Fay/JK1/JKn/SDR),
-        dispatches to ``compute_replicate_if_variance`` for Rao-Wu-style
-        variance. The effective df for t-critical values follows the
-        site-level ``min(df_s, n_valid_het - 1)`` rule and the helper
-        mutates ``replicate_n_valid_list`` so the final
+        group labels), ``time_ids`` (raw per-row period labels),
+        ``weights`` (per-row survey weights), ``resolved``
+        (ResolvedSurveyDesign), and ``periods`` (sorted canonical period
+        array matching ``Y_mat``'s column order). When provided, the
+        regression uses WLS with per-group weights
+        ``W_g = sum of obs survey weights in group g``. The group-level
+        WLS coefficient IF is
+        ``ψ_g = inv(X'WX)[1,:] @ x_g * W_g * r_g``. Two observation-level
+        expansions of ``ψ_g`` coexist on this path, split by variance
+        helper so each path uses the allocator that preserves
+        byte-identity for its aggregation rule:
+
+        * **Binder TSL** (``compute_survey_if_variance``): the
+          cell-period single-cell allocator —
+          ``ψ_i = ψ_g * (w_i / W_{g, out_idx})`` for obs in
+          ``(g, out_idx)``, zero elsewhere. Under PSU=group per-obs
+          distribution differs from the legacy
+          ``ψ_i = ψ_g * (w_i / W_g)`` but PSU-level aggregates
+          telescope to the same ``ψ_g``, so Binder variance is
+          byte-identical to the pre-cell-period release. Under
+          within-group-varying PSU mass lands in the post-period PSU
+          of the transition (DID_l post-period convention).
+        * **Rao-Wu replicate** (``compute_replicate_if_variance``):
+          the legacy group-level allocator ``ψ_i = ψ_g * (w_i / W_g)``.
+          Replicate variance computes ``θ_r = sum_i ratio_ir * ψ_i``
+          at observation level, so moving ψ_g mass onto the
+          post-period cell would silently change the replicate SE
+          whenever a replicate column's ratios vary within a group
+          (which the library allows — e.g., per-row BRR/Fay/SDR
+          matrices). Keeping the legacy allocator on this branch
+          preserves byte-identity of replicate SE across every
+          previously-supported fit. Replicate + within-group-varying
+          PSU is unreachable by construction (``SurveyDesign``
+          rejects ``replicate_weights`` combined with explicit
+          ``strata/psu/fpc``).
+
+        The effective df for t-critical values follows the site-level
+        ``min(df_s, n_valid_het - 1)`` rule and the helper mutates
+        ``replicate_n_valid_list`` so the final
         ``_effective_df_survey(...)`` sees this site's n_valid.
     replicate_n_valid_list : list[int], optional
         Shared accumulator for replicate-weight ``n_valid`` counts across
@@ -3931,25 +3944,46 @@ def _compute_heterogeneity_test(
                 XtWX_inv = np.linalg.pinv(XtWX)
                 psi_g = (XtWX_inv[1, :] @ design.T) * W_elig * r_g  # (n_eligible,)
 
-            # Expand to obs level: ψ_i = ψ_g * (w_i / W_g) for i in group g.
-            psi_obs = np.zeros(len(obs_w_raw))
-            for e_idx, g_idx in enumerate(eligible):
-                gid = gid_list[g_idx]
-                mask_g = (obs_gids_raw == gid) & valid
-                w_sum_g = obs_w_raw[mask_g].sum()
-                if w_sum_g > 0:
-                    psi_obs[mask_g] = psi_g[e_idx] * (
-                        obs_w_raw[mask_g] / w_sum_g
-                    )
-
-            # Dispatch: replicate-weight variance (BRR/Fay/JK1/JKn/SDR)
-            # vs Binder TSL across stratified PSUs. Mirrors the inline
-            # branch in _survey_se_from_group_if and the pattern in
-            # TripleDifference:1206-1238. Heterogeneity uses WLS with
-            # full-sample weights; theta_hat is treated as fixed per the
-            # FWL plug-in IF convention (REGISTRY.md Note on heterogeneity
-            # under replicate — no per-replicate refits).
+            # Allocator dispatch. Two observation-level expansions of
+            # ψ_g coexist on this path, split by variance helper:
+            #
+            #   * Binder TSL (compute_survey_if_variance): cell-period
+            #     single-cell allocator —
+            #       ψ_i = ψ_g * (w_i / W_{g, out_idx})
+            #     for obs in (g, out_idx), zero elsewhere. Under
+            #     PSU=group, per-obs distribution differs from the
+            #     legacy ψ_i = ψ_g * (w_i / W_g) but PSU-level
+            #     aggregates telescope to ψ_g, so Binder variance is
+            #     byte-identical. Under within-group-varying PSU, mass
+            #     lands in the post-period PSU of the transition, which
+            #     is what Binder needs. DID_l single-cell convention —
+            #     see REGISTRY.md ChaisemartinDHaultfoeuille survey IF
+            #     expansion Note.
+            #
+            #   * Rao-Wu replicate (compute_replicate_if_variance):
+            #     legacy group-level allocator —
+            #       ψ_i = ψ_g * (w_i / W_g)
+            #     for obs in group g. Replicate variance computes
+            #     θ_r = sum_i ratio_ir * ψ_i at observation level, so
+            #     moving ψ_g onto the post-period cell only would
+            #     silently change the replicate SE whenever a
+            #     replicate column's ratios vary within group (e.g.,
+            #     the per-row replicate matrices this library
+            #     accepts). The group-level allocator preserves
+            #     byte-identity for all replicate usages under
+            #     PSU=group. The replicate + within-group-varying
+            #     PSU case is not reachable (SurveyDesign rejects
+            #     replicate_weights combined with explicit psu).
             if getattr(resolved, "uses_replicate_variance", False):
+                psi_obs = np.zeros(len(obs_w_raw), dtype=np.float64)
+                for e_idx, g_idx in enumerate(eligible):
+                    gid = gid_list[g_idx]
+                    mask_g = (obs_gids_raw == gid) & valid
+                    w_sum_g = obs_w_raw[mask_g].sum()
+                    if w_sum_g > 0:
+                        psi_obs[mask_g] = psi_g[e_idx] * (
+                            obs_w_raw[mask_g] / w_sum_g
+                        )
                 var_s, n_valid_het = compute_replicate_if_variance(
                     psi_obs, resolved
                 )
@@ -3968,6 +4002,23 @@ def _compute_heterogeneity_test(
                 else:
                     df_s_local = min(int(df_s), int(n_valid_het) - 1)
             else:
+                obs_tids = np.asarray(obs_survey_info["time_ids"])
+                periods_arr = np.asarray(obs_survey_info["periods"])
+                psi_obs = np.zeros(len(obs_w_raw), dtype=np.float64)
+                for e_idx, g_idx in enumerate(eligible):
+                    gid = gid_list[g_idx]
+                    out_idx = first_switch_idx[g_idx] - 1 + l_h
+                    t_val_out = periods_arr[out_idx]
+                    mask_cell = (
+                        (obs_gids_raw == gid)
+                        & (obs_tids == t_val_out)
+                        & valid
+                    )
+                    w_cell = obs_w_raw[mask_cell].sum()
+                    if w_cell > 0:
+                        psi_obs[mask_cell] = psi_g[e_idx] * (
+                            obs_w_raw[mask_cell] / w_cell
+                        )
                 var_s = compute_survey_if_variance(psi_obs, resolved)
                 df_s_local = df_s
             se_het = (
@@ -5413,12 +5464,14 @@ def _strata_psu_vary_within_group(
 ) -> Tuple[bool, bool]:
     """Return (strata_varies_within_group, psu_varies_within_group).
 
-    Diagnostic helper used to gate out-of-scope combinations for the
-    cell-period IF allocator — heterogeneity and ``n_bootstrap > 0``
-    currently require within-group constancy because they read
-    ``obs_survey_info`` through the legacy group-level expansion path.
-    PR 3 and PR 4 will extend them. Zero-weight rows are excluded from
-    the check (subpopulation contract).
+    Diagnostic helper used at ``fit()`` time to gate the remaining
+    out-of-scope combination for the cell-period IF allocator:
+    ``n_bootstrap > 0`` still uses a group-level PSU map and raises
+    ``NotImplementedError`` when PSU varies within group. The
+    heterogeneity WLS path supports within-group-varying PSU/strata
+    via the cell-period allocator (shipped in the PR that lifted the
+    previous gate). Zero-weight rows are excluded from the check
+    (subpopulation contract).
     """
     if resolved is None:
         return False, False
@@ -5766,10 +5819,12 @@ def _survey_se_from_group_if(
     else:
         # Legacy group-level allocator (no per-period attribution
         # provided, or time/period info unavailable). Preserved for
-        # paths that haven't threaded per-period attribution through
-        # yet (e.g., the heterogeneity psi_obs construction in
-        # _compute_heterogeneity_test — gated to within-group-constant
-        # PSU in Stage 2 per PR 2 scope).
+        # defensive fallback and for unit tests that exercise the
+        # legacy allocator. No current caller in fit() uses this
+        # branch — ATT / joiners / leavers / placebos all thread
+        # U_centered_per_period, and heterogeneity (as of PR 3)
+        # constructs its own cell-period psi_obs and calls
+        # compute_survey_if_variance directly.
         group_to_u = {gid: U_centered[idx] for idx, gid in enumerate(eligible_groups)}
         u_obs_eff = np.array([group_to_u.get(gid, 0.0) for gid in gids_eff])
         unique_gids, inverse = np.unique(gids_eff, return_inverse=True)
