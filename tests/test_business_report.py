@@ -1042,6 +1042,64 @@ class TestHausmanFitFaithfulSkip:
         assert "survey design" in reason
 
 
+class TestHausmanPretestPropagatesCluster:
+    """Round-11 regression: ``EfficientDiDResults`` now persists the
+    ``cluster`` column used at fit time, and ``_pt_hausman`` forwards
+    it to ``EfficientDiD.hausman_pretest``. Without this, clustered
+    fits would be replayed under unclustered inference, silently
+    publishing an H statistic / p-value for the wrong design.
+    """
+
+    def test_hausman_pretest_receives_cluster_kwarg(self):
+        import pandas as pd
+
+        from diff_diff import DiagnosticReport, EfficientDiD
+
+        sdf = generate_staggered_data(n_units=100, n_periods=6, treatment_effect=1.5, seed=7)
+        # Add a cluster column (e.g., region) to the panel.
+        sdf = pd.DataFrame(sdf).copy()
+        sdf["cluster_col"] = sdf["unit"] % 10
+
+        edid = EfficientDiD(cluster="cluster_col").fit(
+            sdf,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        # Confirm persistence landed.
+        assert getattr(edid, "cluster", None) == "cluster_col"
+
+        captured: dict = {}
+
+        def _fake_hausman(*args, **kwargs):
+            captured.update(kwargs)
+
+            class _Result:
+                statistic = 0.0
+                p_value = 0.5
+                df = 1
+
+            return _Result()
+
+        with patch(
+            "diff_diff.efficient_did.EfficientDiD.hausman_pretest",
+            side_effect=_fake_hausman,
+        ):
+            DiagnosticReport(
+                edid,
+                data=sdf,
+                outcome="outcome",
+                unit="unit",
+                time="period",
+                first_treat="first_treat",
+            ).run_all()
+
+        assert (
+            captured.get("cluster") == "cluster_col"
+        ), f"cluster column must propagate from fit to Hausman pretest; got {captured}"
+
+
 class TestHausmanTestStatisticPopulated:
     """Round-10 P3 regression: ``HausmanPretestResult`` exposes
     ``statistic`` (not ``test_statistic``); the DR schema was previously

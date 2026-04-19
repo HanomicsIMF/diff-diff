@@ -457,11 +457,30 @@ class DiagnosticReport:
             return None
         if check == "parallel_trends":
             method = _PT_METHOD.get(name)
-            if method == "two_x_two" and self._data is None:
-                return (
-                    "2x2 parallel-trends check needs raw panel data; "
-                    "pass data=<DataFrame> with outcome / time / treatment columns."
-                )
+            if method == "two_x_two":
+                # Mirror the full argument contract of ``_pt_two_x_two``:
+                # the runner needs ``data`` AND all three column names to
+                # call ``check_parallel_trends``. Gating only on ``data``
+                # (as before) left ``applicable_checks`` overstated when
+                # one of the column kwargs was missing (round-11 CI
+                # review on PR #318).
+                two_x_two_missing = [
+                    arg
+                    for arg, val in (
+                        ("data", self._data),
+                        ("outcome", self._outcome),
+                        ("time", self._time),
+                        ("treatment", self._treatment),
+                    )
+                    if val is None
+                ]
+                if two_x_two_missing:
+                    return (
+                        "2x2 parallel-trends check needs raw panel data + "
+                        "outcome / time / treatment column names. Missing: "
+                        + ", ".join(two_x_two_missing)
+                        + "."
+                    )
             if method == "event_study":
                 pre_coefs = _collect_pre_period_coefs(r)
                 if not pre_coefs:
@@ -587,13 +606,32 @@ class DiagnosticReport:
                 return "HonestDiD requires at least one pre-period coefficient."
             return None
         if check == "bacon":
-            # Can run if results is itself Bacon, or if data + first_treat supplied.
+            # ``BaconDecompositionResults`` carries the decomposition
+            # directly; no data/column kwargs needed.
             if name == "BaconDecompositionResults":
                 return None
-            if self._data is None or self._first_treat is None:
+            # Otherwise mirror the full argument contract of
+            # ``_check_bacon`` / ``bacon_decompose``: the runner needs
+            # ``data``, ``first_treat``, and the ``outcome`` / ``time`` /
+            # ``unit`` column names. Gating on only ``data`` +
+            # ``first_treat`` (as before) left ``applicable_checks``
+            # overstated when a column kwarg was missing (round-11 CI
+            # review on PR #318).
+            bacon_missing = [
+                arg
+                for arg, val in (
+                    ("data", self._data),
+                    ("outcome", self._outcome),
+                    ("time", self._time),
+                    ("unit", self._unit),
+                    ("first_treat", self._first_treat),
+                )
+                if val is None
+            ]
+            if bacon_missing:
                 return (
-                    "Bacon decomposition needs panel data + first_treat column; "
-                    "pass data=<DataFrame> and first_treat=<column name>."
+                    "Bacon decomposition needs panel data + outcome / time "
+                    "/ unit / first_treat column names. Missing: " + ", ".join(bacon_missing) + "."
                 )
             return None
         if check == "heterogeneity":
@@ -1702,10 +1740,13 @@ class DiagnosticReport:
                 ),
             }
 
-        # Propagate settings we can read off the result. Same-design
-        # replay: only ``control_group`` and ``anticipation`` need to
-        # match; covariates / cluster / nuisance kwargs are irrelevant
-        # on the ``nocov`` path we just gated to.
+        # Propagate settings we can read off the result. On the
+        # ``nocov`` / no-survey path we just gated to, the design
+        # kwargs that matter for fit-faithful replay are
+        # ``control_group``, ``anticipation``, and — when the fit was
+        # clustered — ``cluster``. ``EfficientDiDResults`` persists the
+        # cluster column so a clustered Hausman statistic is reported
+        # for a clustered fit rather than a silently-unclustered one.
         hausman_kwargs: Dict[str, Any] = {}
         fit_control_group = getattr(r, "control_group", None)
         if isinstance(fit_control_group, str):
@@ -1713,6 +1754,9 @@ class DiagnosticReport:
         fit_anticipation = getattr(r, "anticipation", None)
         if isinstance(fit_anticipation, (int, float)) and np.isfinite(fit_anticipation):
             hausman_kwargs["anticipation"] = int(fit_anticipation)
+        fit_cluster = getattr(r, "cluster", None)
+        if isinstance(fit_cluster, str) and fit_cluster:
+            hausman_kwargs["cluster"] = fit_cluster
 
         try:
             from diff_diff.efficient_did import EfficientDiD

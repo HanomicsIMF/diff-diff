@@ -372,9 +372,12 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
         # Store survey df for safe_inference calls (t-distribution with survey df)
         self._survey_df = survey_metadata.df_survey if survey_metadata is not None else None
         # Guard: replicate design with undefined df → NaN inference
-        if (self._survey_df is None and resolved_survey is not None
-                and hasattr(resolved_survey, 'uses_replicate_variance')
-                and resolved_survey.uses_replicate_variance):
+        if (
+            self._survey_df is None
+            and resolved_survey is not None
+            and hasattr(resolved_survey, "uses_replicate_variance")
+            and resolved_survey.uses_replicate_variance
+        ):
             self._survey_df = 0
 
         # Bootstrap + survey supported via PSU-level multiplier bootstrap.
@@ -510,14 +513,18 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             n_strata_u = len(np.unique(unit_strata)) if unit_strata is not None else 0
             n_psu_u = len(np.unique(unit_psu)) if unit_psu is not None else 0
             self._unit_resolved_survey = resolved_survey.subset_to_units(
-                row_idx, unit_weights_s, unit_strata, unit_psu, unit_fpc,
-                n_strata_u, n_psu_u,
+                row_idx,
+                unit_weights_s,
+                unit_strata,
+                unit_psu,
+                unit_fpc,
+                n_strata_u,
+                n_psu_u,
             )
             # Use unit-level df (not panel-level) for t-distribution
             self._survey_df = self._unit_resolved_survey.df_survey
             # Re-apply replicate guard: undefined df → NaN inference
-            if (self._survey_df is None
-                    and self._unit_resolved_survey.uses_replicate_variance):
+            if self._survey_df is None and self._unit_resolved_survey.uses_replicate_variance:
                 self._survey_df = 0
         else:
             self._unit_resolved_survey = None
@@ -717,10 +724,14 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 # Filter out comparison pairs with zero survey weight
                 if unit_level_weights is not None and pairs:
                     pairs = [
-                        (gp, tpre) for gp, tpre in pairs
-                        if np.sum(unit_level_weights[
-                            never_treated_mask if np.isinf(gp) else cohort_masks[gp]
-                        ]) > 0
+                        (gp, tpre)
+                        for gp, tpre in pairs
+                        if np.sum(
+                            unit_level_weights[
+                                never_treated_mask if np.isinf(gp) else cohort_masks[gp]
+                            ]
+                        )
+                        > 0
                     ]
 
                 if not pairs:
@@ -1081,6 +1092,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             efficient_weights=stored_weights if stored_weights else None,
             omega_condition_numbers=stored_cond if stored_cond else None,
             control_group=self.control_group,
+            cluster=self.cluster,
             influence_functions=eif_by_gt if store_eif else None,
             bootstrap_results=bootstrap_results,
             estimation_path="dr" if use_covariates else "nocov",
@@ -1108,8 +1120,11 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             )
             # Propagate effective replicate df if available
             # (but not the df=0 sentinel — keep metadata as None for undefined df)
-            if (self._survey_df is not None and self._survey_df != 0
-                    and meta.df_survey != self._survey_df):
+            if (
+                self._survey_df is not None
+                and self._survey_df != 0
+                and meta.df_survey != self._survey_df
+            ):
                 meta.df_survey = self._survey_df
             return meta
         return panel_metadata
@@ -1129,7 +1144,9 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             # Score-scale IFs to match TSL bread: psi = w * eif / sum(w)
             w = self._unit_resolved_survey.weights
             psi_scaled = w * eif_vals / w.sum()
-            variance, n_valid = compute_replicate_if_variance(psi_scaled, self._unit_resolved_survey)
+            variance, n_valid = compute_replicate_if_variance(
+                psi_scaled, self._unit_resolved_survey
+            )
             # Update survey df to reflect effective replicate count
             if n_valid < self._unit_resolved_survey.n_replicates:
                 self._survey_df = n_valid - 1 if n_valid > 1 else None
@@ -1271,7 +1288,11 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
 
         # WIF correction: accounts for uncertainty in cohort-size weights
         wif = self._compute_wif_contribution(
-            keepers, effects, unit_cohorts, cohort_fractions, n_units,
+            keepers,
+            effects,
+            unit_cohorts,
+            cohort_fractions,
+            n_units,
             unit_weights=self._unit_level_weights,
         )
         # Compute SE: survey path uses score-level psi to avoid double-weighting
@@ -1282,19 +1303,17 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
             total_w = float(np.sum(uw))
             psi_total = uw * agg_eif / total_w + wif / total_w
 
-            if (hasattr(self._unit_resolved_survey, 'uses_replicate_variance')
-                    and self._unit_resolved_survey.uses_replicate_variance):
+            if (
+                hasattr(self._unit_resolved_survey, "uses_replicate_variance")
+                and self._unit_resolved_survey.uses_replicate_variance
+            ):
                 from diff_diff.survey import compute_replicate_if_variance
 
-                variance, _ = compute_replicate_if_variance(
-                    psi_total, self._unit_resolved_survey
-                )
+                variance, _ = compute_replicate_if_variance(psi_total, self._unit_resolved_survey)
             else:
                 from diff_diff.survey import compute_survey_if_variance
 
-                variance = compute_survey_if_variance(
-                    psi_total, self._unit_resolved_survey
-                )
+                variance = compute_survey_if_variance(psi_total, self._unit_resolved_survey)
             se = float(np.sqrt(max(variance, 0.0))) if np.isfinite(variance) else np.nan
         else:
             agg_eif_total = agg_eif + wif
@@ -1389,7 +1408,11 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 es_keepers = [(g, t) for (g, t) in gt_pairs]
                 es_effects = effs
                 wif_e = self._compute_wif_contribution(
-                    es_keepers, es_effects, unit_cohorts, cohort_fractions, n_units,
+                    es_keepers,
+                    es_effects,
+                    unit_cohorts,
+                    cohort_fractions,
+                    n_units,
                     unit_weights=self._unit_level_weights,
                 )
 
@@ -1398,8 +1421,10 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 total_w = float(np.sum(uw))
                 psi_total = uw * agg_eif / total_w + wif_e / total_w
 
-                if (hasattr(self._unit_resolved_survey, 'uses_replicate_variance')
-                        and self._unit_resolved_survey.uses_replicate_variance):
+                if (
+                    hasattr(self._unit_resolved_survey, "uses_replicate_variance")
+                    and self._unit_resolved_survey.uses_replicate_variance
+                ):
                     from diff_diff.survey import compute_replicate_if_variance
 
                     variance, _ = compute_replicate_if_variance(
@@ -1408,9 +1433,7 @@ class EfficientDiD(EfficientDiDBootstrapMixin):
                 else:
                     from diff_diff.survey import compute_survey_if_variance
 
-                    variance = compute_survey_if_variance(
-                        psi_total, self._unit_resolved_survey
-                    )
+                    variance = compute_survey_if_variance(psi_total, self._unit_resolved_survey)
                 agg_se = float(np.sqrt(max(variance, 0.0))) if np.isfinite(variance) else np.nan
             else:
                 agg_eif = agg_eif + wif_e

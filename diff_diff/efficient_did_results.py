@@ -149,6 +149,12 @@ class EfficientDiDResults:
         default=None, repr=False
     )
     control_group: str = "never_treated"
+    # Cluster column used at fit time (None for unclustered fits). Persisted
+    # so downstream diagnostics — notably ``DiagnosticReport._pt_hausman`` —
+    # can replay the Hausman PT-All vs PT-Post pretest under the same
+    # clustering as the original estimate rather than silently producing
+    # unclustered p-values for a clustered fit.
+    cluster: Optional[str] = None
     influence_functions: Optional[Dict[Tuple[Any, Any], "np.ndarray"]] = field(
         default=None, repr=False
     )

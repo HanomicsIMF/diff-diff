@@ -234,6 +234,32 @@ class TestApplicabilityMatrix:
         dr = DiagnosticReport(fit, data=df, outcome="outcome", treatment="treated", time="post")
         assert "parallel_trends" in dr.applicable_checks
 
+    def test_did_with_data_but_no_column_kwargs_skips_pt(self, did_fit):
+        """Round-11 regression: ``applicable_checks`` must match the
+        runner's full argument contract. 2x2 PT needs ``data`` AND
+        ``outcome`` / ``time`` / ``treatment`` — not just ``data``."""
+        fit, df = did_fit
+        dr = DiagnosticReport(fit, data=df)  # missing column kwargs
+        assert "parallel_trends" not in dr.applicable_checks
+        reason = dr.skipped_checks["parallel_trends"]
+        assert "outcome" in reason
+        assert "time" in reason
+        assert "treatment" in reason
+
+    def test_bacon_applicability_requires_all_column_kwargs(self, cs_fit):
+        """Round-11 regression: Bacon needs the full ``outcome`` / ``time``
+        / ``unit`` / ``first_treat`` contract from ``bacon_decompose``."""
+        fit, sdf = cs_fit
+        dr = DiagnosticReport(
+            fit,
+            data=sdf,
+            first_treat="first_treat",
+            # intentionally omit outcome / time / unit
+        )
+        assert "bacon" not in dr.applicable_checks
+        reason = dr.skipped_checks["bacon"]
+        assert "outcome" in reason or "time" in reason or "unit" in reason
+
     def test_multiperiod_runs_pt_and_power_and_sensitivity(self, multi_period_fit):
         fit, _ = multi_period_fit
         dr = DiagnosticReport(fit)
