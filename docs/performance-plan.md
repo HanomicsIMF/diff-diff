@@ -19,8 +19,12 @@ writeups. The six scenarios are defined in
 
 Environment: macOS darwin 25.3 on Apple Silicon M4, Python 3.9,
 numpy 2.x, diff_diff 3.1.3. Each multi-scale scenario runs at three data
-scales under both `DIFF_DIFF_BACKEND=python` and `DIFF_DIFF_BACKEND=rust`.
-The numerical tables below are auto-generated from the committed JSON
+scales under both `DIFF_DIFF_BACKEND=python` and `DIFF_DIFF_BACKEND=rust`,
+with one intentional exception: the SDiD few-markets scenario at its
+`large` scale runs Rust only, because the pure-numpy jackknife at n=500
+would exceed four minutes per run without changing the already-clear
+Python-vs-Rust conclusion established at `small` and `medium`. The
+numerical tables below are auto-generated from the committed JSON
 baselines by `benchmarks/speed_review/gen_findings_tables.py`; narrative
 prose is hand-written and must be re-read when numbers shift.
 
@@ -241,13 +245,11 @@ or in the silent-failures audit; logging here for awareness.
 
 ### What this baseline does not answer
 
-- Scaling: each scenario runs at a single data shape. We do not know how
-  end-to-end time scales with n, periods, or cohorts. If scaling becomes a
-  decision input, add a small per-scenario scale sweep (e.g., n_units in
-  {100, 500, 1000}) - the scripts are parameterised to support this.
-- Memory: no memory-ceiling measurement. If memory becomes a concern,
-  `pyinstrument --output-memory` or `memray` can be wrapped into
-  `bench_shared.run_scenario` without restructuring.
+- OOM behaviour at the edge: the sweep captures peak RSS up to ~600 MB
+  (staggered CS large under Rust). Behaviour under a hard memory ceiling
+  (512 MB Lambda, 1 GB container) is not exercised; if deployment signal
+  emerges that practitioners hit those ceilings, a ceiling-test pass
+  should be added.
 - Pure-Rust profiles: scenarios run the Rust backend as a black box.
   Optimizing inside `rust/` is a separate concern owned by the crate
   maintainers and is not in scope here.

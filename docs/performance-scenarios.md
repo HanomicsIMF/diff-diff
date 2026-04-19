@@ -54,12 +54,18 @@ For each scenario, `benchmarks/speed_review/` hosts a script
 
 1. Generates (or loads) the data once.
 2. Runs the full operation chain under `pyinstrument` and writes a flame HTML
-   to `benchmarks/speed_review/baselines/profiles/<scenario>_<backend>.html`.
+   to `benchmarks/speed_review/baselines/profiles/<scenario>[_<scale>]_<backend>.html`.
 3. Writes a wall-clock JSON breakdown (per operation + total) to
-   `benchmarks/speed_review/baselines/<scenario>_<backend>.json`.
+   `benchmarks/speed_review/baselines/<scenario>[_<scale>]_<backend>.json`.
+   Multi-scale scenarios include the scale segment (`_small`, `_medium`,
+   `_large`); single-scale scenarios (dose-response, reversible-dCDH)
+   omit it.
 4. Runs under both `DIFF_DIFF_BACKEND=python` and `DIFF_DIFF_BACKEND=rust`
-   when Rust is available. The gap is the primary input to Rust-expansion
-   decisions.
+   when Rust is available. Scenario 4 (SDiD few markets) skips the
+   Python backend at the `large` scale by design because its
+   pure-numpy jackknife would exceed 4 minutes per run without adding
+   signal; every other (scenario, scale) runs under both backends. The
+   Python-vs-Rust gap is the primary input to Rust-expansion decisions.
 
 The scenario scripts are **not** meant to replace `run_benchmarks.py` (which
 serves a different purpose: R-parity accuracy). They complement it.
@@ -342,7 +348,8 @@ output. Scripts filter this warning so profiles stay clean.
 ## Pointers
 
 - Scripts: `benchmarks/speed_review/bench_<scenario>.py`
-- Raw results: `benchmarks/speed_review/baselines/<scenario>_<backend>.json`
-- Flame profiles: `benchmarks/speed_review/baselines/profiles/<scenario>_<backend>.html`
+- Raw results: `benchmarks/speed_review/baselines/<scenario>[_<scale>]_<backend>.json`
+- Flame profiles: `benchmarks/speed_review/baselines/profiles/<scenario>[_<scale>]_<backend>.html`
+  (gitignored; regenerated per run)
 - Findings doc: `docs/performance-plan.md` ("Practitioner Workflow Baseline"
   section - per-scenario top-5 hot phases + recommended action category)
