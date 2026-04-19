@@ -1136,17 +1136,53 @@ class DiagnosticReport:
                 method = "bonferroni"
 
         if joint_p is None:
-            # Bonferroni: min per-period p-value scaled by count, capped at 1.
-            # NaN p-values are excluded — a non-finite p-value means the
-            # per-period test was undefined (zero SE, reference marker that
-            # slipped through, etc.) and must not be treated as clean
-            # evidence. If no valid p-values remain, joint_p stays None and
-            # the verdict will be ``inconclusive``.
-            ps = [
-                p["p_value"]
+            # Bonferroni fallback is only valid when EVERY retained pre-
+            # period contributes a finite p-value. Otherwise we would
+            # silently shrink the test family (e.g., replicate-weight
+            # survey fits where ``safe_inference`` returns NaN p-values
+            # for rows whose effective survey df collapsed — the row's
+            # ``effect`` / ``se`` is still finite, so the ``se > 0``
+            # collector filter lets it through, but a Bonferroni
+            # computed on the remaining subset publishes a finite joint
+            # p-value that BR lifts into "consistent with parallel
+            # trends" prose). Round-34 P0 CI review on PR #318 flagged
+            # that the round-33 guard only caught the ``se <= 0`` case
+            # and missed this.
+            #
+            # Strategy: if any retained pre-period has non-finite
+            # ``p_value``, emit an explicit inconclusive PT block with
+            # a visible count/reason. Otherwise run Bonferroni on the
+            # full family as documented in REPORTING.md.
+            nan_p_count = sum(
+                1
                 for p in per_period
-                if isinstance(p["p_value"], (int, float)) and np.isfinite(p["p_value"])
-            ]
+                if not (
+                    isinstance(p["p_value"], (int, float)) and np.isfinite(p["p_value"])
+                )
+            )
+            if nan_p_count > 0:
+                return {
+                    "status": "ran",
+                    "method": "inconclusive",
+                    "joint_p_value": None,
+                    "test_statistic": None,
+                    "df": len(pre_coefs),
+                    "n_pre_periods": len(pre_coefs),
+                    "n_dropped_undefined": nan_p_count,
+                    "per_period": per_period,
+                    "verdict": "inconclusive",
+                    "reason": (
+                        f"{nan_p_count} retained pre-period coefficient(s) "
+                        "have non-finite per-period p-value (undefined "
+                        "inference per the ``safe_inference`` contract — "
+                        "e.g., replicate-weight survey fits where effective "
+                        "df collapsed). Bonferroni on the remaining subset "
+                        "would silently shrink the test family; the joint "
+                        "PT test is inconclusive on this fit. Inspect the "
+                        "per_period block for the undefined rows."
+                    ),
+                }
+            ps = [p["p_value"] for p in per_period]
             if ps:
                 joint_p = min(1.0, min(ps) * len(ps))
 

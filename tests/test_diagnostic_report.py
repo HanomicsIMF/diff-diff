@@ -1168,6 +1168,62 @@ class TestReferenceMarkerAndNaNFiltering:
         assert pt["n_dropped_undefined"] == 1
         assert "undefined inference" in pt["reason"]
 
+    def test_finite_se_nan_p_value_yields_inconclusive_on_bonferroni_only_surface(self):
+        """Round-34 P0 regression: replicate-weight survey fits can emit
+        event-study rows with finite ``effect`` / ``se`` but
+        ``p_value=NaN`` when ``safe_inference`` sees ``df <= 0`` — the
+        design-based SE is still defined but inference fields collapse
+        to NaN per ``utils.py`` line 175. The round-33 collector filter
+        (``se > 0``) lets such rows through; the Bonferroni fallback
+        previously excluded NaN p-values and scaled by the reduced
+        family, producing a clean joint PT verdict that BR rendered as
+        "do not reject parallel trends" prose.
+
+        Use a ``StackedDiDResults`` stub (Bonferroni-only surface: no
+        ``vcov`` / ``event_study_vcov``) with one finite-inference row
+        and one finite-SE / NaN-p row, and assert DR emits inconclusive.
+        """
+        from diff_diff import BusinessReport
+
+        class StackedDiDResults:
+            pass
+
+        obj = StackedDiDResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.2
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 400
+        obj.n_treated_units = 100
+        obj.n_control_units = 300
+        obj.survey_metadata = None
+        obj.event_study_effects = {
+            -2: {"effect": 0.1, "se": 0.2, "p_value": 0.62, "n_obs": 400},
+            # Finite SE but NaN p-value — models the replicate-weight
+            # collapsed-df case. Previously stayed in the family but
+            # was dropped from the Bonferroni denominator.
+            -1: {"effect": 0.05, "se": 0.3, "p_value": float("nan"), "n_obs": 400},
+        }
+
+        dr = DiagnosticReport(obj, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+
+        assert pt["method"] == "inconclusive", (
+            f"Bonferroni-only surface with NaN per-period p-value must "
+            f"return inconclusive; got method={pt.get('method')!r} with "
+            f"joint_p={pt.get('joint_p_value')!r}"
+        )
+        assert pt["verdict"] == "inconclusive"
+        assert pt["joint_p_value"] is None
+        assert pt["n_dropped_undefined"] == 1
+
+        # And BR must not turn that into "do not reject" / "consistent
+        # with parallel trends" wording.
+        br_summary = BusinessReport(obj).summary().lower()
+        assert "do not reject parallel trends" not in br_summary
+        assert "consistent with parallel trends" not in br_summary
+
     def test_zero_se_pre_period_yields_inconclusive(self):
         """Round-33 P0 regression: a pre-period row whose SE is
         zero/negative is undefined inference per the ``safe_inference``
