@@ -112,14 +112,15 @@ any rerun):
   SunAbraham narrows the gap but ImputationDiD still leads. CS fit with
   `n_bootstrap=999` (both with and without covariates) is well-
   vectorized and sits well below both in the ranking.
-- **Brand awareness survey.** At small scale HonestDiD dominates. From
-  medium onwards the JK1 replicate-weight path is the clear top phase
-  under both backends (2-3x the multi-outcome loop on Python at medium;
-  still the top phase on Rust though by a smaller margin there). At
-  large it consolidates as the single dominant phase. Python and Rust
-  totals on this chain are within noise; the JK1 replicate-fit loop is
-  not Rust-accelerated, so the FFI crossings cost approximately what
-  they save - a neutral outcome, not a regression.
+- **Brand awareness survey.** At small scale HonestDiD dominates. At
+  medium the top three phases are packed closely: on Python JK1 leads
+  (about 1.9x the multi-outcome loop, with HonestDiD close behind);
+  on Rust the multi-outcome loop is slightly ahead of JK1. Only at
+  large does JK1 emerge as the clearly dominant phase under both
+  backends. Python and Rust totals on this chain are within noise; the
+  JK1 replicate-fit loop is not Rust-accelerated, so the FFI crossings
+  cost approximately what they save - a neutral outcome, not a
+  regression.
 - **BRFSS.** `aggregate_survey` share of total grows with scale and is
   effectively 100% of runtime at 1M rows. Downstream phases (CS fit,
   SunAbraham, HonestDiD) are a fraction of a second combined.

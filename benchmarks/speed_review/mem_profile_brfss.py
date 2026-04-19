@@ -86,6 +86,11 @@ def main():
     current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
+    total_net_diff = sum(s.size_diff for s in stats) / (1024 * 1024)
+    top_site_diff = (
+        stats[0].size_diff / (1024 * 1024) if stats else 0.0
+    )
+
     lines = [
         f"# BRFSS-1M aggregate_survey allocation attribution",
         f"# backend: {backend}",
@@ -95,8 +100,8 @@ def main():
         f"# output panel cells: {len(panel)}",
         f"",
         f"# tracemalloc totals during aggregate_survey",
-        f"# net allocated (end - start): "
-        f"{(stats[0].size_diff if stats else 0)/1024/1024:.1f} MB (top site)",
+        f"# total net size diff across all sites: {total_net_diff:.1f} MB",
+        f"# top single-site size diff: {top_site_diff:.2f} MB",
         f"# python peak traced: {peak/1024/1024:.1f} MB",
         f"# python current retained: {current/1024/1024:.1f} MB",
         f"",
