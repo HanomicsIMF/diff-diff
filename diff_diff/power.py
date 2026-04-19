@@ -167,17 +167,24 @@ class SurveyPowerConfig:
             )
 
     def _build_survey_design(self) -> Any:
-        """Return cached SurveyDesign (built once, reused across simulations)."""
-        if not hasattr(self, "_cached_survey_design"):
-            if self.survey_design is not None:
-                self._cached_survey_design = self.survey_design
-            else:
-                from diff_diff.survey import SurveyDesign
+        """Return a SurveyDesign for this config.
 
-                self._cached_survey_design = SurveyDesign(
-                    weights="weight", strata="stratum", psu="psu", fpc="fpc"
-                )
-        return self._cached_survey_design
+        Reflects the live ``self.survey_design`` value every call (no
+        caching). Finding #28 (axis J, silent-failures audit): the
+        previous ``_cached_survey_design`` was populated on first call
+        and never invalidated on mutation, so ``config.survey_design =
+        other_design`` silently kept returning the original. Since the
+        default ``SurveyDesign(...)`` construction is microseconds and
+        user-provided designs are just reference copies, there's no cache
+        cost worth keeping.
+        """
+        if self.survey_design is not None:
+            return self.survey_design
+        from diff_diff.survey import SurveyDesign
+
+        return SurveyDesign(
+            weights="weight", strata="stratum", psu="psu", fpc="fpc"
+        )
 
     @property
     def min_viable_n(self) -> int:
