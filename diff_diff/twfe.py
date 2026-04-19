@@ -36,13 +36,14 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         parameter passed to `fit()`). This differs from
         DifferenceInDifferences where cluster=None means no clustering.
 
-        **Exception:** when ``vcov_type`` is a one-way-only family
-        (``"classical"`` or ``"hc2"``), the unit auto-cluster is dropped
-        because those families are by construction incompatible with
-        clustering. The user's explicit choice of a one-way family wins
-        over the TWFE default. To get clustered SEs under HC2 leverage
-        correction, pass ``vcov_type="hc2_bm"`` (which dispatches to CR2
-        Bell-McCaffrey when a cluster is present).
+        **Exception:** when ``vcov_type="classical"`` and
+        ``inference="analytical"``, the unit auto-cluster is dropped
+        because the classical family is by construction one-way only and
+        the validator rejects ``cluster_ids + classical``. The user's
+        explicit choice of the classical family wins over the TWFE default
+        in that narrow analytical-inference case. Under
+        ``inference="wild_bootstrap"`` the auto-cluster is preserved (the
+        bootstrap uses the cluster structure to resample residuals).
     alpha : float, default=0.05
         Significance level for confidence intervals.
 
@@ -53,6 +54,18 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         Y_it = α_i + γ_t + β*(D_i × Post_t) + X_it'δ + ε_it
 
     where α_i are unit fixed effects and γ_t are time fixed effects.
+
+    **HC2 / Bell-McCaffrey are not available on TWFE.** Because TWFE uses
+    within-transformation (demeaning) to absorb the fixed effects, the
+    reduced design's hat matrix is not the full FE projection; HC2 leverage
+    and CR2 Bell-McCaffrey corrections on the demeaned design would produce
+    silently-wrong small-sample SEs (FWL preserves coefficients, not the
+    hat matrix). ``vcov_type in {"hc2","hc2_bm"}`` therefore raises
+    ``NotImplementedError`` with workarounds: use ``vcov_type="hc1"`` (HC1/
+    CR1 survive FWL), or switch to ``DifferenceInDifferences(fixed_effects=
+    [...])`` where the dummies appear in the full design. Tracked in
+    ``TODO.md`` under Methodology/Correctness; also documented in
+    ``docs/methodology/REGISTRY.md``.
 
     Warning: TWFE can be biased with staggered treatment timing
     and heterogeneous treatment effects. Consider using
@@ -101,6 +114,35 @@ class TwoWayFixedEffects(DifferenceInDifferences):
         if unit not in data.columns:
             raise ValueError(f"Unit column '{unit}' not found in data")
 
+        # Reject HC2 / HC2 + Bell-McCaffrey on TWFE (and any absorbed-FE fit).
+        # TWFE demeans outcomes and regressors via within-transformation before
+        # solving OLS, and passes only the reduced (already-residualized)
+        # regressor matrix into ``LinearRegression``. The HC2 leverage
+        # correction ``h_ii = x_i' (X'X)^{-1} x_i`` and the CR2 Bell-McCaffrey
+        # adjustment matrix ``A_g = (I - H_gg)^{-1/2}`` both depend on the
+        # FULL fixed-effects hat matrix, not the residualized one: FWL
+        # preserves coefficients but NOT the hat matrix, so applying HC2 or
+        # CR2 to the demeaned design produces the wrong leverage and the
+        # wrong Bell-McCaffrey DOF. The correct fix (compute leverage from
+        # the full absorbed projection) is deferred to a follow-up PR; until
+        # then, reject fast rather than ship silently-wrong small-sample SEs.
+        # HC1 and CR1 are unaffected (no leverage term, meat uses only the
+        # residuals which FWL preserves). Tracked in TODO.md.
+        if self.vcov_type in ("hc2", "hc2_bm"):
+            raise NotImplementedError(
+                f"TwoWayFixedEffects(vcov_type={self.vcov_type!r}) is not "
+                "yet supported: TWFE uses within-transformation (demeaning) "
+                "before OLS, and the HC2 leverage correction / CR2 Bell-"
+                "McCaffrey DOF depend on the full FE hat matrix, not the "
+                "residualized one (FWL preserves coefficients but not "
+                "leverage). Applying HC2/CR2-BM to the demeaned design "
+                "would produce silently-wrong small-sample inference. Use "
+                "vcov_type='hc1' (HC1/CR1 preserve correctly under FWL), or "
+                "switch to fixed_effects= dummies on DifferenceInDifferences "
+                "for a full-dummy design where HC2/CR2-BM are computed on "
+                "the full projection."
+            )
+
         # Check for staggered treatment timing and warn if detected
         self._check_staggered_treatment(data, treatment, time, unit)
 
@@ -146,19 +188,24 @@ class TwoWayFixedEffects(DifferenceInDifferences):
             )
 
         # Unit-level clustering is the TWFE default when `cluster` is not
-        # explicitly provided. But one-way variance families (``classical``,
-        # ``hc2``) are by construction not cluster-robust and the validator
-        # in ``compute_robust_vcov`` rejects ``cluster_ids + vcov_type in
-        # {"classical", "hc2"}``. When the user explicitly selects one of
-        # those families and does NOT set ``cluster=``, honor the one-way
-        # choice by disabling the auto-cluster. If the user wants clustered
-        # SEs together with those families, the right fix is to pick a
-        # cluster-aware family (``hc1`` -> CR1, ``hc2_bm`` -> CR2 BM);
-        # mixing is rejected at the linalg layer.
-        _oneway_families = {"classical", "hc2"}
+        # explicitly provided. But the one-way ``classical`` family is by
+        # construction not cluster-robust and the validator in
+        # ``compute_robust_vcov`` rejects ``cluster_ids + vcov_type=="classical"``.
+        # When the user explicitly asks for ``classical`` analytical inference
+        # and does NOT set ``cluster=``, honor that choice by disabling the
+        # auto-cluster.
+        #
+        # Exception: wild-bootstrap inference uses the cluster structure to
+        # resample residuals, not the analytical sandwich. Dropping the
+        # auto-cluster here would break ``inference="wild_bootstrap"`` with
+        # no explicit cluster (a supported combination), so we keep the unit
+        # auto-cluster whenever the bootstrap path will consume it.
+        # ``hc2``/``hc2_bm`` don't reach this block — they are rejected above.
         if self.cluster is not None:
             cluster_var: Optional[str] = self.cluster
-        elif self.vcov_type in _oneway_families:
+        elif self.vcov_type == "classical" and self.inference == "analytical":
+            # One-way classical + analytical inference: drop the auto-cluster
+            # so the validator doesn't reject ``cluster_ids + classical``.
             cluster_var = None
         else:
             cluster_var = unit

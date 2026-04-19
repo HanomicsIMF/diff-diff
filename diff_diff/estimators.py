@@ -300,6 +300,25 @@ class DifferenceInDifferences:
                 "or fixed_effects alone (for low-dimensional FE)."
             )
 
+        # Reject HC2 / HC2 + Bell-McCaffrey on absorbed-FE fits.
+        # `absorb=` demeans regressors via within-transformation before OLS,
+        # and the HC2 leverage correction / CR2 Bell-McCaffrey DOF depend on
+        # the FULL FE hat matrix, not the residualized one (FWL preserves
+        # coefficients but not the hat matrix). Applying HC2/CR2-BM to the
+        # demeaned design would produce silently-wrong small-sample SEs.
+        # HC1 and CR1 are unaffected (no leverage term). Tracked in TODO.md.
+        if absorb and self.vcov_type in ("hc2", "hc2_bm"):
+            raise NotImplementedError(
+                f"DifferenceInDifferences(absorb=..., "
+                f"vcov_type={self.vcov_type!r}) is not yet supported: "
+                "absorbed fixed effects are handled by demeaning, and the "
+                "HC2 / CR2 Bell-McCaffrey leverage corrections depend on "
+                "the full FE hat matrix, not the residualized one. Use "
+                "vcov_type='hc1' with absorb=, or switch to "
+                "fixed_effects= dummies for a full-dummy design where "
+                "HC2/CR2-BM are computed on the full projection."
+            )
+
         if absorb:
             # FWL theorem: demean ALL regressors alongside outcome.
             # Regressors collinear with absorbed FE (e.g., treatment after
@@ -1195,6 +1214,21 @@ class MultiPeriodDiD(DifferenceInDifferences):
                 "fixed_effects dummies, violating the FWL theorem. "
                 "Use absorb alone (for high-dimensional FE) "
                 "or fixed_effects alone (for low-dimensional FE)."
+            )
+
+        # Reject HC2 / HC2 + Bell-McCaffrey on absorbed-FE fits (see the
+        # matching guard in DifferenceInDifferences.fit / twfe.py for the
+        # methodology reasoning: HC2/CR2 leverage corrections depend on the
+        # full FE hat matrix, not the residualized design from within-
+        # transformation). Tracked in TODO.md.
+        if absorb and self.vcov_type in ("hc2", "hc2_bm"):
+            raise NotImplementedError(
+                f"MultiPeriodDiD(absorb=..., vcov_type={self.vcov_type!r}) "
+                "is not yet supported: absorbed fixed effects are handled "
+                "by demeaning, and the HC2 / CR2 Bell-McCaffrey leverage "
+                "corrections depend on the full FE hat matrix, not the "
+                "residualized one. Use vcov_type='hc1' with absorb=, or "
+                "switch to fixed_effects= dummies for a full-dummy design."
             )
 
         # Pre-compute non_ref_periods (needed for absorb demeaning)

@@ -347,33 +347,28 @@ class TestFitBehavior:
         ci_width = r_hc2bm.avg_conf_int[1] - r_hc2bm.avg_conf_int[0]
         assert ci_width > 0
 
-    def test_twfe_fit_honors_vcov_type(self):
-        """TwoWayFixedEffects.fit with vcov_type='hc2_bm' differs from hc1.
-
-        TWFE auto-clusters at the unit level, so hc2_bm dispatches to CR2
-        Bell-McCaffrey. The SE should differ from HC1 (CR1 Liang-Zeger).
+    def test_twfe_rejects_hc2_and_hc2_bm(self):
+        """TWFE rejects vcov_type in {hc2, hc2_bm} because it uses within-
+        transformation. HC2 leverage on the reduced design is not the hat
+        matrix of the full FE projection (FWL preserves coefficients, not
+        the hat matrix), so applying HC2/CR2-BM to the demeaned regressors
+        would silently ship wrong small-sample SEs. The fit must raise with
+        a pointer to HC1 (which has no leverage term and survives FWL) or
+        fixed_effects= dummies as workarounds.
         """
-        rng = np.random.default_rng(20260420)
-        n_units = 30
-        rows = []
-        for i in range(n_units):
-            treated = int(i >= n_units // 2)
-            for t in range(4):
-                post = int(t >= 2)
-                y = rng.normal(0.0, 1.0) + 0.4 * treated + 0.7 * treated * post
-                rows.append({"unit": i, "time": t, "treated": treated, "y": y})
-        data = pd.DataFrame(rows)
-
-        r_hc1 = TwoWayFixedEffects(vcov_type="hc1").fit(
-            data, outcome="y", treatment="treated", time="time", unit="unit"
-        )
-        r_hc2bm = TwoWayFixedEffects(vcov_type="hc2_bm").fit(
-            data, outcome="y", treatment="treated", time="time", unit="unit"
-        )
-        # Point estimates identical (weighted-OLS treatment coefficient).
-        assert r_hc1.att == pytest.approx(r_hc2bm.att, abs=1e-10)
-        # SEs differ because CR1 != CR2 in small samples.
-        assert r_hc1.se != pytest.approx(r_hc2bm.se, abs=1e-10)
+        data = _make_did_panel(n_units=20)
+        for bad in ("hc2", "hc2_bm"):
+            with pytest.raises(
+                NotImplementedError,
+                match="TwoWayFixedEffects.*not yet supported",
+            ):
+                TwoWayFixedEffects(vcov_type=bad).fit(
+                    data,
+                    outcome="y",
+                    treatment="treated",
+                    time="time",
+                    unit="unit",
+                )
 
     def test_twfe_results_record_cluster_name(self):
         """TWFE results should label the auto-clustered SE with the unit column."""
@@ -430,31 +425,123 @@ class TestFitBehavior:
         assert res.cluster_name is None
         assert "CR1 cluster-robust" not in res.summary()
 
-    def test_twfe_honors_hc2_one_way(self):
-        """TWFE with vcov_type='hc2' (leverage-corrected, one-way only) must
-        also skip the auto-cluster; otherwise the linalg validator raises."""
-        data = _make_did_panel(n_units=20)
-        res = TwoWayFixedEffects(vcov_type="hc2").fit(
-            data, outcome="y", treatment="treated", time="time", unit="unit"
-        )
-        assert np.isfinite(res.att)
-        assert np.isfinite(res.se)
-        assert res.vcov_type == "hc2"
-        assert res.cluster_name is None
-        assert "HC2 leverage-corrected" in res.summary()
+    def test_twfe_wild_bootstrap_preserves_auto_cluster(self):
+        """Wild-bootstrap inference on TWFE with no explicit cluster must
+        keep the unit auto-cluster, even under vcov_type='classical'.
 
-    def test_twfe_explicit_cluster_still_clusters_under_hc2_bm(self):
-        """Regression guard: when the user explicitly passes `cluster=`, the
-        auto-cluster bypass does NOT apply. With vcov_type='hc2_bm' this is
-        the only way to reach the CR2 Bell-McCaffrey path on TWFE.
+        Regression guard for a bug where the one-way-family auto-cluster
+        bypass also applied under wild_bootstrap, silently dropping the
+        cluster structure the bootstrap was supposed to consume. The fix
+        gates the bypass on inference=='analytical'.
         """
         data = _make_did_panel(n_units=20)
-        res = TwoWayFixedEffects(vcov_type="hc2_bm", cluster="unit").fit(
-            data, outcome="y", treatment="treated", time="time", unit="unit"
-        )
-        assert np.isfinite(res.att)
+        res = TwoWayFixedEffects(
+            vcov_type="classical",
+            inference="wild_bootstrap",
+            n_bootstrap=50,
+            seed=1,
+        ).fit(data, outcome="y", treatment="treated", time="time", unit="unit")
+        # Bootstrap must have succeeded with a finite SE.
         assert np.isfinite(res.se)
-        assert "CR2 Bell-McCaffrey" in res.summary()
+        assert res.se > 0
+        # Bootstrap consumed a unit-level cluster (20 clusters).
+        assert res.n_clusters == 20
+
+    def test_did_absorb_rejects_hc2_and_hc2_bm(self):
+        """DifferenceInDifferences with absorb= rejects HC2/HC2+BM.
+
+        Same methodology reason as TWFE: absorb= demeans via within-
+        transformation, and HC2/CR2 leverage corrections depend on the full
+        FE hat matrix rather than the residualized design. The fit must
+        raise with a pointer to vcov_type='hc1' or fixed_effects= dummies.
+        """
+        rng = np.random.default_rng(20260420)
+        n_units, n_time = 30, 3
+        rows = []
+        for i in range(n_units):
+            treated = int(i >= n_units // 2)
+            for t in range(n_time):
+                post = int(t >= 1)
+                y = rng.normal(0.0, 1.0) + 0.5 * treated * post
+                rows.append({"unit": i, "time": t, "treated": treated, "post": post, "y": y})
+        data = pd.DataFrame(rows)
+
+        for bad in ("hc2", "hc2_bm"):
+            with pytest.raises(
+                NotImplementedError,
+                match="DifferenceInDifferences.*absorb.*not yet supported",
+            ):
+                DifferenceInDifferences(vcov_type=bad).fit(
+                    data,
+                    outcome="y",
+                    treatment="treated",
+                    time="post",
+                    absorb=["unit"],
+                )
+
+    def test_did_fixed_effects_dummies_still_accept_hc2_and_hc2_bm(self):
+        """DifferenceInDifferences with fixed_effects= (dummy expansion) is
+        NOT affected by the absorb-FE guard: the dummies appear in the full
+        design matrix, so HC2 leverage is computed on the full projection.
+        """
+        rng = np.random.default_rng(20260420)
+        n_units, n_time = 20, 2
+        rows = []
+        for i in range(n_units):
+            treated = int(i >= n_units // 2)
+            stratum = i // 5  # categorical for fixed_effects= dummies
+            for t in range(n_time):
+                y = rng.normal(0.0, 1.0) + 0.5 * treated * t
+                rows.append(
+                    {
+                        "unit": i,
+                        "time": t,
+                        "treated": treated,
+                        "post": t,
+                        "stratum": stratum,
+                        "y": y,
+                    }
+                )
+        data = pd.DataFrame(rows)
+
+        # Neither call should raise.
+        for good in ("hc2", "hc2_bm"):
+            res = DifferenceInDifferences(vcov_type=good).fit(
+                data,
+                outcome="y",
+                treatment="treated",
+                time="post",
+                fixed_effects=["stratum"],
+            )
+            assert np.isfinite(res.att)
+            assert np.isfinite(res.se)
+
+    def test_multi_period_absorb_rejects_hc2_and_hc2_bm(self):
+        """MultiPeriodDiD with absorb= rejects HC2/HC2+BM for the same
+        methodology reason as the base class."""
+        rng = np.random.default_rng(20260420)
+        n_units, n_time = 30, 4
+        rows = []
+        for i in range(n_units):
+            treated = int(i >= n_units // 2)
+            for t in range(n_time):
+                y = rng.normal(0.0, 1.0) + 0.3 * treated + 0.5 * treated * (t >= 2)
+                rows.append({"unit": i, "time": t, "treated": treated, "y": y})
+        data = pd.DataFrame(rows)
+
+        for bad in ("hc2", "hc2_bm"):
+            with pytest.raises(
+                NotImplementedError,
+                match="MultiPeriodDiD.*absorb.*not yet supported",
+            ):
+                MultiPeriodDiD(vcov_type=bad).fit(
+                    data,
+                    outcome="y",
+                    treatment="treated",
+                    time="time",
+                    absorb=["unit"],
+                    unit="unit",
+                )
 
     def test_summary_suppresses_variance_line_under_wild_bootstrap(self):
         """When inference_method='wild_bootstrap', the Variance label is omitted.
