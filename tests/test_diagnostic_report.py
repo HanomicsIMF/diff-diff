@@ -816,6 +816,75 @@ class TestJointWaldAlignment:
         pt = dr.to_dict()["parallel_trends"]
         assert pt["method"] == "bonferroni"
 
+    def test_joint_wald_uses_F_reference_when_survey_df_is_finite(self):
+        """Round-27 P1 regression: event-study PT on a survey-backed fit
+        must use an F reference distribution with denominator df =
+        ``survey_metadata.df_survey`` rather than the chi-square
+        reference. Chi-square over-rejects under a finite-sample
+        correction; the design-based SE already reflects the effective
+        sample size and the PT test must match.
+        """
+        from types import SimpleNamespace
+
+        from scipy.stats import chi2, f as f_dist
+
+        # Same fixture as ``test_joint_wald_runs_when_keys_align`` but with
+        # a survey_metadata carrying a finite df_survey.
+        pre = [(-3, 1.0, 1.0, 0.32), (-2, 1.0, 1.0, 0.32), (-1, 1.0, 1.0, 0.32)]
+        interaction_indices = {-3: 0, -2: 1, -1: 2, 0: 3}
+        vcov = np.eye(4)
+        stub = self._stub_result(
+            pre,
+            interaction_indices,
+            vcov,
+            survey_metadata=SimpleNamespace(df_survey=20.0),
+        )
+
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+
+        # With beta = [1,1,1] and V = I, the Wald statistic is 3.0.
+        assert pt["status"] == "ran"
+        assert pt["test_statistic"] == pytest.approx(3.0, rel=1e-6)
+        assert pt["df"] == 3
+
+        # Method tag surfaces the survey branch so BR / DR prose can
+        # flag the finite-sample correction. Denominator df is exposed
+        # on the schema for downstream consumers.
+        assert pt["method"].endswith("_survey")
+        assert pt["df_denom"] == pytest.approx(20.0)
+
+        # F statistic = W / k = 3.0 / 3 = 1.0; survey p-value uses
+        # F(3, 20) instead of chi-square(3).
+        expected_p_survey = float(1.0 - f_dist.cdf(1.0, dfn=3, dfd=20.0))
+        expected_p_chi2 = float(1.0 - chi2.cdf(3.0, df=3))
+        assert pt["joint_p_value"] == pytest.approx(expected_p_survey, rel=1e-6)
+        # Chi-square would be noticeably more confident (smaller p) than
+        # F under finite df; confirm the survey path isn't degenerating
+        # back to chi-square.
+        assert expected_p_survey > expected_p_chi2
+
+    def test_joint_wald_ignores_non_finite_survey_df(self):
+        """If ``df_survey`` is NaN / inf / non-positive, fall back to
+        chi-square (no finite-sample correction available).
+        """
+        from types import SimpleNamespace
+
+        pre = [(-3, 1.0, 1.0, 0.32), (-2, 1.0, 1.0, 0.32), (-1, 1.0, 1.0, 0.32)]
+        interaction_indices = {-3: 0, -2: 1, -1: 2, 0: 3}
+        vcov = np.eye(4)
+        stub = self._stub_result(
+            pre,
+            interaction_indices,
+            vcov,
+            survey_metadata=SimpleNamespace(df_survey=float("nan")),
+        )
+        dr = DiagnosticReport(stub, run_sensitivity=False, run_bacon=False)
+        pt = dr.to_dict()["parallel_trends"]
+        # Non-finite df_survey must not taint the method tag.
+        assert not pt["method"].endswith("_survey")
+        assert "df_denom" not in pt
+
 
 class TestNarrowedApplicabilityAndPlaceboSchema:
     """Regressions for the round-3 CI-review findings.

@@ -1012,6 +1012,7 @@ class DiagnosticReport:
                     vcov_method_tag = "joint_wald_event_study"
                 except TypeError:
                     idx_map_for_wald = None
+        df_denom: Optional[float] = None
         if vcov_for_wald is not None and idx_map_for_wald is not None and df > 0:
             try:
                 keys_in_vcov = [k for (k, _, _, _) in pre_coefs if k in idx_map_for_wald]
@@ -1021,11 +1022,42 @@ class DiagnosticReport:
                     beta = np.array([beta_map[k] for k in keys_in_vcov], dtype=float)
                     v_sub = np.asarray(vcov_for_wald)[np.ix_(idx, idx)]
                     stat = float(beta @ np.linalg.solve(v_sub, beta))
-                    from scipy.stats import chi2
 
-                    joint_p = float(1.0 - chi2.cdf(stat, df=df))
-                    test_statistic = stat
-                    method = vcov_method_tag
+                    # Round-27 P1 CI review on PR #318: survey-backed
+                    # fits carry a finite ``df_survey`` on
+                    # ``survey_metadata``; using the chi-square reference
+                    # distribution on those produces overconfident
+                    # p-values because it ignores the finite-sample
+                    # correction the design-based SE already reflects.
+                    # When a finite denominator df is available, compute
+                    # ``F = W / k`` (numerator df = k pre-periods) against
+                    # an F(k, df_survey) reference. Reserve the chi-square
+                    # path for fits with no finite-df information.
+                    sm = getattr(r, "survey_metadata", None)
+                    df_survey_raw = getattr(sm, "df_survey", None) if sm is not None else None
+                    df_survey: Optional[float] = None
+                    if df_survey_raw is not None:
+                        try:
+                            df_survey_val = float(df_survey_raw)
+                            if np.isfinite(df_survey_val) and df_survey_val > 0:
+                                df_survey = df_survey_val
+                        except (TypeError, ValueError):
+                            df_survey = None
+
+                    if df_survey is not None:
+                        from scipy.stats import f as f_dist
+
+                        f_stat = stat / df
+                        joint_p = float(1.0 - f_dist.cdf(f_stat, dfn=df, dfd=df_survey))
+                        test_statistic = stat
+                        method = f"{vcov_method_tag}_survey"
+                        df_denom = df_survey
+                    else:
+                        from scipy.stats import chi2
+
+                        joint_p = float(1.0 - chi2.cdf(stat, df=df))
+                        test_statistic = stat
+                        method = vcov_method_tag
             except Exception:  # noqa: BLE001
                 joint_p = None
                 test_statistic = None
@@ -1046,7 +1078,7 @@ class DiagnosticReport:
             if ps:
                 joint_p = min(1.0, min(ps) * len(ps))
 
-        return {
+        out = {
             "status": "ran",
             "method": method,
             "joint_p_value": joint_p,
@@ -1056,6 +1088,12 @@ class DiagnosticReport:
             "per_period": per_period,
             "verdict": _pt_verdict(joint_p),
         }
+        # Expose the denominator df when the survey F-path was used so
+        # BR / DR prose can flag the finite-sample correction rather than
+        # silently presenting a chi-square-style result.
+        if df_denom is not None:
+            out["df_denom"] = df_denom
+        return out
 
     def _check_pretrends_power(self) -> Dict[str, Any]:
         """Compute pre-trends power (MDV) via ``compute_pretrends_power``.

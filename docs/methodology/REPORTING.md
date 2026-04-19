@@ -69,6 +69,20 @@ not new inference.
   Wald statistic (or Bonferroni fallback when `vcov` is missing). This
   mirrors the guidance in `practitioner._parallel_trends_step(staggered=True)`.
 
+- **Note:** Survey finite-df PT policy. When the fitted result carries
+  a finite `survey_metadata.df_survey`, `_pt_event_study` computes
+  `F = W / k` (numerator df = k pre-period coefficients) against an
+  F(k, df_survey) reference distribution rather than chi-square(k).
+  The design-based SE already reflects the effective sample size, so
+  the chi-square reference would systematically over-reject under the
+  finite-sample correction the SE captures. The schema surfaces the
+  survey branch via the `method` suffix `_survey`
+  (e.g., `joint_wald_survey`, `joint_wald_event_study_survey`) and
+  exposes the denominator df as `df_denom`, so BR / DR prose can flag
+  the finite-sample correction rather than silently presenting a
+  chi-square-style result. Non-finite `df_survey` (NaN / inf /
+  non-positive) falls back to the chi-square path.
+
 - **Note:** Estimator-native validation surfaces are surfaced rather
   than duplicated. `SyntheticDiDResults` routes parallel-trends to
   `pre_treatment_fit` (the RMSE of the synthetic-control fit on the
