@@ -371,6 +371,15 @@ def lprobust_bw(
     ``(V, B1, B2, R, bw)``. Called four times from ``lpbwselect_mse_dpi``.
 
     Parameters match the R signature argument-for-argument.
+
+    Raises
+    ------
+    ValueError
+        If any of the three local-polynomial fits has fewer in-window
+        observations than its required column count. Catches opaque
+        ``LinAlgError`` failures from downstream Cholesky inversion in
+        tiny-sample or mispositioned-boundary settings and surfaces a
+        targeted error naming the failing stage.
     """
     N = X.shape[0]
     eC: Optional[np.ndarray] = None
@@ -383,6 +392,14 @@ def lprobust_bw(
     eX = X[ind_V]
     eW = w[ind_V]
     n_V = int(np.sum(ind_V))
+    if n_V < o + 1:
+        raise ValueError(
+            f"lprobust_bw: variance stage has n_V={n_V} in-window "
+            f"observations at h_V={h_V:.6g} (boundary={c}, kernel={kernel!r}), "
+            f"but needs at least o+1={o + 1}. Increase sample size, choose "
+            f"a valid lower boundary with sufficient data to the right, "
+            f"or disable bwcheck=None-driven narrow windows."
+        )
     # Design matrix R.V in R; rename to R_V to avoid Python builtin conflict.
     R_V = np.empty((n_V, o + 1), dtype=np.float64)
     for j in range(o + 1):
@@ -443,6 +460,13 @@ def lprobust_bw(
     eX1 = X[ind1]
     eW1 = w1[ind1]
     n_B1 = int(np.sum(ind1))
+    if n_B1 < o_B + 1:
+        raise ValueError(
+            f"lprobust_bw: B1 stage has n_B1={n_B1} in-window observations "
+            f"at h_B1={h_B1:.6g} (boundary={c}, kernel={kernel!r}), but "
+            f"needs at least o_B+1={o_B + 1}. Increase sample size or "
+            f"widen the pilot bandwidth."
+        )
     R_B1 = np.empty((n_B1, o_B + 1), dtype=np.float64)
     for j in range(o_B + 1):
         R_B1[:, j] = (eX1 - c) ** j
@@ -493,6 +517,13 @@ def lprobust_bw(
     eX2 = X[ind2]
     eW2 = w2[ind2]
     n_B2 = int(np.sum(ind2))
+    if n_B2 < o_B + 2:
+        raise ValueError(
+            f"lprobust_bw: B2 stage has n_B2={n_B2} in-window observations "
+            f"at h_B2={h_B2:.6g} (boundary={c}, kernel={kernel!r}), but "
+            f"needs at least o_B+2={o_B + 2}. Increase sample size or "
+            f"widen the pilot bandwidth."
+        )
     R_B2 = np.empty((n_B2, o_B + 2), dtype=np.float64)
     for j in range(o_B + 2):
         R_B2[:, j] = (eX2 - c) ** j

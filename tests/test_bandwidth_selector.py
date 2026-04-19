@@ -253,24 +253,55 @@ class TestInputValidation:
         assert via_wrapper.b_mse == via_port_nn.b_mse_dpi
         assert via_wrapper.c_bw == via_port_nn.c_bw
 
-    def test_bwcheck_none_on_tiny_sample_does_not_index_error(self):
-        """bwcheck=None should skip the NN floor.
-
-        The selector may still fail inside lprobust.bw on very small
-        samples (rank-deficient design), but any failure must be a
-        linear-algebra error, not an indexing crash in the bwcheck
-        clipping logic.
-        """
+    def test_bwcheck_none_on_tiny_sample_raises_valueerror(self):
+        """bwcheck=None on a tiny sample must raise a clear ValueError
+        from the per-stage support/rank guard in lprobust_bw, NOT an
+        opaque LinAlgError or IndexError."""
         from diff_diff._nprobust_port import lpbwselect_mse_dpi
 
         d = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
         y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        try:
+        with pytest.raises(ValueError, match="lprobust_bw"):
             lpbwselect_mse_dpi(y, d, eval_point=0.0, bwcheck=None)
-        except IndexError as exc:  # pragma: no cover - regression sentinel
-            pytest.fail(f"Unexpected IndexError from bwcheck path: {exc}")
-        except Exception:
-            pass
+
+    def test_interior_boundary_rejected(self):
+        """boundary strictly inside the support must be rejected by
+        the Phase 1b wrapper. Running the boundary selector at an
+        interior point would silently use a symmetric kernel and
+        produce a bandwidth incompatible with the one-sided fitter."""
+        rng = np.random.default_rng(2026)
+        d = rng.uniform(0.0, 1.0, size=500)
+        y = d + d**2 + rng.normal(0, 0.5, size=500)
+        with pytest.raises(ValueError, match="boundary"):
+            mse_optimal_bandwidth(d, y, boundary=0.5)
+
+    def test_upper_boundary_rejected(self):
+        """boundary at d.max() (upper support edge) must be rejected."""
+        rng = np.random.default_rng(2026)
+        d = rng.uniform(0.0, 1.0, size=500)
+        y = d + d**2 + rng.normal(0, 0.5, size=500)
+        with pytest.raises(ValueError, match="boundary"):
+            mse_optimal_bandwidth(d, y, boundary=float(d.max()))
+
+    def test_boundary_equal_to_min_d_accepted(self):
+        """Design 1 continuous-near-d_lower uses boundary = min(d)
+        exactly; this must pass the applicability check."""
+        rng = np.random.default_rng(20260419)
+        d = rng.uniform(1.0, 2.0, size=1500)
+        y = 3.0 + 0.5 * (d - 1.0) ** 2 + rng.normal(0, 0.3, size=1500)
+        h = mse_optimal_bandwidth(d, y, boundary=float(d.min()))
+        assert np.isfinite(h)
+        assert h > 0.0
+
+    def test_boundary_below_min_d_accepted(self):
+        """Design 1' uses boundary = 0 when all D_2 > 0; boundary
+        below d.min() must pass."""
+        rng = np.random.default_rng(20260419)
+        d = rng.uniform(0.01, 1.0, size=1500)  # d.min() > 0
+        y = d + d**2 + rng.normal(0, 0.5, size=1500)
+        h = mse_optimal_bandwidth(d, y, boundary=0.0)
+        assert np.isfinite(h)
+        assert h > 0.0
 
 
 class TestKernelDispatch:

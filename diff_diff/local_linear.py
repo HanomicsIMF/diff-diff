@@ -13,11 +13,13 @@ Ships the foundational RDD infrastructure that downstream estimators compose:
   the conditional mean ``m(d0) := E[Y | D = d0]`` at the boundary of ``D``'s
   support via kernel-weighted OLS.
 
-This module is used by future :class:`HeterogeneousAdoptionDiD` phases:
+This module is used by the :class:`HeterogeneousAdoptionDiD` phases:
 
 - Phase 1a ships the kernels and fitter (this module).
-- Phase 1b will add an MSE-optimal bandwidth selector (Calonico-Cattaneo-Farrell
-  2018) built on top of the fitter.
+- Phase 1b ships the MSE-optimal bandwidth selector
+  ``mse_optimal_bandwidth`` / ``BandwidthResult`` (this module), a thin
+  wrapper over the Calonico-Cattaneo-Farrell (2018) plug-in selector
+  ported in ``diff_diff/_nprobust_port.py``.
 - Phase 1c will add the bias-corrected confidence interval per Equation 8 of
   de Chaisemartin, Ciccia, D'Haultfoeuille & Knau (2026, arXiv:2405.04465v6).
 
@@ -602,6 +604,34 @@ def mse_optimal_bandwidth(
         raise ValueError("y contains non-finite values (NaN or Inf)")
     if not np.isfinite(boundary):
         raise ValueError(f"boundary must be finite; got {boundary}")
+
+    # Boundary-applicability check (Phase 1b scope).
+    # The exported wrapper is scoped to the HAD LOWER-boundary case:
+    #   - Design 1' (d_0 = 0 with support infimum at 0), or
+    #   - Design 1 continuous-near-d_lower (d_0 = d_lower = min(D_2)).
+    # In both cases ``boundary`` must lie at or below the sample minimum:
+    # no observation should fall to the left of the evaluation point,
+    # because the downstream ``local_linear_fit`` uses a one-sided kernel
+    # restricted to ``d >= d_0``. An interior or upper-boundary
+    # evaluation would silently run the boundary selector branch with a
+    # symmetric kernel (see port's ``kernel_W``) and produce a bandwidth
+    # incompatible with the fitter. Reject those inputs here until an
+    # interior-point API is documented (Phase 2+).
+    d_min = float(d.min())
+    # Allow a small numerical tolerance so boundary = min(d) passes even
+    # under floating-point noise (e.g. ``d.min()`` equals ``boundary``
+    # within 1e-12 but not bit-exact).
+    _boundary_tol = 1e-12 * max(1.0, abs(d_min), abs(boundary))
+    if boundary > d_min + _boundary_tol:
+        raise ValueError(
+            f"boundary={boundary!r} exceeds the sample minimum "
+            f"d.min()={d_min!r}. The Phase 1b wrapper is scoped to the "
+            f"HAD lower-boundary case (d_0 <= min(d)). For interior or "
+            f"upper-boundary evaluation, use "
+            f"diff_diff._nprobust_port.lpbwselect_mse_dpi directly with "
+            f"interior=True; note that the non-boundary branches are not "
+            f"separately parity-tested against nprobust."
+        )
 
     # Defer heavy import to call time to avoid import-cycle risk.
     from diff_diff._nprobust_port import lpbwselect_mse_dpi
