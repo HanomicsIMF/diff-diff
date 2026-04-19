@@ -252,12 +252,18 @@ class TestCallawaySantAnnaSEAccuracy:
         assert se_diff_pct < 0.01, \
             f"SE differs from R by {se_diff_pct:.4f}%, expected <0.01%"
 
+    @pytest.mark.slow
     def test_timing_performance(self, cs_results):
         """
         Ensure estimation timing doesn't regress.
 
         Baseline: ~0.005s for 200 units x 8 periods (small scale)
-        Threshold: <0.1s (20x margin for CI variance)
+        Threshold: <0.1s.
+
+        Excluded from default CI via ``@pytest.mark.slow`` — wall-clock time
+        on shared runners is noisy (BLAS path variation, neighbor VM
+        contention, cold caches) and produces false positives. Run locally
+        with ``pytest -m slow`` for ad-hoc performance sanity checks.
         """
         _, elapsed = cs_results
 
@@ -398,8 +404,15 @@ class TestSEFormulaComparison:
             f"Python SE {se_py:.4f} doesn't match standard {se_standard:.4f}"
 
 
+@pytest.mark.slow
 class TestPerformanceRegression:
-    """Tests to prevent performance regression."""
+    """Tests to prevent performance regression.
+
+    Excluded from default CI via ``@pytest.mark.slow`` — wall-clock time on
+    shared runners is noisy (BLAS path variation, neighbor VM contention,
+    cold caches) and produces false positives. Run locally with
+    ``pytest -m slow`` for ad-hoc performance sanity checks.
+    """
 
     @pytest.mark.parametrize("n_units,max_time", [
         (100, 0.15),   # Small: <150ms (CI runners need headroom)
