@@ -1576,6 +1576,13 @@ class DiagnosticReport:
         # exclude entries with non-finite effect.
         es = getattr(r, "event_study_effects", None)
         if es is not None:
+            # Anticipation-aware post-treatment cutoff: include horizons
+            # from the anticipation window onward (where treatment-
+            # affected effects can live) per REGISTRY.md §CallawaySantAnna
+            # lines 355-395; round-15 CI review flagged the prior
+            # ``rel >= 0`` rule as excluding anticipation-window effects
+            # from the heterogeneity dispersion summary.
+            post_cutoff = _pre_post_boundary(r)
             post_only: List[float] = []
             try:
                 items = list(es.items())
@@ -1588,7 +1595,7 @@ class DiagnosticReport:
                     # Non-integer keys — unknown shape; skip conservatively
                     # rather than mixing into the dispersion summary.
                     continue
-                if rel < 0:
+                if rel < post_cutoff:
                     continue
                 if isinstance(entry, dict):
                     if entry.get("n_groups") == 0 or entry.get("n_obs") == 0:
@@ -1637,7 +1644,16 @@ class DiagnosticReport:
                     try:
                         g_num = float(g_t[0])
                         t_num = float(g_t[1])
-                        if t_num < g_num:
+                        # Anticipation-aware post cutoff for (g, t) cells:
+                        # a fit with ``anticipation=k`` treats cells with
+                        # ``t >= g - k`` as treatment-affected (the
+                        # anticipation window is post-announcement).
+                        anticipation = getattr(r, "anticipation", 0) or 0
+                        try:
+                            anticipation = int(anticipation)
+                        except (TypeError, ValueError):
+                            anticipation = 0
+                        if t_num < g_num - anticipation:
                             continue
                     except (TypeError, ValueError):
                         pass
@@ -2015,6 +2031,38 @@ def _power_tier(ratio: Optional[float]) -> str:
     return "underpowered"
 
 
+def _pre_post_boundary(results: Any) -> int:
+    """Return the relative-time cutoff that separates true pre-period
+    horizons from treatment (and post-treatment) horizons.
+
+    Horizons ``rel < _pre_post_boundary(results)`` are true pre-period
+    coefficients suitable for PT tests and pre-trends power. Horizons
+    ``rel >= _pre_post_boundary(results)`` include the anticipation
+    window and post-treatment effects — these are the "affected by
+    treatment (or anticipated treatment)" horizons, and are what
+    heterogeneity dispersion should summarize.
+
+    For anticipation-aware staggered estimators (CS, SA, EfficientDiD,
+    etc., per REGISTRY.md §CallawaySantAnna lines 355-395), a fit with
+    ``anticipation=k`` moves the identification boundary to
+    ``e = -1 - k`` and treats ``e ∈ [-k, -1]`` as the anticipation
+    window. True pre-periods are ``e < -k``. Returns ``-anticipation``
+    (non-positive integer) in that case, falling back to ``0`` (the
+    standard ``e < 0`` boundary) when no anticipation field is exposed.
+
+    Round-15 CI review on PR #318 flagged the hard-coded ``rel < 0``
+    rule as a methodology mismatch on anticipation fits.
+    """
+    anticipation = getattr(results, "anticipation", 0)
+    try:
+        k = int(anticipation)
+    except (TypeError, ValueError):
+        return 0
+    if not np.isfinite(k) or k < 0:
+        return 0
+    return -k
+
+
 def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Optional[float]]]:
     """Return a sorted list of ``(key, effect, se, p_value)`` for pre-period coefficients.
 
@@ -2085,6 +2133,11 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
                 continue
             results_list.append((k, eff_f, se_f, _to_python_float(p)))
     else:
+        # Anticipation-aware cutoff: for CS/SA/EfficientDiD fits with
+        # ``anticipation=k``, treat horizons ``e ∈ [-k, -1]`` as the
+        # anticipation window (not true pre-periods) and only use
+        # ``e < -k`` for PT tests.
+        pre_cutoff = _pre_post_boundary(results)
         es = getattr(results, "event_study_effects", None) or {}
         for k, entry in es.items():
             # Pre-period relative-time keys are negative (convention: e=-1, -2, ...).
@@ -2092,7 +2145,7 @@ def _collect_pre_period_coefs(results: Any) -> List[Tuple[Any, float, float, Opt
                 rel = int(k)
             except (TypeError, ValueError):
                 continue
-            if rel >= 0:
+            if rel >= pre_cutoff:
                 continue
             if not isinstance(entry, dict):
                 continue

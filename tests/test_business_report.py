@@ -1100,6 +1100,81 @@ class TestHausmanPretestPropagatesCluster:
         ), f"cluster column must propagate from fit to Hausman pretest; got {captured}"
 
 
+class TestAnticipationAwareHorizonClassification:
+    """Round-15 P1 regression: on anticipation-aware fits (CS / SA /
+    EfficientDiD with ``anticipation > 0``), the report layer must
+    classify horizons using the shifted boundary:
+
+    - True pre-periods (PT + pre-trends power): ``rel < -anticipation``.
+    - Treatment-affected horizons (heterogeneity dispersion):
+      ``rel >= -anticipation`` (anticipation window is post-announcement).
+
+    Prior code hard-coded ``rel < 0`` / ``rel >= 0`` and could include
+    anticipation-window coefficients as "pre" in PT / power while
+    excluding them as "post" in heterogeneity. REGISTRY.md
+    §CallawaySantAnna lines 355-395 documents the shifted-boundary rule.
+    """
+
+    def _cs_stub_with_anticipation(self, *, anticipation: int = 1):
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        stub.n_treated = 40
+        stub.n_control = 60
+        stub.survey_metadata = None
+        stub.base_period = "universal"
+        stub.anticipation = anticipation
+        stub.event_study_effects = {
+            -3: {"effect": -0.05, "se": 0.1, "p_value": 0.62, "n_groups": 15},
+            -2: {"effect": 0.04, "se": 0.1, "p_value": 0.69, "n_groups": 15},
+            -1: {"effect": 0.80, "se": 0.1, "p_value": 0.01, "n_groups": 15},
+            0: {"effect": 1.00, "se": 0.1, "p_value": 0.001, "n_groups": 15},
+            1: {"effect": 1.20, "se": 0.1, "p_value": 0.001, "n_groups": 12},
+            2: {"effect": 1.40, "se": 0.1, "p_value": 0.001, "n_groups": 10},
+        }
+        return stub
+
+    def test_pre_period_collector_excludes_anticipation_window(self):
+        from diff_diff.diagnostic_report import _collect_pre_period_coefs
+
+        stub = self._cs_stub_with_anticipation(anticipation=1)
+        pre = _collect_pre_period_coefs(stub)
+        keys = sorted(row[0] for row in pre)
+        # Anticipation window (rel=-1) must be excluded; only -3, -2 remain.
+        assert keys == [-3, -2], (
+            f"pre-period collector must exclude the anticipation " f"window; got {keys}"
+        )
+
+    def test_heterogeneity_includes_anticipation_window(self):
+        from diff_diff import DiagnosticReport
+
+        stub = self._cs_stub_with_anticipation(anticipation=1)
+        dr = DiagnosticReport(stub)
+        effects = sorted(dr._collect_effect_scalars())
+        # rel ∈ {-1, 0, 1, 2} → {0.80, 1.00, 1.20, 1.40}.
+        assert effects == pytest.approx([0.80, 1.00, 1.20, 1.40])
+
+    def test_anticipation_zero_preserves_old_behavior(self):
+        from diff_diff import DiagnosticReport
+        from diff_diff.diagnostic_report import _collect_pre_period_coefs
+
+        stub = self._cs_stub_with_anticipation(anticipation=0)
+        pre = _collect_pre_period_coefs(stub)
+        assert sorted(row[0] for row in pre) == [-3, -2, -1]
+
+        dr = DiagnosticReport(stub)
+        effects = sorted(dr._collect_effect_scalars())
+        # Only non-negative horizons: 1.00, 1.20, 1.40.
+        assert effects == pytest.approx([1.00, 1.20, 1.40])
+
+
 class TestDiagFallbackDowngradeAppliedCentrally:
     """Round-14 regression: when ``compute_pretrends_power`` fell back to
     a diagonal-SE approximation while the full ``event_study_vcov`` was

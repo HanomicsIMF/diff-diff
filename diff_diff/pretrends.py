@@ -613,12 +613,25 @@ class PreTrendsPower:
                         "Re-run with aggregate='event_study'."
                     )
 
-                # Get pre-period effects (negative relative times)
-                # Filter out normalization constraints (n_groups=0) and non-finite SEs
+                # Get pre-period effects. Anticipation-aware cutoff per
+                # REGISTRY.md §CallawaySantAnna lines 355-395: with
+                # ``anticipation=k``, true pre-periods are ``t < -k``;
+                # ``t ∈ [-k, -1]`` is the anticipation window and must
+                # not be used for pre-trends power. Filter out
+                # normalization constraints (n_groups=0) and non-finite
+                # SEs as well.
+                _ant = getattr(results, "anticipation", 0) or 0
+                try:
+                    _ant = int(_ant)
+                except (TypeError, ValueError):
+                    _ant = 0
+                _pre_cutoff = -_ant
                 pre_effects = {
                     t: data
                     for t, data in results.event_study_effects.items()
-                    if t < 0 and data.get("n_groups", 1) > 0 and np.isfinite(data.get("se", np.nan))
+                    if t < _pre_cutoff
+                    and data.get("n_groups", 1) > 0
+                    and np.isfinite(data.get("se", np.nan))
                 }
 
                 if not pre_effects:
@@ -640,12 +653,20 @@ class PreTrendsPower:
             from diff_diff.sun_abraham import SunAbrahamResults
 
             if isinstance(results, SunAbrahamResults):
-                # Get pre-period effects (negative relative times)
-                # Filter out normalization constraints (n_groups=0) and non-finite SEs
+                # Same anticipation-aware pre-period cutoff as
+                # CallawaySantAnna above.
+                _ant = getattr(results, "anticipation", 0) or 0
+                try:
+                    _ant = int(_ant)
+                except (TypeError, ValueError):
+                    _ant = 0
+                _pre_cutoff = -_ant
                 pre_effects = {
                     t: data
                     for t, data in results.event_study_effects.items()
-                    if t < 0 and data.get("n_groups", 1) > 0 and np.isfinite(data.get("se", np.nan))
+                    if t < _pre_cutoff
+                    and data.get("n_groups", 1) > 0
+                    and np.isfinite(data.get("se", np.nan))
                 }
 
                 if not pre_effects:
