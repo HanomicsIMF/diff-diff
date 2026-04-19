@@ -346,6 +346,37 @@ class DiagnosticReport:
                 "``heterogeneity``, and ``epv`` are read directly from the "
                 "fitted result and do not accept precomputed overrides."
             )
+
+        # Estimator-aware precomputed validation. SDiD / TROP route
+        # robustness to ``estimator_native_diagnostics`` (SDiD: weighted
+        # pre-treatment fit, in-time placebo, zeta-omega sensitivity;
+        # TROP: factor-model fit metrics), and TROP PT is not applicable
+        # (factor-model identification, not PT). Accepting generic
+        # HonestDiD / parallel-trends precomputed inputs on these
+        # estimators would surface methodology-incompatible diagnostics
+        # through the generic report sections — the opposite of the
+        # native-routing contract documented in REPORTING.md.
+        # Round-21 P1 CI review on PR #318 flagged this bypass.
+        _result_name = type(self._results).__name__
+        _native_routed_names = {"SyntheticDiDResults", "TROPResults"}
+        if _result_name in _native_routed_names:
+            _incompatible_keys = []
+            if "sensitivity" in self._precomputed:
+                _incompatible_keys.append("sensitivity")
+            if "parallel_trends" in self._precomputed:
+                _incompatible_keys.append("parallel_trends")
+            if _incompatible_keys:
+                raise ValueError(
+                    f"{_result_name} routes robustness and pre-trends "
+                    "diagnostics to ``estimator_native_diagnostics`` — "
+                    "generic HonestDiD and parallel-trends precomputed "
+                    "passthroughs are methodology-incompatible with this "
+                    f"estimator. Rejected precomputed keys: {sorted(_incompatible_keys)}. "
+                    "Use the native diagnostics on the result object "
+                    "(SDiD: ``in_time_placebo``, ``sensitivity_to_zeta_omega``, "
+                    "``pre_treatment_fit``; TROP: ``effective_rank``, "
+                    "``loocv_score``) — DR surfaces these automatically."
+                )
         self._outcome_label = outcome_label
         self._treatment_label = treatment_label
         self._cached: Optional[DiagnosticReportResults] = None
@@ -1258,7 +1289,15 @@ class DiagnosticReport:
         }
 
     def _format_precomputed_sensitivity(self, obj: Any) -> Dict[str, Any]:
-        """Accept either ``SensitivityResults`` (grid) or ``HonestDiDResults`` (single M)."""
+        """Accept either ``SensitivityResults`` (grid) or ``HonestDiDResults`` (single M).
+
+        The single-M branch preserves ``original_estimate`` and
+        ``original_se`` for parity with the grid branch — both
+        ``SensitivityResults`` and ``HonestDiDResults`` carry these fields,
+        and downstream tooling that reads the schema should see a
+        consistent shape regardless of which object was passed. (The
+        grid path surfaces them via ``_format_sensitivity_results``.)
+        """
         if hasattr(obj, "M_values") and hasattr(obj, "breakdown_M"):
             formatted = self._format_sensitivity_results(obj)
             formatted["precomputed"] = True
@@ -1282,6 +1321,8 @@ class DiagnosticReport:
                 }
             ],
             "breakdown_M": None,
+            "original_estimate": _to_python_float(getattr(obj, "original_estimate", None)),
+            "original_se": _to_python_float(getattr(obj, "original_se", None)),
             "conclusion": "single_M_precomputed",
             "precomputed": True,
         }

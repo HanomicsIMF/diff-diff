@@ -412,6 +412,41 @@ class TestPrecomputed:
         # Downgrade must apply: pre-tier is well_powered, post-tier is moderately_powered.
         assert block["tier"] == "moderately_powered"
 
+    def test_precomputed_single_m_sensitivity_exposes_original_estimate_and_se(self, cs_fit):
+        """Pre-emptive audit regression: ``_format_precomputed_sensitivity``
+        used to drop ``original_estimate`` and ``original_se`` on the
+        single-M ``HonestDiDResults`` branch, even though both
+        ``SensitivityResults`` and ``HonestDiDResults`` carry those fields.
+        The grid branch surfaces them via ``_format_sensitivity_results``,
+        so dropping them on the single-M branch made the schema shape
+        dependent on which object type the user passed. Parity fix: the
+        single-M branch now carries the same fields.
+        """
+        from types import SimpleNamespace
+
+        fit, _ = cs_fit
+        single_m = SimpleNamespace(
+            lb=0.3,
+            ub=1.8,
+            ci_lb=0.15,
+            ci_ub=1.95,
+            M=1.0,
+            method="relative_magnitude",
+            original_estimate=1.05,
+            original_se=0.22,
+            alpha=0.05,
+        )
+
+        block = DiagnosticReport(
+            fit, precomputed={"sensitivity": single_m}
+        ).to_dict()["sensitivity"]
+        assert block["status"] == "ran"
+        assert block["conclusion"] == "single_M_precomputed"
+        # Parity with the grid branch: these fields must be present and
+        # reflect the passed object's values.
+        assert block["original_estimate"] == 1.05
+        assert block["original_se"] == 0.22
+
 
 # ---------------------------------------------------------------------------
 # Verdict / tier helpers

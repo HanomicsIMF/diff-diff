@@ -388,7 +388,12 @@ def _handle_sa(results: Any):
                 "# sa_alt = SunAbraham(control_group='not_yet_treated')"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # DR's sensitivity section runs HonestDiD, not specification
+            # variation; tagging this as ``sensitivity`` caused
+            # ``_collect_next_steps`` to suppress it after HonestDiD ran.
+            # Use ``specification_comparison`` so the recommendation
+            # persists alongside a completed HonestDiD sensitivity check.
+            step_name="specification_comparison",
         ),
         _step(
             baker_step=7,
@@ -431,7 +436,10 @@ def _handle_imputation(results: Any):
                 "# Leave-one-cohort-out sensitivity analysis"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # See note on SA handler: DR completes ``sensitivity`` when
+            # HonestDiD runs, which is unrelated to this specification-
+            # variation recommendation. Tag separately.
+            step_name="specification_comparison",
         ),
         _robustness_compare_step("CS, SA, or Gardner"),
         _covariates_step(),
@@ -457,7 +465,10 @@ def _handle_two_stage(results: Any):
                 "# Leave-one-cohort-out sensitivity analysis"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # See note on SA handler: DR completes ``sensitivity`` when
+            # HonestDiD runs, which is unrelated to this specification-
+            # variation recommendation. Tag separately.
+            step_name="specification_comparison",
         ),
         _robustness_compare_step("CS, BJS, or SA"),
         _covariates_step(),
@@ -482,7 +493,10 @@ def _handle_stacked(results: Any):
                 "# stacked_alt = StackedDiD(clean_control='not_yet_treated')"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # See note on SA handler: DR completes ``sensitivity`` when
+            # HonestDiD runs, which does not replay ``clean_control``
+            # variation. Tag separately.
+            step_name="specification_comparison",
         ),
         _step(
             baker_step=7,
@@ -624,7 +638,12 @@ def _handle_trop(results: Any):
                 "# Leave-one-out: drop each treated unit and re-estimate"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # TROP's estimator-native diagnostics surface factor-model fit
+            # metrics, not in-time or in-space placebos; DR does not run
+            # placebos on TROP. Tag separately from ``sensitivity`` so the
+            # recommendation persists after DR marks the TROP native
+            # battery complete.
+            step_name="placebo",
         ),
         _robustness_compare_step("SyntheticDiD or CS"),
     ]
@@ -648,7 +667,12 @@ def _handle_efficient(results: Any):
                 "# edid_alt = EfficientDiD(control_group='last_cohort')"
             ),
             priority="medium",
-            step_name="sensitivity",
+            # See note on SA handler: DR completes ``sensitivity`` when
+            # HonestDiD runs, which does not re-estimate with an
+            # alternative control_group. Tag separately so this
+            # recommendation persists alongside a completed HonestDiD
+            # block.
+            step_name="specification_comparison",
         ),
         _step(
             baker_step=7,

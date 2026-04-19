@@ -160,6 +160,33 @@ class BusinessReport:
                 f"got {type(diagnostics).__name__}."
             )
 
+        # Estimator-aware validation for ``honest_did_results``. SDiD /
+        # TROP route robustness to ``estimator_native_diagnostics``
+        # (SDiD: ``in_time_placebo``, ``sensitivity_to_zeta_omega``;
+        # TROP: factor-model fit metrics) and do not accept HonestDiD
+        # bounds because they are methodology-incompatible with the
+        # documented native-routing contract in REPORTING.md. Reject
+        # the passthrough here so it doesn't silently forward to the
+        # auto-constructed ``DiagnosticReport`` (which now also
+        # rejects it at construction time — round-21 P1 CI review on
+        # PR #318).
+        if honest_did_results is not None and type(results).__name__ in {
+            "SyntheticDiDResults",
+            "TROPResults",
+        }:
+            raise ValueError(
+                f"{type(results).__name__} routes robustness to "
+                "``estimator_native_diagnostics`` — ``honest_did_results`` "
+                "is not accepted on this estimator because HonestDiD "
+                "bounds are methodology-incompatible with the native "
+                "routing documented in REPORTING.md. Use the result "
+                "object's native diagnostics "
+                "(SDiD: ``in_time_placebo()``, ``sensitivity_to_zeta_omega()``, "
+                "``pre_treatment_fit``; TROP: ``effective_rank``, "
+                "``loocv_score``) — BusinessReport surfaces these "
+                "automatically under ``estimator_native_diagnostics``."
+            )
+
         self._results = results
         self._honest_did_results = honest_did_results
         self._auto_diagnostics = auto_diagnostics
@@ -491,7 +518,7 @@ class BusinessReport:
         # (StaggeredTripleDiff) as the same dynamic mode.
         #
         # Per-estimator fixed-subset field:
-        #   * CS / SA / Imputation / TwoStage / Stacked / EfficientDiD /
+        #   * CS / SA / Imputation / TwoStage / EfficientDiD /
         #     dCDH / ContinuousDiD — ``n_control_units`` is the
         #     never-treated tally; surface as ``n_never_treated``.
         #   * StaggeredTripleDiff — ``n_control_units`` is a composite
@@ -501,6 +528,15 @@ class BusinessReport:
         #     comparisons (never-treated + future-treated) and does not
         #     map to a never-treated count. Keep on the fixed-count
         #     path even in dynamic mode.
+        #   * Stacked — ``n_control_units`` is "distinct control units
+        #     across the trimmed set" (stacked_did_results.py L59-62).
+        #     Under ``clean_control="not_yet_treated"``, the trimmed
+        #     set uses the rule ``A_s > a + kappa_post`` which admits
+        #     future-treated controls; it is NOT a never-treated tally
+        #     and cannot be relabeled as ``n_never_treated``. Keep
+        #     Stacked on the fixed-count path (round-21 P1 CI review
+        #     on PR #318 flagged the earlier relabeling as a
+        #     semantic-contract violation).
         control_group = _control_group_choice(r)
         name = type(r).__name__
         n_never_treated: Optional[int] = None
@@ -511,7 +547,6 @@ class BusinessReport:
             "SunAbrahamResults",
             "ImputationDiDResults",
             "TwoStageDiDResults",
-            "StackedDiDResults",
             "EfficientDiDResults",
             "ChaisemartinDHaultfoeuilleResults",
             "ContinuousDiDResults",
@@ -638,9 +673,18 @@ def _lift_sensitivity(dr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return {"status": "skipped", "reason": "auto_diagnostics=False"}
     sens = dr.get("sensitivity") or {}
     if sens.get("status") != "ran":
+        # Preserve ``method`` through to the BR schema so downstream
+        # consumers can distinguish a native-routed skip
+        # (``method="estimator_native"`` for SDiD / TROP, where
+        # robustness is covered by the native battery) from a
+        # methodology-blocked skip (e.g., CS with
+        # ``base_period='varying'``). Without it, agents reading the BR
+        # schema alone cannot tell these cases apart and would have to
+        # re-consult the DR schema to disambiguate.
         return {
             "status": sens.get("status", "not_run"),
             "reason": sens.get("reason"),
+            "method": sens.get("method"),
         }
     return {
         "status": "computed",

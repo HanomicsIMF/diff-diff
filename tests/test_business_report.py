@@ -1185,16 +1185,22 @@ class TestAnticipationPersistsOnRealResults:
 class TestStackedCleanControlSurfacesInSampleBlock:
     """Pre-emptive audit regression: ``StackedDiD`` exposes its control-
     group choice as ``clean_control`` (the public Wing-Freedman-
-    Hollingsworth-2024 kwarg name), not ``control_group``. The business-
-    report sample-block treatment for ``"not_yet_treated"`` (dynamic
-    control comparison) must still fire — otherwise a Stacked fit with
-    ``clean_control="not_yet_treated"`` surfaces as ``control_group=None``
-    with ``dynamic_control=False``, which misreports the sample semantics
-    the same way R17/R18 flagged for EfficientDiD's ``control_group``
-    handling.
+    Hollingsworth-2024 kwarg name), not ``control_group``. The BR sample
+    block must normalize the key so downstream agents see a consistent
+    ``control_group`` field across estimators.
+
+    ``n_control_units`` on ``StackedDiDResults`` is documented as
+    "distinct control units across the trimmed set" (stacked_did_results
+    L59-62). Under ``clean_control="not_yet_treated"`` the trimmed set
+    admits future-treated controls by construction, so the count is
+    NOT a never-treated tally and must not be relabeled as
+    ``n_never_treated`` — round-21 P1 CI review on PR #318 flagged the
+    prior relabeling as a semantic-contract violation because it can
+    fabricate never-treated support that does not exist (e.g., in an
+    all-eventually-treated panel).
     """
 
-    def test_stacked_not_yet_treated_surfaces_as_dynamic_control(self):
+    def test_stacked_not_yet_treated_surfaces_without_never_treated_relabel(self):
         from diff_diff import StackedDiD
 
         sdf = generate_staggered_data(n_units=80, n_periods=8, treatment_effect=1.5, seed=7)
@@ -1203,16 +1209,19 @@ class TestStackedCleanControlSurfacesInSampleBlock:
         )
         assert getattr(st, "clean_control", None) == "not_yet_treated"
         sample = BusinessReport(st, auto_diagnostics=False).to_dict()["sample"]
-        # The clean_control choice must be normalized to control_group in
-        # the schema so downstream agents see a consistent key across
-        # estimators.
+        # clean_control normalizes into control_group.
         assert sample["control_group"] == "not_yet_treated"
         assert sample["dynamic_control"] is True
-        # Under the dynamic-control branch, the fixed tally is relabeled:
-        # n_never_treated carries the fixed never-treated subset and
-        # n_control is set to None.
-        assert sample["n_never_treated"] is not None
-        assert sample["n_control"] is None
+        # n_control_units is "distinct control units in the trimmed set";
+        # that count includes future-treated controls and must not be
+        # relabeled as n_never_treated.
+        assert sample["n_never_treated"] is None, (
+            "StackedDiDResults.n_control_units is the distinct-control-"
+            "units tally of the trimmed set (includes future-treated "
+            "controls); it must not be surfaced as n_never_treated."
+        )
+        # The count stays on the n_control path.
+        assert sample["n_control"] == int(st.n_control_units)
 
     def test_stacked_never_treated_surfaces_as_fixed_control(self):
         from diff_diff import StackedDiD
@@ -1224,6 +1233,40 @@ class TestStackedCleanControlSurfacesInSampleBlock:
         sample = BusinessReport(st, auto_diagnostics=False).to_dict()["sample"]
         assert sample["control_group"] == "never_treated"
         assert sample["dynamic_control"] is False
+
+    def test_stacked_all_eventually_treated_panel_does_not_fabricate_never_treated(self):
+        """All-eventually-treated stacked panel with
+        ``clean_control="not_yet_treated"`` must not claim any
+        never-treated units, because every unit is eventually treated
+        (the round-21 reviewer example).
+        """
+        import pandas as pd
+
+        from diff_diff import StackedDiD
+
+        # Every unit is eventually treated (no never-treated).
+        # Multiple cohorts so Stacked has something to stack against.
+        sdf = generate_staggered_data(
+            n_units=80,
+            n_periods=10,
+            never_treated_frac=0.0,
+            treatment_effect=1.5,
+            seed=7,
+        )
+        # Sanity: the fixture has no never-treated units.
+        assert sdf[sdf["first_treat"] == 0].empty
+
+        st = StackedDiD(
+            clean_control="not_yet_treated", kappa_pre=1, kappa_post=1
+        ).fit(
+            sdf, outcome="outcome", unit="unit", time="period", first_treat="first_treat"
+        )
+        sample = BusinessReport(st, auto_diagnostics=False).to_dict()["sample"]
+        assert sample["n_never_treated"] is None, (
+            "All-eventually-treated panel under clean_control='not_yet_treated' "
+            "must not surface any never-treated count; the trimmed stack "
+            "contains only future-treated controls."
+        )
 
 
 class TestDCDHPhase3AssumptionClause:
@@ -2032,6 +2075,256 @@ class TestEfficientDiDHausmanStepTaggedAsParallelTrends:
             "DR's _collect_next_steps() suppresses it after running the same "
             "check. Still present after completed_steps=['parallel_trends'] "
             "filter, meaning the tag is wrong."
+        )
+
+
+class TestSpecificationComparisonStepTagPersistsAfterSensitivityRuns:
+    """Pre-emptive audit regression: several practitioner handlers
+    previously tagged their "compare specifications" / "vary control
+    group" step as ``_step_name="sensitivity"``. DR marks ``sensitivity``
+    complete when HonestDiD runs — which is orthogonal to the
+    specification-variation recommendation — so these steps were
+    incorrectly suppressed from ``next_steps`` after a fit with
+    HonestDiD sensitivity. Retag as ``specification_comparison`` so the
+    recommendations persist alongside a completed HonestDiD block. Same
+    class of mistag as the round-20 Hausman finding (which was about
+    ``heterogeneity`` vs ``parallel_trends``).
+    """
+
+    @staticmethod
+    def _build_stub(class_name: str, **extras):
+        stub_cls = type(class_name, (), {})
+        stub = stub_cls()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 400
+        stub.n_treated = 100
+        stub.n_control = 300
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        for k, v in extras.items():
+            setattr(stub, k, v)
+        return stub
+
+    @staticmethod
+    def _step_labels_after_completed(stub, completed):
+        from diff_diff.practitioner import practitioner_next_steps
+
+        return [
+            s.get("label", "")
+            for s in practitioner_next_steps(
+                stub, completed_steps=completed, verbose=False
+            )["next_steps"]
+        ]
+
+    def test_sa_specification_falsification_persists_after_sensitivity_runs(self):
+        stub = self._build_stub("SunAbrahamResults")
+        labels = self._step_labels_after_completed(stub, completed=["sensitivity"])
+        assert any(
+            "Specification-based falsification" in lab for lab in labels
+        ), (
+            "SA's 'Specification-based falsification' step must persist "
+            "after DR marks sensitivity complete — HonestDiD does not run "
+            "control_group / anticipation variation."
+        )
+
+    def test_imputation_specification_falsification_persists_after_sensitivity_runs(self):
+        stub = self._build_stub("ImputationDiDResults")
+        labels = self._step_labels_after_completed(stub, completed=["sensitivity"])
+        assert any("Specification-based falsification" in lab for lab in labels)
+
+    def test_two_stage_specification_falsification_persists_after_sensitivity_runs(self):
+        stub = self._build_stub("TwoStageDiDResults")
+        labels = self._step_labels_after_completed(stub, completed=["sensitivity"])
+        assert any("Specification-based falsification" in lab for lab in labels)
+
+    def test_stacked_clean_control_variation_persists_after_sensitivity_runs(self):
+        stub = self._build_stub("StackedDiDResults")
+        labels = self._step_labels_after_completed(stub, completed=["sensitivity"])
+        assert any("Vary clean control" in lab for lab in labels), (
+            "StackedDiD's 'Vary clean control definition' step must "
+            "persist after DR marks sensitivity complete — HonestDiD does "
+            "not replay clean_control variation."
+        )
+
+    def test_efficient_compare_control_groups_persists_after_sensitivity_runs(self):
+        stub = self._build_stub("EfficientDiDResults", pt_assumption="all")
+        labels = self._step_labels_after_completed(stub, completed=["sensitivity"])
+        assert any("Compare control group definitions" in lab for lab in labels), (
+            "EfficientDiD's 'Compare control group definitions' step "
+            "must persist after DR marks sensitivity complete — HonestDiD "
+            "does not re-estimate with alternative control_group."
+        )
+
+
+class TestTROPInTimePlaceboStepTaggedAsPlacebo:
+    """Pre-emptive audit regression: the TROP practitioner workflow
+    step "In-time or in-space placebo" was previously tagged
+    ``_step_name="sensitivity"``. TROP's estimator-native diagnostics
+    surface factor-model fit metrics (``effective_rank``, ``loocv_score``,
+    selected lambdas) — not placebos — and
+    ``DiagnosticReport._collect_next_steps`` marks ``sensitivity`` complete
+    for SDiD / TROP when the native battery runs. That suppressed the
+    TROP placebo recommendation unjustly. Retag as ``placebo`` so it
+    persists.
+    """
+
+    def test_trop_placebo_step_persists_after_native_sensitivity_completion(self):
+        from diff_diff.practitioner import practitioner_next_steps
+
+        class TROPResults:
+            pass
+
+        stub = TROPResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.overall_p_value = 0.001
+        stub.overall_conf_int = (0.6, 1.4)
+        stub.alpha = 0.05
+        stub.n_obs = 400
+        stub.n_treated = 40
+        stub.n_control = 360
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+
+        labels = [
+            s.get("label", "")
+            for s in practitioner_next_steps(
+                stub, completed_steps=["sensitivity"], verbose=False
+            )["next_steps"]
+        ]
+        assert any(
+            "In-time or in-space placebo" in lab for lab in labels
+        ), (
+            "TROP's placebo recommendation must persist after DR marks "
+            "sensitivity complete (SDiD/TROP native battery) — factor-"
+            "model diagnostics are not a placebo substitute."
+        )
+
+
+class TestSDiDTROPRejectIncompatiblePrecomputedInputs:
+    """Round-21 P1 CI review on PR #318: ``precomputed={"sensitivity":
+    ...}`` and ``BusinessReport(honest_did_results=...)`` previously
+    short-circuited the SDiD / TROP native-routing guards, letting the
+    generic report sections surface methodology-incompatible HonestDiD
+    or generic PT diagnostics on estimators that route robustness to
+    ``estimator_native_diagnostics``. DR / BR must now reject those
+    passthroughs with a clear error pointing users at the native
+    diagnostics on the result object.
+    """
+
+    @staticmethod
+    def _dummy_sens_object():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            M_values=[0.5, 1.0],
+            bounds=[(0.1, 2.0), (-0.2, 2.5)],
+            robust_cis=[(0.05, 2.1), (-0.3, 2.6)],
+            breakdown_M=0.75,
+            method="relative_magnitude",
+            original_estimate=1.0,
+            original_se=0.2,
+            alpha=0.05,
+        )
+
+    @staticmethod
+    def _dummy_pt_object():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            joint_p_value=0.2, n_pre_periods=3, method="event_study"
+        )
+
+    def test_dr_rejects_precomputed_sensitivity_on_sdid(self, sdid_fit):
+        from diff_diff import DiagnosticReport
+
+        fit, _ = sdid_fit
+        with pytest.raises(ValueError, match="estimator_native_diagnostics"):
+            DiagnosticReport(fit, precomputed={"sensitivity": self._dummy_sens_object()})
+
+    def test_dr_rejects_precomputed_parallel_trends_on_sdid(self, sdid_fit):
+        from diff_diff import DiagnosticReport
+
+        fit, _ = sdid_fit
+        with pytest.raises(ValueError, match="estimator_native_diagnostics"):
+            DiagnosticReport(fit, precomputed={"parallel_trends": self._dummy_pt_object()})
+
+    def test_br_rejects_honest_did_results_on_sdid(self, sdid_fit):
+        fit, _ = sdid_fit
+        with pytest.raises(ValueError, match="estimator_native_diagnostics"):
+            BusinessReport(fit, honest_did_results=self._dummy_sens_object())
+
+    def test_dr_rejects_precomputed_sensitivity_on_trop(self):
+        """TROP construction is expensive; use a stub with the right name."""
+        from diff_diff import DiagnosticReport
+
+        class TROPResults:
+            pass
+
+        stub = TROPResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        with pytest.raises(ValueError, match="estimator_native_diagnostics"):
+            DiagnosticReport(stub, precomputed={"sensitivity": self._dummy_sens_object()})
+
+    def test_dr_rejects_precomputed_parallel_trends_on_trop(self):
+        from diff_diff import DiagnosticReport
+
+        class TROPResults:
+            pass
+
+        stub = TROPResults()
+        stub.overall_att = 1.0
+        stub.overall_se = 0.2
+        stub.alpha = 0.05
+        stub.n_obs = 100
+        with pytest.raises(ValueError, match="estimator_native_diagnostics"):
+            DiagnosticReport(stub, precomputed={"parallel_trends": self._dummy_pt_object()})
+
+    def test_dr_still_accepts_precomputed_on_compatible_estimators(self, cs_fit):
+        """CS remains a valid passthrough target — the guardrail is
+        estimator-specific, not a blanket ban.
+        """
+        from diff_diff import DiagnosticReport
+
+        fit, _ = cs_fit
+        # Should not raise.
+        DiagnosticReport(fit, precomputed={"sensitivity": self._dummy_sens_object()})
+
+    def test_br_still_accepts_honest_did_results_on_compatible_estimators(self, cs_fit):
+        fit, _ = cs_fit
+        # Should not raise.
+        BusinessReport(fit, honest_did_results=self._dummy_sens_object())
+
+
+class TestBRLiftSensitivityPreservesMethodOnSkip:
+    """Pre-emptive audit regression: ``_lift_sensitivity`` previously
+    dropped the ``method`` field from BR's ``sensitivity`` block when
+    ``status != "ran"``. That forced BR-schema consumers to re-consult
+    the DR schema to distinguish native-routed skips
+    (``method="estimator_native"`` for SDiD / TROP, where robustness is
+    covered by the native battery) from methodology-blocked skips (e.g.,
+    CS with ``base_period='varying'``). Preserving the field keeps BR
+    self-describing.
+    """
+
+    def test_sdid_br_schema_exposes_native_method_on_sensitivity_skip(self, sdid_fit):
+        fit, _ = sdid_fit
+        sens_block = BusinessReport(fit).to_dict()["sensitivity"]
+        assert sens_block["status"] == "skipped"
+        # The round-20 DR fix set method="estimator_native"; BR must pass
+        # it through so an agent consuming BR alone can tell this is a
+        # native-routed skip.
+        assert sens_block.get("method") == "estimator_native", (
+            "BR's sensitivity block must preserve method='estimator_native' "
+            "when DR emitted it; otherwise downstream agents cannot "
+            f"distinguish native routing from methodology blocks. Got: {sens_block}"
         )
 
 
