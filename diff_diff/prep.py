@@ -30,6 +30,9 @@ from diff_diff.prep_dgp import (  # noqa: F401
 from diff_diff.survey import (
     ResolvedSurveyDesign,
     SurveyDesign,
+    _compute_if_variance_fast,
+    _precompute_psu_scaffolding,
+    _PsuScaffolding,
     compute_replicate_if_variance,
     compute_survey_if_variance,
 )
@@ -1318,6 +1321,7 @@ def _cell_mean_variance(
     full_resolved: ResolvedSurveyDesign,
     cell_mask: np.ndarray,
     min_n: int,
+    scaffolding: Optional[_PsuScaffolding] = None,
 ) -> Tuple[float, float, int, bool]:
     """Compute design-based mean and variance of the weighted mean for one cell.
 
@@ -1396,9 +1400,14 @@ def _cell_mean_variance(
     valid_positions = cell_indices[valid]
     psi[valid_positions] = w_valid[valid] * (y_clean[valid] - y_bar) / sum_w
 
-    # Route to TSL or replicate variance using the full design
+    # Route to TSL or replicate variance using the full design.  When a
+    # design-level scaffolding is provided (aggregate_survey's fast path),
+    # use it to skip the per-call pandas groupby / np.unique setup that
+    # otherwise dominates runtime at BRFSS scale.
     if full_resolved.uses_replicate_variance:
         variance, _ = compute_replicate_if_variance(psi, full_resolved)
+    elif scaffolding is not None:
+        variance = _compute_if_variance_fast(psi, scaffolding)
     else:
         variance = compute_survey_if_variance(psi, full_resolved)
 
@@ -1580,6 +1589,17 @@ def aggregate_survey(
     )
     full_resolved = effective_design.resolve(data)
 
+    # Precompute stratum/PSU scaffolding once per design.  Amortizes
+    # per-cell pandas groupby + np.unique + stratum FPC lookup that
+    # otherwise dominate runtime at scale (see _compute_if_variance_fast).
+    # Replicate-weight designs use a different variance surface and stay
+    # on the legacy path.
+    _tsl_scaffolding: Optional[_PsuScaffolding] = (
+        _precompute_psu_scaffolding(full_resolved)
+        if not full_resolved.uses_replicate_variance
+        else None
+    )
+
     # --- Precompute full-length outcome/covariate arrays ---
     n_total = len(data)
     all_vars = outcome_cols + cov_cols
@@ -1635,6 +1655,7 @@ def aggregate_survey(
                 full_resolved,
                 cell_mask,
                 min_n,
+                scaffolding=_tsl_scaffolding,
             )
             se = float(np.sqrt(variance)) if not np.isnan(variance) else np.nan
 
