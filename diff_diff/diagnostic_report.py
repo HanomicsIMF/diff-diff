@@ -1585,9 +1585,22 @@ class DiagnosticReport:
             }
         deff = _to_python_float(getattr(sm, "design_effect", None))
         eff_n = _to_python_float(getattr(sm, "effective_n", None))
+        # Round-35 P2 CI review on PR #318: ``is_trivial`` used to be
+        # ``0.95 <= deff <= 1.05`` while ``band_label`` treated
+        # anything ``< 1.05`` as trivial. On a precision-improving
+        # design (``deff < 0.95``) BR's summary keyed off
+        # ``not is_trivial`` and narrated "Survey design reduces
+        # effective sample size", which is directionally wrong — the
+        # effective N is LARGER than the nominal N. Split the band
+        # into a dedicated ``improves_precision`` label for
+        # ``deff < 0.95`` and keep ``is_trivial`` restricted to the
+        # tight "effectively no effect" window so the schema
+        # carries the precision-improving signal explicitly.
         is_trivial = deff is not None and 0.95 <= deff <= 1.05
         if deff is None or not np.isfinite(deff):
             band_label: Optional[str] = None
+        elif deff < 0.95:
+            band_label = "improves_precision"
         elif deff < 1.05:
             band_label = "trivial"
         elif deff < 2.0:
@@ -2846,6 +2859,30 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
                 else "SDiD's synthetic control is designed to satisfy the "
                 "weighted parallel-trends analogue."
             )
+        elif verdict == "inconclusive":
+            # Round-35 P1 CI review on PR #318: DR summary / overall
+            # interpretation must surface the inconclusive state
+            # explicitly rather than omitting the PT sentence. A missing
+            # sentence was indistinguishable from "PT did not run", and
+            # stakeholders reading the summary could not tell that the
+            # joint test had been attempted but yielded undefined
+            # inference.
+            n_dropped = pt.get("n_dropped_undefined")
+            if isinstance(n_dropped, int) and n_dropped > 0:
+                rows_word = "row" if n_dropped == 1 else "rows"
+                sentences.append(
+                    f"Pre-trends is inconclusive on this fit: "
+                    f"{n_dropped} pre-period {rows_word} had undefined "
+                    "inference (zero / negative SE or a non-finite "
+                    "per-period p-value), so the joint test cannot be "
+                    "formed. Treat parallel trends as unassessed."
+                )
+            else:
+                sentences.append(
+                    "Pre-trends is inconclusive on this fit: pre-period "
+                    "inference was undefined, so the joint test cannot "
+                    "be formed. Treat parallel trends as unassessed."
+                )
 
     # Sentence 3: sensitivity. The "robust across the grid" phrasing is reserved
     # for genuine SensitivityResults grids; a precomputed single-M HonestDiDResults

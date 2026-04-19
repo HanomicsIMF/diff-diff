@@ -1758,6 +1758,33 @@ def _render_summary(schema: Dict[str, Any]) -> str:
                 "group's pre-period trajectory (SDiD's weighted-parallel-"
                 "trends analogue)."
             )
+        elif verdict == "inconclusive":
+            # Round-35 P1 CI review on PR #318: a ``verdict=="inconclusive"``
+            # state means one or more pre-period coefficients had
+            # undefined inference (zero SE, NaN p-value) and the joint
+            # test cannot be formed. BR previously omitted the sentence
+            # entirely, so stakeholder prose silently skipped the
+            # identifying-assumption diagnostic. Name the state
+            # explicitly and quote the undefined-row count when
+            # available.
+            n_dropped = pt.get("n_dropped_undefined")
+            if isinstance(n_dropped, int) and n_dropped > 0:
+                rows_word = "row" if n_dropped == 1 else "rows"
+                sentences.append(
+                    f"The pre-trends test is inconclusive on this fit: "
+                    f"{n_dropped} pre-period {rows_word} had undefined "
+                    "inference (zero / negative SE or a non-finite "
+                    "per-period p-value), so the joint test cannot be "
+                    "formed. Treat parallel trends as unassessed rather "
+                    "than supported."
+                )
+            else:
+                sentences.append(
+                    "The pre-trends test is inconclusive on this fit: "
+                    "pre-period inference was undefined, so the joint "
+                    "test cannot be formed. Treat parallel trends as "
+                    "unassessed rather than supported."
+                )
 
     # Sensitivity. A ``single_M_precomputed`` sensitivity block has
     # ``breakdown_M=None`` by construction because only one M was evaluated;
@@ -1877,10 +1904,21 @@ def _render_summary(schema: Dict[str, Any]) -> str:
             deff = survey.get("design_effect")
             eff_n = survey.get("effective_n")
             if isinstance(deff, (int, float)) and isinstance(eff_n, (int, float)):
-                sentences.append(
-                    f"Survey design reduces effective sample size to "
-                    f"~{eff_n:,.0f} (DEFF = {deff:.2g})."
-                )
+                # Round-35 P2 CI review on PR #318: ``deff < 0.95`` is a
+                # precision-improving design (effective N is LARGER than
+                # nominal N). Narrating that as "reduces effective sample
+                # size" is directionally wrong. Branch on the sign of
+                # the departure from 1.
+                if deff < 1.0:
+                    sentences.append(
+                        f"Survey design improves effective sample size to "
+                        f"~{eff_n:,.0f} (DEFF = {deff:.2g})."
+                    )
+                else:
+                    sentences.append(
+                        f"Survey design reduces effective sample size to "
+                        f"~{eff_n:,.0f} (DEFF = {deff:.2g})."
+                    )
 
     # Highest-severity caveat (if any).
     caveats = schema.get("caveats", [])

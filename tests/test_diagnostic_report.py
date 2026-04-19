@@ -1168,6 +1168,91 @@ class TestReferenceMarkerAndNaNFiltering:
         assert pt["n_dropped_undefined"] == 1
         assert "undefined inference" in pt["reason"]
 
+    def test_summary_prose_surfaces_inconclusive_pt_explicitly(self):
+        """Round-35 P1 regression: when pre-trends is inconclusive
+        (undefined pre-period inference), both ``BusinessReport.summary()``
+        and ``DiagnosticReport.summary()`` must emit explicit inconclusive
+        prose — not merely omit the PT sentence. A missing sentence was
+        indistinguishable from "PT did not run" and would silently drop
+        the identifying-assumption diagnostic from stakeholder output.
+        """
+        from diff_diff import BusinessReport
+
+        class StackedDiDResults:
+            pass
+
+        obj = StackedDiDResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.2
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 400
+        obj.n_treated_units = 100
+        obj.n_control_units = 300
+        obj.survey_metadata = None
+        obj.event_study_effects = {
+            -2: {"effect": 0.1, "se": 0.2, "p_value": 0.62, "n_obs": 400},
+            -1: {"effect": 0.05, "se": 0.3, "p_value": float("nan"), "n_obs": 400},
+        }
+
+        dr_summary = DiagnosticReport(
+            obj, run_sensitivity=False, run_bacon=False
+        ).summary()
+        br_summary = BusinessReport(obj).summary()
+
+        # Both summaries must explicitly name the inconclusive state.
+        for label, prose in [("DR", dr_summary), ("BR", br_summary)]:
+            assert "inconclusive" in prose.lower(), (
+                f"{label}.summary() must surface the inconclusive PT "
+                f"state explicitly; got: {prose!r}"
+            )
+            # And must not offer false-clean "do not reject" wording.
+            assert "do not reject parallel trends" not in prose.lower()
+            assert "consistent with parallel trends" not in prose.lower()
+
+    def test_design_effect_deff_below_95_uses_improves_precision_wording(self):
+        """Round-35 P2 regression: ``deff < 0.95`` is a precision-
+        improving survey design — effective N is LARGER than nominal
+        N. DR emits ``band_label="improves_precision"`` and BR narrates
+        "improves effective sample size" instead of "reduces".
+        """
+        from types import SimpleNamespace
+
+        from diff_diff import BusinessReport
+
+        class CallawaySantAnnaResults:
+            pass
+
+        obj = CallawaySantAnnaResults()
+        obj.overall_att = 1.0
+        obj.overall_se = 0.2
+        obj.overall_p_value = 0.001
+        obj.overall_conf_int = (0.6, 1.4)
+        obj.alpha = 0.05
+        obj.n_obs = 500
+        obj.n_treated = 100
+        obj.n_control_units = 400
+        obj.event_study_effects = None
+        obj.survey_metadata = SimpleNamespace(
+            design_effect=0.80,
+            effective_n=625.0,
+            weight_type="pweight",
+            n_strata=None,
+            n_psu=None,
+            df_survey=None,
+            replicate_method=None,
+        )
+
+        # Schema: band_label surfaces the precision-improving state.
+        deff_block = DiagnosticReport(obj).to_dict()["design_effect"]
+        assert deff_block["band_label"] == "improves_precision"
+
+        # Prose: BR says "improves", not "reduces".
+        summary = BusinessReport(obj).summary().lower()
+        assert "improves effective sample size" in summary
+        assert "reduces effective sample size" not in summary
+
     def test_finite_se_nan_p_value_yields_inconclusive_on_bonferroni_only_surface(self):
         """Round-34 P0 regression: replicate-weight survey fits can emit
         event-study rows with finite ``effect`` / ``se`` but
