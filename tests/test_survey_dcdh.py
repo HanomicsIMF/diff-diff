@@ -2001,3 +2001,151 @@ class TestBootstrapCellPeriod:
         # Bootstrap SE should be finite (zero-weight group does not
         # disturb the other groups' contributions).
         assert np.isfinite(res.bootstrap_results.overall_se)
+
+    def test_bootstrap_zero_weight_group_equivalent_to_removing_it(self):
+        """Fixture A: 9 groups (1 all-zero-weighted + 8 positive).
+        Fixture B: 8 groups (same panel without the zero-weight
+        group). Under the fix, an eligible group that has no
+        positive-weight cells contributes nothing to the bootstrap
+        (its `psu_codes_per_cell` row is all sentinel). Both fits
+        therefore produce byte-identical bootstrap SE at the same
+        seed. Without the fix, the `valid_map` gate in fit() would
+        disable the entire PSU-aware path when any row is all
+        sentinel, silently dropping to unclustered group-level for
+        the other groups.
+        """
+        def _make(include_zero_group: bool) -> pd.DataFrame:
+            rows = []
+            n_groups = 9 if include_zero_group else 8
+            for g in range(n_groups):
+                f = 3 if g < 4 else None
+                for t in range(5):
+                    pw = 0.0 if (include_zero_group and g == 8) else 1.0
+                    d = 1 if (f is not None and t >= f) else 0
+                    y = float(g) + 0.1 * t + 1.0 * d
+                    rows.append({
+                        "group": int(g),
+                        "period": int(t),
+                        "treatment": int(d),
+                        "outcome": y,
+                        "pw": pw,
+                        "psu": int(g),  # PSU=group, constant path
+                    })
+            return pd.DataFrame(rows)
+
+        sd = SurveyDesign(weights="pw", psu="psu")
+        res_a = ChaisemartinDHaultfoeuille(n_bootstrap=200, seed=7).fit(
+            _make(include_zero_group=True),
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        res_b = ChaisemartinDHaultfoeuille(n_bootstrap=200, seed=7).fit(
+            _make(include_zero_group=False),
+            outcome="outcome", group="group",
+            time="period", treatment="treatment",
+            survey_design=sd,
+        )
+        assert res_a.bootstrap_results is not None
+        assert res_b.bootstrap_results is not None
+        se_a = float(res_a.bootstrap_results.overall_se)
+        se_b = float(res_b.bootstrap_results.overall_se)
+        assert np.isfinite(se_a) and np.isfinite(se_b)
+        assert se_a == pytest.approx(se_b, rel=0.0, abs=1e-15), (
+            f"Bootstrap SE must match when a zero-weight eligible "
+            f"group is added (fix P0 #1 — no silent dropback to "
+            f"unclustered group-level). Got SE_with_zero={se_a!r}, "
+            f"SE_without_zero={se_b!r}."
+        )
+
+    def test_bootstrap_dense_codes_under_singleton_baseline_excluded_group(self):
+        """Regression for P0 #2: when a group is singleton-baseline-
+        excluded (e.g., an always-treated group whose baseline D=1
+        has no peer), its PSU label must NOT pollute the dense code
+        factorization used by `_compute_dcdh_bootstrap`. Otherwise
+        eligible groups that share a PSU receive gapped dense codes
+        (e.g., `[1, 1]`), `_generate_psu_or_group_weights` computes
+        `n_psu = max + 1 = 2 == n_groups_target = 2`, and the
+        identity fast path wrongly triggers — giving those eligible
+        groups independent multiplier draws instead of a shared
+        one. Assertion: instrument the call to capture the
+        `group_id_to_psu_code` dict actually passed and confirm its
+        values form a contiguous range `[0, n_unique - 1]`.
+        """
+        # Fixture: one always-treated group (D=1 at period 0 → singleton-
+        # baseline-excluded), plus eligible groups that share a PSU
+        # label while the excluded group has a different PSU.
+        rows = []
+        for g in range(5):
+            for t in range(5):
+                if g == 0:
+                    d = 1  # always-treated; baseline D=1 singleton
+                    psu = 100  # distinct PSU for the excluded group
+                else:
+                    d = 1 if t >= 3 else 0  # joiners at period 3
+                    # Groups 1, 2 share PSU=200; groups 3, 4 share PSU=300.
+                    psu = 200 if g in (1, 2) else 300
+                rows.append({
+                    "group": int(g),
+                    "period": int(t),
+                    "treatment": int(d),
+                    "outcome": float(g) + 0.1 * t + 0.5 * d,
+                    "pw": 1.0,
+                    "psu": psu,
+                })
+        df_ = pd.DataFrame(rows)
+        sd = SurveyDesign(weights="pw", psu="psu")
+
+        captured: dict = {}
+
+        est = ChaisemartinDHaultfoeuille(n_bootstrap=50, seed=1)
+        original_bootstrap = est._compute_dcdh_bootstrap
+
+        def _spy(**kwargs):
+            captured["group_id_to_psu_code"] = kwargs.get(
+                "group_id_to_psu_code"
+            )
+            return original_bootstrap(**kwargs)
+
+        est._compute_dcdh_bootstrap = _spy  # type: ignore[method-assign]
+
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")  # singleton-baseline warning
+            est.fit(
+                df_, outcome="outcome", group="group",
+                time="period", treatment="treatment",
+                survey_design=sd,
+            )
+
+        dict_passed = captured["group_id_to_psu_code"]
+        assert dict_passed is not None, (
+            "bootstrap received group_id_to_psu_code=None — the "
+            "PSU-aware path was disabled instead of routing to the "
+            "cell/legacy path via densified codes."
+        )
+        codes = sorted(set(dict_passed.values()))
+        # Eligible groups share only two PSUs (200 for g=1,2;
+        # 300 for g=3,4). Dense codes must be [0, 1], NOT [1, 2]
+        # (which would happen if the excluded g=0's PSU=100 were
+        # dense-coded first).
+        assert codes == list(range(len(codes))), (
+            f"group_id_to_psu_code values must be contiguous "
+            f"dense codes starting at 0, got {codes}. A non-"
+            f"contiguous range signals the excluded group's PSU "
+            f"polluted the dense factorization (P0 #2 regression)."
+        )
+        # Sanity: eligible groups 1, 2 must share a code (PSU=200),
+        # and eligible groups 3, 4 must share a code (PSU=300).
+        assert dict_passed[1] == dict_passed[2], (
+            "Groups 1 and 2 share PSU=200 and must receive the same "
+            "dense code under correct densification."
+        )
+        assert dict_passed[3] == dict_passed[4], (
+            "Groups 3 and 4 share PSU=300 and must receive the same "
+            "dense code."
+        )
+        assert dict_passed[1] != dict_passed[3], (
+            "Groups in PSU=200 and PSU=300 must receive distinct "
+            "dense codes."
+        )

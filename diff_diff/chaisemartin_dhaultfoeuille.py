@@ -2314,81 +2314,90 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     _obs_survey_info["weights"], dtype=np.float64
                 )
                 pos_mask_boot = obs_weights_boot > 0
+                gid_to_idx = {
+                    gid: i for i, gid in enumerate(_eligible_group_ids)
+                }
+                tid_to_idx = {t: i for i, t in enumerate(all_periods)}
+                n_elig_boot = len(_eligible_group_ids)
+                n_per_boot = len(all_periods)
+                g_idx_arr = np.array(
+                    [gid_to_idx.get(g, -1) for g in obs_gids_boot],
+                    dtype=np.int64,
+                )
+                t_idx_arr = np.array(
+                    [tid_to_idx.get(t, -1) for t in obs_tids_boot],
+                    dtype=np.int64,
+                )
                 # Factor PSU labels to dense int codes over the
-                # positive-weight subpopulation. Shared code domain
-                # for both the per-cell tensor and the group-level
-                # dict below.
-                pos_psu_labels = obs_psu_codes[pos_mask_boot]
+                # **eligible-subset** positive-weight observations only
+                # (not the full positive-weight population). Restricting
+                # to eligible obs ensures the resulting dense codes
+                # range ONLY over PSUs actually used by variance-
+                # eligible groups, so downstream n_psu = max(code) + 1
+                # is exact: no gaps from singleton-baseline-excluded
+                # groups that would silently trigger the identity
+                # fast path in `_generate_psu_or_group_weights`.
+                elig_obs_mask = (
+                    pos_mask_boot & (g_idx_arr >= 0) & (t_idx_arr >= 0)
+                )
+                elig_psu_labels = obs_psu_codes[elig_obs_mask]
                 dense_per_row: Optional[np.ndarray] = None
-                if pos_psu_labels.size > 0:
-                    _, pos_dense_codes = np.unique(
-                        pos_psu_labels, return_inverse=True,
+                if elig_psu_labels.size > 0:
+                    _, elig_dense_codes = np.unique(
+                        elig_psu_labels, return_inverse=True,
                     )
-                    pos_dense_codes = np.asarray(pos_dense_codes, dtype=np.int64)
+                    elig_dense_codes = np.asarray(elig_dense_codes, dtype=np.int64)
                     dense_per_row = np.full(
                         len(obs_psu_codes), -1, dtype=np.int64,
                     )
-                    dense_per_row[pos_mask_boot] = pos_dense_codes
+                    dense_per_row[elig_obs_mask] = elig_dense_codes
 
                 # Per-cell PSU tensor: (n_eligible, n_periods), -1 sentinel
-                # for ineligible / zero-weight cells.
+                # for ineligible / zero-weight cells. Populated
+                # unconditionally when `dense_per_row` exists — a row
+                # that ends up all-sentinel (eligible group with no
+                # positive-weight obs) is masked out at unroll time,
+                # not by discarding the entire tensor. See also the
+                # dispatcher's `_psu_varies_within_group` helper which
+                # ignores sentinel entries row-wise.
                 if dense_per_row is not None:
-                    gid_to_idx = {
-                        gid: i for i, gid in enumerate(_eligible_group_ids)
-                    }
-                    tid_to_idx = {t: i for i, t in enumerate(all_periods)}
-                    n_elig_boot = len(_eligible_group_ids)
-                    n_per_boot = len(all_periods)
                     psu_codes_per_cell = np.full(
                         (n_elig_boot, n_per_boot), -1, dtype=np.int64,
                     )
-                    g_idx_arr = np.array(
-                        [gid_to_idx.get(g, -1) for g in obs_gids_boot],
-                        dtype=np.int64,
-                    )
-                    t_idx_arr = np.array(
-                        [tid_to_idx.get(t, -1) for t in obs_tids_boot],
-                        dtype=np.int64,
-                    )
-                    valid_obs_boot = (
-                        pos_mask_boot
-                        & (g_idx_arr >= 0)
-                        & (t_idx_arr >= 0)
-                    )
                     psu_codes_per_cell[
-                        g_idx_arr[valid_obs_boot],
-                        t_idx_arr[valid_obs_boot],
-                    ] = dense_per_row[valid_obs_boot]
+                        g_idx_arr[elig_obs_mask],
+                        t_idx_arr[elig_obs_mask],
+                    ] = dense_per_row[elig_obs_mask]
+                    psu_codes_per_cell_bootstrap = psu_codes_per_cell
 
-                    # Group-level dict: first non-sentinel code per row.
-                    # Under within-group-constant PSU this matches the
-                    # pre-PR-4 "first label per group" convention
-                    # bit-for-bit; under varying PSU the dispatcher
-                    # routes to the cell-level path which uses the
-                    # full `psu_codes_per_cell` tensor.
+                    # Group-level dict: one PSU code per eligible
+                    # group. For rows that are all-sentinel (eligible
+                    # group has no positive-weight obs), assign code
+                    # `0` as a harmless placeholder — the group's IF
+                    # mass is zero, so the bootstrap multiplier it
+                    # receives is irrelevant on either the legacy or
+                    # the cell-level path. Always populate the dict
+                    # so the legacy group-level path keeps clustering
+                    # correctly when psu_varies=False even if some
+                    # eligible groups happen to have no positive-
+                    # weight obs.
                     group_psu_labels: List[int] = []
-                    valid_map = True
                     for i in range(n_elig_boot):
                         row = psu_codes_per_cell[i]
                         valid = row[row >= 0]
                         if valid.size == 0:
-                            valid_map = False
-                            break
-                        group_psu_labels.append(int(valid[0]))
-                    if (
-                        valid_map
-                        and len(group_psu_labels) == n_groups_for_overall_var
-                    ):
-                        group_id_to_psu_code_bootstrap = {
-                            gid: code
-                            for gid, code in zip(
-                                _eligible_group_ids, group_psu_labels
-                            )
-                        }
-                        eligible_group_ids_bootstrap = np.asarray(
-                            _eligible_group_ids
+                            group_psu_labels.append(0)
+                        else:
+                            group_psu_labels.append(int(valid[0]))
+                    group_id_to_psu_code_bootstrap = {
+                        gid: code
+                        for gid, code in zip(
+                            _eligible_group_ids, group_psu_labels
                         )
-                        psu_codes_per_cell_bootstrap = psu_codes_per_cell
+                    }
+                    eligible_group_ids_bootstrap = np.asarray(
+                        _eligible_group_ids
+                    )
 
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
