@@ -635,26 +635,6 @@ class TestNaNPropagation:
             }
         )
 
-    def test_mass_point_all_above_d_lower_nan(self):
-        """Degenerate mass-point: no units at d_lower -> NaN."""
-        rng = np.random.default_rng(0)
-        G = 500
-        d = rng.uniform(0.6, 1.0, G)  # all above 0.5
-        dy = 0.3 * d + 0.1 * rng.standard_normal(G)
-        panel = _make_panel(d, dy)
-        r = HeterogeneousAdoptionDiD(design="mass_point", d_lower=0.5).fit(
-            panel, "outcome", "dose", "period", "unit"
-        )
-        assert np.isnan(r.att)
-        assert_nan_inference(
-            {
-                "se": r.se,
-                "t_stat": r.t_stat,
-                "p_value": r.p_value,
-                "conf_int": r.conf_int,
-            }
-        )
-
     def test_mass_point_all_at_d_lower_nan(self):
         """Degenerate mass-point: all units at d_lower -> NaN."""
         rng = np.random.default_rng(0)
@@ -1043,16 +1023,78 @@ class TestExplicitDesignOverrides:
         with pytest.raises(NotImplementedError, match="mass-point"):
             est.fit(panel, "outcome", "dose", "period", "unit")
 
-    def test_force_mass_point_on_continuous_data(self):
-        """Forcing mass-point on continuous data runs the 2SLS on the minimum cluster."""
+    def test_force_mass_point_on_continuous_data_at_support_infimum(self):
+        """Forcing mass-point on continuous data with d_lower=d.min() runs.
+
+        d.min()==0 exactly in this DGP, so d_lower=0.0 is the paper-consistent
+        support-infimum threshold. The resulting mass=1 case exercises the
+        degenerate-mass boundary (only unit 0 is "at d_lower"; rest are above).
+        """
         d, dy = _dgp_continuous_at_zero(500, seed=0)
         panel = _make_panel(d, dy)
-        # d.min() == 0 exactly; mass-point with d_lower=0 will treat the
-        # zero-dose unit (just 1 unit) as the mass cluster and the rest as
-        # "above". This exercises the degenerate mass=1 case.
+        # d.min() == 0 exactly (d[0]=0 by construction); d_lower must match.
         est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=0.0)
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert r.design == "mass_point"
+        assert r.d_lower == 0.0
+
+
+# =============================================================================
+# Mass-point d_lower contract enforcement
+# =============================================================================
+
+
+class TestMassPointDLowerContract:
+    """Paper Section 3.2.4: mass-point d_lower must equal float(d.min())."""
+
+    def test_d_lower_above_min_raises(self):
+        d, dy = _dgp_mass_point(500, seed=0)  # d.min() == 0.5
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=0.6)
+        with pytest.raises(ValueError, match="support infimum"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_d_lower_below_min_raises(self):
+        d, dy = _dgp_mass_point(500, seed=0)  # d.min() == 0.5
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=0.3)
+        with pytest.raises(ValueError, match="support infimum"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_d_lower_matches_support_infimum_succeeds(self):
+        d, dy = _dgp_mass_point(500, seed=0)  # d.min() == 0.5
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=0.5)
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        assert r.d_lower == 0.5
+        assert np.isfinite(r.att)
+
+    def test_d_lower_none_auto_resolves_to_min(self):
+        """With d_lower=None, the contract is satisfied automatically."""
+        d, dy = _dgp_mass_point(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=None)
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        assert abs(r.d_lower - float(d.min())) < 1e-14
+
+    def test_d_lower_within_tolerance_succeeds(self):
+        """Float-tolerance overrides of d.min() are accepted."""
+        d, dy = _dgp_mass_point(500, seed=0)
+        panel = _make_panel(d, dy)
+        # Pass d_lower that differs from d.min() by float-rounding noise.
+        d_lower_user = float(d.min()) + 1e-15
+        est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=d_lower_user)
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        assert np.isfinite(r.att)
+
+    def test_d_lower_contract_is_mass_point_only(self):
+        """continuous_near_d_lower accepts arbitrary d_lower (within other guards)."""
+        d, dy = _dgp_continuous_near_d_lower(500, seed=0)
+        panel = _make_panel(d, dy)
+        # Setting d_lower=d.min() on continuous should just work.
+        est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower", d_lower=float(d.min()))
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        assert np.isfinite(r.att)
 
 
 # =============================================================================

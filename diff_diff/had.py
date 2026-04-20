@@ -423,11 +423,13 @@ def _validate_had_panel(
             f"t_pre={t_pre}. Drop these units or verify the dose column."
         )
 
-    # Optional cross-validation via first_treat_col: if supplied, the
-    # first_treat == 0 units must have D_{g, t_post} == 0, and first_treat
-    # == t_post units may have any D_{g, t_post} >= 0. We do NOT require
-    # strict consistency (the paper treats D_{g,2} as the primary signal),
-    # but a quick sanity check catches obvious column mix-ups.
+    # Optional value-domain validation via first_treat_col: if supplied,
+    # every unit's first_treat value must be in {0, t_post} (0 = never
+    # treated, t_post = treated in the second period). This is a value-
+    # domain check that catches typos and staggered-timing mix-ups; it
+    # does NOT cross-validate first_treat against post-period dose
+    # (D_{g, t_post} remains the primary signal). Extended cross-checks
+    # are queued for a follow-up PR.
     if first_treat_col is not None:
         ft = data.groupby(unit_col)[first_treat_col].first().to_numpy()
         if np.any(np.isnan(ft.astype(np.float64, copy=False))):
@@ -987,6 +989,30 @@ class HeterogeneousAdoptionDiD:
         else:
             d_lower_val = float(d_lower_arg)
 
+        # ---- Mass-point contract: d_lower must equal the support infimum ----
+        # Paper Section 3.2.4 defines the mass-point estimator with instrument
+        # Z = 1{D_{g,2} > d_lower} where d_lower is the lower-support mass
+        # point. A user-supplied d_lower that differs from float(d_arr.min())
+        # redefines the instrument / control split and identifies a different
+        # estimand. Phase 2a supports only the paper's lower-support mass-point
+        # estimator, so we reject mismatched overrides front-door rather than
+        # silently running an unsupported variant.
+        if resolved_design == "mass_point" and d_lower_arg is not None:
+            d_min = float(d_arr.min())
+            tol = 1e-12 * max(1.0, abs(d_min))
+            if abs(d_lower_val - d_min) > tol:
+                raise ValueError(
+                    f"design='mass_point' requires d_lower to equal the "
+                    f"support infimum float(d.min())={d_min!r}; got "
+                    f"d_lower={d_lower_val!r}. The paper's Design 1 mass-"
+                    f"point estimator (Section 3.2.4) identifies at the "
+                    f"lower-support mass point, not at an arbitrary "
+                    f"threshold. Pass d_lower=None to auto-resolve, or "
+                    f"d_lower=float(d.min()) explicitly. Non-support-"
+                    f"infimum thresholds identify a different (LATE-like) "
+                    f"estimand that is out of Phase 2a scope."
+                )
+
         # ---- Compute cohort counts ----
         if resolved_design == "mass_point":
             eps = 1e-12 * max(1.0, abs(d_lower_val))
@@ -1007,8 +1033,9 @@ class HeterogeneousAdoptionDiD:
 
         # ---- Dispatch ----
         if resolved_design in ("continuous_at_zero", "continuous_near_d_lower"):
-            # Warn once if the user set a mass-point-only knob that's
-            # ignored on the continuous path.
+            # Warn when the user set a mass-point-only knob that's ignored
+            # on the continuous path. (Emitted per fit call; this is not
+            # suppressed after the first call.)
             if vcov_type_arg is not None:
                 warnings.warn(
                     f"vcov_type={vcov_type_arg!r} is ignored on the "
