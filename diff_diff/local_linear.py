@@ -959,10 +959,12 @@ def bias_corrected_local_linear(
     **Public API scope (Phase 1c of HAD).** Hard-coded for the HAD
     configuration: ``p=1`` (local-linear), ``q=2`` (bias-correction
     order), ``deriv=0`` (level), ``interior=False`` (boundary eval
-    point), ``bwcheck=21``, ``bwregul=1``. The underlying
-    ``diff_diff._nprobust_port`` supports more. HC0-3 vce modes are
-    exposed here but NOT separately golden-parity-tested against R in
-    Phase 1c; use at your own risk until Phase 2+.
+    point), ``bwcheck=21``, ``bwregul=1``, and ``vce="nn"`` (the only
+    variance mode golden-parity-tested against R in this phase). The
+    underlying ``diff_diff._nprobust_port.lprobust`` accepts the broader
+    surface (hc0/hc1/hc2/hc3, higher ``p``, interior eval), but those
+    paths are not separately parity-tested and remain private until
+    Phase 2+ ships dedicated goldens.
 
     Parameters
     ----------
@@ -1012,12 +1014,14 @@ def bias_corrected_local_linear(
     ------
     ValueError
         Shape mismatch, non-finite inputs, off-support boundary, negative
-        doses, ``alpha`` outside ``(0, 1)``, unsupported ``kernel``/``vce``,
-        NaN cluster IDs, incompatible ``vce="hc2"/"hc3"`` with clustering,
-        ``b`` supplied without ``h``, or a rank-deficient window.
+        doses, ``alpha`` outside ``(0, 1)``, unknown ``kernel``,
+        NaN / None cluster IDs, ``b`` supplied without ``h``, or a
+        rank-deficient window.
     NotImplementedError
-        ``weights=`` passed, or a Design 1 mass-point sample (redirects to
-        Phase 2's 2SLS sample-average path per the paper's Section 3.2.4).
+        ``weights=`` passed; ``vce != "nn"`` (hc0/hc1/hc2/hc3 deferred
+        to Phase 2+ pending dedicated R parity goldens); a Design 1
+        mass-point sample (redirects to Phase 2's 2SLS sample-average
+        path per the paper's Section 3.2.4).
 
     Notes
     -----
