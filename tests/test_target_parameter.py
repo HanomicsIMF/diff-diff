@@ -588,3 +588,45 @@ class TestTargetParameterRealFitIntegration:
         assert "delta" in tp["name"]
         assert tp["headline_attribute"] == "overall_att"
         assert hasattr(fit, "overall_att")
+
+    def test_dcdh_trends_linear_with_l_max_geq_2_fit_real(self):
+        """Real ``trends_linear=True`` + ``L_max>=2`` fit: the library
+        intentionally sets ``overall_att=NaN`` and populates the
+        per-horizon effects on ``linear_trends_effects`` instead
+        (``chaisemartin_dhaultfoeuille.py:2828-2834``). The target-
+        parameter block must reflect that via
+        ``aggregation="no_scalar_headline"`` and
+        ``headline_attribute is None``. PR #347 R3 P3 regression on
+        a live fit.
+        """
+        import math
+        import warnings
+
+        from diff_diff import ChaisemartinDHaultfoeuille
+
+        warnings.filterwarnings("ignore")
+        df = self._dcdh_reversible_panel(seed=15)
+        fit = ChaisemartinDHaultfoeuille().fit(
+            df,
+            outcome="outcome",
+            group="unit",
+            time="period",
+            treatment="treated",
+            L_max=2,
+            trends_linear=True,
+        )
+        # Real fit must intentionally produce NaN overall_att.
+        assert math.isnan(fit.overall_att), (
+            "trends_linear + L_max>=2 must suppress overall_att (NaN by "
+            "design). If this test fails, the library contract changed — "
+            "update the ``no_scalar_headline`` branch of "
+            "describe_target_parameter accordingly."
+        )
+        # linear_trends_effects must be populated (the per-horizon
+        # cumulated level effects that replace the scalar aggregate).
+        assert fit.linear_trends_effects is not None
+        # Target-parameter block must route through the no-scalar branch.
+        tp = describe_target_parameter(fit)
+        assert tp["aggregation"] == "no_scalar_headline"
+        assert tp["headline_attribute"] is None
+        assert "linear_trends_effects" in tp["definition"]

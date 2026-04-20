@@ -51,10 +51,16 @@ stability) are documented in :doc:`../methodology/REPORTING`.
 
 The schema carries a top-level ``target_parameter`` block
 (experimental) naming what the headline scalar represents per
-estimator — simple ATT, event-study average, DID_M, DID_l,
-dose-response aggregate, factor-model residual, etc. See the
-"Target parameter" section of :doc:`../methodology/REPORTING` for
-the per-estimator dispatch and schema shape.
+estimator — simple ATT, event-study average, DID_M, DID_1,
+cost-benefit delta, dose-response aggregate, factor-model residual,
+etc. For the dCDH dynamic branch with ``trends_linear=True`` and
+``L_max>=2``, the scalar is intentionally NaN and
+``aggregation`` is ``"no_scalar_headline"`` with
+``headline_attribute`` set to ``None`` — agents should dispatch on
+this case and consult ``linear_trends_effects`` instead of
+``overall_att``. See the "Target parameter" section of
+:doc:`../methodology/REPORTING` for the full per-estimator dispatch
+table and schema shape.
 
 Example
 -------

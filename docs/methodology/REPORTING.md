@@ -88,15 +88,35 @@ Field semantics:
   summary paragraph so stakeholder prose stays within the 6-10-
   sentence target.
 - `aggregation` — machine-readable tag dispatching agents can
-  branch on: `"simple"`, `"event_study"`, `"group"`, `"2x2"`,
-  `"twfe"`, `"iw"`, `"stacked"`, `"ddd"`, `"staggered_ddd"`,
-  `"synthetic"`, `"factor_model"`, `"M"`, `"l"`, `"l_x"`,
-  `"l_fd"`, `"l_x_fd"`, `"dose_overall"`,
-  `"pt_all_combined"`, `"pt_post_single_baseline"`, `"unknown"`.
+  branch on. Complete enumeration per estimator:
+  - `"2x2"` (DiDResults / TwoWayFixedEffects both route here)
+  - `"event_study"` (MultiPeriodDiDResults)
+  - `"simple"` (CallawaySantAnna / Imputation / TwoStage / Wooldridge)
+  - `"iw"` (SunAbraham)
+  - `"stacked"` (StackedDiD)
+  - `"pt_all_combined"` / `"pt_post_single_baseline"` (EfficientDiD
+    branched on `pt_assumption`)
+  - `"dose_overall"` (ContinuousDiD)
+  - `"ddd"` / `"staggered_ddd"` (TripleDifference / StaggeredTripleDiff)
+  - dCDH dynamic branches follow the exact `overall_att`
+    contract: `"M"` / `"M_x"` / `"M_fd"` / `"M_x_fd"` for
+    `L_max=None`; `"DID_1"` / `"DID_1_x"` / `"DID_1_fd"` /
+    `"DID_1_x_fd"` for `L_max=1`; `"delta"` / `"delta_x"` for
+    `L_max>=2` without trend suppression; and
+    `"no_scalar_headline"` when `trends_linear=True` AND
+    `L_max>=2` (the scalar is intentionally NaN).
+  - `"synthetic"` (SyntheticDiD) / `"factor_model"` (TROP) /
+    `"twfe"` (BaconDecomposition read-out) / `"unknown"` (default
+    fallback).
 - `headline_attribute` — the raw result attribute the scalar
   comes from (`"overall_att"` / `"att"` / `"avg_att"` /
-  `"twfe_estimate"`). Different result classes use different
-  attribute names; agents that want to re-read the raw value
+  `"twfe_estimate"`), OR `None` when `aggregation ==
+  "no_scalar_headline"` (the dCDH `trends_linear=True,
+  L_max>=2` branch where `overall_att` is intentionally NaN by
+  design). Agents dispatching on this field must handle `None` as
+  "no scalar aggregate — consult `linear_trends_effects`
+  instead". Different result classes use different attribute
+  names; agents that want to re-read the raw value
   can dispatch on this.
 - `reference` — one-line citation pointer to the canonical paper
   and the REGISTRY.md section.
