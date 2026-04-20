@@ -899,6 +899,42 @@ class TestResultMethods:
         assert "WAS" in s
         assert "Confidence Interval" in s
 
+    def test_summary_uses_target_parameter_for_row_label(self):
+        """Review P2: the estimate row must render target_parameter (WAS or
+        WAS_d_lower), not hardcoded 'WAS'.
+        """
+        # Design 1' -> target_parameter = "WAS"
+        d, dy = _dgp_continuous_at_zero(400, seed=0)
+        panel = _make_panel(d, dy)
+        r_d1p = HeterogeneousAdoptionDiD(design="continuous_at_zero").fit(
+            panel, "outcome", "dose", "period", "unit"
+        )
+        s_d1p = r_d1p.summary()
+        assert r_d1p.target_parameter == "WAS"
+        assert "WAS" in s_d1p
+
+        # Design 1 continuous-near-d_lower -> target_parameter = "WAS_d_lower"
+        d, dy = _dgp_continuous_near_d_lower(400, seed=0)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_d1 = HeterogeneousAdoptionDiD(design="continuous_near_d_lower").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+        assert r_d1.target_parameter == "WAS_d_lower"
+        assert "WAS_d_lower" in r_d1.summary()
+
+        # Design 1 mass-point -> target_parameter = "WAS_d_lower"
+        d, dy = _dgp_mass_point(400, seed=0)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_mp = HeterogeneousAdoptionDiD(design="mass_point").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+        assert r_mp.target_parameter == "WAS_d_lower"
+        assert "WAS_d_lower" in r_mp.summary()
+
     def test_print_summary_executes(self, capsys):
         r = self._result()
         r.print_summary()
@@ -1429,6 +1465,70 @@ class TestValidateHadPanel:
         panel["ft"] = np.repeat(ft_unit, 2)
         with pytest.raises(ValueError, match="first_treat_col"):
             _validate_had_panel(panel, "outcome", "dose", "period", "unit", "ft")
+
+    def test_semantic_pre_post_labels_not_lexicographic(self):
+        """Review P1 round 3: pre/post inference must be dose-based.
+
+        ("pre", "post") sorts alphabetically to ["post", "pre"], which
+        previously flipped the pre/post labels and raised on a valid
+        panel. The validator now infers pre from the all-zero-dose
+        period.
+        """
+        d, dy = _dgp_continuous_at_zero(100, seed=0)
+        panel = _make_panel(d, dy, periods=("pre", "post"))
+        t_pre, t_post = _validate_had_panel(panel, "outcome", "dose", "period", "unit", None)
+        assert t_pre == "pre"
+        assert t_post == "post"
+
+    def test_semantic_pre_post_with_first_treat_col(self):
+        """Combined: string periods + first_treat_col in {0, 'post'}."""
+        d, dy = _dgp_continuous_at_zero(100, seed=0)
+        panel = _make_panel(d, dy, periods=("pre", "post"))
+        ft_unit = np.array([0 if i % 2 == 0 else "post" for i in range(100)], dtype=object)
+        panel["ft"] = np.repeat(ft_unit, 2)
+        t_pre, t_post = _validate_had_panel(panel, "outcome", "dose", "period", "unit", "ft")
+        assert t_pre == "pre"
+        assert t_post == "post"
+
+    def test_semantic_pre_post_fit_end_to_end(self):
+        """End-to-end: fit() runs on ("pre","post")-labelled panel."""
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        panel = _make_panel(d, dy, periods=("pre", "post"))
+        r = HeterogeneousAdoptionDiD(design="continuous_at_zero").fit(
+            panel, "outcome", "dose", "period", "unit"
+        )
+        assert np.isfinite(r.att)
+
+    def test_before_after_labels(self):
+        """("before","after") is also reversed alphabetically; must not fail."""
+        d, dy = _dgp_continuous_at_zero(100, seed=0)
+        panel = _make_panel(d, dy, periods=("before", "after"))
+        t_pre, t_post = _validate_had_panel(panel, "outcome", "dose", "period", "unit", None)
+        assert t_pre == "before"
+        assert t_post == "after"
+
+    def test_no_all_zero_period_raises(self):
+        """If neither period has all-zero dose, HAD's D_{g,1}=0 contract fails."""
+        d, dy = _dgp_continuous_at_zero(100, seed=0)
+        panel = _make_panel(d, dy)
+        # Inject nonzero dose into the pre period so neither period is all-zero.
+        panel.loc[panel["period"] == 1, "dose"] = 0.5
+        with pytest.raises(ValueError, match=r"D_\{g,1\}|pre-treatment"):
+            _validate_had_panel(panel, "outcome", "dose", "period", "unit", None)
+
+    def test_both_all_zero_periods_raises(self):
+        """If both periods have all-zero dose, no treatment to estimate."""
+        G = 100
+        panel = pd.DataFrame(
+            {
+                "unit": np.repeat(np.arange(G), 2),
+                "period": np.tile([1, 2], G),
+                "dose": np.zeros(2 * G),
+                "outcome": np.random.default_rng(0).standard_normal(2 * G),
+            }
+        )
+        with pytest.raises(ValueError, match="variation"):
+            _validate_had_panel(panel, "outcome", "dose", "period", "unit", None)
 
 
 # =============================================================================

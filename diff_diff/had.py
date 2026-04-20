@@ -289,6 +289,7 @@ class HeterogeneousAdoptionDiDResults:
             bc = self.bias_corrected_fit
             lines.append(f"{'Bandwidth h used:':<30} {bc.h:>20.6g}")
             lines.append(f"{'Obs in window (n_used):':<30} {bc.n_used:>20}")
+        param_label = self.target_parameter
         lines.extend(
             [
                 "",
@@ -299,7 +300,7 @@ class HeterogeneousAdoptionDiDResults:
                 ),
                 "-" * width,
                 (
-                    f"{'WAS':<15} {self.att:>12.4f} {self.se:>12.4f} "
+                    f"{param_label:<15} {self.att:>12.4f} {self.se:>12.4f} "
                     f"{self.t_stat:>10.3f} {self.p_value:>10.4f}"
                 ),
                 "-" * width,
@@ -395,29 +396,26 @@ def _validate_had_panel(
     if missing:
         raise ValueError(f"Missing column(s) in data: {missing}. Required: {required}.")
 
-    periods = np.sort(np.asarray(data[time_col].unique()))
-    if len(periods) < 2:
+    periods_list = list(data[time_col].unique())
+    if len(periods_list) < 2:
         raise ValueError(
-            f"HAD requires a two-period panel; got {len(periods)} distinct "
+            f"HAD requires a two-period panel; got {len(periods_list)} distinct "
             f"period(s) in column {time_col!r}."
         )
-    if len(periods) > 2:
+    if len(periods_list) > 2:
         if first_treat_col is None:
             raise ValueError(
                 f"HAD Phase 2a requires exactly two time periods "
-                f"(got {len(periods)} in {time_col!r}) when "
+                f"(got {len(periods_list)} in {time_col!r}) when "
                 f"first_treat_col=None. Multi-period / staggered adoption "
                 f"support is queued for Phase 2b (Appendix B.2 event-study)."
             )
         raise ValueError(
             f"HAD Phase 2a requires exactly two time periods "
-            f"(got {len(periods)} in {time_col!r}). Staggered adoption "
+            f"(got {len(periods_list)} in {time_col!r}). Staggered adoption "
             f"reduction (first_treat_col supplied with >2 periods) is "
             f"queued for Phase 2b (Appendix B.2 event-study)."
         )
-
-    t_pre = int(periods[0]) if np.issubdtype(periods.dtype, np.integer) else periods[0]
-    t_post = int(periods[1]) if np.issubdtype(periods.dtype, np.integer) else periods[1]
 
     # Balanced-panel check: every unit appears exactly once per period.
     counts = data.groupby([unit_col, time_col]).size()
@@ -446,17 +444,35 @@ def _validate_had_panel(
                 f"calling fit()."
             )
 
-    # Pre-period no-unit-untreated check.
-    pre_mask = data[time_col] == t_pre
-    pre_doses = np.asarray(data.loc[pre_mask, dose_col], dtype=np.float64)
-    nonzero_pre = pre_doses != 0
-    if nonzero_pre.any():
-        n_bad = int(nonzero_pre.sum())
+    # Identify t_pre and t_post by the HAD invariant rather than by
+    # lexicographic sort on the time labels: D_{g, t_pre} = 0 for all
+    # units (paper Section 2 no-unit-untreated pre-period convention).
+    # Sorting labels alphabetically reverses valid chronologies like
+    # ("pre", "post") where ordering is semantic, not alphabetic.
+    per_period_nonzero: Dict[Any, int] = {}
+    for p in periods_list:
+        p_doses = np.asarray(data.loc[data[time_col] == p, dose_col], dtype=np.float64)
+        per_period_nonzero[p] = int((p_doses != 0).sum())
+    all_zero_periods = [p for p, nz in per_period_nonzero.items() if nz == 0]
+    if len(all_zero_periods) == 0:
+        # Neither period has all-zero dose: HAD pre-period contract violated.
+        stats_str = ", ".join(f"{p!r}: {nz} nonzero" for p, nz in per_period_nonzero.items())
         raise ValueError(
             f"HAD requires D_{{g,1}} = 0 for all units (pre-period "
-            f"untreated). {n_bad} unit(s) have nonzero dose at "
-            f"t_pre={t_pre}. Drop these units or verify the dose column."
+            f"untreated). Neither period in column {time_col!r} has "
+            f"all-zero dose ({stats_str}). Exactly one period must be "
+            f"the pre-treatment period with D_{{g,1}} = 0 for every unit; "
+            f"drop rows with nonzero pre-period dose or verify the dose "
+            f"column."
         )
+    if len(all_zero_periods) == 2:
+        raise ValueError(
+            f"HAD requires variation in D_{{g,2}} for estimation. Both "
+            f"periods in column {time_col!r} have all-zero dose, so "
+            f"there is no treatment assignment to estimate."
+        )
+    t_pre = all_zero_periods[0]
+    t_post = [p for p in periods_list if p != t_pre][0]
 
     # Post-period nonnegative-dose check on the ORIGINAL (unshifted) dose
     # scale. Front-door rejection per paper Assumption (dose definition
