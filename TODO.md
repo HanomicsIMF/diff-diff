@@ -100,6 +100,7 @@ Deferred items from PR reviews that were not addressed before merge.
 | `HeterogeneousAdoptionDiD` Phase 4: Pierce-Schott (2016) replication harness; reproduce paper Figure 2 values and Table 1 coverage rates. | `benchmarks/`, `tests/` | Phase 2a | Low |
 | `HeterogeneousAdoptionDiD` Phase 5: `practitioner_next_steps()` integration, tutorial notebook, and `llms.txt` updates (preserving UTF-8 fingerprint). | `diff_diff/practitioner.py`, `tutorials/`, `diff_diff/guides/` | Phase 2a | Low |
 | `HeterogeneousAdoptionDiD` staggered-timing reduction: Phase 2a requires exactly 2 time periods and raises on `>2` periods with or without `first_treat_col`. A "last-cohort subgroup" reduction scheme (slice to max-cohort's 2-period window) could lift this in a targeted follow-up PR before full Phase 2b multi-period aggregation. | `diff_diff/had.py::_validate_had_panel` | Phase 2a | Low |
+| `HeterogeneousAdoptionDiD` repeated-cross-section support: paper Section 2 defines HAD on panel OR repeated cross-section, but Phase 2a is panel-only. RCS inputs (disjoint unit IDs between periods) are rejected by the balanced-panel validator with the generic "unit(s) do not appear in both periods" error. A follow-up PR will add an RCS identification path based on pre/post cell means (rather than unit-level first differences), with its own validator and a distinct `data_mode` / API surface. | `diff_diff/had.py::_validate_had_panel`, `diff_diff/had.py::_aggregate_first_difference` | Phase 2a | Medium |
 
 #### Performance
 

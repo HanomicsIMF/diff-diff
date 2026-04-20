@@ -20,7 +20,7 @@
 **Key implementation requirements:**
 
 *Assumption checks / warnings:*
-- Data must be panel (or repeated cross-section) with `D_{g,1} = 0` for all `g` (nobody treated in period one).
+- Data must be panel (or repeated cross-section) with `D_{g,1} = 0` for all `g` (nobody treated in period one). **Phase 2a implementation note:** `diff_diff.HeterogeneousAdoptionDiD` ships panel-only; repeated-cross-section inputs are rejected by the balanced-panel validator. RCS support is queued for a follow-up PR.
 - Treatment dose `D_{g,2} >= 0`. For Design 1' (the QUG case) the support infimum `d̲ := inf Supp(D_{g,2})` must equal 0; for Design 1 (no QUG) `d̲ > 0` and Assumption 5 or 6 must be invoked.
 - Assumption 1 (i.i.d. sample): `(Y_{g,1}, Y_{g,2}, D_{g,1}, D_{g,2})_{g=1,...,G}` i.i.d.
 - Assumption 2 (parallel trends for the least-treated): `lim_{d ↓ d̲} E[ΔY(0) | D_2 ≤ d] = E[ΔY(0)]`. Testable with pre-trends when a pre-treatment period `t=0` exists. Reduces to standard parallel trends when treatment is binary.

@@ -9,7 +9,8 @@ family) or the Wald-IV ratio (mass-point), then route inference through
 :func:`diff_diff.utils.safe_inference`.
 
 1. Design 1' (``continuous_at_zero``): ``d_lower = 0``, boundary density
-   continuous at zero, Assumption 3. Equation 7 / Theorem 3:
+   continuous at zero, Assumption 3. Theorem 1 / Equation 3
+   (identification); Equation 7 (sample estimator):
 
        beta = (E[Delta Y] - lim_{d v 0} E[Delta Y | D_2 <= d]) / E[D_2]
 
@@ -19,7 +20,8 @@ family) or the Wald-IV ratio (mass-point), then route inference through
 
 2. Design 1 continuous-near-d_lower (``continuous_near_d_lower``):
    ``d_lower > 0``, continuous boundary density, Assumption 5 or 6.
-   Proposition 3 / Theorem 4 (``WAS_{d_lower}`` under Assumption 6):
+   Theorem 3 / Equation 11 (``WAS_{d_lower}`` under Assumption 6;
+   Theorem 4 is the QUG null test, not this estimand):
 
        beta = (E[Delta Y] - lim_{d v d_lower} E[Delta Y | D_2 <= d])
               / E[D_2 - d_lower]
@@ -135,13 +137,14 @@ class HeterogeneousAdoptionDiDResults:
     att : float
         Point estimate of the WAS parameter on the beta-scale.
 
-        - Design 1' (paper Equation 7 / Theorem 3):
+        - Design 1' (paper Theorem 1 / Equation 3 identification;
+          Equation 7 sample estimator):
           ``att = (mean(ΔY) - tau_bc) / D_bar``
           where ``tau_bc`` is the bias-corrected local-linear estimate
           of ``lim_{d v 0} E[ΔY | D_2 <= d]`` and
           ``D_bar = (1/G) * sum(D_{g,2})``.
-        - Design 1 continuous-near-d_lower (paper Theorem 4,
-          ``WAS_{d_lower}`` under Assumption 6):
+        - Design 1 continuous-near-d_lower (paper Theorem 3 /
+          Equation 11, ``WAS_{d_lower}`` under Assumption 6):
           ``att = (mean(ΔY) - tau_bc) / mean(D_2 - d_lower)``
           where ``tau_bc`` is the bias-corrected local-linear estimate
           of ``lim_{d v d_lower} E[ΔY | D_2 <= d]``.
@@ -1006,6 +1009,17 @@ class HeterogeneousAdoptionDiD:
     ) -> HeterogeneousAdoptionDiDResults:
         """Fit the HAD estimator on a two-period panel.
 
+        Phase 2a is **panel-only**: the paper (Section 2) defines HAD on
+        panel or repeated-cross-section data, but this implementation
+        requires a balanced two-period panel with a unit identifier so
+        that unit-level first differences ``ΔY_g = Y_{g,2} - Y_{g,1}``
+        can be formed. Repeated-cross-section inputs (disjoint unit IDs
+        between periods) are rejected by the balanced-panel validator.
+        Repeated-cross-section support is queued for a follow-up PR
+        (tracked in ``TODO.md``); it requires a separate identification
+        path based on pre/post cell means rather than unit-level
+        differences.
+
         Parameters
         ----------
         data : pd.DataFrame
@@ -1337,16 +1351,17 @@ class HeterogeneousAdoptionDiD:
         Implements de Chaisemartin, Ciccia, D'Haultfoeuille, and Knau
         (2026) continuous-design estimators:
 
-        - Design 1' (``continuous_at_zero``), paper Equation 7 /
-          Theorem 3:
+        - Design 1' (``continuous_at_zero``), paper Theorem 1 /
+          Equation 3 (identification); Equation 7 (sample estimator):
 
               beta = (E[Delta Y] - lim_{d v 0} E[Delta Y | D_2 <= d]) / E[D_2]
 
           Regressor passed to the local-linear boundary fit is
           ``d_arr``; the boundary is ``0``.
 
-        - Design 1 (``continuous_near_d_lower``), paper Proposition 3 /
-          Theorem 4 (``WAS_{d_lower}`` under Assumption 6):
+        - Design 1 (``continuous_near_d_lower``), paper Theorem 3 /
+          Equation 11 (``WAS_{d_lower}`` under Assumption 6; note
+          Theorem 4 is the QUG null test, not this estimand):
 
               beta = (E[Delta Y] - lim_{d v d_lower} E[Delta Y | D_2 <= d])
                      / E[D_2 - d_lower]

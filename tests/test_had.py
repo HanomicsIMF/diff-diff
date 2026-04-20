@@ -1546,6 +1546,58 @@ class TestValidateHadPanel:
         with pytest.raises(ValueError, match="variation"):
             _validate_had_panel(panel, "outcome", "dose", "period", "unit", None)
 
+    def test_repeated_cross_section_raises(self):
+        """Review P1 round 6: Phase 2a is panel-only. An RCS input (disjoint
+        unit IDs across periods) must be rejected by the balanced-panel
+        validator with the "unit(s) do not appear in both periods" error.
+        """
+        rng = np.random.default_rng(0)
+        G = 100
+        pre = pd.DataFrame(
+            {
+                "unit": np.arange(G),
+                "period": 1,
+                "dose": np.zeros(G),
+                "outcome": rng.standard_normal(G),
+            }
+        )
+        post = pd.DataFrame(
+            {
+                "unit": np.arange(G, 2 * G),
+                "period": 2,
+                "dose": rng.uniform(0, 1, G),
+                "outcome": rng.standard_normal(G),
+            }
+        )
+        rcs = pd.concat([pre, post], ignore_index=True)
+        with pytest.raises(ValueError, match=r"both periods|[Uu]nbalanced"):
+            _validate_had_panel(rcs, "outcome", "dose", "period", "unit", None)
+
+    def test_repeated_cross_section_fit_raises(self):
+        """End-to-end: fit() on an RCS panel raises ValueError."""
+        rng = np.random.default_rng(0)
+        G = 100
+        pre = pd.DataFrame(
+            {
+                "unit": np.arange(G),
+                "period": 1,
+                "dose": np.zeros(G),
+                "outcome": rng.standard_normal(G),
+            }
+        )
+        post = pd.DataFrame(
+            {
+                "unit": np.arange(G, 2 * G),
+                "period": 2,
+                "dose": rng.uniform(0, 1, G),
+                "outcome": rng.standard_normal(G),
+            }
+        )
+        rcs = pd.concat([pre, post], ignore_index=True)
+        est = HeterogeneousAdoptionDiD()
+        with pytest.raises(ValueError, match=r"both periods|[Uu]nbalanced"):
+            est.fit(rcs, "outcome", "dose", "period", "unit")
+
 
 # =============================================================================
 # Review P1: continuous_near_d_lower on a true mass-point sample rejects
