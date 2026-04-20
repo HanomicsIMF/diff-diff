@@ -828,13 +828,36 @@ class HeterogeneousAdoptionDiD:
     design : {"auto", "continuous_at_zero", "continuous_near_d_lower", "mass_point"}
         Design-dispatch strategy. Defaults to ``"auto"`` which resolves
         via the REGISTRY auto-detect rule on the fitted dose data
-        (see :func:`_detect_design`). Explicit overrides run the chosen
-        path without auto-reject (e.g., forcing Design 1' on mass-point
-        data runs the nonparametric fit even though the paper would
-        counsel the 2SLS path).
+        (see :func:`_detect_design`).
+
+        Explicit overrides are checked against the paper's
+        regime-partition contract (Section 3.2) at fit time:
+
+        - ``"continuous_at_zero"`` (Design 1'): paper requires the
+          support infimum ``d_lower = 0``. Phase 1c's
+          ``_validate_had_inputs`` rejects mass-point samples passed
+          to this path.
+        - ``"continuous_near_d_lower"`` (Design 1, continuous density
+          near ``d_lower``): requires ``d_lower > 0`` and a
+          non-mass-point sample (modal fraction at ``d.min()`` must be
+          <= 2%). ``d_lower`` must equal ``float(d.min())`` within
+          float tolerance; non-support-infimum thresholds are off-
+          support and raise.
+        - ``"mass_point"`` (Design 1 mass-point): requires
+          ``d_lower > 0`` and ``d_lower == float(d.min())`` within
+          float tolerance. Forcing this design on a ``d_lower = 0``
+          sample raises (use ``"continuous_at_zero"`` or ``"auto"``).
+
+        Mismatched overrides raise ``ValueError`` pointing at the
+        correct design rather than silently identifying a different
+        estimand.
     d_lower : float or None
         Support infimum ``d_lower``. ``None`` means use ``0.0`` on the
         Design 1' path and ``float(d.min())`` on the other two paths.
+        On Design 1 paths (``continuous_near_d_lower`` and
+        ``mass_point``), an explicit ``d_lower`` must equal
+        ``float(d.min())`` within float tolerance AND must be strictly
+        positive; zero-valued or mismatched thresholds raise.
     kernel : {"epanechnikov", "triangular", "uniform"}
         Forwarded to :func:`bias_corrected_local_linear` on the continuous
         paths. Ignored on the mass-point path.
@@ -1069,6 +1092,29 @@ class HeterogeneousAdoptionDiD:
             d_lower_val = float(d_arr.min())
         else:
             d_lower_val = float(d_lower_arg)
+
+        # ---- Regime partition: d_lower > 0 for Design 1 paths ----
+        # Paper Section 3.2 partitions HAD into d_lower = 0 (Design 1',
+        # continuous_at_zero) and d_lower > 0 (Design 1, continuous_near
+        # _d_lower or mass_point). The auto-detect rule already enforces
+        # this partition; explicit overrides must respect it too, otherwise
+        # `design="mass_point", d_lower=0` returns a finite but
+        # paper-incompatible 2SLS result and `design="continuous_near_d_lower"`
+        # with d_lower=0 reduces to Design 1' algebra while mislabeling the
+        # estimand as `WAS_d_lower` and emitting the wrong Assumption 5/6
+        # warning. Use the same float-tolerance family as _detect_design's
+        # d.min()==0 tie-break.
+        if resolved_design in ("mass_point", "continuous_near_d_lower"):
+            scale = max(1.0, float(np.max(np.abs(d_arr))))
+            if abs(d_lower_val) <= 1e-12 * scale:
+                raise ValueError(
+                    f"design={resolved_design!r} requires d_lower > 0 (paper "
+                    f"Section 3.2 reserves the d_lower=0 regime for Design 1' "
+                    f"/ `continuous_at_zero`). Got d_lower={d_lower_val!r}. "
+                    f"Use design='continuous_at_zero' (explicit) or "
+                    f"design='auto' (auto-detect) for samples with support "
+                    f"infimum at zero."
+                )
 
         # ---- Original-scale mass-point check before the regressor shift ----
         # When a user explicitly forces design="continuous_near_d_lower"

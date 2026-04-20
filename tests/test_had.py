@@ -1108,20 +1108,36 @@ class TestExplicitDesignOverrides:
         with pytest.raises(NotImplementedError, match="mass-point"):
             est.fit(panel, "outcome", "dose", "period", "unit")
 
-    def test_force_mass_point_on_continuous_data_at_support_infimum(self):
-        """Forcing mass-point on continuous data with d_lower=d.min() runs.
+    def test_force_mass_point_on_d_lower_zero_sample_raises(self):
+        """Review P1 round 4: Design 1 paths require d_lower > 0.
 
-        d.min()==0 exactly in this DGP, so d_lower=0.0 is the paper-consistent
-        support-infimum threshold. The resulting mass=1 case exercises the
-        degenerate-mass boundary (only unit 0 is "at d_lower"; rest are above).
+        Paper Section 3.2 reserves the d_lower=0 regime for Design 1'
+        (continuous_at_zero). Forcing `mass_point` on a sample with
+        d.min()==0 must raise, pointing the user to continuous_at_zero
+        or auto.
         """
         d, dy = _dgp_continuous_at_zero(500, seed=0)
         panel = _make_panel(d, dy)
-        # d.min() == 0 exactly (d[0]=0 by construction); d_lower must match.
         est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=0.0)
-        r = est.fit(panel, "outcome", "dose", "period", "unit")
-        assert r.design == "mass_point"
-        assert r.d_lower == 0.0
+        with pytest.raises(ValueError, match=r"d_lower > 0|Design 1'"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_force_continuous_near_d_lower_on_d_lower_zero_sample_raises(self):
+        """Parallel: continuous_near_d_lower must also reject d_lower=0."""
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower")
+        # d_lower auto-resolves to float(d.min()) == 0.0 on this DGP.
+        with pytest.raises(ValueError, match=r"d_lower > 0|Design 1'"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_force_mass_point_d_lower_none_on_zero_sample_raises(self):
+        """d_lower=None on a d.min()==0 sample resolves to 0; must still raise."""
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=None)
+        with pytest.raises(ValueError, match=r"d_lower > 0"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
 
 
 # =============================================================================
