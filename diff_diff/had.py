@@ -189,10 +189,15 @@ class HeterogeneousAdoptionDiDResults:
         ``"analytical_nonparametric"`` (continuous designs) or
         ``"analytical_2sls"`` (mass-point).
     vcov_type : str or None
-        Variance-covariance family used. ``None`` on continuous paths
-        (they use the CCT-2014 robust SE from Phase 1c, not the library's
-        ``vcov_type`` enum). Mass-point: one of ``"classical"`` or
-        ``"hc1"`` (CR1 when ``cluster`` is supplied).
+        Effective variance-covariance family used. ``None`` on continuous
+        paths (they use the CCT-2014 robust SE from Phase 1c, not the
+        library's ``vcov_type`` enum). Mass-point: ``"classical"`` or
+        ``"hc1"`` when ``cluster`` is not supplied, and ``"cr1"``
+        whenever ``cluster`` is supplied (cluster-robust CR1 is computed
+        regardless of the requested ``vcov_type`` because
+        classical/hc1 + cluster collapses to the same CR1 sandwich).
+        Downstream consumers reading ``result.to_dict()`` can inspect
+        this field directly to determine the effective SE family.
     cluster_name : str or None
         Column name of the cluster variable on the mass-point path when
         cluster-robust SE is requested. ``None`` otherwise.
@@ -269,9 +274,12 @@ class HeterogeneousAdoptionDiDResults:
             lines.append(f"{'Strictly above d_lower:':<30} {self.n_above_d_lower:>20}")
         lines.append(f"{'Inference method:':<30} {self.inference_method:>20}")
         if self.vcov_type is not None:
-            label = self.vcov_type
             if self.cluster_name is not None:
+                # Cluster-robust (CR1): the stored vcov_type is already "cr1",
+                # but render with the cluster column for clarity.
                 label = f"CR1 at {self.cluster_name}"
+            else:
+                label = self.vcov_type
             lines.append(f"{'Variance:':<30} {label:>20}")
         if self.bandwidth_diagnostics is not None:
             bw = self.bandwidth_diagnostics
@@ -476,20 +484,24 @@ def _validate_had_panel(
     # domain check that catches typos and staggered-timing mix-ups; it
     # does NOT cross-validate first_treat against post-period dose
     # (D_{g, t_post} remains the primary signal). Extended cross-checks
-    # are queued for a follow-up PR.
+    # are queued for a follow-up PR. The check is DTYPE-AGNOSTIC: it uses
+    # pd.isna() for missingness and raw-value membership against
+    # {0, t_post} so that string-labelled periods (e.g., ("A", "B")) with
+    # first_treat in {0, "B"} are supported.
     if first_treat_col is not None:
-        ft = data.groupby(unit_col)[first_treat_col].first().to_numpy()
-        if np.any(np.isnan(ft.astype(np.float64, copy=False))):
+        ft_series = data.groupby(unit_col)[first_treat_col].first()
+        if bool(ft_series.isna().any()):
             raise ValueError(
                 f"first_treat_col={first_treat_col!r} contains NaN. "
                 f"Use 0 for never-treated units and t_post for treated."
             )
         valid_values = {0, t_post}
-        bad = [v for v in np.unique(ft) if int(v) not in valid_values]
+        observed = set(ft_series.unique().tolist())
+        bad = sorted(observed - valid_values, key=lambda x: str(x))
         if bad:
             raise ValueError(
                 f"first_treat_col={first_treat_col!r} contains value(s) "
-                f"{bad} outside the allowed set {{0, {t_post}}} for a "
+                f"{bad} outside the allowed set {{0, {t_post!r}}} for a "
                 f"two-period HAD panel. Staggered timing with multiple "
                 f"cohorts is Phase 2b."
             )
@@ -1042,6 +1054,34 @@ class HeterogeneousAdoptionDiD:
         else:
             d_lower_val = float(d_lower_arg)
 
+        # ---- Original-scale mass-point check before the regressor shift ----
+        # When a user explicitly forces design="continuous_near_d_lower"
+        # on a sample that is actually a mass-point sample (modal fraction
+        # at d.min() > 2% per paper Section 3.2.4), the downstream code
+        # would shift D - d_lower, making the support minimum zero on the
+        # shifted scale and suppressing the Phase 1c mass-point rejection
+        # guard (_validate_had_inputs only checks modal fraction when
+        # d.min() > 0). That silent coercion produces wrong CIs for a
+        # mass-point sample by running the nonparametric estimator where
+        # the paper's 2SLS branch is required. Front-door reject.
+        if resolved_design == "continuous_near_d_lower":
+            d_min_orig = float(d_arr.min())
+            if d_min_orig > 0:
+                eps_mp = 1e-12 * max(1.0, abs(d_min_orig))
+                at_d_min_mask_orig = np.abs(d_arr - d_min_orig) <= eps_mp
+                modal_fraction_orig = float(np.mean(at_d_min_mask_orig))
+                if modal_fraction_orig > _MASS_POINT_THRESHOLD:
+                    raise ValueError(
+                        f"design='continuous_near_d_lower' cannot be used on a "
+                        f"mass-point sample (modal fraction {modal_fraction_orig:.4f} "
+                        f"at d.min()={d_min_orig!r} exceeds the "
+                        f"{_MASS_POINT_THRESHOLD:.2f} threshold from paper Section "
+                        f"3.2.4). Use design='mass_point' (Wald-IV / 2SLS) or "
+                        f"design='auto' which will auto-detect. Forcing the "
+                        f"continuous path on a mass-point sample would produce "
+                        f"the wrong estimand."
+                    )
+
         # ---- d_lower contract for Design 1 paths ----
         # Paper Sections 3.2.2-3.2.4 define the Design 1 estimators at
         # d_lower = support infimum of D_{g,2}. For the mass-point path,
@@ -1148,21 +1188,25 @@ class HeterogeneousAdoptionDiD:
         elif resolved_design == "mass_point":
             if vcov_type_arg is None:
                 # Backward-compat: robust=True -> hc1, robust=False -> classical.
-                vcov_effective = "hc1" if robust_arg else "classical"
+                vcov_requested = "hc1" if robust_arg else "classical"
             else:
-                vcov_effective = vcov_type_arg.lower()
-            # Explicit cluster + hc1 becomes CR1 inside _fit_mass_point_2sls.
+                vcov_requested = vcov_type_arg.lower()
             att, se = _fit_mass_point_2sls(
                 d_arr,
                 dy_arr,
                 d_lower_val,
                 cluster_arr,
-                vcov_effective,
+                vcov_requested,
             )
             bc_fit = None
             bw_diag = None
             inference_method = "analytical_2sls"
-            vcov_label = vcov_effective
+            # Store the EFFECTIVE variance family so downstream consumers
+            # (to_dict, to_dataframe, summary) see the actual SE type that
+            # was computed. When cluster is supplied, _fit_mass_point_2sls
+            # unconditionally computes CR1 regardless of vcov_requested
+            # (e.g. classical+cluster -> CR1), so we surface that here.
+            vcov_label = "cr1" if cluster_arg is not None else vcov_requested
             cluster_label = cluster_arg if cluster_arg is not None else None
         else:
             raise ValueError(f"Internal error: unhandled design={resolved_design!r}.")

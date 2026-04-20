@@ -1404,3 +1404,118 @@ class TestValidateHadPanel:
         t_pre, t_post = _validate_had_panel(panel, "outcome", "dose", "period", "unit", None)
         assert t_pre == "A"
         assert t_post == "B"
+
+    def test_first_treat_col_with_string_periods(self):
+        """Review P1: first_treat_col validator must be dtype-agnostic.
+
+        With string periods ("A", "B") and first_treat_col values in
+        {0, "B"}, the validator must not attempt numeric coercion.
+        """
+        d, dy = _dgp_continuous_at_zero(100, seed=0)
+        panel = _make_panel(d, dy, periods=("A", "B"))
+        # 50 units never-treated (first_treat=0), 50 treated (first_treat="B")
+        ft_unit = np.array([0 if i % 2 == 0 else "B" for i in range(100)], dtype=object)
+        panel["ft"] = np.repeat(ft_unit, 2)
+        t_pre, t_post = _validate_had_panel(panel, "outcome", "dose", "period", "unit", "ft")
+        assert t_pre == "A"
+        assert t_post == "B"
+
+    def test_first_treat_col_dtype_agnostic_rejects_invalid_string(self):
+        """Mix string periods + invalid first_treat_col string -> ValueError."""
+        d, dy = _dgp_continuous_at_zero(100, seed=0)
+        panel = _make_panel(d, dy, periods=("A", "B"))
+        # Invalid: "Z" is neither 0 nor "B"
+        ft_unit = np.array([0 if i % 2 == 0 else "Z" for i in range(100)], dtype=object)
+        panel["ft"] = np.repeat(ft_unit, 2)
+        with pytest.raises(ValueError, match="first_treat_col"):
+            _validate_had_panel(panel, "outcome", "dose", "period", "unit", "ft")
+
+
+# =============================================================================
+# Review P1: continuous_near_d_lower on a true mass-point sample rejects
+# =============================================================================
+
+
+class TestContinuousPathRejectsMassPoint:
+    """Explicit override to continuous_near_d_lower on a mass-point sample
+    must raise before the regressor shift, otherwise the Phase 1c
+    mass-point guard (which fires only on d.min() > 0) is bypassed.
+    """
+
+    def test_continuous_near_on_mass_point_sample_raises(self):
+        d, dy = _dgp_mass_point(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower")
+        with pytest.raises(ValueError, match=r"mass-point sample|mass_point"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_continuous_near_on_continuous_sample_runs(self):
+        """Sanity: the pre-shift check does NOT reject valid continuous samples."""
+        d, dy = _dgp_continuous_near_d_lower(500, seed=0)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = HeterogeneousAdoptionDiD(design="continuous_near_d_lower").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+        assert np.isfinite(r.att)
+
+
+# =============================================================================
+# Review P2: cluster-applied mass-point stores vcov_type="cr1"
+# =============================================================================
+
+
+class TestMassPointClusterLabel:
+    def test_cluster_stores_cr1(self):
+        """to_dict() / downstream consumers see 'cr1' not 'hc1' when clustered."""
+        d, dy = _dgp_mass_point(200, seed=0)
+        cluster_unit = np.repeat(np.arange(50), 4)
+        panel = _make_panel(d, dy, extra_cols={"state": cluster_unit})
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = HeterogeneousAdoptionDiD(design="mass_point", cluster="state").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+        assert r.vcov_type == "cr1"
+        assert r.cluster_name == "state"
+
+    def test_no_cluster_stores_base_family(self):
+        """Unclustered mass-point keeps 'hc1' or 'classical' label."""
+        d, dy = _dgp_mass_point(200, seed=0)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_hc1 = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="hc1").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+            r_cl = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="classical").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+        assert r_hc1.vcov_type == "hc1"
+        assert r_cl.vcov_type == "classical"
+
+    def test_cluster_with_classical_collapses_to_cr1(self):
+        """classical + cluster is CR1 in practice; label reflects that."""
+        d, dy = _dgp_mass_point(200, seed=0)
+        cluster_unit = np.repeat(np.arange(50), 4)
+        panel = _make_panel(d, dy, extra_cols={"state": cluster_unit})
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = HeterogeneousAdoptionDiD(
+                design="mass_point", vcov_type="classical", cluster="state"
+            ).fit(panel, "outcome", "dose", "period", "unit")
+        assert r.vcov_type == "cr1"
+
+    def test_to_dict_shows_effective_family(self):
+        d, dy = _dgp_mass_point(200, seed=0)
+        cluster_unit = np.repeat(np.arange(50), 4)
+        panel = _make_panel(d, dy, extra_cols={"state": cluster_unit})
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = HeterogeneousAdoptionDiD(design="mass_point", cluster="state").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+        result_dict = r.to_dict()
+        assert result_dict["vcov_type"] == "cr1"
+        assert result_dict["cluster_name"] == "state"
