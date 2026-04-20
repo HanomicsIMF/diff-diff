@@ -70,17 +70,34 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
     name = type(results).__name__
 
     if name == "DiDResults":
+        # Covers both ``DifferenceInDifferences`` (2x2 DiD) and
+        # ``TwoWayFixedEffects`` (TWFE with unit + time FE). Both
+        # estimators return ``DiDResults``; there is no separate
+        # ``TwoWayFixedEffectsResults`` class as of this PR
+        # (confirmed in PR #347 R1 review). The description covers
+        # both interpretations because the result carries no
+        # estimator-provenance marker BR/DR can dispatch on. Adding a
+        # dedicated TWFE result class (or persisting provenance on
+        # DiDResults) is queued as follow-up so this branch can split
+        # in a future PR.
         return {
-            "name": "ATT (2x2)",
+            "name": "ATT (2x2 or TWFE within-transformed coefficient)",
             "definition": (
-                "The average treatment effect on the treated, estimated as a "
-                "single 2x2 Difference-in-Differences contrast between the "
-                "treated-unit change and the control-unit change across the "
-                "pre / post period."
+                "The average treatment effect on the treated. For "
+                "``DifferenceInDifferences``, this is the 2x2 DiD "
+                "contrast between treated-unit change and control-unit "
+                "change across pre / post. For ``TwoWayFixedEffects``, "
+                "this is the coefficient on the treatment-by-post "
+                "interaction in a regression with unit and time fixed "
+                "effects; under homogeneous treatment effects it is "
+                "the ATT, and under heterogeneous effects with staggered "
+                "adoption it is a weighted average of 2x2 comparisons "
+                "that may include forbidden later-vs-earlier comparisons "
+                "(see Goodman-Bacon)."
             ),
             "aggregation": "2x2",
             "headline_attribute": "att",
-            "reference": "REGISTRY.md Sec. DifferenceInDifferences",
+            "reference": ("REGISTRY.md Sec. DifferenceInDifferences / TwoWayFixedEffects"),
         }
 
     if name == "MultiPeriodDiDResults":
@@ -95,22 +112,6 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
             "aggregation": "event_study",
             "headline_attribute": "avg_att",
             "reference": "REGISTRY.md Sec. MultiPeriodDiD",
-        }
-
-    if name == "TwoWayFixedEffectsResults":
-        return {
-            "name": "TWFE ATT (within-transformed DiD coefficient)",
-            "definition": (
-                "The coefficient on the treatment-by-post interaction in a "
-                "two-way-fixed-effects regression (unit + time FE). Under "
-                "homogeneous treatment effects this is the ATT; under "
-                "heterogeneous effects with staggered adoption it is a weighted "
-                "average of 2x2 comparisons, possibly including forbidden "
-                "comparisons (see Goodman-Bacon)."
-            ),
-            "aggregation": "twfe",
-            "headline_attribute": "att",
-            "reference": "REGISTRY.md Sec. TwoWayFixedEffects",
         }
 
     if name == "CallawaySantAnnaResults":
@@ -197,13 +198,19 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                 "(``A_s > a + kappa_post``)."
             )
         return {
-            "name": "overall ATT (sub-experiment-weighted aggregate across stacked events)",
+            "name": "overall ATT (average of post-treatment event-study coefficients)",
             "definition": (
-                "A weighted aggregate of per-sub-experiment ATTs across stacked "
-                "adoption events. Each sub-experiment aligns a treated cohort "
-                "with its clean-control set over the event window "
-                "``[-kappa_pre, +kappa_post]``; the overall ATT averages these "
-                "sub-experiment ATTs using treated-unit share weights. " + control_clause
+                "The average of post-treatment event-study coefficients "
+                "``delta_h`` (h >= -anticipation), estimated from the stacked "
+                "sub-experiment panel with delta-method SE "
+                "(``stacked_did.py`` around line 541). Each sub-experiment "
+                "aligns a treated cohort with its clean-control set over the "
+                "event window ``[-kappa_pre, +kappa_post]``; each per-horizon "
+                "``delta_h`` is the paper's ``theta_kappa^e`` "
+                "treated-share-weighted cross-event aggregate. The "
+                "``overall_att`` headline is the equally-weighted average of "
+                "these per-horizon coefficients, not a separate cross-event "
+                "weighted aggregate at the ATT level. " + control_clause
             ),
             "aggregation": "stacked",
             "headline_attribute": "overall_att",
@@ -322,7 +329,7 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                     "contrasts."
                 ),
                 "aggregation": "M",
-                "headline_attribute": "att",
+                "headline_attribute": "overall_att",
                 "reference": (
                     "de Chaisemartin & D'Haultfoeuille (2020); "
                     "REGISTRY.md Sec. ChaisemartinDHaultfoeuille"
@@ -362,7 +369,7 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                 "share weights." + extra
             ),
             "aggregation": agg_tag,
-            "headline_attribute": "att",
+            "headline_attribute": "overall_att",
             "reference": (
                 "de Chaisemartin & D'Haultfoeuille (2020, 2024); "
                 "REGISTRY.md Sec. ChaisemartinDHaultfoeuille"
