@@ -3440,3 +3440,217 @@ class TestAggregateSurvey:
             )
         assert 0 not in panel_a["state"].values
         assert len(panel_a) == 6  # 3 states x 2 periods
+
+
+class TestAggregateSurveyScaffolding:
+    """Tests for the amortized TSL variance fast path in aggregate_survey.
+
+    Equivalence tests verify that ``_compute_if_variance_fast`` produces
+    numerically identical ``_mean`` / ``_se`` / ``_precision`` outputs
+    (assert_allclose atol=1e-14 rtol=1e-14) relative to the legacy
+    ``compute_survey_if_variance`` path across every supported design
+    mode and ``lonely_psu`` policy.  Reduction-order drift is expected
+    to be sub-ULP because the formulas are identical and only the
+    order of summation changes (single np.bincount vs per-stratum
+    pandas groupby).
+    """
+
+    def _build_microdata(self, mode, seed=42):
+        """Per-case microdata plus a SurveyDesign that exercises that mode."""
+        rng = np.random.default_rng(seed)
+        n_per_cell = 80
+        state = np.repeat(["A", "B", "C"], 2 * n_per_cell)
+        year = np.tile(np.repeat([2019, 2020], n_per_cell), 3)
+        n = len(state)
+        wt = rng.uniform(0.5, 2.5, n)
+        y = rng.normal(5.0, 1.5, n)
+        df_base = pd.DataFrame(
+            {"state": state, "year": year, "wt": wt, "y": y}
+        )
+
+        if mode == "stratified_fpc":
+            df = df_base.copy()
+            df["stratum"] = rng.integers(0, 4, n)
+            df["psu"] = df["stratum"] * 10 + rng.integers(0, 4, n)
+            df["fpc"] = 200.0  # comfortably above per-stratum n_psu
+            sd = SurveyDesign(weights="wt", strata="stratum", psu="psu", fpc="fpc")
+            return df, sd
+
+        if mode == "stratified_no_fpc":
+            df = df_base.copy()
+            df["stratum"] = rng.integers(0, 4, n)
+            df["psu"] = df["stratum"] * 10 + rng.integers(0, 4, n)
+            sd = SurveyDesign(weights="wt", strata="stratum", psu="psu")
+            return df, sd
+
+        if mode == "stratified_no_psu":
+            # strata present, psu absent — each observation is its own
+            # PSU within its stratum.  This is a distinct scaffolding
+            # branch (survey.py:_precompute_psu_scaffolding, else clause
+            # of the `if psu is not None` block).
+            df = df_base.copy()
+            df["stratum"] = rng.integers(0, 4, n)
+            sd = SurveyDesign(weights="wt", strata="stratum")
+            return df, sd
+
+        if mode == "stratified_no_psu_fpc":
+            # Same branch as above plus stratum-level FPC lookup.
+            df = df_base.copy()
+            df["stratum"] = rng.integers(0, 4, n)
+            df["fpc"] = 1000.0  # well above per-stratum obs count
+            sd = SurveyDesign(weights="wt", strata="stratum", fpc="fpc")
+            return df, sd
+
+        if mode == "psu_only":
+            df = df_base.copy()
+            df["psu"] = rng.integers(0, 12, n)
+            sd = SurveyDesign(weights="wt", psu="psu")
+            return df, sd
+
+        if mode == "weights_only":
+            return df_base.copy(), SurveyDesign(weights="wt")
+
+        if mode.startswith("lonely_"):
+            # Singleton stratum: stratum 0 has exactly one PSU; strata 1..3
+            # each have 4 PSUs.  Forces every lonely_psu branch to engage.
+            df = df_base.copy()
+            strata = rng.integers(1, 4, n)
+            psu = strata * 10 + rng.integers(0, 4, n)
+            sentinel = rng.choice(n, size=n // 8, replace=False)
+            strata[sentinel] = 0
+            psu[sentinel] = 999
+            df["stratum"] = strata
+            df["psu"] = psu
+            policy = mode.split("_", 1)[1]
+            sd = SurveyDesign(
+                weights="wt", strata="stratum", psu="psu", lonely_psu=policy,
+            )
+            return df, sd
+
+        raise ValueError(f"Unknown mode: {mode}")
+
+    @staticmethod
+    def _assert_panels_equivalent(p_fast, p_legacy, outcome="y"):
+        assert len(p_fast) == len(p_legacy)
+        assert list(p_fast.columns) == list(p_legacy.columns)
+        for suffix in ("_mean", "_se", "_precision"):
+            col = f"{outcome}{suffix}"
+            a = p_fast[col].to_numpy(dtype=np.float64)
+            b = p_legacy[col].to_numpy(dtype=np.float64)
+            nan_a, nan_b = np.isnan(a), np.isnan(b)
+            assert np.array_equal(nan_a, nan_b), f"NaN pattern mismatch in {col}"
+            np.testing.assert_allclose(
+                a[~nan_a], b[~nan_b],
+                atol=1e-14, rtol=1e-14,
+                err_msg=f"{col} diverges between fast and legacy paths",
+            )
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "stratified_fpc",
+            "stratified_no_fpc",
+            "stratified_no_psu",
+            "stratified_no_psu_fpc",
+            "psu_only",
+            "weights_only",
+            "lonely_remove",
+            "lonely_certainty",
+            "lonely_adjust",
+        ],
+    )
+    def test_fast_path_equals_legacy(self, mode, monkeypatch):
+        """Fast and legacy paths produce numerically identical panels."""
+        from diff_diff import prep
+
+        data, sd = self._build_microdata(mode)
+        panel_fast, _ = aggregate_survey(
+            data, by=["state", "year"], outcomes="y", survey_design=sd,
+        )
+        # Force the legacy code path by disabling the scaffolding precompute.
+        # _cell_mean_variance falls back to compute_survey_if_variance when
+        # scaffolding is None.
+        monkeypatch.setattr(
+            prep, "_precompute_psu_scaffolding", lambda resolved: None,
+        )
+        panel_legacy, _ = aggregate_survey(
+            data, by=["state", "year"], outcomes="y", survey_design=sd,
+        )
+        self._assert_panels_equivalent(panel_fast, panel_legacy)
+
+    def test_scaffolding_stratified_shape(self):
+        from diff_diff.survey import _precompute_psu_scaffolding
+
+        data, sd = self._build_microdata("stratified_fpc")
+        resolved = sd.resolve(data)
+        scf = _precompute_psu_scaffolding(resolved)
+        assert scf.mode == "stratified"
+        assert scf.n == len(data)
+        assert scf.psu_codes.shape == (len(data),)
+        assert scf.psu_stratum.ndim == 1
+        assert scf.n_psu_per_stratum.ndim == 1
+        assert len(scf.psu_stratum) == int(scf.psu_codes.max() + 1)
+        # adjustment_h is zero for any singleton stratum by construction
+        if scf.singleton_strata.any():
+            assert np.all(scf.adjustment_h[scf.singleton_strata] == 0.0)
+
+    def test_scaffolding_weights_only_shape(self):
+        from diff_diff.survey import _precompute_psu_scaffolding
+
+        data, sd = self._build_microdata("weights_only")
+        resolved = sd.resolve(data)
+        scf = _precompute_psu_scaffolding(resolved)
+        assert scf.mode == "no_strata_no_psu"
+        assert scf.adjustment_direct is not None
+        assert scf.psu_codes is None
+        assert scf.psu_codes_only is None
+
+    def test_scaffolding_psu_only_shape(self):
+        from diff_diff.survey import _precompute_psu_scaffolding
+
+        data, sd = self._build_microdata("psu_only")
+        resolved = sd.resolve(data)
+        scf = _precompute_psu_scaffolding(resolved)
+        assert scf.mode == "psu_only"
+        assert scf.psu_codes_only is not None
+        assert scf.n_psu_only is not None and scf.n_psu_only >= 2
+        assert scf.adjustment_only is not None
+        assert scf.psu_codes is None
+        assert scf.adjustment_direct is None
+
+    def test_lonely_psu_certainty_counts_singletons(self):
+        """Under lonely_psu='certainty', singletons contribute to legitimate_zero_count."""
+        from diff_diff.survey import _precompute_psu_scaffolding
+
+        data, sd = self._build_microdata("lonely_certainty")
+        resolved = sd.resolve(data)
+        scf = _precompute_psu_scaffolding(resolved)
+        n_singletons = int(scf.singleton_strata.sum())
+        assert n_singletons >= 1  # sanity: fixture does plant a singleton
+        assert scf.legitimate_zero_count >= n_singletons
+
+    def test_scaffolding_fpc_saturation_counts(self):
+        """f_h >= 1.0 increments legitimate_zero_count independent of singletons."""
+        from diff_diff.survey import _precompute_psu_scaffolding
+
+        rng = np.random.default_rng(7)
+        n = 200
+        stratum = rng.integers(0, 2, n)
+        # Build exactly 4 unique PSUs per stratum so FPC = n_psu exactly.
+        psu = np.empty(n, dtype=np.int64)
+        for h in range(2):
+            idx = np.where(stratum == h)[0]
+            psu[idx] = np.arange(len(idx)) % 4 + h * 10
+        df = pd.DataFrame(
+            {
+                "wt": rng.uniform(1, 2, n),
+                "stratum": stratum,
+                "psu": psu,
+                "y": rng.normal(size=n),
+                "fpc": 4.0,  # f_h = 4/4 = 1.0
+            }
+        )
+        sd = SurveyDesign(weights="wt", strata="stratum", psu="psu", fpc="fpc")
+        resolved = sd.resolve(df)
+        scf = _precompute_psu_scaffolding(resolved)
+        assert scf.legitimate_zero_count >= 1

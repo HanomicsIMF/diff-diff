@@ -41,32 +41,36 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
 <!-- TABLE:start scale_sweep_totals -->
 | Scenario | Scale | Python (s) | Rust (s) | Py/Rust |
 |---|---|---:|---:|---:|
-| 1. Staggered campaign | small | 0.51 | 0.50 | 1.0x |
-|  | medium | 0.75 | 0.76 | 1.0x |
-|  | large | 1.33 | 1.38 | 1.0x |
-| 2. Brand awareness survey | small | 0.19 | 0.20 | 1.0x |
-|  | medium | 0.56 | 0.55 | 1.0x |
-|  | large | 1.09 | 1.00 | 1.1x |
-| 3. BRFSS microdata -> CS panel | small | 1.61 | 1.66 | 1.0x |
-|  | medium | 6.10 | 6.23 | 1.0x |
-|  | large | 24.41 | 24.94 | 1.0x |
-| 4. SDiD few markets | small | 3.70 | 0.04 | 89.5x |
-|  | medium | 3.99 | 0.12 | 33.6x |
-|  | large | skip | 0.26 | - |
-| 5. Reversible dCDH | single | 0.72 | 0.75 | 1.0x |
-| 6. Pricing dose-response | single | 0.59 | 0.60 | 1.0x |
+| 1. Staggered campaign | small | 0.52 | 0.51 | 1.0x |
+|  | medium | 0.81 | 0.81 | 1.0x |
+|  | large | 1.32 | 1.31 | 1.0x |
+| 2. Brand awareness survey | small | 0.23 | 0.20 | 1.1x |
+|  | medium | 0.53 | 0.50 | 1.1x |
+|  | large | 0.87 | 0.93 | 0.9x |
+| 3. BRFSS microdata -> CS panel | small | 0.21 | 0.17 | 1.3x |
+|  | medium | 0.49 | 0.47 | 1.0x |
+|  | large | 1.33 | 1.32 | 1.0x |
+| 4. SDiD few markets | small | 3.70 | 0.04 | 88.6x |
+|  | medium | 4.00 | 0.11 | 37.6x |
+|  | large | skip | 0.23 | - |
+| 5. Reversible dCDH | single | 0.79 | 0.78 | 1.0x |
+| 6. Pricing dose-response | single | 0.59 | 0.63 | 0.9x |
 <!-- TABLE:end scale_sweep_totals -->
 
 ### Scaling findings
 
 **Three findings are load-bearing for the optimization priority list:**
 
-1. **BRFSS `aggregate_survey` is the dominant practitioner pain point at
-   realistic pooled-multi-year scale.** Scales near-linearly with microdata
-   row count. At 1M rows (roughly what a 10-year pooled BRFSS analysis
-   looks like) the full chain takes ~24 seconds and essentially all of it
-   is inside `_compute_stratified_psu_meat`. Rust does not touch it
-   (`aggregate_survey` is entirely Python).
+1. **BRFSS `aggregate_survey` is now practitioner-fast at every measured
+   scale.** Prior to the precompute-scaffolding fix (see "Optimization
+   landed" below), the full chain at 1M rows took ~24 seconds and was
+   essentially all inside `_compute_stratified_psu_meat`. After the fix,
+   the chain is sub-2s at every measured scale; `aggregate_survey`
+   continues to dominate its own (now-cheap) chain share, but in
+   absolute time the entire workflow is well under a practitioner-
+   perceptible threshold at realistic pooled-multi-year BRFSS volume.
+   The path is entirely Python, so Python and Rust backends track each
+   other within noise.
 2. **Staggered CS chain stays cheap across scales.** A 10x unit increase
    (150 -> 1,500) is a small-single-digit multiplier on total time.
    ImputationDiD and SunAbraham together consistently account for
@@ -96,18 +100,18 @@ scale. Data-shape details are in `docs/performance-scenarios.md`.
 <!-- TABLE:start top_phases_by_scenario -->
 | Scenario | Scale | Backend | Top phase (%) | 2nd phase (%) | 3rd phase (%) |
 |---|---|---|---|---|---|
-| 1. Staggered campaign | large | python | `6_imputation_did_robustness` (49%) | `5_sun_abraham_robustness` (28%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
-| 1. Staggered campaign | large | rust | `6_imputation_did_robustness` (40%) | `5_sun_abraham_robustness` (37%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
-| 2. Brand awareness survey | large | python | `3_replicate_weights_jk1` (57%) | `4_multi_outcome_loop_3_metrics` (22%) | `7_event_study_plus_honest_did` (14%) |
-| 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (54%) | `4_multi_outcome_loop_3_metrics` (22%) | `7_event_study_plus_honest_did` (14%) |
-| 3. BRFSS microdata -> CS panel | large | python | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
-| 3. BRFSS microdata -> CS panel | large | rust | `1_aggregate_survey_microdata_to_panel` (100%) | `5_sun_abraham_robustness` (0%) | `2_cs_fit_with_stage2_survey_design` (0%) |
+| 1. Staggered campaign | large | python | `6_imputation_did_robustness` (54%) | `5_sun_abraham_robustness` (21%) | `2_cs_fit_with_covariates_bootstrap999` (13%) |
+| 1. Staggered campaign | large | rust | `6_imputation_did_robustness` (41%) | `5_sun_abraham_robustness` (36%) | `2_cs_fit_with_covariates_bootstrap999` (12%) |
+| 2. Brand awareness survey | large | python | `3_replicate_weights_jk1` (46%) | `4_multi_outcome_loop_3_metrics` (26%) | `7_event_study_plus_honest_did` (17%) |
+| 2. Brand awareness survey | large | rust | `3_replicate_weights_jk1` (50%) | `4_multi_outcome_loop_3_metrics` (25%) | `7_event_study_plus_honest_did` (15%) |
+| 3. BRFSS microdata -> CS panel | large | python | `1_aggregate_survey_microdata_to_panel` (91%) | `5_sun_abraham_robustness` (8%) | `2_cs_fit_with_stage2_survey_design` (1%) |
+| 3. BRFSS microdata -> CS panel | large | rust | `1_aggregate_survey_microdata_to_panel` (95%) | `5_sun_abraham_robustness` (4%) | `2_cs_fit_with_stage2_survey_design` (1%) |
 | 4. SDiD few markets | medium | python | `5_sensitivity_to_zeta_omega` (43%) | `3_in_time_placebo` (39%) | `2_sdid_bootstrap_variance_200` (9%) |
-| 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (40%) | `3_in_time_placebo` (30%) | `1_sdid_jackknife_variance` (16%) |
-| 5. Reversible dCDH | single | python | `4_heterogeneity_refit` (51%) | `1_dcdh_fit_Lmax3_survey_TSL` (48%) | `3_honest_did_on_placebo` (1%) |
-| 5. Reversible dCDH | single | rust | `4_heterogeneity_refit` (50%) | `1_dcdh_fit_Lmax3_survey_TSL` (49%) | `3_honest_did_on_placebo` (1%) |
-| 6. Pricing dose-response | single | python | `1_cdid_cubic_spline_bootstrap199` (25%) | `6_spline_sensitivity_num_knots2` (25%) | `5_spline_sensitivity_degree1` (25%) |
-| 6. Pricing dose-response | single | rust | `1_cdid_cubic_spline_bootstrap199` (25%) | `6_spline_sensitivity_num_knots2` (25%) | `3_cdid_event_study_pretrend` (25%) |
+| 4. SDiD few markets | large | rust | `5_sensitivity_to_zeta_omega` (38%) | `3_in_time_placebo` (30%) | `1_sdid_jackknife_variance` (16%) |
+| 5. Reversible dCDH | single | python | `4_heterogeneity_refit` (51%) | `1_dcdh_fit_Lmax3_survey_TSL` (49%) | `3_honest_did_on_placebo` (0%) |
+| 5. Reversible dCDH | single | rust | `4_heterogeneity_refit` (50%) | `1_dcdh_fit_Lmax3_survey_TSL` (50%) | `3_honest_did_on_placebo` (0%) |
+| 6. Pricing dose-response | single | python | `1_cdid_cubic_spline_bootstrap199` (26%) | `6_spline_sensitivity_num_knots2` (25%) | `3_cdid_event_study_pretrend` (25%) |
+| 6. Pricing dose-response | single | rust | `1_cdid_cubic_spline_bootstrap199` (26%) | `6_spline_sensitivity_num_knots2` (25%) | `3_cdid_event_study_pretrend` (25%) |
 <!-- TABLE:end top_phases_by_scenario -->
 
 Per-scenario phase narrative (cross-check against the table above after
@@ -129,9 +133,11 @@ any rerun):
   see scale-sweep table); the JK1 replicate-fit loop is not
   Rust-accelerated, so the backends neither help nor hurt each other
   meaningfully on this chain.
-- **BRFSS.** `aggregate_survey` share of total grows with scale and is
-  effectively 100% of runtime at 1M rows. Downstream phases (CS fit,
-  SunAbraham, HonestDiD) are a fraction of a second combined.
+- **BRFSS.** `aggregate_survey` remains the single largest chain share
+  under both backends at every scale, but the absolute chain total is
+  sub-2s at 1M rows after the precompute-scaffolding fix. Downstream
+  phases (CS fit, SunAbraham, HonestDiD) are a fraction of a second
+  combined - see the scale-sweep table for the current totals.
 - **SDiD few markets.** `sensitivity_to_zeta_omega` and
   `in_time_placebo` are the two largest phases under Python at every
   scale and under Rust at medium/large (together ~70% of the chain).
@@ -156,7 +162,7 @@ any rerun):
 
 | # | Location | Scenario + scale | Signal | Recommended action |
 |---|---|---|---|---|
-| 1 | `diff_diff/survey.py:1160` `_compute_stratified_psu_meat` | BRFSS @ 1M rows | dominates BRFSS chain at all scales, ~100% at 1M rows | **Algorithmic fix, highest priority.** Function called once per (state, year) cell (500 calls); per-call work rebuilds stratum-PSU scaffolding every time. Precompute stratum indexes once at `aggregate_survey` top-level and reuse. |
+| 1 | `diff_diff/survey.py` `_compute_stratified_psu_meat` + `aggregate_survey` | BRFSS @ 1M rows | previously dominated BRFSS chain at all scales (~100% at 1M rows) | **LANDED** (this PR). Precompute stratum-PSU scaffolding once per design at `aggregate_survey` top level; replace per-cell pandas groupby with two vectorized `np.bincount` passes. BRFSS-large chain drops from ~24s to sub-2s across both backends. See "Optimization landed" below. |
 | 2 | `diff_diff/imputation.py` ImputationDiD fit (+ `diff_diff/sun_abraham.py` SunAbraham fit) | Staggered CS @ 1,500 units | together consistently ~70-80% of the chain at every scale; either can be the top phase at a given (scale, backend) cell | **Investigate only after BRFSS fix lands.** Total chain is well under practitioner-perceptible threshold; candidate follow-up. Either phase is a legitimate target. |
 | 3 | `diff_diff/utils.py:1434` `_sc_weight_fw_numpy` | SDiD python @ any scale | dominates Python SDiD at all scales | **Already ported to Rust.** Python fallback acceptable as a teaching/safety path; non-production for n > 100. Python skipped at n=500 (jackknife cost would exceed 4 minutes per run). |
 | 4 | `diff_diff/chaisemartin_dhaultfoeuille.py` dCDH fit + heterogeneity | Reversible (single scale) | main fit and survey-aware heterogeneity refit each rebuild TSL scaffolding; heterogeneity phase is as expensive as the main fit | **Cache/precompute** - heterogeneity refit duplicates the main fit's TSL setup under the same `SurveyDesign`. Not P0; newer code path (v3.1) never optimization-reviewed. |
@@ -174,20 +180,20 @@ in `benchmarks/speed_review/baselines/mem_profile_brfss_large_<backend>.txt`.
 <!-- TABLE:start memory_by_scenario -->
 | Scenario | Scale | Py peak RSS (MB) | Py growth (MB) | Rust peak RSS (MB) | Rust growth (MB) |
 |---|---|---:|---:|---:|---:|
-| 1. Staggered campaign | small | 143 | 28 | 151 | 36 |
-|  | medium | 227 | 79 | 254 | 99 |
-|  | large | 472 | 245 | 588 | 322 |
-| 2. Brand awareness survey | small | 127 | 12 | 128 | 13 |
-|  | medium | 188 | 54 | 185 | 50 |
-|  | large | 327 | 139 | 336 | 142 |
-| 3. BRFSS microdata -> CS panel | small | 133 | 11 | 136 | 15 |
-|  | medium | 210 | 17 | 212 | 15 |
-|  | large | 418 | 17 | 429 | 33 |
+| 1. Staggered campaign | small | 146 | 31 | 148 | 34 |
+|  | medium | 235 | 85 | 253 | 100 |
+|  | large | 486 | 251 | 582 | 327 |
+| 2. Brand awareness survey | small | 130 | 15 | 128 | 13 |
+|  | medium | 183 | 45 | 189 | 55 |
+|  | large | 340 | 139 | 348 | 158 |
+| 3. BRFSS microdata -> CS panel | small | 133 | 11 | 130 | 8 |
+|  | medium | 203 | 17 | 200 | 21 |
+|  | large | 413 | 25 | 409 | 25 |
 | 4. SDiD few markets | small | 124 | 10 | 116 | 1 |
-|  | medium | 152 | 8 | 118 | 0 |
+|  | medium | 148 | 8 | 117 | 0 |
 |  | large | skip | skip | 118 | 0 |
-| 5. Reversible dCDH | single | 135 | 22 | 135 | 21 |
-| 6. Pricing dose-response | single | 123 | 9 | 121 | 8 |
+| 5. Reversible dCDH | single | 134 | 20 | 134 | 20 |
+| 6. Pricing dose-response | single | 122 | 8 | 123 | 9 |
 <!-- TABLE:end memory_by_scenario -->
 
 The ~115-130 MB floor is the Python + diff-diff + numpy import footprint;
@@ -195,16 +201,15 @@ the "growth" columns are the practitioner-meaningful numbers.
 
 ### Memory findings
 
-1. **BRFSS `aggregate_survey` is compute-bound, not memory-bound.** At
-   20x data growth (50K -> 1M rows), working-memory growth stays in the
-   low tens of MB. The tracemalloc pass confirms: net retained allocation
-   after `aggregate_survey` returns is well under 1 MB; the top
-   allocation site is `tracemalloc`'s own linecache overhead (a smoking
-   gun that nothing else is allocating meaningfully). **The BRFSS cost
-   is pure CPU; the function is already memory-efficient.** This
-   strengthens the case for the precompute-scaffolding fix: low-risk,
-   pure CPU win, fits in any deployment environment including 512 MB
-   Lambda.
+1. **BRFSS `aggregate_survey` was compute-bound, not memory-bound - and
+   the compute side is now addressed.** Working-memory growth stayed in
+   the low tens of MB across the 20x data-growth sweep (50K -> 1M rows);
+   the pre-fix tracemalloc pass confirmed net retained allocation under
+   1 MB and identified `tracemalloc`'s own linecache overhead as the
+   top allocation site (smoking gun that nothing else was allocating
+   meaningfully). The precompute-scaffolding fix in this PR is a pure
+   CPU win - no change to the function's memory profile, which was
+   already Lambda-friendly.
 2. **Staggered CS chain is memory-heavier than wall-clock suggested.** At
    1,500 units the chain's peak RSS sits in the high-400s to high-500s
    MB depending on backend. Fine for workstations, tight for 512 MB
@@ -229,16 +234,32 @@ the "growth" columns are the practitioner-meaningful numbers.
 
 | # | Opportunity | Time upside | Memory upside | Risk | Priority |
 |---|---|---|---|---|---|
-| 1 | `aggregate_survey` precompute stratum scaffolding | ~-20s at 1M rows | none (already memory-efficient) | Low | **High** |
+| 1 | `aggregate_survey` precompute stratum scaffolding | ~-20s at 1M rows | none (already memory-efficient) | Low | **LANDED** (this PR) |
 | 2 | Staggered CS chain working-memory audit (Lambda-oriented) | none | ~200-300 MB at 1,500 units (peak RSS crosses 512 MB Lambda line under Rust) | Medium | Low (bump to Medium if Lambda deployment becomes a concrete ask) |
 | 3 | dCDH: cache TSL scaffolding across main fit + heterogeneity refit | ~0.2s per chain | ~20 MB per chain | Low | Low |
 | 4 | ImputationDiD fit-loop vectorization audit | ~0.1-0.3s at 1,500 units | unknown | Low | Low |
 | 5 | Rust-port JK1 replicate fit loop | ~0.5s at 160 replicates | ~140 MB at 160 replicates | Medium | Low (demoted: Rust is no longer slower than Python on this path after rerun, so the "fix-a-Rust-regression" leg of the original rationale is gone) |
 
-**Bottom line: one clear priority, four optional.** #1 is the single
-practitioner-perceptible win identified by this analysis and should be
-the next PR. #2-5 are optional polish that should be prioritized by
-concrete deployment-environment signal (Lambda OOMs, practitioner
+### Optimization landed
+
+**#1 shipped in this PR.** `diff_diff/survey.py` now precomputes a
+per-design `_PsuScaffolding` (strata codes, global PSU codes, per-
+stratum counts and FPC ratios, singleton mask, lonely-PSU-aware
+variance-computable flag).  `aggregate_survey` builds it once per call
+and threads it through `_cell_mean_variance` so each per-cell variance
+reduction uses two vectorized `np.bincount` passes instead of a
+per-stratum pandas groupby loop.  Numerics are preserved to sub-ULP
+tolerance; equivalence tests across seven design cases
+(`TestAggregateSurveyScaffolding`) enforce `assert_allclose(atol=1e-14,
+rtol=1e-14)` between fast and legacy paths.
+
+Replicate-weight designs (JK1 etc.) continue to use the legacy
+`compute_replicate_if_variance` code path and are unaffected.
+
+**Bottom line: no practitioner-perceptible bottleneck remains in the
+six measured workflows; four optional items stand by.** Items #2-5
+above should be prioritized by concrete deployment-environment signal
+(Lambda OOMs, practitioner
 reports of slowness at specific shapes), not proactively.
 
 ### Correctness-adjacent observations (not P0, route separately)

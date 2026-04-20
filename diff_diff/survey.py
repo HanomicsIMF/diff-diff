@@ -1304,6 +1304,326 @@ def _compute_stratified_psu_meat(
     return meat, _variance_computed, legitimate_zero_count
 
 
+@dataclass(frozen=True)
+class _PsuScaffolding:
+    """Precomputed stratum/PSU layout for amortized TSL variance.
+
+    Internal helper used by :func:`diff_diff.prep.aggregate_survey` to reuse
+    design-dependent scaffolding across hundreds of per-cell variance calls.
+    Holds integer codes, per-stratum counts, FPC ratios, and static
+    variance-computability flags that depend only on the
+    :class:`ResolvedSurveyDesign` (not on the psi / outcome being collapsed).
+
+    See :func:`_compute_if_variance_fast` for the fast variance path that
+    consumes this scaffolding.  Numerically equivalent to
+    :func:`compute_survey_if_variance` up to sub-ULP reduction-order drift.
+    """
+
+    mode: str  # "no_strata_no_psu" | "psu_only" | "stratified"
+    n: int
+    lonely_psu: str
+    variance_computable: bool
+    legitimate_zero_count: int
+    # stratified-mode fields (None in other modes):
+    psu_codes: Optional[np.ndarray] = None          # (n,) int, global PSU id 0..P-1
+    psu_stratum: Optional[np.ndarray] = None        # (P,) int, stratum of each PSU
+    n_psu_per_stratum: Optional[np.ndarray] = None  # (S,) int
+    singleton_strata: Optional[np.ndarray] = None   # (S,) bool
+    adjustment_h: Optional[np.ndarray] = None       # (S,) float, (1-f_h)*n_h/(n_h-1); 0 for singletons
+    # psu_only-mode fields (None in other modes):
+    psu_codes_only: Optional[np.ndarray] = None     # (n,) int, PSU id 0..P-1
+    n_psu_only: Optional[int] = None
+    adjustment_only: Optional[float] = None         # (1-f)*n_psu/(n_psu-1) or 0
+    # no_strata_no_psu-mode fields (None in other modes):
+    adjustment_direct: Optional[float] = None       # (1-f)*n/(n-1) or 0
+
+
+def _precompute_psu_scaffolding(resolved: "ResolvedSurveyDesign") -> _PsuScaffolding:
+    """Precompute per-design PSU/stratum scaffolding for fast per-cell variance.
+
+    Equivalent in effect to the per-call scaffolding work inside
+    :func:`_compute_stratified_psu_meat`, but done once per design instead of
+    once per output cell.  For the typical BRFSS-scale
+    :func:`~diff_diff.prep.aggregate_survey` workload (~500 cells, ~20 strata),
+    this amortizes the pandas-groupby + ``np.unique`` setup that otherwise
+    dominates the chain runtime.
+
+    Parameters
+    ----------
+    resolved : ResolvedSurveyDesign
+        Resolved survey design.  Must NOT use replicate variance
+        (``resolved.uses_replicate_variance`` False).
+
+    Returns
+    -------
+    _PsuScaffolding
+        Frozen dataclass with mode-appropriate precomputed fields.
+
+    Raises
+    ------
+    ValueError
+        Same FPC-vs-n guards as :func:`_compute_stratified_psu_meat`
+        (FPC must be >= effective PSU count in each stratum).
+    """
+    weights = resolved.weights
+    n = int(len(weights))
+    strata = resolved.strata
+    psu = resolved.psu
+    fpc = resolved.fpc
+    lonely_psu = resolved.lonely_psu
+
+    if strata is None and psu is None:
+        # Implicit per-observation PSUs
+        f = 0.0
+        lz_count = 0
+        if fpc is not None:
+            N = fpc[0]
+            if N < n:
+                raise ValueError(
+                    f"FPC ({N}) is less than the number of observations "
+                    f"({n}). FPC must be >= n_obs for implicit per-observation PSUs."
+                )
+            f = n / N
+            if f >= 1.0:
+                lz_count = 1
+        var_computable = n >= 2
+        adjustment = (1.0 - f) * (n / (n - 1)) if n >= 2 else 0.0
+        return _PsuScaffolding(
+            mode="no_strata_no_psu",
+            n=n,
+            lonely_psu=lonely_psu,
+            variance_computable=var_computable,
+            legitimate_zero_count=lz_count,
+            adjustment_direct=float(adjustment),
+        )
+
+    if strata is None and psu is not None:
+        # Single-stratum cluster-robust
+        psu_arr = np.asarray(psu)
+        codes, uniques = pd.factorize(psu_arr)
+        n_psu = int(len(uniques))
+        f = 0.0
+        lz_count = 0
+        if n_psu >= 2:
+            if fpc is not None:
+                N = fpc[0]
+                if N < n_psu:
+                    raise ValueError(
+                        f"FPC ({N}) is less than the number of effective PSUs "
+                        f"({n_psu}). FPC must be >= n_PSU."
+                    )
+                f = n_psu / N
+                if f >= 1.0:
+                    lz_count = 1
+            adjustment = (1.0 - f) * (n_psu / (n_psu - 1))
+            var_computable = True
+        else:
+            adjustment = 0.0
+            var_computable = False
+        return _PsuScaffolding(
+            mode="psu_only",
+            n=n,
+            lonely_psu=lonely_psu,
+            variance_computable=var_computable,
+            legitimate_zero_count=lz_count,
+            psu_codes_only=codes.astype(np.int64),
+            n_psu_only=n_psu,
+            adjustment_only=float(adjustment),
+        )
+
+    # Stratified branch (with or without PSU)
+    strata_arr = np.asarray(strata)
+    strata_codes, strata_uniques = pd.factorize(strata_arr, sort=True)
+    strata_codes = strata_codes.astype(np.int64)
+    S = int(len(strata_uniques))
+
+    if psu is not None:
+        # Global PSU codes unique across (stratum, psu) pairs — matches the
+        # legacy per-stratum pandas groupby which never aggregated PSU labels
+        # across strata.
+        psu_arr = np.asarray(psu)
+        psu_local_codes, _ = pd.factorize(psu_arr)
+        psu_local_codes = psu_local_codes.astype(np.int64)
+        psu_local_max = int(psu_local_codes.max()) if len(psu_local_codes) > 0 else 0
+        compound = strata_codes * (psu_local_max + 1) + psu_local_codes
+        psu_codes, _ = pd.factorize(compound)
+        psu_codes = psu_codes.astype(np.int64)
+        P = int(psu_codes.max() + 1) if len(psu_codes) > 0 else 0
+        psu_stratum = np.zeros(P, dtype=np.int64)
+        # Safe scatter: by construction, all observations sharing a global
+        # PSU code share a stratum, so repeated writes to the same position
+        # store the same value.
+        if P > 0:
+            psu_stratum[psu_codes] = strata_codes
+    else:
+        # Each observation is its own PSU within its stratum (legacy
+        # behavior when strata is not None and psu is None).
+        psu_codes = np.arange(n, dtype=np.int64)
+        P = n
+        psu_stratum = strata_codes.copy()
+
+    n_psu_per_stratum = np.bincount(psu_stratum, minlength=S).astype(np.int64)
+    singleton_strata = n_psu_per_stratum == 1
+
+    # Per-stratum FPC ratio (stratum-level attribute; read from the first
+    # observation of each stratum, matching legacy ``resolved.fpc[mask_h][0]``).
+    f_h = np.zeros(S, dtype=np.float64)
+    if fpc is not None:
+        fpc_arr = np.asarray(fpc)
+        # Vectorized "first-in-stratum" FPC lookup:
+        # pd.factorize with sort=True iterates the array in input order, so
+        # the first observation encountered for each stratum_code is the
+        # reference row.
+        first_idx = np.full(S, -1, dtype=np.int64)
+        seen = np.zeros(S, dtype=bool)
+        for i in range(n):
+            h = strata_codes[i]
+            if not seen[h]:
+                seen[h] = True
+                first_idx[h] = i
+                if seen.all():
+                    break
+        for h in range(S):
+            if first_idx[h] < 0:
+                continue
+            N_h = fpc_arr[first_idx[h]]
+            n_h = n_psu_per_stratum[h]
+            if n_h > 0 and N_h < n_h:
+                raise ValueError(
+                    f"FPC ({N_h}) is less than the number of effective PSUs "
+                    f"({n_h}) in stratum. FPC must be >= n_PSU."
+                )
+            if n_h > 0:
+                f_h[h] = n_h / N_h
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        adjustment_h = np.where(
+            n_psu_per_stratum >= 2,
+            (1.0 - f_h) * n_psu_per_stratum / np.maximum(n_psu_per_stratum - 1, 1),
+            0.0,
+        )
+
+    # Static legitimate_zero_count (design-dependent only):
+    #   - Non-singleton strata with f_h >= 1.0 contribute (legacy counter).
+    #   - Singleton strata under lonely_psu == "certainty" contribute.
+    fpc_saturated = (n_psu_per_stratum >= 2) & (f_h >= 1.0)
+    legitimate_zero_count = int(fpc_saturated.sum())
+    if lonely_psu == "certainty":
+        legitimate_zero_count += int(singleton_strata.sum())
+
+    # Static variance_computable flag:
+    #   - Any non-singleton stratum (regardless of FPC) → variance_computed=True
+    #     path is exercised.
+    #   - Under "adjust", any singleton stratum also counts (adds V_h even if 0).
+    has_non_singleton = bool(np.any(~singleton_strata))
+    has_singleton = bool(np.any(singleton_strata))
+    variance_computable = has_non_singleton or (
+        lonely_psu == "adjust" and has_singleton
+    )
+
+    return _PsuScaffolding(
+        mode="stratified",
+        n=n,
+        lonely_psu=lonely_psu,
+        variance_computable=variance_computable,
+        legitimate_zero_count=legitimate_zero_count,
+        psu_codes=psu_codes,
+        psu_stratum=psu_stratum,
+        n_psu_per_stratum=n_psu_per_stratum,
+        singleton_strata=singleton_strata,
+        adjustment_h=adjustment_h,
+    )
+
+
+def _compute_if_variance_fast(
+    psi: np.ndarray,
+    scaffolding: _PsuScaffolding,
+) -> float:
+    """Fast TSL variance for aggregate_survey using precomputed scaffolding.
+
+    Numerically equivalent to :func:`compute_survey_if_variance` for any
+    TSL (non-replicate) design, up to sub-ULP reduction-order drift.  The
+    speedup comes from replacing per-cell pandas groupbys and per-stratum
+    Python loops with two ``np.bincount`` passes plus a fully vectorized
+    per-stratum reduction.
+
+    Parameters
+    ----------
+    psi : np.ndarray
+        Per-unit influence function values, shape (n,).
+    scaffolding : _PsuScaffolding
+        Precomputed via :func:`_precompute_psu_scaffolding` for the same
+        resolved design.
+
+    Returns
+    -------
+    float
+        Design-based variance.  Returns ``np.nan`` when variance is
+        unidentified (matches legacy behavior).
+    """
+    psi = np.asarray(psi, dtype=np.float64).ravel()
+
+    def _finalize(meat_scalar: float) -> float:
+        if meat_scalar == 0.0:
+            if scaffolding.variance_computable or scaffolding.legitimate_zero_count > 0:
+                return 0.0
+            return float("nan")
+        return meat_scalar
+
+    if scaffolding.mode == "no_strata_no_psu":
+        if scaffolding.n < 2:
+            return float("nan")
+        psi_mean = psi.mean()
+        centered = psi - psi_mean
+        meat = scaffolding.adjustment_direct * float(centered @ centered)
+        return _finalize(meat)
+
+    if scaffolding.mode == "psu_only":
+        if scaffolding.n_psu_only < 2:
+            if scaffolding.legitimate_zero_count > 0:
+                return 0.0
+            return float("nan")
+        psu_sums = np.bincount(
+            scaffolding.psu_codes_only, weights=psi, minlength=scaffolding.n_psu_only
+        )
+        psu_mean = psu_sums.mean()
+        centered = psu_sums - psu_mean
+        meat = scaffolding.adjustment_only * float(centered @ centered)
+        return _finalize(meat)
+
+    # Stratified
+    S = len(scaffolding.n_psu_per_stratum)
+    P = len(scaffolding.psu_stratum)
+
+    psu_sums = np.bincount(scaffolding.psu_codes, weights=psi, minlength=P)
+    sum_by_h = np.bincount(scaffolding.psu_stratum, weights=psu_sums, minlength=S)
+    sum2_by_h = np.bincount(
+        scaffolding.psu_stratum, weights=psu_sums * psu_sums, minlength=S
+    )
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        centered_ss = np.where(
+            scaffolding.n_psu_per_stratum >= 2,
+            sum2_by_h - (sum_by_h * sum_by_h) / np.maximum(scaffolding.n_psu_per_stratum, 1),
+            0.0,
+        )
+    meat_per_stratum = scaffolding.adjustment_h * centered_ss
+
+    if np.any(scaffolding.singleton_strata) and scaffolding.lonely_psu == "adjust":
+        # Singleton strata under "adjust": V_h = (psu_sum - global_mean)^2.
+        # For a singleton stratum, the one PSU's sum equals sum_by_h[h].
+        # No FPC, no (n-1) adjustment — matches legacy (survey.py:1276-1281).
+        if P > 0:
+            global_mean = psu_sums.mean()
+            singleton_meat = (sum_by_h - global_mean) ** 2
+            meat_per_stratum = np.where(
+                scaffolding.singleton_strata, singleton_meat, meat_per_stratum
+            )
+
+    meat = float(meat_per_stratum.sum())
+    return _finalize(meat)
+
+
 def _compute_stratified_meat_from_psu_scores(
     psu_scores: np.ndarray,
     psu_strata: np.ndarray,
