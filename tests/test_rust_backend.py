@@ -106,8 +106,26 @@ class TestRustBackend:
 
     # Tests for `compute_synthetic_weights` direct Rust binding removed in
     # the silent-failures audit post-cleanup (finding #22). The helper was
-    # deleted from the Python layer; remaining Rust symbol is dead code
-    # (tracked as a low-priority Rust cleanup TODO).
+    # deleted from the Python layer and the Rust symbol was subsequently
+    # removed from `rust/src/weights.rs` + unregistered in `rust/src/lib.rs`.
+
+    def test_compute_synthetic_weights_is_removed(self):
+        """Regression guard against accidental re-export of the deleted
+        `compute_synthetic_weights` PyO3 binding (silent-failures finding
+        #22). If this test fails, someone reintroduced the binding — audit
+        the reason before adding it back."""
+        import diff_diff._rust_backend as rb
+
+        with pytest.raises(ImportError):
+            from diff_diff._rust_backend import (  # noqa: F401
+                compute_synthetic_weights,
+            )
+
+        assert not hasattr(rb, "compute_synthetic_weights"), (
+            "compute_synthetic_weights was removed from the Rust backend "
+            "in the post-audit cleanup for finding #22; its presence here "
+            "indicates accidental re-export."
+        )
 
     # =========================================================================
     # Simplex Projection Tests

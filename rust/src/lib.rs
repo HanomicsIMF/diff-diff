@@ -28,8 +28,7 @@ fn _rust_backend(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
 
-    // Synthetic control weights (legacy projected gradient descent)
-    m.add_function(wrap_pyfunction!(weights::compute_synthetic_weights, m)?)?;
+    // Simplex projection
     m.add_function(wrap_pyfunction!(weights::project_simplex, m)?)?;
 
     // SDID weights (Frank-Wolfe matching R's synthdid)
