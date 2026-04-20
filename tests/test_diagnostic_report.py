@@ -48,6 +48,7 @@ _TOP_LEVEL_KEYS = {
     "schema_version",
     "estimator",
     "headline_metric",
+    "target_parameter",
     "parallel_trends",
     "pretrends_power",
     "sensitivity",

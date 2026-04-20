@@ -53,6 +53,89 @@ effects, pre-period and reference-marker rows excluded). These are
 reporting-layer aggregations of inputs already in the result object,
 not new inference.
 
+## Target parameter
+
+The BusinessReport and DiagnosticReport schemas both carry a
+top-level `target_parameter` block that names what scalar the
+headline number actually represents. The 16 result classes have
+meaningfully different estimands — a stakeholder reading
+`overall_att = -0.0214` on a Callaway-Sant'Anna fit cannot tell
+whether that is the simple-weighted average across `ATT(g,t)`
+cells, an event-study-weighted aggregate, or a group-weighted
+aggregate. Baker et al. (2025) Step 2 is "Define the target
+parameter"; BR/DR does that work for the user.
+
+Schema shape:
+
+```json
+"target_parameter": {
+  "name": "overall ATT (cohort-size-weighted average of ATT(g,t))",
+  "definition": "A cohort-size-weighted average of group-time ATTs ...",
+  "aggregation": "simple",
+  "headline_attribute": "overall_att",
+  "reference": "Callaway & Sant'Anna (2021); REGISTRY.md Sec. CallawaySantAnna"
+}
+```
+
+Field semantics:
+
+- `name` — short stakeholder-facing name. Rendered verbatim in
+  BR's summary paragraph and DR's overall-interpretation
+  paragraph. Always non-empty.
+- `definition` — plain-English description of what the scalar is
+  and how it is aggregated. Rendered in BR's and DR's full-report
+  markdown (under "## Target Parameter") but omitted from the
+  summary paragraph so stakeholder prose stays within the 6-10-
+  sentence target.
+- `aggregation` — machine-readable tag dispatching agents can
+  branch on: `"simple"`, `"event_study"`, `"group"`, `"2x2"`,
+  `"twfe"`, `"iw"`, `"stacked"`, `"ddd"`, `"staggered_ddd"`,
+  `"synthetic"`, `"factor_model"`, `"M"`, `"l"`, `"l_x"`,
+  `"l_fd"`, `"l_x_fd"`, `"dose_overall"`,
+  `"pt_all_combined"`, `"pt_post_single_baseline"`, `"unknown"`.
+- `headline_attribute` — the raw result attribute the scalar
+  comes from (`"overall_att"` / `"att"` / `"avg_att"` /
+  `"twfe_estimate"`). Different result classes use different
+  attribute names; agents that want to re-read the raw value
+  can dispatch on this.
+- `reference` — one-line citation pointer to the canonical paper
+  and the REGISTRY.md section.
+
+Per-estimator dispatch lives in
+`diff_diff/_reporting_helpers.py::describe_target_parameter`. Each
+branch is sourced from the corresponding estimator's section in
+REGISTRY.md; new result classes must add an explicit branch (the
+exhaustiveness test `TestTargetParameterCoversEveryResultClass`
+locks this in).
+
+A few branches read fit-time config from the result object:
+
+- `EfficientDiDResults.pt_assumption`: `"all"` (over-identified
+  combined) vs `"post"` (just-identified single-baseline) branches
+  `aggregation` between `"pt_all_combined"` and
+  `"pt_post_single_baseline"`.
+- `StackedDiDResults.clean_control`: `"never_treated"` /
+  `"strict"` / `"not_yet_treated"` varies the `definition` clause
+  describing which units qualify as controls.
+- `ChaisemartinDHaultfoeuilleResults.L_max` +
+  `covariate_residuals` + `linear_trends_effects`: branches the
+  dCDH estimand tag between `DID_M` / `DID_l` / `DID^X_l` /
+  `DID^{fd}_l` / `DID^{X,fd}_l`.
+
+A few branches emit a fixed tag regardless of fit-time config —
+notably `CallawaySantAnna`, `ImputationDiD`, `TwoStageDiD`, and
+`WooldridgeDiD`. For these estimators the `overall_att`
+(or `att` / `avg_att`) scalar is ALWAYS the simple weighted
+aggregation; the fit-time `aggregate` kwarg populates additional
+horizon / group tables on the result object but does not change
+the headline scalar. Disambiguating those tables in prose is
+tracked under BR/DR gap #9 (per-cohort narrative rendering).
+
+`ContinuousDiDResults` emits a single `"dose_overall"` tag with a
+disjunctive definition (`ATT^loc` under PT; `ATT^glob` under
+SPT) because the PT-vs-SPT regime is a user-level assumption, not
+a library setting.
+
 ## Design deviations
 
 - **Note:** No hard pass/fail gates. `DiagnosticReport` does not produce

@@ -49,6 +49,13 @@ Methodology deviations (no traffic-light gates, pre-trends verdict
 thresholds, power-aware phrasing, unit-translation policy, schema
 stability) are documented in :doc:`../methodology/REPORTING`.
 
+The schema carries a top-level ``target_parameter`` block
+(experimental) naming what the headline scalar represents per
+estimator — simple ATT, event-study average, DID_M, DID_l,
+dose-response aggregate, factor-model residual, etc. See the
+"Target parameter" section of :doc:`../methodology/REPORTING` for
+the per-estimator dispatch and schema shape.
+
 Example
 -------
 

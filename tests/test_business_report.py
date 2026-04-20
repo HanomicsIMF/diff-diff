@@ -49,6 +49,7 @@ _BR_TOP_LEVEL_KEYS = {
     "estimator",
     "context",
     "headline",
+    "target_parameter",
     "assumption",
     "pre_trends",
     "sensitivity",

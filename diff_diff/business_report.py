@@ -42,6 +42,7 @@ from typing import Any, Dict, FrozenSet, List, Optional, Union
 
 import numpy as np
 
+from diff_diff._reporting_helpers import describe_target_parameter
 from diff_diff.diagnostic_report import DiagnosticReport, DiagnosticReportResults
 
 BUSINESS_REPORT_SCHEMA_VERSION = "1.0"
@@ -434,6 +435,7 @@ class BusinessReport:
 
         headline = self._extract_headline(dr_schema)
         sample = self._extract_sample()
+        target_parameter = describe_target_parameter(self._results)
         heterogeneity = _lift_heterogeneity(dr_schema)
         pre_trends = _lift_pre_trends(dr_schema)
         sensitivity = _lift_sensitivity(dr_schema)
@@ -475,6 +477,7 @@ class BusinessReport:
                 "alpha": self._context.alpha,
             },
             "headline": headline,
+            "target_parameter": target_parameter,
             "assumption": assumption,
             "pre_trends": pre_trends,
             "sensitivity": sensitivity,
@@ -1993,6 +1996,17 @@ def _render_summary(schema: Dict[str, Any]) -> str:
 
     # Headline sentence with significance phrase.
     sentences.append(_render_headline_sentence(schema))
+    # BR/DR gap #6 (target-parameter clarity): name what the headline
+    # scalar actually represents so the stakeholder can map the number
+    # to a specific estimand. Rendered immediately after the headline
+    # and before the significance phrase. The summary surfaces only
+    # the short ``name`` so the paragraph stays within the
+    # 6-10-sentence target; ``definition`` lives in the full report
+    # and in the structured schema for agents that want the long form.
+    tp = schema.get("target_parameter", {}) or {}
+    tp_name = tp.get("name")
+    if tp_name:
+        sentences.append(f"Target parameter: {tp_name}.")
     h = schema.get("headline", {})
     p = h.get("p_value")
     alpha = ctx.get("alpha", 0.05)
@@ -2313,6 +2327,21 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"Statistically, {_significance_phrase(p, alpha)}.")
     lines.append("")
+
+    # Target parameter (BR/DR gap #6): name what the headline scalar
+    # represents so the stakeholder can map the number to a specific
+    # estimand. Rendered between "Headline" and "Identifying Assumption"
+    # because the target parameter is about what the scalar IS, whereas
+    # identifying assumption is about what makes it valid.
+    tp = schema.get("target_parameter", {}) or {}
+    if tp.get("name") or tp.get("definition"):
+        lines.append("## Target Parameter")
+        lines.append("")
+        if tp.get("name"):
+            lines.append(f"- **{tp['name']}**")
+        if tp.get("definition"):
+            lines.append(f"- {tp['definition']}")
+        lines.append("")
 
     # Identifying assumption
     lines.append("## Identifying Assumption")

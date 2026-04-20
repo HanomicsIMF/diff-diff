@@ -38,6 +38,8 @@ from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from diff_diff._reporting_helpers import describe_target_parameter  # noqa: E402 (top-level import)
+
 DIAGNOSTIC_REPORT_SCHEMA_VERSION = "1.0"
 
 __all__ = [
@@ -962,6 +964,7 @@ class DiagnosticReport:
             "schema_version": DIAGNOSTIC_REPORT_SCHEMA_VERSION,
             "estimator": type(self._results).__name__,
             "headline_metric": headline,
+            "target_parameter": describe_target_parameter(self._results),
             "parallel_trends": sections["parallel_trends"],
             "pretrends_power": sections["pretrends_power"],
             "sensitivity": sections["sensitivity"],
@@ -3003,7 +3006,19 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
             f"On {est}, {treatment} {direction} {outcome} by {val:.3g}{ci_str}{p_str}."
         )
 
-    # Sentence 2: parallel trends + power (method-aware prose per the
+    # Sentence 2: name the target parameter (BR/DR gap #6). Rendered
+    # right after the headline so the reader sees what the scalar
+    # represents before pre-trends / sensitivity context. Only the
+    # terse ``name`` goes in the interpretation paragraph; the full
+    # ``definition`` lives in DR's "## Target Parameter" markdown
+    # section and in the structured ``schema["target_parameter"]``
+    # dict for agents that want the long form.
+    tp = schema.get("target_parameter") or {}
+    tp_name = tp.get("name")
+    if tp_name:
+        sentences.append(f"Target parameter: {tp_name}.")
+
+    # Sentence 3: parallel trends + power (method-aware prose per the
     # round-8 CI review on PR #318; PT method can be slope_difference
     # (2x2), joint_wald / bonferroni (event study), hausman (EfficientDiD
     # PT-All vs PT-Post), synthetic_fit (SDiD), or factor (TROP), and the
@@ -3221,6 +3236,25 @@ def _render_dr_full_report(results: "DiagnosticReportResults") -> str:
             f"(SE {headline.get('se')}, p = {headline.get('p_value')})"
         )
     lines.append("")
+
+    # BR/DR gap #6: target-parameter section between headline metadata
+    # and the overall-interpretation paragraph.
+    tp = schema.get("target_parameter") or {}
+    if tp.get("name") or tp.get("definition"):
+        lines.append("## Target Parameter")
+        lines.append("")
+        if tp.get("name"):
+            lines.append(f"- **{tp['name']}**")
+        if tp.get("definition"):
+            lines.append(f"- {tp['definition']}")
+        if tp.get("aggregation"):
+            lines.append(f"- Aggregation tag: `{tp['aggregation']}`")
+        if tp.get("headline_attribute"):
+            lines.append(f"- Headline attribute: `{tp['headline_attribute']}`")
+        if tp.get("reference"):
+            lines.append(f"- Reference: {tp['reference']}")
+        lines.append("")
+
     lines.append("## Overall Interpretation")
     lines.append("")
     lines.append(schema.get("overall_interpretation", "") or "_No synthesis available._")
