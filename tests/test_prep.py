@@ -803,6 +803,89 @@ class TestRankControlUnits:
             f"scale; n_nonzero={int(np.sum(weights > 1e-6))}. weights={weights}"
         )
 
+    def test_synthetic_weight_column_with_lambda_reg(self):
+        """`rank_control_units(lambda_reg > 0)` regression. Non-zero
+        regularization must produce a valid simplex vector and should pull
+        weights toward a more uniform distribution vs `lambda_reg=0`."""
+        from diff_diff.prep import rank_control_units
+
+        data = generate_did_data(n_units=10, n_periods=8, seed=42)
+
+        res_unreg = rank_control_units(
+            data,
+            unit_column="unit",
+            time_column="period",
+            outcome_column="outcome",
+            treatment_column="treated",
+            lambda_reg=0.0,
+        )
+        res_reg = rank_control_units(
+            data,
+            unit_column="unit",
+            time_column="period",
+            outcome_column="outcome",
+            treatment_column="treated",
+            lambda_reg=1.0,
+        )
+
+        w_unreg = res_unreg["synthetic_weight"].to_numpy()
+        w_reg = res_reg["synthetic_weight"].to_numpy()
+
+        for w, label in [(w_unreg, "unregularized"), (w_reg, "regularized")]:
+            assert np.all(w >= 0), f"{label} weights must be non-negative"
+            assert abs(w.sum() - 1.0) < 1e-10, (
+                f"{label} weights should sum to 1.0, got {w.sum()}"
+            )
+
+        # Regularization should increase entropy (pull toward uniform) or at
+        # least not collapse the simplex — a valid regularized solution must
+        # put non-trivial mass on at least as many donors as the unregularized
+        # one for a well-conditioned input.
+        assert int(np.sum(w_reg > 1e-6)) >= int(np.sum(w_unreg > 1e-6)) - 1, (
+            f"lambda_reg=1.0 should not collapse support vs lambda_reg=0; "
+            f"n_nonzero_reg={int(np.sum(w_reg > 1e-6))}, "
+            f"n_nonzero_unreg={int(np.sum(w_unreg > 1e-6))}"
+        )
+
+    def test_synthetic_weight_column_backend_parity(self):
+        """Full-pipeline Rust/Python parity for `rank_control_units`. Forces
+        the Python FW path via `HAS_RUST_BACKEND=False` and verifies the
+        resulting `synthetic_weight` column agrees with the default (Rust
+        when available) path to a loose tolerance. Backend divergence on
+        this caller path was the trigger for deleting the old wrapper."""
+        from unittest.mock import patch
+
+        from diff_diff import utils as utils_mod
+        from diff_diff.prep import rank_control_units
+
+        data = generate_did_data(n_units=10, n_periods=8, seed=123)
+
+        kwargs = dict(
+            unit_column="unit",
+            time_column="period",
+            outcome_column="outcome",
+            treatment_column="treated",
+        )
+
+        res_default = rank_control_units(data, **kwargs)
+        with patch.object(utils_mod, "HAS_RUST_BACKEND", False):
+            res_python = rank_control_units(data, **kwargs)
+
+        # Align by unit id (ranking order is not a backend-parity property;
+        # the simplex values on common donors are).
+        merged = res_default[["unit", "synthetic_weight"]].merge(
+            res_python[["unit", "synthetic_weight"]],
+            on="unit",
+            suffixes=("_default", "_python"),
+        )
+        # FW stopping threshold is scale-dependent, so use a loose tolerance.
+        np.testing.assert_allclose(
+            merged["synthetic_weight_default"].to_numpy(),
+            merged["synthetic_weight_python"].to_numpy(),
+            atol=1e-4,
+            rtol=1e-4,
+        )
+
 
 class TestGenerateStaggeredData:
     """Tests for generate_staggered_data function."""

@@ -1132,8 +1132,12 @@ def equivalence_test_trends(
 
 # compute_synthetic_weights and _compute_synthetic_weights_numpy removed in the
 # silent-failures audit post-cleanup (finding #22). The one caller
-# (`diff_diff.prep.rank_control_units`) inlines Frank-Wolfe directly via
-# `_sc_weight_fw`, matching R `synthdid::sc.weight.fw`. See `prep.py:990`.
+# (`diff_diff.prep.rank_control_units`) inlines a single-pass, uncentered
+# Frank-Wolfe via the shared `_sc_weight_fw` dispatcher — a ranking heuristic,
+# NOT the canonical SDID/R `synthdid::sc.weight.fw` two-pass procedure
+# (intercept=True, 100-iter -> sparsify -> 10000-iter). Canonical SDID unit
+# weights go through `compute_sdid_unit_weights` (see `_sc_weight_fw_numpy`
+# below and REGISTRY.md SDID section).
 
 
 def _project_simplex(v: np.ndarray) -> np.ndarray:
