@@ -433,9 +433,44 @@ class BusinessReport:
             diagnostics_results.schema if diagnostics_results is not None else None
         )
 
-        headline = self._extract_headline(dr_schema)
-        sample = self._extract_sample()
+        # PR #347 R4 P1: compute target_parameter BEFORE extracting
+        # the headline so the no-scalar-by-design case
+        # (``aggregation == "no_scalar_headline"``, e.g., dCDH
+        # ``trends_linear=True`` with ``L_max >= 2``) can route the
+        # headline through a dedicated branch that names the intentional
+        # NaN rather than an estimation-failure path.
         target_parameter = describe_target_parameter(self._results)
+        if target_parameter.get("aggregation") == "no_scalar_headline":
+            headline = {
+                "status": "no_scalar_by_design",
+                "effect": None,
+                "se": None,
+                "ci_lower": None,
+                "ci_upper": None,
+                "alpha_was_honored": True,
+                "alpha_override_caveat": None,
+                "ci_level": int(round((1.0 - self._context.alpha) * 100)),
+                "p_value": None,
+                "is_significant": False,
+                "near_significance_threshold": False,
+                "unit": self._context.outcome_unit,
+                "unit_kind": _UNIT_KINDS.get(
+                    self._context.outcome_unit.lower() if self._context.outcome_unit else "",
+                    "unknown",
+                ),
+                "sign": "none",
+                "breakdown_M": None,
+                "reason": (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``). Per-horizon "
+                    "cumulated level effects are on "
+                    "``results.linear_trends_effects[l]``."
+                ),
+            }
+        else:
+            headline = self._extract_headline(dr_schema)
+        sample = self._extract_sample()
         heterogeneity = _lift_heterogeneity(dr_schema)
         pre_trends = _lift_pre_trends(dr_schema)
         sensitivity = _lift_sensitivity(dr_schema)
@@ -1931,6 +1966,22 @@ def _render_headline_sentence(schema: Dict[str, Any]) -> str:
     """
     ctx = schema.get("context", {})
     h = schema.get("headline", {})
+    # PR #347 R4 P1: the dCDH ``trends_linear=True`` + ``L_max>=2``
+    # configuration does not produce a scalar headline by design —
+    # ``overall_att`` is intentionally NaN (per
+    # ``chaisemartin_dhaultfoeuille.py:2828-2834``). Render explicit
+    # "no scalar headline by design" prose instead of routing through
+    # the non-finite / estimation-failure path.
+    if h.get("status") == "no_scalar_by_design":
+        treatment = ctx.get("treatment_label", "the treatment")
+        outcome_label = ctx.get("outcome_label", "the outcome")
+        treatment_sentence = _sentence_first_upper(treatment)
+        return (
+            f"{treatment_sentence} does not produce a scalar aggregate effect "
+            f"on {outcome_label} under this configuration (by design; see "
+            f"``linear_trends_effects`` for per-horizon cumulated level "
+            f"effects)."
+        )
     effect = h.get("effect")
     outcome = ctx.get("outcome_label", "the outcome")
     treatment = ctx.get("treatment_label", "the treatment")

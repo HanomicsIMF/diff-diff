@@ -218,19 +218,56 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
         }
 
     if name == "WooldridgeDiDResults":
+        # PR #347 R4 P2: Wooldridge ETWFE has two identification paths
+        # (REGISTRY.md splits them at Sec. WooldridgeDiD): the OLS
+        # path computes ``overall_att`` as an observation-count-
+        # weighted aggregation of ``ATT(g, t)`` coefficients from the
+        # saturated regression, while the nonlinear (logit / Poisson)
+        # paths produce an ASF-based ATT from the average-structural-
+        # function contrast. ``WooldridgeDiDResults.method`` persists
+        # the choice; branch on it so OLS fits aren't mislabeled with
+        # nonlinear-ASF wording.
+        method = getattr(results, "method", "ols")
+        if method == "ols":
+            return {
+                "name": (
+                    "overall ATT (observation-count-weighted average of "
+                    "ATT(g,t) from saturated OLS ETWFE)"
+                ),
+                "definition": (
+                    "The overall ATT under OLS ETWFE (Wooldridge 2023): the "
+                    "saturated regression fits cohort x time ATT(g, t) "
+                    "coefficients, and ``overall_att`` is their "
+                    "observation-count-weighted average across post-"
+                    'treatment cells. Calling ``.aggregate("event")`` '
+                    "populates additional event-study tables but does NOT "
+                    "change the ``overall_att`` scalar."
+                ),
+                "aggregation": "simple",
+                "headline_attribute": "overall_att",
+                "reference": ("Wooldridge (2023); REGISTRY.md Sec. WooldridgeDiD (OLS path)"),
+            }
         return {
-            "name": "overall ATT (observation-count-weighted ASF ATT across cohort x time cells)",
+            "name": (
+                f"overall ATT (ASF-based average from Wooldridge ETWFE, " f"method={method!r})"
+            ),
             "definition": (
-                "The overall ATT under Wooldridge's ETWFE: the average-structural-"
-                "function (ASF) contrast between treated and counterfactual "
-                "untreated outcomes, averaged across cohort x time cells with "
-                'observation-count weights. Calling ``.aggregate("event")`` '
-                "populates additional event-study tables but does NOT change "
-                "the ``overall_att`` scalar."
+                f"The overall ATT under Wooldridge ETWFE with a nonlinear "
+                f"link function (``method={method!r}``, typically logit or "
+                f"Poisson QMLE): the average-structural-function (ASF) "
+                f"contrast between treated and counterfactual untreated "
+                f"outcomes averaged across cohort x time cells with "
+                f"observation-count weights. The ASF handles the "
+                f"nonlinearity; OLS ETWFE uses the saturated-regression "
+                f'coefficient path instead. Calling ``.aggregate("event")`` '
+                f"populates additional event-study tables but does NOT "
+                f"change the ``overall_att`` scalar."
             ),
             "aggregation": "simple",
             "headline_attribute": "overall_att",
-            "reference": "Wooldridge (2023); REGISTRY.md Sec. WooldridgeDiD",
+            "reference": (
+                "Wooldridge (2023, 2025); REGISTRY.md Sec. WooldridgeDiD " "(nonlinear / ASF path)"
+            ),
         }
 
     if name == "EfficientDiDResults":

@@ -99,11 +99,30 @@ class TestTargetParameterPerEstimator:
         assert tp["headline_attribute"] == "overall_att"
         assert "sub-experiment" in tp["definition"].lower()
 
-    def test_wooldridge(self):
-        tp = describe_target_parameter(_minimal_result("WooldridgeDiDResults"))
+    def test_wooldridge_ols(self):
+        """PR #347 R4 P2: OLS Wooldridge ETWFE must not be labeled with
+        ASF wording. The OLS path aggregates ATT(g,t) coefficients with
+        observation-count weights; the ASF path is for nonlinear links.
+        """
+        tp = describe_target_parameter(_minimal_result("WooldridgeDiDResults", method="ols"))
         assert tp["aggregation"] == "simple"
         assert tp["headline_attribute"] == "overall_att"
-        assert "ETWFE" in tp["name"] or "ETWFE" in tp["definition"] or "ASF" in tp["name"]
+        # OLS wording: mentions ATT(g,t) aggregation, not ASF.
+        assert (
+            "ATT(g,t)" in tp["name"] or "ATT(g,t)" in tp["definition"] or "OLS ETWFE" in tp["name"]
+        )
+        assert "ASF" not in tp["name"]
+
+    def test_wooldridge_nonlinear(self):
+        """Nonlinear (logit/Poisson) Wooldridge ETWFE uses the ASF-based
+        ATT path — different wording, different REGISTRY reference.
+        """
+        for method in ("logit", "poisson"):
+            tp = describe_target_parameter(_minimal_result("WooldridgeDiDResults", method=method))
+            assert tp["aggregation"] == "simple"
+            assert tp["headline_attribute"] == "overall_att"
+            assert "ASF" in tp["name"]
+            assert method in tp["name"] or method in tp["definition"]
 
     def test_efficient_did_pt_all(self):
         tp = describe_target_parameter(_minimal_result("EfficientDiDResults", pt_assumption="all"))
@@ -588,6 +607,73 @@ class TestTargetParameterRealFitIntegration:
         assert "delta" in tp["name"]
         assert tp["headline_attribute"] == "overall_att"
         assert hasattr(fit, "overall_att")
+
+    def test_dcdh_trends_linear_no_scalar_propagates_through_br(self):
+        """PR #347 R4 P1 end-to-end: on the dCDH no-scalar
+        configuration (``trends_linear=True`` + ``L_max>=2``), BR's
+        ``to_dict()`` headline must carry ``status="no_scalar_by_design"``
+        and BR's summary / full report must emit explicit no-scalar
+        prose — NOT the generic "non-finite effect / inspect the fit
+        for rank deficiency" estimation-failure messaging.
+        """
+        import warnings
+
+        from diff_diff import BusinessReport, ChaisemartinDHaultfoeuille
+
+        warnings.filterwarnings("ignore")
+        df = self._dcdh_reversible_panel(seed=16)
+        fit = ChaisemartinDHaultfoeuille().fit(
+            df,
+            outcome="outcome",
+            group="unit",
+            time="period",
+            treatment="treated",
+            L_max=2,
+            trends_linear=True,
+        )
+        br = BusinessReport(fit, outcome_label="the outcome", auto_diagnostics=False)
+        schema = br.to_dict()
+        assert schema["headline"]["status"] == "no_scalar_by_design"
+        assert schema["headline"]["effect"] is None
+        # BR's summary prose must be explicit no-scalar, not
+        # "non-finite estimate / inspect rank deficiency".
+        summary = br.summary()
+        assert "no scalar" in summary.lower() or "does not produce a scalar" in summary.lower()
+        assert "rank deficiency" not in summary.lower()
+        assert "estimation failed" not in summary.lower()
+        # Must NOT emit the "estimation_failure" caveat either.
+        caveats = br.caveats()
+        topics = {c.get("topic") for c in caveats}
+        assert "estimation_failure" not in topics
+
+    def test_dcdh_trends_linear_no_scalar_propagates_through_dr(self):
+        """Same contract on the DR side: ``headline_metric`` carries
+        ``status="no_scalar_by_design"`` and the overall-interpretation
+        prose is explicit no-scalar, not an estimation-failure sentence.
+        """
+        import warnings
+
+        from diff_diff import ChaisemartinDHaultfoeuille, DiagnosticReport
+
+        warnings.filterwarnings("ignore")
+        df = self._dcdh_reversible_panel(seed=17)
+        fit = ChaisemartinDHaultfoeuille().fit(
+            df,
+            outcome="outcome",
+            group="unit",
+            time="period",
+            treatment="treated",
+            L_max=2,
+            trends_linear=True,
+        )
+        dr = DiagnosticReport(fit).run_all()
+        schema = dr.schema
+        assert schema["headline_metric"]["status"] == "no_scalar_by_design"
+        # DR interpretation must not narrate estimation failure.
+        prose = dr.interpretation
+        assert "does not produce a scalar" in prose.lower() or "no scalar" in prose.lower()
+        assert "rank deficiency" not in prose.lower()
+        assert "zero effective sample" not in prose.lower()
 
     def test_dcdh_trends_linear_with_l_max_geq_2_fit_real(self):
         """Real ``trends_linear=True`` + ``L_max>=2`` fit: the library

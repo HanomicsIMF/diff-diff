@@ -928,7 +928,35 @@ class DiagnosticReport:
             }
 
         # Headline metric — best-effort across estimator types.
-        headline = self._extract_headline_metric()
+        # PR #347 R4 P1: the dCDH ``trends_linear=True`` + ``L_max>=2``
+        # configuration does not produce a scalar headline by design
+        # (``overall_att`` is intentionally NaN per
+        # ``chaisemartin_dhaultfoeuille.py:2828-2834``). Route the
+        # headline through a dedicated no-scalar block when the
+        # target-parameter helper flags this case so prose does not
+        # narrate it as an estimation failure.
+        _tp_agg = describe_target_parameter(self._results).get("aggregation")
+        if _tp_agg == "no_scalar_headline":
+            headline = {
+                "status": "no_scalar_by_design",
+                "name": "no scalar headline (see linear_trends_effects)",
+                "value": None,
+                "se": None,
+                "p_value": None,
+                "conf_int": (None, None),
+                "alpha": self._alpha,
+                "is_significant": False,
+                "sign": "none",
+                "reason": (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``). Per-horizon "
+                    "cumulated level effects are on "
+                    "``results.linear_trends_effects[l]``."
+                ),
+            }
+        else:
+            headline = self._extract_headline_metric()
 
         # Pull suggested next steps from the practitioner workflow.
         next_steps = self._collect_next_steps(sections)
@@ -2979,7 +3007,19 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
     ci = headline.get("conf_int") if isinstance(headline, dict) else None
     p = headline.get("p_value") if isinstance(headline, dict) else None
     val_finite = isinstance(val, (int, float)) and np.isfinite(val)
-    if val is not None and not val_finite:
+    # PR #347 R4 P1: if the estimator intentionally produces no scalar
+    # aggregate (dCDH ``trends_linear=True`` + ``L_max>=2``), route
+    # through explicit no-scalar prose rather than the
+    # estimation-failure branch below. The headline block carries
+    # ``status="no_scalar_by_design"`` in that case.
+    if isinstance(headline, dict) and headline.get("status") == "no_scalar_by_design":
+        sentences.append(
+            f"On {est}, {treatment} does not produce a scalar aggregate "
+            f"effect on {outcome} under this configuration (by design; "
+            f"see ``linear_trends_effects`` for per-horizon cumulated "
+            f"level effects)."
+        )
+    elif val is not None and not val_finite:
         sentences.append(
             f"On {est}, {treatment}'s effect on {outcome} is non-finite "
             "(the estimation did not produce a usable point estimate). "
