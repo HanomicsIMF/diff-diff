@@ -316,64 +316,140 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
         l_max = getattr(results, "L_max", None)
         has_controls = getattr(results, "covariate_residuals", None) is not None
         has_trends = getattr(results, "linear_trends_effects", None) is not None
+        reference = (
+            "de Chaisemartin & D'Haultfoeuille (2020, 2024); "
+            "REGISTRY.md Sec. ChaisemartinDHaultfoeuille"
+        )
+        # PR #347 R2 P1 review: mirror the exact ``overall_att``
+        # contract from ``chaisemartin_dhaultfoeuille.py`` lines
+        # 2602-2634 (L_max>=2 overrides with cost-benefit ``delta``,
+        # NaN if non-estimable) and lines 2828-2834 (``trends_linear``
+        # + ``L_max>=2`` suppresses the scalar entirely with NaN).
+        # The result class's own ``_estimand_label`` at
+        # ``chaisemartin_dhaultfoeuille_results.py:454-490`` is the
+        # source-of-truth; this branch tracks that logic.
+
+        # Trends + L_max>=2: overall_att is NaN. No scalar aggregate;
+        # per-horizon effects are on ``linear_trends_effects``.
+        if has_trends and l_max is not None and l_max >= 2:
+            if has_controls:
+                estimand_label = "DID^{X,fd}_l (see linear_trends_effects)"
+            else:
+                estimand_label = "DID^{fd}_l (see linear_trends_effects)"
+            return {
+                "name": estimand_label,
+                "definition": (
+                    "Under ``trends_linear=True`` with ``L_max >= 2``, the "
+                    "estimator intentionally does NOT produce a scalar "
+                    "aggregate in ``overall_att`` (it is NaN by design, "
+                    "matching R's ``did_multiplegt_dyn`` with "
+                    "``trends_lin=TRUE``). Per-horizon cumulated level "
+                    "effects ``DID^{fd}_l`` (or ``DID^{X,fd}_l`` when "
+                    "covariates are active) live on "
+                    "``results.linear_trends_effects[l]``. Consult those "
+                    "rather than the headline."
+                ),
+                "aggregation": "no_scalar_headline",
+                "headline_attribute": None,
+                "reference": reference,
+            }
+
         if l_max is None:
             # DID_M — period-aggregated contemporaneous-switch ATT.
-            return {
-                "name": "DID_M (period-aggregated contemporaneous-switch ATT)",
-                "definition": (
-                    "The contemporaneous-switch ATT averaged across switching "
-                    "periods. At each period the estimator contrasts joiners "
-                    "(``D: 0 -> 1``), leavers (``D: 1 -> 0``), and stable-"
-                    "control cells that share the same treatment state across "
-                    "adjacent periods; ``DID_M`` averages these per-period "
-                    "contrasts."
-                ),
-                "aggregation": "M",
-                "headline_attribute": "overall_att",
-                "reference": (
-                    "de Chaisemartin & D'Haultfoeuille (2020); "
-                    "REGISTRY.md Sec. ChaisemartinDHaultfoeuille"
-                ),
-            }
-        # L_max >= 1 — dynamic horizon estimand.
+            base, agg_base, base_label = (
+                "DID_M",
+                "M",
+                "period-aggregated contemporaneous-switch ATT",
+            )
+            definition_core = (
+                "The contemporaneous-switch ATT averaged across switching "
+                "periods. At each period the estimator contrasts joiners "
+                "(``D: 0 -> 1``), leavers (``D: 1 -> 0``), and stable-"
+                "control cells that share the same treatment state across "
+                "adjacent periods; ``DID_M`` averages these per-period "
+                "contrasts."
+            )
+        elif l_max == 1:
+            # DID_1 — single-horizon per-group estimand.
+            base, agg_base, base_label = (
+                "DID_1",
+                "DID_1",
+                "single-horizon per-group dynamic ATT",
+            )
+            definition_core = (
+                "The per-group dynamic ATT at event horizon ``l = 1`` "
+                "post-switch (Equation 3 of the dCDH dynamic companion "
+                "paper). The estimator contrasts joiners and stable "
+                "controls conditioning on baseline treatment ``D_{g,1}``; "
+                "the aggregate averages across cohorts with treated-share "
+                "weights. This is the per-group ``DID_{g,1}`` building "
+                "block averaged, NOT the per-period ``DID_M`` (the two can "
+                "differ by O(1%) on mixed-direction panels — see the "
+                "``Phase 2 DID_1 vs Phase 1 DID_M`` Note in REGISTRY.md)."
+            )
+        else:
+            # L_max >= 2: cost-benefit delta aggregate.
+            base, agg_base, base_label = (
+                "delta",
+                "delta",
+                "cost-benefit cross-horizon aggregate",
+            )
+            definition_core = (
+                "The cost-benefit aggregate "
+                "``delta = sum_l w_l * DID_l`` (Lemma 4 of the dCDH "
+                "dynamic companion paper), a weighted cross-horizon "
+                "combination where ``w_l`` reflects the cumulative dose at "
+                "each horizon. ``overall_att`` holds this delta when "
+                "``L_max >= 2``; if delta is non-estimable (no eligible "
+                "switchers at any horizon) it is NaN with the same "
+                "``overall_se`` / CI surface."
+            )
+
+        # Suffix for controls / trends. ``trends_linear`` + ``L_max >= 2``
+        # was handled above (no-scalar case); here ``has_trends`` can
+        # only co-occur with ``L_max in {None, 1}`` (or ``L_max == None``
+        # where the no-scalar rule does not apply).
         if has_controls and has_trends:
-            agg_tag = "l_x_fd"
-            headline_name = "DID^{X,fd}_l (covariate-residualized first-differences)"
-            extra = (
-                " Identification holds conditional on the covariates entering "
-                "the first-stage residualization and allowing group-specific "
-                "linear trends."
+            suffix, agg_suffix, suffix_clause = (
+                "^{X,fd}",
+                "_x_fd",
+                " Identification is conditional on the first-stage "
+                "covariates and allows group-specific linear pre-trends.",
             )
         elif has_controls:
-            agg_tag = "l_x"
-            headline_name = "DID^X_l (covariate-residualized per-horizon ATT)"
-            extra = (
-                " Identification holds conditional on the covariates entering "
-                "the first-stage residualization."
+            suffix, agg_suffix, suffix_clause = (
+                "^X",
+                "_x",
+                " Identification is conditional on the first-stage " "covariates.",
             )
         elif has_trends:
-            agg_tag = "l_fd"
-            headline_name = "DID^{fd}_l (first-differenced per-horizon ATT)"
-            extra = " The identifying restriction allows group-specific linear " "pre-trends."
+            suffix, agg_suffix, suffix_clause = (
+                "^{fd}",
+                "_fd",
+                " The identifying restriction allows group-specific linear " "pre-trends.",
+            )
         else:
-            agg_tag = "l"
-            headline_name = "DID_l (per-horizon dynamic ATT)"
-            extra = ""
+            suffix, agg_suffix, suffix_clause = "", "", ""
+
+        # Assemble the name label to match the result class's
+        # ``_estimand_label()``: for ``delta``, suffix follows the base
+        # (``delta^X``); for DID variants, suffix goes on ``DID`` with
+        # the subscript preserved (``DID^X_1``, ``DID^{fd}_M``).
+        if base == "delta":
+            name_label = f"delta{suffix}" if suffix else "delta"
+        elif suffix:
+            did_part = base.split("_")[0]
+            sub_part = base.split("_")[1] if "_" in base else ""
+            name_label = f"{did_part}{suffix}_{sub_part}" if sub_part else f"{did_part}{suffix}"
+        else:
+            name_label = base
+
         return {
-            "name": headline_name,
-            "definition": (
-                "A cohort-averaged dynamic ATT at event horizon ``l`` "
-                "post-switch. The estimator contrasts joiners and stable "
-                "controls that share baseline treatment state at the switching "
-                "period; the aggregate averages across cohorts with treated-"
-                "share weights." + extra
-            ),
-            "aggregation": agg_tag,
+            "name": f"{name_label} ({base_label})",
+            "definition": definition_core + suffix_clause,
+            "aggregation": agg_base + agg_suffix,
             "headline_attribute": "overall_att",
-            "reference": (
-                "de Chaisemartin & D'Haultfoeuille (2020, 2024); "
-                "REGISTRY.md Sec. ChaisemartinDHaultfoeuille"
-            ),
+            "reference": reference,
         }
 
     if name == "SyntheticDiDResults":

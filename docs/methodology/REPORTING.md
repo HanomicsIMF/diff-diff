@@ -119,8 +119,29 @@ A few branches read fit-time config from the result object:
   describing which units qualify as controls.
 - `ChaisemartinDHaultfoeuilleResults.L_max` +
   `covariate_residuals` + `linear_trends_effects`: branches the
-  dCDH estimand tag between `DID_M` / `DID_l` / `DID^X_l` /
-  `DID^{fd}_l` / `DID^{X,fd}_l`.
+  dCDH estimand tag per the exact `overall_att` contract in
+  `chaisemartin_dhaultfoeuille.py:2602-2634` and
+  `chaisemartin_dhaultfoeuille.py:2828-2834`:
+  - `L_max=None` → `DID_M` (Phase 1 per-period aggregate;
+    `aggregation="M"`).
+  - `L_max=1` → `DID_1` (single-horizon per-group estimand,
+    Equation 3 of the dynamic companion paper;
+    `aggregation="DID_1"`).
+  - `L_max>=2` → cost-benefit `delta` (Lemma 4 cross-horizon
+    aggregate; `aggregation="delta"`).
+  - `trends_linear=True` AND `L_max>=2` → `overall_att` is
+    intentionally NaN (no scalar aggregate; per-horizon level
+    effects live on `results.linear_trends_effects[l]`).
+    `aggregation="no_scalar_headline"` and
+    `headline_attribute` is `None`.
+
+  Covariates (`has_controls`) and/or linear trends
+  (`has_trends`, when `L_max < 2`) add `_x` / `_fd` /
+  `_x_fd` suffixes to the `aggregation` tag and the
+  corresponding `^X` / `^{fd}` / `^{X,fd}` superscripts to the
+  `name` (e.g. `DID^X_1`, `delta^X`, `DID^{fd}_M`), matching the
+  result class's own `_estimand_label()` helper at
+  `chaisemartin_dhaultfoeuille_results.py:454-490`.
 
 A few branches emit a fixed tag regardless of fit-time config —
 notably `CallawaySantAnna`, `ImputationDiD`, `TwoStageDiD`, and

@@ -143,7 +143,29 @@ class TestTargetParameterPerEstimator:
         # downstream consumers should read.
         assert tp["headline_attribute"] == "overall_att"
 
-    def test_dcdh_l(self):
+    def test_dcdh_did_1(self):
+        """``L_max = 1`` → headline is ``DID_1`` (per-group single-
+        horizon estimand, Equation 3 of the dCDH dynamic paper), NOT
+        the generic ``DID_l``. R2 PR #347 review P1 regression:
+        previously every ``L_max >= 1`` was flattened to ``DID_l``.
+        """
+        tp = describe_target_parameter(
+            _minimal_result(
+                "ChaisemartinDHaultfoeuilleResults",
+                L_max=1,
+                covariate_residuals=None,
+                linear_trends_effects=None,
+            )
+        )
+        assert tp["aggregation"] == "DID_1"
+        assert "DID_1" in tp["name"]
+        assert tp["headline_attribute"] == "overall_att"
+
+    def test_dcdh_delta(self):
+        """``L_max >= 2`` (no trends) → headline is the cost-benefit
+        ``delta`` aggregate (Lemma 4), NOT ``DID_l``. Mirrors
+        ``chaisemartin_dhaultfoeuille.py:2602-2634``.
+        """
         tp = describe_target_parameter(
             _minimal_result(
                 "ChaisemartinDHaultfoeuilleResults",
@@ -152,11 +174,23 @@ class TestTargetParameterPerEstimator:
                 linear_trends_effects=None,
             )
         )
-        assert tp["aggregation"] == "l"
-        assert "DID_l" in tp["name"]
+        assert tp["aggregation"] == "delta"
+        assert "delta" in tp["name"]
         assert tp["headline_attribute"] == "overall_att"
 
-    def test_dcdh_l_with_controls(self):
+    def test_dcdh_did_1_with_controls(self):
+        tp = describe_target_parameter(
+            _minimal_result(
+                "ChaisemartinDHaultfoeuilleResults",
+                L_max=1,
+                covariate_residuals=SimpleNamespace(),
+                linear_trends_effects=None,
+            )
+        )
+        assert tp["aggregation"] == "DID_1_x"
+        assert "DID^X_1" in tp["name"]
+
+    def test_dcdh_delta_with_controls(self):
         tp = describe_target_parameter(
             _minimal_result(
                 "ChaisemartinDHaultfoeuilleResults",
@@ -165,10 +199,17 @@ class TestTargetParameterPerEstimator:
                 linear_trends_effects=None,
             )
         )
-        assert tp["aggregation"] == "l_x"
-        assert "DID^X_l" in tp["name"]
+        assert tp["aggregation"] == "delta_x"
+        assert "delta^X" in tp["name"]
 
-    def test_dcdh_l_with_trends(self):
+    def test_dcdh_trends_linear_with_l_max_geq_2_emits_no_scalar_headline(self):
+        """``trends_linear=True`` with ``L_max >= 2`` intentionally
+        suppresses the scalar aggregate (``overall_att`` is NaN by
+        design per ``chaisemartin_dhaultfoeuille.py:2828-2834``). The
+        target-parameter block must reflect that — ``aggregation =
+        "no_scalar_headline"`` and ``headline_attribute = None``.
+        R2 PR #347 review P1 regression.
+        """
         tp = describe_target_parameter(
             _minimal_result(
                 "ChaisemartinDHaultfoeuilleResults",
@@ -177,8 +218,26 @@ class TestTargetParameterPerEstimator:
                 linear_trends_effects={"foo": "bar"},
             )
         )
-        assert tp["aggregation"] == "l_fd"
-        assert "DID^{fd}_l" in tp["name"]
+        assert tp["aggregation"] == "no_scalar_headline"
+        assert tp["headline_attribute"] is None
+        assert "linear_trends_effects" in tp["definition"]
+
+    def test_dcdh_trends_linear_with_l_max_1_still_has_scalar(self):
+        """``trends_linear=True`` with ``L_max = 1`` still produces a
+        scalar headline (``DID^{fd}_1``) — the no-scalar rule only
+        applies when ``L_max >= 2``.
+        """
+        tp = describe_target_parameter(
+            _minimal_result(
+                "ChaisemartinDHaultfoeuilleResults",
+                L_max=1,
+                covariate_residuals=None,
+                linear_trends_effects={"foo": "bar"},
+            )
+        )
+        assert tp["aggregation"] == "DID_1_fd"
+        assert "DID^{fd}_1" in tp["name"]
+        assert tp["headline_attribute"] == "overall_att"
 
     def test_sdid(self):
         tp = describe_target_parameter(_minimal_result("SyntheticDiDResults"))
@@ -222,11 +281,20 @@ class TestTargetParameterFitConfigReads:
     @pytest.mark.parametrize(
         "L_max, controls, trends, expected_tag",
         [
+            # L_max=None -> DID_M (Phase 1 per-period aggregate).
             (None, None, None, "M"),
-            (2, None, None, "l"),
-            (2, SimpleNamespace(), None, "l_x"),
-            (2, None, {"foo": "bar"}, "l_fd"),
-            (2, SimpleNamespace(), {"foo": "bar"}, "l_x_fd"),
+            (None, SimpleNamespace(), None, "M_x"),
+            # L_max=1 -> DID_1 (single-horizon per-group).
+            (1, None, None, "DID_1"),
+            (1, SimpleNamespace(), None, "DID_1_x"),
+            (1, None, {"foo": "bar"}, "DID_1_fd"),
+            (1, SimpleNamespace(), {"foo": "bar"}, "DID_1_x_fd"),
+            # L_max>=2 (no trends) -> cost-benefit delta aggregate.
+            (2, None, None, "delta"),
+            (2, SimpleNamespace(), None, "delta_x"),
+            # L_max>=2 + trends_linear -> no scalar aggregate.
+            (2, None, {"foo": "bar"}, "no_scalar_headline"),
+            (2, SimpleNamespace(), {"foo": "bar"}, "no_scalar_headline"),
         ],
     )
     def test_dcdh_config_branches_tag(self, L_max, controls, trends, expected_tag):
@@ -239,6 +307,13 @@ class TestTargetParameterFitConfigReads:
             )
         )
         assert tp["aggregation"] == expected_tag
+        # Contract: ``headline_attribute`` is "overall_att" whenever
+        # there IS a scalar aggregate, and None when the
+        # ``trends_linear + L_max>=2`` no-scalar rule fires.
+        if expected_tag == "no_scalar_headline":
+            assert tp["headline_attribute"] is None
+        else:
+            assert tp["headline_attribute"] == "overall_att"
 
 
 class TestTargetParameterCoversEveryResultClass:
@@ -465,16 +540,41 @@ class TestTargetParameterRealFitIntegration:
             "an attribute that actually exists on the real result object."
         )
 
-    def test_dcdh_did_l_fit_headline_attribute_is_overall_att(self):
-        """Same guard for the DID_l dynamic-horizon regime
-        (``L_max >= 1``). Real-fit regression.
+    def test_dcdh_did_1_fit_overall_att_real(self):
+        """Real ``L_max = 1`` fit: headline is ``DID_1`` (single-
+        horizon per-group estimand), not the generic ``DID_l``.
+        PR #347 R2 P1 regression on a live fit.
         """
         import warnings
 
         from diff_diff import ChaisemartinDHaultfoeuille
 
         warnings.filterwarnings("ignore")
-        df = self._dcdh_reversible_panel(seed=12)
+        df = self._dcdh_reversible_panel(seed=13)
+        fit = ChaisemartinDHaultfoeuille().fit(
+            df,
+            outcome="outcome",
+            group="unit",
+            time="period",
+            treatment="treated",
+            L_max=1,
+        )
+        tp = describe_target_parameter(fit)
+        assert tp["aggregation"] == "DID_1"
+        assert "DID_1" in tp["name"]
+        assert tp["headline_attribute"] == "overall_att"
+        assert hasattr(fit, "overall_att")
+
+    def test_dcdh_delta_fit_real(self):
+        """Real ``L_max >= 2`` fit: headline is the cost-benefit
+        ``delta`` aggregate. PR #347 R2 P1 regression on a live fit.
+        """
+        import warnings
+
+        from diff_diff import ChaisemartinDHaultfoeuille
+
+        warnings.filterwarnings("ignore")
+        df = self._dcdh_reversible_panel(seed=14)
         fit = ChaisemartinDHaultfoeuille().fit(
             df,
             outcome="outcome",
@@ -484,6 +584,7 @@ class TestTargetParameterRealFitIntegration:
             L_max=2,
         )
         tp = describe_target_parameter(fit)
-        assert tp["aggregation"] == "l"
+        assert tp["aggregation"] == "delta"
+        assert "delta" in tp["name"]
         assert tp["headline_attribute"] == "overall_att"
-        assert hasattr(fit, tp["headline_attribute"])
+        assert hasattr(fit, "overall_att")
