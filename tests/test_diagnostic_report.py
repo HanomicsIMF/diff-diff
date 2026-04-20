@@ -1891,6 +1891,121 @@ class TestOverallInterpretation:
         assert "## HonestDiD sensitivity" in md
 
 
+class TestDRFragilePhrasingIsGridAware:
+    """CI review on PR #341 R1: DR's ``overall_interpretation``
+    fragile-sensitivity sentence must be gated on the actual
+    evaluated grid, not just on ``breakdown_M``. ``breakdown_M`` is
+    the interpolated threshold between grid points; "smallest grid
+    point fails" is only a valid claim when the smallest actually-
+    evaluated M has ``robust_to_zero == False``. Mirrors the BR test
+    class ``TestCanonicalValidationSurfaceFixes``.
+    """
+
+    @staticmethod
+    def _grid(breakdown_m, grid_rows):
+        """Build a sensitivity block with a populated grid, matching
+        the schema ``_check_sensitivity`` emits."""
+        return {
+            "status": "ran",
+            "method": "relative_magnitude",
+            "breakdown_M": breakdown_m,
+            "conclusion": "fragile",
+            "grid": [
+                {
+                    "M": row["M"],
+                    "ci_lower": 0.0,
+                    "ci_upper": 0.0,
+                    "bound_lower": 0.0,
+                    "bound_upper": 0.0,
+                    "robust_to_zero": row["robust_to_zero"],
+                }
+                for row in grid_rows
+            ],
+        }
+
+    def _render(self, sens_block):
+        """Call the DR overall-interpretation renderer on a minimal
+        schema that has our sensitivity block and otherwise skipped
+        sections (so the fragile-sensitivity branch fires alone)."""
+        from diff_diff.diagnostic_report import _render_overall_interpretation
+
+        schema = {
+            "schema_version": "1.0",
+            "estimator": {"class_name": "CallawaySantAnnaResults", "display_name": "CS"},
+            "headline_metric": {
+                "status": "ran",
+                "effect": 0.5,
+                "se": 0.1,
+                "p_value": 0.0,
+                "ci_lower": 0.3,
+                "ci_upper": 0.7,
+                "is_significant": True,
+                "sign": "positive",
+                "alpha": 0.05,
+            },
+            "parallel_trends": {"status": "skipped", "reason": "stub"},
+            "pretrends_power": {"status": "skipped", "reason": "stub"},
+            "sensitivity": sens_block,
+            "placebo": {"status": "skipped", "reason": "stub"},
+            "bacon": {"status": "skipped", "reason": "stub"},
+            "design_effect": {"status": "skipped", "reason": "stub"},
+            "heterogeneity": {"status": "skipped", "reason": "stub"},
+            "epv": {"status": "skipped", "reason": "stub"},
+            "estimator_native_diagnostics": {"status": "not_applicable"},
+            "skipped": {},
+            "warnings": [],
+            "next_steps": [],
+        }
+        return _render_overall_interpretation(schema, {})
+
+    def test_dr_smallest_grid_m_fails_uses_smallest_m_wording(self):
+        """Castle Doctrine pattern: grid ``[0.5, 1.0, ...]`` with M=0.5
+        already non-robust. DR emits "smallest M evaluated (M = 0.5)".
+        """
+        sens = self._grid(
+            breakdown_m=0.0,
+            grid_rows=[
+                {"M": 0.5, "robust_to_zero": False},
+                {"M": 1.0, "robust_to_zero": False},
+            ],
+        )
+        prose = self._render(sens)
+        assert "smallest M evaluated on the sensitivity grid" in prose
+        assert "M = 0.5" in prose
+        assert "0x the pre-period variation" not in prose
+
+    def test_dr_smallest_grid_m_robust_falls_through_to_multiplier(self):
+        """Grid starting at M=0 with smallest point still robust.
+        ``breakdown_M=0.03`` is the interpolated threshold between
+        M=0 and M=0.25; DR must NOT claim the smallest grid point
+        failed (it didn't) and must use the multiplier wording
+        instead.
+        """
+        sens = self._grid(
+            breakdown_m=0.03,
+            grid_rows=[
+                {"M": 0.0, "robust_to_zero": True},
+                {"M": 0.25, "robust_to_zero": False},
+            ],
+        )
+        prose = self._render(sens)
+        assert "smallest M evaluated on the sensitivity grid" not in prose
+        assert "0.03x" in prose
+
+    def test_dr_normal_fragile_keeps_multiplier(self):
+        """Normal fragile value (e.g., 0.3) still quotes the multiplier."""
+        sens = self._grid(
+            breakdown_m=0.3,
+            grid_rows=[
+                {"M": 0.5, "robust_to_zero": True},
+                {"M": 1.0, "robust_to_zero": True},
+            ],
+        )
+        prose = self._render(sens)
+        assert "0.3x" in prose
+        assert "smallest M evaluated on the sensitivity grid" not in prose
+
+
 # ---------------------------------------------------------------------------
 # Public result class
 # ---------------------------------------------------------------------------

@@ -259,11 +259,14 @@ class TestCastleDoctrineCanonicalDirection:
         )
         assert "Castle Doctrine law adoption" in br.headline()
 
-    def test_breakdown_m_zero_uses_smallest_grid_point_wording(self, castle_panel):
+    def test_breakdown_m_zero_uses_smallest_m_evaluated_wording(self, castle_panel):
         """Castle Doctrine's fragile sensitivity surfaced a
-        ``breakdown_M == 0`` edge case in BR's summary wording. The
-        summary must not quote ``0x the pre-period variation``; it
-        must use the smallest-grid-point phrasing.
+        ``breakdown_M == 0`` edge case. The default HonestDiD grid
+        starts at M=0.5, and every grid point has the robust CI
+        including zero — so the smallest-M-evaluated wording is
+        semantically accurate here. BR's summary must say ``smallest
+        M evaluated on the sensitivity grid (M = 0.5)`` and must not
+        quote the degenerate ``0x`` multiplier.
         """
         cs = CallawaySantAnna(base_period="universal", control_group="never_treated").fit(
             castle_panel,
@@ -292,12 +295,14 @@ class TestCastleDoctrineCanonicalDirection:
             f"breakdown_M <= 0.05; if not, the dataset or estimator "
             f"changed. Got breakdown_M={bkd!r}"
         )
-        # Must not render the degenerate "0x the pre-period variation"
-        # wording.
-        assert "0x" not in summary, (
+        # Must not render the degenerate ``0x`` multiplier.
+        assert "0x the pre-period variation" not in summary, (
             f"Summary must not quote ``0x`` multiplier on edge-case " f"breakdown. Got: {summary!r}"
         )
-        assert "smallest parallel-trends violations" in summary
+        # Must name the smallest evaluated grid point (0.5 for the
+        # default grid).
+        assert "smallest M evaluated on the sensitivity grid" in summary
+        assert "M = 0.5" in summary
 
 
 class TestCastleDoctrineCrossEstimatorConsistency:

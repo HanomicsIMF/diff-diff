@@ -1854,6 +1854,30 @@ def _significance_phrase(p: Optional[float], alpha: float) -> str:
     return "the confidence interval includes zero; the data are consistent with no effect"
 
 
+def _smallest_failing_grid_m(sens: Dict[str, Any]) -> Optional[float]:
+    """If the smallest evaluated M on the HonestDiD sensitivity grid
+    already has the robust CI including zero, return that M. Returns
+    ``None`` when the grid is missing or when the smallest evaluated
+    point is still robust — in the latter case ``breakdown_M`` is an
+    interpolated threshold between grid points, not a statement about
+    the smallest grid point itself.
+
+    Matches the twin helper in ``diagnostic_report.py``; keep the two
+    in sync for cross-surface parity.
+    """
+    grid_points = sens.get("grid") or []
+    sorted_grid = sorted(
+        (p for p in grid_points if isinstance(p.get("M"), (int, float))),
+        key=lambda p: p["M"],
+    )
+    if not sorted_grid:
+        return None
+    smallest = sorted_grid[0]
+    if not smallest.get("robust_to_zero", True):
+        return float(smallest["M"])
+    return None
+
+
 def _sentence_first_upper(text: str) -> str:
     """Uppercase only the first character of ``text``, preserving all
     other casing. Unlike ``str.capitalize()``, which lowercases every
@@ -2115,19 +2139,26 @@ def _render_summary(schema: Dict[str, Any]) -> str:
                 f"pre-period variation."
             )
         elif isinstance(bkd, (int, float)):
-            # Round-1 BR/DR canonical-validation (2026-04-19):
-            # ``breakdown_M`` at or near zero reads as "0x the
-            # pre-period variation" which is a degenerate sentence
-            # (zero-times-anything is zero). The correct wording when
-            # the CI includes zero at the smallest grid point is to
-            # say the result is fragile to essentially any nonzero
-            # violation, not to quote the ``0x`` multiplier.
-            if bkd <= 0.05:
+            # Round-1 BR/DR canonical-validation (2026-04-19) then
+            # tightened per CI review on PR #341 R1:
+            # ``breakdown_M`` is the smallest M at which the robust
+            # CI includes zero (interpolated between grid points) —
+            # not a claim about any specific grid point. Earlier fix
+            # keyed off ``bkd <= 0.05`` which incorrectly asserted
+            # "smallest grid point fails" even for grids that start
+            # at M=0 where the smallest evaluated point is still
+            # robust (e.g., grid=[0, 0.25, ...] with bkd=0.03). The
+            # "smallest grid point" wording is only accurate when
+            # the smallest evaluated M on the grid itself fails
+            # (``robust_to_zero == False``); otherwise fall through
+            # to the numeric multiplier.
+            smallest_failed_m = _smallest_failing_grid_m(sens)
+            if smallest_failed_m is not None:
                 sentences.append(
                     "HonestDiD: the result is fragile — the confidence "
-                    "interval includes zero even at the smallest "
-                    "parallel-trends violations on the sensitivity "
-                    "grid."
+                    "interval includes zero even at the smallest M "
+                    f"evaluated on the sensitivity grid (M = "
+                    f"{smallest_failed_m:.2g})."
                 )
             else:
                 sentences.append(

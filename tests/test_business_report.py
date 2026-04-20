@@ -4004,11 +4004,28 @@ class TestCanonicalValidationSurfaceFixes:
         stub.inference_method = "analytical"
         return stub
 
-    def _fragile_dr_schema(self, breakdown_m: float):
+    def _fragile_dr_schema(self, breakdown_m: float, grid=None):
         """Build a fake DiagnosticReportResults whose ``sensitivity``
-        block carries the given ``breakdown_M`` value."""
+        block carries the given ``breakdown_M`` value and grid. Pass
+        ``grid`` as a list of ``{"M": float, "robust_to_zero": bool}``
+        dicts (other fields populated with plausible values).
+        """
         from diff_diff.diagnostic_report import DiagnosticReportResults
 
+        grid = grid if grid is not None else []
+        # Populate optional CI / bound fields so grid entries match
+        # the schema the BR/DR runners actually emit.
+        grid_full = [
+            {
+                "M": row["M"],
+                "ci_lower": row.get("ci_lower", 0.0),
+                "ci_upper": row.get("ci_upper", 0.0),
+                "bound_lower": row.get("bound_lower", 0.0),
+                "bound_upper": row.get("bound_upper", 0.0),
+                "robust_to_zero": row["robust_to_zero"],
+            }
+            for row in grid
+        ]
         schema = {
             "schema_version": "1.0",
             "estimator": {"class_name": "CallawaySantAnnaResults", "display_name": "CS"},
@@ -4020,7 +4037,7 @@ class TestCanonicalValidationSurfaceFixes:
                 "method": "relative_magnitude",
                 "breakdown_M": breakdown_m,
                 "conclusion": "fragile",
-                "grid": [],
+                "grid": grid_full,
             },
             "placebo": {"status": "skipped", "reason": "stub"},
             "bacon": {"status": "skipped", "reason": "stub"},
@@ -4097,50 +4114,83 @@ class TestCanonicalValidationSurfaceFixes:
             "Castle Doctrine law adoption" in headline
         ), f"Proper-noun casing must be preserved. Got: {headline!r}"
 
-    def test_breakdown_m_zero_uses_smallest_grid_point_wording(self):
-        """Cheng-Hoekstra Castle Doctrine produces ``breakdown_M == 0``
-        under HonestDiD. The old wording "violations reach 0x the
-        pre-period variation" reads as a degenerate zero-times-variation
-        sentence. The fix switches to "includes zero even at the
-        smallest parallel-trends violations on the sensitivity grid"
-        for breakdown values at or near zero.
+    def test_smallest_grid_m_fails_uses_smallest_grid_point_wording(self):
+        """When the smallest M actually evaluated on the grid has
+        ``robust_to_zero == False``, the "smallest M evaluated" wording
+        is semantically correct. This is the Cheng-Hoekstra Castle
+        Doctrine pattern: default grid ``[0.5, 1.0, 1.5, 2.0]`` with
+        M=0.5 already non-robust.
         """
         stub = self._cs_like_stub_with_zero_breakdown()
-        dr = self._fragile_dr_schema(breakdown_m=0.0)
+        dr = self._fragile_dr_schema(
+            breakdown_m=0.0,
+            grid=[
+                {"M": 0.5, "robust_to_zero": False},
+                {"M": 1.0, "robust_to_zero": False},
+                {"M": 1.5, "robust_to_zero": False},
+                {"M": 2.0, "robust_to_zero": False},
+            ],
+        )
         br = BusinessReport(stub, diagnostics=dr)
         summary = br.summary()
-        assert "0x" not in summary, (
-            f"Summary must not render ``0x the pre-period variation``; "
-            f"that reads as zero-times-anything. Got: {summary!r}"
+        # Must not render the degenerate multiplier form on the
+        # zero-breakdown case.
+        assert (
+            "0x the pre-period variation" not in summary
+        ), f"Summary must not quote ``0x`` multiplier. Got: {summary!r}"
+        # New wording quotes the actual smallest evaluated M.
+        assert "smallest M evaluated on the sensitivity grid" in summary, (
+            f"Summary must use the smallest-M-evaluated wording when the "
+            f"smallest grid point actually fails. Got: {summary!r}"
         )
-        assert "smallest parallel-trends violations" in summary, (
-            f"Summary must use the smallest-grid-point wording at "
-            f"breakdown_M == 0. Got: {summary!r}"
-        )
+        assert "M = 0.5" in summary
 
-    def test_breakdown_m_small_positive_still_uses_smallest_grid_point_wording(self):
-        """Breakdown values just above zero (e.g., 0.03) should also
-        route through the smallest-grid-point wording — quoting
-        ``0.03x`` to a stakeholder is equally uninformative.
+    def test_smallest_grid_m_robust_falls_through_to_multiplier_wording(self):
+        """CI review on PR #341 R1: ``breakdown_M`` is the interpolated
+        threshold between grid points, not a claim about any specific
+        grid point. On a grid starting at M=0 where the smallest
+        evaluated point is still robust, a small ``breakdown_M=0.03``
+        does NOT mean the smallest grid point failed — it means
+        fragility emerges between grid points. The correct wording is
+        the numeric multiplier, not the smallest-grid-point claim.
         """
         stub = self._cs_like_stub_with_zero_breakdown()
-        dr = self._fragile_dr_schema(breakdown_m=0.03)
+        dr = self._fragile_dr_schema(
+            breakdown_m=0.03,
+            grid=[
+                # Smallest evaluated M (0) is still robust: CI excludes
+                # zero. Breakdown is interpolated somewhere between M=0
+                # and M=0.25.
+                {"M": 0.0, "robust_to_zero": True},
+                {"M": 0.25, "robust_to_zero": False},
+                {"M": 0.5, "robust_to_zero": False},
+            ],
+        )
         br = BusinessReport(stub, diagnostics=dr)
         summary = br.summary()
-        assert "smallest parallel-trends violations" in summary
-        assert "0.03x" not in summary
+        # Must NOT claim the smallest grid point failed — it didn't.
+        assert "smallest M evaluated on the sensitivity grid" not in summary, (
+            f"Summary must not assert ``smallest M evaluated fails`` when the "
+            f"smallest grid point is still robust. Got: {summary!r}"
+        )
+        # Correct wording quotes the numeric multiplier.
+        assert "0.03x" in summary, (
+            f"Fragile fit with robust smallest-M should quote the interpolated "
+            f"breakdown multiplier. Got: {summary!r}"
+        )
 
     def test_breakdown_m_normal_keeps_multiplier_wording(self):
         """Breakdown values at the usual fragile-but-nonzero range
         (e.g., 0.3) must still quote the ``0.3x`` multiplier — the
-        smallest-grid-point wording is only for the degenerate tail.
+        smallest-M-evaluated wording is only for grids whose smallest
+        actually-evaluated point is already non-robust.
         """
         stub = self._cs_like_stub_with_zero_breakdown()
         dr = self._fragile_dr_schema(breakdown_m=0.3)
         br = BusinessReport(stub, diagnostics=dr)
         summary = br.summary()
         assert "0.3x" in summary
-        assert "smallest parallel-trends violations" not in summary
+        assert "smallest M evaluated on the sensitivity grid" not in summary
 
 
 class TestBaconCaveatEstimatorAware:
