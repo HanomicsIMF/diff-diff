@@ -990,9 +990,11 @@ def bias_corrected_local_linear(
         provided without ``h`` raises ``ValueError``.
     alpha : float, default=0.05
         CI level; ``0.05`` gives a 95% CI. Must be in ``(0, 1)``.
-    vce : {"nn", "hc0", "hc1", "hc2", "hc3"}, default="nn"
-        Variance-estimation method. ``"nn"`` is parity-tested in
-        Phase 1c; other modes are exposed but not golden-parity-tested.
+    vce : {"nn"}, default="nn"
+        Variance-estimation method. Only ``"nn"`` is supported in
+        Phase 1c; hc0/hc1/hc2/hc3 are queued for Phase 2+ pending
+        dedicated R parity goldens. Passing anything else raises
+        ``NotImplementedError``.
     cluster : np.ndarray or None
         Per-observation cluster IDs for cluster-robust variance. Missing
         (NaN) cluster IDs raise ``ValueError`` rather than silently
@@ -1019,18 +1021,19 @@ def bias_corrected_local_linear(
 
     Notes
     -----
-    Parity against ``nprobust::lprobust(..., bwselect="mse-dpi")`` is tiered
-    (see ``docs/methodology/REGISTRY.md``): ``atol=1e-12`` on ``tau_cl``,
-    ``tau_bc``, ``se_cl``, and ``se_rb`` across the three unclustered
-    golden DGPs; ``atol=1e-13`` on CI bounds. The Python wrapper computes
-    its own ``z_{1-alpha/2}`` via ``scipy.stats.norm.ppf`` inside
-    ``safe_inference()``; R's ``qnorm`` value is stored in the golden JSON
-    for audit, and the parity harness compares Python's CI bounds to R's
-    pre-computed CI bounds, so any residual drift is purely the
-    floating-point arithmetic in ``tau.bc +/- z * se.rb``, not a
-    critical-value disagreement. Clustered DGP 4 achieves bit-parity
-    (``atol=1e-14``) when cluster IDs happen to be in first-appearance
-    order; otherwise BLAS reduction ordering can drift to ``atol=1e-10``.
+    Parity against ``nprobust::lprobust(..., bwselect="mse-dpi")`` is
+    asserted at ``atol=1e-12`` on ``tau_cl``, ``tau_bc``, ``se_cl``,
+    ``se_rb``, ``ci_low``, and ``ci_high`` across the three unclustered
+    golden DGPs; DGP 1 and DGP 3 typically land closer to ``1e-13``.
+    The Python wrapper computes its own ``z_{1-alpha/2}`` via
+    ``scipy.stats.norm.ppf`` inside ``safe_inference()``; R's ``qnorm``
+    value is stored in the golden JSON for audit, and the parity harness
+    compares Python's CI bounds to R's pre-computed CI bounds, so any
+    residual drift is purely the floating-point arithmetic in
+    ``tau.bc +/- z * se.rb``, not a critical-value disagreement.
+    Clustered DGP 4 achieves bit-parity (``atol=1e-14``) when cluster
+    IDs are in first-appearance order; otherwise BLAS reduction
+    ordering can drift to ``atol=1e-10``.
     """
     if weights is not None:
         raise NotImplementedError(
@@ -1050,15 +1053,26 @@ def bias_corrected_local_linear(
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must be in (0, 1); got {alpha!r}.")
 
-    # Reject manifestly-incompatible vce+cluster combinations upfront.
-    # nprobust's lprobust silently accepts hc2/hc3 + cluster and produces a
-    # weighted-score cluster meat that is NOT the standard CR2 or clustered
-    # HC estimator. Rather than propagate that ambiguity, reject.
-    if cluster is not None and vce in ("hc2", "hc3"):
-        raise ValueError(
-            f"vce={vce!r} combined with cluster= is not a well-defined "
-            "estimator in nprobust (hc2/hc3 assume independent observations)."
-            " Use vce='nn' or drop the cluster argument."
+    # Phase 1c public-wrapper vce restriction.
+    # Only ``vce="nn"`` is golden-tested against R in Phase 1c. Exposing
+    # hc0/hc1/hc2/hc3 on the public surface would ship non-parity-verified
+    # inference -- and nprobust's internal hc2/hc3 residual path reuses
+    # the p-fit hat-matrix leverage for the q-fit residuals (lprobust.R
+    # :229-241), a detail that would need its own R parity anchor before
+    # the Python port can advertise it as CCT-2014-compliant. Defer the
+    # hc-mode public surface to Phase 2+ with dedicated goldens. The
+    # port-level ``diff_diff._nprobust_port.lprobust`` still accepts
+    # hc0..hc3 for callers who need the broader surface and accept that
+    # the hc-mode behavior has not been separately parity-tested.
+    if vce != "nn":
+        raise NotImplementedError(
+            f"vce={vce!r} is not supported on bias_corrected_local_linear "
+            "in Phase 1c. Only vce='nn' is golden-tested against R "
+            "nprobust::lprobust in this phase; hc0/hc1/hc2/hc3 are queued "
+            "for Phase 2+ pending dedicated R parity goldens. If you need "
+            "the hc-mode port path for exploratory use, call "
+            "diff_diff._nprobust_port.lprobust directly and accept that "
+            "those paths are not separately parity-tested."
         )
 
     # HAD-scope input validation (shared with Phase 1b via _validate_had_inputs).

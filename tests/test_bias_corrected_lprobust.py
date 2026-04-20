@@ -380,23 +380,30 @@ class TestParameterInteractions:
         assert np.isfinite(fit.estimate_bias_corrected)
         assert fit.se_robust > 0
 
-    def test_vce_hc2_with_cluster_raises(self):
-        d = np.linspace(0.05, 1.0, 100)
+    def test_vce_hc0_raises_not_implemented(self):
+        """Only vce='nn' is golden-tested in Phase 1c; hc-modes raise."""
+        d = np.linspace(0.0, 1.0, 100)
         y = d.copy()
-        cluster = np.repeat(np.arange(10), 10)
-        with pytest.raises(ValueError, match="hc2.*not a well-defined"):
-            bias_corrected_local_linear(
-                d, y, h=0.3, vce="hc2", cluster=cluster,
-            )
+        with pytest.raises(NotImplementedError, match="vce='hc0'"):
+            bias_corrected_local_linear(d, y, h=0.3, vce="hc0")
 
-    def test_vce_hc3_with_cluster_raises(self):
-        d = np.linspace(0.05, 1.0, 100)
+    def test_vce_hc1_raises_not_implemented(self):
+        d = np.linspace(0.0, 1.0, 100)
         y = d.copy()
-        cluster = np.repeat(np.arange(10), 10)
-        with pytest.raises(ValueError, match="hc3.*not a well-defined"):
-            bias_corrected_local_linear(
-                d, y, h=0.3, vce="hc3", cluster=cluster,
-            )
+        with pytest.raises(NotImplementedError, match="vce='hc1'"):
+            bias_corrected_local_linear(d, y, h=0.3, vce="hc1")
+
+    def test_vce_hc2_raises_not_implemented(self):
+        d = np.linspace(0.0, 1.0, 100)
+        y = d.copy()
+        with pytest.raises(NotImplementedError, match="vce='hc2'"):
+            bias_corrected_local_linear(d, y, h=0.3, vce="hc2")
+
+    def test_vce_hc3_raises_not_implemented(self):
+        d = np.linspace(0.0, 1.0, 100)
+        y = d.copy()
+        with pytest.raises(NotImplementedError, match="vce='hc3'"):
+            bias_corrected_local_linear(d, y, h=0.3, vce="hc3")
 
 
 # =============================================================================
@@ -503,19 +510,14 @@ class TestAutoBandwidthForwardsParameters:
         # be identical to bit-parity.
         assert fit_cluster.h != fit_uncluster.h
 
-    def test_auto_vce_hc1_returns_finite(self):
-        """Auto-bandwidth with non-default vce must use the requested vce
-        during bandwidth selection, not silently fall back to nn."""
+    def test_auto_vce_hc1_rejected_in_phase_1c(self):
+        """Phase 1c public wrapper restricts vce to 'nn'; hc-modes raise.
+        Port-level lprobust still forwards vce through, so
+        lpbwselect_mse_dpi gets the correct setting when unlocked in
+        Phase 2+."""
         d, y = self._smoke_data()
-        fit_hc1 = bias_corrected_local_linear(d, y, vce="hc1")
-        fit_nn = bias_corrected_local_linear(d, y, vce="nn")
-        assert fit_hc1.bandwidth_source == "auto"
-        assert np.isfinite(fit_hc1.estimate_bias_corrected)
-        assert np.isfinite(fit_hc1.se_robust)
-        # Different residual definitions yield different stage-2/3 AMSE
-        # and therefore different bandwidths. Bit-identity would indicate
-        # the selector silently ignored vce.
-        assert fit_hc1.h != fit_nn.h
+        with pytest.raises(NotImplementedError, match="vce='hc1'"):
+            bias_corrected_local_linear(d, y, vce="hc1")
 
     def test_auto_nnmatch_non_default_returns_finite(self):
         """Auto-bandwidth with non-default nnmatch must forward it to the
