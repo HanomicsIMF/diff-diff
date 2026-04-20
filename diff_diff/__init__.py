@@ -55,6 +55,10 @@ from diff_diff.local_linear import (
     triangular_kernel,
     uniform_kernel,
 )
+from diff_diff.had import (
+    HeterogeneousAdoptionDiD,
+    HeterogeneousAdoptionDiDResults,
+)
 from diff_diff.estimators import (
     DifferenceInDifferences,
     MultiPeriodDiD,
@@ -252,6 +256,7 @@ Bacon = BaconDecomposition
 EDiD = EfficientDiD
 ETWFE = WooldridgeDiD
 DCDH = ChaisemartinDHaultfoeuille
+HAD = HeterogeneousAdoptionDiD
 
 __version__ = "3.2.0"
 __all__ = [
@@ -431,6 +436,10 @@ __all__ = [
     # Bias-corrected local-linear (Phase 1c for HeterogeneousAdoptionDiD)
     "BiasCorrectedFit",
     "bias_corrected_local_linear",
+    # HeterogeneousAdoptionDiD (Phase 2a)
+    "HeterogeneousAdoptionDiD",
+    "HeterogeneousAdoptionDiDResults",
+    "HAD",
     # Datasets
     "load_card_krueger",
     "load_castle_doctrine",
