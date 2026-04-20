@@ -838,7 +838,10 @@ def rank_control_units(
         - quality_score: Combined quality score (0-1, higher is better)
         - outcome_trend_score: Pre-treatment outcome trend similarity
         - covariate_score: Covariate match score (NaN if no covariates)
-        - synthetic_weight: Weight from synthetic control optimization
+        - synthetic_weight: Informational heuristic weight from a single-pass
+          uncentered Frank-Wolfe solve; does NOT factor into ``quality_score``
+          (ranking) and is NOT the canonical SDID unit weight. For canonical
+          SDID weights use ``SyntheticDiD.fit()``.
         - pre_trend_rmse: RMSE of pre-treatment outcome vs treated mean
         - is_required: Whether unit was in require_units
 
