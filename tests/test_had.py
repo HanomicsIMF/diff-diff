@@ -1087,11 +1087,16 @@ class TestMassPointDLowerContract:
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert np.isfinite(r.att)
 
-    def test_d_lower_contract_is_mass_point_only(self):
-        """continuous_near_d_lower accepts arbitrary d_lower (within other guards)."""
+    def test_mass_point_equality_guard_does_not_fire_on_continuous(self):
+        """The mass-point-specific d_lower equality guard is not enforced on
+        continuous_near_d_lower. (The continuous path has its own upstream
+        Phase 1c guards against off-support d_lower via the negative-dose
+        check after the regressor shift, but the mass-point-specific
+        ValueError does not fire here.)
+        """
         d, dy = _dgp_continuous_near_d_lower(500, seed=0)
         panel = _make_panel(d, dy)
-        # Setting d_lower=d.min() on continuous should just work.
+        # d_lower == d.min() is always a valid continuous configuration.
         est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower", d_lower=float(d.min()))
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert np.isfinite(r.att)
