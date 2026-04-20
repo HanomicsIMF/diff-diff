@@ -21,7 +21,6 @@ from diff_diff._backend import (
     _rust_compute_robust_vcov,
     _rust_project_simplex,
     _rust_solve_ols,
-    _rust_synthetic_weights,
 )
 
 from diff_diff.bacon import (

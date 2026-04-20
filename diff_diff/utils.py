@@ -17,7 +17,6 @@ from diff_diff.linalg import solve_ols as _solve_ols_linalg
 from diff_diff._backend import (
     HAS_RUST_BACKEND,
     _rust_project_simplex,
-    _rust_synthetic_weights,
     _rust_sdid_unit_weights,
     _rust_compute_time_weights,
     _rust_compute_noise_level,
@@ -1131,115 +1130,14 @@ def equivalence_test_trends(
     }
 
 
-def compute_synthetic_weights(
-    Y_control: np.ndarray, Y_treated: np.ndarray, lambda_reg: float = 0.0, min_weight: float = 1e-6
-) -> np.ndarray:
-    """
-    Compute synthetic control unit weights using constrained optimization.
-
-    Finds weights ω that minimize the squared difference between the
-    weighted average of control unit outcomes and the treated unit outcomes
-    during pre-treatment periods.
-
-    Parameters
-    ----------
-    Y_control : np.ndarray
-        Control unit outcomes matrix of shape (n_pre_periods, n_control_units).
-        Each column is a control unit, each row is a pre-treatment period.
-    Y_treated : np.ndarray
-        Treated unit mean outcomes of shape (n_pre_periods,).
-        Average across treated units for each pre-treatment period.
-    lambda_reg : float, default=0.0
-        L2 regularization parameter. Larger values shrink weights toward
-        uniform (1/n_control). Helps prevent overfitting when n_pre < n_control.
-    min_weight : float, default=1e-6
-        Minimum weight threshold. Weights below this are set to zero.
-
-    Returns
-    -------
-    np.ndarray
-        Unit weights of shape (n_control_units,) that sum to 1.
-
-    Notes
-    -----
-    Solves the quadratic program:
-
-        min_ω ||Y_treated - Y_control @ ω||² + λ||ω - 1/n||²
-        s.t. ω >= 0, sum(ω) = 1
-
-    Uses a simplified coordinate descent approach with projection onto simplex.
-    """
-    n_pre, n_control = Y_control.shape
-
-    if n_control == 0:
-        return np.asarray([])
-
-    if n_control == 1:
-        return np.asarray([1.0])
-
-    # Use Rust backend if available
-    if HAS_RUST_BACKEND:
-        Y_control = np.ascontiguousarray(Y_control, dtype=np.float64)
-        Y_treated = np.ascontiguousarray(Y_treated, dtype=np.float64)
-        weights = _rust_synthetic_weights(
-            Y_control, Y_treated, lambda_reg, _OPTIMIZATION_MAX_ITER, _OPTIMIZATION_TOL
-        )
-    else:
-        # Fallback to NumPy implementation
-        weights = _compute_synthetic_weights_numpy(Y_control, Y_treated, lambda_reg)
-
-    # Set small weights to zero for interpretability
-    weights[weights < min_weight] = 0
-    if np.sum(weights) > 0:
-        weights = weights / np.sum(weights)
-    else:
-        # Fallback to uniform if all weights are zeroed
-        weights = np.ones(n_control) / n_control
-
-    return np.asarray(weights)
-
-
-def _compute_synthetic_weights_numpy(
-    Y_control: np.ndarray,
-    Y_treated: np.ndarray,
-    lambda_reg: float = 0.0,
-) -> np.ndarray:
-    """NumPy fallback implementation of compute_synthetic_weights."""
-    n_pre, n_control = Y_control.shape
-
-    # Initialize with uniform weights
-    weights = np.ones(n_control) / n_control
-
-    # Precompute matrices for optimization
-    # Objective: ||Y_treated - Y_control @ w||^2 + lambda * ||w - w_uniform||^2
-    # = w' @ (Y_control' @ Y_control + lambda * I) @ w - 2 * (Y_control' @ Y_treated + lambda * w_uniform)' @ w + const
-    YtY = Y_control.T @ Y_control
-    YtT = Y_control.T @ Y_treated
-    w_uniform = np.ones(n_control) / n_control
-
-    # Add regularization
-    H = YtY + lambda_reg * np.eye(n_control)
-    f = YtT + lambda_reg * w_uniform
-
-    # Solve with projected gradient descent
-    # Project onto probability simplex
-    step_size = 1.0 / (np.linalg.norm(H, 2) + _NUMERICAL_EPS)
-
-    for _ in range(_OPTIMIZATION_MAX_ITER):
-        weights_old = weights.copy()
-
-        # Gradient step: minimize ||Y - Y_control @ w||^2
-        grad = H @ weights - f
-        weights = weights - step_size * grad
-
-        # Project onto simplex (sum to 1, non-negative)
-        weights = _project_simplex(weights)
-
-        # Check convergence
-        if np.linalg.norm(weights - weights_old) < _OPTIMIZATION_TOL:
-            break
-
-    return weights
+# compute_synthetic_weights and _compute_synthetic_weights_numpy removed in the
+# silent-failures audit post-cleanup (finding #22). The one caller
+# (`diff_diff.prep.rank_control_units`) inlines a single-pass, uncentered
+# Frank-Wolfe via the shared `_sc_weight_fw` dispatcher — a ranking heuristic,
+# NOT the canonical SDID/R `synthdid::sc.weight.fw` two-pass procedure
+# (intercept=True, 100-iter -> sparsify -> 10000-iter). Canonical SDID unit
+# weights go through `compute_sdid_unit_weights` (see `_sc_weight_fw_numpy`
+# below and REGISTRY.md SDID section).
 
 
 def _project_simplex(v: np.ndarray) -> np.ndarray:

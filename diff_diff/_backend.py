@@ -19,7 +19,6 @@ _backend_env = os.environ.get("DIFF_DIFF_BACKEND", "auto").lower()
 try:
     from diff_diff._rust_backend import (
         generate_bootstrap_weights_batch as _rust_bootstrap_weights,
-        compute_synthetic_weights as _rust_synthetic_weights,
         project_simplex as _rust_project_simplex,
         solve_ols as _rust_solve_ols,
         compute_robust_vcov as _rust_compute_robust_vcov,
@@ -43,7 +42,6 @@ try:
 except ImportError:
     _rust_available = False
     _rust_bootstrap_weights = None
-    _rust_synthetic_weights = None
     _rust_project_simplex = None
     _rust_solve_ols = None
     _rust_compute_robust_vcov = None
@@ -66,7 +64,6 @@ if _backend_env == "python":
     # Force pure Python mode - disable Rust even if available
     HAS_RUST_BACKEND = False
     _rust_bootstrap_weights = None
-    _rust_synthetic_weights = None
     _rust_project_simplex = None
     _rust_solve_ols = None
     _rust_compute_robust_vcov = None
@@ -115,7 +112,6 @@ __all__ = [
     "HAS_RUST_BACKEND",
     "rust_backend_info",
     "_rust_bootstrap_weights",
-    "_rust_synthetic_weights",
     "_rust_project_simplex",
     "_rust_solve_ols",
     "_rust_compute_robust_vcov",

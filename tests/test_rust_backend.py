@@ -104,39 +104,10 @@ class TestRustBackend:
     # Synthetic Weight Tests
     # =========================================================================
 
-    def test_synthetic_weights_sum_to_one(self):
-        """Test synthetic weights sum to 1."""
-        from diff_diff._rust_backend import compute_synthetic_weights
-
-        np.random.seed(42)
-        Y_control = np.random.randn(10, 5)
-        Y_treated = np.random.randn(10)
-
-        weights = compute_synthetic_weights(Y_control, Y_treated, 0.0, 1000, 1e-8)
-        assert abs(weights.sum() - 1.0) < 1e-6, f"Weights should sum to 1, got {weights.sum()}"
-
-    def test_synthetic_weights_non_negative(self):
-        """Test synthetic weights are non-negative."""
-        from diff_diff._rust_backend import compute_synthetic_weights
-
-        np.random.seed(42)
-        Y_control = np.random.randn(10, 5)
-        Y_treated = np.random.randn(10)
-
-        weights = compute_synthetic_weights(Y_control, Y_treated, 0.0, 1000, 1e-8)
-        assert np.all(weights >= -1e-10), "Weights should be non-negative"
-
-    def test_synthetic_weights_shape(self):
-        """Test synthetic weights have correct shape."""
-        from diff_diff._rust_backend import compute_synthetic_weights
-
-        np.random.seed(42)
-        n_control = 8
-        Y_control = np.random.randn(10, n_control)
-        Y_treated = np.random.randn(10)
-
-        weights = compute_synthetic_weights(Y_control, Y_treated, 0.0, 1000, 1e-8)
-        assert weights.shape == (n_control,)
+    # Tests for `compute_synthetic_weights` direct Rust binding removed in
+    # the silent-failures audit post-cleanup (finding #22). The helper was
+    # deleted from the Python layer; remaining Rust symbol is dead code
+    # (tracked as a low-priority Rust cleanup TODO).
 
     # =========================================================================
     # Simplex Projection Tests
@@ -729,52 +700,10 @@ class TestRustVsNumpy:
     # Synthetic Weights Equivalence
     # =========================================================================
 
-    def test_synthetic_weights_match(self):
-        """Test Rust and NumPy synthetic weights produce similar results."""
-        from diff_diff._rust_backend import compute_synthetic_weights as rust_fn
-        from diff_diff.utils import _compute_synthetic_weights_numpy as numpy_fn
-
-        np.random.seed(42)
-        Y_control = np.random.randn(10, 5)
-        Y_treated = np.random.randn(10)
-
-        rust_weights = rust_fn(Y_control, Y_treated, 0.0, 1000, 1e-8)
-        numpy_weights = numpy_fn(Y_control, Y_treated, 0.0)
-
-        # Both should be valid simplex weights
-        assert abs(rust_weights.sum() - 1.0) < 1e-6, "Rust weights should sum to 1"
-        assert abs(numpy_weights.sum() - 1.0) < 1e-6, "NumPy weights should sum to 1"
-        assert np.all(rust_weights >= -1e-6), "Rust weights should be non-negative"
-        assert np.all(numpy_weights >= -1e-6), "NumPy weights should be non-negative"
-
-        # Reconstruction error should be similar
-        rust_error = np.linalg.norm(Y_treated - Y_control @ rust_weights)
-        numpy_error = np.linalg.norm(Y_treated - Y_control @ numpy_weights)
-        assert abs(rust_error - numpy_error) < 0.5, \
-            f"Reconstruction errors should be similar: rust={rust_error:.4f}, numpy={numpy_error:.4f}"
-
-    def test_synthetic_weights_with_regularization(self):
-        """Test Rust synthetic weights with L2 regularization."""
-        from diff_diff._rust_backend import compute_synthetic_weights as rust_fn
-        from diff_diff.utils import _compute_synthetic_weights_numpy as numpy_fn
-
-        np.random.seed(42)
-        Y_control = np.random.randn(15, 8)
-        Y_treated = np.random.randn(15)
-        lambda_reg = 0.1
-
-        rust_weights = rust_fn(Y_control, Y_treated, lambda_reg, 1000, 1e-8)
-        numpy_weights = numpy_fn(Y_control, Y_treated, lambda_reg)
-
-        # Both should be valid simplex weights
-        assert abs(rust_weights.sum() - 1.0) < 1e-6
-        assert abs(numpy_weights.sum() - 1.0) < 1e-6
-
-        # With regularization, weights should be more spread out (higher entropy)
-        rust_entropy = -np.sum(rust_weights * np.log(rust_weights + 1e-10))
-        numpy_entropy = -np.sum(numpy_weights * np.log(numpy_weights + 1e-10))
-        assert rust_entropy > 0.5, "Regularized weights should have positive entropy"
-        assert numpy_entropy > 0.5, "Regularized weights should have positive entropy"
+    # Rust/NumPy synthetic_weights parity tests removed in the silent-failures
+    # audit post-cleanup (finding #22). Helper deleted; parity is now a
+    # non-question since both paths route through the shared `_sc_weight_fw`
+    # dispatcher in `utils.py`.
 
     def test_simplex_projection_match(self):
         """Test Rust and NumPy simplex projection match exactly."""
@@ -2214,104 +2143,10 @@ class TestSolveOLSSkipRankCheckParity:
         )
 
 
-@pytest.mark.skipif(not HAS_RUST_BACKEND, reason="Rust backend not available")
-class TestSyntheticWeightsBackendParity:
-    """Finding #22: `compute_synthetic_weights` Rust vs Python parity.
-
-    Both backends solve the same constrained QP (FW + simplex projection)
-    with ``_OPTIMIZATION_TOL=1e-8``. PR #312 normalized Y inside the SDID
-    fit path; the shared utility at ``utils.py:1134-1199`` is unchanged
-    and is called from ``prep.py:990`` (DGP) only.
-
-    Tolerance: ``atol=1e-7, rtol=1e-6`` on weights — loose enough to
-    absorb the FW convergence tolerance (1e-8) plus BLAS platform drift
-    (~1e-12 to 1e-14 on float64), tight enough to catch real algorithmic
-    divergence.
-    """
-
-    def _run_both_backends(self, Y_control, Y_treated, lambda_reg=0.0):
-        import sys
-        from unittest.mock import patch
-
-        from diff_diff.utils import compute_synthetic_weights
-
-        w_rust = compute_synthetic_weights(Y_control, Y_treated, lambda_reg=lambda_reg)
-
-        utils_module = sys.modules["diff_diff.utils"]
-        with patch.object(utils_module, "HAS_RUST_BACKEND", False):
-            w_py = compute_synthetic_weights(Y_control, Y_treated, lambda_reg=lambda_reg)
-        return w_rust, w_py
-
-    def test_near_singular_Y_prime_Y(self):
-        """Highly collinear control units make Y'Y near-singular. Both
-        backends should converge to the same (near-uniform or zeroed-out)
-        weight vector."""
-        rng = np.random.default_rng(7)
-        n_pre, n_control = 5, 4
-        base = rng.normal(0, 1, n_pre)
-        # Three of four control units are nearly parallel to `base`
-        Y_control = np.column_stack([
-            base,
-            base + 1e-10 * rng.normal(0, 1, n_pre),
-            base + 1e-10 * rng.normal(0, 1, n_pre),
-            rng.normal(0, 1, n_pre),
-        ])
-        Y_treated = base + 1e-8 * rng.normal(0, 1, n_pre)
-
-        w_rust, w_py = self._run_both_backends(Y_control, Y_treated)
-
-        np.testing.assert_allclose(
-            w_rust, w_py, atol=1e-7, rtol=1e-6,
-            err_msg="Near-singular Y'Y: weight divergence between Rust and Python",
-        )
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Rust path is Frank-Wolfe, Python fallback at utils.py:1228 is "
-        "projected gradient descent. PGD and FW can converge to different "
-        "vertices under near-degenerate / extreme-scale inputs even though "
-        "both solve the same constrained QP. Algorithmic unification is a "
-        "larger fix (P1 follow-up in TODO.md); this xfail baselines the gap "
-        "so we notice if/when the algorithms align.",
-    )
-    def test_extreme_Y_scale(self):
-        """Y at 1e9 scale, well-conditioned panel. Known Rust-vs-Python
-        divergence: Rust/FW concentrates on one unit, Python/PGD returns
-        near-uniform. See xfail reason."""
-        rng = np.random.default_rng(44)
-        n_pre, n_control = 8, 5
-        Y_control = rng.normal(0, 1, (n_pre, n_control)) + 1e9
-        Y_treated = rng.normal(0, 1, n_pre) + 1e9
-
-        w_rust, w_py = self._run_both_backends(Y_control, Y_treated)
-
-        np.testing.assert_allclose(
-            w_rust, w_py, atol=1e-7, rtol=1e-6,
-            err_msg="Extreme Y scale: weight divergence "
-            "(known FW-vs-PGD algorithmic mismatch; see xfail reason)",
-        )
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Rust path is Frank-Wolfe, Python fallback at utils.py:1228 is "
-        "projected gradient descent. Same algorithmic mismatch as "
-        "test_extreme_Y_scale — backends reach different simplex vertices "
-        "on moderate-scale random data. P1 follow-up in TODO.md.",
-    )
-    def test_regularization_lambda_variations(self):
-        """Parity across lambda_reg=0 (unregularized) and lambda_reg>0
-        (shrink toward uniform). Known divergence; see xfail reason."""
-        rng = np.random.default_rng(55)
-        n_pre, n_control = 8, 5
-        Y_control = rng.normal(0, 1, (n_pre, n_control))
-        Y_treated = rng.normal(0, 1, n_pre)
-
-        for lr in (0.0, 0.01, 1.0):
-            w_rust, w_py = self._run_both_backends(Y_control, Y_treated, lambda_reg=lr)
-            np.testing.assert_allclose(
-                w_rust, w_py, atol=1e-7, rtol=1e-6,
-                err_msg=f"lambda_reg={lr}: weight divergence between Rust and Python",
-            )
+# TestSyntheticWeightsBackendParity removed in the silent-failures audit
+# post-cleanup (finding #22). The wrapper it tested was deleted; the FW
+# computation is inlined in `rank_control_units` (prep.py:990) and covered
+# there by tests/test_prep.py::TestRankControlUnits.
 
 
 @pytest.mark.slow

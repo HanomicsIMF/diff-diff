@@ -9,6 +9,7 @@ Data generation functions (generate_*) are defined in prep_dgp.py and
 re-exported here for backward compatibility.
 """
 
+import warnings
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -36,7 +37,7 @@ from diff_diff.survey import (
     compute_replicate_if_variance,
     compute_survey_if_variance,
 )
-from diff_diff.utils import compute_synthetic_weights
+from diff_diff.utils import _compute_noise_level, _sc_weight_fw
 
 # Constants for rank_control_units
 _SIMILARITY_THRESHOLD_SD = 0.5  # Controls within this many SDs are "similar"
@@ -837,7 +838,10 @@ def rank_control_units(
         - quality_score: Combined quality score (0-1, higher is better)
         - outcome_trend_score: Pre-treatment outcome trend similarity
         - covariate_score: Covariate match score (NaN if no covariates)
-        - synthetic_weight: Weight from synthetic control optimization
+        - synthetic_weight: Informational heuristic weight from a single-pass
+          uncentered Frank-Wolfe solve; does NOT factor into ``quality_score``
+          (ranking) and is NOT the canonical SDID unit weight. For canonical
+          SDID weights use ``SyntheticDiD.fit()``.
         - pre_trend_rmse: RMSE of pre-treatment outcome vs treated mean
         - is_required: Whether unit was in require_units
 
@@ -989,8 +993,74 @@ def rank_control_units(
     # -------------------------------------------------------------------------
     # Compute outcome trend scores
     # -------------------------------------------------------------------------
-    # Synthetic weights (higher = better match)
-    synthetic_weights = compute_synthetic_weights(Y_control, Y_treated_mean, lambda_reg=lambda_reg)
+    # Informational `synthetic_weight` column. This is a RANKING HEURISTIC,
+    # not an estimator: it gives a rough "which controls would a synthetic
+    # regression weight heavily" signal that's reported alongside RMSE and
+    # covariate distance. The actual ranking (`quality_score`) is computed
+    # below from `outcome_trend_score` (RMSE-based) + `covariate_score`; the
+    # `synthetic_weight` column does NOT factor into the ranking decision.
+    #
+    # Solver choice. We use a single-pass uncentered Frank-Wolfe via the
+    # shared `_sc_weight_fw` dispatcher to solve:
+    #
+    #     min_w  ||Y_treated_mean - Y_control @ w||^2 + lambda_reg * ||w||^2
+    #         s.t. w >= 0, sum(w) = 1
+    #
+    # Mapped to the FW objective `zeta^2 ||w||^2 + (1/N) ||Aw - b||^2` via
+    # `zeta = sqrt(lambda_reg / N)`. intercept=False because this QP does
+    # no column-centering, max_iter=1000 to bound ranking-loop cost,
+    # min_weight=1e-6 post-processing for interpretability.
+    #
+    # NOTE — this is INTENTIONALLY NOT the canonical SDID / R
+    # `synthdid::sc.weight.fw` two-pass unit-weight procedure (that uses
+    # intercept=TRUE, 100-iter -> sparsify -> 10000-iter). SDID estimation
+    # still uses that canonical path in `_sc_weight_fw_numpy` at
+    # `utils.py:_sc_weight_fw_numpy` via `compute_sdid_unit_weights`; this
+    # ranking heuristic uses a simpler single-pass call to the same solver
+    # for a cheap diagnostic score.
+    #
+    # Replaces the former `compute_synthetic_weights` wrapper whose Rust
+    # and Python backends had divergent PGD implementations (audit
+    # finding #22). Net effect: users on default `lambda_reg=0` with
+    # typical data see `synthetic_weight` values that agree with the old
+    # code to ~1e-7; extreme Y or `lambda_reg > 0` cases produce values
+    # that differ from the old code (which was mathematically wrong).
+    _Y_control = np.ascontiguousarray(Y_control, dtype=np.float64)
+    _Y_treated_mean = np.ascontiguousarray(Y_treated_mean, dtype=np.float64)
+    _n_pre, _n_control = _Y_control.shape
+    if _n_control == 0:
+        synthetic_weights = np.array([], dtype=np.float64)
+    elif _n_control == 1:
+        synthetic_weights = np.array([1.0])
+    else:
+        _zeta = float(np.sqrt(lambda_reg / _n_pre)) if lambda_reg > 0 else 0.0
+        # Scale stopping threshold by noise level so convergence stays
+        # meaningful at any data magnitude.
+        _sigma = _compute_noise_level(_Y_control)
+        _min_decrease = 1e-5 * max(_sigma, 1e-12)
+        _Y_fw = np.column_stack([_Y_control, _Y_treated_mean])
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*did not converge.*",
+                category=UserWarning,
+            )
+            synthetic_weights = _sc_weight_fw(
+                _Y_fw,
+                zeta=_zeta,
+                intercept=False,
+                min_decrease=_min_decrease,
+                max_iter=1000,
+            )
+        # Set small weights to zero for interpretability, then renormalize.
+        synthetic_weights = np.asarray(synthetic_weights, dtype=np.float64)
+        _min_weight = 1e-6
+        synthetic_weights[synthetic_weights < _min_weight] = 0.0
+        _total = float(np.sum(synthetic_weights))
+        if _total > 0:
+            synthetic_weights = synthetic_weights / _total
+        else:
+            synthetic_weights = np.ones(_n_control) / _n_control
 
     # RMSE for each control vs treated mean (use nanmean to handle missing data)
     rmse_scores = []
