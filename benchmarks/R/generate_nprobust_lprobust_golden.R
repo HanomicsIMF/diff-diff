@@ -123,8 +123,11 @@ golden <- list(
     generator = "benchmarks/R/generate_nprobust_lprobust_golden.R",
     algorithm = paste("nprobust::lprobust(..., bwselect='mse-dpi') at a single",
                        "eval point, p=1, deriv=0, kernel='epa', vce='nn'",
-                       "unless noted. z = qnorm(1 - alpha/2) exported so the",
-                       "Python side consumes R's critical value directly.")
+                       "unless noted. The Python wrapper computes its own",
+                       "z_{1-alpha/2} via scipy.stats.norm.ppf inside",
+                       "safe_inference(); R's z is exported here for audit",
+                       "so a reviewer can verify the two critical values",
+                       "agree to machine precision.")
   ),
   dgp1 = c(list(n = G, d = d1, y = y1, kernel = "epa", vce = "nn",
                 description = "Uniform(0,1), polynomial m(d) = d + d^2"),

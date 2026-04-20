@@ -1191,11 +1191,13 @@ def bias_corrected_local_linear(
     # cases where the residual vector collapses), ALL inference fields —
     # including the CI — must return NaN. This enforces the repo-wide
     # inference contract (CLAUDE.md Key Design Pattern #6; CI review
-    # PR #340 P0) rather than returning a misleading zero-width or infinite
-    # CI. safe_inference also handles the R z = qnorm(1 - alpha/2) critical
-    # value via scipy.stats.norm.ppf (the golden JSON stores R's z so
-    # parity tests consume R's value directly and drift is pure
-    # tau.bc + z * se.rb arithmetic).
+    # PR #340 P0) rather than returning a misleading zero-width or
+    # infinite CI. safe_inference computes the critical value z_{1-α/2}
+    # via scipy.stats.norm.ppf; the parity tests compare Python's
+    # scipy-computed ci_low/ci_high to R's qnorm-computed ci_low/ci_high
+    # stored in the golden JSON. The golden JSON also exports R's raw
+    # `z` value for audit/reference so a reviewer can verify the two
+    # critical values agree to machine precision.
     from diff_diff.utils import safe_inference
 
     _, _, (ci_low, ci_high) = safe_inference(
