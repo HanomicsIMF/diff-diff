@@ -2,25 +2,39 @@
 Heterogeneous Adoption Difference-in-Differences (HAD) estimator (Phase 2a).
 
 Implements the de Chaisemartin, Ciccia, D'Haultfoeuille, and Knau (2026)
-Weighted-Average-Slope (WAS) estimator with three design-dispatch paths:
+Weighted-Average-Slope (WAS) estimator with three design-dispatch paths.
+All three paths produce a beta-scale point estimate of the form
+``(mean(Delta Y) - [boundary limit]) / [expected dose gap]`` (Design 1
+family) or the Wald-IV ratio (mass-point), then route inference through
+:func:`diff_diff.utils.safe_inference`.
 
 1. Design 1' (``continuous_at_zero``): ``d_lower = 0``, boundary density
-   continuous at zero. Evaluates the bias-corrected local-linear fit at
-   ``boundary = 0`` and rescales to the beta-scale via Equation 8's divisor
-   ``D_bar = (1/G) * sum(D_{g,2})``. Invokes Assumption 3.
+   continuous at zero, Assumption 3. Equation 7 / Theorem 3:
+
+       beta = (E[Delta Y] - lim_{d v 0} E[Delta Y | D_2 <= d]) / E[D_2]
+
+   The bias-corrected local-linear fit at ``boundary = 0`` estimates
+   the boundary limit; ``E[D_2]`` and ``E[Delta Y]`` are plugin sample
+   means.
 
 2. Design 1 continuous-near-d_lower (``continuous_near_d_lower``):
-   ``d_lower > 0``, continuous boundary density. Evaluates the bias-corrected
-   local-linear fit at ``boundary = float(d.min())`` after the regressor
-   shift ``D' = D - d_lower``. Same divisor, same CI path.
-   Invokes Assumption 5 or 6.
+   ``d_lower > 0``, continuous boundary density, Assumption 5 or 6.
+   Proposition 3 / Theorem 4 (``WAS_{d_lower}`` under Assumption 6):
 
-3. Design 1 mass-point (``mass_point``): ``d_lower > 0``, modal fraction at
-   ``d.min()`` exceeds 2%. Uses a sample-average 2SLS estimator with
-   instrument ``Z_g = 1{D_{g,2} > d_lower}``. Point estimate reduces to the
-   Wald-IV ratio
-   ``(Ybar_{Z=1} - Ybar_{Z=0}) / (Dbar_{Z=1} - Dbar_{Z=0})``. Standard error
-   via the structural-residual 2SLS sandwich (see ``_fit_mass_point_2sls``).
+       beta = (E[Delta Y] - lim_{d v d_lower} E[Delta Y | D_2 <= d])
+              / E[D_2 - d_lower]
+
+   The local-linear fit is anchored at ``d_lower`` via the regressor
+   shift ``D' = D - d_lower``, evaluated at ``boundary = 0`` on the
+   shifted scale.
+
+3. Design 1 mass-point (``mass_point``): ``d_lower > 0``, modal fraction
+   at ``d.min()`` exceeds 2%. Sample-average 2SLS with instrument
+   ``Z_g = 1{D_{g,2} > d_lower}`` (paper Section 3.2.4). Point estimate
+   equals the Wald-IV ratio
+   ``(Ybar_{Z=1} - Ybar_{Z=0}) / (Dbar_{Z=1} - Dbar_{Z=0})``. Standard
+   error via the structural-residual 2SLS sandwich
+   (see ``_fit_mass_point_2sls``).
 
 Phase 2a ships the single-period path only; the multi-period event-study
 extension (paper Appendix B.2) is queued for Phase 2b.
@@ -119,15 +133,28 @@ class HeterogeneousAdoptionDiDResults:
     Attributes
     ----------
     att : float
-        Point estimate of the WAS parameter on the beta-scale. For the
-        continuous designs: ``tau_bc / D_bar`` where ``tau_bc`` is the
-        bias-corrected local-linear statistic on the mu-scale and
-        ``D_bar = (1/G) * sum(D_{g,2})``. For the mass-point design:
-        the 2SLS coefficient directly.
+        Point estimate of the WAS parameter on the beta-scale.
+
+        - Design 1' (paper Equation 7 / Theorem 3):
+          ``att = (mean(ΔY) - tau_bc) / D_bar``
+          where ``tau_bc`` is the bias-corrected local-linear estimate
+          of ``lim_{d v 0} E[ΔY | D_2 <= d]`` and
+          ``D_bar = (1/G) * sum(D_{g,2})``.
+        - Design 1 continuous-near-d_lower (paper Theorem 4,
+          ``WAS_{d_lower}`` under Assumption 6):
+          ``att = (mean(ΔY) - tau_bc) / mean(D_2 - d_lower)``
+          where ``tau_bc`` is the bias-corrected local-linear estimate
+          of ``lim_{d v d_lower} E[ΔY | D_2 <= d]``.
+        - Mass-point (paper Section 3.2.4): the Wald-IV / 2SLS
+          coefficient directly -
+          ``(Ybar_{Z=1} - Ybar_{Z=0}) / (Dbar_{Z=1} - Dbar_{Z=0})``.
     se : float
         Standard error on the beta-scale. For continuous designs, the
-        CCT-2014 robust SE divided by ``D_bar``. For mass-point, the 2SLS
-        structural-residual sandwich SE.
+        CCT-2014 robust SE from Phase 1c divided by ``|den|`` (the
+        absolute denominator used in ``att``); the higher-order
+        variance from ``mean(ΔY)`` is dominated by the nonparametric
+        boundary estimate in large samples and is not included. For
+        mass-point, the 2SLS structural-residual sandwich SE.
     t_stat, p_value, conf_int : inference fields
         Routed through ``safe_inference``; NaN when SE is non-finite.
     alpha : float
@@ -421,6 +448,26 @@ def _validate_had_panel(
             f"HAD requires D_{{g,1}} = 0 for all units (pre-period "
             f"untreated). {n_bad} unit(s) have nonzero dose at "
             f"t_pre={t_pre}. Drop these units or verify the dose column."
+        )
+
+    # Post-period nonnegative-dose check on the ORIGINAL (unshifted) dose
+    # scale. Front-door rejection per paper Assumption (dose definition
+    # Section 2) which treats D_{g,2} as nonnegative. Without this
+    # check, negative original doses would only surface after the
+    # regressor shift in ``_fit_continuous`` via Phase 1c's
+    # ``_validate_had_inputs``, which references the shifted values
+    # and would confuse users about which column is malformed.
+    post_mask = data[time_col] == t_post
+    post_doses = np.asarray(data.loc[post_mask, dose_col], dtype=np.float64)
+    neg_post = post_doses < 0
+    if neg_post.any():
+        n_neg = int(neg_post.sum())
+        min_neg = float(post_doses[neg_post].min())
+        raise ValueError(
+            f"HAD requires D_{{g,2}} >= 0 for all units (paper Section "
+            f"2 dose definition). {n_neg} unit(s) have negative post-"
+            f"period dose at t_post={t_post} (min={min_neg!r}). Drop "
+            f"these units or verify the dose column."
         )
 
     # Optional value-domain validation via first_treat_col: if supplied,
@@ -766,15 +813,21 @@ class HeterogeneousAdoptionDiD:
     alpha : float
         CI level (0.05 for 95% CI).
     vcov_type : {"classical", "hc1"} or None
-        Mass-point-path only. ``None`` defaults to ``"hc1"``.
-        ``"hc2"`` and ``"hc2_bm"`` raise ``NotImplementedError``. Ignored
-        on the continuous paths (which use the CCT-2014 robust SE from
+        Mass-point-path only. When ``None``, the effective family falls
+        back to the ``robust`` flag: ``robust=True`` -> ``"hc1"``,
+        ``robust=False`` -> ``"classical"`` (the default construction).
+        Explicit ``"hc2"`` and ``"hc2_bm"`` raise ``NotImplementedError``
+        pending a 2SLS-specific leverage derivation. Ignored on the
+        continuous paths (which use the CCT-2014 robust SE from
         Phase 1c); passing a non-default ``vcov_type`` on a continuous
-        path emits a one-time ``UserWarning``.
+        path emits a ``UserWarning`` per fit call.
     robust : bool
-        Backward-compat alias: ``True`` maps to ``"hc1"``, ``False`` maps
-        to ``"classical"``. Only relevant when ``vcov_type is None`` on
-        the mass-point path.
+        Backward-compat alias used only when ``vcov_type is None``:
+        ``True`` -> ``"hc1"``, ``False`` -> ``"classical"``. Explicit
+        ``vcov_type`` takes precedence (e.g.,
+        ``vcov_type="classical", robust=True`` runs classical). Only
+        the mass-point path consumes these; continuous paths ignore
+        both with a warning.
     cluster : str or None
         Column name for cluster-robust SE on the mass-point path (CR1).
         Ignored with a ``UserWarning`` on the continuous paths in Phase
@@ -989,28 +1042,35 @@ class HeterogeneousAdoptionDiD:
         else:
             d_lower_val = float(d_lower_arg)
 
-        # ---- Mass-point contract: d_lower must equal the support infimum ----
-        # Paper Section 3.2.4 defines the mass-point estimator with instrument
-        # Z = 1{D_{g,2} > d_lower} where d_lower is the lower-support mass
-        # point. A user-supplied d_lower that differs from float(d_arr.min())
-        # redefines the instrument / control split and identifies a different
-        # estimand. Phase 2a supports only the paper's lower-support mass-point
-        # estimator, so we reject mismatched overrides front-door rather than
-        # silently running an unsupported variant.
-        if resolved_design == "mass_point" and d_lower_arg is not None:
+        # ---- d_lower contract for Design 1 paths ----
+        # Paper Sections 3.2.2-3.2.4 define the Design 1 estimators at
+        # d_lower = support infimum of D_{g,2}. For the mass-point path,
+        # the instrument Z = 1{D_{g,2} > d_lower} requires d_lower to be
+        # the lower-support mass point. For the continuous-near-d_lower
+        # path, evaluating the local-linear fit after the regressor
+        # shift (D - d_lower) at boundary=0 only makes sense when the
+        # shift anchors to the realized sample minimum; otherwise the
+        # boundary evaluation is off-support (no observations near zero
+        # on the shifted scale) and Phase 1c's 5% plausibility heuristic
+        # may fail to catch the mismatch. We enforce d_lower == d.min()
+        # within float tolerance on both Design 1 paths; mismatched
+        # overrides raise with a clear pointer to the unsupported
+        # estimand.
+        if resolved_design in ("mass_point", "continuous_near_d_lower") and d_lower_arg is not None:
             d_min = float(d_arr.min())
             tol = 1e-12 * max(1.0, abs(d_min))
             if abs(d_lower_val - d_min) > tol:
                 raise ValueError(
-                    f"design='mass_point' requires d_lower to equal the "
-                    f"support infimum float(d.min())={d_min!r}; got "
-                    f"d_lower={d_lower_val!r}. The paper's Design 1 mass-"
-                    f"point estimator (Section 3.2.4) identifies at the "
-                    f"lower-support mass point, not at an arbitrary "
+                    f"design={resolved_design!r} requires d_lower to equal "
+                    f"the support infimum float(d.min())={d_min!r}; got "
+                    f"d_lower={d_lower_val!r}. The paper's Design 1 "
+                    f"estimators (Sections 3.2.2-3.2.4) identify at the "
+                    f"lower-support boundary, not at an arbitrary "
                     f"threshold. Pass d_lower=None to auto-resolve, or "
                     f"d_lower=float(d.min()) explicitly. Non-support-"
-                    f"infimum thresholds identify a different (LATE-like) "
-                    f"estimand that is out of Phase 2a scope."
+                    f"infimum thresholds identify a different (LATE-like "
+                    f"for mass_point, off-support for continuous_near_"
+                    f"d_lower) estimand that is out of Phase 2a scope."
                 )
 
         # ---- Compute cohort counts ----
@@ -1030,6 +1090,26 @@ class HeterogeneousAdoptionDiD:
             n_control = n_obs - n_treated
 
         dose_mean = float(d_arr.mean())
+
+        # ---- Assumption 5/6 warning on Design 1 paths ----
+        # Paper Sections 3.2.2-3.2.4: when d_lower > 0 (Design 1 family),
+        # point identification of WAS_{d_lower} requires Assumption 6 in
+        # addition to parallel trends (Assumption 1-3); Assumption 5 gives
+        # only sign identification. These extra assumptions are NOT
+        # testable via pre-trends. Surface this to the user front-door so
+        # results are not silently interpreted as full point identification.
+        if resolved_design in ("continuous_near_d_lower", "mass_point"):
+            warnings.warn(
+                f"design={resolved_design!r} (Design 1, d_lower > 0) requires "
+                f"Assumption 6 from de Chaisemartin et al. (2026) for point "
+                f"identification of WAS_{{d_lower}}, or Assumption 5 for "
+                f"sign identification only. Neither is testable via "
+                f"pre-trends. Confirm the extra assumption is defensible "
+                f"for your setting before interpreting the returned "
+                f"point estimate as the WAS.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # ---- Dispatch ----
         if resolved_design in ("continuous_at_zero", "continuous_near_d_lower"):
@@ -1125,28 +1205,53 @@ class HeterogeneousAdoptionDiD:
         resolved_design: str,
         d_lower_val: float,
     ) -> Tuple[float, float, Optional[BiasCorrectedFit], Optional[BandwidthResult]]:
-        """Fit Phase 1c ``bias_corrected_local_linear`` and rescale to beta-scale.
+        """Fit Phase 1c ``bias_corrected_local_linear`` and form the WAS estimate.
 
-        Both continuous designs share the same rescaling path - they
-        differ only in the regressor shift and boundary:
+        Implements de Chaisemartin, Ciccia, D'Haultfoeuille, and Knau
+        (2026) continuous-design estimators:
 
-        - ``continuous_at_zero``: regressor ``d_arr``, boundary ``0``.
-        - ``continuous_near_d_lower``: regressor ``d_arr - d_lower``,
-          boundary ``0``.
+        - Design 1' (``continuous_at_zero``), paper Equation 7 /
+          Theorem 3:
 
-        The mu-scale output ``tau_bc`` from
-        :func:`bias_corrected_local_linear` is divided by the
-        beta-scale divisor ``D_bar = (1/G) * sum(D_{g,2})`` (Equation 8
-        in the paper). The same divisor applies to the classical CI
-        endpoints. The result of ``D_bar`` uses the ORIGINAL
-        (unshifted) dose mean, matching paper convention.
+              beta = (E[Delta Y] - lim_{d v 0} E[Delta Y | D_2 <= d]) / E[D_2]
+
+          Regressor passed to the local-linear boundary fit is
+          ``d_arr``; the boundary is ``0``.
+
+        - Design 1 (``continuous_near_d_lower``), paper Proposition 3 /
+          Theorem 4 (``WAS_{d_lower}`` under Assumption 6):
+
+              beta = (E[Delta Y] - lim_{d v d_lower} E[Delta Y | D_2 <= d])
+                     / E[D_2 - d_lower]
+
+          Regressor passed to the local-linear fit is
+          ``d_arr - d_lower`` so the boundary evaluation point is ``0``
+          on the shifted scale; the numerator and denominator are
+          computed on the original scale.
+
+        The bias-corrected boundary estimate ``tau_bc`` from
+        :func:`bias_corrected_local_linear` corresponds to the limit
+        ``lim_{d v d_lower} E[Delta Y | D_2 <= d]``. The beta-scale
+        estimator and standard error are then:
+
+            att = (mean(dy) - tau_bc) / den
+            se  = se_robust / |den|
+
+        where ``den`` is the expectation in the denominator (``D_bar``
+        for Design 1', ``mean(D_2 - d_lower)`` for Design 1). The
+        confidence interval is ``att +/- z * se`` computed in
+        :func:`diff_diff.utils.safe_inference`; the endpoints reverse
+        relative to the boundary-limit CI because the numerator
+        transformation is ``ΔȲ - tau_bc``.
         """
         if resolved_design == "continuous_at_zero":
             d_reg = d_arr
             boundary = 0.0
+            den = float(d_arr.mean())
         elif resolved_design == "continuous_near_d_lower":
             d_reg = d_arr - d_lower_val
             boundary = 0.0
+            den = float((d_arr - d_lower_val).mean())
         else:
             raise ValueError(
                 f"_fit_continuous called with non-continuous " f"design={resolved_design!r}"
@@ -1174,15 +1279,18 @@ class HeterogeneousAdoptionDiD:
         except (ZeroDivisionError, FloatingPointError, np.linalg.LinAlgError):
             return float("nan"), float("nan"), None, None
 
-        dose_mean = float(d_arr.mean())
-        # Phase 1b / Phase 1c pre-checks enforce dose_mean > 0 for
-        # Design 1-family samples, but defense-in-depth: if dose_mean
-        # rounds to zero, fall through to NaN via safe_inference in fit().
-        if abs(dose_mean) < 1e-12:
+        # Guard against degenerate denominators: if all units are at
+        # d_lower (continuous_near_d_lower) or if D_bar rounds to zero
+        # (continuous_at_zero with a vanishing sample mean), the beta-
+        # scale estimator is undefined. Fall through to NaN via
+        # safe_inference in fit().
+        if abs(den) < 1e-12:
             att = float("nan")
             se = float("nan")
         else:
-            att = float(bc_fit.estimate_bias_corrected) / dose_mean
-            se = float(bc_fit.se_robust) / dose_mean
+            dy_mean = float(dy_arr.mean())
+            tau_bc = float(bc_fit.estimate_bias_corrected)
+            att = (dy_mean - tau_bc) / den
+            se = float(bc_fit.se_robust) / abs(den)
 
         return att, se, bc_fit, bc_fit.bandwidth_diagnostics

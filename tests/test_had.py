@@ -4,8 +4,13 @@ Covers the 12 plan commit criteria:
 
 1. All three design paths produce a finite result on synthetic DGPs.
 2. ``design="auto"`` resolves correctly on each DGP + two edge cases.
-3. Beta-scale rescaling: ``att == tau_bc / D_bar`` and CI endpoints ==
-   ``(ci_low/D_bar, ci_high/D_bar)`` at ``atol=1e-14``.
+3. Beta-scale WAS estimator at atol=1e-14:
+   - Design 1' / continuous_at_zero:
+     ``att = (mean(ΔY) - tau_bc) / mean(D)``
+   - Design 1 / continuous_near_d_lower:
+     ``att = (mean(ΔY) - tau_bc) / mean(D - d_lower)``
+   - CI endpoints reverse under subtraction:
+     ``CI_lower(att) = (mean(ΔY) - CI_upper_boundary) / den``
 4. Mass-point Wald-IV point estimate matches manual formula at
    ``atol=1e-14``.
 5. Mass-point 2SLS SE parity against hand-coded sandwich at
@@ -231,8 +236,19 @@ class TestDesignAutoDetect:
 
 
 class TestBetaScaleRescaling:
-    def test_att_equals_tau_bc_over_dbar(self):
-        """result.att == bc_fit.tau_bc / D_bar at atol=1e-14."""
+    """Plan commit criterion #3 + review P0: the continuous estimator is
+
+        att = (mean(ΔY) - tau_bc) / den
+
+    with ``den = mean(D)`` for Design 1' and ``den = mean(D - d_lower)``
+    for Design 1 continuous-near-d_lower. SE is ``se_robust / |den|``.
+    CI endpoints are computed via ``att +/- z * se`` (endpoints reverse
+    relative to the boundary-limit CI because the numerator is
+    ``ΔȲ - tau_bc``).
+    """
+
+    def test_att_design_1_prime(self):
+        """att = (mean(ΔY) - tau_bc) / D_bar for Design 1' at atol=1e-14."""
         d, dy = _dgp_continuous_at_zero(500, seed=0)
         panel = _make_panel(d, dy)
         r = HeterogeneousAdoptionDiD(design="continuous_at_zero").fit(
@@ -240,21 +256,27 @@ class TestBetaScaleRescaling:
         )
         bc = bias_corrected_local_linear(d=d, y=dy, boundary=0.0, alpha=0.05)
         d_bar = float(d.mean())
-        expected = float(bc.estimate_bias_corrected) / d_bar
+        dy_mean = float(dy.mean())
+        expected = (dy_mean - float(bc.estimate_bias_corrected)) / d_bar
         assert abs(r.att - expected) < 1e-14
 
-    def test_se_equals_se_rb_over_dbar(self):
+    def test_se_design_1_prime(self):
+        """se = se_robust / |D_bar| for Design 1' at atol=1e-14."""
         d, dy = _dgp_continuous_at_zero(500, seed=0)
         panel = _make_panel(d, dy)
         r = HeterogeneousAdoptionDiD(design="continuous_at_zero").fit(
             panel, "outcome", "dose", "period", "unit"
         )
         bc = bias_corrected_local_linear(d=d, y=dy, boundary=0.0, alpha=0.05)
-        d_bar = float(d.mean())
-        expected = float(bc.se_robust) / d_bar
+        expected = float(bc.se_robust) / abs(float(d.mean()))
         assert abs(r.se - expected) < 1e-14
 
-    def test_ci_lower_equals_ci_low_over_dbar(self):
+    def test_ci_endpoints_reverse_under_subtraction(self):
+        """Because att = (ΔȲ - tau_bc)/D_bar, CI endpoints reverse:
+
+        CI_lower(att) = (ΔȲ - CI_upper_boundary) / D_bar
+        CI_upper(att) = (ΔȲ - CI_lower_boundary) / D_bar
+        """
         d, dy = _dgp_continuous_at_zero(500, seed=0)
         panel = _make_panel(d, dy)
         r = HeterogeneousAdoptionDiD(design="continuous_at_zero").fit(
@@ -262,33 +284,60 @@ class TestBetaScaleRescaling:
         )
         bc = bias_corrected_local_linear(d=d, y=dy, boundary=0.0, alpha=0.05)
         d_bar = float(d.mean())
-        expected = float(bc.ci_low) / d_bar
-        assert abs(r.conf_int[0] - expected) < 1e-14
+        dy_mean = float(dy.mean())
+        # CI bounds on the att scale, computed by endpoint reversal from
+        # the boundary-limit CI.
+        expected_lower = (dy_mean - float(bc.ci_high)) / d_bar
+        expected_upper = (dy_mean - float(bc.ci_low)) / d_bar
+        assert abs(r.conf_int[0] - expected_lower) < 1e-14
+        assert abs(r.conf_int[1] - expected_upper) < 1e-14
 
-    def test_ci_upper_equals_ci_high_over_dbar(self):
-        d, dy = _dgp_continuous_at_zero(500, seed=0)
-        panel = _make_panel(d, dy)
-        r = HeterogeneousAdoptionDiD(design="continuous_at_zero").fit(
-            panel, "outcome", "dose", "period", "unit"
-        )
-        bc = bias_corrected_local_linear(d=d, y=dy, boundary=0.0, alpha=0.05)
-        d_bar = float(d.mean())
-        expected = float(bc.ci_high) / d_bar
-        assert abs(r.conf_int[1] - expected) < 1e-14
-
-    def test_rescaling_shifted_regressor_continuous_near_d_lower(self):
-        """continuous_near_d_lower: regressor shift `D - d_lower`, divisor = mean(D)."""
+    def test_att_design_1_continuous_near_d_lower(self):
+        """att = (mean(ΔY) - tau_bc) / mean(D - d_lower) for Design 1 at atol=1e-14."""
         d, dy = _dgp_continuous_near_d_lower(500, seed=0)
         panel = _make_panel(d, dy)
         d_lower_val = float(d.min())
-        r = HeterogeneousAdoptionDiD(design="continuous_near_d_lower").fit(
-            panel, "outcome", "dose", "period", "unit"
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = HeterogeneousAdoptionDiD(design="continuous_near_d_lower").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
         d_reg = d - d_lower_val
         bc = bias_corrected_local_linear(d=d_reg, y=dy, boundary=0.0, alpha=0.05)
-        d_bar = float(d.mean())
-        expected = float(bc.estimate_bias_corrected) / d_bar
+        den = float((d - d_lower_val).mean())
+        dy_mean = float(dy.mean())
+        expected = (dy_mean - float(bc.estimate_bias_corrected)) / den
         assert abs(r.att - expected) < 1e-14
+
+    def test_att_recovers_true_beta_design_1_prime(self):
+        """Sanity: on a known DGP with beta=0.3, att should be close to 0.3."""
+        rng = np.random.default_rng(0)
+        G = 2000
+        d = rng.uniform(0, 1, G)
+        d[0] = 0.0
+        dy = 0.3 * d + 0.05 * rng.standard_normal(G)
+        panel = _make_panel(d, dy)
+        r = HeterogeneousAdoptionDiD(design="continuous_at_zero").fit(
+            panel, "outcome", "dose", "period", "unit"
+        )
+        # Asymptotic: expect att close to 0.3 at G=2000, n=4000 observations.
+        assert abs(r.att - 0.3) < 0.1
+
+    def test_att_recovers_true_beta_continuous_near_d_lower(self):
+        """Sanity: Design 1 DGP with beta_d_lower=0.3 recovers beta at scale."""
+        rng = np.random.default_rng(0)
+        G = 2000
+        u = rng.beta(2, 2, G)
+        d = 0.1 + 0.9 * u  # d_lower ~ 0.1
+        # True WAS_{d_lower} = 0.3 since dy = 0.3 * (d - d_lower) + noise
+        dy = 0.3 * (d - 0.1) + 0.05 * rng.standard_normal(G)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = HeterogeneousAdoptionDiD(design="continuous_near_d_lower").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+        assert abs(r.att - 0.3) < 0.1
 
     def test_dose_mean_stored_on_result(self):
         d, dy = _dgp_continuous_at_zero(500, seed=0)
@@ -1040,66 +1089,160 @@ class TestExplicitDesignOverrides:
 
 
 # =============================================================================
-# Mass-point d_lower contract enforcement
+# Design 1 d_lower contract enforcement (mass-point + continuous_near_d_lower)
 # =============================================================================
 
 
-class TestMassPointDLowerContract:
-    """Paper Section 3.2.4: mass-point d_lower must equal float(d.min())."""
+class TestDesign1DLowerContract:
+    """Paper Sections 3.2.2-3.2.4: Design 1 estimators identify at the support
+    infimum. Both mass_point and continuous_near_d_lower require
+    ``d_lower == float(d.min())`` within float tolerance; mismatched
+    overrides raise.
+    """
 
-    def test_d_lower_above_min_raises(self):
+    def test_mass_point_d_lower_above_min_raises(self):
         d, dy = _dgp_mass_point(500, seed=0)  # d.min() == 0.5
         panel = _make_panel(d, dy)
         est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=0.6)
         with pytest.raises(ValueError, match="support infimum"):
             est.fit(panel, "outcome", "dose", "period", "unit")
 
-    def test_d_lower_below_min_raises(self):
-        d, dy = _dgp_mass_point(500, seed=0)  # d.min() == 0.5
+    def test_mass_point_d_lower_below_min_raises(self):
+        d, dy = _dgp_mass_point(500, seed=0)
         panel = _make_panel(d, dy)
         est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=0.3)
         with pytest.raises(ValueError, match="support infimum"):
             est.fit(panel, "outcome", "dose", "period", "unit")
 
-    def test_d_lower_matches_support_infimum_succeeds(self):
-        d, dy = _dgp_mass_point(500, seed=0)  # d.min() == 0.5
+    def test_mass_point_d_lower_matches_succeeds(self):
+        d, dy = _dgp_mass_point(500, seed=0)
         panel = _make_panel(d, dy)
         est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=0.5)
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert r.d_lower == 0.5
         assert np.isfinite(r.att)
 
-    def test_d_lower_none_auto_resolves_to_min(self):
-        """With d_lower=None, the contract is satisfied automatically."""
+    def test_mass_point_d_lower_none_auto_resolves_to_min(self):
         d, dy = _dgp_mass_point(500, seed=0)
         panel = _make_panel(d, dy)
         est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=None)
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert abs(r.d_lower - float(d.min())) < 1e-14
 
-    def test_d_lower_within_tolerance_succeeds(self):
-        """Float-tolerance overrides of d.min() are accepted."""
+    def test_mass_point_d_lower_within_tolerance_succeeds(self):
         d, dy = _dgp_mass_point(500, seed=0)
         panel = _make_panel(d, dy)
-        # Pass d_lower that differs from d.min() by float-rounding noise.
         d_lower_user = float(d.min()) + 1e-15
         est = HeterogeneousAdoptionDiD(design="mass_point", d_lower=d_lower_user)
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert np.isfinite(r.att)
 
-    def test_mass_point_equality_guard_does_not_fire_on_continuous(self):
-        """The mass-point-specific d_lower equality guard is not enforced on
-        continuous_near_d_lower. (The continuous path has its own upstream
-        Phase 1c guards against off-support d_lower via the negative-dose
-        check after the regressor shift, but the mass-point-specific
-        ValueError does not fire here.)
-        """
+    def test_continuous_near_d_lower_above_min_raises(self):
+        """Review P1: continuous_near_d_lower must also enforce support infimum."""
         d, dy = _dgp_continuous_near_d_lower(500, seed=0)
         panel = _make_panel(d, dy)
-        # d_lower == d.min() is always a valid continuous configuration.
-        est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower", d_lower=float(d.min()))
-        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower", d_lower=0.3)
+        with pytest.raises(ValueError, match="support infimum"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_continuous_near_d_lower_below_min_raises(self):
+        d, dy = _dgp_continuous_near_d_lower(500, seed=0)
+        panel = _make_panel(d, dy)
+        # d.min() for this Beta DGP is > 0.1 but setting d_lower=0.05 is below min.
+        est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower", d_lower=0.05)
+        with pytest.raises(ValueError, match="support infimum"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_continuous_near_d_lower_matches_succeeds(self):
+        d, dy = _dgp_continuous_near_d_lower(500, seed=0)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower", d_lower=float(d.min()))
+            r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert np.isfinite(r.att)
+
+
+# =============================================================================
+# Post-period dose non-negative contract (review P1)
+# =============================================================================
+
+
+class TestPostPeriodDoseContract:
+    """Paper Section 2 dose definition: D_{g,2} >= 0. _validate_had_panel
+    rejects negative post-period dose front-door on the ORIGINAL scale
+    (before the regressor shift) so the error references the user's
+    dose column, not the Phase 1c shifted values.
+    """
+
+    def test_negative_post_dose_raises(self):
+        d, dy = _dgp_continuous_at_zero(200, seed=0)
+        panel = _make_panel(d, dy)
+        # Inject a negative post-period dose on one unit.
+        post_mask = panel["period"] == 2
+        idx = panel[post_mask].index[0]
+        panel.loc[idx, "dose"] = -0.1
+        est = HeterogeneousAdoptionDiD()
+        with pytest.raises(ValueError, match=r"D_\{g,2\}|negative post"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_zero_post_dose_accepted(self):
+        """D_{g,2} == 0 is the Design 1' no-treated-group case, always allowed."""
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        # Ensure d[0] == 0 exactly (no-treated unit) is accepted.
+        assert d[0] == 0.0
+        panel = _make_panel(d, dy)
+        r = HeterogeneousAdoptionDiD(design="continuous_at_zero").fit(
+            panel, "outcome", "dose", "period", "unit"
+        )
+        assert np.isfinite(r.att)
+
+
+# =============================================================================
+# Design 1 Assumption 5/6 identification warning (review P1)
+# =============================================================================
+
+
+class TestAssumptionFiveSixWarning:
+    """Paper Sections 3.2.2-3.2.4: Design 1 fits require Assumption 5 (sign
+    identification) or Assumption 6 (point identification of WAS_{d_lower})
+    beyond parallel trends. These extras are not pre-trend testable. A
+    UserWarning surfaces the identification burden on Design 1 fits.
+    """
+
+    def test_continuous_near_d_lower_emits_assumption_warning(self):
+        d, dy = _dgp_continuous_near_d_lower(500, seed=0)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            HeterogeneousAdoptionDiD(design="continuous_near_d_lower").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+            assumption_warnings = [warn for warn in w if "Assumption" in str(warn.message)]
+            assert len(assumption_warnings) >= 1
+
+    def test_mass_point_emits_assumption_warning(self):
+        d, dy = _dgp_mass_point(500, seed=0)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            HeterogeneousAdoptionDiD(design="mass_point").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+            assumption_warnings = [warn for warn in w if "Assumption" in str(warn.message)]
+            assert len(assumption_warnings) >= 1
+
+    def test_continuous_at_zero_does_not_emit_assumption_warning(self):
+        """Design 1' (d_lower=0) is identified under Assumption 3 only; no warning."""
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            HeterogeneousAdoptionDiD(design="continuous_at_zero").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+            assumption_warnings = [warn for warn in w if "Assumption 6" in str(warn.message)]
+            assert len(assumption_warnings) == 0
 
 
 # =============================================================================
