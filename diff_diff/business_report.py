@@ -1854,6 +1854,48 @@ def _significance_phrase(p: Optional[float], alpha: float) -> str:
     return "the confidence interval includes zero; the data are consistent with no effect"
 
 
+def _smallest_failing_grid_m(sens: Dict[str, Any]) -> Optional[float]:
+    """If the smallest evaluated M on the HonestDiD sensitivity grid
+    already has the robust CI including zero, return that M. Returns
+    ``None`` when the grid is missing or when the smallest evaluated
+    point is still robust — in the latter case ``breakdown_M`` is an
+    interpolated threshold between grid points, not a statement about
+    the smallest grid point itself.
+
+    Matches the twin helper in ``diagnostic_report.py``; keep the two
+    in sync for cross-surface parity.
+    """
+    grid_points = sens.get("grid") or []
+    sorted_grid = sorted(
+        (p for p in grid_points if isinstance(p.get("M"), (int, float))),
+        key=lambda p: p["M"],
+    )
+    if not sorted_grid:
+        return None
+    smallest = sorted_grid[0]
+    if not smallest.get("robust_to_zero", True):
+        return float(smallest["M"])
+    return None
+
+
+def _sentence_first_upper(text: str) -> str:
+    """Uppercase only the first character of ``text``, preserving all
+    other casing. Unlike ``str.capitalize()``, which lowercases every
+    character after the first, this keeps user-supplied abbreviations
+    and proper nouns intact.
+
+    Examples
+    --------
+    >>> _sentence_first_upper("the NJ minimum-wage increase")
+    'The NJ minimum-wage increase'
+    >>> _sentence_first_upper("Castle Doctrine law adoption")
+    'Castle Doctrine law adoption'
+    """
+    if not text:
+        return text
+    return text[0].upper() + text[1:]
+
+
 def _direction_verb(effect: float, outcome_direction: Optional[str]) -> str:
     """Return a direction-aware verb for the headline sentence.
 
@@ -1929,7 +1971,16 @@ def _render_headline_sentence(schema: Dict[str, Any]) -> str:
         # is not actually available.
         ci_str = " (inference unavailable: confidence interval is undefined for this fit)"
     by_clause = f" by {magnitude}" if effect != 0 else ""
-    return f"{treatment.capitalize()} {verb} {outcome}{by_clause}{ci_str}."
+    # Round-1 BR/DR canonical-validation (2026-04-19): Python's
+    # ``str.capitalize()`` lowercases everything except the first
+    # character, so ``"the NJ minimum-wage increase".capitalize()``
+    # returns ``"The nj minimum-wage increase"`` — flattening the
+    # ``NJ`` abbreviation. Real canonical datasets (Card-Krueger,
+    # Castle Doctrine) carry proper-noun / acronym tokens in the
+    # user-supplied ``treatment_label``, so preserve user casing and
+    # only ensure the first character is uppercase.
+    treatment_sentence = _sentence_first_upper(treatment)
+    return f"{treatment_sentence} {verb} {outcome}{by_clause}{ci_str}."
 
 
 def _render_summary(schema: Dict[str, Any]) -> str:
@@ -2088,11 +2139,33 @@ def _render_summary(schema: Dict[str, Any]) -> str:
                 f"pre-period variation."
             )
         elif isinstance(bkd, (int, float)):
-            sentences.append(
-                f"HonestDiD: the result is fragile — the confidence interval "
-                f"includes zero once violations reach {bkd:.2g}x the "
-                f"pre-period variation."
-            )
+            # Round-1 BR/DR canonical-validation (2026-04-19) then
+            # tightened per CI review on PR #341 R1:
+            # ``breakdown_M`` is the smallest M at which the robust
+            # CI includes zero (interpolated between grid points) —
+            # not a claim about any specific grid point. Earlier fix
+            # keyed off ``bkd <= 0.05`` which incorrectly asserted
+            # "smallest grid point fails" even for grids that start
+            # at M=0 where the smallest evaluated point is still
+            # robust (e.g., grid=[0, 0.25, ...] with bkd=0.03). The
+            # "smallest grid point" wording is only accurate when
+            # the smallest evaluated M on the grid itself fails
+            # (``robust_to_zero == False``); otherwise fall through
+            # to the numeric multiplier.
+            smallest_failed_m = _smallest_failing_grid_m(sens)
+            if smallest_failed_m is not None:
+                sentences.append(
+                    "HonestDiD: the result is fragile — the confidence "
+                    "interval includes zero even at the smallest M "
+                    f"evaluated on the sensitivity grid (M = "
+                    f"{smallest_failed_m:.2g})."
+                )
+            else:
+                sentences.append(
+                    f"HonestDiD: the result is fragile — the confidence "
+                    f"interval includes zero once violations reach {bkd:.2g}x "
+                    f"the pre-period variation."
+                )
 
     # Sample sentence. For fits with a dynamic comparison set (CS /
     # ContinuousDiD / StaggeredTripleDiff / EfficientDiD /

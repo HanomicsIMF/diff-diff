@@ -3975,6 +3975,224 @@ class TestCSVaryingBaseSensitivityRejectsPrecomputed:
         assert "precomputed['sensitivity']" in msg
 
 
+class TestCanonicalValidationSurfaceFixes:
+    """Regression coverage for issues surfaced by the first round of
+    BR/DR canonical-dataset validation (``docs/validation/
+    validate_br_dr_canonical.py``). Each test pins a wording bug
+    observed on a real published-applied-work fit.
+    """
+
+    def _cs_like_stub_with_zero_breakdown(self):
+        """CS-style result stub matching the Cheng-Hoekstra Castle
+        Doctrine fit pattern."""
+
+        class CallawaySantAnnaResults:
+            pass
+
+        stub = CallawaySantAnnaResults()
+        stub.overall_att = 0.5608
+        stub.overall_se = 0.1216
+        stub.overall_p_value = 0.0
+        stub.overall_conf_int = (0.323, 0.799)
+        stub.alpha = 0.05
+        stub.n_obs = 539
+        stub.n_treated = 22
+        stub.n_control_units = 27
+        stub.survey_metadata = None
+        stub.event_study_effects = None
+        stub.base_period = "universal"
+        stub.inference_method = "analytical"
+        return stub
+
+    def _fragile_dr_schema(self, breakdown_m: float, grid=None):
+        """Build a fake DiagnosticReportResults whose ``sensitivity``
+        block carries the given ``breakdown_M`` value and grid. Pass
+        ``grid`` as a list of ``{"M": float, "robust_to_zero": bool}``
+        dicts (other fields populated with plausible values).
+        """
+        from diff_diff.diagnostic_report import DiagnosticReportResults
+
+        grid = grid if grid is not None else []
+        # Populate optional CI / bound fields so grid entries match
+        # the schema the BR/DR runners actually emit.
+        grid_full = [
+            {
+                "M": row["M"],
+                "ci_lower": row.get("ci_lower", 0.0),
+                "ci_upper": row.get("ci_upper", 0.0),
+                "bound_lower": row.get("bound_lower", 0.0),
+                "bound_upper": row.get("bound_upper", 0.0),
+                "robust_to_zero": row["robust_to_zero"],
+            }
+            for row in grid
+        ]
+        schema = {
+            "schema_version": "1.0",
+            "estimator": {"class_name": "CallawaySantAnnaResults", "display_name": "CS"},
+            "headline_metric": {},
+            "parallel_trends": {"status": "skipped", "reason": "stub"},
+            "pretrends_power": {"status": "skipped", "reason": "stub"},
+            "sensitivity": {
+                "status": "ran",
+                "method": "relative_magnitude",
+                "breakdown_M": breakdown_m,
+                "conclusion": "fragile",
+                "grid": grid_full,
+            },
+            "placebo": {"status": "skipped", "reason": "stub"},
+            "bacon": {"status": "skipped", "reason": "stub"},
+            "design_effect": {"status": "skipped", "reason": "stub"},
+            "heterogeneity": {"status": "skipped", "reason": "stub"},
+            "epv": {"status": "skipped", "reason": "stub"},
+            "estimator_native_diagnostics": {"status": "not_applicable"},
+            "skipped": {},
+            "warnings": [],
+            "overall_interpretation": "",
+            "next_steps": [],
+        }
+        return DiagnosticReportResults(
+            schema=schema,
+            interpretation="",
+            applicable_checks=("sensitivity",),
+            skipped_checks={},
+            warnings=(),
+        )
+
+    def test_treatment_label_preserves_embedded_abbreviations(self):
+        """Card-Krueger use case: ``treatment_label="the NJ minimum-wage
+        increase"`` previously rendered as ``"The nj minimum-wage
+        increase"`` because ``str.capitalize()`` lowercases every
+        character after the first. The fix preserves user-supplied
+        casing and only uppercases the first character.
+        """
+
+        class DiDResults:
+            pass
+
+        stub = DiDResults()
+        stub.att = 1.47
+        stub.se = 1.93
+        stub.t_stat = 0.76
+        stub.p_value = 0.45
+        stub.conf_int = (-2.32, 5.27)
+        stub.alpha = 0.05
+        stub.n_obs = 620
+        stub.n_treated = 462
+        stub.n_control = 158
+        stub.survey_metadata = None
+        stub.inference_method = "analytical"
+        br = BusinessReport(
+            stub,
+            outcome_label="FTE employment",
+            treatment_label="the NJ minimum-wage increase",
+            auto_diagnostics=False,
+        )
+        headline = br.headline()
+        assert "The NJ minimum-wage increase" in headline, (
+            "Embedded ``NJ`` abbreviation must survive the first-word "
+            f"capitalization. Got headline: {headline!r}"
+        )
+        assert "The nj" not in headline, (
+            "Previous capitalize() bug lowercased the NJ abbreviation. " f"Got: {headline!r}"
+        )
+
+    def test_treatment_label_preserves_proper_noun_case(self):
+        """Castle Doctrine use case: ``treatment_label="Castle Doctrine
+        law adoption"`` previously rendered as ``"Castle doctrine law
+        adoption"`` because capitalize() lowercased the rest. Must
+        preserve proper-noun casing.
+        """
+        stub = self._cs_like_stub_with_zero_breakdown()
+        br = BusinessReport(
+            stub,
+            outcome_label="Homicide rate",
+            treatment_label="Castle Doctrine law adoption",
+            auto_diagnostics=False,
+        )
+        headline = br.headline()
+        assert (
+            "Castle Doctrine law adoption" in headline
+        ), f"Proper-noun casing must be preserved. Got: {headline!r}"
+
+    def test_smallest_grid_m_fails_uses_smallest_grid_point_wording(self):
+        """When the smallest M actually evaluated on the grid has
+        ``robust_to_zero == False``, the "smallest M evaluated" wording
+        is semantically correct. This is the Cheng-Hoekstra Castle
+        Doctrine pattern: default grid ``[0.5, 1.0, 1.5, 2.0]`` with
+        M=0.5 already non-robust.
+        """
+        stub = self._cs_like_stub_with_zero_breakdown()
+        dr = self._fragile_dr_schema(
+            breakdown_m=0.0,
+            grid=[
+                {"M": 0.5, "robust_to_zero": False},
+                {"M": 1.0, "robust_to_zero": False},
+                {"M": 1.5, "robust_to_zero": False},
+                {"M": 2.0, "robust_to_zero": False},
+            ],
+        )
+        br = BusinessReport(stub, diagnostics=dr)
+        summary = br.summary()
+        # Must not render the degenerate multiplier form on the
+        # zero-breakdown case.
+        assert (
+            "0x the pre-period variation" not in summary
+        ), f"Summary must not quote ``0x`` multiplier. Got: {summary!r}"
+        # New wording quotes the actual smallest evaluated M.
+        assert "smallest M evaluated on the sensitivity grid" in summary, (
+            f"Summary must use the smallest-M-evaluated wording when the "
+            f"smallest grid point actually fails. Got: {summary!r}"
+        )
+        assert "M = 0.5" in summary
+
+    def test_smallest_grid_m_robust_falls_through_to_multiplier_wording(self):
+        """CI review on PR #341 R1: ``breakdown_M`` is the interpolated
+        threshold between grid points, not a claim about any specific
+        grid point. On a grid starting at M=0 where the smallest
+        evaluated point is still robust, a small ``breakdown_M=0.03``
+        does NOT mean the smallest grid point failed — it means
+        fragility emerges between grid points. The correct wording is
+        the numeric multiplier, not the smallest-grid-point claim.
+        """
+        stub = self._cs_like_stub_with_zero_breakdown()
+        dr = self._fragile_dr_schema(
+            breakdown_m=0.03,
+            grid=[
+                # Smallest evaluated M (0) is still robust: CI excludes
+                # zero. Breakdown is interpolated somewhere between M=0
+                # and M=0.25.
+                {"M": 0.0, "robust_to_zero": True},
+                {"M": 0.25, "robust_to_zero": False},
+                {"M": 0.5, "robust_to_zero": False},
+            ],
+        )
+        br = BusinessReport(stub, diagnostics=dr)
+        summary = br.summary()
+        # Must NOT claim the smallest grid point failed — it didn't.
+        assert "smallest M evaluated on the sensitivity grid" not in summary, (
+            f"Summary must not assert ``smallest M evaluated fails`` when the "
+            f"smallest grid point is still robust. Got: {summary!r}"
+        )
+        # Correct wording quotes the numeric multiplier.
+        assert "0.03x" in summary, (
+            f"Fragile fit with robust smallest-M should quote the interpolated "
+            f"breakdown multiplier. Got: {summary!r}"
+        )
+
+    def test_breakdown_m_normal_keeps_multiplier_wording(self):
+        """Breakdown values at the usual fragile-but-nonzero range
+        (e.g., 0.3) must still quote the ``0.3x`` multiplier — the
+        smallest-M-evaluated wording is only for grids whose smallest
+        actually-evaluated point is already non-robust.
+        """
+        stub = self._cs_like_stub_with_zero_breakdown()
+        dr = self._fragile_dr_schema(breakdown_m=0.3)
+        br = BusinessReport(stub, diagnostics=dr)
+        summary = br.summary()
+        assert "0.3x" in summary
+        assert "smallest M evaluated on the sensitivity grid" not in summary
+
+
 class TestBaconCaveatEstimatorAware:
     """Round-45 P1 CI review on PR #318: Goodman-Bacon decomposes TWFE
     weights. On fits already produced by a heterogeneity-robust

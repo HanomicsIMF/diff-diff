@@ -2780,6 +2780,32 @@ def _collect_pre_period_coefs(
     return results_list, n_dropped_undefined
 
 
+def _smallest_failing_grid_m_dr(sens: Dict[str, Any]) -> Optional[float]:
+    """Return the smallest evaluated M on the HonestDiD sensitivity
+    grid if it already has the robust CI including zero, else ``None``.
+    Matches ``business_report._smallest_failing_grid_m`` — both helpers
+    must stay in sync for cross-surface parity. See PR #341 R1 review.
+
+    ``breakdown_M`` is an interpolated threshold between grid points,
+    so "the smallest grid point fails" is only a valid claim when the
+    smallest actually-evaluated M has ``robust_to_zero == False``. On
+    a grid that starts at M=0 where the smallest evaluated point is
+    still robust, the breakdown value is information about what
+    happens between grid points — not at the smallest grid point.
+    """
+    grid_points = sens.get("grid") or []
+    sorted_grid = sorted(
+        (p for p in grid_points if isinstance(p.get("M"), (int, float))),
+        key=lambda p: p["M"],
+    )
+    if not sorted_grid:
+        return None
+    smallest = sorted_grid[0]
+    if not smallest.get("robust_to_zero", True):
+        return float(smallest["M"])
+    return None
+
+
 def _pt_verdict(p: Optional[float]) -> str:
     """Map a pre-trends joint p-value to the three-bin verdict enum.
 
@@ -3118,13 +3144,33 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
                 f"pre-period variation."
             )
         else:
-            sentences.append(
-                f"HonestDiD sensitivity: the result is fragile — the "
-                f"confidence interval includes zero once violations reach "
-                f"{bkd:.2g}x the pre-period variation."
-                if isinstance(bkd, (int, float))
-                else ""
-            )
+            # Round-1 BR/DR canonical-validation (2026-04-19) then
+            # tightened per CI review on PR #341 R1: the "smallest
+            # grid point" wording is only semantically correct when
+            # the smallest M actually evaluated on the sensitivity
+            # grid has ``robust_to_zero == False``. ``breakdown_M``
+            # is the interpolated threshold between grid points, so
+            # a small breakdown value on a grid starting at M=0
+            # (where the smallest evaluated point is still robust)
+            # would previously have been narrated as "smallest grid
+            # point fails" — stronger than the evaluated grid
+            # supports. Mirror BR's fix: check the grid directly.
+            if isinstance(bkd, (int, float)):
+                smallest_failed_m = _smallest_failing_grid_m_dr(sens)
+                if smallest_failed_m is not None:
+                    sentences.append(
+                        "HonestDiD sensitivity: the result is fragile — "
+                        "the confidence interval includes zero even at "
+                        "the smallest M evaluated on the sensitivity "
+                        f"grid (M = {smallest_failed_m:.2g})."
+                    )
+                else:
+                    sentences.append(
+                        f"HonestDiD sensitivity: the result is fragile — "
+                        f"the confidence interval includes zero once "
+                        f"violations reach {bkd:.2g}x the pre-period "
+                        f"variation."
+                    )
 
     # Sentence 4: one secondary caveat if present.
     bacon = schema.get("bacon") or {}
