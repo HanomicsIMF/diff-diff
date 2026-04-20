@@ -25,7 +25,6 @@ from diff_diff.utils import (
     compute_p_value,
     compute_robust_se,
     compute_sdid_estimator,
-    compute_synthetic_weights,
     compute_time_weights,
     equivalence_test_trends,
     safe_inference,
@@ -1125,59 +1124,9 @@ class TestEquivalenceTestTrends:
         assert results_wide["tost_p_value"] <= results_tight["tost_p_value"]
 
 
-# =============================================================================
-# Additional tests for compute_synthetic_weights
-# =============================================================================
-
-
-class TestComputeSyntheticWeightsEdgeCases:
-    """Edge case tests for compute_synthetic_weights."""
-
-    def test_empty_control_matrix(self):
-        """Test with empty control matrix."""
-        Y_control = np.zeros((5, 0))
-        Y_treated = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-
-        weights = compute_synthetic_weights(Y_control, Y_treated)
-
-        assert len(weights) == 0
-
-    def test_single_control_unit(self):
-        """Test with single control unit."""
-        Y_control = np.array([[1.0], [2.0], [3.0]])
-        Y_treated = np.array([1.0, 2.0, 3.0])
-
-        weights = compute_synthetic_weights(Y_control, Y_treated)
-
-        assert len(weights) == 1
-        assert abs(weights[0] - 1.0) < 1e-6
-
-    def test_regularization_effect(self):
-        """Test that regularization affects weight sparsity."""
-        np.random.seed(42)
-        Y_control = np.random.randn(10, 5)
-        Y_treated = np.random.randn(10)
-
-        weights_no_reg = compute_synthetic_weights(Y_control, Y_treated, lambda_reg=0.0)
-        weights_high_reg = compute_synthetic_weights(Y_control, Y_treated, lambda_reg=10.0)
-
-        # High regularization should give more uniform weights
-        var_no_reg = np.var(weights_no_reg)
-        var_high_reg = np.var(weights_high_reg)
-
-        assert var_high_reg < var_no_reg + 0.01
-
-    def test_min_weight_threshold(self):
-        """Test that small weights are zeroed out."""
-        np.random.seed(42)
-        Y_control = np.random.randn(10, 5)
-        Y_treated = np.random.randn(10)
-
-        weights = compute_synthetic_weights(Y_control, Y_treated, min_weight=0.01)
-
-        # All non-zero weights should be >= min_weight
-        non_zero_weights = weights[weights > 0]
-        assert np.all(non_zero_weights >= 0.01)
+# Removed TestComputeSyntheticWeightsEdgeCases in the silent-failures audit
+# post-cleanup (finding #22). The `compute_synthetic_weights` helper was deleted;
+# its behavior is now exercised via `rank_control_units` in test_prep.py.
 
 
 # =============================================================================

@@ -3124,25 +3124,9 @@ class TestSyntheticWeightsUtils:
         assert abs(np.sum(projected) - 1.0) < 1e-6
         assert np.all(projected >= 0)
 
-    def test_compute_synthetic_weights(self):
-        """Test synthetic weight computation."""
-        from diff_diff.utils import compute_synthetic_weights
-
-        np.random.seed(42)
-        n_pre = 5
-        n_control = 10
-
-        Y_control = np.random.randn(n_pre, n_control)
-        Y_treated = np.random.randn(n_pre)
-
-        weights = compute_synthetic_weights(Y_control, Y_treated)
-
-        # Weights should sum to 1
-        assert abs(np.sum(weights) - 1.0) < 1e-6
-        # Weights should be non-negative
-        assert np.all(weights >= 0)
-        # Should have correct length
-        assert len(weights) == n_control
+    # test_compute_synthetic_weights removed in the silent-failures audit
+    # post-cleanup (finding #22). Helper deleted; behavior now covered via
+    # tests/test_prep.py::TestRankControlUnits (its sole caller).
 
     def test_compute_time_weights(self):
         """Test time weight computation with Frank-Wolfe solver."""

@@ -766,6 +766,43 @@ class TestRankControlUnits:
         # Single control should get score of 1.0 (best possible)
         assert result["quality_score"].iloc[0] == 1.0
 
+    def test_extreme_Y_scale_synthetic_weight_column(self):
+        """Finding #22 (post-audit cleanup): `synthetic_weight` column must
+        remain a valid non-degenerate simplex vector even at extreme Y
+        scale (Y ~ 1e9). The previous `compute_synthetic_weights` wrapper
+        had two bugs here: Rust PGD collapsed to a single vertex, Python
+        PGD stalled at uniform. The inlined Frank-Wolfe solver in
+        ``rank_control_units`` handles both cases correctly."""
+        from diff_diff.prep import rank_control_units
+
+        data = generate_did_data(n_units=12, n_periods=8, seed=42)
+        # Shift outcomes to extreme scale — the exact condition the deleted
+        # wrapper mishandled.
+        data = data.copy()
+        data["outcome"] = data["outcome"] + 1e9
+
+        result = rank_control_units(
+            data,
+            unit_column="unit",
+            time_column="period",
+            outcome_column="outcome",
+            treatment_column="treated",
+        )
+
+        weights = result["synthetic_weight"].to_numpy()
+        # Valid simplex: non-negative, sums to 1.
+        assert np.all(weights >= 0), "synthetic_weight must be non-negative"
+        assert abs(weights.sum() - 1.0) < 1e-10, (
+            f"synthetic_weight should sum to 1.0, got {weights.sum()}"
+        )
+        # Non-degenerate: at least 2 controls receive non-trivial weight.
+        # This guards the Rust-PGD collapse-to-one-vertex bug that
+        # previously fired at Y ~ 1e9 under the deleted wrapper.
+        assert int(np.sum(weights > 1e-6)) >= 2, (
+            f"synthetic_weight collapsed to a single vertex at extreme Y "
+            f"scale; n_nonzero={int(np.sum(weights > 1e-6))}. weights={weights}"
+        )
+
 
 class TestGenerateStaggeredData:
     """Tests for generate_staggered_data function."""
