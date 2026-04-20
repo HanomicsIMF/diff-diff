@@ -10,13 +10,6 @@ license: MIT
 version: "3.2.0"
 date-released: "2026-04-19"
 doi: "10.5281/zenodo.19646175"
-identifiers:
-  - type: doi
-    value: "10.5281/zenodo.19646175"
-    description: "Concept DOI — always resolves to the latest release"
-  - type: doi
-    value: "10.5281/zenodo.19646176"
-    description: "Versioned DOI for v3.1.3"
 url: "https://github.com/igerber/diff-diff"
 repository-code: "https://github.com/igerber/diff-diff"
 keywords:
