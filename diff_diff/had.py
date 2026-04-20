@@ -844,9 +844,13 @@ class HeterogeneousAdoptionDiD:
           float tolerance; non-support-infimum thresholds are off-
           support and raise.
         - ``"mass_point"`` (Design 1 mass-point): requires
-          ``d_lower > 0`` and ``d_lower == float(d.min())`` within
-          float tolerance. Forcing this design on a ``d_lower = 0``
-          sample raises (use ``"continuous_at_zero"`` or ``"auto"``).
+          ``d_lower > 0`` AND a mass-point sample (modal fraction at
+          ``d.min()`` must be > 2%). ``d_lower`` must equal
+          ``float(d.min())`` within float tolerance. Forcing this
+          design on a ``d_lower = 0`` sample or on a continuous
+          (non-mass-point) sample raises; in either case 2SLS
+          identifies a different estimand than the paper's Design 1
+          mass-point WAS.
 
         Mismatched overrides raise ``ValueError`` pointing at the
         correct design rather than silently identifying a different
@@ -1116,23 +1120,27 @@ class HeterogeneousAdoptionDiD:
                     f"infimum at zero."
                 )
 
-        # ---- Original-scale mass-point check before the regressor shift ----
-        # When a user explicitly forces design="continuous_near_d_lower"
-        # on a sample that is actually a mass-point sample (modal fraction
-        # at d.min() > 2% per paper Section 3.2.4), the downstream code
-        # would shift D - d_lower, making the support minimum zero on the
-        # shifted scale and suppressing the Phase 1c mass-point rejection
-        # guard (_validate_had_inputs only checks modal fraction when
-        # d.min() > 0). That silent coercion produces wrong CIs for a
-        # mass-point sample by running the nonparametric estimator where
-        # the paper's 2SLS branch is required. Front-door reject.
-        if resolved_design == "continuous_near_d_lower":
+        # ---- Original-scale modal-fraction / regime check ----
+        # Paper Section 3.2 splits Design 1 into two REGIME-SPECIFIC
+        # estimators by modal-min fraction:
+        #   - continuous_near_d_lower: modal fraction at d.min() <= 2%
+        #     (local-linear boundary-limit estimator).
+        #   - mass_point: modal fraction at d.min() > 2%
+        #     (Wald-IV / 2SLS identified by the instrument 1{D_2 > d_lower}).
+        # The auto-detect rule already enforces this; explicit overrides
+        # must too, otherwise the wrong estimand is returned silently.
+        # Both guards are symmetric around the 2% threshold used in
+        # _detect_design() and Phase 1c's _validate_had_inputs().
+        if resolved_design in ("continuous_near_d_lower", "mass_point"):
             d_min_orig = float(d_arr.min())
             if d_min_orig > 0:
                 eps_mp = 1e-12 * max(1.0, abs(d_min_orig))
                 at_d_min_mask_orig = np.abs(d_arr - d_min_orig) <= eps_mp
                 modal_fraction_orig = float(np.mean(at_d_min_mask_orig))
-                if modal_fraction_orig > _MASS_POINT_THRESHOLD:
+                if (
+                    resolved_design == "continuous_near_d_lower"
+                    and modal_fraction_orig > _MASS_POINT_THRESHOLD
+                ):
                     raise ValueError(
                         f"design='continuous_near_d_lower' cannot be used on a "
                         f"mass-point sample (modal fraction {modal_fraction_orig:.4f} "
@@ -1142,6 +1150,19 @@ class HeterogeneousAdoptionDiD:
                         f"design='auto' which will auto-detect. Forcing the "
                         f"continuous path on a mass-point sample would produce "
                         f"the wrong estimand."
+                    )
+                if resolved_design == "mass_point" and modal_fraction_orig <= _MASS_POINT_THRESHOLD:
+                    raise ValueError(
+                        f"design='mass_point' requires a modal mass at d.min() "
+                        f"exceeding the {_MASS_POINT_THRESHOLD:.2f} threshold "
+                        f"(paper Section 3.2.4). Got modal fraction "
+                        f"{modal_fraction_orig:.4f} at d.min()={d_min_orig!r}. "
+                        f"For continuous-near-d_lower samples use "
+                        f"design='continuous_near_d_lower' (local-linear "
+                        f"boundary-limit estimator) or design='auto' which "
+                        f"will auto-detect. Forcing 2SLS on a continuous "
+                        f"sample identifies the exact-d.min() cell rather "
+                        f"than the paper's boundary-limit estimand."
                     )
 
         # ---- d_lower contract for Design 1 paths ----

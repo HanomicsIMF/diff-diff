@@ -1577,6 +1577,59 @@ class TestContinuousPathRejectsMassPoint:
         assert np.isfinite(r.att)
 
 
+class TestMassPointPathRejectsContinuousSample:
+    """Review P1 round 5: reciprocal guard. Forcing design="mass_point" on a
+    continuous-near-d_lower sample (modal fraction at d.min() <= 2%) must
+    raise, otherwise 2SLS identifies the exact-d.min() cell rather than
+    the paper's boundary-limit estimand.
+    """
+
+    def test_mass_point_on_continuous_near_sample_raises(self):
+        d, dy = _dgp_continuous_near_d_lower(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="mass_point")
+        with pytest.raises(ValueError, match=r"modal mass|2SLS.*continuous"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_mass_point_on_true_mass_point_sample_runs(self):
+        """Sanity: the reciprocal guard does NOT reject valid mass-point samples."""
+        d, dy = _dgp_mass_point(500, seed=0)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = HeterogeneousAdoptionDiD(design="mass_point").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+        assert np.isfinite(r.att)
+
+    def test_mass_point_modal_at_threshold_runs(self):
+        """At exactly 2% + 1 unit, mass_point runs (strict > 0.02)."""
+        rng = np.random.default_rng(0)
+        G = 1000
+        mass_n = 25  # 2.5% > threshold
+        d = np.concatenate([np.full(mass_n, 0.5), rng.uniform(0.5001, 1.0, G - mass_n)])
+        dy = 0.3 * d + 0.1 * rng.standard_normal(G)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = HeterogeneousAdoptionDiD(design="mass_point").fit(
+                panel, "outcome", "dose", "period", "unit"
+            )
+        assert np.isfinite(r.att)
+
+    def test_mass_point_modal_exactly_two_percent_raises(self):
+        """At exactly 2% (not strictly greater), mass_point must raise."""
+        rng = np.random.default_rng(0)
+        G = 1000
+        mass_n = 20  # exactly 2% (not > 2%)
+        d = np.concatenate([np.full(mass_n, 0.5), rng.uniform(0.5001, 1.0, G - mass_n)])
+        dy = 0.3 * d + 0.1 * rng.standard_normal(G)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="mass_point")
+        with pytest.raises(ValueError, match=r"modal mass"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+
 # =============================================================================
 # Review P2: cluster-applied mass-point stores vcov_type="cr1"
 # =============================================================================
