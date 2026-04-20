@@ -46,7 +46,9 @@ from diff_diff.linalg import (
 from diff_diff.local_linear import (
     KERNELS,
     BandwidthResult,
+    BiasCorrectedFit,
     LocalLinearFit,
+    bias_corrected_local_linear,
     epanechnikov_kernel,
     kernel_moments,
     local_linear_fit,
@@ -427,6 +429,9 @@ __all__ = [
     # MSE-optimal bandwidth selector (Phase 1b for HeterogeneousAdoptionDiD)
     "BandwidthResult",
     "mse_optimal_bandwidth",
+    # Bias-corrected local-linear (Phase 1c for HeterogeneousAdoptionDiD)
+    "BiasCorrectedFit",
+    "bias_corrected_local_linear",
     # Datasets
     "load_card_krueger",
     "load_castle_doctrine",

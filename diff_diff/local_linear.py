@@ -20,8 +20,13 @@ This module is used by the :class:`HeterogeneousAdoptionDiD` phases:
   ``mse_optimal_bandwidth`` / ``BandwidthResult`` (this module), a thin
   wrapper over the Calonico-Cattaneo-Farrell (2018) plug-in selector
   ported in ``diff_diff/_nprobust_port.py``.
-- Phase 1c will add the bias-corrected confidence interval per Equation 8 of
-  de Chaisemartin, Ciccia, D'Haultfoeuille & Knau (2026, arXiv:2405.04465v6).
+- Phase 1c ships the bias-corrected local-linear fit
+  ``bias_corrected_local_linear`` / ``BiasCorrectedFit`` (this module), a
+  thin wrapper over the Calonico-Cattaneo-Titiunik (2014) robust-bias
+  correction ported in ``diff_diff/_nprobust_port.py``. This produces
+  the mu-scale point estimate and CI for Equation 8 of de Chaisemartin,
+  Ciccia, D'Haultfoeuille & Knau (2026, arXiv:2405.04465v6); Phase 2
+  applies the ``(1/G) * sum(D_{g,2})`` beta-scale rescaling.
 
 References
 ----------
@@ -48,6 +53,8 @@ from diff_diff.linalg import solve_ols
 
 __all__ = [
     "BandwidthResult",
+    "BiasCorrectedFit",
+    "bias_corrected_local_linear",
     "epanechnikov_kernel",
     "triangular_kernel",
     "uniform_kernel",
@@ -492,6 +499,177 @@ _KERNEL_NAME_TO_NPROBUST = {
 }
 
 
+def _validate_had_inputs(
+    d: np.ndarray,
+    y: np.ndarray,
+    boundary: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """HAD-scope input validation shared across Phase 1b and Phase 1c.
+
+    Coerces ``d`` and ``y`` to 1-D ``float64`` arrays and enforces the
+    HAD input contract used by both ``mse_optimal_bandwidth`` (Phase 1b)
+    and ``bias_corrected_local_linear`` (Phase 1c). Each caller handles
+    its own ``weights=`` rejection upfront because the phase name and
+    message differ; every other rule lives here.
+
+    Rules (matching Phase 1b's original inline checks verbatim):
+
+    - ``d`` and ``y`` must be shape-matched, non-empty, and finite.
+    - ``boundary`` must be finite.
+    - Doses are nonnegative (HAD support ``D_{g,2} >= 0``).
+    - ``boundary`` is approximately ``0`` (Design 1') or approximately
+      ``d.min()`` (Design 1 continuous-near-d_lower); other boundaries
+      raise so off-support calls do not silently target a different
+      estimand.
+    - Mass-point designs at ``d.min() > 0`` with modal-min fraction
+      ``> 2%`` raise ``NotImplementedError`` pointing to Phase 2's 2SLS
+      path, per the paper's Section 3.2.4.
+    - Design 1' plausibility heuristic: when ``boundary ~ 0``, require
+      ``d.min() <= 0.05 * median(|d|)``; samples above that ratio are
+      redirected to ``boundary=float(d.min())``.
+
+    Parameters
+    ----------
+    d, y : np.ndarray
+        Regressor (dose) and outcome.
+    boundary : float
+        Evaluation point.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Coerced ``(d, y)`` as 1-D float64 arrays.
+
+    Raises
+    ------
+    ValueError, NotImplementedError
+    """
+    if not np.isfinite(boundary):
+        raise ValueError(f"boundary must be finite; got {boundary}")
+
+    d = np.asarray(d, dtype=np.float64).ravel()
+    y = np.asarray(y, dtype=np.float64).ravel()
+    if d.shape != y.shape:
+        raise ValueError(f"d and y must have the same shape; got {d.shape} and {y.shape}")
+    if d.size == 0:
+        raise ValueError(
+            "d and y must be non-empty; the selector cannot estimate a "
+            "bandwidth from zero observations."
+        )
+    if not np.all(np.isfinite(d)):
+        raise ValueError("d contains non-finite values (NaN or Inf)")
+    if not np.all(np.isfinite(y)):
+        raise ValueError("y contains non-finite values (NaN or Inf)")
+
+    # HAD support restriction: de Chaisemartin et al. (2026) Assumption
+    # (dose definition in Section 2) treats ``D_{g,2}`` as the period-2
+    # treatment dose with ``D_{g,2} >= 0``. Negative dose values are
+    # outside the HAD design and would silently calibrate the selector
+    # against a symmetric-kernel two-sided problem while the downstream
+    # fitter remains one-sided. Reject front-door rather than produce a
+    # plausible bandwidth on a malformed input.
+    d_neg = d < 0.0
+    if np.any(d_neg):
+        n_neg = int(d_neg.sum())
+        min_neg = float(d[d_neg].min())
+        raise ValueError(
+            f"Negative dose values detected in d (n_neg={n_neg}, "
+            f"min={min_neg!r}). The HAD estimator (de Chaisemartin et "
+            f"al. 2026) requires the period-2 dose D_{{g,2}} >= 0. "
+            f"Nonnegative-dose data is required for both Design 1' "
+            f"(d_lower = 0) and Design 1 (d_lower > 0)."
+        )
+
+    # Boundary-applicability check (Phase 1b scope).
+    # The exported wrapper is scoped to the two documented HAD
+    # nonparametric estimands:
+    #   - Design 1' evaluates m(0) = lim_{d down 0} E[Delta Y | D_2 <= d]
+    #     with ``boundary = 0``.
+    #   - Design 1 continuous-near-d_lower evaluates m(d_lower) with
+    #     ``boundary = d_lower = min(D_2)``.
+    # Any other off-support boundary (interior, upper-boundary, or an
+    # arbitrary value between 0 and d.min()) would silently target an
+    # undocumented limit and is rejected.
+    d_min = float(d.min())
+    _boundary_tol = 1e-12 * max(1.0, abs(d_min), abs(boundary))
+    _at_zero = abs(boundary) <= _boundary_tol
+    _at_d_min = abs(boundary - d_min) <= _boundary_tol
+    if not (_at_zero or _at_d_min):
+        raise ValueError(
+            f"boundary={boundary!r} is not at a supported HAD estimand. "
+            f"The Phase 1b public wrapper accepts only boundary ~ 0 "
+            f"(Design 1') or boundary ~ d.min()={d_min!r} (Design 1 "
+            f"continuous-near-d_lower). Off-support values would "
+            f"silently target an undocumented limit. For interior or "
+            f"other boundary points, use "
+            f"diff_diff._nprobust_port.lpbwselect_mse_dpi directly and "
+            f"note that those paths are not separately parity-tested."
+        )
+
+    # Mass-point design check (paper Section 3.2.4, REGISTRY 2% rule).
+    # Must fire BEFORE the Design 1' support check: mass-point data is
+    # never appropriate for the CCF nonparametric selector regardless
+    # of the boundary the caller supplied. The correct remediation is
+    # the 2SLS sample-average path (Phase 2), not a boundary
+    # reclassification.
+    #
+    # The check explicitly excludes d_min ~ 0 (the Design 1'
+    # "untreated units present" subcase that the paper's simulations
+    # and the Garrett et al. (2020) application accept).
+    _MASS_POINT_THRESHOLD = 0.02  # REGISTRY rule: > 2% modal-min
+    if d_min > _boundary_tol:
+        eps_eq = 1e-12 * max(1.0, abs(d_min))
+        at_d_min_mask = np.abs(d - d_min) <= eps_eq
+        modal_fraction = float(np.mean(at_d_min_mask))
+        if modal_fraction > _MASS_POINT_THRESHOLD:
+            raise NotImplementedError(
+                f"Detected mass-point design at d.min()={d_min!r} "
+                f"(modal fraction {modal_fraction:.4f} > "
+                f"{_MASS_POINT_THRESHOLD:.2f}). Per de Chaisemartin et "
+                f"al. (2026) Section 3.2.4, Design 1 mass-point cases "
+                f"require the 2SLS sample-average estimator with "
+                f"instrument 1{{D_2 > d_lower}}, not the CCF "
+                f"nonparametric selector. That path is queued for "
+                f"Phase 2 (HeterogeneousAdoptionDiD). For continuous "
+                f"near-d_lower designs (modal fraction <= "
+                f"{_MASS_POINT_THRESHOLD:.2f}), this wrapper is "
+                f"applicable."
+            )
+
+    # Design 1' support check: boundary ~ 0 requires the realized
+    # sample minimum to be compatible with a population support
+    # infimum at 0. Otherwise the selector calibrates ``h_mse`` at
+    # an off-support limit.
+    #
+    # Rule: when boundary ~ 0 (not also at d.min()), require
+    # d.min() <= 5% * median(|d|). The 5% threshold is generous
+    # enough to accept Design 1' samples with vanishing boundary
+    # density (Beta(2,2): d.min/median ~ 3%) while rejecting samples
+    # substantially off-support (U(0.5, 1): d.min/median ~ 1.0).
+    # Samples just between these (e.g. U(0.05, 1), d.min/median ~ 10%)
+    # are directed to boundary=float(d.min()) for the continuous-
+    # near-d_lower path.
+    _DESIGN_1_PRIME_RATIO = 0.05
+    if _at_zero and not _at_d_min:
+        d_median_abs = float(np.median(np.abs(d)))
+        effective_threshold = _DESIGN_1_PRIME_RATIO * max(d_median_abs, 1e-12)
+        if d_min > effective_threshold:
+            raise ValueError(
+                f"boundary ~ 0 selected but d.min()={d_min!r} is not "
+                f"compatible with a Design 1' support infimum at 0 "
+                f"(rule: d.min() <= "
+                f"{_DESIGN_1_PRIME_RATIO} * median(|d|) = "
+                f"{effective_threshold!r}). This sample is not "
+                f"Design 1'. Either: (a) pass boundary=float(d.min()) "
+                f"for the Design 1 continuous-near-d_lower path, or "
+                f"(b) verify the population support actually has "
+                f"infimum at 0 (in which case the realized d.min() "
+                f"would be closer to zero relative to the data scale)."
+            )
+
+    return d, y
+
+
 def mse_optimal_bandwidth(
     d: np.ndarray,
     y: np.ndarray,
@@ -611,127 +789,7 @@ def mse_optimal_bandwidth(
         )
     nprobust_kernel = _KERNEL_NAME_TO_NPROBUST[kernel]
 
-    d = np.asarray(d, dtype=np.float64).ravel()
-    y = np.asarray(y, dtype=np.float64).ravel()
-    if d.shape != y.shape:
-        raise ValueError(f"d and y must have the same shape; got {d.shape} and {y.shape}")
-    if d.size == 0:
-        raise ValueError(
-            "d and y must be non-empty; the selector cannot estimate a "
-            "bandwidth from zero observations."
-        )
-    if not np.all(np.isfinite(d)):
-        raise ValueError("d contains non-finite values (NaN or Inf)")
-    if not np.all(np.isfinite(y)):
-        raise ValueError("y contains non-finite values (NaN or Inf)")
-    if not np.isfinite(boundary):
-        raise ValueError(f"boundary must be finite; got {boundary}")
-
-    # HAD support restriction: de Chaisemartin et al. (2026) Assumption
-    # (dose definition in Section 2) treats ``D_{g,2}`` as the period-2
-    # treatment dose with ``D_{g,2} >= 0``. Negative dose values are
-    # outside the HAD design and would silently calibrate the selector
-    # against a symmetric-kernel two-sided problem while the downstream
-    # fitter remains one-sided. Reject front-door rather than produce a
-    # plausible bandwidth on a malformed input.
-    d_neg = d < 0.0
-    if np.any(d_neg):
-        n_neg = int(d_neg.sum())
-        min_neg = float(d[d_neg].min())
-        raise ValueError(
-            f"Negative dose values detected in d (n_neg={n_neg}, "
-            f"min={min_neg!r}). The HAD estimator (de Chaisemartin et "
-            f"al. 2026) requires the period-2 dose D_{{g,2}} >= 0. "
-            f"Nonnegative-dose data is required for both Design 1' "
-            f"(d_lower = 0) and Design 1 (d_lower > 0)."
-        )
-
-    # Boundary-applicability check (Phase 1b scope).
-    # The exported wrapper is scoped to the two documented HAD
-    # nonparametric estimands:
-    #   - Design 1' evaluates m(0) = lim_{d down 0} E[Delta Y | D_2 <= d]
-    #     with ``boundary = 0``.
-    #   - Design 1 continuous-near-d_lower evaluates m(d_lower) with
-    #     ``boundary = d_lower = min(D_2)``.
-    # Any other off-support boundary (interior, upper-boundary, or an
-    # arbitrary value between 0 and d.min()) would silently target an
-    # undocumented limit and is rejected.
-    d_min = float(d.min())
-    _boundary_tol = 1e-12 * max(1.0, abs(d_min), abs(boundary))
-    _at_zero = abs(boundary) <= _boundary_tol
-    _at_d_min = abs(boundary - d_min) <= _boundary_tol
-    if not (_at_zero or _at_d_min):
-        raise ValueError(
-            f"boundary={boundary!r} is not at a supported HAD estimand. "
-            f"The Phase 1b public wrapper accepts only boundary ~ 0 "
-            f"(Design 1') or boundary ~ d.min()={d_min!r} (Design 1 "
-            f"continuous-near-d_lower). Off-support values would "
-            f"silently target an undocumented limit. For interior or "
-            f"other boundary points, use "
-            f"diff_diff._nprobust_port.lpbwselect_mse_dpi directly and "
-            f"note that those paths are not separately parity-tested."
-        )
-
-    # Mass-point design check (paper Section 3.2.4, REGISTRY 2% rule).
-    # Must fire BEFORE the Design 1' support check: mass-point data is
-    # never appropriate for the CCF nonparametric selector regardless
-    # of the boundary the caller supplied. The correct remediation is
-    # the 2SLS sample-average path (Phase 2), not a boundary
-    # reclassification.
-    #
-    # The check explicitly excludes d_min ~ 0 (the Design 1'
-    # "untreated units present" subcase that the paper's simulations
-    # and the Garrett et al. (2020) application accept).
-    _MASS_POINT_THRESHOLD = 0.02  # REGISTRY rule: > 2% modal-min
-    if d_min > _boundary_tol:
-        eps_eq = 1e-12 * max(1.0, abs(d_min))
-        at_d_min_mask = np.abs(d - d_min) <= eps_eq
-        modal_fraction = float(np.mean(at_d_min_mask))
-        if modal_fraction > _MASS_POINT_THRESHOLD:
-            raise NotImplementedError(
-                f"Detected mass-point design at d.min()={d_min!r} "
-                f"(modal fraction {modal_fraction:.4f} > "
-                f"{_MASS_POINT_THRESHOLD:.2f}). Per de Chaisemartin et "
-                f"al. (2026) Section 3.2.4, Design 1 mass-point cases "
-                f"require the 2SLS sample-average estimator with "
-                f"instrument 1{{D_2 > d_lower}}, not the CCF "
-                f"nonparametric selector. That path is queued for "
-                f"Phase 2 (HeterogeneousAdoptionDiD). For continuous "
-                f"near-d_lower designs (modal fraction <= "
-                f"{_MASS_POINT_THRESHOLD:.2f}), this wrapper is "
-                f"applicable."
-            )
-
-    # Design 1' support check: boundary ~ 0 requires the realized
-    # sample minimum to be compatible with a population support
-    # infimum at 0. Otherwise the selector calibrates ``h_mse`` at
-    # an off-support limit.
-    #
-    # Rule: when boundary ~ 0 (not also at d.min()), require
-    # d.min() <= 5% * median(|d|). The 5% threshold is generous
-    # enough to accept Design 1' samples with vanishing boundary
-    # density (Beta(2,2): d.min/median ~ 3%) while rejecting samples
-    # substantially off-support (U(0.5, 1): d.min/median ~ 1.0).
-    # Samples just between these (e.g. U(0.05, 1), d.min/median ~ 10%)
-    # are directed to boundary=float(d.min()) for the continuous-
-    # near-d_lower path.
-    _DESIGN_1_PRIME_RATIO = 0.05
-    if _at_zero and not _at_d_min:
-        d_median_abs = float(np.median(np.abs(d)))
-        effective_threshold = _DESIGN_1_PRIME_RATIO * max(d_median_abs, 1e-12)
-        if d_min > effective_threshold:
-            raise ValueError(
-                f"boundary ~ 0 selected but d.min()={d_min!r} is not "
-                f"compatible with a Design 1' support infimum at 0 "
-                f"(rule: d.min() <= "
-                f"{_DESIGN_1_PRIME_RATIO} * median(|d|) = "
-                f"{effective_threshold!r}). This sample is not "
-                f"Design 1'. Either: (a) pass boundary=float(d.min()) "
-                f"for the Design 1 continuous-near-d_lower path, or "
-                f"(b) verify the population support actually has "
-                f"infimum at 0 (in which case the realized d.min() "
-                f"would be closer to zero relative to the data scale)."
-            )
+    d, y = _validate_had_inputs(d, y, boundary)
 
     # Defer heavy import to call time to avoid import-cycle risk.
     from diff_diff._nprobust_port import lpbwselect_mse_dpi
@@ -778,6 +836,411 @@ def mse_optimal_bandwidth(
         stage_h_B2=stages.stage_h.B2,
         stage_h_R=stages.stage_h.R,
         n=int(d.shape[0]),
+        kernel=kernel,
+        boundary=float(boundary),
+    )
+
+
+# =============================================================================
+# Bias-corrected local-linear fit (Phase 1c)
+# =============================================================================
+#
+# Public wrapper around diff_diff._nprobust_port.lprobust. The port is a
+# faithful Python translation of the single-eval-point path of
+# nprobust::lprobust (R package nprobust 0.5.0, SHA 36e4e53) implementing
+# Calonico, Cattaneo, and Titiunik (2014) robust bias correction.
+#
+# This wrapper produces the mu-scale quantities of Equation 8 in de
+# Chaisemartin, Ciccia, D'Haultfoeuille, and Knau (2026): a classical and
+# bias-corrected point estimate plus naive and robust standard errors and
+# the bias-corrected confidence interval [tau.bc +/- z_{1-alpha/2} * se.rb].
+# The beta-scale rescaling in Equation 8 (divide by ``(1/G) * sum(D_{g,2})``)
+# is applied by Phase 2's ``HeterogeneousAdoptionDiD.fit()``, not here.
+
+
+@dataclass
+class BiasCorrectedFit:
+    """Bias-corrected local-linear fit at a boundary (Phase 1c).
+
+    Output of :func:`bias_corrected_local_linear`. Produces the mu-scale
+    quantities needed by Equation 8 of de Chaisemartin, Ciccia,
+    D'Haultfoeuille, and Knau (2026). Phase 2's ``HeterogeneousAdoptionDiD``
+    class applies the beta-scale ``(1/G) * sum(D_{g,2})`` rescaling.
+
+    Attributes
+    ----------
+    estimate_classical : float
+        Classical point estimate ``tau.cl`` from ``nprobust::lprobust``
+        (local-linear boundary intercept at ``h``; no bias correction).
+    estimate_bias_corrected : float
+        Bias-corrected point estimate ``tau.bc = mu_hat + M_hat`` from the
+        Calonico-Cattaneo-Titiunik (2014) combined design-matrix statistic.
+    se_classical : float
+        Naive plug-in standard error.
+    se_robust : float
+        Robust standard error accounting for the additional variability
+        introduced by the bias-correction term (CCT 2014).
+    ci_low, ci_high : float
+        Endpoints of the bias-corrected CI: ``tau.bc +/- z_{1-alpha/2} *
+        se.rb``.
+    alpha : float
+        CI level (``0.05`` gives a 95% CI).
+    h, b : float
+        Main and bias-correction bandwidths actually used (post-``bwcheck``
+        floor).
+    bandwidth_source : {"auto", "user"}
+        ``"auto"`` when the wrapper called the Phase 1b DPI selector
+        (``_nprobust_port.lpbwselect_mse_dpi``) internally with the
+        caller's ``cluster`` / ``vce`` / ``nnmatch``; ``"user"`` when the
+        caller passed explicit bandwidths. Auto mode then enforces
+        nprobust's ``rho=1`` default by setting ``b = h``; the
+        selector's distinct ``b_mse`` is surfaced via
+        ``bandwidth_diagnostics`` but not applied.
+    bandwidth_diagnostics : BandwidthResult or None
+        Full Phase 1b selector output when ``bandwidth_source == "auto"``;
+        ``None`` when the user supplied bandwidths (to avoid a redundant
+        selector call).
+    n_used : int
+        Observations retained in the active kernel window (``sum(ind.b)``
+        when ``h <= b`` and ``sum(ind.h)`` when ``h > b``; with the
+        ``rho=1`` default the two coincide).
+    n_total : int
+        Total observations passed in (before kernel filtering).
+    kernel : str
+        Kernel name as supplied by the caller.
+    boundary : float
+        Evaluation point ``c``.
+
+    Notes
+    -----
+    ``p=1``, ``q=2``, ``deriv=0`` are hard-coded for HAD Phase 1c and are
+    not exposed as fields. Phase 2 may surface them on the estimator-level
+    result class if a use case materializes.
+    """
+
+    estimate_classical: float
+    estimate_bias_corrected: float
+    se_classical: float
+    se_robust: float
+    ci_low: float
+    ci_high: float
+    alpha: float
+    h: float
+    b: float
+    bandwidth_source: str
+    bandwidth_diagnostics: Optional[BandwidthResult]
+    n_used: int
+    n_total: int
+    kernel: str
+    boundary: float
+
+
+def bias_corrected_local_linear(
+    d: np.ndarray,
+    y: np.ndarray,
+    boundary: float = 0.0,
+    kernel: str = "epanechnikov",
+    h: Optional[float] = None,
+    b: Optional[float] = None,
+    alpha: float = 0.05,
+    vce: str = "nn",
+    cluster: Optional[np.ndarray] = None,
+    nnmatch: int = 3,
+    weights: Optional[np.ndarray] = None,
+) -> BiasCorrectedFit:
+    """Bias-corrected local-linear fit with robust CI at a boundary.
+
+    Ports the single-eval-point path of ``nprobust::lprobust`` (Calonico,
+    Cattaneo, and Titiunik 2014) and produces the mu-scale outputs of
+    Equation 8 in de Chaisemartin, Ciccia, D'Haultfoeuille, and Knau
+    (2026). Phase 2's ``HeterogeneousAdoptionDiD`` class applies the
+    beta-scale rescaling to return the final estimand.
+
+    **Public API scope (Phase 1c of HAD).** Hard-coded for the HAD
+    configuration: ``p=1`` (local-linear), ``q=2`` (bias-correction
+    order), ``deriv=0`` (level), ``interior=False`` (boundary eval
+    point), ``bwcheck=21``, ``bwregul=1``, and ``vce="nn"`` (the only
+    variance mode golden-parity-tested against R in this phase). The
+    underlying ``diff_diff._nprobust_port.lprobust`` accepts the broader
+    surface (hc0/hc1/hc2/hc3, higher ``p``, interior eval), but those
+    paths are not separately parity-tested and remain private until
+    Phase 2+ ships dedicated goldens.
+
+    Parameters
+    ----------
+    d : np.ndarray, shape (G,)
+        Regressor (dose ``D_{g,2}`` in HAD).
+    y : np.ndarray, shape (G,)
+        Outcome (first-difference ``Delta Y_g`` in HAD).
+    boundary : float, default=0.0
+        Evaluation point ``d_0``. Accepts only ``boundary ~ 0`` (Design 1')
+        or ``boundary ~ float(d.min())`` (Design 1 continuous-near-d_lower);
+        see Phase 1b's input contract.
+    kernel : {"epanechnikov", "triangular", "uniform"}, default="epanechnikov"
+    h : float or None, default=None
+        Main bandwidth. ``None`` auto-selects ``h`` by calling
+        ``diff_diff._nprobust_port.lpbwselect_mse_dpi`` directly with the
+        supplied ``cluster``, ``vce``, and ``nnmatch`` so the selector
+        and the final fit use the same estimator. ``b`` is then set to
+        ``h`` per nprobust's ``rho=1`` default; the selector's distinct
+        ``b_mse`` is surfaced through
+        ``BiasCorrectedFit.bandwidth_diagnostics`` for inspection but
+        not applied. If ``h`` is provided and ``b`` is ``None``,
+        ``b = h`` likewise.
+    b : float or None, default=None
+        Bias-correction bandwidth. Pairs with ``h`` (see above). ``b``
+        provided without ``h`` raises ``ValueError``.
+    alpha : float, default=0.05
+        CI level; ``0.05`` gives a 95% CI. Must be in ``(0, 1)``.
+    vce : {"nn"}, default="nn"
+        Variance-estimation method. Only ``"nn"`` is supported in
+        Phase 1c; hc0/hc1/hc2/hc3 are queued for Phase 2+ pending
+        dedicated R parity goldens. Passing anything else raises
+        ``NotImplementedError``.
+    cluster : np.ndarray or None
+        Per-observation cluster IDs for cluster-robust variance. Missing
+        (NaN) cluster IDs raise ``ValueError`` rather than silently
+        dropping rows.
+    nnmatch : int, default=3
+        Number of nearest neighbors for ``vce="nn"`` residuals.
+    weights : np.ndarray or None, default=None
+        Not supported in Phase 1c (raises ``NotImplementedError``).
+
+    Returns
+    -------
+    BiasCorrectedFit
+
+    Raises
+    ------
+    ValueError
+        Shape mismatch, non-finite inputs, off-support boundary, negative
+        doses, ``alpha`` outside ``(0, 1)``, unknown ``kernel``,
+        NaN / None cluster IDs, ``b`` supplied without ``h``, or a
+        rank-deficient window.
+    NotImplementedError
+        ``weights=`` passed; ``vce != "nn"`` (hc0/hc1/hc2/hc3 deferred
+        to Phase 2+ pending dedicated R parity goldens); a Design 1
+        mass-point sample (redirects to Phase 2's 2SLS sample-average
+        path per the paper's Section 3.2.4).
+
+    Notes
+    -----
+    Parity against ``nprobust::lprobust(..., bwselect="mse-dpi")`` is
+    asserted at ``atol=1e-12`` on ``tau_cl``, ``tau_bc``, ``se_cl``,
+    ``se_rb``, ``ci_low``, and ``ci_high`` across the three unclustered
+    golden DGPs; DGP 1 and DGP 3 typically land closer to ``1e-13``.
+    The Python wrapper computes its own ``z_{1-alpha/2}`` via
+    ``scipy.stats.norm.ppf`` inside ``safe_inference()``; R's ``qnorm``
+    value is stored in the golden JSON for audit, and the parity harness
+    compares Python's CI bounds to R's pre-computed CI bounds, so any
+    residual drift is purely the floating-point arithmetic in
+    ``tau.bc +/- z * se.rb``, not a critical-value disagreement.
+    Clustered DGP 4 achieves bit-parity (``atol=1e-14``) when cluster
+    IDs are in first-appearance order; otherwise BLAS reduction
+    ordering can drift to ``atol=1e-10``.
+    """
+    if weights is not None:
+        raise NotImplementedError(
+            "weights= is not supported in Phase 1c of the bias-corrected "
+            "local-linear estimator. nprobust::lprobust has no weight "
+            "argument, so there is no parity anchor. Weighted-data "
+            "support is queued for Phase 2+ (survey-design adaptation)."
+        )
+
+    if kernel not in _KERNEL_NAME_TO_NPROBUST:
+        raise ValueError(
+            f"Unknown kernel {kernel!r}. Expected one of "
+            f"{sorted(_KERNEL_NAME_TO_NPROBUST.keys())}."
+        )
+    nprobust_kernel = _KERNEL_NAME_TO_NPROBUST[kernel]
+
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must be in (0, 1); got {alpha!r}.")
+
+    # Phase 1c public-wrapper vce restriction.
+    # Only ``vce="nn"`` is golden-tested against R in Phase 1c. Exposing
+    # hc0/hc1/hc2/hc3 on the public surface would ship non-parity-verified
+    # inference -- and nprobust's internal hc2/hc3 residual path reuses
+    # the p-fit hat-matrix leverage for the q-fit residuals (lprobust.R
+    # :229-241), a detail that would need its own R parity anchor before
+    # the Python port can advertise it as CCT-2014-compliant. Defer the
+    # hc-mode public surface to Phase 2+ with dedicated goldens. The
+    # port-level ``diff_diff._nprobust_port.lprobust`` still accepts
+    # hc0..hc3 for callers who need the broader surface and accept that
+    # the hc-mode behavior has not been separately parity-tested.
+    if vce != "nn":
+        raise NotImplementedError(
+            f"vce={vce!r} is not supported on bias_corrected_local_linear "
+            "in Phase 1c. Only vce='nn' is golden-tested against R "
+            "nprobust::lprobust in this phase; hc0/hc1/hc2/hc3 are queued "
+            "for Phase 2+ pending dedicated R parity goldens. If you need "
+            "the hc-mode port path for exploratory use, call "
+            "diff_diff._nprobust_port.lprobust directly and accept that "
+            "those paths are not separately parity-tested."
+        )
+
+    # HAD-scope input validation (shared with Phase 1b via _validate_had_inputs).
+    d, y = _validate_had_inputs(d, y, boundary)
+    n_total = int(d.shape[0])
+
+    # Reject missing cluster IDs up front (Phase 1b convention). Delegates
+    # to the dtype-agnostic `_cluster_has_missing` helper in the port so
+    # wrapper, port-level `lprobust`, and `lpbwselect_mse_dpi` all enforce
+    # the same missing-sentinel contract across float / object / string
+    # dtypes (CI review PR #340 P1 follow-up).
+    cluster_arr: Optional[np.ndarray] = None
+    if cluster is not None:
+        from diff_diff._nprobust_port import _cluster_has_missing
+
+        cluster_arr = np.asarray(cluster).ravel()
+        if cluster_arr.shape[0] != n_total:
+            raise ValueError(
+                f"cluster length ({cluster_arr.shape[0]}) does not match "
+                f"d/y ({n_total})."
+            )
+        if _cluster_has_missing(cluster_arr):
+            raise ValueError(
+                "cluster contains missing values (NaN / None). Filter "
+                "your data before the call or drop missing observations "
+                "explicitly."
+            )
+
+    # --- Resolve (h, b) ---
+    # nprobust's lprobust() with the default rho=1 sets b = h / rho = h
+    # whenever h is unspecified (R lprobust.R:121-124 and 139: even though
+    # lpbwselect returns a distinct b_mse, `if (rho>0) b <- h/rho` discards
+    # it). Auto mode here matches that behavior to preserve bit-parity. The
+    # distinct b_mse from Phase 1b's selector is still surfaced via
+    # bandwidth_diagnostics.b_mse for callers that want to inspect or
+    # override. The paper (de Chaisemartin et al. 2026) likewise uses a
+    # single h*_G throughout Equation 8.
+    #
+    # In auto mode, cluster / vce / nnmatch are forwarded to
+    # ``lpbwselect_mse_dpi`` so bandwidth selection reflects the same
+    # estimator the final ``lprobust`` call will use. Calling
+    # ``mse_optimal_bandwidth`` (the public wrapper) instead would hard-code
+    # ``cluster=None, vce="nn", nnmatch=3`` and silently mismatch the
+    # downstream fit — a methodology bug (CI review PR #340 P1).
+    bw_source: str
+    bw_diag: Optional[BandwidthResult] = None
+    if h is None and b is None:
+        # Defer heavy import to call time to avoid import-cycle risk.
+        from diff_diff._nprobust_port import lpbwselect_mse_dpi
+
+        stages = lpbwselect_mse_dpi(
+            y=y,
+            x=d,
+            cluster=cluster_arr,
+            eval_point=float(boundary),
+            p=1,
+            q=2,
+            deriv=0,
+            kernel=nprobust_kernel,
+            bwcheck=21,
+            bwregul=1.0,
+            vce=vce,
+            nnmatch=nnmatch,
+            interior=False,
+        )
+        bw_diag = BandwidthResult(
+            h_mse=stages.h_mse_dpi,
+            b_mse=stages.b_mse_dpi,
+            c_bw=stages.c_bw,
+            bw_mp2=stages.bw_mp2,
+            bw_mp3=stages.bw_mp3,
+            stage_d1_V=stages.stage_d1.V,
+            stage_d1_B1=stages.stage_d1.B1,
+            stage_d1_B2=stages.stage_d1.B2,
+            stage_d1_R=stages.stage_d1.R,
+            stage_d2_V=stages.stage_d2.V,
+            stage_d2_B1=stages.stage_d2.B1,
+            stage_d2_B2=stages.stage_d2.B2,
+            stage_d2_R=stages.stage_d2.R,
+            stage_b_V=stages.stage_b.V,
+            stage_b_B1=stages.stage_b.B1,
+            stage_b_B2=stages.stage_b.B2,
+            stage_b_R=stages.stage_b.R,
+            stage_h_V=stages.stage_h.V,
+            stage_h_B1=stages.stage_h.B1,
+            stage_h_B2=stages.stage_h.B2,
+            stage_h_R=stages.stage_h.R,
+            n=int(d.shape[0]),
+            kernel=kernel,
+            boundary=float(boundary),
+        )
+        h_val = float(bw_diag.h_mse)
+        b_val = h_val  # rho=1 default to match nprobust
+        bw_source = "auto"
+    elif h is not None:
+        h_val = float(h)
+        if b is None:
+            b_val = h_val  # nprobust rho=1 default
+        else:
+            b_val = float(b)
+        if not (np.isfinite(h_val) and h_val > 0):
+            raise ValueError(f"h must be finite and positive; got {h!r}.")
+        if not (np.isfinite(b_val) and b_val > 0):
+            raise ValueError(f"b must be finite and positive; got {b!r}.")
+        bw_source = "user"
+    else:
+        # h is None but b is not None: ambiguous.
+        raise ValueError(
+            "b provided without h; pass both bandwidths explicitly or "
+            "leave both as None to auto-select via mse_optimal_bandwidth."
+        )
+
+    # --- Call the port ---
+    # Defer heavy import to call time to avoid import-cycle risk.
+    from diff_diff._nprobust_port import lprobust
+
+    result = lprobust(
+        y=y,
+        x=d,
+        eval_point=float(boundary),
+        h=h_val,
+        b=b_val,
+        p=1,
+        q=2,
+        deriv=0,
+        kernel=nprobust_kernel,
+        vce=vce,
+        cluster=cluster_arr,
+        nnmatch=nnmatch,
+        bwcheck=21,
+    )
+
+    # --- Bias-corrected CI via safe_inference (NaN-safe gate) ---
+    # When se_robust is zero, negative, or non-finite (e.g., exact-fit
+    # cases where the residual vector collapses), ALL inference fields —
+    # including the CI — must return NaN. This enforces the repo-wide
+    # inference contract (CLAUDE.md Key Design Pattern #6; CI review
+    # PR #340 P0) rather than returning a misleading zero-width or
+    # infinite CI. safe_inference computes the critical value z_{1-α/2}
+    # via scipy.stats.norm.ppf; the parity tests compare Python's
+    # scipy-computed ci_low/ci_high to R's qnorm-computed ci_low/ci_high
+    # stored in the golden JSON. The golden JSON also exports R's raw
+    # `z` value for audit/reference so a reviewer can verify the two
+    # critical values agree to machine precision.
+    from diff_diff.utils import safe_inference
+
+    _, _, (ci_low, ci_high) = safe_inference(
+        result.tau_bc, result.se_rb, alpha=float(alpha)
+    )
+
+    return BiasCorrectedFit(
+        estimate_classical=result.tau_cl,
+        estimate_bias_corrected=result.tau_bc,
+        se_classical=result.se_cl,
+        se_robust=result.se_rb,
+        ci_low=ci_low,
+        ci_high=ci_high,
+        alpha=float(alpha),
+        h=result.h,
+        b=result.b,
+        bandwidth_source=bw_source,
+        bandwidth_diagnostics=bw_diag,
+        n_used=result.n_used,
+        n_total=n_total,
         kernel=kernel,
         boundary=float(boundary),
     )

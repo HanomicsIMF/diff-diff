@@ -55,6 +55,7 @@ Deviations from nprobust (documented):
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -66,11 +67,13 @@ __all__ = [
     "NPROBUST_VERSION",
     "NPROBUST_SHA",
     "LprobustBwResult",
+    "LprobustResult",
     "kernel_W",
     "qrXXinv",
     "lprobust_res",
     "lprobust_vce",
     "lprobust_bw",
+    "lprobust",
     "lpbwselect_mse_dpi",
 ]
 
@@ -79,6 +82,33 @@ NPROBUST_SHA = "36e4e532d2f7d23d4dc6e162575cca79e0927cda"
 
 _VALID_KERNELS = ("epa", "uni", "tri", "gau")
 _VALID_VCE = ("nn", "hc0", "hc1", "hc2", "hc3")
+
+
+def _cluster_has_missing(cluster: np.ndarray) -> bool:
+    """Detect missing cluster IDs across float / object / string dtypes.
+
+    nprobust::lpbwselect complete-case-filters (x, y, cluster) before
+    dispatch. This port deliberately rejects missingness instead so
+    callers see it rather than silently losing rows. Used by
+    ``lpbwselect_mse_dpi`` and ``lprobust`` (and the public
+    ``bias_corrected_local_linear`` wrapper) so all three surfaces
+    honor the same contract.
+    """
+    if cluster.dtype.kind in ("f", "c"):
+        return bool(np.any(~np.isfinite(cluster)))
+    # Object / string / None-containing arrays: treat None and NaN-like
+    # sentinels as missing.
+    try:
+        if bool(np.any([v is None for v in cluster])):
+            return True
+    except TypeError:
+        pass
+    try:
+        # np.nan comparisons are False; cast to float and check finiteness.
+        cluster_f = cluster.astype(np.float64, copy=False)
+        return bool(np.any(~np.isfinite(cluster_f)))
+    except (TypeError, ValueError):
+        return False
 
 
 # =============================================================================
@@ -516,12 +546,18 @@ def lprobust_bw(
             dups_B = dups[ind1] if dups is not None else None
             dupsid_B = dupsid[ind1] if dupsid is not None else None
         if vce in ("hc0", "hc1", "hc2", "hc3"):
-            predicts_B = R_B1 @ beta_B1
-            if vce in ("hc2", "hc3"):
-                hii_B = np.empty(n_B1, dtype=np.float64)
-                RW1 = R_B1 * eW1[:, None]
-                for i in range(n_B1):
-                    hii_B[i] = R_B1[i, :] @ invG_B1 @ RW1[i, :]
+            # Suppress spurious BLAS FPE warnings (numpy issue #21432
+            # pattern); matmul on some platforms (Accelerate / OpenBLAS)
+            # sets divide/overflow flags on SIMD intermediates even when
+            # input and output are finite.
+            with np.errstate(divide="ignore", over="ignore",
+                             invalid="ignore", under="ignore"):
+                predicts_B = R_B1 @ beta_B1
+                if vce in ("hc2", "hc3"):
+                    hii_B = np.empty(n_B1, dtype=np.float64)
+                    RW1 = R_B1 * eW1[:, None]
+                    for i in range(n_B1):
+                        hii_B[i] = R_B1[i, :] @ invG_B1 @ RW1[i, :]
         res_B = lprobust_res(
             eX1,
             eY1,
@@ -675,25 +711,9 @@ def lpbwselect_mse_dpi(
         # before dispatch; this port deliberately rejects instead so
         # callers see the missingness rather than lose rows silently.
         # The "reject" vs "filter" choice is documented in the module
-        # docstring deviations list.
-        has_missing = False
-        if cluster.dtype.kind in ("f", "c"):
-            has_missing = bool(np.any(~np.isfinite(cluster)))
-        else:
-            # object / string / None-containing arrays: treat None and
-            # NaN-like sentinels as missing.
-            try:
-                has_missing = bool(np.any([x is None for x in cluster]))
-            except TypeError:
-                has_missing = False
-            if not has_missing:
-                try:
-                    # np.nan comparisons are False; use pd-style check.
-                    cluster_f = cluster.astype(np.float64, copy=False)
-                    has_missing = bool(np.any(~np.isfinite(cluster_f)))
-                except (TypeError, ValueError):
-                    pass
-        if has_missing:
+        # docstring deviations list. Dtype-agnostic via
+        # `_cluster_has_missing`.
+        if _cluster_has_missing(cluster):
             raise ValueError(
                 "cluster contains missing values (NaN / None). Unlike "
                 "nprobust::lpbwselect which complete-case-filters "
@@ -920,4 +940,366 @@ def lpbwselect_mse_dpi(
         stage_d2=C_d2,
         stage_b=C_b,
         stage_h=C_h,
+    )
+
+
+# =============================================================================
+# lprobust single-eval-point path (lprobust.R:177-248) — Phase 1c
+# =============================================================================
+#
+# Port of the body of nprobust::lprobust's per-eval-point loop iteration from
+# lprobust.R (version pinned by NPROBUST_VERSION / NPROBUST_SHA above). The
+# single-eval path produces the classical (no bias correction) and Calonico-
+# Cattaneo-Titiunik (2014) bias-corrected point estimates plus their naive
+# and robust standard errors. The multi-eval grid and the covgrid=TRUE
+# cross-covariance branch (lprobust.R:253-378) are intentionally out of scope
+# for Phase 1c.
+#
+# Active-window rule (lprobust.R:181-182, single-eval only): ``ind = ind.b``
+# by default, overwritten to ``ind.h`` only when ``h > b``. This is a
+# CONDITIONAL REPLACEMENT, not a union. The union ``ind.h | ind.b`` is only
+# used in the covgrid branch.
+
+
+@dataclass
+class LprobustResult:
+    """Single-eval-point result of ``lprobust`` (CCT 2014 bias correction).
+
+    Mirrors the per-eval-point row of nprobust's ``Estimate`` matrix
+    (lprobust.R:163-164, 248) plus the full intermediate ``(p+1)x(p+1)``
+    variance matrices (kept so Phase 2 diagnostics can inspect them).
+
+    Attributes
+    ----------
+    eval_point : float
+        Evaluation point (``c`` in nprobust's notation; the boundary in HAD).
+    h, b : float
+        Main and bias-correction bandwidths as actually used after the
+        ``bwcheck`` clip (never below the ``bwcheck``-nearest-neighbor floor).
+    n_used : int
+        Observations in the SELECTED single kernel window (line 181-182 of
+        lprobust.R): ``sum(ind.b)`` when ``h <= b`` and ``sum(ind.h)`` when
+        ``h > b``. With ``rho=1`` default (``h == b``), the two windows
+        coincide.
+    tau_cl : float
+        Classical point estimate ``factorial(deriv) * beta.p[deriv+1]``
+        (lprobust.R:226).
+    tau_bc : float
+        Bias-corrected point estimate ``factorial(deriv) *
+        beta.bc[deriv+1]`` (lprobust.R:227), equal to ``mu_hat + M_hat`` in
+        the Equation 8 notation of de Chaisemartin et al. (2026).
+    se_cl : float
+        Naive plug-in standard error ``sqrt(factorial(deriv)^2 *
+        V.Y.cl[deriv+1, deriv+1])`` (lprobust.R:245).
+    se_rb : float
+        Robust standard error under the CCT (2014) bias-corrected
+        asymptotics ``sqrt(factorial(deriv)^2 * V.Y.bc[deriv+1, deriv+1])``
+        (lprobust.R:246).
+    V_Y_cl, V_Y_bc : np.ndarray, shape (p+1, p+1)
+        Full classical and robust variance matrices. CI bounds are not
+        produced here; the public wrapper ``bias_corrected_local_linear``
+        adds ``ci_low``/``ci_high`` from ``tau.bc +/- z_{1-alpha/2} * se.rb``.
+    """
+
+    eval_point: float
+    h: float
+    b: float
+    n_used: int
+    tau_cl: float
+    tau_bc: float
+    se_cl: float
+    se_rb: float
+    V_Y_cl: np.ndarray
+    V_Y_bc: np.ndarray
+
+
+def lprobust(
+    y: np.ndarray,
+    x: np.ndarray,
+    eval_point: float,
+    h: float,
+    b: float,
+    p: int = 1,
+    q: Optional[int] = None,
+    deriv: int = 0,
+    kernel: str = "epa",
+    vce: str = "nn",
+    cluster: Optional[np.ndarray] = None,
+    nnmatch: int = 3,
+    bwcheck: Optional[int] = 21,
+) -> LprobustResult:
+    """Local-polynomial point estimate with CCT (2014) bias correction.
+
+    Single-eval port of ``nprobust::lprobust`` (lprobust.R:177-246) from
+    ``nprobust`` version ``NPROBUST_VERSION`` (SHA ``NPROBUST_SHA``).
+    Produces both the classical and bias-corrected point estimates along
+    with their naive and robust standard errors.
+
+    Computation (source-mapped to lprobust.R:177-246):
+
+        w.h = kernel_W((x - eval_point) / h, kernel) / h   # line 177
+        w.b = kernel_W((x - eval_point) / b, kernel) / b   # line 178
+        ind.h = w.h > 0;  ind.b = w.b > 0                  # line 179
+        ind = ind.b                                         # line 181 (default)
+        if h > b: ind = ind.h                               # line 182 (conditional
+                                                            #   replacement, NOT union)
+        eN = sum(ind); eY = y[ind]; eX = x[ind]            # line 189-191
+        W.h = w.h[ind]; W.b = w.b[ind]                     # line 192-193
+        u_h = (eX - eval_point) / h                        # line 212
+        R.q[:, j] = (eX - eval_point)^j, j = 0..q          # line 213-214
+        R.p = R.q[:, :p+1]                                 # line 215
+        L = (R.p * W.h).T @ u_h^(p+1)                      # line 218
+        invG.q = qrXXinv(sqrt(W.b) * R.q)                  # line 219
+        invG.p = qrXXinv(sqrt(W.h) * R.p)                  # line 220
+        e_{p+2}: unit vector with 1 at position p+2         # line 221 (1-indexed)
+        Q.q = (R.p * W.h) - h^(p+1) * L @ e_{p+2}.T
+              @ (invG.q @ R.q.T * W.b).T                    # line 223 (eN, p+1)
+        beta.p  = invG.p @ (R.p * W.h).T @ eY              # line 224
+        beta.bc = invG.p @ Q.q.T @ eY                      # line 224
+        tau.cl = deriv! * beta.p[deriv+1]                  # line 226
+        tau.bc = deriv! * beta.bc[deriv+1]                 # line 227
+        res.h = lprobust_res(..., j=p+1, vce=vce)          # line 239
+        res.b = res.h  if vce=="nn"  else
+                lprobust_res(..., j=q+1)                   # line 240-241
+        V.Y.cl = invG.p @ lprobust_vce(R.p*W.h, res.h, eC) @ invG.p   # line 243
+        V.Y.bc = invG.p @ lprobust_vce(Q.q,     res.b, eC) @ invG.p   # line 244
+        se.cl  = sqrt(deriv!^2 * V.Y.cl[deriv+1, deriv+1])            # line 245
+        se.rb  = sqrt(deriv!^2 * V.Y.bc[deriv+1, deriv+1])            # line 246
+
+    Parameters
+    ----------
+    y, x : np.ndarray, shape (N,)
+        Outcome and regressor.
+    eval_point : float
+        Evaluation point ``c``.
+    h, b : float
+        Main and bias-correction bandwidths. Must both be positive.
+        With nprobust's ``rho=1`` default, the caller passes ``h == b``.
+    p : int, default=1
+        Main polynomial order.
+    q : int or None, default=None
+        Bias-correction polynomial order. ``None`` resolves to ``p + 1``.
+    deriv : int, default=0
+        Derivative order to estimate. Must satisfy ``deriv <= p``.
+    kernel : {"epa", "uni", "tri", "gau"}, default="epa"
+    vce : {"nn", "hc0", "hc1", "hc2", "hc3"}, default="nn"
+    cluster : np.ndarray or None
+        Per-observation cluster IDs for cluster-robust variance. Length
+        must match ``x``. ``None`` for unclustered.
+    nnmatch : int, default=3
+        Number of nearest neighbors for ``vce="nn"`` residuals.
+    bwcheck : int or None, default=21
+        Floor ``h`` and ``b`` at the distance to the ``bwcheck``-th nearest
+        neighbor of ``eval_point``. Matches nprobust's default.
+
+    Returns
+    -------
+    LprobustResult
+
+    Raises
+    ------
+    ValueError
+        On shape mismatch, empty/non-finite inputs, unknown ``kernel``/
+        ``vce``, ``deriv > p``, or a rank-deficient design (surfaced from
+        ``qrXXinv``).
+    """
+    # --- input coercion + validation ---
+    if kernel not in _VALID_KERNELS:
+        raise ValueError(f"Unknown kernel {kernel!r}. Expected one of {_VALID_KERNELS}.")
+    if vce not in _VALID_VCE:
+        raise ValueError(f"Unknown vce {vce!r}. Expected one of {_VALID_VCE}.")
+    if p < 0 or deriv < 0 or nnmatch <= 0:
+        raise ValueError("p, deriv, nnmatch must be nonneg integers; nnmatch > 0.")
+    if deriv > p:
+        raise ValueError(f"deriv ({deriv}) cannot exceed p ({p}).")
+    if q is None:
+        q = p + 1
+    if q < p:
+        raise ValueError(f"q ({q}) cannot be less than p ({p}).")
+    if not (np.isfinite(h) and h > 0):
+        raise ValueError(f"h must be finite and positive; got {h!r}.")
+    if not (np.isfinite(b) and b > 0):
+        raise ValueError(f"b must be finite and positive; got {b!r}.")
+    if not np.isfinite(eval_point):
+        raise ValueError(f"eval_point must be finite; got {eval_point!r}.")
+
+    x = np.asarray(x, dtype=np.float64).ravel()
+    y = np.asarray(y, dtype=np.float64).ravel()
+    if x.shape != y.shape:
+        raise ValueError(f"x and y must have the same shape; got {x.shape} and {y.shape}.")
+    N = x.shape[0]
+    if N == 0:
+        raise ValueError("x and y must be non-empty.")
+    if not np.all(np.isfinite(x)):
+        raise ValueError("x contains non-finite values (NaN or Inf).")
+    if not np.all(np.isfinite(y)):
+        raise ValueError("y contains non-finite values (NaN or Inf).")
+
+    if cluster is not None:
+        cluster = np.asarray(cluster).ravel()
+        if cluster.shape[0] != N:
+            raise ValueError(
+                f"cluster length ({cluster.shape[0]}) does not match x/y ({N})."
+            )
+        # Dtype-agnostic missingness check. Float NaN/Inf, object None,
+        # and object np.nan all get rejected here (shared with
+        # `lpbwselect_mse_dpi` via `_cluster_has_missing`) so the
+        # downstream `lprobust_vce` cluster grouping on `np.unique`
+        # cannot silently treat a missing sentinel as a real cluster.
+        if _cluster_has_missing(cluster):
+            raise ValueError(
+                "cluster contains missing values (NaN / None). "
+                "Filter your data before the call or drop missing "
+                "observations explicitly."
+            )
+
+    # --- vce="nn" setup: sort ascending, precompute dups ---
+    dups: Optional[np.ndarray] = None
+    dupsid: Optional[np.ndarray] = None
+    if vce == "nn":
+        order_x = np.argsort(x, kind="mergesort")  # stable, matches R order()
+        x = x[order_x]
+        y = y[order_x]
+        if cluster is not None:
+            cluster = cluster[order_x]
+        dups, dupsid = _precompute_nn_duplicates(x)
+
+    # --- bwcheck floor (lprobust.R:169-175) ---
+    if bwcheck is not None:
+        if bwcheck < 1 or bwcheck > N:
+            raise ValueError(f"bwcheck must be in [1, {N}]; got {bwcheck}.")
+        bw_min = float(np.sort(np.abs(x - eval_point))[bwcheck - 1])
+        h = max(h, bw_min)
+        b = max(b, bw_min)
+
+    # --- kernel weights and active-window selection (lprobust.R:177-182) ---
+    w_h = kernel_W((x - eval_point) / h, kernel) / h
+    w_b = kernel_W((x - eval_point) / b, kernel) / b
+    ind_h = w_h > 0
+    ind_b = w_b > 0
+
+    # Single-eval CONDITIONAL REPLACEMENT: default to the b-window, swap to
+    # the h-window only when h > b. This is NOT a union; the union form
+    # appears only in the out-of-scope covgrid branch (lprobust.R:275).
+    ind = ind_b.copy()
+    if h > b:
+        ind = ind_h.copy()
+
+    eN = int(np.sum(ind))
+    if eN < (p + 1):
+        raise ValueError(
+            f"Active kernel window retains only {eN} observations; need at "
+            f"least p+1={p+1} for the local-polynomial fit. Widen h/b or "
+            f"pick a boundary with more distinct values nearby."
+        )
+
+    eY = y[ind]
+    eX = x[ind]
+    W_h = w_h[ind]
+    W_b = w_b[ind]
+
+    eC: Optional[np.ndarray] = None
+    if cluster is not None:
+        eC = cluster[ind]
+
+    edups: Optional[np.ndarray] = None
+    edupsid: Optional[np.ndarray] = None
+    if vce == "nn":
+        assert dups is not None and dupsid is not None  # set above
+        edups = dups[ind]
+        edupsid = dupsid[ind]
+
+    # --- design matrices (lprobust.R:212-215) ---
+    u_h = (eX - eval_point) / h
+    R_q = np.empty((eN, q + 1), dtype=np.float64)
+    for j in range(q + 1):
+        R_q[:, j] = (eX - eval_point) ** j
+    R_p = R_q[:, : p + 1]
+
+    # --- L vector (lprobust.R:218): L = crossprod(R.p*W.h, u^(p+1)) ---
+    L = (R_p * W_h[:, None]).T @ (u_h ** (p + 1))  # shape (p+1,)
+
+    # --- Inverses (lprobust.R:219-220) ---
+    # qrXXinv expects an already-row-scaled design; sqrt(W) * R.
+    invG_q = qrXXinv(R_q * np.sqrt(W_b)[:, None])
+    invG_p = qrXXinv(R_p * np.sqrt(W_h)[:, None])
+
+    # --- Q.q combined design matrix (lprobust.R:223) ---
+    # e.p1 has 1 at R-index p+2 (1-indexed) = Python index p+1 (0-indexed).
+    e_p1 = np.zeros(q + 1, dtype=np.float64)
+    e_p1[p + 1] = 1.0
+
+    # R: Q.q <- t(t(R.p*W.h) - h^(p+1)*(L%*%t(e.p1))%*%t(t(invG.q%*%t(R.q))*W.b))
+    # Unpacking in Python (see block comment above for derivation).
+    # BLAS matmul on some platforms (Accelerate / OpenBLAS) can raise
+    # spurious divide/overflow/invalid FPE warnings on SIMD intermediates
+    # even when the input and output are finite and bounded. These are
+    # known benign (numpy issue #21432 pattern); suppress locally.
+    R_p_W_h = R_p * W_h[:, None]  # (eN, p+1)
+    L_outer = np.outer(L, e_p1)  # (p+1, q+1)
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore", under="ignore"):
+        C = invG_q @ R_q.T  # (q+1, eN)
+        CW = C * W_b[None, :]  # (q+1, eN), column j scaled by W_b[j]
+        F = (h ** (p + 1)) * (L_outer @ CW)  # (p+1, eN)
+    Q_q = (R_p_W_h.T - F).T  # (eN, p+1)
+    if not np.all(np.isfinite(Q_q)):
+        raise ValueError(
+            "Q.q bias-combined design matrix contains non-finite values. "
+            "This typically signals a degenerate bandwidth pair (h or b "
+            "near zero) or a rank-deficient window."
+        )
+
+    # --- beta.p and beta.bc (lprobust.R:224) ---
+    beta_p = invG_p @ (R_p_W_h.T @ eY)  # (p+1,)
+    beta_bc = invG_p @ (Q_q.T @ eY)  # (p+1,)
+
+    deriv_fact = float(math.factorial(deriv))
+    tau_cl = deriv_fact * float(beta_p[deriv])
+    tau_bc = deriv_fact * float(beta_bc[deriv])
+
+    # --- Residuals (lprobust.R:239-241) ---
+    # hc2/hc3 need the hat-matrix diagonal hii. For vce="nn", hii is unused.
+    hii: Optional[np.ndarray] = None
+    predicts_p: Optional[np.ndarray] = None
+    predicts_q: Optional[np.ndarray] = None
+    if vce in ("hc0", "hc1", "hc2", "hc3"):
+        predicts_p = (R_p @ beta_p).reshape(-1, 1)
+        # R.q @ beta.q where beta.q is the q-polynomial fit. But the R code
+        # computes beta.q only for hc2/hc3 and reuses it for predicts.q. We
+        # compute it on demand.
+        beta_q = invG_q @ ((R_q * W_b[:, None]).T @ eY)  # (q+1,)
+        predicts_q = (R_q @ beta_q).reshape(-1, 1)
+        if vce in ("hc2", "hc3"):
+            # hii[j] = R.p[j] @ invG.p @ (R.p * W.h)[j]
+            #       = W.h[j] * R.p[j] @ invG.p @ R.p[j]
+            RpG = R_p @ invG_p  # (eN, p+1)
+            hii = (np.sum(RpG * R_p, axis=1) * W_h).reshape(-1, 1)
+
+    res_h = lprobust_res(eX, eY, predicts_p if predicts_p is not None else np.zeros((eN, 1)),
+                         hii, vce, nnmatch, edups, edupsid, p + 1)
+    if vce == "nn":
+        res_b = res_h
+    else:
+        res_b = lprobust_res(eX, eY, predicts_q if predicts_q is not None else np.zeros((eN, 1)),
+                             hii, vce, nnmatch, edups, edupsid, q + 1)
+
+    # --- Variance matrices (lprobust.R:243-244) ---
+    V_Y_cl = invG_p @ lprobust_vce(R_p_W_h, res_h, eC) @ invG_p
+    V_Y_bc = invG_p @ lprobust_vce(Q_q, res_b, eC) @ invG_p
+
+    # --- Standard errors (lprobust.R:245-246) ---
+    se_cl = float(np.sqrt((deriv_fact ** 2) * V_Y_cl[deriv, deriv]))
+    se_rb = float(np.sqrt((deriv_fact ** 2) * V_Y_bc[deriv, deriv]))
+
+    return LprobustResult(
+        eval_point=float(eval_point),
+        h=float(h),
+        b=float(b),
+        n_used=eN,
+        tau_cl=tau_cl,
+        tau_bc=tau_bc,
+        se_cl=se_cl,
+        se_rb=se_rb,
+        V_Y_cl=V_Y_cl,
+        V_Y_bc=V_Y_bc,
     )

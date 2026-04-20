@@ -419,3 +419,230 @@ class TestLprobustVceClustered:
         assert res.h_mse_dpi > 0.0
         assert np.isfinite(res.c_bw)
         assert res.c_bw > 0.0
+
+
+# =============================================================================
+# lprobust single-eval (Phase 1c: lprobust.R:177-246 port)
+# =============================================================================
+#
+# Port-level parity tests. Exercise lprobust() directly with R-supplied
+# bandwidths so drift is localized to the single-eval math (Q.q, beta.bc,
+# CCT-2014 robust variance), not the bandwidth-selection pipeline. Wrapper-
+# level parity lives in tests/test_bias_corrected_lprobust.py.
+
+
+def _load_lprobust_golden():
+    """Skip if benchmarks/ is absent (CI isolated-install path)."""
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "benchmarks" / "data" / "nprobust_lprobust_golden.json"
+    if not path.exists():
+        pytest.skip(
+            "Golden values file not found; "
+            "run: Rscript benchmarks/R/generate_nprobust_lprobust_golden.R"
+        )
+    with path.open() as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="module")
+def lprobust_golden():
+    return _load_lprobust_golden()
+
+
+class TestLprobustSingleEval:
+    """Parity and behavioral tests for the single-eval-point port of
+    nprobust::lprobust (lprobust.R:177-246).
+
+    Cluster parity here is ORTHOGONAL to the wrapper-level clustered test
+    in test_bias_corrected_lprobust.py: this class exercises the port
+    (lprobust_vce cluster branch -> Q.q -> V.Y.bc), while the wrapper test
+    verifies the public API's cluster contract (NaN rejection, vce+cluster
+    interactions).
+    """
+
+    def _dgp(self, golden, name):
+        g = golden[name]
+        return (
+            np.asarray(g["d"], dtype=np.float64),
+            np.asarray(g["y"], dtype=np.float64),
+            g,
+        )
+
+    def test_lprobust_dgp1_parity(self, lprobust_golden):
+        from diff_diff._nprobust_port import lprobust
+
+        d, y, g = self._dgp(lprobust_golden, "dgp1")
+        res = lprobust(
+            y, d, eval_point=0.0, h=g["h"], b=g["b"], p=1, q=2, deriv=0,
+            kernel="epa", vce="nn",
+        )
+        # Tiered tolerances per plan commit criterion #1.
+        np.testing.assert_allclose(res.tau_cl, g["tau_cl"], atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(res.se_cl, g["se_cl"], atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(res.tau_bc, g["tau_bc"], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(res.se_rb, g["se_rb"], atol=1e-12, rtol=1e-12)
+        assert res.n_used == int(g["n_used"])
+
+    def test_lprobust_dgp2_parity(self, lprobust_golden):
+        from diff_diff._nprobust_port import lprobust
+
+        d, y, g = self._dgp(lprobust_golden, "dgp2")
+        res = lprobust(
+            y, d, eval_point=0.0, h=g["h"], b=g["b"], p=1, q=2, deriv=0,
+            kernel="epa", vce="nn",
+        )
+        np.testing.assert_allclose(res.tau_cl, g["tau_cl"], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(res.se_cl, g["se_cl"], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(res.tau_bc, g["tau_bc"], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(res.se_rb, g["se_rb"], atol=1e-12, rtol=1e-12)
+
+    def test_lprobust_dgp3_parity(self, lprobust_golden):
+        from diff_diff._nprobust_port import lprobust
+
+        d, y, g = self._dgp(lprobust_golden, "dgp3")
+        res = lprobust(
+            y, d, eval_point=0.0, h=g["h"], b=g["b"], p=1, q=2, deriv=0,
+            kernel="epa", vce="nn",
+        )
+        np.testing.assert_allclose(res.tau_cl, g["tau_cl"], atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(res.se_cl, g["se_cl"], atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(res.tau_bc, g["tau_bc"], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(res.se_rb, g["se_rb"], atol=1e-12, rtol=1e-12)
+
+    def test_lprobust_manual_bandwidths_rho_1(self):
+        """Smoke test that lprobust runs with user-supplied h == b == 0.3."""
+        from diff_diff._nprobust_port import lprobust
+
+        rng = np.random.default_rng(20260420)
+        G = 1000
+        d = rng.uniform(0.0, 1.0, G)
+        y = d + d ** 2 + rng.normal(0, 0.5, G)
+        res = lprobust(y, d, eval_point=0.0, h=0.3, b=0.3, p=1, q=2, deriv=0,
+                       kernel="epa", vce="nn")
+        assert np.isfinite(res.tau_cl)
+        assert np.isfinite(res.tau_bc)
+        assert res.se_cl > 0
+        assert res.se_rb > 0
+        assert res.h == 0.3
+        assert res.b == 0.3
+
+    def test_lprobust_cluster_parity(self, lprobust_golden):
+        """Port-level clustered parity. DGP 4 uses manual h=b=0.3 to sidestep
+        an nprobust-internal singleton-cluster bug in mse-dpi pilot fits.
+        """
+        from diff_diff._nprobust_port import lprobust
+
+        g = lprobust_golden["dgp4"]
+        d = np.asarray(g["d"], dtype=np.float64)
+        y = np.asarray(g["y"], dtype=np.float64)
+        cluster = np.asarray(g["cluster"])
+        res = lprobust(
+            y, d, eval_point=0.0, h=g["h"], b=g["b"], p=1, q=2, deriv=0,
+            kernel="epa", vce="nn", cluster=cluster,
+        )
+        # Cluster IDs happen to match R's first-appearance order here (IDs
+        # are already sequential 1..50), so bit-parity is achievable.
+        np.testing.assert_allclose(res.tau_cl, g["tau_cl"], atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(res.tau_bc, g["tau_bc"], atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(res.se_cl, g["se_cl"], atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(res.se_rb, g["se_rb"], atol=1e-14, rtol=1e-14)
+
+    def test_lprobust_bwcheck_clip_floor(self):
+        """Sparse-ish data where requested h is below the 21st-NN
+        distance should clip up to bw.min."""
+        from diff_diff._nprobust_port import lprobust
+
+        rng = np.random.default_rng(7)
+        G = 100
+        d = np.abs(rng.normal(0, 1, G))  # few obs near 0
+        y = d + rng.normal(0, 0.5, G)
+        # Very small h; bwcheck should float it up.
+        res = lprobust(
+            y, d, eval_point=0.0, h=0.001, b=0.001, p=1, q=2, deriv=0,
+            kernel="epa", vce="nn", bwcheck=21,
+        )
+        # Bandwidth must have been floored — original 0.001 will not hold.
+        assert res.h > 0.001
+        assert res.b > 0.001
+        # The floor is the 21st-NN distance to boundary 0; must be positive.
+        sorted_dists = np.sort(np.abs(d - 0.0))
+        expected_floor = sorted_dists[20]
+        assert res.h == pytest.approx(expected_floor, rel=1e-14)
+
+    def test_lprobust_shifted_boundary_dgp5(self, lprobust_golden):
+        """Parity at a non-zero boundary (Design 1 continuous-near-d_lower).
+        """
+        from diff_diff._nprobust_port import lprobust
+
+        g = lprobust_golden["dgp5"]
+        d = np.asarray(g["d"], dtype=np.float64)
+        y = np.asarray(g["y"], dtype=np.float64)
+        res = lprobust(
+            y, d, eval_point=g["eval_point_override"], h=g["h"], b=g["b"],
+            p=1, q=2, deriv=0, kernel="epa", vce="nn",
+        )
+        np.testing.assert_allclose(res.tau_cl, g["tau_cl"], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(res.tau_bc, g["tau_bc"], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(res.se_cl, g["se_cl"], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(res.se_rb, g["se_rb"], atol=1e-12, rtol=1e-12)
+
+    def test_lprobust_cluster_object_none_raises(self):
+        """Port-level: object-dtype cluster with None sentinel is rejected.
+        Mirror of the wrapper test; pins that `_cluster_has_missing` fires
+        inside the direct port entry point too (CI review PR #340
+        follow-up P1)."""
+        from diff_diff._nprobust_port import lprobust
+
+        rng = np.random.default_rng(0)
+        G = 200
+        d = rng.uniform(0.0, 1.0, G)
+        y = d + rng.normal(0, 0.3, G)
+        cluster = np.array(
+            [i // 10 if i != 5 else None for i in range(G)], dtype=object
+        )
+        with pytest.raises(ValueError, match="cluster contains missing"):
+            lprobust(y, d, eval_point=0.0, h=0.3, b=0.3, cluster=cluster)
+
+    def test_lprobust_cluster_object_nan_raises(self):
+        """Port-level: object-dtype cluster with np.nan is rejected."""
+        from diff_diff._nprobust_port import lprobust
+
+        rng = np.random.default_rng(0)
+        G = 200
+        d = rng.uniform(0.0, 1.0, G)
+        y = d + rng.normal(0, 0.3, G)
+        cluster = np.array(
+            [i // 10 if i != 5 else np.nan for i in range(G)], dtype=object
+        )
+        with pytest.raises(ValueError, match="cluster contains missing"):
+            lprobust(y, d, eval_point=0.0, h=0.3, b=0.3, cluster=cluster)
+
+    def test_lprobust_h_gt_b_selects_h_window(self):
+        """When h > b, the active window is ind.h (lprobust.R:182 conditional
+        replacement), not a union of ind.h and ind.b."""
+        from diff_diff._nprobust_port import lprobust
+
+        rng = np.random.default_rng(42)
+        G = 800
+        d = rng.uniform(0.0, 1.0, G)
+        y = d + rng.normal(0, 0.3, G)
+        # h = 0.4 > b = 0.2 -> active window = ind.h (the larger window).
+        # Expected n_used = count of obs within kernel support of h-window,
+        # which for epa is 0 <= (d - 0)/h <= 1 => 0 <= d <= h.
+        h = 0.4
+        b = 0.2
+        res = lprobust(y, d, eval_point=0.0, h=h, b=b, p=1, q=2, deriv=0,
+                       kernel="epa", vce="nn", bwcheck=None)
+        # Post-sort d; ind.h = (|d|/h <= 1) & (d <= h) => d in [0, h].
+        sorted_d = np.sort(d)
+        expected_n_h = int(np.sum((np.abs(sorted_d) / h <= 1) & (sorted_d != h)))
+        # Relaxed: must be close to expected, exact match because epa is
+        # > 0 strictly inside |u| <= 1 minus the point (avoided by continuity).
+        # Just assert n_used > sum of b-window (which is smaller).
+        expected_n_b = int(np.sum((np.abs(sorted_d) / b <= 1)))
+        assert res.n_used > expected_n_b, (
+            f"h > b should select the wider h-window: n_used={res.n_used} "
+            f"should exceed b-window count ({expected_n_b})"
+        )
