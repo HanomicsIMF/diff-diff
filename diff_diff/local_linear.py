@@ -889,13 +889,17 @@ class BiasCorrectedFit:
         Main and bias-correction bandwidths actually used (post-``bwcheck``
         floor).
     bandwidth_source : {"auto", "user"}
-        ``"auto"`` when the selector chose ``h`` and ``b`` via
-        :func:`mse_optimal_bandwidth`; ``"user"`` when the caller passed
-        explicit bandwidths.
+        ``"auto"`` when the wrapper called the Phase 1b DPI selector
+        (``_nprobust_port.lpbwselect_mse_dpi``) internally with the
+        caller's ``cluster`` / ``vce`` / ``nnmatch``; ``"user"`` when the
+        caller passed explicit bandwidths. Auto mode then enforces
+        nprobust's ``rho=1`` default by setting ``b = h``; the
+        selector's distinct ``b_mse`` is surfaced via
+        ``bandwidth_diagnostics`` but not applied.
     bandwidth_diagnostics : BandwidthResult or None
         Full Phase 1b selector output when ``bandwidth_source == "auto"``;
         ``None`` when the user supplied bandwidths (to avoid a redundant
-        Phase 1b computation).
+        selector call).
     n_used : int
         Observations retained in the active kernel window (``sum(ind.b)``
         when ``h <= b`` and ``sum(ind.h)`` when ``h > b``; with the
@@ -972,9 +976,15 @@ def bias_corrected_local_linear(
         see Phase 1b's input contract.
     kernel : {"epanechnikov", "triangular", "uniform"}, default="epanechnikov"
     h : float or None, default=None
-        Main bandwidth. ``None`` auto-selects both ``h`` and ``b`` via
-        :func:`mse_optimal_bandwidth`. If ``h`` is provided and ``b`` is
-        ``None``, ``b = h`` (nprobust ``rho=1`` default).
+        Main bandwidth. ``None`` auto-selects ``h`` by calling
+        ``diff_diff._nprobust_port.lpbwselect_mse_dpi`` directly with the
+        supplied ``cluster``, ``vce``, and ``nnmatch`` so the selector
+        and the final fit use the same estimator. ``b`` is then set to
+        ``h`` per nprobust's ``rho=1`` default; the selector's distinct
+        ``b_mse`` is surfaced through
+        ``BiasCorrectedFit.bandwidth_diagnostics`` for inspection but
+        not applied. If ``h`` is provided and ``b`` is ``None``,
+        ``b = h`` likewise.
     b : float or None, default=None
         Bias-correction bandwidth. Pairs with ``h`` (see above). ``b``
         provided without ``h`` raises ``ValueError``.
