@@ -192,6 +192,13 @@ class TestParity:
                                    atol=1e-14, rtol=1e-14)
         np.testing.assert_allclose(fit.se_robust, g["se_rb"],
                                    atol=1e-14, rtol=1e-14)
+        # CI bounds at bit-parity too (Python's scipy ppf and R's qnorm
+        # agree to ULP; the remaining drift is pure tau.bc +/- z * se.rb
+        # floating-point arithmetic).
+        np.testing.assert_allclose(fit.ci_low, g["ci_low"],
+                                   atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(fit.ci_high, g["ci_high"],
+                                   atol=1e-14, rtol=1e-14)
 
     def test_shifted_boundary_parity_dgp_5(self, golden):
         """Design 1 continuous-near-d_lower: boundary = d.min() > 0."""
@@ -209,6 +216,12 @@ class TestParity:
         np.testing.assert_allclose(fit.se_classical, g["se_cl"],
                                    atol=1e-12, rtol=1e-12)
         np.testing.assert_allclose(fit.se_robust, g["se_rb"],
+                                   atol=1e-12, rtol=1e-12)
+        # CI bounds at the same tolerance (Python scipy ppf vs R qnorm
+        # agree to ULP; tau.bc +/- z * se.rb inherits se_rb's drift).
+        np.testing.assert_allclose(fit.ci_low, g["ci_low"],
+                                   atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(fit.ci_high, g["ci_high"],
                                    atol=1e-12, rtol=1e-12)
 
 

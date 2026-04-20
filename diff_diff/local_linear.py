@@ -1020,12 +1020,17 @@ def bias_corrected_local_linear(
     Notes
     -----
     Parity against ``nprobust::lprobust(..., bwselect="mse-dpi")`` is tiered
-    (see ``docs/methodology/REGISTRY.md``): bit-parity on ``tau_cl``/``se_cl``
-    (same arithmetic path as Phase 1b's bit-parity-verified primitives);
-    ``atol=1e-12`` on ``tau_bc``/``se_rb`` (new outer-product step); and
-    ``atol=1e-13`` on CI bounds (R's ``z_{1-alpha/2}`` is stored in the
-    golden JSON so Python consumes it directly rather than calling
-    ``scipy.stats.norm.ppf``).
+    (see ``docs/methodology/REGISTRY.md``): ``atol=1e-12`` on ``tau_cl``,
+    ``tau_bc``, ``se_cl``, and ``se_rb`` across the three unclustered
+    golden DGPs; ``atol=1e-13`` on CI bounds. The Python wrapper computes
+    its own ``z_{1-alpha/2}`` via ``scipy.stats.norm.ppf`` inside
+    ``safe_inference()``; R's ``qnorm`` value is stored in the golden JSON
+    for audit, and the parity harness compares Python's CI bounds to R's
+    pre-computed CI bounds, so any residual drift is purely the
+    floating-point arithmetic in ``tau.bc +/- z * se.rb``, not a
+    critical-value disagreement. Clustered DGP 4 achieves bit-parity
+    (``atol=1e-14``) when cluster IDs happen to be in first-appearance
+    order; otherwise BLAS reduction ordering can drift to ``atol=1e-10``.
     """
     if weights is not None:
         raise NotImplementedError(
