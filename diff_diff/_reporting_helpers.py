@@ -62,10 +62,15 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
       both regime readings (``ATT^loc`` under PT,
       ``ATT^glob`` under SPT) so the user can pick the
       interpretation that matches their assumption.
-    - ``WooldridgeDiD``: ``overall_att`` reports the observation-
-      count-weighted ASF-based ATT across cohort x time cells.
-      Calling ``.aggregate("event")`` populates additional event-
-      study tables but does NOT change the headline scalar.
+    - ``WooldridgeDiD``: ``overall_att`` depends on the fit-time
+      ``method`` — for OLS ETWFE (``method="ols"``) it is the
+      observation-count-weighted average of ``ATT(g, t)``
+      coefficients from the saturated regression; for nonlinear
+      ETWFE (``method="logit"`` / ``"poisson"``) it is the
+      average-structural-function (ASF) contrast across cohort x
+      time cells. Both paths preserve ``overall_att`` across
+      ``.aggregate("event")`` calls (which only populate additional
+      event-study tables).
     """
     name = type(results).__name__
 

@@ -3270,11 +3270,25 @@ def _render_dr_full_report(results: "DiagnosticReportResults") -> str:
     lines.append(f"**Estimator**: `{schema.get('estimator')}`")
     headline = schema.get("headline_metric")
     if headline:
-        lines.append(
-            f"**Headline**: {headline.get('name')} = "
-            f"{headline.get('value')} "
-            f"(SE {headline.get('se')}, p = {headline.get('p_value')})"
-        )
+        # PR #347 R5 P2: the no-scalar-by-design branch
+        # (``trends_linear=True`` + ``L_max>=2`` on dCDH) has
+        # ``value`` / ``se`` / ``p_value`` all ``None``. Formatting
+        # those straight into the ``**Headline**: ... = None`` line
+        # would produce a malformed top headline even though the
+        # "## Target Parameter" section below correctly explains
+        # the design. Route to explicit no-scalar markdown.
+        if headline.get("status") == "no_scalar_by_design":
+            lines.append("**Headline**: no scalar aggregate by design.")
+            reason = headline.get("reason")
+            if reason:
+                lines.append("")
+                lines.append(reason)
+        else:
+            lines.append(
+                f"**Headline**: {headline.get('name')} = "
+                f"{headline.get('value')} "
+                f"(SE {headline.get('se')}, p = {headline.get('p_value')})"
+            )
     lines.append("")
 
     # BR/DR gap #6: target-parameter section between headline metadata

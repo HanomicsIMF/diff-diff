@@ -666,7 +666,8 @@ class TestTargetParameterRealFitIntegration:
             L_max=2,
             trends_linear=True,
         )
-        dr = DiagnosticReport(fit).run_all()
+        dr_report = DiagnosticReport(fit)
+        dr = dr_report.run_all()
         schema = dr.schema
         assert schema["headline_metric"]["status"] == "no_scalar_by_design"
         # DR interpretation must not narrate estimation failure.
@@ -674,6 +675,21 @@ class TestTargetParameterRealFitIntegration:
         assert "does not produce a scalar" in prose.lower() or "no scalar" in prose.lower()
         assert "rank deficiency" not in prose.lower()
         assert "zero effective sample" not in prose.lower()
+        # PR #347 R5 P2 + P3: the DR markdown full_report must also
+        # handle the no-scalar case — the top **Headline** line
+        # previously formatted ``None`` values straight in
+        # (``**Headline**: ... = None (SE None, p = None)``). The
+        # fixed renderer should emit explicit no-scalar markdown
+        # instead.
+        md = dr_report.full_report()
+        assert "**Headline**: no scalar aggregate by design" in md, (
+            f"DR full_report must emit explicit no-scalar top headline on "
+            f"the trends_linear + L_max>=2 dCDH branch. Got: {md!r}"
+        )
+        # And must NOT contain the raw `None`-interpolated line from
+        # the generic headline path.
+        assert "= None (SE None" not in md
+        assert "p = None)" not in md
 
     def test_dcdh_trends_linear_with_l_max_geq_2_fit_real(self):
         """Real ``trends_linear=True`` + ``L_max>=2`` fit: the library
