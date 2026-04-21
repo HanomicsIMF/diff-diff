@@ -277,7 +277,7 @@ fn compute_robust_vcov_internal(
 }
 
 /// Convert ndarray Array2 to faer Mat
-fn ndarray_to_faer(arr: &Array2<f64>) -> faer::Mat<f64> {
+pub(crate) fn ndarray_to_faer(arr: &Array2<f64>) -> faer::Mat<f64> {
     let nrows = arr.nrows();
     let ncols = arr.ncols();
     faer::Mat::from_fn(nrows, ncols, |i, j| arr[[i, j]])
