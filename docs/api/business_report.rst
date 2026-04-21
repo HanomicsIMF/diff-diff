@@ -52,7 +52,7 @@ stability) are documented in :doc:`../methodology/REPORTING`.
 The schema carries a top-level ``target_parameter`` block
 (experimental) naming what the headline scalar represents per
 estimator — simple ATT, event-study average, DID_M, DID_1,
-cost-benefit delta, dose-response aggregate, factor-model residual,
+cost-benefit delta, dose-response aggregate, factor-model-adjusted ATT,
 etc. For the dCDH dynamic branch with ``trends_linear=True`` and
 ``L_max>=2``, the scalar is intentionally NaN and
 ``aggregation`` is ``"no_scalar_headline"`` with

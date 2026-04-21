@@ -278,6 +278,50 @@ class TestTargetParameterPerEstimator:
         assert tp["aggregation"] == "factor_model"
         assert "factor" in tp["name"].lower()
 
+    def test_bacon_decomposition(self):
+        """PR #347 R8 P3: BaconDecompositionResults is accepted by DR
+        (as a diagnostic read-out) but is NOT in ``_APPLICABILITY``,
+        so the exhaustiveness test does not exercise it. Cover the
+        branch directly. Contract: the target parameter of a Bacon
+        decomposition is the TWFE coefficient it decomposes.
+        """
+        tp = describe_target_parameter(_minimal_result("BaconDecompositionResults"))
+        assert tp["aggregation"] == "twfe"
+        assert tp["headline_attribute"] == "twfe_estimate"
+        assert "TWFE" in tp["name"]
+        assert "Goodman-Bacon" in tp["definition"] or "decomposition" in tp["definition"].lower()
+        assert "Goodman-Bacon" in tp["reference"]
+
+
+class TestTargetParameterBaconDRIntegration:
+    """PR #347 R8 P3 follow-on: pass a real ``BaconDecompositionResults``
+    through DR and assert the ``target_parameter`` block propagates
+    into the DR schema. BR rejects ``BaconDecompositionResults`` with
+    a ``TypeError`` (Bacon is a diagnostic, not an estimator), so this
+    branch is DR-only.
+    """
+
+    def test_dr_with_bacon_result_emits_target_parameter(self):
+        import warnings
+
+        from diff_diff import DiagnosticReport, bacon_decompose, generate_staggered_data
+
+        warnings.filterwarnings("ignore")
+        df = generate_staggered_data(n_units=40, n_periods=5, seed=21)
+        bacon = bacon_decompose(
+            df,
+            outcome="outcome",
+            unit="unit",
+            time="period",
+            first_treat="first_treat",
+        )
+        dr = DiagnosticReport(bacon).to_dict()
+        tp = dr["target_parameter"]
+        assert tp["aggregation"] == "twfe"
+        assert tp["headline_attribute"] == "twfe_estimate"
+        # Sanity: the named attribute exists on the real result object.
+        assert hasattr(bacon, "twfe_estimate")
+
 
 class TestTargetParameterFitConfigReads:
     """Parameterized fit-config-branching tests."""
