@@ -994,13 +994,23 @@ class HeterogeneousAdoptionDiD:
                     f"or None."
                 )
 
-    def get_params(self) -> Dict[str, Any]:
+    def get_params(self, deep: bool = True) -> Dict[str, Any]:
         """Return the raw constructor parameters (sklearn-compatible).
 
-        Preserves the user's original inputs - in particular, ``design``
-        returns ``"auto"`` when the user set it to ``"auto"`` (even after
-        fit), so ``sklearn.base.clone(est)`` round-trips exactly.
+        Matches the :meth:`sklearn.base.BaseEstimator.get_params`
+        signature. Preserves the user's original inputs - in particular,
+        ``design`` returns ``"auto"`` when the user set it to ``"auto"``
+        (even after fit), so ``sklearn.base.clone(est)`` round-trips
+        exactly.
+
+        Parameters
+        ----------
+        deep : bool, default=True
+            Accepted for sklearn-contract compatibility. This estimator
+            has no nested sub-estimator parameters, so ``deep=False``
+            and ``deep=True`` return the same dict.
         """
+        del deep  # accepted for compat; this estimator has no nested params
         return {
             "design": self.design,
             "d_lower": self.d_lower,
@@ -1012,12 +1022,18 @@ class HeterogeneousAdoptionDiD:
         }
 
     def set_params(self, **params: Any) -> "HeterogeneousAdoptionDiD":
-        """Set estimator parameters and return self (sklearn-compatible)."""
+        """Set estimator parameters and return self (sklearn-compatible).
+
+        Only keys returned by :meth:`get_params` are accepted. Passing
+        any other attribute name (including method names like ``fit``)
+        raises ``ValueError`` so the estimator cannot be silently
+        corrupted by a mistyped or attacker-supplied key.
+        """
+        valid_keys = set(self.get_params().keys())
         for key, value in params.items():
-            if not hasattr(self, key):
+            if key not in valid_keys:
                 raise ValueError(
-                    f"Invalid parameter: {key}. Valid parameters: "
-                    f"{list(self.get_params().keys())}."
+                    f"Invalid parameter: {key!r}. Valid parameters: " f"{sorted(valid_keys)}."
                 )
             setattr(self, key, value)
         self._validate_constructor_args()

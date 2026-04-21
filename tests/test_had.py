@@ -849,6 +849,46 @@ class TestSklearnCompat:
         with pytest.raises(ValueError, match="Invalid parameter"):
             est.set_params(not_a_param=True)
 
+    def test_set_params_rejects_method_names(self):
+        """Review P1 round 10: set_params must restrict to constructor keys,
+        not any hasattr-able name. Method names like 'fit' must raise,
+        else they would silently overwrite the method.
+        """
+        est = HeterogeneousAdoptionDiD()
+        with pytest.raises(ValueError, match="Invalid parameter"):
+            est.set_params(fit="not_a_method")
+        # sanity: fit is still callable on the class
+        assert callable(est.fit)
+
+    def test_set_params_rejects_private_attrs(self):
+        """Internal-looking attribute names must also raise."""
+        est = HeterogeneousAdoptionDiD()
+        with pytest.raises(ValueError, match="Invalid parameter"):
+            est.set_params(_internal=42)
+
+    def test_get_params_accepts_deep_keyword(self):
+        """Review P1 round 10: get_params must match sklearn's signature.
+
+        sklearn.base.BaseEstimator.get_params(deep=True). This estimator
+        has no nested sub-estimators, so deep=True and deep=False return
+        the same dict, but the keyword must be accepted.
+        """
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", alpha=0.1)
+        params_default = est.get_params()
+        params_deep_true = est.get_params(deep=True)
+        params_deep_false = est.get_params(deep=False)
+        assert params_default == params_deep_true == params_deep_false
+
+    def test_sklearn_clone_round_trip_if_available(self):
+        """If sklearn is installed, sklearn.base.clone round-trips the estimator."""
+        sklearn_base = pytest.importorskip("sklearn.base")
+        est = HeterogeneousAdoptionDiD(design="auto", alpha=0.1, kernel="triangular")
+        cloned = sklearn_base.clone(est)
+        assert cloned.get_params() == est.get_params()
+        assert cloned is not est
+        # clone produces a fresh instance of the same class.
+        assert type(cloned) is type(est)
+
     def test_set_params_invalid_design_raises(self):
         est = HeterogeneousAdoptionDiD()
         with pytest.raises(ValueError, match="design"):
