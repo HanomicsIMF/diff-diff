@@ -508,21 +508,43 @@ def _validate_had_panel(
     # {0, t_post} so that string-labelled periods (e.g., ("A", "B")) with
     # first_treat in {0, "B"} are supported.
     if first_treat_col is not None:
-        ft_series = data.groupby(unit_col)[first_treat_col].first()
-        if bool(ft_series.isna().any()):
+        # Row-level NaN check: `groupby().first()` skips NaNs silently, so a
+        # unit with rows [valid, NaN] would pass a collapsed check. Validate
+        # raw per-row values first, then verify per-unit constancy with
+        # `nunique(dropna=False)` so within-unit NaN variation is caught.
+        ft_raw = data[first_treat_col]
+        if bool(ft_raw.isna().any()):
+            n_nan = int(ft_raw.isna().sum())
             raise ValueError(
-                f"first_treat_col={first_treat_col!r} contains NaN. "
-                f"Use 0 for never-treated units and t_post for treated."
+                f"first_treat_col={first_treat_col!r} contains "
+                f"{n_nan} NaN value(s) at the row level. Use 0 for "
+                f"never-treated units and t_post for treated, and drop "
+                f"or impute any NaN rows before calling fit()."
             )
+        # Row-level domain check: every row (not just the collapsed first())
+        # must be in {0, t_post}. Catches mixed-row malformed inputs where
+        # a unit has [valid, invalid].
         valid_values = {0, t_post}
-        observed = set(ft_series.unique().tolist())
-        bad = sorted(observed - valid_values, key=lambda x: str(x))
+        observed_raw = set(ft_raw.unique().tolist())
+        bad = sorted(observed_raw - valid_values, key=lambda x: str(x))
         if bad:
             raise ValueError(
                 f"first_treat_col={first_treat_col!r} contains value(s) "
                 f"{bad} outside the allowed set {{0, {t_post!r}}} for a "
                 f"two-period HAD panel. Staggered timing with multiple "
                 f"cohorts is Phase 2b."
+            )
+        # Within-unit consistency: every unit must have a single
+        # first_treat value across its rows. Uses dropna=False so a unit
+        # with [value, NaN] counts as 2 unique values (caught above by
+        # the NaN check anyway, but this is belt-and-suspenders).
+        ft_per_unit_nunique = data.groupby(unit_col)[first_treat_col].nunique(dropna=False)
+        if (ft_per_unit_nunique > 1).any():
+            n_bad = int((ft_per_unit_nunique > 1).sum())
+            raise ValueError(
+                f"first_treat_col={first_treat_col!r} is not constant "
+                f"within unit for {n_bad} unit(s). Each unit must have "
+                f"a single first_treat value across both observed periods."
             )
 
     return t_pre, t_post
@@ -574,8 +596,22 @@ def _aggregate_first_difference(
     if cluster_col is not None:
         if cluster_col not in data.columns:
             raise ValueError(f"cluster column {cluster_col!r} not found in data.")
-        # Cluster must be unit-constant; take the first cluster id per unit.
-        cluster_per_unit = df.groupby(unit_col)[cluster_col].nunique()
+        # Row-level NaN check: `groupby().first()` skips NaNs silently, so a
+        # unit with rows [valid, NaN] would pass a collapsed check. Validate
+        # raw per-row values first so any NaN in the cluster column is
+        # rejected up-front, not masked by the per-unit collapse.
+        cluster_raw = data[cluster_col]
+        if bool(cluster_raw.isna().any()):
+            n_nan = int(cluster_raw.isna().sum())
+            raise ValueError(
+                f"cluster column {cluster_col!r} contains {n_nan} NaN "
+                f"value(s) at the row level. Silent row dropping is "
+                f"disabled; drop or impute cluster ids before calling fit()."
+            )
+        # Cluster must be unit-constant. `nunique(dropna=False)` counts NaN
+        # as a distinct value so rows like [value, NaN] register as 2
+        # uniques (also caught by the row-level NaN check above).
+        cluster_per_unit = df.groupby(unit_col)[cluster_col].nunique(dropna=False)
         if (cluster_per_unit > 1).any():
             n_bad = int((cluster_per_unit > 1).sum())
             raise ValueError(
@@ -585,14 +621,6 @@ def _aggregate_first_difference(
                 f"where each unit belongs to a single cluster)."
             )
         cluster_arr = df.groupby(unit_col)[cluster_col].first().sort_index().to_numpy()
-        # NaN cluster ids are a silent-failure vector; reject front-door.
-        if pd.isna(cluster_arr).any():
-            n_nan = int(pd.isna(cluster_arr).sum())
-            raise ValueError(
-                f"{n_nan} unit(s) have NaN cluster id in "
-                f"column {cluster_col!r}. Silent row dropping is "
-                f"disabled; drop or impute cluster ids before calling fit()."
-            )
 
     return d_arr, dy_arr, cluster_arr, unit_ids
 
@@ -1233,6 +1261,16 @@ class HeterogeneousAdoptionDiD:
                     f"for mass_point, off-support for continuous_near_"
                     f"d_lower) estimand that is out of Phase 2a scope."
                 )
+            # Snap tolerance-accepted overrides back to the exact support
+            # infimum. Float-rounding drift matters downstream: on the
+            # mass-point path, `Z = d > d_lower` with d_lower = d.min() - ε
+            # puts the mass-point units into Z=1 (control group empties);
+            # on the continuous-near-d_lower path, d_lower = d.min() + ε
+            # makes `d - d_lower` negative and trips Phase 1c's
+            # _validate_had_inputs negative-dose guard. Snapping preserves
+            # the "within tolerance" contract while keeping downstream
+            # algebra exact.
+            d_lower_val = d_min
 
         # ---- Compute cohort counts ----
         if resolved_design == "mass_point":

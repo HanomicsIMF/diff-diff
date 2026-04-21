@@ -659,6 +659,36 @@ class TestPanelContract:
                 first_treat_col="ft",
             )
 
+    def test_first_treat_col_mixed_row_nan_raises(self):
+        """Review P2 round 8: per-unit rows like [valid, NaN] must be rejected.
+
+        `groupby().first()` silently skips NaNs; a unit with [0, NaN]
+        collapses to first_treat=0 and a unit-level NaN check would
+        pass. Row-level validation must catch the NaN on the bad row.
+        """
+        d, dy = _dgp_continuous_at_zero(200, seed=0)
+        panel = _make_panel(d, dy)
+        # Unit-level first_treat all zero (never-treated); inject a NaN on
+        # exactly the second row of unit 0 (t_post row).
+        panel["ft"] = 0.0
+        unit0_post_idx = panel[(panel["unit"] == 0) & (panel["period"] == 2)].index[0]
+        panel.loc[unit0_post_idx, "ft"] = np.nan
+        est = HeterogeneousAdoptionDiD()
+        with pytest.raises(ValueError, match="NaN"):
+            est.fit(panel, "outcome", "dose", "period", "unit", first_treat_col="ft")
+
+    def test_first_treat_col_mixed_row_invalid_value_raises(self):
+        """Per-unit rows like [valid, invalid_value] must be rejected."""
+        d, dy = _dgp_continuous_at_zero(200, seed=0)
+        panel = _make_panel(d, dy)
+        panel["ft"] = 0.0
+        # Inject an out-of-domain value on unit 0's post-period row.
+        unit0_post_idx = panel[(panel["unit"] == 0) & (panel["period"] == 2)].index[0]
+        panel.loc[unit0_post_idx, "ft"] = 999.0
+        est = HeterogeneousAdoptionDiD()
+        with pytest.raises(ValueError, match=r"first_treat_col.*999"):
+            est.fit(panel, "outcome", "dose", "period", "unit", first_treat_col="ft")
+
 
 # =============================================================================
 # Criterion 8: NaN propagation
@@ -1189,6 +1219,47 @@ class TestDesign1DLowerContract:
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert np.isfinite(r.att)
 
+    def test_mass_point_d_lower_below_min_within_tolerance_snaps(self):
+        """Review P1 round 8: tolerance-accepted d_lower = d.min() - ε must
+        be SNAPPED to d.min() so the instrument Z = d > d_lower matches
+        the exact-minimum case; otherwise mass-point units would fall
+        into Z=1 and empty the control group.
+        """
+        d, dy = _dgp_mass_point(500, seed=0)
+        panel = _make_panel(d, dy)
+        d_lower_below = float(d.min()) - 1e-15
+        r_below = HeterogeneousAdoptionDiD(design="mass_point", d_lower=d_lower_below).fit(
+            panel, "outcome", "dose", "period", "unit"
+        )
+        r_exact = HeterogeneousAdoptionDiD(design="mass_point", d_lower=float(d.min())).fit(
+            panel, "outcome", "dose", "period", "unit"
+        )
+        # Behavior must be identical within ULP (the snap collapses them).
+        assert r_below.att == r_exact.att
+        assert r_below.se == r_exact.se
+        assert r_below.n_mass_point == r_exact.n_mass_point
+        assert r_below.n_above_d_lower == r_exact.n_above_d_lower
+
+    def test_continuous_near_d_lower_above_within_tolerance_snaps(self):
+        """Review P1 round 8: tolerance-accepted d_lower = d.min() + ε on
+        continuous_near_d_lower must be SNAPPED so the regressor shift
+        `d - d_lower` does not produce negative doses and trip Phase 1c's
+        _validate_had_inputs negative-dose guard.
+        """
+        d, dy = _dgp_continuous_near_d_lower(500, seed=0)
+        panel = _make_panel(d, dy)
+        d_lower_above = float(d.min()) + 1e-15
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_above = HeterogeneousAdoptionDiD(
+                design="continuous_near_d_lower", d_lower=d_lower_above
+            ).fit(panel, "outcome", "dose", "period", "unit")
+            r_exact = HeterogeneousAdoptionDiD(
+                design="continuous_near_d_lower", d_lower=float(d.min())
+            ).fit(panel, "outcome", "dose", "period", "unit")
+        assert r_above.att == r_exact.att
+        assert r_above.se == r_exact.se
+
     def test_continuous_near_d_lower_above_min_raises(self):
         """Review P1: continuous_near_d_lower must also enforce support infimum."""
         d, dy = _dgp_continuous_near_d_lower(500, seed=0)
@@ -1325,6 +1396,21 @@ class TestClusterHandling:
         cluster_unit = np.repeat(np.arange(50).astype(float), 2)  # length 100
         cluster_unit[0] = np.nan
         panel = _make_panel(d, dy, extra_cols={"state": cluster_unit})
+        est = HeterogeneousAdoptionDiD(design="mass_point", cluster="state")
+        with pytest.raises(ValueError, match="NaN"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_mixed_row_nan_cluster_raises_on_mass_point(self):
+        """Review P2 round 8: a unit with rows [valid, NaN] on mass-point
+        must be rejected by row-level validation, not masked by
+        `groupby().first()`.
+        """
+        d, dy = _dgp_mass_point(100, seed=0)
+        cluster_unit = np.repeat(np.arange(50).astype(float), 2)  # all valid
+        panel = _make_panel(d, dy, extra_cols={"state": cluster_unit})
+        # Inject NaN only on the second row (t_post) of unit 0.
+        unit0_post_idx = panel[(panel["unit"] == 0) & (panel["period"] == 2)].index[0]
+        panel.loc[unit0_post_idx, "state"] = np.nan
         est = HeterogeneousAdoptionDiD(design="mass_point", cluster="state")
         with pytest.raises(ValueError, match="NaN"):
             est.fit(panel, "outcome", "dose", "period", "unit")
