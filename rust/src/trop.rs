@@ -14,6 +14,8 @@ use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, ToPyArray};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
+use crate::linalg::ndarray_to_faer;
+
 /// Minimum chunk size for parallel distance computation.
 /// Reduces scheduling overhead for small matrices.
 const MIN_CHUNK_SIZE: usize = 16;
@@ -1233,111 +1235,164 @@ fn solve_joint_no_lowrank(
     y: &ArrayView2<f64>,
     delta: &ArrayView2<f64>,
 ) -> Option<(f64, Array1<f64>, Array1<f64>)> {
+    // SVD-based minimum-norm weighted least-squares fit — mirrors Python's
+    // `_solve_global_no_lowrank` at `diff_diff/trop_global.py:340-412`
+    // step-for-step so Rust and Python paths produce the same canonical
+    // solution on rank-deficient Y (silent-failures finding #23).
+    //
+    // Model: Y_it = μ + α_i + β_t + ε_it, with α_0 = β_0 = 0 for
+    // identification. Weights: δ_it. Flatten row-major with
+    // idx = t * n_units + i (matches Python's Y.flatten() C-order).
     let n_periods = y.nrows();
     let n_units = y.ncols();
+    let n_obs = n_periods * n_units;
+    let n_params = 1 + (n_units - 1) + (n_periods - 1);
 
-    // We solve using normal equations with the design matrix structure
-    // Rather than build full X matrix, use block structure for efficiency
-    //
-    // The model: Y_it = μ + α_i + β_t + ε_it
-    // With identification: α_0 = β_0 = 0
-
-    // Compute weighted sums needed for normal equations
+    // Flatten y + weights with NaN masking — matches trop_global.py:354-360.
+    let mut y_flat = Array1::<f64>::zeros(n_obs);
+    let mut w_flat = Array1::<f64>::zeros(n_obs);
     let mut sum_w = 0.0;
-    let mut sum_wy = 0.0;
-
-    // Per-unit and per-period weighted sums
-    let mut sum_w_by_unit = Array1::<f64>::zeros(n_units);
-    let mut sum_wy_by_unit = Array1::<f64>::zeros(n_units);
-    let mut sum_w_by_period = Array1::<f64>::zeros(n_periods);
-    let mut sum_wy_by_period = Array1::<f64>::zeros(n_periods);
-
     for t in 0..n_periods {
         for i in 0..n_units {
-            // NaN outcomes get zero weight (not imputed to 0.0 with active weight)
-            let w = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
-            let y_ti = if y[[t, i]].is_finite() { y[[t, i]] } else { 0.0 };
-
+            let idx = t * n_units + i;
+            let y_ti = y[[t, i]];
+            let w_ti = delta[[t, i]];
+            let valid = y_ti.is_finite() && w_ti.is_finite();
+            let w = if valid { w_ti.max(0.0) } else { 0.0 };
+            y_flat[idx] = if valid { y_ti } else { 0.0 };
+            w_flat[idx] = w;
             sum_w += w;
-            sum_wy += w * y_ti;
-
-            sum_w_by_unit[i] += w;
-            sum_wy_by_unit[i] += w * y_ti;
-            sum_w_by_period[t] += w;
-            sum_wy_by_period[t] += w * y_ti;
         }
     }
 
+    // All-zero weights short-circuit — matches trop_global.py:366.
     if sum_w < 1e-10 {
         return None;
     }
 
-    // Use iterative approach: alternate between (alpha, beta) and mu
-    // until convergence (simpler than full normal equations)
-    let mut mu = sum_wy / sum_w;
-    let mut alpha = Array1::<f64>::zeros(n_units);
-    let mut beta = Array1::<f64>::zeros(n_periods);
-
-    for _ in 0..50 {
-        let mu_old = mu;
-        let alpha_old = alpha.clone();
-        let beta_old = beta.clone();
-
-        // Update alpha (fixing beta, mu)
-        for i in 1..n_units {  // α_0 = 0 for identification
-            if sum_w_by_unit[i] > 1e-10 {
-                let mut num = 0.0;
-                for t in 0..n_periods {
-                    // NaN outcomes get zero weight
-                    let w = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
-                    let y_ti = if y[[t, i]].is_finite() { y[[t, i]] } else { 0.0 };
-                    num += w * (y_ti - mu - beta[t]);
-                }
-                alpha[i] = num / sum_w_by_unit[i];
+    // Build design matrix X = [intercept | unit_dummies[1..] | time_dummies[1..]]
+    // — matches trop_global.py:374-385. Explicit nested loops so the
+    // index correspondence with Python is unambiguous.
+    let mut x = Array2::<f64>::zeros((n_obs, n_params));
+    for t in 0..n_periods {
+        for i in 0..n_units {
+            let idx = t * n_units + i;
+            x[[idx, 0]] = 1.0; // intercept
+            if i >= 1 {
+                x[[idx, i]] = 1.0; // unit dummy (unit 0 dropped)
             }
-        }
-
-        // Update beta (fixing alpha, mu)
-        for t in 1..n_periods {  // β_0 = 0 for identification
-            if sum_w_by_period[t] > 1e-10 {
-                let mut num = 0.0;
-                for i in 0..n_units {
-                    // NaN outcomes get zero weight
-                    let w = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
-                    let y_ti = if y[[t, i]].is_finite() { y[[t, i]] } else { 0.0 };
-                    num += w * (y_ti - mu - alpha[i]);
-                }
-                beta[t] = num / sum_w_by_period[t];
+            if t >= 1 {
+                x[[idx, (n_units - 1) + t]] = 1.0; // time dummy (period 0 dropped)
             }
-        }
-
-        // Update mu (fixing alpha, beta)
-        let mut num_mu = 0.0;
-        for t in 0..n_periods {
-            for i in 0..n_units {
-                // NaN outcomes get zero weight
-                let w = if y[[t, i]].is_finite() { delta[[t, i]] } else { 0.0 };
-                let y_ti = if y[[t, i]].is_finite() { y[[t, i]] } else { 0.0 };
-                num_mu += w * (y_ti - alpha[i] - beta[t]);
-            }
-        }
-        mu = num_mu / sum_w;
-
-        // Check convergence across ALL parameters (not just mu)
-        let mu_diff = (mu - mu_old).abs();
-        let alpha_diff = alpha.iter().zip(alpha_old.iter())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0_f64, f64::max);
-        let beta_diff = beta.iter().zip(beta_old.iter())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0_f64, f64::max);
-        let max_diff = mu_diff.max(alpha_diff).max(beta_diff);
-        if max_diff < 1e-8 {
-            break;
         }
     }
 
+    // Apply sqrt-weights: X_w = X * sqrt(w)[:, None], y_w = y * sqrt(w).
+    // Matches trop_global.py:387-389.
+    let sqrt_w: Array1<f64> = w_flat.mapv(|w| w.sqrt());
+    for r in 0..n_obs {
+        let s = sqrt_w[r];
+        for c in 0..n_params {
+            x[[r, c]] *= s;
+        }
+        y_flat[r] *= s;
+    }
+
+    // Solve via SVD with numpy-compatible rcond truncation.
+    let coeffs = solve_wls_svd(&x.view(), &y_flat.view())?;
+
+    // Unpack: mu = coeffs[0], alpha[1..] = coeffs[1..n_units],
+    // beta[1..] = coeffs[n_units..]. Matches trop_global.py:406-410.
+    let mu = coeffs[0];
+    let mut alpha = Array1::<f64>::zeros(n_units);
+    for i in 1..n_units {
+        alpha[i] = coeffs[i];
+    }
+    let mut beta = Array1::<f64>::zeros(n_periods);
+    for t in 1..n_periods {
+        beta[t] = coeffs[(n_units - 1) + t];
+    }
+
     Some((mu, alpha, beta))
+}
+
+/// Minimum-norm least-squares solution via faer thin SVD with rcond truncation.
+///
+/// Mirrors `np.linalg.lstsq(A, b, rcond=None)` from numpy: singular values
+/// below `rcond * max(S)` with `rcond = eps * max(n_rows, n_cols)` are
+/// treated as zero. On rank-deficient A this returns the unique
+/// minimum-norm least-squares solution.
+///
+/// This helper intentionally does NOT reuse `rust/src/linalg.rs::solve_ols`
+/// because `solve_ols` hard-codes `rcond = 1e-7` (R's `lm()` default) which
+/// would truncate singular values that numpy's default keeps. TROP's
+/// canonical Python path is numpy-compatible; Rust must match.
+///
+/// Returns `None` only when the SVD itself fails (rare on finite inputs);
+/// the caller (LOOCV / FISTA / bootstrap) interprets `None` as an
+/// unsuccessful fit.
+fn solve_wls_svd(a: &ArrayView2<f64>, b: &ArrayView1<f64>) -> Option<Array1<f64>> {
+    let n_rows = a.nrows();
+    let n_cols = a.ncols();
+    let a_owned = a.to_owned();
+    let b_owned = b.to_owned();
+
+    // Convert ndarray -> faer for SVD.
+    let a_faer = ndarray_to_faer(&a_owned);
+
+    let svd = a_faer.thin_svd().ok()?;
+
+    let u_faer = svd.U();
+    let s_diag = svd.S();
+    let s_col = s_diag.column_vector();
+    let v_faer = svd.V();
+
+    // Extract U (n_rows x min(n,k)) back to ndarray.
+    let u_rows = u_faer.nrows();
+    let u_cols = u_faer.ncols();
+    let mut u = Array2::<f64>::zeros((u_rows, u_cols));
+    for i in 0..u_rows {
+        for j in 0..u_cols {
+            u[[i, j]] = u_faer[(i, j)];
+        }
+    }
+
+    // Extract singular values.
+    let s_len = s_col.nrows();
+    let mut s = Array1::<f64>::zeros(s_len);
+    for i in 0..s_len {
+        s[i] = s_col[i];
+    }
+
+    // Extract V (k x min(n,k)) back to ndarray. faer's V is not V^T.
+    let v_rows = v_faer.nrows();
+    let v_cols = v_faer.ncols();
+    let mut v = Array2::<f64>::zeros((v_rows, v_cols));
+    for i in 0..v_rows {
+        for j in 0..v_cols {
+            v[[i, j]] = v_faer[(i, j)];
+        }
+    }
+
+    // numpy rcond = eps * max(n_rows, n_cols); truncate s[i] <= rcond * max(s).
+    let rcond = f64::EPSILON * (n_rows.max(n_cols) as f64);
+    let s_max = s.iter().cloned().fold(0.0_f64, f64::max);
+    let threshold = s_max * rcond;
+
+    // Compute β = V * S^{-1}_truncated * U^T * y.
+    let uty = u.t().dot(&b_owned); // (min(n,k),)
+    let mut s_inv_uty = Array1::<f64>::zeros(s_len);
+    for i in 0..s_len {
+        if s[i] > threshold {
+            s_inv_uty[i] = uty[i] / s[i];
+        }
+        // else: leave 0 — this is the pseudo-inverse / minimum-norm step
+        // that also covers Python's `except LinAlgError: pinv(...)` fallback
+        // tier, since faer thin_svd is numerically robust on finite inputs.
+    }
+    let coeffs = v.dot(&s_inv_uty);
+
+    Some(coeffs)
 }
 
 /// Solve global TWFE + low-rank via alternating minimization (no tau).

@@ -2059,6 +2059,10 @@ Treatment effects are **heterogeneous** per-observation values. ATT is their mea
 1. **Without low-rank (λ_nn = ∞)**: Standard weighted least squares
    - Build design matrix with unit/time dummies (no treatment indicator)
    - Solve via np.linalg.lstsq for (μ, α, β) using (1-W)-masked weights
+   - Both the Python fallback and the Rust acceleration path use SVD-based
+     minimum-norm least squares with numpy-compatible rcond = eps × max(n, k),
+     so they return the canonical minimum-norm solution on rank-deficient Y
+     (e.g., two near-parallel control units)
 
 2. **With low-rank (finite λ_nn)**: Alternating minimization
    - Alternate between:

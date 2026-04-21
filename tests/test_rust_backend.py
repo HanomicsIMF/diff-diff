@@ -2204,23 +2204,18 @@ class TestTROPRustEdgeCaseParity:
                 data.append({"unit": i, "time": t, "outcome": y, "treated": treated})
         return pd.DataFrame(data)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="TROP Rust grid-search at trop_global.py:688 and Python fallback "
-        "at trop_global.py:753 diverge on rank-deficient Y: empirical ATT "
-        "gap ~6% on two near-parallel control units. Either (a) grid-winner "
-        "ties break differently between backends, or (b) the per-λ solver "
-        "itself reaches different stationary points under rank deficiency. "
-        "Finding #23 flagged this exact surface as the Phase-2 gap. Rust "
-        "vs Python unification is a P1 follow-up (TODO.md). This xfail "
-        "baselines the divergence so we notice when/if the backends align.",
-    )
     def test_grid_search_rank_deficient_Y(self):
         """Grid-search ATT parity on rank-deficient Y.
 
-        Known to fail: two near-parallel control units produce ~6% ATT
-        divergence between Rust and Python LOOCV grid-search. See xfail
-        reason for follow-up plan.
+        Silent-failures audit Finding #23 (grid-search half) regression
+        guard. Previously a ~6% ATT divergence on two near-parallel
+        control units because the Rust inner solver used iterative block
+        coordinate descent while the Python fallback used SVD-based
+        minimum-norm least squares. Fixed by porting the Rust inner
+        solver to an SVD-based WLS path (numpy-compatible
+        rcond = eps*max(n,k)) that mirrors Python's
+        `np.linalg.lstsq(rcond=None)` step-for-step. This test asserts
+        the backends now agree at atol=1e-6 on rank-deficient Y.
         """
         import sys
         from unittest.mock import patch
