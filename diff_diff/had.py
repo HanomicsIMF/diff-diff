@@ -1078,8 +1078,13 @@ class HeterogeneousAdoptionDiD:
             data, outcome_col, dose_col, time_col, unit_col, first_treat_col
         )
 
-        # ---- Aggregate to unit-level first differences ----
-        d_arr, dy_arr, cluster_arr, _ = _aggregate_first_difference(
+        # ---- Aggregate to unit-level first differences (no cluster yet) ----
+        # Defer cluster validation/extraction until after the design is
+        # resolved: the continuous paths ignore cluster= with a warning,
+        # so a malformed or irrelevant cluster column must not abort a
+        # valid continuous fit. Cluster extraction is re-run below only
+        # when resolved_design == "mass_point".
+        d_arr, dy_arr, _, _ = _aggregate_first_difference(
             data,
             outcome_col,
             dose_col,
@@ -1087,7 +1092,7 @@ class HeterogeneousAdoptionDiD:
             unit_col,
             t_pre,
             t_post,
-            cluster_arg,
+            None,
         )
 
         n_obs = int(d_arr.shape[0])
@@ -1102,6 +1107,25 @@ class HeterogeneousAdoptionDiD:
             resolved_design = _detect_design(d_arr)
         else:
             resolved_design = design_arg
+
+        # ---- Extract cluster IDs (mass-point path only) ----
+        # Continuous paths ignore cluster= with a warning emitted later in
+        # the dispatch block; the cluster column is not read for them. On
+        # the mass-point path we now re-run the aggregation with
+        # cluster_col so validation (missing column / NaN / within-unit
+        # variance) fires only when cluster is actually going to be used.
+        cluster_arr: Optional[np.ndarray] = None
+        if resolved_design == "mass_point" and cluster_arg is not None:
+            _, _, cluster_arr, _ = _aggregate_first_difference(
+                data,
+                outcome_col,
+                dose_col,
+                time_col,
+                unit_col,
+                t_pre,
+                t_post,
+                cluster_arg,
+            )
 
         # ---- Resolve d_lower ----
         if resolved_design == "continuous_at_zero":

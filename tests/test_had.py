@@ -1356,6 +1356,58 @@ class TestClusterHandling:
         )
         assert r.cluster_name is None
 
+    def test_missing_cluster_column_on_continuous_only_warns(self):
+        """Review P1 round 7: irrelevant cluster on continuous path must not
+        abort the fit. The cluster column doesn't even need to exist.
+        """
+        d, dy = _dgp_continuous_at_zero(200, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", cluster="does_not_exist")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = est.fit(panel, "outcome", "dose", "period", "unit")
+            assert any("cluster" in str(warn.message).lower() for warn in w)
+        assert np.isfinite(r.att)
+        assert r.cluster_name is None
+
+    def test_nan_cluster_on_continuous_only_warns(self):
+        """NaN cluster IDs on continuous path must not abort the fit."""
+        d, dy = _dgp_continuous_at_zero(200, seed=0)
+        cluster_unit = np.repeat(np.arange(100).astype(float), 2)
+        cluster_unit[0] = np.nan
+        panel = _make_panel(d, dy, extra_cols={"state": cluster_unit})
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", cluster="state")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = est.fit(panel, "outcome", "dose", "period", "unit")
+            assert any("cluster" in str(warn.message).lower() for warn in w)
+        assert np.isfinite(r.att)
+
+    def test_within_unit_varying_cluster_on_continuous_only_warns(self):
+        """Within-unit-varying cluster IDs on continuous path must not abort."""
+        d, dy = _dgp_continuous_at_zero(200, seed=0)
+        panel = _make_panel(d, dy)
+        # Varies within unit (distinct value per row)
+        panel["state"] = np.arange(len(panel))
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", cluster="state")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = est.fit(panel, "outcome", "dose", "period", "unit")
+            assert any("cluster" in str(warn.message).lower() for warn in w)
+        assert np.isfinite(r.att)
+
+    def test_auto_design_ignores_irrelevant_cluster_on_continuous(self):
+        """design='auto' resolving to a continuous path must also ignore cluster."""
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="auto", cluster="does_not_exist")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = est.fit(panel, "outcome", "dose", "period", "unit")
+            assert any("cluster" in str(warn.message).lower() for warn in w)
+        assert r.design == "continuous_at_zero"
+        assert np.isfinite(r.att)
+
 
 # =============================================================================
 # First-difference aggregation helper
