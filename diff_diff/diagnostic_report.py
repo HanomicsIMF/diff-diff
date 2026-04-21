@@ -40,7 +40,7 @@ import pandas as pd
 
 from diff_diff._reporting_helpers import describe_target_parameter  # noqa: E402 (top-level import)
 
-DIAGNOSTIC_REPORT_SCHEMA_VERSION = "1.0"
+DIAGNOSTIC_REPORT_SCHEMA_VERSION = "2.0"
 
 __all__ = [
     "DiagnosticReport",

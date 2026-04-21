@@ -128,11 +128,21 @@ class TestTargetParameterPerEstimator:
         tp = describe_target_parameter(_minimal_result("EfficientDiDResults", pt_assumption="all"))
         assert tp["aggregation"] == "pt_all_combined"
         assert "PT-All" in tp["name"]
+        # PR #347 R7 P1 regression: the definition must disambiguate
+        # the library's cohort-size-weighted ``overall_att`` from the
+        # paper's uniform-event-time ``ES_avg``.
+        defn = tp["definition"]
+        assert "cohort-size-weighted" in defn
+        assert "ES_avg" in defn
+        assert "post-treatment" in defn.lower()
 
     def test_efficient_did_pt_post(self):
         tp = describe_target_parameter(_minimal_result("EfficientDiDResults", pt_assumption="post"))
         assert tp["aggregation"] == "pt_post_single_baseline"
         assert "PT-Post" in tp["name"]
+        defn = tp["definition"]
+        assert "cohort-size-weighted" in defn
+        assert "ES_avg" in defn
 
     def test_continuous_did(self):
         tp = describe_target_parameter(_minimal_result("ContinuousDiDResults"))

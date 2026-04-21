@@ -358,6 +358,17 @@ a library setting.
   anchor tooling on them prematurely; a formal deprecation policy will
   land within two subsequent PRs.
 
+- **Note:** Schema version 2.0 (both BR and DR). The BR/DR gap #6
+  target-parameter PR adds the `headline.status` /
+  `headline_metric.status` value `"no_scalar_by_design"` (used for
+  the dCDH `trends_linear=True, L_max>=2` configuration where
+  `overall_att` is intentionally NaN). Per the stability policy
+  above, new enum values are breaking changes, so
+  `BUSINESS_REPORT_SCHEMA_VERSION` and
+  `DIAGNOSTIC_REPORT_SCHEMA_VERSION` bumped from `"1.0"` to
+  `"2.0"`. The schemas remain marked experimental, so the formal
+  deprecation policy does not yet apply.
+
 ## Reference implementation(s)
 
 The phrasing rules follow the guidance in:

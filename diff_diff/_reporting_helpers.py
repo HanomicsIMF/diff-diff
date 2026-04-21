@@ -275,7 +275,23 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
         }
 
     if name == "EfficientDiDResults":
+        # PR #347 R7 P1: the BR/DR headline ``overall_att`` is the
+        # library's cohort-size-weighted average over post-treatment
+        # ``(g, t)`` cells (see ``efficient_did.py`` around line 1274
+        # and REGISTRY.md Sec. EfficientDiD). This is distinct from
+        # the paper's ``ES_avg`` uniform event-time average.
+        # Disambiguating this in the stakeholder-facing definition
+        # keeps the user from mistaking one for the other — the
+        # regime (PT-All vs PT-Post) describes identification, not
+        # the aggregation choice for the headline scalar.
         pt_assumption = getattr(results, "pt_assumption", "all")
+        library_aggregation_note = (
+            " The BR/DR headline ``overall_att`` is the library's "
+            "cohort-size-weighted average of ATT(g, t) over post-"
+            "treatment cells, NOT the paper's ``ES_avg`` uniform event-"
+            "time average (see REGISTRY.md Sec. EfficientDiD for the "
+            "distinction)."
+        )
         if pt_assumption == "post":
             return {
                 "name": "overall ATT under PT-Post (single-baseline)",
@@ -284,7 +300,7 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                     "regime (parallel trends hold only in post-treatment "
                     "periods). The baseline is period ``g - 1`` only; the "
                     "estimator is just-identified and reduces to standard "
-                    "single-baseline DiD (Corollary 3.2)."
+                    "single-baseline DiD (Corollary 3.2)." + library_aggregation_note
                 ),
                 "aggregation": "pt_post_single_baseline",
                 "headline_attribute": "overall_att",
@@ -297,7 +313,7 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                 "(parallel trends hold for all groups and all periods). The "
                 "estimator is over-identified (Lemma 2.1) and applies "
                 "optimal-combination weights to achieve the semiparametric "
-                "efficiency bound on the no-covariate path."
+                "efficiency bound on the no-covariate path." + library_aggregation_note
             ),
             "aggregation": "pt_all_combined",
             "headline_attribute": "overall_att",

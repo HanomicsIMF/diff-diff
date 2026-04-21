@@ -45,7 +45,7 @@ import numpy as np
 from diff_diff._reporting_helpers import describe_target_parameter
 from diff_diff.diagnostic_report import DiagnosticReport, DiagnosticReportResults
 
-BUSINESS_REPORT_SCHEMA_VERSION = "1.0"
+BUSINESS_REPORT_SCHEMA_VERSION = "2.0"
 
 __all__ = [
     "BusinessReport",

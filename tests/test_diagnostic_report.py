@@ -173,7 +173,7 @@ class TestSchemaContract:
         fit, _ = multi_period_fit
         schema = DiagnosticReport(fit).to_dict()
         assert schema["schema_version"] == DIAGNOSTIC_REPORT_SCHEMA_VERSION
-        assert DIAGNOSTIC_REPORT_SCHEMA_VERSION == "1.0"
+        assert DIAGNOSTIC_REPORT_SCHEMA_VERSION == "2.0"
 
     def test_all_statuses_use_closed_enum(self, cs_fit):
         fit, sdf = cs_fit
@@ -1931,7 +1931,7 @@ class TestDRFragilePhrasingIsGridAware:
         from diff_diff.diagnostic_report import _render_overall_interpretation
 
         schema = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "estimator": {"class_name": "CallawaySantAnnaResults", "display_name": "CS"},
             "headline_metric": {
                 "status": "ran",
