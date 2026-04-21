@@ -1776,11 +1776,23 @@ Schema top-level keys (all always present; missing content uses a
 `{"status": "skipped", "reason": "..."}` shape rather than being absent):
 
 - `schema_version`, `estimator`, `context`
-- `headline`, `assumption`, `pre_trends`, `sensitivity`
+- `headline`, `target_parameter`, `assumption`, `pre_trends`, `sensitivity`
 - `sample`, `heterogeneity`, `robustness`, `diagnostics`
 - `next_steps`, `caveats`, `references`
 
+`target_parameter` (experimental) names what the headline scalar
+represents for each estimator — overall ATT, DID_M, DID_1, cost-
+benefit delta, dose-response aggregate, ASF-based ETWFE, etc.
+Fields: `name` (short stakeholder label), `definition` (full prose),
+`aggregation` (machine-readable dispatch tag, e.g., `"simple"`,
+`"event_study"`, `"delta"`, `"no_scalar_headline"`),
+`headline_attribute` (which raw attribute holds the scalar, or
+`None` when no scalar exists by design — e.g., dCDH with
+`trends_linear=True` and `L_max>=2`), `reference` (citation).
+
 Status enum values: `ran | skipped | error | not_applicable | not_run | computed`.
+`headline.status` also supports `"no_scalar_by_design"` on the dCDH
+no-scalar branch.
 
 ## DiagnosticReport
 
@@ -1830,9 +1842,14 @@ dr.skipped_checks        # dict of {check: plain-English reason}
 ```
 
 Schema top-level keys: `schema_version, estimator, headline_metric,
-parallel_trends, pretrends_power, sensitivity, placebo, bacon,
-design_effect, heterogeneity, epv, estimator_native_diagnostics,
-skipped, warnings, overall_interpretation, next_steps`.
+target_parameter, parallel_trends, pretrends_power, sensitivity,
+placebo, bacon, design_effect, heterogeneity, epv,
+estimator_native_diagnostics, skipped, warnings,
+overall_interpretation, next_steps`. The `target_parameter` block
+mirrors BR's (same shape and dispatch); see BR's section above for
+field semantics including the `headline_attribute=None` /
+`aggregation="no_scalar_headline"` case for dCDH
+`trends_linear=True, L_max>=2` fits.
 
 ### Verdicts and tiers
 

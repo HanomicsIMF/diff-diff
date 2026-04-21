@@ -207,15 +207,15 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
             "definition": (
                 "The average of post-treatment event-study coefficients "
                 "``delta_h`` (h >= -anticipation), estimated from the stacked "
-                "sub-experiment panel with delta-method SE "
-                "(``stacked_did.py`` around line 541). Each sub-experiment "
-                "aligns a treated cohort with its clean-control set over the "
-                "event window ``[-kappa_pre, +kappa_post]``; each per-horizon "
-                "``delta_h`` is the paper's ``theta_kappa^e`` "
-                "treated-share-weighted cross-event aggregate. The "
-                "``overall_att`` headline is the equally-weighted average of "
-                "these per-horizon coefficients, not a separate cross-event "
-                "weighted aggregate at the ATT level. " + control_clause
+                "sub-experiment panel with delta-method SE. Each sub-"
+                "experiment aligns a treated cohort with its clean-control "
+                "set over the event window ``[-kappa_pre, +kappa_post]``; "
+                "each per-horizon ``delta_h`` is the paper's "
+                "``theta_kappa^e`` treated-share-weighted cross-event "
+                "aggregate. The ``overall_att`` headline is the equally-"
+                "weighted average of these per-horizon coefficients, not a "
+                "separate cross-event weighted aggregate at the ATT level. "
+                + control_clause
             ),
             "aggregation": "stacked",
             "headline_attribute": "overall_att",
