@@ -239,17 +239,63 @@ class TestTargetParameterPerEstimator:
         "no_scalar_headline"`` and ``headline_attribute = None``.
         R2 PR #347 review P1 regression.
         """
+        # PR #347 R9 P1: exercise BOTH routes to the no-scalar branch
+        # — the explicit persisted flag (primary contract) and the
+        # legacy ``linear_trends_effects is not None`` inference
+        # (fallback for older fits).
         tp = describe_target_parameter(
             _minimal_result(
                 "ChaisemartinDHaultfoeuilleResults",
                 L_max=2,
                 covariate_residuals=None,
                 linear_trends_effects={"foo": "bar"},
+                trends_linear=True,
             )
         )
         assert tp["aggregation"] == "no_scalar_headline"
         assert tp["headline_attribute"] is None
         assert "linear_trends_effects" in tp["definition"]
+
+    def test_dcdh_trends_linear_empty_surface_still_no_scalar(self):
+        """PR #347 R9 P1 regression: the estimator sets
+        ``linear_trends_effects=None`` when the cumulated-horizon dict
+        is empty, but still unconditionally NaN-s ``overall_att`` for
+        ``trends_linear=True`` with ``L_max >= 2`` (see
+        ``chaisemartin_dhaultfoeuille.py:2828-2834``). The previous
+        inference on ``linear_trends_effects is not None`` would have
+        routed this case to the ``delta`` branch and narrated it as an
+        estimation failure. With the persisted ``trends_linear`` flag
+        the no-scalar branch fires correctly.
+        """
+        tp = describe_target_parameter(
+            _minimal_result(
+                "ChaisemartinDHaultfoeuilleResults",
+                L_max=2,
+                covariate_residuals=None,
+                linear_trends_effects=None,  # empty surface
+                trends_linear=True,  # persisted fit-time flag
+            )
+        )
+        assert tp["aggregation"] == "no_scalar_headline"
+        assert tp["headline_attribute"] is None
+
+    def test_dcdh_legacy_fit_without_persisted_flag_still_routes_correctly(self):
+        """Older fits that do not carry ``trends_linear`` on the
+        result still work via the legacy
+        ``linear_trends_effects is not None`` inference. This
+        preserves backwards compatibility for any cached fit objects
+        predating the persisted-flag change.
+        """
+        tp = describe_target_parameter(
+            _minimal_result(
+                "ChaisemartinDHaultfoeuilleResults",
+                L_max=2,
+                covariate_residuals=None,
+                linear_trends_effects={"foo": "bar"},
+                # trends_linear NOT set — legacy fallback kicks in
+            )
+        )
+        assert tp["aggregation"] == "no_scalar_headline"
 
     def test_dcdh_trends_linear_with_l_max_1_still_has_scalar(self):
         """``trends_linear=True`` with ``L_max = 1`` still produces a

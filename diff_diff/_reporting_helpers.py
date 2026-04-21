@@ -372,7 +372,23 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
     if name == "ChaisemartinDHaultfoeuilleResults":
         l_max = getattr(results, "L_max", None)
         has_controls = getattr(results, "covariate_residuals", None) is not None
-        has_trends = getattr(results, "linear_trends_effects", None) is not None
+        # PR #347 R9 P1: read the persisted ``trends_linear`` flag
+        # directly rather than inferring from
+        # ``linear_trends_effects is not None``. The estimator can set
+        # ``linear_trends_effects = None`` when the cumulated-horizon
+        # dict is empty (no estimable horizons) while still
+        # unconditionally NaN-ing ``overall_att`` under
+        # ``trends_linear=True`` + ``L_max >= 2``
+        # (``chaisemartin_dhaultfoeuille.py:2828-2834``). The previous
+        # inference missed that edge case; the new explicit flag
+        # (persisted on ``ChaisemartinDHaultfoeuilleResults``) closes
+        # the gap. Older fits without the persisted flag fall back to
+        # the legacy inference.
+        _persisted = getattr(results, "trends_linear", None)
+        if isinstance(_persisted, bool):
+            has_trends = _persisted
+        else:
+            has_trends = getattr(results, "linear_trends_effects", None) is not None
         reference = (
             "de Chaisemartin & D'Haultfoeuille (2020, 2024); "
             "REGISTRY.md Sec. ChaisemartinDHaultfoeuille"

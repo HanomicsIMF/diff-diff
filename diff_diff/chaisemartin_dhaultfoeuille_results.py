@@ -426,6 +426,16 @@ class ChaisemartinDHaultfoeuilleResults:
     sup_t_bands: Optional[Dict[str, Any]] = field(default=None, repr=False)
     covariate_residuals: Optional[pd.DataFrame] = field(default=None, repr=False)
     linear_trends_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None, repr=False)
+    # PR #347 R9 P1: persist the fit-time ``trends_linear`` flag
+    # explicitly. The previous approach of inferring the flag from
+    # ``linear_trends_effects is not None`` broke on the empty-
+    # horizon case — the estimator sets ``linear_trends_effects=None``
+    # when the cumulated dict is empty but still unconditionally
+    # NaN-s ``overall_att`` for ``trends_linear=True`` with
+    # ``L_max >= 2``. BR/DR dispatch on this flag (via
+    # ``describe_target_parameter``) to route the no-scalar-by-design
+    # headline correctly even when the horizon surface is empty.
+    trends_linear: Optional[bool] = None
     heterogeneity_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None, repr=False)
     design2_effects: Optional[Dict[str, Any]] = field(default=None, repr=False)
     honest_did_results: Optional["HonestDiDResults"] = field(default=None, repr=False)
@@ -558,9 +568,11 @@ class ChaisemartinDHaultfoeuilleResults:
             "",
             f"{'Total observations:':<35} {self.n_obs:>10}",
             f"{'Treated observations:':<35} {self.n_treated_obs:>10}",
-            f"{'Eligible switchers (N_1):':<35} {self.n_switcher_cells:>10}"
-            if self.L_max is not None and self.L_max >= 1
-            else f"{'Switcher cells (N_S):':<35} {self.n_switcher_cells:>10}",
+            (
+                f"{'Eligible switchers (N_1):':<35} {self.n_switcher_cells:>10}"
+                if self.L_max is not None and self.L_max >= 1
+                else f"{'Switcher cells (N_S):':<35} {self.n_switcher_cells:>10}"
+            ),
             f"{'Groups (post-filter):':<35} {len(self.groups):>10}",
             f"{'Cohorts:':<35} {self.n_cohorts:>10}",
             f"{'Time periods:':<35} {len(self.time_periods):>10}",
@@ -866,17 +878,13 @@ class ChaisemartinDHaultfoeuilleResults:
     # Summary section helpers (Phase 3 blocks)
     # ------------------------------------------------------------------
 
-    def _render_covariate_section(
-        self, lines: List[str], width: int, thin: str
-    ) -> None:
+    def _render_covariate_section(self, lines: List[str], width: int, thin: str) -> None:
         if self.covariate_residuals is None:
             return
         cov_df = self.covariate_residuals
         control_names = sorted(cov_df["covariate"].unique())
         n_baselines = cov_df["baseline_treatment"].nunique()
-        failed = int(
-            (cov_df.groupby("baseline_treatment")["theta_hat"].first().isna()).sum()
-        )
+        failed = int((cov_df.groupby("baseline_treatment")["theta_hat"].first().isna()).sum())
         lines.extend(
             [
                 thin,
@@ -917,9 +925,7 @@ class ChaisemartinDHaultfoeuilleResults:
             )
         lines.extend([thin, ""])
 
-    def _render_heterogeneity_section(
-        self, lines: List[str], width: int, thin: str
-    ) -> None:
+    def _render_heterogeneity_section(self, lines: List[str], width: int, thin: str) -> None:
         if self.heterogeneity_effects is None:
             return
         lines.extend(
@@ -951,9 +957,7 @@ class ChaisemartinDHaultfoeuilleResults:
             ]
         )
 
-    def _render_design2_section(
-        self, lines: List[str], width: int, thin: str
-    ) -> None:
+    def _render_design2_section(self, lines: List[str], width: int, thin: str) -> None:
         if self.design2_effects is None:
             return
         d2 = self.design2_effects
@@ -976,9 +980,7 @@ class ChaisemartinDHaultfoeuilleResults:
             ]
         )
 
-    def _render_honest_did_section(
-        self, lines: List[str], width: int, thin: str
-    ) -> None:
+    def _render_honest_did_section(self, lines: List[str], width: int, thin: str) -> None:
         if self.honest_did_results is None:
             return
         hd = self.honest_did_results
@@ -996,22 +998,16 @@ class ChaisemartinDHaultfoeuilleResults:
             ]
         )
         if hd.post_periods_used is not None:
-            lines.append(
-                f"{'Post horizons used:':<35} {hd.post_periods_used}"
-            )
+            lines.append(f"{'Post horizons used:':<35} {hd.post_periods_used}")
         if hd.pre_periods_used is not None:
-            lines.append(
-                f"{'Pre horizons used:':<35} {hd.pre_periods_used}"
-            )
+            lines.append(f"{'Pre horizons used:':<35} {hd.pre_periods_used}")
         lines.extend(
             [
                 f"{'Original estimate:':<35} {_fmt_float(hd.original_estimate):>10}",
-                f"{'Identified set:':<35} "
-                f"[{_fmt_float(hd.lb)}, {_fmt_float(hd.ub)}]",
+                f"{'Identified set:':<35} " f"[{_fmt_float(hd.lb)}, {_fmt_float(hd.ub)}]",
                 f"{'Robust ' + str(conf_pct) + '% CI:':<35} "
                 f"[{_fmt_float(hd.ci_lb)}, {_fmt_float(hd.ci_ub)}]",
-                f"{'Significant at ' + str(int(hd.alpha * 100)) + '%:':<35} "
-                f"{sig_label:>10}",
+                f"{'Significant at ' + str(int(hd.alpha * 100)) + '%:':<35} " f"{sig_label:>10}",
                 thin,
                 "",
             ]
@@ -1256,8 +1252,7 @@ class ChaisemartinDHaultfoeuilleResults:
         elif level == "linear_trends":
             if self.linear_trends_effects is None:
                 raise ValueError(
-                    "Linear trends effects not available. Pass "
-                    "trends_linear=True to fit()."
+                    "Linear trends effects not available. Pass " "trends_linear=True to fit()."
                 )
             rows = []
             for h, data in sorted(self.linear_trends_effects.items()):
