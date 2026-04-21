@@ -529,6 +529,37 @@ class TestMassPointUnsupportedVcov:
             assert any("ignored" in str(warn.message).lower() for warn in w)
         assert np.isfinite(r.att)
 
+    def test_robust_true_ignored_on_continuous_warns(self):
+        """Review P2 round 9: robust=True on continuous path must warn.
+
+        The continuous designs use the CCT-2014 robust SE unconditionally;
+        robust= is a mass-point-only backward-compat alias for vcov_type.
+        Passing robust=True on a continuous path has no effect on the
+        computed SE, so the user must get a warning that the flag was
+        ignored.
+        """
+        d, dy = _dgp_continuous_at_zero(300, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", robust=True)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = est.fit(panel, "outcome", "dose", "period", "unit")
+            robust_warnings = [warn for warn in w if "robust" in str(warn.message).lower()]
+            assert len(robust_warnings) >= 1
+        assert np.isfinite(r.att)
+
+    def test_robust_false_silent_on_continuous(self):
+        """robust=False (the default) on continuous path emits no robust-warn."""
+        d, dy = _dgp_continuous_at_zero(300, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", robust=False)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = est.fit(panel, "outcome", "dose", "period", "unit")
+            robust_warnings = [warn for warn in w if "robust=True is ignored" in str(warn.message)]
+            assert len(robust_warnings) == 0
+        assert np.isfinite(r.att)
+
 
 # =============================================================================
 # Criterion 7: Panel-contract violations

@@ -385,8 +385,12 @@ def _validate_had_panel(
 
     Returns
     -------
-    tuple[int, int]
-        ``(t_pre, t_post)`` - the two period identifiers, min then max.
+    tuple[Any, Any]
+        ``(t_pre, t_post)`` - the two period identifiers identified by
+        the HAD dose invariant (``t_pre`` is the period with dose == 0
+        for all units; ``t_post`` is the other period). Supports
+        arbitrary-dtype period labels (int, str, datetime, etc.) rather
+        than relying on ordinal / lexicographic sort.
 
     Raises
     ------
@@ -1321,6 +1325,16 @@ class HeterogeneousAdoptionDiD:
                     f"'{resolved_design}' path (the continuous designs "
                     f"use the CCT-2014 robust SE from Phase 1c). "
                     f"vcov_type applies only to design='mass_point'.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            if robust_arg:
+                warnings.warn(
+                    f"robust=True is ignored on the '{resolved_design}' "
+                    f"path (the continuous designs use the CCT-2014 "
+                    f"robust SE from Phase 1c unconditionally; the "
+                    f"robust flag is a mass-point-only backward-compat "
+                    f"alias for vcov_type).",
                     UserWarning,
                     stacklevel=2,
                 )
