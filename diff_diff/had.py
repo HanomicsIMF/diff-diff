@@ -1205,6 +1205,24 @@ class HeterogeneousAdoptionDiD:
 
         # ---- Resolve d_lower ----
         if resolved_design == "continuous_at_zero":
+            # Design 1' regime (paper Section 3.2) is defined at d_lower = 0.
+            # Reject explicit nonzero d_lower overrides front-door rather
+            # than silently coerce to zero. Tolerance family matches the
+            # Design 1 d_lower guards below.
+            if d_lower_arg is not None:
+                scale = max(1.0, float(np.max(np.abs(d_arr))))
+                if abs(float(d_lower_arg)) > 1e-12 * scale:
+                    raise ValueError(
+                        f"design='continuous_at_zero' (Design 1') requires "
+                        f"d_lower == 0 within float tolerance (paper Section "
+                        f"3.2 Design 1' regime). Got d_lower="
+                        f"{float(d_lower_arg)!r}. For d_lower > 0 use "
+                        f"design='continuous_near_d_lower' (local-linear "
+                        f"boundary-limit estimator) or design='mass_point' "
+                        f"(2SLS) as appropriate, or design='auto' which "
+                        f"auto-detects the correct path from the dose "
+                        f"distribution."
+                    )
             d_lower_val = 0.0
         elif d_lower_arg is None:
             d_lower_val = float(d_arr.min())

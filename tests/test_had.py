@@ -1272,6 +1272,46 @@ class TestExplicitDesignOverrides:
         with pytest.raises(ValueError, match=r"d_lower > 0"):
             est.fit(panel, "outcome", "dose", "period", "unit")
 
+    def test_continuous_at_zero_with_nonzero_d_lower_raises(self):
+        """Review P1 round 12: continuous_at_zero must reject nonzero d_lower.
+
+        Paper Section 3.2 Design 1' is defined at d_lower = 0; silently
+        coercing a user-supplied d_lower=0.5 to zero would contradict
+        the documented regime contract.
+        """
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", d_lower=0.5)
+        with pytest.raises(ValueError, match=r"d_lower == 0|Design 1'"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_continuous_at_zero_with_small_d_lower_raises(self):
+        """Even a small nonzero d_lower should raise."""
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", d_lower=0.01)
+        with pytest.raises(ValueError, match=r"d_lower == 0|Design 1'"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
+    def test_continuous_at_zero_with_zero_d_lower_succeeds(self):
+        """d_lower=0.0 exactly is fine (redundant but allowed)."""
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", d_lower=0.0)
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        assert r.d_lower == 0.0
+        assert np.isfinite(r.att)
+
+    def test_auto_on_zero_sample_ignores_user_d_lower(self):
+        """design='auto' resolving to continuous_at_zero must ALSO reject
+        an explicit nonzero d_lower, not silently drop it.
+        """
+        d, dy = _dgp_continuous_at_zero(500, seed=0)
+        panel = _make_panel(d, dy)
+        est = HeterogeneousAdoptionDiD(design="auto", d_lower=0.5)
+        with pytest.raises(ValueError, match=r"d_lower == 0|Design 1'"):
+            est.fit(panel, "outcome", "dose", "period", "unit")
+
 
 # =============================================================================
 # Design 1 d_lower contract enforcement (mass-point + continuous_near_d_lower)
