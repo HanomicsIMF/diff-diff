@@ -894,6 +894,38 @@ class TestSklearnCompat:
         with pytest.raises(ValueError, match="design"):
             est.set_params(design="made_up")
 
+    def test_set_params_rollback_on_failure(self):
+        """Review P2 round 11: set_params must be ATOMIC.
+
+        A failing call (valid key but value violates constructor
+        constraints) must leave the estimator unchanged so the caller
+        can catch the ValueError and reuse the object.
+        """
+        est = HeterogeneousAdoptionDiD(alpha=0.05, design="continuous_at_zero")
+        baseline = est.get_params()
+        # Multi-key call where alpha is valid but design is invalid.
+        # The old (non-atomic) code would have set alpha before raising
+        # on design, leaving the estimator half-mutated.
+        with pytest.raises(ValueError):
+            est.set_params(alpha=0.1, design="garbage_design")
+        assert est.get_params() == baseline
+
+    def test_set_params_rollback_on_invalid_key(self):
+        """Rejecting an unknown key must leave self unchanged."""
+        est = HeterogeneousAdoptionDiD(alpha=0.05)
+        baseline = est.get_params()
+        with pytest.raises(ValueError):
+            est.set_params(alpha=0.1, not_a_param=True)
+        assert est.get_params() == baseline
+
+    def test_set_params_rollback_on_invalid_alpha(self):
+        """alpha outside (0, 1) must leave self unchanged."""
+        est = HeterogeneousAdoptionDiD(alpha=0.05, design="continuous_at_zero")
+        baseline = est.get_params()
+        with pytest.raises(ValueError):
+            est.set_params(alpha=1.5, kernel="triangular")
+        assert est.get_params() == baseline
+
 
 # =============================================================================
 # Criterion 10: Scaffolding raises

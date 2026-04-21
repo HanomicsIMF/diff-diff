@@ -940,12 +940,28 @@ class HeterogeneousAdoptionDiD:
 
     Examples
     --------
+    Construct a two-period HAD panel by hand. Phase 2a requires exactly
+    two periods with ``D_{g,1} = 0`` for every unit.
+
+    >>> import numpy as np
     >>> import pandas as pd
-    >>> from diff_diff import HeterogeneousAdoptionDiD, generate_continuous_did_data
-    >>> data = generate_continuous_did_data(n_units=500, seed=42)  # doctest: +SKIP
+    >>> from diff_diff import HeterogeneousAdoptionDiD
+    >>> rng = np.random.default_rng(42)  # doctest: +SKIP
+    >>> G = 500  # doctest: +SKIP
+    >>> dose_post = rng.uniform(0.0, 1.0, G)  # doctest: +SKIP
+    >>> dose_post[0] = 0.0  # at least one zero-dose unit for Design 1'
+    >>> delta_y = 0.3 * dose_post + 0.1 * rng.standard_normal(G)  # doctest: +SKIP
+    >>> data = pd.DataFrame({  # doctest: +SKIP
+    ...     "unit": np.repeat(np.arange(G), 2),
+    ...     "period": np.tile([1, 2], G),
+    ...     "dose": np.column_stack([np.zeros(G), dose_post]).ravel(),
+    ...     "outcome": np.column_stack([np.zeros(G), delta_y]).ravel(),
+    ... })
     >>> est = HeterogeneousAdoptionDiD(design="auto")  # doctest: +SKIP
-    >>> result = est.fit(data, outcome_col="outcome", dose_col="dose",
-    ...                  time_col="period", unit_col="unit")  # doctest: +SKIP
+    >>> result = est.fit(  # doctest: +SKIP
+    ...     data, outcome_col="outcome", dose_col="dose",
+    ...     time_col="period", unit_col="unit",
+    ... )
     >>> result.design  # doctest: +SKIP
     'continuous_at_zero'
     """
@@ -1028,15 +1044,27 @@ class HeterogeneousAdoptionDiD:
         any other attribute name (including method names like ``fit``)
         raises ``ValueError`` so the estimator cannot be silently
         corrupted by a mistyped or attacker-supplied key.
+
+        Mutation is ATOMIC: validation runs on a proposed merged
+        parameter dict before any attribute is overwritten. A failing
+        call (invalid key, or an otherwise valid key whose value
+        violates the constructor constraints) leaves ``self`` unchanged
+        and safe to reuse.
         """
         valid_keys = set(self.get_params().keys())
+        invalid = [k for k in params if k not in valid_keys]
+        if invalid:
+            raise ValueError(
+                f"Invalid parameter: {invalid[0]!r}. Valid parameters: " f"{sorted(valid_keys)}."
+            )
+        # Dry-run validation by constructing a fresh instance with the
+        # merged state. If the constructor raises, self is not mutated.
+        merged = self.get_params()
+        merged.update(params)
+        type(self)(**merged)  # raises ValueError on invalid combination
+        # All checks passed; apply atomically.
         for key, value in params.items():
-            if key not in valid_keys:
-                raise ValueError(
-                    f"Invalid parameter: {key!r}. Valid parameters: " f"{sorted(valid_keys)}."
-                )
             setattr(self, key, value)
-        self._validate_constructor_args()
         return self
 
     # ------------------------------------------------------------------
