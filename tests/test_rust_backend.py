@@ -2207,12 +2207,13 @@ class TestTROPRustEdgeCaseParity:
     def test_grid_search_rank_deficient_Y(self):
         """Grid-search ATT parity on rank-deficient Y.
 
-        Finding #23 / TODO row 87 regression guard. Previously a ~6%
-        ATT divergence on two near-parallel control units because the
-        Rust inner solver used iterative block coordinate descent while
-        the Python fallback used SVD-based minimum-norm least squares.
-        Fixed by porting the Rust inner solver to an SVD-based WLS path
-        (numpy-compatible rcond = eps*max(n,k)) that mirrors Python's
+        Silent-failures audit Finding #23 (grid-search half) regression
+        guard. Previously a ~6% ATT divergence on two near-parallel
+        control units because the Rust inner solver used iterative block
+        coordinate descent while the Python fallback used SVD-based
+        minimum-norm least squares. Fixed by porting the Rust inner
+        solver to an SVD-based WLS path (numpy-compatible
+        rcond = eps*max(n,k)) that mirrors Python's
         `np.linalg.lstsq(rcond=None)` step-for-step. This test asserts
         the backends now agree at atol=1e-6 on rank-deficient Y.
         """
