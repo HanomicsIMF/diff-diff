@@ -214,8 +214,7 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                 "``theta_kappa^e`` treated-share-weighted cross-event "
                 "aggregate. The ``overall_att`` headline is the equally-"
                 "weighted average of these per-horizon coefficients, not a "
-                "separate cross-event weighted aggregate at the ATT level. "
-                + control_clause
+                "separate cross-event weighted aggregate at the ATT level. " + control_clause
             ),
             "aggregation": "stacked",
             "headline_attribute": "overall_att",
