@@ -1328,6 +1328,38 @@ class TestGetSetParams:
         with pytest.raises(ValueError, match="Unknown parameter"):
             sdid.set_params(nonexistent_param=1.0)
 
+    def test_set_params_accepts_bootstrap_refit(self):
+        """set_params(variance_method='bootstrap_refit') succeeds."""
+        sdid = SyntheticDiD()
+        sdid.set_params(variance_method="bootstrap_refit")
+        assert sdid.variance_method == "bootstrap_refit"
+
+    def test_set_params_rejects_invalid_variance_method(self):
+        """set_params with invalid variance_method raises ValueError.
+
+        Parity with __init__: the setter path must enforce the same enum
+        contract, not silently accept arbitrary strings.
+        """
+        sdid = SyntheticDiD()
+        with pytest.raises(ValueError, match="variance_method must be one of"):
+            sdid.set_params(variance_method="not_a_method")
+
+    def test_set_params_rejects_incoherent_n_bootstrap(self):
+        """set_params(variance_method='bootstrap', n_bootstrap=1) raises.
+
+        Parity with __init__: n_bootstrap >= 2 required unless jackknife.
+        """
+        sdid = SyntheticDiD()
+        with pytest.raises(ValueError, match="n_bootstrap must be >= 2"):
+            sdid.set_params(variance_method="bootstrap_refit", n_bootstrap=1)
+
+    def test_set_params_allows_n_bootstrap_one_for_jackknife(self):
+        """Jackknife is deterministic; n_bootstrap is ignored and need not be >= 2."""
+        sdid = SyntheticDiD()
+        sdid.set_params(variance_method="jackknife", n_bootstrap=1)
+        assert sdid.variance_method == "jackknife"
+        assert sdid.n_bootstrap == 1
+
 
 class TestDeprecatedParams:
     """Test deprecated parameter handling in __init__."""

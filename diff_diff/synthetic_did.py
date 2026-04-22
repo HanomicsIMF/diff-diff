@@ -172,22 +172,29 @@ class SyntheticDiD(DifferenceInDifferences):
         self.n_bootstrap = n_bootstrap
         self.seed = seed
 
-        # Validate n_bootstrap (irrelevant for jackknife, which is deterministic)
-        if n_bootstrap < 2 and variance_method != "jackknife":
-            raise ValueError(
-                f"n_bootstrap must be >= 2 (got {n_bootstrap}). At least 2 "
-                f"iterations are needed to estimate standard errors."
-            )
-
-        # Validate variance_method
-        valid_methods = ("bootstrap", "bootstrap_refit", "jackknife", "placebo")
-        if variance_method not in valid_methods:
-            raise ValueError(
-                f"variance_method must be one of {valid_methods}, " f"got '{variance_method}'"
-            )
+        self._validate_config()
 
         self._unit_weights = None
         self._time_weights = None
+
+    _VALID_VARIANCE_METHODS = ("bootstrap", "bootstrap_refit", "jackknife", "placebo")
+
+    def _validate_config(self) -> None:
+        """Validate ``variance_method`` and ``n_bootstrap`` on the current state.
+
+        Called from both ``__init__`` and ``set_params`` so updates via the
+        sklearn-style setter path enforce the same contract as construction.
+        """
+        if self.variance_method not in self._VALID_VARIANCE_METHODS:
+            raise ValueError(
+                f"variance_method must be one of {self._VALID_VARIANCE_METHODS}, "
+                f"got '{self.variance_method}'"
+            )
+        if self.n_bootstrap < 2 and self.variance_method != "jackknife":
+            raise ValueError(
+                f"n_bootstrap must be >= 2 (got {self.n_bootstrap}). At least 2 "
+                f"iterations are needed to estimate standard errors."
+            )
 
     def fit(  # type: ignore[override]
         self,
@@ -1572,7 +1579,12 @@ class SyntheticDiD(DifferenceInDifferences):
         }
 
     def set_params(self, **params) -> "SyntheticDiD":
-        """Set estimator parameters."""
+        """Set estimator parameters.
+
+        After applying updates, re-runs the constructor's config validation
+        (``variance_method`` enum + ``n_bootstrap`` / method coherence) so the
+        sklearn-style setter path cannot bypass what ``__init__`` rejects.
+        """
         # Deprecated parameter names — emit warning and ignore
         _deprecated = {"lambda_reg", "zeta"}
         for key, value in params.items():
@@ -1587,4 +1599,5 @@ class SyntheticDiD(DifferenceInDifferences):
                 setattr(self, key, value)
             else:
                 raise ValueError(f"Unknown parameter: {key}")
+        self._validate_config()
         return self
