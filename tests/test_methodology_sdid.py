@@ -27,6 +27,7 @@ from diff_diff.utils import (
     compute_sdid_estimator,
     compute_sdid_unit_weights,
     compute_time_weights,
+    safe_inference,
 )
 
 
@@ -870,6 +871,49 @@ class TestJackknifeSERParity:
             post_periods=[5, 6, 7],
         )
         assert abs(results.se - self.R_JACKKNIFE_SE) < 1e-10
+
+    def test_bootstrap_se_matches_r(self, r_panel_df):
+        """Bootstrap SE should match R's vcov(method='bootstrap') given the
+        same bootstrap indices. Fixture pins B × N R-generated indices so
+        that both implementations traverse identical resamples, eliminating
+        cross-language RNG drift from the comparison.
+        """
+        import json
+        import pathlib
+
+        fixture = pathlib.Path(__file__).parent / "data" / "sdid_bootstrap_indices_r.json"
+        if not fixture.exists():
+            pytest.skip(
+                f"Missing R-parity fixture {fixture}; regenerate via "
+                "benchmarks/R/benchmark_synthdid.R."
+            )
+        payload = json.loads(fixture.read_text())
+        # R indices are 1-based; convert to 0-based for numpy.
+        indices = np.asarray(payload["indices"], dtype=np.int64) - 1
+        r_bootstrap_se = float(payload["se"])
+
+        n_bootstrap = indices.shape[0]
+        sdid = SyntheticDiD(
+            variance_method="bootstrap",
+            n_bootstrap=n_bootstrap,
+            seed=42,
+        )
+        # Route the pinned indices through the hidden _bootstrap_indices seam
+        # on _bootstrap_se. Patch the bound method at the class level so the
+        # sdid.fit() call picks it up.
+        orig = SyntheticDiD._bootstrap_se
+
+        def _patched(self, *args, **kwargs):
+            kwargs["_bootstrap_indices"] = indices
+            return orig(self, *args, **kwargs)
+
+        with patch.object(SyntheticDiD, "_bootstrap_se", _patched):
+            results = sdid.fit(
+                r_panel_df, outcome="outcome", treatment="treated",
+                unit="unit", time="time",
+                post_periods=[5, 6, 7],
+            )
+        assert abs(results.se - r_bootstrap_se) < 1e-10
 
 
 # =============================================================================
@@ -2170,9 +2214,9 @@ class TestScaleEquivariance:
     # Hard-coded baselines captured pre-fix on a well-scaled panel. If these
     # drift the fix is not a true no-op on normal data and review is warranted.
     _BASELINE = {
-        "placebo":   (4.603349837478791,   0.29385822261006445, 0.004975124378109453,   200),
-        "bootstrap": (4.603349837478791,   0.1589472532935243,  0.4869109947643979,     191),
-        "jackknife": (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,  23),
+        "placebo":   (4.603349837478791,   0.29385822261006445, 0.004975124378109453,    200),
+        "bootstrap": (4.603349837478791,   0.1585306149536113,  2.2063514347386345e-185, 191),
+        "jackknife": (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,   23),
     }
 
     # (a, b) pairs. Includes extreme scales where pre-fix SDID loses
@@ -2280,9 +2324,9 @@ class TestScaleEquivariance:
 
         # τ must land near the true effect (within ~3 SE); SE must be
         # positive, finite, and small enough that the effect is significant
-        # by z-statistic. For placebo/jackknife the empirical p-value is a
-        # proper null-distribution test; for bootstrap the empirical p is
-        # not a null test (draws center on τ̂), so check z directly.
+        # both by z-statistic and by p-value. Placebo uses the empirical null
+        # formula (permutations approximate the null distribution); bootstrap
+        # and jackknife use the analytical normal-theory p-value from the SE.
         assert np.isfinite(r.att) and np.isfinite(r.se)
         assert r.se > 0
         assert abs(r.att - true_att) < max(3 * r.se, 0.1 * true_att)
@@ -2291,11 +2335,122 @@ class TestScaleEquivariance:
             f"Effect at Y~1e9 must be detectable by z-stat; att={r.att}, "
             f"se={r.se}, z={z} (variance_method={variance_method})"
         )
-        if variance_method != "bootstrap":
-            assert r.p_value < 0.05, (
-                f"Effect at Y~1e9 must reject null; p_value={r.p_value} "
-                f"(variance_method={variance_method})"
+        assert r.p_value < 0.05, (
+            f"Effect at Y~1e9 must reject null; p_value={r.p_value} "
+            f"(variance_method={variance_method})"
+        )
+
+
+class TestPValueSemantics:
+    """P-value dispatch is variance-method dependent.
+
+    Placebo (Algorithm 4) permutes control indices to generate null-
+    distribution draws and uses the empirical formula
+    ``max(mean(|draws| >= |att|), 1/(r+1))``. Bootstrap (Algorithm 2)
+    resamples units to approximate the sampling distribution of τ̂ —
+    draws are centered on τ̂, not 0 — so bootstrap uses the analytical
+    normal-theory p-value from the SE. Jackknife pseudo-values are not
+    null draws either and also use the analytical p-value.
+    """
+
+    def test_bootstrap_p_value_matches_analytical(self):
+        """Bootstrap p-value must equal safe_inference(att, se)[1]."""
+        df = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = SyntheticDiD(
+                variance_method="bootstrap", n_bootstrap=200, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
             )
+        _, expected_p, _ = safe_inference(r.att, r.se, alpha=0.05)
+        assert abs(r.p_value - expected_p) < 1e-12, (
+            f"bootstrap p_value={r.p_value} != analytical {expected_p}"
+        )
+
+    def test_placebo_p_value_uses_empirical_formula(self):
+        """Placebo p-value must equal max(mean(|draws| >= |att|), 1/(r+1))."""
+        df = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = SyntheticDiD(
+                variance_method="placebo", n_bootstrap=200, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+            )
+        placebo_effects = np.asarray(r.placebo_effects)
+        empirical_p = float(np.mean(np.abs(placebo_effects) >= np.abs(r.att)))
+        expected_p = max(empirical_p, 1.0 / (len(placebo_effects) + 1))
+        assert abs(r.p_value - expected_p) < 1e-12, (
+            f"placebo p_value={r.p_value} != empirical {expected_p}"
+        )
+
+    def test_bootstrap_p_value_detects_large_effect(self):
+        """Bootstrap p-value must reject decisively when z is large.
+
+        Regression guard: pre-fix this would return ~0.5 regardless of
+        effect size because the empirical null formula was applied to
+        draws centered on τ̂.
+        """
+        df = _make_panel(att=5.0, seed=123)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = SyntheticDiD(
+                variance_method="bootstrap", n_bootstrap=200, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+            )
+        z = abs(r.att / r.se)
+        assert z > 6, f"setup error: z={z} too small to test rejection"
+        assert r.p_value < 1e-6, (
+            f"bootstrap p_value={r.p_value} too large at z={z}"
+        )
+
+    @pytest.mark.slow
+    def test_bootstrap_p_value_null_calibration(self):
+        """Bootstrap p-values on null data must be roughly centered and
+        reject at approximately the nominal rate.
+
+        Fixed-weight bootstrap is a shortcut from Arkhangelsky et al. (2021)
+        Algorithm 2 and under-estimates SE by ignoring weight-estimation
+        uncertainty, so empirical p-values are expected to be biased
+        toward rejection rather than strictly uniform. We check the two
+        weakest defensible properties: (a) median p-value in [0.3, 0.7]
+        (would be ~0.5 under the dispatch bug but acceptable post-fix),
+        and (b) empirical rejection rate at nominal α=0.05 in [0.02, 0.12]
+        (allowing some over-rejection). Pre-fix the rejection rate was
+        ~0 because p≈0.5 on every seed.
+        """
+        p_values = []
+        for seed in range(100):
+            df = _make_panel(att=0.0, seed=seed)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                r = SyntheticDiD(
+                    variance_method="bootstrap", n_bootstrap=200, seed=seed,
+                ).fit(
+                    df, outcome="outcome", treatment="treated",
+                    unit="unit", time="period",
+                    post_periods=[5, 6, 7],
+                )
+            if np.isfinite(r.p_value):
+                p_values.append(r.p_value)
+        p_arr = np.asarray(p_values)
+        assert len(p_arr) >= 90, f"only {len(p_arr)}/100 fits produced finite p-values"
+        median_p = float(np.median(p_arr))
+        rejection_rate = float(np.mean(p_arr < 0.05))
+        assert 0.3 <= median_p <= 0.7, (
+            f"median p-value {median_p:.3f} outside [0.3, 0.7] — calibration drifted"
+        )
+        assert 0.02 <= rejection_rate <= 0.12, (
+            f"rejection rate {rejection_rate:.3f} outside [0.02, 0.12] at nominal α=0.05"
+        )
 
 
 class TestDiagnosticScaleParity:
