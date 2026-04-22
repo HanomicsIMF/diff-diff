@@ -514,9 +514,13 @@ variables appear to the left of the `|` separator.
    in PR #351 along with its R-parity fixture, which had also been mis-anchored.
    The same PR added the warm-start plumbing to `compute_sdid_unit_weights` /
    `compute_time_weights` via new `init_weights=` kwargs.)*
-5. **Default `variance_method` changed to `"placebo"`** matching R's default. The R
-   package uses placebo variance by default (`synthdid_estimate` returns an object whose
-   `vcov()` uses the placebo method); our default now matches.
+5. **Default `variance_method` changed to `"placebo"`** — intentional deviation from
+   R's default (R's `synthdid::vcov()` defaults to `"bootstrap"`). The library default
+   is placebo for two reasons: (a) placebo is unconditionally available on pweight-only
+   survey designs, whereas refit bootstrap rejects every survey design in this release;
+   (b) placebo sidesteps the ~5–30× slowdown of per-draw Frank-Wolfe re-estimation in
+   refit bootstrap. See REGISTRY.md §SyntheticDiD `Note (default variance_method
+   deviation from R)` for details.
 6. **Deprecated `lambda_reg` and `zeta` params; new params are `zeta_omega` and
    `zeta_lambda`**. The old parameters had unclear semantics and did not correspond to
    the paper's notation. The new parameters directly match the paper and R package

@@ -50,7 +50,11 @@ class SyntheticDiD(DifferenceInDifferences):
     variance_method : str, default="placebo"
         Method for variance estimation:
         - "placebo": Placebo-based variance matching R's synthdid::vcov(method="placebo").
-          Implements Algorithm 4 from Arkhangelsky et al. (2021). This is R's default.
+          Implements Algorithm 4 from Arkhangelsky et al. (2021). Library default
+          (R's default is ``"bootstrap"``; we default to placebo because it is
+          unconditionally available on pweight-only survey designs and avoids the
+          ~5–30× slowdown of the refit bootstrap). See REGISTRY.md §SyntheticDiD
+          ``Note (default variance_method deviation from R)`` for rationale.
         - "bootstrap": Paper-faithful pairs bootstrap — Arkhangelsky et al. (2021)
           Algorithm 2 step 2, also the behavior of R's default
           synthdid::vcov(method="bootstrap") (which rebinds ``attr(estimate, "opts")``
@@ -1125,10 +1129,22 @@ class SyntheticDiD(DifferenceInDifferences):
         # Ensure we have enough controls for the split
         n_pseudo_control = n_control - n_treated
         if n_pseudo_control < 1:
+            # Bootstrap rejects every survey design in this release, so
+            # steer survey users to jackknife (pweight-only only) or
+            # adding controls. Non-survey users can still fall back to
+            # bootstrap or jackknife.
+            fallback = (
+                "variance_method='jackknife' or adding more control units "
+                "(strata/PSU/FPC are not yet supported by any SDID variance "
+                "method)"
+                if w_control is not None
+                else "variance_method='bootstrap', variance_method='jackknife', "
+                "or adding more control units"
+            )
             warnings.warn(
                 f"Not enough control units ({n_control}) for placebo variance "
                 f"estimation with {n_treated} treated units. "
-                f"Consider using variance_method='bootstrap'.",
+                f"Consider using {fallback}.",
                 UserWarning,
                 stacklevel=3,
             )
@@ -1217,11 +1233,21 @@ class SyntheticDiD(DifferenceInDifferences):
         n_successful = len(placebo_estimates)
 
         if n_successful < 2:
+            # Same survey-awareness branch as the pre-replication guard
+            # above — bootstrap rejects every survey design in this
+            # release, so suggest jackknife for pweight-only fits.
+            fallback = (
+                "variance_method='jackknife' or increasing the number of "
+                "control units (strata/PSU/FPC are not yet supported by any "
+                "SDID variance method)"
+                if w_control is not None
+                else "variance_method='bootstrap' or variance_method='jackknife' "
+                "or increasing the number of control units"
+            )
             warnings.warn(
                 f"Only {n_successful} placebo replications completed successfully. "
                 f"Standard error cannot be estimated reliably. "
-                f"Consider using variance_method='bootstrap' or increasing "
-                f"the number of control units.",
+                f"Consider using {fallback}.",
                 UserWarning,
                 stacklevel=3,
             )
