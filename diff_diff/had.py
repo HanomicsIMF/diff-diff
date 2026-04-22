@@ -563,8 +563,9 @@ class HeterogeneousAdoptionDiDEventStudyResults:
         )
         for i, e in enumerate(self.event_times):
             ci_str = f"[{self.conf_int_low[i]:.4f}, {self.conf_int_high[i]:.4f}]"
-            # Render NaN inference values as "NaN" rather than "nan" for
-            # readability.
+            # Default float formatting renders non-finite values as "nan";
+            # we do not override this here since the column width is fixed
+            # and lowercase "nan" is unambiguous.
             se_i = self.se[i]
             t_i = self.t_stat[i]
             p_i = self.p_value[i]
@@ -869,11 +870,16 @@ def _validate_had_panel_event_study(
     t_post_list : list
         Post-period labels (``t >= F``, some D > 0), sorted.
     data_filtered : pd.DataFrame
-        Input with earlier cohorts dropped (if staggered), otherwise the
-        input unchanged.
+        Input with earlier cohorts (``first_treat`` in ``dropped_cohorts``)
+        dropped if staggered; never-treated units (``first_treat = 0``)
+        are RETAINED per paper Appendix B.2's "there must be an untreated
+        group" requirement. Identical to input when no staggered filter
+        applies.
     filter_info : dict or None
-        Populated on staggered filter with keys ``F_last``, ``n_kept``,
-        ``n_dropped``, ``dropped_cohorts``. ``None`` otherwise.
+        Populated on staggered filter with keys ``F_last`` (kept cohort
+        label), ``n_kept`` (last-cohort units PLUS never-treated units),
+        ``n_dropped`` (earlier-cohort units removed), ``dropped_cohorts``
+        (list of earlier cohort labels). ``None`` otherwise.
 
     Raises
     ------
@@ -947,8 +953,18 @@ def _validate_had_panel_event_study(
         if len(cohorts) > 1:
             F_last = cohorts[-1]
             dropped_cohorts = cohorts[:-1]
-            # Filter: keep only units whose first_treat == F_last.
-            keep_mask = data[first_treat_col] == F_last
+            # Filter: keep last-cohort AND never-treated (first_treat == 0).
+            # Paper Appendix B.2: "in designs with variation in treatment
+            # timing, there must be an untreated group, at least till the
+            # period where the last cohort gets treated". Never-treated
+            # units (first_treat=0) satisfy the dose invariant for every
+            # period (D=0 throughout) and serve as the untreated-group
+            # comparison at every pre-period horizon. Keeping them matches
+            # the paper's "there must be an untreated group" language and
+            # preserves Design 1' identifiability (boundary at 0) when the
+            # last-cohort doses are uniformly positive. Only earlier-treated
+            # cohorts (first_treat in dropped_cohorts) are dropped.
+            keep_mask = (data[first_treat_col] == F_last) | (data[first_treat_col] == 0)
             dropped_unit_ids = set(data.loc[~keep_mask, unit_col].unique())
             kept_unit_ids = set(data.loc[keep_mask, unit_col].unique())
             data_filtered = data.loc[keep_mask].copy()
@@ -971,12 +987,16 @@ def _validate_had_panel_event_study(
                 f"Staggered-timing panel detected: {len(cohorts)} distinct "
                 f"nonzero cohorts in first_treat_col={first_treat_col!r} "
                 f"({cohorts!r}). Auto-filtering to the last cohort "
-                f"(F_last={F_last!r}): {n_kept} units kept, {n_dropped} "
-                f"units dropped (from cohorts {dropped_cohorts!r} and/or "
-                f"first_treat=0). HAD applies only to the last treatment "
-                f"cohort in staggered designs (paper Appendix B.2). For "
-                f"earlier-cohort effects, use "
-                f"ChaisemartinDHaultfoeuille (did_multiplegt_dyn).",
+                f"(F_last={F_last!r}) plus never-treated units "
+                f"(first_treat=0): {n_kept} units kept, {n_dropped} "
+                f"earlier-cohort units dropped (from cohorts "
+                f"{dropped_cohorts!r}). HAD applies only to the last "
+                f"treatment cohort in staggered designs (paper Appendix "
+                f"B.2); never-treated units are retained as the untreated-"
+                f"group comparison per the paper's \"there must be an "
+                f'untreated group" requirement. For earlier-cohort '
+                f"effects, use ChaisemartinDHaultfoeuille "
+                f"(did_multiplegt_dyn).",
                 UserWarning,
                 stacklevel=3,
             )
@@ -1037,8 +1057,11 @@ def _validate_had_panel_event_study(
             f"zero dose; there is no treatment to estimate."
         )
 
-    # Sort by natural ordering on the time column dtype. Tuple key with
-    # str fallback handles mixed-dtype panels (e.g., None + int).
+    # Sort by natural ordering on the time column dtype. Tuple key
+    # ``(x is None, x)`` places None at the end and sorts the rest by
+    # natural order (works for int/float/str/datetime when the dtype is
+    # homogeneous; mixed dtypes would raise at comparison time, which is
+    # the desired failure mode).
     t_pre_list = sorted(t_pre_list_unsorted, key=lambda x: (x is None, x))
     t_post_list = sorted(t_post_list_unsorted, key=lambda x: (x is None, x))
 

@@ -2313,11 +2313,17 @@ class TestEventStudyStaggeredFilter:
             )
         assert result.filter_info is not None
         assert result.filter_info["F_last"] == 5
-        n_kept_expected = int((ft == 5).sum())
+        # n_kept = last-cohort units + never-treated units (both retained).
+        n_kept_expected = int(((ft == 5) | (ft == 0)).sum())
         assert result.filter_info["n_kept"] == n_kept_expected
+        # n_dropped = earlier cohorts only (never-treated are kept).
+        n_dropped_expected = int((ft == 3).sum())
+        assert result.filter_info["n_dropped"] == n_dropped_expected
         assert 3 in result.filter_info["dropped_cohorts"]
+        # Never-treated cohort (0) is NOT in dropped_cohorts.
+        assert 0 not in result.filter_info["dropped_cohorts"]
 
-    def test_staggered_filter_only_keeps_last_cohort(self):
+    def test_staggered_filter_keeps_last_cohort_and_never_treated(self):
         panel, ft = self._staggered_panel(seed=0)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
@@ -2330,9 +2336,43 @@ class TestEventStudyStaggeredFilter:
                 first_treat_col="first_treat",
                 aggregate="event_study",
             )
-        n_last = int((ft == 5).sum())
-        assert result.n_units == n_last
+        # Paper Appendix B.2: staggered HAD applies to last cohort + keeps
+        # never-treated as the "untreated group" comparison. Earlier cohorts
+        # (first_treat=3) are dropped; never-treated (first_treat=0) AND
+        # last-cohort (first_treat=5) are retained.
+        n_kept_expected = int(((ft == 5) | (ft == 0)).sum())
+        assert result.n_units == n_kept_expected
         assert result.F == 5
+
+    def test_staggered_filter_retains_never_treated_units(self):
+        """Explicit sample-composition test: after staggered filter, kept
+        units are the union of last-cohort and never-treated.
+
+        This pins the paper Appendix B.2 contract: "there must be an
+        untreated group, at least till the period where the last cohort
+        gets treated". Earlier cohorts are dropped; never-treated are NOT.
+        """
+        panel, ft = self._staggered_panel(seed=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            HeterogeneousAdoptionDiD(design="auto").fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                first_treat_col="first_treat",
+                aggregate="event_study",
+            )
+        # The fit ran successfully with never-treated retained. Verify
+        # directly: the validator returns data_filtered with expected
+        # composition.
+        F, t_pre, t_post, data_filtered, filter_info = _validate_had_panel_event_study(
+            panel, "outcome", "dose", "period", "unit", "first_treat"
+        )
+        kept_ft_values = set(data_filtered["first_treat"].unique().tolist())
+        # Should contain exactly {0, F_last=5}; NOT earlier cohort 3.
+        assert kept_ft_values == {0, 5}
 
     def test_no_filter_on_single_cohort(self):
         """Panel with one nonzero cohort (plus never-treated): no filter."""
