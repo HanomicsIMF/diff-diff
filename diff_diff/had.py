@@ -446,7 +446,9 @@ class HeterogeneousAdoptionDiDEventStudyResults:
         fitted data.
     n_units : int
         Number of unique units contributing to the fit. After staggered
-        auto-filter: only last-cohort units.
+        auto-filter: last-cohort units PLUS never-treated (``first_treat = 0``)
+        units retained as the untreated-group comparison per paper
+        Appendix B.2. Only earlier-treated cohorts are dropped.
     inference_method : str
         ``"analytical_nonparametric"`` (continuous designs) or
         ``"analytical_2sls"`` (mass-point). Shared across horizons.
@@ -933,6 +935,25 @@ def _validate_had_panel_event_study(
             f"before calling fit() with aggregate='event_study'."
         )
 
+    # Construct the chronological sort key once, shared across every
+    # downstream ordering: cohort ranking, pre/post period sorting, and
+    # contiguity checks. Ordered categoricals use their declared
+    # category index (``list(categorical)`` strips the ordering and
+    # falls back to string comparison); numeric / datetime use natural
+    # Python order. Reused by ``_aggregate_multi_period_first_differences``
+    # via a parallel construction in that helper (both read the same
+    # ``time_dtype``).
+    if isinstance(time_dtype, pd.CategoricalDtype) and time_dtype.ordered:
+        _cat_order = {c: i for i, c in enumerate(time_dtype.categories)}
+
+        def _sort_key(x: Any) -> Tuple[bool, Any]:
+            return (x is None, _cat_order.get(x, len(_cat_order)))
+
+    else:
+
+        def _sort_key(x: Any) -> Tuple[bool, Any]:
+            return (x is None, x)
+
     # NaN checks on key columns (before any filter).
     for col in [outcome_col, dose_col, unit_col]:
         if bool(data[col].isna().any()):
@@ -1005,12 +1026,17 @@ def _validate_had_panel_event_study(
                 f"to equal each unit's first positive-dose period (or 0 "
                 f"for never-treated) before calling fit()."
             )
-        # Identify cohorts (nonzero first_treat values).
-        # Use pd.unique to preserve dtype; sort with a stable key.
+        # Identify cohorts (nonzero first_treat values). Sort using
+        # ``_sort_key`` (chronological order from ``time_dtype``), NOT
+        # raw Python sort: first_treat values are period labels and
+        # must rank chronologically so ``F_last = cohorts[-1]`` is the
+        # chronologically latest cohort. Under ordered-categorical time
+        # labels (e.g. month names), raw Python sort is lexicographic
+        # and would silently pick the wrong ``F_last``.
         ft_unique = list(pd.unique(ft_raw))
         cohorts = sorted(
             [v for v in ft_unique if v != 0 and not (isinstance(v, float) and np.isnan(v))],
-            key=lambda x: (x is None, x),
+            key=_sort_key,
         )
         if len(cohorts) == 0:
             raise ValueError(
@@ -1127,22 +1153,9 @@ def _validate_had_panel_event_study(
             f"zero dose; there is no treatment to estimate."
         )
 
-    # Sort by natural ordering on the time column dtype. For ordered
-    # categorical dtypes, use the declared category order (since
-    # ``list(categorical)`` strips the ordered semantics and falls back
-    # to string comparison). For numeric / datetime, use natural Python
-    # order. Tuple key places None at the end.
-    if isinstance(time_dtype, pd.CategoricalDtype) and time_dtype.ordered:
-        _cat_order = {c: i for i, c in enumerate(time_dtype.categories)}
-
-        def _sort_key(x: Any) -> Tuple[bool, Any]:
-            return (x is None, _cat_order.get(x, len(_cat_order)))
-
-    else:
-
-        def _sort_key(x: Any) -> Tuple[bool, Any]:
-            return (x is None, x)
-
+    # Sort using the same ``_sort_key`` already constructed for cohorts
+    # (ordered-categorical uses declared category order; numeric /
+    # datetime use natural Python order).
     t_pre_list = sorted(t_pre_list_unsorted, key=_sort_key)
     t_post_list = sorted(t_post_list_unsorted, key=_sort_key)
 
@@ -1203,10 +1216,8 @@ def _validate_had_panel_event_study(
         first_pos_per_unit = df_sorted.loc[pos_mask_global].groupby(unit_col)[time_col].first()
         cohort_labels = list(first_pos_per_unit.unique())
         if len(cohort_labels) > 1:
-            try:
-                distinct_cohorts = sorted(cohort_labels, key=lambda x: (x is None, x))
-            except TypeError:
-                distinct_cohorts = list(cohort_labels)
+            # Sort chronologically via the validated time-column order.
+            distinct_cohorts = sorted(cohort_labels, key=_sort_key)
             raise ValueError(
                 f"Staggered-timing panel detected (first_treat_col is "
                 f"None): {len(distinct_cohorts)} distinct first-positive-"
@@ -1940,7 +1951,15 @@ class HeterogeneousAdoptionDiD:
         survey: Any = None,
         weights: Optional[np.ndarray] = None,
     ) -> HeterogeneousAdoptionDiDResults:
-        """Fit the HAD estimator on a two-period panel.
+        """Fit the HAD estimator.
+
+        ``aggregate="overall"`` (default) fits on a two-period panel and
+        returns a :class:`HeterogeneousAdoptionDiDResults` with the
+        single-period WAS estimate. ``aggregate="event_study"`` fits on
+        a multi-period panel (``T > 2``) and returns a
+        :class:`HeterogeneousAdoptionDiDEventStudyResults` with per-
+        event-time WAS estimates using a uniform ``F-1`` anchor (paper
+        Appendix B.2).
 
         Both the overall and event-study paths are **panel-only**: the paper
         (Section 2) defines HAD on panel or repeated-cross-section data,

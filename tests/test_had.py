@@ -2727,6 +2727,70 @@ class TestEventStudyPanelContract:
                 panel, "outcome", "dose", "period", "unit", aggregate="event_study"
             )
 
+    def test_staggered_ordered_categorical_chooses_chronological_last(self):
+        """Staggered filter uses chronological (not lexicographic) last.
+
+        Constructs an ordered-categorical time column where lexicographic
+        and chronological orderings disagree. With category order
+        ``["q1", "q2", "q3", "q10"]``, chronological last is ``"q10"``
+        but lexicographic last is ``"q3"``. If cohorts are ``{"q2", "q10"}``,
+        a raw-sort implementation would pick ``F_last = "q2"`` (lex-max
+        of the two strings); the fixed version must pick ``F_last = "q10"``.
+
+        Covers CI reviewer round 3 P0: cohort sorting must use
+        chronological order from ``time_dtype``, not raw Python sort.
+        """
+        rng = np.random.default_rng(0)
+        G = 80
+        periods = ["q1", "q2", "q3", "q10"]
+        cat_dtype = pd.CategoricalDtype(categories=periods, ordered=True)
+        # Half of units treated at q2 (cohort 1), half at q10 (cohort 2).
+        rows = []
+        for g in range(G):
+            F_g = "q2" if g < G // 2 else "q10"
+            d_g = float(rng.uniform(0.1, 1.0))
+            for p in periods:
+                # Dose = d_g once the period >= F_g in chronological order.
+                chrono_g = periods.index(F_g)
+                chrono_p = periods.index(p)
+                dose = d_g if chrono_p >= chrono_g else 0.0
+                rows.append(
+                    {
+                        "unit": g,
+                        "period": p,
+                        "dose": dose,
+                        "outcome": rng.standard_normal(),
+                        "first_treat": F_g,
+                    }
+                )
+        panel = pd.DataFrame(rows)
+        panel["period"] = panel["period"].astype(cat_dtype)
+        panel["first_treat"] = panel["first_treat"].astype(cat_dtype)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            result = HeterogeneousAdoptionDiD(design="auto").fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                first_treat_col="first_treat",
+                aggregate="event_study",
+            )
+
+        # Chronological last cohort = "q10", not lexicographic last ("q3"
+        # is not even a cohort here; lex last of the two cohorts would
+        # be "q2" since "q10" < "q2" lexicographically).
+        assert result.filter_info is not None
+        assert result.filter_info["F_last"] == "q10"
+        assert result.F == "q10"
+        # q2-cohort units (G/2) are dropped; q10-cohort units (G/2)
+        # retained.
+        assert result.n_units == G // 2
+        # Dropped cohorts should list "q2".
+        assert "q2" in result.filter_info["dropped_cohorts"]
+
     def test_first_treat_col_mismatch_with_dose_raises(self):
         """first_treat_col disagreeing with observed dose path must raise.
 
