@@ -885,7 +885,7 @@ class TestJackknifeSERParity:
         if not fixture.exists():
             pytest.skip(
                 f"Missing R-parity fixture {fixture}; regenerate via "
-                "benchmarks/R/benchmark_synthdid.R."
+                "`Rscript benchmarks/R/generate_sdid_bootstrap_parity_fixture.R`."
             )
         payload = json.loads(fixture.read_text())
         # R indices are 1-based; convert to 0-based for numpy.
