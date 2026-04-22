@@ -948,32 +948,34 @@ class SyntheticDiD(DifferenceInDifferences):
                 # Algorithm 2 step 2: re-estimate ω̂_b and λ̂_b via two-pass
                 # sparsified Frank-Wolfe on the resampled panel, using the
                 # fit-time normalized-scale zeta and the warm-start inits.
-                # Per-draw convergence warnings are captured and aggregated
-                # below.
-                with warnings.catch_warnings(record=True) as _fw_draw_warnings:
-                    warnings.simplefilter("always")
-                    boot_omega = compute_sdid_unit_weights(
-                        Y_boot_pre_c,
-                        Y_boot_pre_t_mean,
-                        zeta_omega=zeta_omega_n,
-                        min_decrease=min_decrease,
-                        init_weights=boot_omega_init,
-                    )
-                    boot_lambda = compute_time_weights(
-                        Y_boot_pre_c,
-                        Y_boot_post_c,
-                        zeta_lambda=zeta_lambda_n,
-                        min_decrease=min_decrease,
-                        init_weights=boot_lambda_init,
-                    )
+                # Pass ``return_convergence=True`` so the helpers thread a
+                # bool out of every FW pass (Rust and numpy both) instead of
+                # relying on ``warnings.catch_warnings`` — the Rust FW entry
+                # point is silent on ``max_iter`` exhaustion, so the
+                # warnings-based tally would always read zero under the
+                # default backend (see ``_sc_weight_fw_with_convergence`` in
+                # ``rust/src/weights.rs``).
+                boot_omega, omega_converged = compute_sdid_unit_weights(
+                    Y_boot_pre_c,
+                    Y_boot_pre_t_mean,
+                    zeta_omega=zeta_omega_n,
+                    min_decrease=min_decrease,
+                    init_weights=boot_omega_init,
+                    return_convergence=True,
+                )
+                boot_lambda, lambda_converged = compute_time_weights(
+                    Y_boot_pre_c,
+                    Y_boot_post_c,
+                    zeta_lambda=zeta_lambda_n,
+                    min_decrease=min_decrease,
+                    init_weights=boot_lambda_init,
+                    return_convergence=True,
+                )
                 # Count draws with ANY non-convergence (boolean per draw),
                 # not raw solver warnings — a single draw can emit up to
-                # three UserWarnings (ω pre-sparsify, ω main, λ). The
-                # registry text describes the rate per valid draw.
-                if any(
-                    issubclass(_w.category, UserWarning) and "did not converge" in str(_w.message)
-                    for _w in _fw_draw_warnings
-                ):
+                # three non-convergence events (ω pre-sparsify, ω main, λ).
+                # The registry text describes the rate per valid draw.
+                if not (omega_converged and lambda_converged):
                     fw_nonconvergence_count += 1
 
                 tau = compute_sdid_estimator(

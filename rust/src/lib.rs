@@ -36,6 +36,7 @@ fn _rust_backend(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(weights::compute_time_weights, m)?)?;
     m.add_function(wrap_pyfunction!(weights::compute_noise_level, m)?)?;
     m.add_function(wrap_pyfunction!(weights::sc_weight_fw, m)?)?;
+    m.add_function(wrap_pyfunction!(weights::sc_weight_fw_with_convergence, m)?)?;
 
     // Linear algebra operations
     m.add_function(wrap_pyfunction!(linalg::solve_ols, m)?)?;

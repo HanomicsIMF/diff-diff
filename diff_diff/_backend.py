@@ -34,6 +34,7 @@ try:
         compute_time_weights as _rust_compute_time_weights,
         compute_noise_level as _rust_compute_noise_level,
         sc_weight_fw as _rust_sc_weight_fw,
+        sc_weight_fw_with_convergence as _rust_sc_weight_fw_with_convergence,
         # Diagnostics
         rust_backend_info as _rust_backend_info,
     )
@@ -57,6 +58,7 @@ except ImportError:
     _rust_compute_time_weights = None
     _rust_compute_noise_level = None
     _rust_sc_weight_fw = None
+    _rust_sc_weight_fw_with_convergence = None
     _rust_backend_info = None
 
 # Determine final backend based on environment variable and availability
@@ -79,6 +81,7 @@ if _backend_env == "python":
     _rust_compute_time_weights = None
     _rust_compute_noise_level = None
     _rust_sc_weight_fw = None
+    _rust_sc_weight_fw_with_convergence = None
     _rust_backend_info = None
 elif _backend_env == "rust":
     # Force Rust mode - fail if not available
@@ -127,4 +130,5 @@ __all__ = [
     "_rust_compute_time_weights",
     "_rust_compute_noise_level",
     "_rust_sc_weight_fw",
+    "_rust_sc_weight_fw_with_convergence",
 ]

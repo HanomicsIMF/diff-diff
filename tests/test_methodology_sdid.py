@@ -638,6 +638,63 @@ class TestBootstrapSE:
         assert "Bootstrap replications" in summary
         assert str(n_boot) in summary
 
+    def test_bootstrap_fw_nonconvergence_warning_fires_under_rust(self, monkeypatch):
+        """Aggregate FW non-convergence warning surfaces on the Rust backend.
+
+        Regression against the silent-failure mode previously masked by the
+        ``warnings.catch_warnings`` tally: the Rust FW solver is silent on
+        ``max_iter`` exhaustion, so a purely warnings-based per-draw count
+        read zero even when the Rust solver did not converge. After wiring
+        ``return_convergence=True`` through
+        ``compute_sdid_unit_weights`` / ``compute_time_weights`` via the new
+        ``sc_weight_fw_with_convergence`` Rust entry point, the helpers
+        thread an explicit bool per pass and the aggregate warning above 5%
+        of valid draws fires.
+
+        We force every Rust FW call to report ``converged=False`` by monkey-
+        patching the helper; under the fixed wiring, the aggregate warning
+        must fire. Prior to the fix, this same monkeypatch would have had
+        no effect on the tally.
+        """
+        from diff_diff import utils as dd_utils
+
+        if not dd_utils.HAS_RUST_BACKEND:
+            pytest.skip("Test targets the Rust backend specifically.")
+
+        real_rust = dd_utils._rust_sc_weight_fw_with_convergence
+
+        def _always_not_converged(Y, zeta, intercept, init, min_decrease, max_iter):
+            weights, _ = real_rust(Y, zeta, intercept, init, min_decrease, max_iter)
+            return weights, False
+
+        monkeypatch.setattr(
+            dd_utils, "_rust_sc_weight_fw_with_convergence", _always_not_converged
+        )
+
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        sdid = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=42)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sdid.fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=list(range(5, 8)),
+            )
+
+        fw_warnings = [
+            w for w in caught
+            if issubclass(w.category, UserWarning)
+            and "Frank-Wolfe did not converge" in str(w.message)
+        ]
+        assert len(fw_warnings) >= 1, (
+            "Expected the aggregate Frank-Wolfe non-convergence warning "
+            "to fire when every FW call reports converged=False under "
+            "the Rust backend. Got no such warning — the Rust FW path is "
+            "silent on non-convergence and the bootstrap loop is not "
+            "surfacing it."
+        )
+
 
 # =============================================================================
 # Jackknife SE
