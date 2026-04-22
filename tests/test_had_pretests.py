@@ -279,13 +279,9 @@ class TestStuteTest:
         assert r.cvm_stat == 0.0
 
     def test_exact_linear_shortcut_does_not_fire_on_shifted_noisy_data(self):
-        """P0 fix: the exact-linear short-circuit must NOT fire on noisy
-        data after an additive shift. Previously the short-circuit scaled
-        against raw ``sum(dy^2)``, which is NOT translation-invariant:
-        adding a large constant to dy inflated ``sum(dy^2)`` and
-        spuriously tripped the "exact linear" branch on genuinely noisy
-        data. Fix scales against ``sum((dy - dybar)^2)`` (centered TSS,
-        translation-invariant).
+        """P0 fix (R2): the exact-linear short-circuit must NOT fire on
+        noisy data after an additive shift. The fix scales against
+        ``sum((dy - dybar)^2)`` (centered TSS, translation-invariant).
 
         Exact numerical equivalence of the two bootstrap runs is NOT
         expected (FP cancellation at 1e12 scale costs ~4 digits of
@@ -301,15 +297,36 @@ class TestStuteTest:
         r_raw = stute_test(d, dy, n_bootstrap=199, seed=42)
         r_shift = stute_test(d, dy_shifted, n_bootstrap=199, seed=42)
 
-        # Neither run may hit the exact-linear short-circuit (both have
-        # unit-scale noise; neither should register as effectively-zero
-        # residuals relative to centered TSS).
         assert r_raw.cvm_stat > 0.0, "shortcut fired on raw noisy data"
         assert r_shift.cvm_stat > 0.0, "shortcut fired on shifted noisy data"
-        # Decision must be preserved across translation.
         assert r_raw.reject == r_shift.reject
-        # P-values match at moderate tolerance (FP cancellation limits precision).
         np.testing.assert_allclose(r_raw.p_value, r_shift.p_value, rtol=5e-3)
+
+    def test_exact_linear_shortcut_does_not_fire_on_rescaled_noisy_data(self):
+        """P0 fix (R5): the exact-linear short-circuit must NOT fire on
+        noisy data after a MULTIPLICATIVE rescaling. An earlier revision
+        used ``max(centered_TSS, 1.0)`` as the denominator in the guard,
+        which broke scale invariance: scaling ``dy`` by ``1e-12`` would
+        make ``centered_TSS ~ 1e-24`` but the floor would hold the
+        threshold at 1.0, firing the shortcut on noisy data that should
+        NOT trigger it. Fix uses a purely relative comparison with a
+        separate branch for the ``centered_TSS == 0`` edge case.
+        """
+        rng = np.random.default_rng(42)
+        G = 50
+        d = rng.uniform(0.0, 1.0, size=G)
+        dy = 2.0 * d + rng.normal(0.0, 1.0, size=G)
+        dy_scaled = dy * 1e-12  # multiplicative rescale
+
+        r_raw = stute_test(d, dy, n_bootstrap=199, seed=42)
+        r_scaled = stute_test(d, dy_scaled, n_bootstrap=199, seed=42)
+
+        # Neither run may hit the short-circuit.
+        assert r_raw.cvm_stat > 0.0, "shortcut fired on raw noisy data"
+        assert r_scaled.cvm_stat > 0.0, "shortcut fired on scaled noisy data"
+        # Decision must be preserved: rescaling dy cannot change the
+        # rejection outcome (the statistic is scale-invariant in dy).
+        assert r_raw.reject == r_scaled.reject
 
     def test_mismatched_lengths_raise(self):
         with pytest.raises(ValueError, match="same length"):
@@ -390,10 +407,8 @@ class TestYatchewHRTest:
         assert r.t_stat_hr == float("-inf")
 
     def test_exact_linear_shortcut_does_not_fire_on_shifted_noisy_data(self):
-        """P0 fix: the Yatchew exact-linear short-circuit must NOT fire
-        on noisy data after an additive shift (same rationale as Stute
-        fix: scale-ratio is translation-invariant only against centered
-        TSS)."""
+        """P0 fix (R2): Yatchew exact-linear short-circuit is translation-
+        invariant (comparison against centered TSS, not raw sum(dy^2))."""
         rng = np.random.default_rng(42)
         G = 50
         d = rng.uniform(0.0, 1.0, size=G)
@@ -403,13 +418,34 @@ class TestYatchewHRTest:
         r_raw = yatchew_hr_test(d, dy)
         r_shift = yatchew_hr_test(d, dy_shifted)
 
-        # Neither run may hit the short-circuit (t_stat_hr would be -inf).
         assert np.isfinite(r_raw.t_stat_hr), "shortcut fired on raw noisy data"
         assert np.isfinite(r_shift.t_stat_hr), "shortcut fired on shifted noisy data"
-        # Decision preserved across translation.
         assert r_raw.reject == r_shift.reject
-        # T-stats match at moderate tolerance (FP cancellation at 1e12 scale).
         np.testing.assert_allclose(r_raw.t_stat_hr, r_shift.t_stat_hr, rtol=1e-3)
+
+    def test_exact_linear_shortcut_does_not_fire_on_rescaled_noisy_data(self):
+        """P0 fix (R5): Yatchew exact-linear short-circuit is scale-
+        invariant. An earlier revision used a ``max(centered_TSS, 1.0)``
+        floor that broke scale invariance under multiplicative rescaling
+        of dy (e.g. ``dy * 1e-12``). Fix removes the floor and handles
+        the zero-centered-TSS case in a separate branch."""
+        rng = np.random.default_rng(42)
+        G = 50
+        d = rng.uniform(0.0, 1.0, size=G)
+        dy = 2.0 * d + rng.normal(0.0, 1.0, size=G)
+        dy_scaled = dy * 1e-12
+
+        r_raw = yatchew_hr_test(d, dy)
+        r_scaled = yatchew_hr_test(d, dy_scaled)
+
+        # Neither run may short-circuit to t_stat_hr = -inf.
+        assert np.isfinite(r_raw.t_stat_hr), "shortcut fired on raw noisy data"
+        assert np.isfinite(r_scaled.t_stat_hr), "shortcut fired on scaled noisy data"
+        # Decision preserved: Yatchew is scale-invariant in dy.
+        assert r_raw.reject == r_scaled.reject
+        # T_hr is scale-invariant: sigma2_lin and sigma2_diff both scale
+        # by c^2, sigma2_W scales by c^2, so the ratio is unchanged.
+        np.testing.assert_allclose(r_raw.t_stat_hr, r_scaled.t_stat_hr, rtol=1e-3)
 
     def test_duplicate_doses_return_nan(self):
         """P1 fix: yatchew_hr_test rejects duplicate doses with UserWarning
