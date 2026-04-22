@@ -957,7 +957,10 @@ class SyntheticDiDResults:
 
         # Variance method info
         lines.append(f"{'Variance method:':<25} {self.variance_method:>10}")
-        if self.variance_method == "bootstrap" and self.n_bootstrap is not None:
+        if (
+            self.variance_method in ("bootstrap", "bootstrap_refit")
+            and self.n_bootstrap is not None
+        ):
             lines.append(f"{'Bootstrap replications:':<25} {self.n_bootstrap:>10}")
 
         # Add survey design info

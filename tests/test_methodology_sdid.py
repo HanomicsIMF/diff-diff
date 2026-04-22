@@ -537,6 +537,187 @@ class TestBootstrapSE:
 
 
 # =============================================================================
+# Bootstrap SE (refit; paper-faithful Algorithm 2 step 2)
+# =============================================================================
+
+
+class TestBootstrapRefitSE:
+    """Verify the paper-faithful refit bootstrap (``variance_method='bootstrap_refit'``).
+
+    Refit re-estimates ω̂_b and λ̂_b via Frank-Wolfe on each pairs-bootstrap
+    draw (Arkhangelsky et al. 2021, Algorithm 2 step 2). Fixed-weight
+    bootstrap (``variance_method='bootstrap'``) is the R-compatible shortcut
+    that renormalizes the original ω.
+    """
+
+    def test_refit_se_positive(self, ci_params):
+        """Refit SE is positive and populates the result fields correctly."""
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        n_boot = ci_params.bootstrap(50)
+        r = SyntheticDiD(
+            variance_method="bootstrap_refit", n_bootstrap=n_boot, seed=42,
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+        )
+        assert r.se > 0
+        assert r.variance_method == "bootstrap_refit"
+        assert r.n_bootstrap == n_boot
+
+    def test_refit_se_differs_from_fixed(self, ci_params):
+        """Refit SE differs from fixed-weight SE on a non-sparse-ω DGP.
+
+        Regression guard: if the refit branch accidentally reuses the fixed
+        ω, refit SE collapses to the fixed-weight SE and this assertion fails.
+        """
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        n_boot = ci_params.bootstrap(100)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_fixed = SyntheticDiD(
+                variance_method="bootstrap", n_bootstrap=n_boot, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period", post_periods=[5, 6, 7],
+            )
+            r_refit = SyntheticDiD(
+                variance_method="bootstrap_refit", n_bootstrap=n_boot, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period", post_periods=[5, 6, 7],
+            )
+        # Point estimates are identical (fit-time ω/λ are shared).
+        assert abs(r_fixed.att - r_refit.att) < 1e-10
+        # SEs are produced by different resampling procedures and must diverge.
+        rel_diff = abs(r_refit.se - r_fixed.se) / r_fixed.se
+        assert rel_diff > 0.02, (
+            f"refit SE {r_refit.se:.6f} too close to fixed-weight SE "
+            f"{r_fixed.se:.6f} (rel diff {rel_diff:.4f}); refit branch may "
+            f"not be re-estimating weights"
+        )
+
+    def test_refit_se_tracks_placebo_se_exchangeable(self, ci_params):
+        """Refit SE tracks placebo SE under control-pool exchangeability.
+
+        Tertiary validation anchor from ``project_sdid_bundle_a_plan.md``:
+        placebo (Algorithm 4) already re-estimates ω and λ per permutation,
+        so under exchangeability of the control pool it should produce a
+        similar variance to the refit bootstrap. Divergence would flag
+        either a refit implementation bug or a genuine exchangeability
+        violation in the DGP.
+        """
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        n_boot = ci_params.bootstrap(200, min_n=100)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_placebo = SyntheticDiD(
+                variance_method="placebo", n_bootstrap=n_boot, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period", post_periods=[5, 6, 7],
+            )
+            r_refit = SyntheticDiD(
+                variance_method="bootstrap_refit", n_bootstrap=n_boot, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period", post_periods=[5, 6, 7],
+            )
+        rel_diff = abs(r_refit.se - r_placebo.se) / r_placebo.se
+        # Tolerance chosen for B=100–200 with MC noise floor ~7–10% on the
+        # SE ratio; 0.40 leaves headroom without hiding order-of-magnitude
+        # regressions.
+        assert rel_diff < 0.40, (
+            f"refit SE {r_refit.se:.6f} does not track placebo SE "
+            f"{r_placebo.se:.6f} on exchangeable DGP (rel diff {rel_diff:.4f})"
+        )
+
+    def test_refit_raises_on_pweight_survey(self):
+        """Survey + refit raises NotImplementedError (pweight-only path).
+
+        Guard lives upstream in ``fit()`` before the bootstrap dispatcher;
+        reaches the same ``NotImplementedError`` for any survey design.
+        """
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        with pytest.raises(NotImplementedError, match="bootstrap_refit"):
+            SyntheticDiD(
+                variance_method="bootstrap_refit", n_bootstrap=50, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt"),
+            )
+
+    def test_refit_raises_on_full_design_survey(self):
+        """Survey + refit with strata/PSU also raises NotImplementedError."""
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        df["stratum"] = df["unit"] % 2
+        with pytest.raises(NotImplementedError, match="bootstrap_refit"):
+            SyntheticDiD(
+                variance_method="bootstrap_refit", n_bootstrap=50, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt", strata="stratum"),
+            )
+
+    def test_refit_p_value_uses_analytical_dispatch(self):
+        """Refit p-value must equal safe_inference(att, se)[1].
+
+        Mirrors the fixed-weight bootstrap regression guard: refit draws
+        approximate the sampling distribution of τ̂ (centered on τ̂), so
+        the empirical null formula is invalid; dispatch must route to the
+        analytical normal-theory p-value from the refit SE.
+        """
+        df = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = SyntheticDiD(
+                variance_method="bootstrap_refit", n_bootstrap=100, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+            )
+        _, expected_p, _ = safe_inference(r.att, r.se, alpha=0.05)
+        assert abs(r.p_value - expected_p) < 1e-12, (
+            f"refit p_value={r.p_value} != analytical {expected_p}"
+        )
+
+    def test_refit_validates_variance_method_enum(self):
+        """bootstrap_refit is accepted; unknown strings still raise ValueError."""
+        SyntheticDiD(variance_method="bootstrap_refit", n_bootstrap=10)  # OK
+        with pytest.raises(ValueError, match="bootstrap_refit"):
+            SyntheticDiD(variance_method="not_a_method", n_bootstrap=10)
+
+    def test_refit_summary_shows_bootstrap_replications(self, ci_params):
+        """result.summary() shows "Bootstrap replications" line for refit.
+
+        Cross-surface guard: the result-class gating at ``results.py:960``
+        must include ``bootstrap_refit`` in its allow-list so the
+        replications row renders for refit fits (not only fixed-weight).
+        """
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        n_boot = ci_params.bootstrap(50)
+        r = SyntheticDiD(
+            variance_method="bootstrap_refit", n_bootstrap=n_boot, seed=1
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+        )
+        summary = r.summary()
+        assert "Bootstrap replications" in summary
+        assert str(n_boot) in summary
+
+
+# =============================================================================
 # Jackknife SE
 # =============================================================================
 
@@ -2394,6 +2575,29 @@ class TestPValueSemantics:
             f"bootstrap p_value={r.p_value} != analytical {expected_p}"
         )
 
+    def test_refit_p_value_matches_analytical(self):
+        """Refit bootstrap p-value must equal safe_inference(att, se)[1].
+
+        Symmetric with the fixed-weight test: refit draws still approximate
+        the sampling distribution of τ̂ (centered on τ̂), so the empirical
+        null formula is invalid and dispatch must route to the analytical
+        p-value.
+        """
+        df = _make_panel(seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = SyntheticDiD(
+                variance_method="bootstrap_refit", n_bootstrap=100, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+            )
+        _, expected_p, _ = safe_inference(r.att, r.se, alpha=0.05)
+        assert abs(r.p_value - expected_p) < 1e-12, (
+            f"refit p_value={r.p_value} != analytical {expected_p}"
+        )
+
     def test_placebo_p_value_uses_empirical_formula(self):
         """Placebo p-value must equal max(mean(|draws| >= |att|), 1/(r+1))."""
         df = _make_panel(seed=42)
@@ -2748,3 +2952,69 @@ class TestHeterogeneousAndRampingScale:
         sens = r.sensitivity_to_zeta_omega()
         assert np.all(np.isfinite(sens["att"]))
         assert np.all(np.isfinite(sens["pre_fit_rmse"]))
+
+
+# =============================================================================
+# Coverage MC calibration artifact (generated by benchmarks/python/coverage_sdid.py)
+# =============================================================================
+
+
+class TestCoverageMCArtifact:
+    """Schema smoke-check on ``benchmarks/data/sdid_coverage.json``.
+
+    The full Monte Carlo study (500 seeds × B=200 × 3 DGPs × 4 methods)
+    runs outside CI; its JSON output underwrites the calibration table in
+    REGISTRY.md §SyntheticDiD. This test verifies the artifact is present
+    and structured correctly. Per ``feedback_golden_file_pytest_skip.md``,
+    skip if missing — CI's isolated-install job copies only ``tests/``,
+    not ``benchmarks/``.
+    """
+
+    def test_coverage_artifacts_present(self):
+        import json
+        import pathlib
+
+        artifact = (
+            pathlib.Path(__file__).parent.parent
+            / "benchmarks" / "data" / "sdid_coverage.json"
+        )
+        if not artifact.exists():
+            pytest.skip(
+                f"Missing coverage MC artifact {artifact}; regenerate via "
+                "`python benchmarks/python/coverage_sdid.py --n-seeds 500 "
+                "--n-bootstrap 200 --output benchmarks/data/sdid_coverage.json`."
+            )
+        payload = json.loads(artifact.read_text())
+
+        for key in ("metadata", "dgps", "per_dgp"):
+            assert key in payload, f"missing top-level key: {key}"
+
+        meta = payload["metadata"]
+        for key in ("n_seeds", "n_bootstrap", "library_version", "backend",
+                    "generated_at", "methods", "alphas"):
+            assert key in meta, f"missing metadata key: {key}"
+        assert meta["n_seeds"] >= 100, (
+            f"n_seeds={meta['n_seeds']} too small; the REGISTRY calibration "
+            "table cites 500-seed rates — regenerate with documented settings."
+        )
+        assert "bootstrap_refit" in meta["methods"], (
+            "coverage artifact must include bootstrap_refit"
+        )
+
+        for dgp in ("balanced", "unbalanced", "aer63"):
+            assert dgp in payload["per_dgp"], f"missing DGP block: {dgp}"
+            per_method = payload["per_dgp"][dgp]
+            for method in ("placebo", "bootstrap", "bootstrap_refit", "jackknife"):
+                assert method in per_method, (
+                    f"missing method block {method!r} under DGP {dgp!r}"
+                )
+                block = per_method[method]
+                for field in ("rejection_rate", "mean_se", "true_sd_tau_hat",
+                              "se_over_truesd", "n_successful_fits"):
+                    assert field in block, (
+                        f"missing field {field!r} in {dgp}/{method}"
+                    )
+                for alpha_key in ("0.01", "0.05", "0.10"):
+                    assert alpha_key in block["rejection_rate"], (
+                        f"missing alpha {alpha_key} in {dgp}/{method} rejection_rate"
+                    )
