@@ -541,6 +541,44 @@ class TestCompositeWorkflow:
         assert report.qug.reject is True
         assert report.stute.reject or report.yatchew.reject
 
+    def test_workflow_handles_tied_zero_doses_via_stute_fallback(self):
+        """R4 P2 fix: on a common QUG-style panel with repeated d=0
+        (never-treated comparison group), Yatchew returns NaN (duplicate
+        doses) but Stute handles ties correctly. The composite workflow
+        must adjudicate the linearity step via Stute ALONE per the paper's
+        "Stute or Yatchew" step-3 wording, producing a conclusive verdict
+        with a Yatchew-skipped note rather than forcing the whole report
+        to inconclusive.
+
+        Paper review line 298 cites an application with 12 zero-dose
+        units, so this panel shape is not exotic.
+        """
+        rng = np.random.default_rng(42)
+        G = 60
+        # 20 never-treated (d=0 at post), 40 treated with random positive.
+        d = np.zeros(G)
+        d[20:] = rng.uniform(0.1, 1.0, size=40)
+        dy = 2.0 * d + rng.normal(0.0, 0.3, size=G)
+        panel = _make_two_period_panel(G, d, dy, seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            report = did_had_pretest_workflow(
+                panel, "y", "d", "time", "unit", n_bootstrap=199, seed=42
+            )
+        # Yatchew must NaN (ties from the 20 zero doses).
+        assert np.isnan(report.yatchew.p_value)
+        assert report.yatchew.reject is False
+        # QUG and Stute must be conclusive.
+        assert np.isfinite(report.qug.p_value)
+        assert np.isfinite(report.stute.p_value)
+        # Composite must be conclusive (NOT inconclusive).
+        assert "inconclusive" not in report.verdict
+        # Verdict should note Yatchew was skipped.
+        assert "Yatchew NaN - skipped" in report.verdict
+        # With a linear DGP, all_pass should be True despite Yatchew NaN
+        # (step 3 handled by Stute alone, per paper's "Stute OR Yatchew").
+        assert report.all_pass is True
+
     def test_all_pass_false_when_any_test_nan(self):
         """P1 fix: all_pass must NOT be True when any constituent test is
         NaN. Previously all_pass was computed from `not reject` only, so a
@@ -829,14 +867,47 @@ def _mk_yatchew(reject: bool, p: float = 0.5) -> YatchewTestResults:
 class TestComposeVerdictLogic:
     """Commit criterion 15: 5 priority-order tests."""
 
-    def test_nan_in_any_test_inconclusive(self):
-        """(a) Any NaN p-value -> inconclusive."""
+    def test_qug_nan_is_inconclusive(self):
+        """(a1) QUG NaN forces inconclusive (step 1 is required)."""
+        q = _mk_qug(reject=False, p=float("nan"))
+        s = _mk_stute(reject=False)
+        y = _mk_yatchew(reject=False)
+        verdict = _compose_verdict(q, s, y)
+        assert verdict == "inconclusive - QUG NaN"
+
+    def test_both_linearity_nan_is_inconclusive(self):
+        """(a2) When BOTH Stute and Yatchew are NaN, the linearity step
+        cannot be adjudicated and the verdict is inconclusive."""
+        q = _mk_qug(reject=False)
+        s = _mk_stute(reject=False, p=float("nan"))
+        y = _mk_yatchew(reject=False, p=float("nan"))
+        verdict = _compose_verdict(q, s, y)
+        assert verdict == "inconclusive - both Stute and Yatchew linearity tests NaN"
+
+    def test_yatchew_nan_alone_does_not_force_inconclusive(self):
+        """CRITICAL R4 P3 fix: the paper says step 3 uses "Stute OR
+        Yatchew". A conclusive Stute must be sufficient even when Yatchew
+        returns NaN (e.g. tied-dose panels). Verdict should be
+        fail-to-reject with a "(Yatchew NaN - skipped)" suffix."""
+        q = _mk_qug(reject=False)
+        s = _mk_stute(reject=False)
+        y = _mk_yatchew(reject=False, p=float("nan"))
+        verdict = _compose_verdict(q, s, y)
+        assert "inconclusive" not in verdict
+        assert verdict.startswith("QUG and linearity diagnostics fail-to-reject")
+        assert "Yatchew NaN - skipped" in verdict
+        assert "Assumption 7" in verdict
+
+    def test_stute_nan_alone_does_not_force_inconclusive(self):
+        """Mirror of the above: Yatchew conclusive + Stute NaN should
+        still adjudicate the linearity step via Yatchew alone."""
         q = _mk_qug(reject=False)
         s = _mk_stute(reject=False, p=float("nan"))
         y = _mk_yatchew(reject=False)
         verdict = _compose_verdict(q, s, y)
-        assert verdict.startswith("inconclusive")
-        assert "Stute" in verdict
+        assert "inconclusive" not in verdict
+        assert verdict.startswith("QUG and linearity diagnostics fail-to-reject")
+        assert "Stute NaN - skipped" in verdict
 
     def test_none_reject_flags_assumption7_gap(self):
         """(b) None reject -> verdict flags the Assumption 7 pre-trends gap

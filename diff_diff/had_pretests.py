@@ -379,14 +379,15 @@ class HADPretestReport:
     stute : StuteTestResults
     yatchew : YatchewTestResults
     all_pass : bool
-        ``True`` iff every constituent ``p_value`` is finite AND no test
-        rejects. ``False`` whenever any test produced a NaN p-value
-        (inconclusive) OR any test rejected. This gating prevents
-        downstream callers from mistaking an "inconclusive" report for a
-        "pass" by inspecting ``all_pass`` in isolation. Even when
-        ``all_pass`` is ``True``, the report is a PARTIAL indicator: it
-        does not certify Assumption 7 (pre-trends), which is not tested
-        by Phase 3.
+        ``True`` iff (a) QUG is conclusive (step 1), (b) at least ONE of
+        Stute / Yatchew is conclusive (step 3 - paper's "Stute or
+        Yatchew" wording), AND (c) no conclusive test rejects. This
+        gating follows the paper's four-step workflow exactly: step 3
+        accepts either linearity test, so a conclusive Stute is
+        sufficient even when Yatchew returns NaN (e.g. tied-dose
+        panels). Even when ``all_pass`` is ``True``, the report is a
+        PARTIAL indicator: it does not certify Assumption 7 (pre-trends),
+        which is not tested by Phase 3.
     verdict : str
         Human-readable classification. Priority-ordered first-match:
 
@@ -591,41 +592,57 @@ def _compose_verdict(
 ) -> str:
     """Build the :class:`HADPretestReport` verdict string.
 
+    Paper Section 4.2-4.3 specifies a four-step workflow; Phase 3 ships
+    step 1 (QUG) and step 3 (linearity, via ``stute_test`` OR
+    ``yatchew_hr_test``). The linearity step accepts either test, so a
+    conclusive Stute result alone suffices even when Yatchew is NaN
+    (e.g. tied doses, which Yatchew rejects by contract).
+
     Priority-ordered first-match:
 
-    1. Any NaN p-value -> ``"inconclusive - {names} NaN"``
-    2. None of the implemented tests reject -> partial-workflow verdict
-       flagging the Assumption 7 / pre-trends gap (paper step 2 deferred):
-       ``"QUG and linearity diagnostics fail-to-reject; Assumption 7
-       pre-trends test NOT run (paper step 2 deferred to Phase 3
-       follow-up)"``.
-    3. Otherwise bundle each rejection reason naming the failed assumption.
+    1. QUG NaN -> ``"inconclusive - QUG NaN"`` (step 1 required).
+    2. BOTH Stute AND Yatchew NaN -> ``"inconclusive - both Stute and
+       Yatchew linearity tests NaN"`` (step 3 requires at least one).
+    3. Otherwise, count rejections from CONCLUSIVE tests only:
+       3a. None of the conclusive tests reject -> partial-workflow
+           fail-to-reject verdict flagging the Assumption 7 gap, plus
+           a ``" (Yatchew NaN - skipped)"`` suffix when applicable.
+       3b. At least one conclusive test rejects -> bundle each
+           rejection reason naming the failed assumption.
     """
-    nan_tests = [
-        name
-        for name, res in (
-            ("QUG", qug),
-            ("Stute", stute),
-            ("Yatchew", yatchew),
-        )
-        if not np.isfinite(res.p_value)
-    ]
-    if nan_tests:
-        return f"inconclusive - {', '.join(nan_tests)} NaN"
+    qug_ok = bool(np.isfinite(qug.p_value))
+    stute_ok = bool(np.isfinite(stute.p_value))
+    yatchew_ok = bool(np.isfinite(yatchew.p_value))
 
-    any_reject = qug.reject or stute.reject or yatchew.reject
-    if not any_reject:
+    if not qug_ok:
+        return "inconclusive - QUG NaN"
+    if not stute_ok and not yatchew_ok:
+        return "inconclusive - both Stute and Yatchew linearity tests NaN"
+
+    qug_rej = qug.reject
+    stute_rej = bool(stute_ok and stute.reject)
+    yatchew_rej = bool(yatchew_ok and yatchew.reject)
+
+    if not (qug_rej or stute_rej or yatchew_rej):
+        skipped = []
+        if not stute_ok:
+            skipped.append("Stute NaN")
+        if not yatchew_ok:
+            skipped.append("Yatchew NaN")
+        skip_note = f" ({'; '.join(skipped)} - skipped)" if skipped else ""
         return (
-            "QUG and linearity diagnostics fail-to-reject; "
-            "Assumption 7 pre-trends test NOT run "
+            "QUG and linearity diagnostics fail-to-reject"
+            f"{skip_note}; Assumption 7 pre-trends test NOT run "
             "(paper step 2 deferred to Phase 3 follow-up)"
         )
 
     reasons = []
-    if qug.reject:
+    if qug_rej:
         reasons.append("support infimum rejected - continuous_at_zero design invalid (QUG)")
-    if stute.reject or yatchew.reject:
-        which = ",".join(name for name, r in (("Stute", stute), ("Yatchew", yatchew)) if r.reject)
+    if stute_rej or yatchew_rej:
+        which = ",".join(
+            name for name, rejected in (("Stute", stute_rej), ("Yatchew", yatchew_rej)) if rejected
+        )
         reasons.append(f"linearity rejected - heterogeneity bias ({which})")
     return "; ".join(reasons)
 
@@ -1280,18 +1297,21 @@ def did_had_pretest_workflow(
     stute_res = stute_test(d_arr, dy_arr, alpha=alpha, n_bootstrap=n_bootstrap, seed=seed)
     yatchew_res = yatchew_hr_test(d_arr, dy_arr, alpha=alpha)
 
-    # `all_pass` must be conclusive: require every constituent p-value to be
-    # finite AND no test to reject. A NaN p-value means the test is
-    # inconclusive, not a pass, so `all_pass = False` on any NaN result
-    # (even when none of the tests set `reject = True`). This keeps
-    # `all_pass` semantically aligned with the verdict string.
-    finite_all = (
-        np.isfinite(qug_res.p_value)
-        and np.isfinite(stute_res.p_value)
-        and np.isfinite(yatchew_res.p_value)
-    )
+    # `all_pass` must be conclusive under the paper's four-step workflow
+    # (step 1 QUG + step 3 linearity via Stute OR Yatchew):
+    #   - QUG must produce a finite p-value (step 1 is required).
+    #   - At least ONE of Stute / Yatchew must produce a finite p-value
+    #     (step 3 accepts either; the paper's wording is "Stute OR
+    #     Yatchew"). This accommodates common QUG-style panels with
+    #     repeated d=0 units, where Yatchew's duplicate-dose guard trips
+    #     but Stute's tie-safe CvM still produces a conclusive result.
+    #   - No conclusive test may reject. NaN-p tests have reject=False by
+    #     convention, so the OR across `.reject` naturally counts only
+    #     the conclusive rejections.
+    qug_conclusive = bool(np.isfinite(qug_res.p_value))
+    linearity_conclusive = bool(np.isfinite(stute_res.p_value) or np.isfinite(yatchew_res.p_value))
     any_reject = qug_res.reject or stute_res.reject or yatchew_res.reject
-    all_pass = bool(finite_all and not any_reject)
+    all_pass = bool(qug_conclusive and linearity_conclusive and not any_reject)
     verdict = _compose_verdict(qug_res, stute_res, yatchew_res)
 
     return HADPretestReport(
