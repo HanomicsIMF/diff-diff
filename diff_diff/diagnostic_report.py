@@ -937,9 +937,34 @@ class DiagnosticReport:
         # narrate it as an estimation failure.
         _tp_agg = describe_target_parameter(self._results).get("aggregation")
         if _tp_agg == "no_scalar_headline":
+            # PR #347 R12 P1: distinguish populated vs empty per-horizon
+            # surface. Pointing users at ``linear_trends_effects`` is
+            # dead-end guidance when that dict is ``None``.
+            _surface_empty = getattr(self._results, "linear_trends_effects", None) is None
+            if _surface_empty:
+                headline_name = "no scalar headline (empty per-horizon surface)"
+                headline_reason = (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``), and on "
+                    "this fit no cumulated level effects ``DID^{fd}_l`` "
+                    "survived estimation — the per-horizon surface is "
+                    "empty. Re-fit with a larger ``L_max`` or with "
+                    "``trends_linear=False`` if you need a reportable "
+                    "estimand."
+                )
+            else:
+                headline_name = "no scalar headline (see linear_trends_effects)"
+                headline_reason = (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``). Per-horizon "
+                    "cumulated level effects are on "
+                    "``results.linear_trends_effects[l]``."
+                )
             headline = {
                 "status": "no_scalar_by_design",
-                "name": "no scalar headline (see linear_trends_effects)",
+                "name": headline_name,
                 "value": None,
                 "se": None,
                 "p_value": None,
@@ -947,13 +972,7 @@ class DiagnosticReport:
                 "alpha": self._alpha,
                 "is_significant": False,
                 "sign": "none",
-                "reason": (
-                    "The fitted estimator intentionally does not produce a "
-                    "scalar overall ATT on this configuration "
-                    "(``trends_linear=True`` with ``L_max >= 2``). Per-horizon "
-                    "cumulated level effects are on "
-                    "``results.linear_trends_effects[l]``."
-                ),
+                "reason": headline_reason,
             }
         else:
             headline = self._extract_headline_metric()

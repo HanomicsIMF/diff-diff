@@ -85,6 +85,14 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
         # dedicated TWFE result class (or persisting provenance on
         # DiDResults) is queued as follow-up so this branch can split
         # in a future PR.
+        #
+        # PR #347 R12 P2: the ``aggregation`` tag is
+        # ``"did_or_twfe"`` (not ``"2x2"``) because real TWFE fits
+        # can be weighted averages of 2x2 comparisons, potentially
+        # with forbidden later-vs-earlier weights. Downstream agents
+        # dispatching on ``aggregation`` must not treat this as a
+        # clean 2x2 fit — the ambiguity is intrinsic until an
+        # estimator-provenance marker exists.
         return {
             "name": "ATT (2x2 or TWFE within-transformed coefficient)",
             "definition": (
@@ -100,7 +108,7 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                 "that may include forbidden later-vs-earlier comparisons "
                 "(see Goodman-Bacon)."
             ),
-            "aggregation": "2x2",
+            "aggregation": "did_or_twfe",
             "headline_attribute": "att",
             "reference": ("REGISTRY.md Sec. DifferenceInDifferences / TwoWayFixedEffects"),
         }
@@ -405,13 +413,35 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
         # Trends + L_max>=2: overall_att is NaN. No scalar aggregate;
         # per-horizon effects are on ``linear_trends_effects``.
         if has_trends and l_max is not None and l_max >= 2:
+            # PR #347 R12 P1: distinguish the populated-surface case
+            # (``linear_trends_effects`` has horizons) from the
+            # empty-surface subcase (``linear_trends_effects is
+            # None``: requested ``trends_linear=True`` but no
+            # horizons survived). Pointing users to a nonexistent
+            # dict in the latter is dead-end guidance.
+            horizon_surface_empty = getattr(results, "linear_trends_effects", None) is None
             if has_controls:
-                estimand_label = "DID^{X,fd}_l (see linear_trends_effects)"
+                estimand_label = "DID^{X,fd}_l"
             else:
-                estimand_label = "DID^{fd}_l (see linear_trends_effects)"
-            return {
-                "name": estimand_label,
-                "definition": (
+                estimand_label = "DID^{fd}_l"
+            if horizon_surface_empty:
+                definition_text = (
+                    "Under ``trends_linear=True`` with ``L_max >= 2``, the "
+                    "estimator intentionally does NOT produce a scalar "
+                    "aggregate in ``overall_att`` (it is NaN by design, "
+                    "matching R's ``did_multiplegt_dyn`` with "
+                    "``trends_lin=TRUE``). On this fit, no cumulated level "
+                    "effects ``DID^{fd}_l`` survived estimation (the "
+                    "horizon surface is empty — either no eligible "
+                    "switchers at any positive horizon or all horizons "
+                    "were dropped). There is no scalar headline AND no "
+                    "per-horizon table to fall back on; re-fit with a "
+                    "larger ``L_max`` or with ``trends_linear=False`` if "
+                    "you need a reportable estimand."
+                )
+            else:
+                estimand_label = estimand_label + " (see linear_trends_effects)"
+                definition_text = (
                     "Under ``trends_linear=True`` with ``L_max >= 2``, the "
                     "estimator intentionally does NOT produce a scalar "
                     "aggregate in ``overall_att`` (it is NaN by design, "
@@ -421,7 +451,10 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                     "covariates are active) live on "
                     "``results.linear_trends_effects[l]``. Consult those "
                     "rather than the headline."
-                ),
+                )
+            return {
+                "name": estimand_label,
+                "definition": definition_text,
                 "aggregation": "no_scalar_headline",
                 "headline_attribute": None,
                 "reference": reference,

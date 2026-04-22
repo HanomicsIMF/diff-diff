@@ -44,7 +44,7 @@ class TestTargetParameterPerEstimator:
 
     def test_did_results(self):
         tp = describe_target_parameter(_minimal_result("DiDResults"))
-        assert tp["aggregation"] == "2x2"
+        assert tp["aggregation"] == "did_or_twfe"
         assert tp["headline_attribute"] == "att"
         assert "ATT" in tp["name"]
 
@@ -61,7 +61,7 @@ class TestTargetParameterPerEstimator:
         ``TwoWayFixedEffectsResults`` class.
         """
         tp = describe_target_parameter(_minimal_result("DiDResults"))
-        assert tp["aggregation"] == "2x2"
+        assert tp["aggregation"] == "did_or_twfe"
         assert "TWFE" in tp["name"] or "TWFE" in tp["definition"]
 
     def test_callaway_santanna(self):
@@ -574,7 +574,7 @@ class TestTargetParameterRealFitIntegration:
         # Real TWFE fit returns DiDResults (no separate TWFE result class).
         assert type(fit).__name__ == "DiDResults"
         tp = describe_target_parameter(fit)
-        assert tp["aggregation"] == "2x2"
+        assert tp["aggregation"] == "did_or_twfe"
         # The DiDResults branch must name TWFE explicitly so the
         # description is source-faithful for both DiD and TWFE fits.
         assert "TWFE" in tp["name"] or "TWFE" in tp["definition"]
@@ -790,6 +790,118 @@ class TestTargetParameterRealFitIntegration:
         # the generic headline path.
         assert "= None (SE None" not in md
         assert "p = None)" not in md
+
+    def test_dcdh_empty_surface_target_parameter_definition_names_empty_state(self):
+        """PR #347 R12 P1: when ``trends_linear=True, L_max>=2,
+        linear_trends_effects=None`` (no horizons survived), the
+        target-parameter ``definition`` must NOT tell users to "see
+        linear_trends_effects" — that dict is empty. It must name the
+        empty-surface state explicitly and point at a different
+        remediation (re-fit).
+        """
+        tp = describe_target_parameter(
+            _minimal_result(
+                "ChaisemartinDHaultfoeuilleResults",
+                L_max=2,
+                covariate_residuals=None,
+                linear_trends_effects=None,
+                trends_linear=True,
+            )
+        )
+        defn = tp["definition"]
+        # Must NOT claim the horizon dict has content.
+        assert "``results.linear_trends_effects[l]``" not in defn
+        # Must name the empty-surface state.
+        assert (
+            "no cumulated level effects" in defn.lower()
+            or "horizon surface is empty" in defn.lower()
+            or "survived estimation" in defn.lower()
+        ), f"Empty-surface definition must name the state. Got: {defn!r}"
+
+    def _empty_surface_stub(self):
+        from diff_diff.chaisemartin_dhaultfoeuille_results import (
+            ChaisemartinDHaultfoeuilleResults,
+        )
+
+        return ChaisemartinDHaultfoeuilleResults(
+            overall_att=float("nan"),
+            overall_se=float("nan"),
+            overall_t_stat=float("nan"),
+            overall_p_value=float("nan"),
+            overall_conf_int=(float("nan"), float("nan")),
+            joiners_att=float("nan"),
+            joiners_se=float("nan"),
+            joiners_t_stat=float("nan"),
+            joiners_p_value=float("nan"),
+            joiners_conf_int=(float("nan"), float("nan")),
+            n_joiner_cells=0,
+            n_joiner_obs=0,
+            joiners_available=False,
+            leavers_att=float("nan"),
+            leavers_se=float("nan"),
+            leavers_t_stat=float("nan"),
+            leavers_p_value=float("nan"),
+            leavers_conf_int=(float("nan"), float("nan")),
+            n_leaver_cells=0,
+            n_leaver_obs=0,
+            leavers_available=False,
+            placebo_effect=float("nan"),
+            placebo_se=float("nan"),
+            placebo_t_stat=float("nan"),
+            placebo_p_value=float("nan"),
+            placebo_conf_int=(float("nan"), float("nan")),
+            placebo_available=False,
+            per_period_effects={},
+            groups=[1, 2, 3],
+            time_periods=[1, 2, 3, 4],
+            n_obs=100,
+            n_treated_obs=50,
+            n_switcher_cells=10,
+            n_cohorts=2,
+            n_groups_dropped_crossers=0,
+            n_groups_dropped_singleton_baseline=0,
+            n_groups_dropped_never_switching=0,
+            L_max=2,
+            trends_linear=True,
+            linear_trends_effects=None,
+        )
+
+    def test_dcdh_empty_surface_br_dr_reason_names_empty_state(self):
+        """Mirror empty-surface contract through BR and DR headline
+        ``reason``. Pointing users at ``linear_trends_effects`` is
+        dead-end guidance when that surface is empty.
+        """
+        from diff_diff import BusinessReport, DiagnosticReport
+
+        stub = self._empty_surface_stub()
+        br_reason = BusinessReport(stub, auto_diagnostics=False).to_dict()["headline"]["reason"]
+        assert "``results.linear_trends_effects[l]``" not in br_reason
+        assert (
+            "no cumulated level effects" in br_reason.lower()
+            or "horizon surface is empty" in br_reason.lower()
+            or "survived estimation" in br_reason.lower()
+        )
+
+        dr_reason = DiagnosticReport(stub).to_dict()["headline_metric"]["reason"]
+        assert "``results.linear_trends_effects[l]``" not in dr_reason
+        assert (
+            "no cumulated level effects" in dr_reason.lower()
+            or "horizon surface is empty" in dr_reason.lower()
+            or "survived estimation" in dr_reason.lower()
+        )
+
+    def test_dcdh_empty_surface_to_dataframe_linear_trends_returns_empty_frame(self):
+        """PR #347 R12 P1: ``to_dataframe("linear_trends")`` on an
+        empty-surface trends-linear fit previously raised the wrong
+        remediation ("Pass trends_linear=True to fit()") — which is
+        dead-end when the user already did. Now returns an empty
+        DataFrame.
+        """
+        stub = self._empty_surface_stub()
+        df = stub.to_dataframe("linear_trends")
+        assert df.empty
+        assert "horizon" in df.columns
+        assert "effect" in df.columns
 
     def test_dcdh_empty_surface_propagates_to_assumption_and_native_label(self):
         """PR #347 R10 P1 regression: the persisted ``trends_linear``

@@ -441,6 +441,32 @@ class BusinessReport:
         # NaN rather than an estimation-failure path.
         target_parameter = describe_target_parameter(self._results)
         if target_parameter.get("aggregation") == "no_scalar_headline":
+            # PR #347 R12 P1: the no-scalar ``reason`` must distinguish
+            # the populated-surface case (per-horizon table exists) from
+            # the empty-surface subcase (``linear_trends_effects=None``
+            # — no horizons survived estimation). Telling a user with
+            # an empty surface to "see linear_trends_effects" is
+            # dead-end guidance.
+            _surface_empty = getattr(self._results, "linear_trends_effects", None) is None
+            if _surface_empty:
+                no_scalar_reason = (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``), and on "
+                    "this fit no cumulated level effects ``DID^{fd}_l`` "
+                    "survived estimation — the per-horizon surface is "
+                    "empty. Re-fit with a larger ``L_max`` or with "
+                    "``trends_linear=False`` if you need a reportable "
+                    "estimand."
+                )
+            else:
+                no_scalar_reason = (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``). Per-horizon "
+                    "cumulated level effects are on "
+                    "``results.linear_trends_effects[l]``."
+                )
             headline = {
                 "status": "no_scalar_by_design",
                 "effect": None,
@@ -460,13 +486,7 @@ class BusinessReport:
                 ),
                 "sign": "none",
                 "breakdown_M": None,
-                "reason": (
-                    "The fitted estimator intentionally does not produce a "
-                    "scalar overall ATT on this configuration "
-                    "(``trends_linear=True`` with ``L_max >= 2``). Per-horizon "
-                    "cumulated level effects are on "
-                    "``results.linear_trends_effects[l]``."
-                ),
+                "reason": no_scalar_reason,
             }
         else:
             headline = self._extract_headline(dr_schema)

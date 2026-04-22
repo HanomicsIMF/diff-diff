@@ -89,7 +89,7 @@ Field semantics:
   sentence target.
 - `aggregation` — machine-readable tag dispatching agents can
   branch on. Complete enumeration per estimator:
-  - `"2x2"` (DiDResults / TwoWayFixedEffects both route here)
+  - `"did_or_twfe"` (DiDResults / TwoWayFixedEffects both route here — neutral tag; ambiguous at the result-class level until estimator provenance is persisted)
   - `"event_study"` (MultiPeriodDiDResults)
   - `"simple"` (CallawaySantAnna / Imputation / TwoStage / Wooldridge)
   - `"iw"` (SunAbraham)

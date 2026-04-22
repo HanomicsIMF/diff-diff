@@ -1267,8 +1267,24 @@ class ChaisemartinDHaultfoeuilleResults:
 
         elif level == "linear_trends":
             if self.linear_trends_effects is None:
+                # PR #347 R12 P1: distinguish the "trends_linear was
+                # not requested" case from the "trends_linear was
+                # requested but no horizons survived" case. Telling
+                # a user who already passed ``trends_linear=True``
+                # to pass it again is a dead-end.
+                if self._has_trends_linear():
+                    return pd.DataFrame(
+                        columns=[
+                            "horizon",
+                            "effect",
+                            "se",
+                            "t_stat",
+                            "p_value",
+                            "conf_int",
+                        ]
+                    )
                 raise ValueError(
-                    "Linear trends effects not available. Pass " "trends_linear=True to fit()."
+                    "Linear trends effects not available. Pass trends_linear=True to fit()."
                 )
             rows = []
             for h, data in sorted(self.linear_trends_effects.items()):
