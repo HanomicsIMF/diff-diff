@@ -2601,26 +2601,28 @@ class TestPValueSemantics:
         )
 
     @pytest.mark.slow
-    def test_bootstrap_p_value_null_calibration(self):
-        """Bootstrap p-values on null data must be spread (not clustered)
-        and reject within a plausible band for the fixed-weight regime.
+    def test_bootstrap_p_value_null_dispersion(self):
+        """Bootstrap p-values on null data must be dispersed and fall in a
+        loose calibration-agnostic band — regression guard against the
+        pre-fix p-clustering dispatch bug and against SE-collapse.
 
-        Semantic: this is a characterization test, not a nominal-
-        calibration assertion. Fixed-weight bootstrap deviates from
-        Arkhangelsky et al. (2021) Algorithm 2 by ignoring weight-
-        estimation uncertainty, which biases SE downward and over-
-        rejects under H0. On this DGP at n=500 seeds the empirical
-        rejection rate at α=0.05 runs ~0.18 (≈3.7× nominal) — see the
-        SyntheticDiD calibration note in REGISTRY.md.
+        Semantic: this is a calibration-agnostic regression test, not a
+        nominal-calibration assertion. Under paper-faithful refit
+        bootstrap (Arkhangelsky et al. 2021 Algorithm 2 step 2) the
+        REGISTRY-cited coverage MC puts α=0.05 rejection near nominal on
+        this DGP (≈0.08 at 500 seeds × B=200); the previous fixed-weight
+        path over-rejected at ~0.18. We deliberately do NOT assert
+        directionally on rejection rate because the reviewer's P2 was
+        that the prior lower bound (`> 0.05`) biased the test toward
+        anti-conservative behavior.
 
-        Assertions are wide enough to accommodate Monte Carlo noise at
-        n=100 seeds (rejection rate SE ≈ 0.04 under fixed-weight) and
-        remain valid if future calibration improves toward nominal:
+        Assertions (calibration-agnostic):
 
-        - rejection rate > α = 0.05: catches the pre-fix dispatch bug
-          where p clustered at ~0.5 on every seed (rejection rate → 0).
-        - rejection rate < 0.5: upper sanity bound — catches new
-          catastrophic miscalibration (e.g. SE collapsing to 0).
+        - ``np.std(p_values) > 0.10``: dispersion floor — catches the
+          pre-fix dispatch bug where p clustered at ~0.5 on every seed
+          (std → 0).
+        - ``0.01 <= rejection_rate <= 0.40``: loose band — catches both
+          SE-collapse (rate → 1) and SE-explosion (rate → 0).
         """
         p_values = []
         for seed in range(100):
@@ -2638,14 +2640,20 @@ class TestPValueSemantics:
                 p_values.append(r.p_value)
         p_arr = np.asarray(p_values)
         assert len(p_arr) >= 90, f"only {len(p_arr)}/100 fits produced finite p-values"
-        rejection_rate = float(np.mean(p_arr < 0.05))
-        assert rejection_rate > 0.05, (
-            f"rejection rate {rejection_rate:.3f} <= 0.05 — p-values likely "
-            "clustered (dispatch-bug regression)"
+
+        p_std = float(np.std(p_arr))
+        assert p_std > 0.10, (
+            f"p-value std {p_std:.3f} <= 0.10 — p-values too tightly "
+            "clustered (pre-fix dispatch bug regression; fixed-weight→"
+            "refit porting bug would manifest as p≈0.5 on every seed)"
         )
-        assert rejection_rate < 0.5, (
-            f"rejection rate {rejection_rate:.3f} >= 0.5 — catastrophic "
-            "miscalibration (SE → 0 regression?)"
+
+        rejection_rate = float(np.mean(p_arr < 0.05))
+        assert 0.01 <= rejection_rate <= 0.40, (
+            f"rejection rate {rejection_rate:.3f} outside loose "
+            "calibration-agnostic band [0.01, 0.40] — likely SE-collapse "
+            "or SE-explosion regression (compare against the REGISTRY "
+            "coverage MC table for the nominal band on this DGP)"
         )
 
 
