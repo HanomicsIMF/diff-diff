@@ -11,7 +11,9 @@ The output JSON underwrites the calibration table in
 ``docs/methodology/REGISTRY.md`` §SyntheticDiD.
 
 Usage:
-    # Full run (~2–4 hours, AER §6.3 refit is the long tail)
+    # Full run (~15–40 min on M-series Mac with Rust backend; AER §6.3 refit
+    # is the long tail at ~37 min. Matches the wall-clock wording in
+    # REGISTRY.md §SyntheticDiD coverage MC note.)
     python benchmarks/python/coverage_sdid.py \\
         --n-seeds 500 --n-bootstrap 200 \\
         --output benchmarks/data/sdid_coverage.json

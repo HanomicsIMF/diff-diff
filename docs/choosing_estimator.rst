@@ -611,7 +611,7 @@ differences helps interpret results and choose appropriate inference.
      - Uses influence-function SEs with WIF adjustment by default. Set ``n_bootstrap=999`` for multiplier bootstrap inference (weight types: ``rademacher``, ``mammen``, ``webb``).
    * - ``SyntheticDiD``
      - Placebo, paper-faithful refit bootstrap, or jackknife
-     - Default uses placebo-based variance (``variance_method="placebo"``). Set ``variance_method="bootstrap"`` for paper-faithful Algorithm 2 bootstrap (re-estimates ω and λ via Frank-Wolfe per draw; ~10–100× slower than placebo). Both methods use ``n_bootstrap`` replications (default 200). ``variance_method="jackknife"`` is also available.
+     - Default uses placebo-based variance (``variance_method="placebo"``). Set ``variance_method="bootstrap"`` for paper-faithful Algorithm 2 bootstrap (re-estimates ω and λ via Frank-Wolfe per draw; ~5–30× slower than placebo, panel-size dependent). Both methods use ``n_bootstrap`` replications (default 200). ``variance_method="jackknife"`` is also available.
    * - ``ContinuousDiD``
      - Analytical (influence function)
      - Uses influence-function-based SEs by default. Use ``n_bootstrap=199`` (or higher) for multiplier bootstrap inference with proper CIs.

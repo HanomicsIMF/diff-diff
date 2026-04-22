@@ -718,7 +718,7 @@ def _check_sdid_placebo_data(
             f"n_treated={n_treated}. Either adjust your data_generator so that "
             f"n_control > n_treated, or use "
             f"SyntheticDiD(variance_method='bootstrap') (paper-faithful refit; "
-            f"~10-100x slower than placebo) or SyntheticDiD(variance_method='jackknife')."
+            f"~5-30x slower than placebo) or SyntheticDiD(variance_method='jackknife')."
         )
 
 
@@ -2047,7 +2047,7 @@ def simulate_power(
                 f"n_treated={effective_n_treated}). Either lower "
                 f"treatment_fraction so that n_control > n_treated, or use "
                 f"SyntheticDiD(variance_method='bootstrap') (paper-faithful refit; "
-                f"~10-100x slower than placebo) or "
+                f"~5-30x slower than placebo) or "
                 f"SyntheticDiD(variance_method='jackknife')."
             )
 

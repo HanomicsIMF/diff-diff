@@ -235,8 +235,9 @@ serves a different purpose: R-parity accuracy). They complement it.
   SyntheticDiD(variance_method="jackknife", n_bootstrap=0).fit(...)
   # then also variance_method="bootstrap", n_bootstrap=200 for comparison
   # NOTE: bootstrap is now paper-faithful refit (re-estimates ω and λ via
-  # Frank-Wolfe per draw); ~10–100× slower than placebo or the previous
-  # release's fixed-weight bootstrap. Plan accordingly when timing.
+  # Frank-Wolfe per draw); ~5–30× slower than placebo (panel-size dependent;
+  # warm-start plumbing reduces the slowdown relative to cold-start). Plan
+  # accordingly when timing.
   ```
 - **Operation chain.** (1) SDiD fit with `variance_method="jackknife"` -
   exercises the leave-one-out refit loop; (2) SDiD fit with
