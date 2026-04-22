@@ -239,7 +239,7 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                     "ATT(g,t) from saturated OLS ETWFE)"
                 ),
                 "definition": (
-                    "The overall ATT under OLS ETWFE (Wooldridge 2023): the "
+                    "The overall ATT under OLS ETWFE (Wooldridge 2025): the "
                     "saturated regression fits cohort x time ATT(g, t) "
                     "coefficients, and ``overall_att`` is their "
                     "observation-count-weighted average across post-"
@@ -249,7 +249,7 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
                 ),
                 "aggregation": "simple",
                 "headline_attribute": "overall_att",
-                "reference": ("Wooldridge (2023); REGISTRY.md Sec. WooldridgeDiD (OLS path)"),
+                "reference": ("Wooldridge (2025); REGISTRY.md Sec. WooldridgeDiD (OLS path)"),
             }
         return {
             "name": (
