@@ -1581,23 +1581,34 @@ class SyntheticDiD(DifferenceInDifferences):
     def set_params(self, **params) -> "SyntheticDiD":
         """Set estimator parameters.
 
-        After applying updates, re-runs the constructor's config validation
-        (``variance_method`` enum + ``n_bootstrap`` / method coherence) so the
-        sklearn-style setter path cannot bypass what ``__init__`` rejects.
+        Applies updates transactionally: if ``_validate_config()`` rejects the
+        post-update state, the instance is rolled back to the pre-call values
+        so a raised ``ValueError`` leaves the object consistent with its
+        pre-call configuration.
         """
         # Deprecated parameter names — emit warning and ignore
         _deprecated = {"lambda_reg", "zeta"}
-        for key, value in params.items():
-            if key in _deprecated:
-                warnings.warn(
-                    f"{key} is deprecated and ignored. Use zeta_omega/zeta_lambda "
-                    f"instead. Will be removed in v4.0.0.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-            elif hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                raise ValueError(f"Unknown parameter: {key}")
-        self._validate_config()
+        # Snapshot original values for transactional rollback on validation failure.
+        _rollback: Dict[str, Any] = {}
+        for key in params:
+            if key not in _deprecated and hasattr(self, key):
+                _rollback[key] = getattr(self, key)
+        try:
+            for key, value in params.items():
+                if key in _deprecated:
+                    warnings.warn(
+                        f"{key} is deprecated and ignored. Use zeta_omega/zeta_lambda "
+                        f"instead. Will be removed in v4.0.0.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                elif hasattr(self, key):
+                    setattr(self, key, value)
+                else:
+                    raise ValueError(f"Unknown parameter: {key}")
+            self._validate_config()
+        except (ValueError, TypeError):
+            for key, prev in _rollback.items():
+                setattr(self, key, prev)
+            raise
         return self

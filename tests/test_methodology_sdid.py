@@ -1360,6 +1360,20 @@ class TestGetSetParams:
         assert sdid.variance_method == "jackknife"
         assert sdid.n_bootstrap == 1
 
+    def test_set_params_rolls_back_on_validation_failure(self):
+        """On validation failure, ``set_params`` restores the pre-call state.
+
+        Guards against leaving the instance in a partially-mutated invalid
+        state if one of multiple simultaneous updates fails validation.
+        """
+        sdid = SyntheticDiD(variance_method="placebo", n_bootstrap=200)
+        with pytest.raises(ValueError):
+            sdid.set_params(variance_method="bootstrap_refit", n_bootstrap=1)
+        # Pre-call values preserved despite mid-sequence setattr on the
+        # (now-partially-applied) instance.
+        assert sdid.variance_method == "placebo"
+        assert sdid.n_bootstrap == 200
+
 
 class TestDeprecatedParams:
     """Test deprecated parameter handling in __init__."""
