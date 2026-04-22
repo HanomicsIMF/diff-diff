@@ -1110,9 +1110,15 @@ def _validate_had_panel_event_study(
                 )
 
     # Balanced panel on the (possibly-filtered) data: every unit appears
-    # exactly once per period. ``observed=False`` preserves current
-    # behavior on categorical time columns (pandas' default is changing).
-    counts = data_filtered.groupby([unit_col, time_col], observed=False).size()
+    # exactly once per period. ``observed=True`` tells categorical
+    # groupby to count only OBSERVED unit-period cells. Without it, a
+    # time_col with an ordered-categorical dtype carrying extra unused
+    # category levels (beyond the periods actually present in the data)
+    # would expand to zero-count cells and the balance check would
+    # falsely reject valid panels. The rest of the validator is keyed
+    # to ``periods_list`` (observed unique values) so this stays
+    # consistent.
+    counts = data_filtered.groupby([unit_col, time_col], observed=True).size()
     if (counts != 1).any():
         n_bad = int((counts != 1).sum())
         raise ValueError(

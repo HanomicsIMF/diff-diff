@@ -2865,6 +2865,48 @@ class TestEventStudyPanelContract:
                 panel, "outcome", "dose", "period", "unit", aggregate="event_study"
             )
 
+    def test_ordered_categorical_with_unused_levels_accepted(self):
+        """Ordered categorical with extra unused category levels fits.
+
+        Covers CI reviewer round 4 P1: the balanced-panel check must
+        use ``observed=True`` on categorical groupby so unused category
+        levels don't expand to zero-count cells and falsely trip the
+        balance guard.
+        """
+        rng = np.random.default_rng(0)
+        G = 40
+        # Observed periods: pre1, pre2, post1, post2
+        # Declared categories: ALSO include pre0 (unused) and post3 (unused)
+        all_categories = ["pre0", "pre1", "pre2", "post1", "post2", "post3"]
+        observed = ["pre1", "pre2", "post1", "post2"]
+        cat_dtype = pd.CategoricalDtype(categories=all_categories, ordered=True)
+        rows = []
+        d_post = rng.uniform(0.1, 1.0, G)
+        d_post[0] = 0.0
+        for g in range(G):
+            for label in observed:
+                dose = d_post[g] if label in ("post1", "post2") else 0.0
+                rows.append(
+                    {
+                        "unit": g,
+                        "period": label,
+                        "dose": dose,
+                        "outcome": rng.standard_normal(),
+                    }
+                )
+        panel = pd.DataFrame(rows)
+        panel["period"] = panel["period"].astype(cat_dtype)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            result = HeterogeneousAdoptionDiD(design="auto").fit(
+                panel, "outcome", "dose", "period", "unit", aggregate="event_study"
+            )
+        # F should be post1 (first observed post-period); event_times
+        # should be [-2, 0, 1] (e=-1 for anchor pre2 is skipped).
+        assert result.F == "post1"
+        assert result.event_times.tolist() == [-2, 0, 1]
+        assert result.n_units == G
+
     def test_ordered_categorical_time_col_accepted(self):
         """Ordered categorical time dtype passes the ordered-time check."""
         rng = np.random.default_rng(0)
