@@ -95,8 +95,23 @@ Y <- matrix(Y_flat, nrow = N, ncol = T, byrow = TRUE)
 tau_hat <- synthdid_estimate(Y, N0, T0)
 weights <- attr(tau_hat, "weights")
 
-# Bootstrap loop — record indices and compute tau_b with fixed weights,
-# mimicking synthdid::vcov(method="bootstrap") per the package source.
+# Bootstrap loop — record indices and compute tau_b with FIXED weights.
+#
+# IMPORTANT: this is NOT the behavior of R's default
+# synthdid::vcov(method="bootstrap"). The default vcov code path in vcov.R
+# rebinds attr(tau_hat, "opts") (which includes update.omega = TRUE from
+# the original fit) back into synthdid_estimate via do.call, so each
+# bootstrap draw re-estimates ω and λ via Frank-Wolfe with the renormalized
+# weights used only as initialization. The call below deliberately omits
+# the opts rebind; because update.omega / update.lambda default to
+# is.null(weights$*) and we pass non-null weights, this runs a manual
+# fixed-weight bootstrap. We use this shape so that the 1e-10 Python-R
+# parity test in tests/test_methodology_sdid.py anchors our fixed-weight
+# variance_method="bootstrap" against a matching R invocation. Refit
+# parity against the default vcov behavior belongs to a separate fixture
+# (see variance_method="bootstrap_refit" and the Julia Synthdid.jl
+# follow-up anchor).
+#
 # Retry on degenerate draws (no controls or no treated) so the fixture
 # contains B non-degenerate rows and Python's `_bootstrap_indices` seam
 # consumes them all without skipping.

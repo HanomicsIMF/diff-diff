@@ -1054,21 +1054,40 @@ class TestJackknifeSERParity:
         assert abs(results.se - self.R_JACKKNIFE_SE) < 1e-10
 
     def test_bootstrap_se_matches_r(self, r_panel_df):
-        """Bootstrap SE should match R's vcov(method='bootstrap') given the
-        same bootstrap indices.
+        """Fixed-weight bootstrap SE is bit-identical to a manual R
+        fixed-weight invocation given the same bootstrap indices.
 
-        Scope of parity: RNG streams differ between Python (PCG64) and R
-        (Mersenne Twister), so a shared integer `seed` value draws
-        different resamples in each language. The fixture pins R's B × N
-        index matrix and the test feeds it through the Python bootstrap
-        loop via the `_bootstrap_indices` seam, so both implementations
-        traverse the *same* resamples. What the 1e-10 match verifies is
-        the deterministic math downstream of the indices — per-draw
-        estimator (weight renormalization + SDID formula) and SE
-        aggregation (`sqrt((r-1)/r) × sd(ddof=1)`). It does NOT verify
-        that independently-seeded runs of the two bootstraps agree at any
-        finite B; that would require a shared RNG stream or a Monte-
-        Carlo-tolerance comparison at large B, both out of scope here.
+        **Scope caveat:** this is NOT parity against R's default
+        ``synthdid::vcov(method="bootstrap")``. R's default bootstrap
+        rebinds ``attr(estimate, "opts")`` (including
+        ``update.omega=TRUE``) back into ``synthdid_estimate`` inside its
+        bootstrap loop, so the renormalized ω is used only as Frank-Wolfe
+        initialization and weights are re-estimated per draw — i.e., R's
+        default is refit, not fixed-weight. The fixture generator in
+        ``benchmarks/R/generate_sdid_bootstrap_parity_fixture.R`` calls
+        ``synthdid_estimate(weights = weights_boot)`` **without** rebinding
+        ``opts``; that path defaults ``update.omega = is.null(weights$omega)``
+        to ``FALSE`` given non-null weights and therefore runs a manual
+        fixed-weight bootstrap. This test anchors our ``variance_method="bootstrap"``
+        (also fixed-weight, documented in REGISTRY.md as a deviation from
+        R's default) against that manual R invocation, not against R's
+        real ``vcov`` behavior. The corresponding refit-parity anchor
+        (Python ``variance_method="bootstrap_refit"`` vs R's default) is
+        a follow-up tracked via the Julia ``Synthdid.jl`` refit cross-
+        language anchor noted in ``project_sdid_bundle_a_plan.md``.
+
+        Scope of the bit-identity check: RNG streams differ between Python
+        (PCG64) and R (Mersenne Twister), so a shared integer ``seed``
+        value draws different resamples in each language. The fixture
+        pins R's B × N index matrix and the test feeds it through the
+        Python bootstrap loop via the ``_bootstrap_indices`` seam, so
+        both implementations traverse the *same* resamples. What the
+        1e-10 match verifies is the deterministic math downstream of the
+        indices — per-draw fixed-weight estimator (weight renormalization
+        + SDID formula) and SE aggregation (``sqrt((r-1)/r) × sd(ddof=1)``).
+        It does NOT verify that independently-seeded runs agree at any
+        finite B; that would require a shared RNG stream or a Monte-Carlo
+        tolerance at large B, both out of scope here.
         """
         import json
         import pathlib

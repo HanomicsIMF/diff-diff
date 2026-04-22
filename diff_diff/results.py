@@ -815,8 +815,10 @@ class SyntheticDiDResults:
         ``"bootstrap_refit"``, ``"jackknife"``, or ``"placebo"``.
         ``"bootstrap_refit"`` is the paper-faithful pairs bootstrap that
         re-estimates ω and λ via Frank-Wolfe on each draw
-        (Arkhangelsky et al. 2021 Algorithm 2 step 2); ``"bootstrap"`` is
-        the R-compatible fixed-weight shortcut.
+        (Arkhangelsky et al. 2021 Algorithm 2 step 2, and the behavior of
+        R's default ``synthdid::vcov(method="bootstrap")``); ``"bootstrap"``
+        is a fixed-weight shortcut documented in REGISTRY.md as a deviation
+        from R's default.
     placebo_effects : np.ndarray, optional
         Method-specific per-iteration estimates: placebo treatment effects
         (for ``"placebo"``), bootstrap ATT estimates with fixed weights

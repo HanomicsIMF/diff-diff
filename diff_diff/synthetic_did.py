@@ -51,12 +51,19 @@ class SyntheticDiD(DifferenceInDifferences):
         Method for variance estimation:
         - "placebo": Placebo-based variance matching R's synthdid::vcov(method="placebo").
           Implements Algorithm 4 from Arkhangelsky et al. (2021). This is R's default.
-        - "bootstrap": Bootstrap at unit level with fixed weights matching R's
-          synthdid::vcov(method="bootstrap") (renormalized original ω, original λ).
+        - "bootstrap": Bootstrap at unit level with **fixed weights** (renormalized
+          original ω, original λ). Deviation from R's default
+          synthdid::vcov(method="bootstrap"), which re-estimates per draw (the
+          renormalized ω is used only as Frank-Wolfe initialization); see
+          REGISTRY.md SyntheticDiD section. Anti-conservative under H0 relative
+          to the paper and R's default — see the coverage MC calibration table
+          in REGISTRY.md.
         - "bootstrap_refit": Paper-faithful pairs bootstrap (Arkhangelsky et al. 2021
-          Algorithm 2 step 2); re-estimates ω̂_b and λ̂_b via Frank-Wolfe on each
-          bootstrap draw. Expected ~10–100× slower per fit than the fixed-weight
-          shortcut. Survey designs composed with this method raise NotImplementedError.
+          Algorithm 2 step 2), also the behavior of R's default
+          synthdid::vcov(method="bootstrap"); re-estimates ω̂_b and λ̂_b via
+          Frank-Wolfe on each bootstrap draw. Expected ~10–100× slower per fit
+          than the fixed-weight shortcut. Survey designs composed with this
+          method raise NotImplementedError.
         - "jackknife": Jackknife variance matching R's synthdid::vcov(method="jackknife").
           Implements Algorithm 3 from Arkhangelsky et al. (2021). Deterministic
           (N_control + N_treated iterations), uses fixed weights (no re-estimation).
@@ -909,12 +916,23 @@ class SyntheticDiD(DifferenceInDifferences):
         min_decrease: float = 1e-5,
         _bootstrap_indices: Optional[np.ndarray] = None,
     ) -> Tuple[float, np.ndarray]:
-        """Compute bootstrap standard error matching R's synthdid bootstrap_sample.
+        """Compute pairs-bootstrap standard error for SDID.
 
         Resamples all units (control + treated) with replacement, then either
-        renormalizes the original unit weights (``refit=False``, default) or
-        re-estimates ω̂_b and λ̂_b via Frank-Wolfe on each bootstrap draw
-        (``refit=True``, Arkhangelsky et al. 2021 Algorithm 2 step 2).
+        renormalizes the original unit weights (``refit=False``, default —
+        a fixed-weight shortcut) or re-estimates ω̂_b and λ̂_b via Frank-Wolfe
+        on each bootstrap draw (``refit=True`` — Arkhangelsky et al. 2021
+        Algorithm 2 step 2, and R's default ``synthdid::vcov(method="bootstrap")``).
+
+        **Deviation from R (fixed-weight path only):** R's default
+        ``synthdid::vcov(method="bootstrap")`` rebinds the original fit's
+        ``opts`` (including ``update.omega=TRUE``) back into
+        ``synthdid_estimate`` inside its bootstrap loop, so the renormalized ω
+        is used only as Frank-Wolfe initialization. This library's
+        ``refit=False`` path holds the renormalized ω exactly — it does not
+        re-run Frank-Wolfe. Under-estimates SE relative to the paper and R's
+        default; see the coverage MC calibration table in
+        ``docs/methodology/REGISTRY.md`` §SyntheticDiD.
 
         When ``resolved_survey`` is provided (unit-level ResolvedSurveyDesign
         with strata/PSU/FPC), uses Rao-Wu rescaled bootstrap instead of the
@@ -930,10 +948,11 @@ class SyntheticDiD(DifferenceInDifferences):
 
         ``_bootstrap_indices`` is a test-only seam: when provided (shape
         ``(n_bootstrap, n_total)``), the pairs-bootstrap branch uses row ``b``
-        of the array instead of ``rng.choice``. Used by the R-parity test to
-        feed pre-computed R indices; ignored by the Rao-Wu branch.
-
-        Fixed-weight path matches R's ``synthdid::vcov(method="bootstrap")``.
+        of the array instead of ``rng.choice``. Used by the fixed-weight
+        parity test to feed pre-computed R indices through an invocation
+        whose weight semantics match a manual ``synthdid_estimate`` call
+        without the ``opts`` rebind (see the R-parity Note in REGISTRY.md).
+        Ignored by the Rao-Wu branch.
         """
         from diff_diff.bootstrap_utils import generate_rao_wu_weights
 
