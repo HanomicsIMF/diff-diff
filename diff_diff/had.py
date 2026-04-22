@@ -125,6 +125,53 @@ _TARGET_PARAMETER = {
 
 
 # =============================================================================
+# JSON-serialization helpers
+# =============================================================================
+
+
+def _json_safe_scalar(x: Any) -> Any:
+    """Coerce a scalar to a JSON-serializable type.
+
+    - NumPy scalars (``np.int64``, ``np.float64``, ``np.bool_``) ->
+      native Python via ``.item()``
+    - ``pd.Timestamp`` / ``pd.Timedelta`` -> ISO 8601 string via
+      ``.isoformat()``
+    - Everything else returned as-is.
+
+    The ``to_dict`` methods use this to keep the returned dict
+    serializable via ``json.dumps`` regardless of the underlying
+    pandas/numpy dtype of the time / first_treat columns.
+    """
+    if isinstance(x, (pd.Timestamp, pd.Timedelta)):
+        return x.isoformat()
+    if hasattr(x, "item") and callable(getattr(x, "item")):
+        try:
+            return x.item()
+        except (AttributeError, ValueError, TypeError):
+            return x
+    return x
+
+
+def _json_safe_filter_info(
+    filter_info: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Normalize a ``filter_info`` dict to JSON-safe scalars.
+
+    Returns ``None`` unchanged; otherwise coerces ``F_last`` and each
+    entry in ``dropped_cohorts`` via :func:`_json_safe_scalar`. Int
+    counts are cast to ``int`` for stability.
+    """
+    if filter_info is None:
+        return None
+    return {
+        "F_last": _json_safe_scalar(filter_info.get("F_last")),
+        "n_kept": int(filter_info.get("n_kept", 0)),
+        "n_dropped": int(filter_info.get("n_dropped", 0)),
+        "dropped_cohorts": [_json_safe_scalar(c) for c in filter_info.get("dropped_cohorts", [])],
+    }
+
+
+# =============================================================================
 # Results dataclass
 # =============================================================================
 
@@ -591,29 +638,34 @@ class HeterogeneousAdoptionDiDEventStudyResults:
     def to_dict(self) -> Dict[str, Any]:
         """Return results as a dict with per-horizon arrays and scalars.
 
-        Per-horizon arrays are returned as Python lists for JSON-
-        serialization friendliness.
+        Per-horizon arrays are converted to Python lists via
+        ``ndarray.tolist()`` (which unwraps NumPy scalar elements to
+        native ``int`` / ``float``); scalar fields are coerced to
+        native Python types via ``_json_safe_scalar`` where relevant
+        (NumPy scalars -> ``.item()``, pandas ``Timestamp`` -> ISO
+        string, ``Timedelta`` -> ISO string). The returned dict is
+        JSON-serializable directly via ``json.dumps``.
         """
         return {
-            "event_times": list(self.event_times),
-            "att": list(self.att),
-            "se": list(self.se),
-            "t_stat": list(self.t_stat),
-            "p_value": list(self.p_value),
-            "conf_int_low": list(self.conf_int_low),
-            "conf_int_high": list(self.conf_int_high),
-            "n_obs_per_horizon": list(self.n_obs_per_horizon),
-            "alpha": self.alpha,
+            "event_times": self.event_times.tolist(),
+            "att": self.att.tolist(),
+            "se": self.se.tolist(),
+            "t_stat": self.t_stat.tolist(),
+            "p_value": self.p_value.tolist(),
+            "conf_int_low": self.conf_int_low.tolist(),
+            "conf_int_high": self.conf_int_high.tolist(),
+            "n_obs_per_horizon": self.n_obs_per_horizon.tolist(),
+            "alpha": float(self.alpha),
             "design": self.design,
             "target_parameter": self.target_parameter,
-            "d_lower": self.d_lower,
-            "dose_mean": self.dose_mean,
-            "F": self.F,
-            "n_units": self.n_units,
+            "d_lower": float(self.d_lower),
+            "dose_mean": float(self.dose_mean),
+            "F": _json_safe_scalar(self.F),
+            "n_units": int(self.n_units),
             "inference_method": self.inference_method,
             "vcov_type": self.vcov_type,
             "cluster_name": self.cluster_name,
-            "filter_info": self.filter_info,
+            "filter_info": _json_safe_filter_info(self.filter_info),
         }
 
     def to_dataframe(self) -> pd.DataFrame:

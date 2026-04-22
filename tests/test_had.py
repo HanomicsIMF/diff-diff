@@ -2576,6 +2576,27 @@ class TestEventStudyResultMethods:
         assert d["design"] == result.design
         assert d["F"] == result.F
 
+    def test_to_dict_json_serializable(self):
+        """``to_dict()`` output must be JSON-serializable via ``json.dumps``.
+
+        Covers CI reviewer round 5 P2: previously the per-horizon arrays
+        contained numpy scalars that tripped ``json.dumps``.
+        """
+        import json
+
+        result = self._fit()
+        d = result.to_dict()
+        # Should not raise.
+        payload = json.dumps(d)
+        assert isinstance(payload, str)
+        # Round-trip: values should parse back as native Python types.
+        parsed = json.loads(payload)
+        assert isinstance(parsed["event_times"], list)
+        assert isinstance(parsed["event_times"][0], int)
+        assert isinstance(parsed["att"][0], float)
+        assert isinstance(parsed["alpha"], float)
+        assert isinstance(parsed["n_units"], int)
+
     def test_summary_renders(self):
         result = self._fit()
         summary = result.summary()
