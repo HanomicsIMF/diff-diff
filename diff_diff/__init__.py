@@ -60,6 +60,16 @@ from diff_diff.had import (
     HeterogeneousAdoptionDiDEventStudyResults,
     HeterogeneousAdoptionDiDResults,
 )
+from diff_diff.had_pretests import (
+    HADPretestReport,
+    QUGTestResults,
+    StuteTestResults,
+    YatchewTestResults,
+    did_had_pretest_workflow,
+    qug_test,
+    stute_test,
+    yatchew_hr_test,
+)
 from diff_diff.estimators import (
     DifferenceInDifferences,
     MultiPeriodDiD,
@@ -442,6 +452,15 @@ __all__ = [
     "HeterogeneousAdoptionDiDResults",
     "HeterogeneousAdoptionDiDEventStudyResults",
     "HAD",
+    # HeterogeneousAdoptionDiD pre-test diagnostics (Phase 3)
+    "qug_test",
+    "stute_test",
+    "yatchew_hr_test",
+    "did_had_pretest_workflow",
+    "QUGTestResults",
+    "StuteTestResults",
+    "YatchewTestResults",
+    "HADPretestReport",
     # Datasets
     "load_card_krueger",
     "load_castle_doctrine",
