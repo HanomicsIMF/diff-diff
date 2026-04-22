@@ -131,13 +131,26 @@ class HeterogeneousAdoptionDiDResults:
     ``p_value``, and ``conf_int`` are routed through
     :func:`diff_diff.utils.safe_inference`, which returns NaN on all
     three whenever ``se`` is non-finite, zero, or negative. ``att`` and
-    ``se`` themselves are raw estimator outputs - when the estimator's
-    fit path detects a degenerate configuration (constant outcome,
-    no-variation-above-``d_lower``, divide-by-zero), it returns
-    ``(att=nan, se=nan)`` directly, which the safe-inference gate then
-    propagates into the remaining three fields. Net effect: users can
-    safely check ``np.isfinite(result.se)`` and expect all five fields
-    to be finite or all NaN together on the current fit paths.
+    ``se`` themselves are RAW estimator outputs from the chosen fit
+    path and are NOT gated by ``safe_inference``:
+
+    - On the degenerate fit configurations (constant outcome on the
+      continuous paths, all-units-at-d_lower / no-dose-variation on the
+      mass-point path), the fit path explicitly returns
+      ``(att=nan, se=nan)``, which combined with the safe-inference
+      gate yields all five fields NaN together.
+    - On the degenerate CR1 cluster configuration (mass-point path
+      with a single cluster), ``_fit_mass_point_2sls`` returns
+      ``(att=beta_hat, se=nan)`` - ``att`` stays finite because the
+      Wald-IV ratio is well defined, but the cluster-robust SE is
+      not, so ``se`` is NaN and the downstream triple becomes NaN
+      via the safe-inference gate.
+
+    So the guaranteed NaN coupling is on the downstream triple
+    (``t_stat``, ``p_value``, ``conf_int``), not on ``att``. The
+    ``assert_nan_inference`` fixture in ``tests/conftest.py`` checks
+    the downstream triple against the gate contract and does not
+    assume ``att`` is NaN.
 
     Attributes
     ----------
