@@ -431,11 +431,7 @@ class SyntheticDiD(DifferenceInDifferences):
         # nonzero (near-constant Y_pre_control). Fall back to 1.0 in that
         # case and on non-finite std.
         _scale_floor = 1e-12 * max(abs(Y_shift), 1.0)
-        Y_scale = (
-            Y_scale_raw
-            if np.isfinite(Y_scale_raw) and Y_scale_raw > _scale_floor
-            else 1.0
-        )
+        Y_scale = Y_scale_raw if np.isfinite(Y_scale_raw) and Y_scale_raw > _scale_floor else 1.0
         Y_pre_control_n = (Y_pre_control - Y_shift) / Y_scale
         Y_post_control_n = (Y_post_control - Y_shift) / Y_scale
         Y_pre_treated_n = (Y_pre_treated - Y_shift) / Y_scale
@@ -452,20 +448,14 @@ class SyntheticDiD(DifferenceInDifferences):
             Y_pre_control_n, len(treated_units), len(post_periods)
         )
         zeta_omega_n = (
-            self.zeta_omega / Y_scale
-            if self.zeta_omega is not None
-            else auto_zeta_omega_n
+            self.zeta_omega / Y_scale if self.zeta_omega is not None else auto_zeta_omega_n
         )
         zeta_lambda_n = (
-            self.zeta_lambda / Y_scale
-            if self.zeta_lambda is not None
-            else auto_zeta_lambda_n
+            self.zeta_lambda / Y_scale if self.zeta_lambda is not None else auto_zeta_lambda_n
         )
         # Report the user-supplied value exactly (no roundoff from /*Y_scale
         # roundtrip); report auto-zeta rescaled to original Y units.
-        zeta_omega = (
-            self.zeta_omega if self.zeta_omega is not None else auto_zeta_omega_n * Y_scale
-        )
+        zeta_omega = self.zeta_omega if self.zeta_omega is not None else auto_zeta_omega_n * Y_scale
         zeta_lambda = (
             self.zeta_lambda if self.zeta_lambda is not None else auto_zeta_lambda_n * Y_scale
         )
@@ -516,9 +506,7 @@ class SyntheticDiD(DifferenceInDifferences):
 
         # Compute SDID estimate on normalized Y, then rescale to original units.
         if w_treated is not None:
-            Y_post_treated_mean_n = np.average(
-                Y_post_treated_n, axis=1, weights=w_treated
-            )
+            Y_post_treated_mean_n = np.average(Y_post_treated_n, axis=1, weights=w_treated)
         else:
             Y_post_treated_mean_n = np.mean(Y_post_treated_n, axis=1)
 
@@ -542,9 +530,7 @@ class SyntheticDiD(DifferenceInDifferences):
         # original outcome scale for plotting and the poor-fit warning.
         synthetic_pre_trajectory = Y_pre_control @ omega_eff
         synthetic_post_trajectory = Y_post_control @ omega_eff
-        pre_fit_rmse = np.sqrt(
-            np.mean((Y_pre_treated_mean - synthetic_pre_trajectory) ** 2)
-        )
+        pre_fit_rmse = np.sqrt(np.mean((Y_pre_treated_mean - synthetic_pre_trajectory) ** 2))
 
         # Warn if pre-treatment fit is poor (Registry requirement).
         # Threshold: 1× SD of treated pre-treatment outcomes — a natural baseline
@@ -623,14 +609,13 @@ class SyntheticDiD(DifferenceInDifferences):
 
         # Compute test statistics
         t_stat, p_value_analytical, conf_int = safe_inference(att, se, alpha=self.alpha)
-        # Empirical p-value for placebo/bootstrap (null-distribution draws).
-        # Jackknife pseudo-values are NOT null-distribution draws, so use
-        # analytical (normal) p-value instead.
-        if (
-            inference_method != "jackknife"
-            and len(placebo_effects) > 0
-            and np.isfinite(t_stat)
-        ):
+        # Empirical p-value is valid only for placebo (Algorithm 4): control
+        # permutations produce draws from the null distribution, centered on 0.
+        # Bootstrap draws (Algorithm 2) are resampled units centered on τ̂
+        # (sampling distribution, not null), and jackknife pseudo-values are not
+        # null-distribution draws either. Both use the analytical p-value from
+        # the bootstrap/jackknife SE.
+        if inference_method == "placebo" and len(placebo_effects) > 0 and np.isfinite(t_stat):
             p_value = max(
                 np.mean(np.abs(placebo_effects) >= np.abs(att)),
                 1.0 / (len(placebo_effects) + 1),
@@ -877,6 +862,7 @@ class SyntheticDiD(DifferenceInDifferences):
         w_treated=None,
         w_control=None,
         resolved_survey=None,
+        _bootstrap_indices: Optional[np.ndarray] = None,
     ) -> Tuple[float, np.ndarray]:
         """Compute bootstrap standard error matching R's synthdid bootstrap_sample.
 
@@ -889,6 +875,11 @@ class SyntheticDiD(DifferenceInDifferences):
         simple pairs bootstrap.  The Rao-Wu weights are per-unit rescaled
         survey weights; they composite with SDID unit weights the same way
         pweights do in the weights-only path.
+
+        ``_bootstrap_indices`` is a test-only seam: when provided (shape
+        ``(n_bootstrap, n_total)``), the pairs-bootstrap branch uses row ``b``
+        of the array instead of ``rng.choice``. Used by the R-parity test to
+        feed pre-computed R indices; ignored by the Rao-Wu branch.
 
         This matches R's ``synthdid::vcov(method="bootstrap")``.
         """
@@ -915,9 +906,24 @@ class SyntheticDiD(DifferenceInDifferences):
         ):
             return np.nan, np.array([])
 
-        bootstrap_estimates = []
+        bootstrap_estimates: List[float] = []
 
-        for _ in range(self.n_bootstrap):
+        # Retry-until-B-valid semantic: matches R's synthdid::bootstrap_sample
+        # (`while (count < replications) { ...; if !is.na(est) count = count+1 }`)
+        # and paper Algorithm 2 (B bootstrap replicates). A bounded attempt
+        # guard (20x) prevents pathological-input hangs; normal fits finish
+        # well inside this budget because degenerate-draw probability scales
+        # as (N_co/N)^N + (N_tr/N)^N, which is small for any non-trivial
+        # N_co/N_tr split.
+        max_attempts = 20 * self.n_bootstrap
+        attempts = 0
+        # Fixture-driven path uses deterministic index iteration instead of
+        # retry: R's generator already encodes retry semantics into the stored
+        # B x N indices, so every row is pre-validated.
+        fixture_row = 0
+
+        while len(bootstrap_estimates) < self.n_bootstrap and attempts < max_attempts:
+            attempts += 1
             if _use_rao_wu:
                 # --- Rao-Wu rescaled bootstrap path ---
                 # generate_rao_wu_weights returns per-unit rescaled survey
@@ -929,7 +935,7 @@ class SyntheticDiD(DifferenceInDifferences):
                     rw_control = boot_rw[:n_control]
                     rw_treated = boot_rw[n_control:]
 
-                    # Skip if all control or all treated weights are zero
+                    # Retry if all control or all treated weights are zero
                     if rw_control.sum() == 0 or rw_treated.sum() == 0:
                         continue
 
@@ -961,21 +967,28 @@ class SyntheticDiD(DifferenceInDifferences):
                         time_weights,
                     )
                     if np.isfinite(tau):
-                        bootstrap_estimates.append(tau)
+                        bootstrap_estimates.append(float(tau))
 
                 except (ValueError, LinAlgError):
                     continue
             else:
                 # --- Standard pairs bootstrap path (weights-only or no survey) ---
-                # Resample ALL units with replacement
-                boot_idx = rng.choice(n_total, size=n_total, replace=True)
+                # Resample ALL units with replacement (or use pre-computed
+                # indices from the test-only _bootstrap_indices seam).
+                if _bootstrap_indices is not None:
+                    if fixture_row >= len(_bootstrap_indices):
+                        break
+                    boot_idx = np.asarray(_bootstrap_indices[fixture_row], dtype=np.int64)
+                    fixture_row += 1
+                else:
+                    boot_idx = rng.choice(n_total, size=n_total, replace=True)
 
                 # Identify which resampled units are control vs treated
                 boot_is_control = boot_idx < n_control
                 boot_control_idx = boot_idx[boot_is_control]
                 boot_treated_idx = boot_idx[~boot_is_control]
 
-                # Skip if no control or no treated units in bootstrap sample
+                # Retry if no control or no treated units in bootstrap sample
                 if len(boot_control_idx) == 0 or len(boot_treated_idx) == 0:
                     continue
 
@@ -1027,21 +1040,23 @@ class SyntheticDiD(DifferenceInDifferences):
                         time_weights,
                     )
                     if np.isfinite(tau):
-                        bootstrap_estimates.append(tau)
+                        bootstrap_estimates.append(float(tau))
 
                 except (ValueError, LinAlgError):
                     continue
 
         bootstrap_estimates = np.array(bootstrap_estimates)
 
-        # Check bootstrap success rate and handle failures
+        # Check bootstrap success rate and handle failures.
+        # n_successful should equal self.n_bootstrap under the retry contract;
+        # it only falls short if max_attempts was exhausted on pathological data.
         n_successful = len(bootstrap_estimates)
         failure_rate = 1 - (n_successful / self.n_bootstrap)
 
         if n_successful == 0:
             raise ValueError(
-                f"All {self.n_bootstrap} bootstrap iterations failed. "
-                f"This typically occurs when:\n"
+                f"Could not produce any valid bootstrap draw in {attempts} "
+                f"attempts (target {self.n_bootstrap}). This typically occurs when:\n"
                 f"  - Sample size is too small for reliable resampling\n"
                 f"  - Weight matrices are singular or near-singular\n"
                 f"  - Insufficient pre-treatment periods for weight estimation\n"
@@ -1049,27 +1064,34 @@ class SyntheticDiD(DifferenceInDifferences):
                 f"Consider using variance_method='placebo' or increasing "
                 f"the regularization parameters (zeta_omega, zeta_lambda)."
             )
-        elif n_successful == 1:
+        if n_successful == 1:
             warnings.warn(
-                f"Only 1/{self.n_bootstrap} bootstrap iteration succeeded. "
-                f"Standard error cannot be computed reliably (requires at least 2). "
-                f"Returning SE=0.0. Consider using variance_method='placebo' or "
-                f"increasing the regularization (zeta_omega, zeta_lambda).",
+                f"Only 1/{self.n_bootstrap} valid bootstrap draw accumulated in "
+                f"{attempts} attempts. Standard error cannot be computed reliably "
+                f"(requires at least 2). Returning SE=0.0. Consider using "
+                f"variance_method='placebo' or increasing the regularization "
+                f"(zeta_omega, zeta_lambda).",
                 UserWarning,
                 stacklevel=2,
             )
-            se = 0.0
-        elif failure_rate > 0.05:
+            return 0.0, bootstrap_estimates
+
+        if failure_rate > 0.05:
             warnings.warn(
-                f"Only {n_successful}/{self.n_bootstrap} bootstrap iterations succeeded "
-                f"({failure_rate:.1%} failure rate). Standard errors may be unreliable. "
-                f"This can occur with small samples or insufficient pre-treatment periods.",
+                f"Bootstrap attempt budget exhausted: only {n_successful}/"
+                f"{self.n_bootstrap} valid draws accumulated in {attempts} "
+                f"attempts. Standard errors may be unreliable; pathological "
+                f"inputs can produce this signal (e.g., extreme treated/control "
+                f"imbalance or singular weight matrices).",
                 UserWarning,
                 stacklevel=2,
             )
-            se = float(np.std(bootstrap_estimates, ddof=1))
-        else:
-            se = float(np.std(bootstrap_estimates, ddof=1))
+
+        # SE formula matches R's synthdid::vcov(method="bootstrap"):
+        # sqrt((r-1)/r) * sd(ddof=1), equivalent to Arkhangelsky et al. (2021)
+        # Algorithm 2's σ̂² = (1/r) Σ (τ_b - τ̄)². Uses n_successful for
+        # consistency with _placebo_variance_se.
+        se = float(np.sqrt((n_successful - 1) / n_successful) * np.std(bootstrap_estimates, ddof=1))
 
         return se, bootstrap_estimates
 
@@ -1415,12 +1437,8 @@ class SyntheticDiD(DifferenceInDifferences):
                     jackknife_estimates[n_control + k] = np.nan
                     mask[k] = True
                     continue
-                t_pre_mean = np.average(
-                    Y_pre_treated[:, mask], axis=1, weights=w_t_jk
-                )
-                t_post_mean = np.average(
-                    Y_post_treated[:, mask], axis=1, weights=w_t_jk
-                )
+                t_pre_mean = np.average(Y_pre_treated[:, mask], axis=1, weights=w_t_jk)
+                t_post_mean = np.average(Y_post_treated[:, mask], axis=1, weights=w_t_jk)
             else:
                 t_pre_mean = np.mean(Y_pre_treated[:, mask], axis=1)
                 t_post_mean = np.mean(Y_post_treated[:, mask], axis=1)
