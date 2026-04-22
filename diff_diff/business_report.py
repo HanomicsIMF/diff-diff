@@ -2014,8 +2014,7 @@ def _render_headline_sentence(schema: Dict[str, Any]) -> str:
         if isinstance(reason, str) and reason:
             return (
                 f"{treatment_sentence} does not produce a scalar aggregate "
-                f"effect on {outcome_label} under this configuration. "
-                + reason
+                f"effect on {outcome_label} under this configuration. " + reason
             )
         return (
             f"{treatment_sentence} does not produce a scalar aggregate effect "
