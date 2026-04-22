@@ -2865,7 +2865,7 @@ class TestHeterogeneousAndRampingScale:
 class TestCoverageMCArtifact:
     """Schema smoke-check on ``benchmarks/data/sdid_coverage.json``.
 
-    The full Monte Carlo study (500 seeds × B=200 × 3 DGPs × 4 methods)
+    The full Monte Carlo study (500 seeds × B=200 × 3 DGPs × 3 methods)
     runs outside CI; its JSON output underwrites the calibration table in
     REGISTRY.md §SyntheticDiD. This test verifies the artifact is present
     and structured correctly. Per ``feedback_golden_file_pytest_skip.md``,
