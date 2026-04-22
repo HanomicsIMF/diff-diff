@@ -113,11 +113,27 @@ Field semantics:
   `"twfe_estimate"`), OR `None` when `aggregation ==
   "no_scalar_headline"` (the dCDH `trends_linear=True,
   L_max>=2` branch where `overall_att` is intentionally NaN by
-  design). Agents dispatching on this field must handle `None` as
-  "no scalar aggregate — consult `linear_trends_effects`
-  instead". Different result classes use different attribute
-  names; agents that want to re-read the raw value
-  can dispatch on this.
+  design). Agents dispatching on this field must handle `None` by
+  inspecting `headline.reason` (BR) / `headline_metric.reason`
+  (DR), which distinguishes two subcases:
+
+  - **Populated-surface subcase** (per-horizon
+    `linear_trends_effects` dict is non-empty): `reason`
+    directs callers to `results.linear_trends_effects[l]` for
+    per-horizon cumulated level effects.
+  - **Empty-surface subcase** (`linear_trends_effects is None`
+    because no horizons survived estimation): `reason` names
+    the empty state explicitly and directs callers toward
+    re-fit remediation (larger `L_max` or
+    `trends_linear=False`) rather than a nonexistent dict. The
+    dCDH native estimand label is also branched — on this
+    subcase `_estimand_label()` returns
+    `DID^{fd}_l (no cumulated level effects survived estimation)`
+    (or `DID^{X,fd}_l (...)` when covariates are active).
+
+  Different result classes use different attribute names; agents
+  that want to re-read the raw value can dispatch on
+  `headline_attribute`.
 - `reference` — one-line citation pointer to the canonical paper
   and the REGISTRY.md section.
 

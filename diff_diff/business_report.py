@@ -2002,14 +2002,24 @@ def _render_headline_sentence(schema: Dict[str, Any]) -> str:
     # "no scalar headline by design" prose instead of routing through
     # the non-finite / estimation-failure path.
     if h.get("status") == "no_scalar_by_design":
+        # PR #347 R13 P1: the headline-level ``reason`` field is the
+        # single source for the no-scalar prose and is already
+        # branched on populated-vs-empty surface in ``_build_schema``.
+        # Use it verbatim so the headline sentence never drifts from
+        # the schema-level message on the empty-surface subcase.
         treatment = ctx.get("treatment_label", "the treatment")
         outcome_label = ctx.get("outcome_label", "the outcome")
         treatment_sentence = _sentence_first_upper(treatment)
+        reason = h.get("reason")
+        if isinstance(reason, str) and reason:
+            return (
+                f"{treatment_sentence} does not produce a scalar aggregate "
+                f"effect on {outcome_label} under this configuration. "
+                + reason
+            )
         return (
             f"{treatment_sentence} does not produce a scalar aggregate effect "
-            f"on {outcome_label} under this configuration (by design; see "
-            f"``linear_trends_effects`` for per-horizon cumulated level "
-            f"effects)."
+            f"on {outcome_label} under this configuration (by design)."
         )
     effect = h.get("effect")
     outcome = ctx.get("outcome_label", "the outcome")

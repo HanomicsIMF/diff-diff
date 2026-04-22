@@ -483,11 +483,16 @@ class ChaisemartinDHaultfoeuilleResults:
         has_trends = self._has_trends_linear()
 
         # When trends_linear + L_max>=2, overall is NaN (no aggregate).
-        # Label reflects that per-horizon effects are in linear_trends_effects.
+        # Label reflects that per-horizon effects are in
+        # linear_trends_effects — UNLESS that surface is also empty
+        # (empty-horizon subcase; PR #347 R13 P1). In the
+        # empty-surface subcase we do not direct users to a
+        # nonexistent dict; we name the empty state instead.
         if has_trends and self.L_max is not None and self.L_max >= 2:
-            if has_controls:
-                return "DID^{X,fd}_l (see linear_trends_effects)"
-            return "DID^{fd}_l (see linear_trends_effects)"
+            base_label = "DID^{X,fd}_l" if has_controls else "DID^{fd}_l"
+            if self.linear_trends_effects is None:
+                return f"{base_label} (no cumulated level effects survived estimation)"
+            return f"{base_label} (see linear_trends_effects)"
 
         if self.L_max is not None and self.L_max >= 2:
             base = "delta"

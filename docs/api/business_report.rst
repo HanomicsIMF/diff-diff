@@ -56,11 +56,14 @@ cost-benefit delta, dose-response aggregate, factor-model-adjusted ATT,
 etc. For the dCDH dynamic branch with ``trends_linear=True`` and
 ``L_max>=2``, the scalar is intentionally NaN and
 ``aggregation`` is ``"no_scalar_headline"`` with
-``headline_attribute`` set to ``None`` — agents should dispatch on
-this case and consult ``linear_trends_effects`` instead of
-``overall_att``. See the "Target parameter" section of
-:doc:`../methodology/REPORTING` for the full per-estimator dispatch
-table and schema shape.
+``headline_attribute`` set to ``None``. Agents should dispatch on
+this case and inspect the headline ``reason`` field, which
+distinguishes the populated-surface subcase (per-horizon table
+available on ``linear_trends_effects``) from the empty-surface
+subcase (no horizons survived estimation; re-fit with a larger
+``L_max`` or with ``trends_linear=False``). See the "Target
+parameter" section of :doc:`../methodology/REPORTING` for the
+full per-estimator dispatch table and schema shape.
 
 Example
 -------

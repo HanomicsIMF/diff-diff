@@ -3032,12 +3032,18 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
     # estimation-failure branch below. The headline block carries
     # ``status="no_scalar_by_design"`` in that case.
     if isinstance(headline, dict) and headline.get("status") == "no_scalar_by_design":
-        sentences.append(
+        # PR #347 R13 P1: route through the headline-level ``reason``
+        # field so the DR interpretation never drifts from the
+        # schema-level populated-vs-empty branching.
+        reason = headline.get("reason")
+        base = (
             f"On {est}, {treatment} does not produce a scalar aggregate "
-            f"effect on {outcome} under this configuration (by design; "
-            f"see ``linear_trends_effects`` for per-horizon cumulated "
-            f"level effects)."
+            f"effect on {outcome} under this configuration."
         )
+        if isinstance(reason, str) and reason:
+            sentences.append(f"{base} {reason}")
+        else:
+            sentences.append(base + " (by design)")
     elif val is not None and not val_finite:
         sentences.append(
             f"On {est}, {treatment}'s effect on {outcome} is non-finite "

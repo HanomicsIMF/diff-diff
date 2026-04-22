@@ -903,6 +903,72 @@ class TestTargetParameterRealFitIntegration:
         assert "horizon" in df.columns
         assert "effect" in df.columns
 
+    def test_dcdh_empty_surface_br_rendered_prose_no_stale_guidance(self):
+        """PR #347 R13 P1: BR's rendered prose surfaces
+        (``headline()``, ``summary()``, ``full_report()``) must not
+        tell users to "see linear_trends_effects" on the empty-
+        surface subcase. Previously the schema ``reason`` was
+        correct but the renderers still hardcoded the populated-
+        surface phrasing.
+        """
+        from diff_diff import BusinessReport
+
+        stub = self._empty_surface_stub()
+        br = BusinessReport(stub, auto_diagnostics=False)
+
+        headline = br.headline()
+        assert "see ``linear_trends_effects``" not in headline
+        assert (
+            "no cumulated level effects" in headline.lower()
+            or "horizon surface is empty" in headline.lower()
+            or "survived estimation" in headline.lower()
+        )
+
+        summary = br.summary()
+        assert "see ``linear_trends_effects``" not in summary
+
+        full = br.full_report()
+        assert "see ``linear_trends_effects``" not in full
+        assert (
+            "no cumulated level effects" in full.lower()
+            or "horizon surface is empty" in full.lower()
+            or "survived estimation" in full.lower()
+        )
+
+    def test_dcdh_empty_surface_dr_rendered_prose_no_stale_guidance(self):
+        """PR #347 R13 P1: DR's overall-interpretation prose must not
+        tell users to "see linear_trends_effects" on the empty-
+        surface subcase.
+        """
+        from diff_diff import DiagnosticReport
+
+        stub = self._empty_surface_stub()
+        dr = DiagnosticReport(stub).run_all()
+
+        prose = dr.interpretation
+        assert "see ``linear_trends_effects``" not in prose
+        assert (
+            "no cumulated level effects" in prose.lower()
+            or "horizon surface is empty" in prose.lower()
+            or "survived estimation" in prose.lower()
+        )
+
+    def test_dcdh_empty_surface_native_label_no_stale_guidance(self):
+        """PR #347 R13 P1: the dCDH result's own
+        ``_estimand_label()`` (surfaced via
+        ``to_dataframe("overall")``) must not direct users to
+        ``linear_trends_effects`` on the empty-surface subcase.
+        Instead it names the empty state.
+        """
+        stub = self._empty_surface_stub()
+        label = stub._estimand_label()
+        assert "see linear_trends_effects" not in label
+        assert "no cumulated level effects survived" in label.lower()
+
+        # to_dataframe("overall") pulls the label too.
+        row = stub.to_dataframe("overall").iloc[0]
+        assert "see linear_trends_effects" not in row["estimand"]
+
     def test_dcdh_empty_surface_propagates_to_assumption_and_native_label(self):
         """PR #347 R10 P1 regression: the persisted ``trends_linear``
         flag must drive every downstream consumer that previously
