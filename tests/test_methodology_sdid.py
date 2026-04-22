@@ -2465,9 +2465,10 @@ class TestScaleEquivariance:
     # Hard-coded baselines captured pre-fix on a well-scaled panel. If these
     # drift the fix is not a true no-op on normal data and review is warranted.
     _BASELINE = {
-        "placebo":   (4.603349837478791,   0.29385822261006445, 0.004975124378109453,    200),
-        "bootstrap": (4.603349837478791,   0.16272527384941657, 4.707563471218442e-176,  200),
-        "jackknife": (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,   23),
+        "placebo":         (4.603349837478791,   0.29385822261006445, 0.004975124378109453,    200),
+        "bootstrap":       (4.603349837478791,   0.16272527384941657, 4.707563471218442e-176,  200),
+        "bootstrap_refit": (4.6033498374787865,  0.21424970247101688, 2.1089088107241648e-102, 200),
+        "jackknife":       (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,   23),
     }
 
     # (a, b) pairs. Includes extreme scales where pre-fix SDID loses
@@ -2493,7 +2494,9 @@ class TestScaleEquivariance:
             post_periods=[5, 6, 7],
         )
 
-    @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
+    @pytest.mark.parametrize(
+        "variance_method", ["placebo", "bootstrap", "bootstrap_refit", "jackknife"]
+    )
     def test_baseline_parity_small_scale(self, variance_method):
         """Existing-fixture results match pre-fix literals — guards against
         drift; a true no-op should hit float epsilon relative to baseline."""
@@ -2507,7 +2510,9 @@ class TestScaleEquivariance:
         assert r.p_value == pytest.approx(p0, rel=1e-8)
         assert len(r.placebo_effects) == n0
 
-    @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
+    @pytest.mark.parametrize(
+        "variance_method", ["placebo", "bootstrap", "bootstrap_refit", "jackknife"]
+    )
     def test_scale_equivariance(self, variance_method):
         """τ/a, SE/|a|, p-value, and n_successful must be invariant under
         (Y → a*Y + b) across ~15 orders of magnitude."""
@@ -2539,7 +2544,9 @@ class TestScaleEquivariance:
             assert r.noise_level / abs(a) == pytest.approx(noise0, rel=1e-8)
             assert r.zeta_omega / abs(a) == pytest.approx(zeta_omega0, rel=1e-8)
 
-    @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
+    @pytest.mark.parametrize(
+        "variance_method", ["placebo", "bootstrap", "bootstrap_refit", "jackknife"]
+    )
     def test_detects_true_effect_at_extreme_scale(self, variance_method):
         """Pre-fix regression: catastrophic cancellation at Y~1e9 degraded
         SEs so p-values clustered near 0.5 regardless of true effect. Here

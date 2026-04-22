@@ -237,6 +237,9 @@ class SyntheticDiD(DifferenceInDifferences):
             variance_method='bootstrap'. Non-bootstrap variance methods
             (placebo, jackknife) do not support strata/PSU/FPC; use
             variance_method='bootstrap' for full designs.
+            ``variance_method='bootstrap_refit'`` rejects any survey design
+            (including pweight-only) — Rao-Wu rescaled weights composed with
+            Frank-Wolfe re-estimation requires a separate derivation.
 
         Returns
         -------
@@ -249,6 +252,11 @@ class SyntheticDiD(DifferenceInDifferences):
         ValueError
             If required parameters are missing, data validation fails,
             or a non-pweight survey design is provided.
+        NotImplementedError
+            If ``variance_method`` is ``'bootstrap_refit'`` and
+            ``survey_design`` is provided, or if ``variance_method`` is
+            not ``'bootstrap'`` and the survey design includes
+            strata/PSU/FPC.
         """
         # Validate inputs
         if outcome is None or treatment is None or unit is None or time is None:
@@ -1089,12 +1097,17 @@ class SyntheticDiD(DifferenceInDifferences):
                                 zeta_lambda=zeta_lambda_n,
                                 min_decrease=min_decrease,
                             )
-                        fw_nonconvergence_count += sum(
-                            1
-                            for _w in _fw_draw_warnings
-                            if issubclass(_w.category, UserWarning)
+                        # Count draws with ANY non-convergence (boolean per draw),
+                        # not raw solver warnings — a single draw can emit up to
+                        # three UserWarnings (omega pre-sparsify, omega main,
+                        # lambda). The registry text below describes the rate
+                        # relative to valid bootstrap draws, not solver calls.
+                        if any(
+                            issubclass(_w.category, UserWarning)
                             and "did not converge" in str(_w.message)
-                        )
+                            for _w in _fw_draw_warnings
+                        ):
+                            fw_nonconvergence_count += 1
                         # Refit + survey composition is rejected upstream in fit();
                         # w_control / w_treated are None here by construction.
                         boot_omega_eff = boot_omega
