@@ -941,13 +941,16 @@ class DiagnosticReport:
             # surface. Pointing users at ``linear_trends_effects`` is
             # dead-end guidance when that dict is ``None``.
             _surface_empty = getattr(self._results, "linear_trends_effects", None) is None
+            # PR #347 R14 P1: control-aware empty-surface label.
+            _has_controls = getattr(self._results, "covariate_residuals", None) is not None
+            _empty_surface_label = "DID^{X,fd}_l" if _has_controls else "DID^{fd}_l"
             if _surface_empty:
                 headline_name = "no scalar headline (empty per-horizon surface)"
                 headline_reason = (
                     "The fitted estimator intentionally does not produce a "
                     "scalar overall ATT on this configuration "
                     "(``trends_linear=True`` with ``L_max >= 2``), and on "
-                    "this fit no cumulated level effects ``DID^{fd}_l`` "
+                    f"this fit no cumulated level effects ``{_empty_surface_label}`` "
                     "survived estimation — the per-horizon surface is "
                     "empty. Re-fit with a larger ``L_max`` or with "
                     "``trends_linear=False`` if you need a reportable "

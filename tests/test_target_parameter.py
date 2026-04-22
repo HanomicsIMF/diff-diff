@@ -953,6 +953,144 @@ class TestTargetParameterRealFitIntegration:
             or "survived estimation" in prose.lower()
         )
 
+    def _empty_surface_stub_with_controls(self):
+        """Mirror of ``_empty_surface_stub`` with ``covariate_residuals``
+        populated — the covariate-adjusted empty-surface subcase.
+        """
+        from diff_diff.chaisemartin_dhaultfoeuille_results import (
+            ChaisemartinDHaultfoeuilleResults,
+        )
+
+        return ChaisemartinDHaultfoeuilleResults(
+            overall_att=float("nan"),
+            overall_se=float("nan"),
+            overall_t_stat=float("nan"),
+            overall_p_value=float("nan"),
+            overall_conf_int=(float("nan"), float("nan")),
+            joiners_att=float("nan"),
+            joiners_se=float("nan"),
+            joiners_t_stat=float("nan"),
+            joiners_p_value=float("nan"),
+            joiners_conf_int=(float("nan"), float("nan")),
+            n_joiner_cells=0,
+            n_joiner_obs=0,
+            joiners_available=False,
+            leavers_att=float("nan"),
+            leavers_se=float("nan"),
+            leavers_t_stat=float("nan"),
+            leavers_p_value=float("nan"),
+            leavers_conf_int=(float("nan"), float("nan")),
+            n_leaver_cells=0,
+            n_leaver_obs=0,
+            leavers_available=False,
+            placebo_effect=float("nan"),
+            placebo_se=float("nan"),
+            placebo_t_stat=float("nan"),
+            placebo_p_value=float("nan"),
+            placebo_conf_int=(float("nan"), float("nan")),
+            placebo_available=False,
+            per_period_effects={},
+            groups=[1, 2, 3],
+            time_periods=[1, 2, 3, 4],
+            n_obs=100,
+            n_treated_obs=50,
+            n_switcher_cells=10,
+            n_cohorts=2,
+            n_groups_dropped_crossers=0,
+            n_groups_dropped_singleton_baseline=0,
+            n_groups_dropped_never_switching=0,
+            L_max=2,
+            trends_linear=True,
+            linear_trends_effects=None,
+            # The load-bearing difference from ``_empty_surface_stub``:
+            # covariates are active, so every label and reason surface
+            # must flip to the covariate-adjusted form ``DID^{X,fd}_l``.
+            covariate_residuals=SimpleNamespace(),
+        )
+
+    def test_dcdh_empty_surface_with_controls_target_parameter_uses_x_fd_label(self):
+        """PR #347 R14 P1 regression: when ``trends_linear=True``,
+        ``L_max >= 2``, ``covariate_residuals`` is populated, and
+        ``linear_trends_effects is None`` (empty-surface subcase with
+        covariates), the helper definition must name
+        ``DID^{X,fd}_l`` — NOT bare ``DID^{fd}_l``. The R14 review
+        flagged the hardcoded ``DID^{fd}_l`` label on this exact
+        branch.
+        """
+        stub = self._empty_surface_stub_with_controls()
+        tp = describe_target_parameter(stub)
+        defn = tp["definition"]
+        assert "DID^{X,fd}_l" in defn, (
+            f"Covariate-adjusted empty-surface definition must use "
+            f"``DID^{{X,fd}}_l``. Got: {defn!r}"
+        )
+        # The helper must NOT also emit the bare ``DID^{fd}_l`` form on
+        # the covariate path (that label belongs to the no-covariate
+        # branch only).
+        assert "DID^{fd}_l" not in defn.replace("DID^{X,fd}_l", ""), (
+            f"Covariate-adjusted empty-surface definition must not emit "
+            f"the bare ``DID^{{fd}}_l`` label. Got: {defn!r}"
+        )
+
+    def test_dcdh_empty_surface_with_controls_br_dr_reason_uses_x_fd_label(self):
+        """PR #347 R14 P1 regression: BR's ``headline.reason`` and
+        DR's ``headline_metric.reason`` on the covariate-adjusted
+        empty-surface subcase must both name ``DID^{X,fd}_l``, not
+        bare ``DID^{fd}_l``.
+        """
+        from diff_diff import BusinessReport, DiagnosticReport
+
+        stub = self._empty_surface_stub_with_controls()
+
+        br_reason = BusinessReport(stub, auto_diagnostics=False).to_dict()["headline"]["reason"]
+        assert "DID^{X,fd}_l" in br_reason, (
+            f"BR headline.reason on covariate-adjusted empty-surface fit "
+            f"must name ``DID^{{X,fd}}_l``. Got: {br_reason!r}"
+        )
+        assert "DID^{fd}_l" not in br_reason.replace("DID^{X,fd}_l", ""), (
+            f"BR headline.reason must not emit the bare ``DID^{{fd}}_l`` "
+            f"label when covariates are active. Got: {br_reason!r}"
+        )
+
+        dr_reason = DiagnosticReport(stub).to_dict()["headline_metric"]["reason"]
+        assert "DID^{X,fd}_l" in dr_reason, (
+            f"DR headline_metric.reason on covariate-adjusted empty-surface "
+            f"fit must name ``DID^{{X,fd}}_l``. Got: {dr_reason!r}"
+        )
+        assert "DID^{fd}_l" not in dr_reason.replace("DID^{X,fd}_l", ""), (
+            f"DR headline_metric.reason must not emit the bare "
+            f"``DID^{{fd}}_l`` label when covariates are active. "
+            f"Got: {dr_reason!r}"
+        )
+
+    def test_dcdh_empty_surface_with_controls_rendered_prose_uses_x_fd_label(self):
+        """PR #347 R14 P1 regression: BR's rendered prose
+        (``headline()``, ``full_report()``) and DR's
+        ``interpretation`` / full report on the covariate-adjusted
+        empty-surface subcase must all name ``DID^{X,fd}_l``.
+        """
+        from diff_diff import BusinessReport, DiagnosticReport
+
+        stub = self._empty_surface_stub_with_controls()
+        br = BusinessReport(stub, auto_diagnostics=False)
+        br_headline = br.headline()
+        assert "DID^{X,fd}_l" in br_headline, (
+            f"BR headline() prose must name ``DID^{{X,fd}}_l`` on "
+            f"covariate-adjusted empty-surface fit. Got: {br_headline!r}"
+        )
+        br_full = br.full_report()
+        assert "DID^{X,fd}_l" in br_full, (
+            "BR full_report() prose must name ``DID^{X,fd}_l`` on "
+            "covariate-adjusted empty-surface fit."
+        )
+
+        dr = DiagnosticReport(stub).run_all()
+        assert "DID^{X,fd}_l" in dr.interpretation, (
+            f"DR interpretation prose must name ``DID^{{X,fd}}_l`` on "
+            f"covariate-adjusted empty-surface fit. Got: "
+            f"{dr.interpretation!r}"
+        )
+
     def test_dcdh_empty_surface_native_label_no_stale_guidance(self):
         """PR #347 R13 P1: the dCDH result's own
         ``_estimand_label()`` (surfaced via

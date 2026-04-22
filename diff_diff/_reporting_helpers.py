@@ -425,14 +425,20 @@ def describe_target_parameter(results: Any) -> Dict[str, Any]:
             else:
                 estimand_label = "DID^{fd}_l"
             if horizon_surface_empty:
+                # PR #347 R14 P1: name the estimand label with the
+                # covariate-adjusted form (``DID^{X,fd}_l``) when
+                # covariates are active rather than hardcoding
+                # ``DID^{fd}_l``. The native result label already
+                # handles this; propagate to the reporting-layer
+                # prose.
                 definition_text = (
                     "Under ``trends_linear=True`` with ``L_max >= 2``, the "
                     "estimator intentionally does NOT produce a scalar "
                     "aggregate in ``overall_att`` (it is NaN by design, "
                     "matching R's ``did_multiplegt_dyn`` with "
                     "``trends_lin=TRUE``). On this fit, no cumulated level "
-                    "effects ``DID^{fd}_l`` survived estimation (the "
-                    "horizon surface is empty — either no eligible "
+                    f"effects ``{estimand_label}`` survived estimation "
+                    "(the horizon surface is empty — either no eligible "
                     "switchers at any positive horizon or all horizons "
                     "were dropped). There is no scalar headline AND no "
                     "per-horizon table to fall back on; re-fit with a "
