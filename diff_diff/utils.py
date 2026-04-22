@@ -1427,6 +1427,7 @@ def compute_time_weights(
     min_decrease: float = 1e-5,
     max_iter_pre_sparsify: int = 100,
     max_iter: int = 10000,
+    init_weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Compute SDID time weights via Frank-Wolfe optimization.
 
@@ -1452,6 +1453,15 @@ def compute_time_weights(
     max_iter : int, default 10000
         Maximum iterations for second pass (after sparsification).
         Matches R's default.
+    init_weights : np.ndarray, optional
+        Warm-start weights for the first Frank-Wolfe pass, shape ``(n_pre,)``.
+        If None (default), the solver starts from uniform, matching the
+        top-level ``synthdid_estimate(update.lambda=TRUE)`` path. When
+        provided, the Rust fast-path is skipped in favor of the Python
+        two-pass dispatcher so the first-pass init can be threaded
+        through; this matches R's ``synthdid::bootstrap_sample`` shape
+        (which passes ``weights$lambda`` as FW init per draw). Used by
+        ``SyntheticDiD._bootstrap_se`` on the refit loop.
 
     Returns
     -------
@@ -1464,7 +1474,7 @@ def compute_time_weights(
             "is required for time weight computation."
         )
 
-    if HAS_RUST_BACKEND:
+    if HAS_RUST_BACKEND and init_weights is None:
         return np.asarray(
             _rust_compute_time_weights(
                 np.ascontiguousarray(Y_pre_control, dtype=np.float64),
@@ -1486,11 +1496,15 @@ def compute_time_weights(
     post_means = np.mean(Y_post_control, axis=0)  # (N_co,)
     Y_time = np.column_stack([Y_pre_control.T, post_means])  # (N_co, T_pre+1)
 
-    # First pass: limited iterations (matching R's max.iter.pre.sparsify)
+    # First pass: limited iterations (matching R's max.iter.pre.sparsify).
+    # init_weights is either None (uniform start) or the caller-supplied
+    # warm-start; the inner _sc_weight_fw still dispatches to Rust for the
+    # 100-iter run, so we only pay a Python-level dispatch overhead.
     lam = _sc_weight_fw(
         Y_time,
         zeta=zeta_lambda,
         intercept=intercept,
+        init_weights=init_weights,
         min_decrease=min_decrease,
         max_iter=max_iter_pre_sparsify,
     )
@@ -1519,6 +1533,7 @@ def compute_sdid_unit_weights(
     min_decrease: float = 1e-5,
     max_iter_pre_sparsify: int = 100,
     max_iter: int = 10000,
+    init_weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Compute SDID unit weights via Frank-Wolfe with two-pass sparsification.
 
@@ -1541,6 +1556,15 @@ def compute_sdid_unit_weights(
         Iterations for first pass (before sparsification).
     max_iter : int, default 10000
         Iterations for second pass (after sparsification). Matches R's default.
+    init_weights : np.ndarray, optional
+        Warm-start weights for the first Frank-Wolfe pass, shape
+        ``(n_control,)``. If None (default), the solver starts from
+        uniform — matching the top-level ``synthdid_estimate(update.omega=TRUE)``
+        path. When provided, the Rust fast-path is skipped in favor of the
+        Python two-pass dispatcher so the first-pass init can be threaded
+        through; this matches R's ``synthdid::bootstrap_sample`` shape
+        (which passes ``sum_normalize(weights$omega[...])`` as FW init per
+        draw). Used by ``SyntheticDiD._bootstrap_se`` on the refit loop.
 
     Returns
     -------
@@ -1554,7 +1578,7 @@ def compute_sdid_unit_weights(
     if n_control == 1:
         return np.asarray([1.0])
 
-    if HAS_RUST_BACKEND:
+    if HAS_RUST_BACKEND and init_weights is None:
         return np.asarray(
             _rust_sdid_unit_weights(
                 np.ascontiguousarray(Y_pre_control, dtype=np.float64),
@@ -1570,11 +1594,15 @@ def compute_sdid_unit_weights(
     # Build collapsed form: (T_pre, N_co + 1), last col = treated pre means
     Y_unit = np.column_stack([Y_pre_control, Y_pre_treated_mean.reshape(-1, 1)])
 
-    # First pass: limited iterations
+    # First pass: limited iterations. init_weights is either None (uniform
+    # start) or the caller-supplied warm-start; the inner _sc_weight_fw
+    # still dispatches to Rust for the 100-iter run, so we only pay a
+    # Python-level dispatch overhead.
     omega = _sc_weight_fw(
         Y_unit,
         zeta=zeta_omega,
         intercept=intercept,
+        init_weights=init_weights,
         max_iter=max_iter_pre_sparsify,
         min_decrease=min_decrease,
     )

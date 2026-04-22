@@ -2328,12 +2328,17 @@ class TestScaleEquivariance:
     # drift the fix is not a true no-op on normal data and review is warranted.
     _BASELINE = {
         "placebo":   (4.603349837478791,   0.29385822261006445, 0.004975124378109453,    200),
-        # bootstrap = paper-faithful refit. Previously captured under the
-        # "bootstrap_refit" enum value that has since been folded into
-        # "bootstrap"; the numerics are bit-identical (same rng.choice
-        # sequence, same compute_sdid_{unit,time}_weights + compute_sdid_estimator
-        # call chain).
-        "bootstrap": (4.6033498374787865,  0.21424970247101688, 2.1089088107241648e-102, 200),
+        # bootstrap = paper-faithful refit with R-default warm-start: FW is
+        # initialized with ``sum_normalize(unit_weights[boot_control_idx])``
+        # for ω and with the fit-time ``time_weights`` for λ on each draw,
+        # matching R's ``vcov.R::bootstrap_sample`` opts-rebind shape.
+        # Drift from the cold-start capture (0.21424970…) is confined to
+        # a handful of bootstrap draws where the 100-iter pre-sparsify pass
+        # converged to a different sparsification pattern under uniform
+        # init; strict-convexity of the FW objective means the converged
+        # answer is unique, so the warm-start matches R more faithfully on
+        # problems where the pre-sparsify budget is tight.
+        "bootstrap": (4.6033498374787865,  0.21427381053829253, 2.2215821875845446e-102, 200),
         "jackknife": (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,   23),
     }
 

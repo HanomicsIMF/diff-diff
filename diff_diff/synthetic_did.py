@@ -283,11 +283,18 @@ class SyntheticDiD(DifferenceInDifferences):
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
-        # Reject replicate-weight designs — SyntheticDiD uses bootstrap variance
+        # Reject replicate-weight designs — SyntheticDiD has no replicate-
+        # weight variance path. Full survey designs with strata/PSU/FPC are
+        # also not supported on any variance method in this release (see the
+        # guards below). Pweight-only works with variance_method='placebo'
+        # or 'jackknife'.
         if resolved_survey is not None and resolved_survey.uses_replicate_variance:
             raise NotImplementedError(
-                "SyntheticDiD does not yet support replicate-weight survey "
-                "designs. Use a TSL-based survey design (strata/psu/fpc)."
+                "SyntheticDiD does not support replicate-weight survey designs. "
+                "Only pweight-only survey weights are accepted, and only with "
+                "variance_method='placebo' or 'jackknife'. See "
+                "docs/methodology/REGISTRY.md §SyntheticDiD for the survey "
+                "support matrix."
             )
         # Validate pweight only
         if resolved_survey is not None and resolved_survey.weight_type != "pweight":
@@ -863,11 +870,11 @@ class SyntheticDiD(DifferenceInDifferences):
         loop if the rate of draws with any non-convergence event exceeds 5%
         of valid draws (counted once per draw, not once per solver call).
         """
-        # unit_weights and time_weights from the fit-time solver are not used
-        # inside the refit loop (each draw re-estimates). Kept in the signature
-        # so the fit() call site and the result-assembly path stay symmetric
-        # across variance methods.
-        del unit_weights, time_weights
+        # unit_weights (fit-time ω) and time_weights (fit-time λ) are used
+        # as warm-start Frank-Wolfe initializations per bootstrap draw,
+        # matching R's ``vcov.R::bootstrap_sample`` which passes
+        # ``sum_normalize(weights$omega[sort(ind[ind <= N0])])`` and
+        # ``weights$lambda`` as the FW init via the rebound ``opts``.
 
         rng = np.random.default_rng(self.seed)
         n_control = Y_pre_control.shape[1]
@@ -915,10 +922,29 @@ class SyntheticDiD(DifferenceInDifferences):
                 Y_boot_pre_t_mean = np.mean(Y_boot_pre_t, axis=1)
                 Y_boot_post_t_mean = np.mean(Y_boot_post_t, axis=1)
 
+                # Warm-start Frank-Wolfe initialization matching R's
+                # ``vcov.R::bootstrap_sample`` shape: ω_init is the fit-time
+                # ω renormalized over the resampled controls (same
+                # ``sum_normalize`` operation R uses), and λ_init is the
+                # fit-time λ unchanged. R's ``synthdid_estimate`` with
+                # ``update.omega=TRUE`` / ``update.lambda=TRUE`` then runs
+                # Frank-Wolfe from those initializations. Without warm-start
+                # our FW first-pass (max_iter=100) may land in a different
+                # sparsification pattern than R's on problems where the
+                # 100-iter budget is tight (e.g., small ζ_λ on
+                # less-regularized time weights). Strictly-convex objective
+                # → warm and cold start converge to the same global minimum
+                # when FW is run to full convergence, but sparsification
+                # introduces path dependence on the 100-iter first pass.
+                boot_control_idx = boot_idx[boot_is_control]
+                boot_omega_init = _sum_normalize(unit_weights[boot_control_idx])
+                boot_lambda_init = time_weights
+
                 # Algorithm 2 step 2: re-estimate ω̂_b and λ̂_b via two-pass
                 # sparsified Frank-Wolfe on the resampled panel, using the
-                # fit-time normalized-scale zeta. Per-draw convergence
-                # warnings are captured and aggregated below.
+                # fit-time normalized-scale zeta and the warm-start inits.
+                # Per-draw convergence warnings are captured and aggregated
+                # below.
                 with warnings.catch_warnings(record=True) as _fw_draw_warnings:
                     warnings.simplefilter("always")
                     boot_omega = compute_sdid_unit_weights(
@@ -926,12 +952,14 @@ class SyntheticDiD(DifferenceInDifferences):
                         Y_boot_pre_t_mean,
                         zeta_omega=zeta_omega_n,
                         min_decrease=min_decrease,
+                        init_weights=boot_omega_init,
                     )
                     boot_lambda = compute_time_weights(
                         Y_boot_pre_c,
                         Y_boot_post_c,
                         zeta_lambda=zeta_lambda_n,
                         min_decrease=min_decrease,
+                        init_weights=boot_lambda_init,
                     )
                 # Count draws with ANY non-convergence (boolean per draw),
                 # not raw solver warnings — a single draw can emit up to
