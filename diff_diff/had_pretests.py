@@ -61,6 +61,15 @@ _MIN_G_YATCHEW = 3
 _MIN_N_BOOTSTRAP = 99
 _STUTE_LARGE_G_THRESHOLD = 100_000
 
+# Scale-relative tolerance for detecting a numerically exact linear OLS fit,
+# i.e., ``sum(eps^2) / sum(dy^2) < _EXACT_LINEAR_RELATIVE_TOL`` means the
+# OLS residuals are IEEE-arithmetic noise rather than signal. Under exact
+# Assumption 8, residuals are mathematically zero; in practice FP round-off
+# leaves eps on the order of machine-epsilon (~1e-16). Squared that is
+# ~1e-32. The threshold ~1e-24 leaves ~10^8 accumulated FP operations of
+# margin so genuinely-noisy data is never mis-classified.
+_EXACT_LINEAR_RELATIVE_TOL = 1e-24
+
 
 # =============================================================================
 # Result dataclasses
@@ -366,9 +375,14 @@ class HADPretestReport:
     stute : StuteTestResults
     yatchew : YatchewTestResults
     all_pass : bool
-        ``True`` iff none of the three IMPLEMENTED tests rejects. This is
-        a PARTIAL indicator: it does not certify Assumption 7 (pre-trends),
-        which is not tested by Phase 3.
+        ``True`` iff every constituent ``p_value`` is finite AND no test
+        rejects. ``False`` whenever any test produced a NaN p-value
+        (inconclusive) OR any test rejected. This gating prevents
+        downstream callers from mistaking an "inconclusive" report for a
+        "pass" by inspecting ``all_pass`` in isolation. Even when
+        ``all_pass`` is ``True``, the report is a PARTIAL indicator: it
+        does not certify Assumption 7 (pre-trends), which is not tested
+        by Phase 3.
     verdict : str
         Human-readable classification. Priority-ordered first-match:
 
@@ -522,29 +536,50 @@ def _fit_ols_intercept_slope(d: np.ndarray, dy: np.ndarray) -> "tuple[float, flo
     return a_hat, b_hat, residuals
 
 
-def _cvm_statistic(eps_sorted: np.ndarray) -> float:
-    """Compute the sorted-residual Cramer-von Mises statistic.
+def _cvm_statistic(eps_sorted: np.ndarray, d_sorted: np.ndarray) -> float:
+    """Compute the tie-safe Cramer-von Mises cusum statistic.
 
-    Equivalent to paper's ``S = Σ (g/G)^2 · ((1/g) Σ_{h=1}^g eps_(h))^2``:
+    Paper definition (Appendix D):
 
-        (g/G)^2 * (C_g / g)^2 = C_g^2 / G^2
+        c_G(d) := G^{-1/2} * sum_g 1{D_g <= d} * eps_g
+        S := (1/G) * sum_g c_G^2(D_g) = (1/G^2) * sum_g (C_g)^2
 
-    where ``C_g = Σ_{h=1}^g eps_(h)`` is the cumulative residual sum.
-    Implementation uses the simplified form for numerical stability.
+    where ``C_g = sum_{h : D_h <= D_g} eps_h`` is the cumulative residual
+    sum up to and including ALL observations with dose <= D_g. This
+    definition is tie-safe: at a tied dose value ``D_g == D_{g+1}``, both
+    c_G(D_g) and c_G(D_{g+1}) include all tie-block members, so the
+    cumulative sum used at each tied observation is the cumulative sum
+    through the END of the tie block.
+
+    A naive per-observation ``cumsum`` on sorted residuals violates this
+    at tie blocks (each tied observation sees a partial within-block
+    cumulative sum). This implementation collapses each tie block to the
+    post-tie cumulative sum before squaring, matching the paper definition.
 
     Parameters
     ----------
     eps_sorted : np.ndarray, shape (G,)
-        Residuals sorted by the associated regressor ``d``.
+        Residuals sorted by ``d_sorted``.
+    d_sorted : np.ndarray, shape (G,)
+        Regressor values sorted ascending. Must be sorted consistently
+        with ``eps_sorted``.
 
     Returns
     -------
     float
-        ``S = (1 / G^2) * sum(cumsum(eps_sorted)^2)``.
+        ``S = (1 / G^2) * sum_g C_g^2``.
     """
     G = eps_sorted.shape[0]
     cumsum = np.cumsum(eps_sorted)
-    return float(np.sum(cumsum * cumsum) / (G * G))
+    # Tie-safe correction: replace within-tie-block values with the
+    # cumulative sum at the END of each tie block. np.unique on the
+    # already-sorted regressor gives per-unique-value counts; the last
+    # index of each tie block is `cumsum(counts) - 1`, and np.repeat
+    # expands that back to per-observation.
+    _, counts = np.unique(d_sorted, return_counts=True)
+    tie_end_idx = np.cumsum(counts) - 1
+    cumsum_tie_safe = np.repeat(cumsum[tie_end_idx], counts)
+    return float(np.sum(cumsum_tie_safe * cumsum_tie_safe) / (G * G))
 
 
 def _compose_verdict(
@@ -646,6 +681,17 @@ def qug_test(d: np.ndarray, alpha: float = 0.05) -> QUGTestResults:
     d_arr = _validate_1d_numeric(d, "d")
     critical_value = 1.0 / alpha - 1.0
 
+    # HAD support restriction: doses must be non-negative (paper Section 2).
+    # Reject negative doses at the front door rather than silently filtering
+    # them into the zero-exclusion counter.
+    if (d_arr < 0).any():
+        n_neg = int((d_arr < 0).sum())
+        raise ValueError(
+            f"qug_test: d contains {n_neg} negative value(s); HAD doses "
+            f"must be non-negative (paper Section 2). Check your dose "
+            f"column or pre-process before calling qug_test."
+        )
+
     mask = d_arr > 0
     d_nz = d_arr[mask]
     n_excluded = int(d_arr.shape[0] - d_nz.shape[0])
@@ -678,9 +724,13 @@ def qug_test(d: np.ndarray, alpha: float = 0.05) -> QUGTestResults:
             d_order_2=float("nan"),
         )
 
-    d_sorted = np.sort(d_nz)
-    D1 = float(d_sorted[0])
-    D2 = float(d_sorted[1])
+    # Use np.partition for O(G) extraction of the two smallest positive
+    # doses (faster than full O(G log G) sort). For k=1, np.partition
+    # guarantees partitioned[0] <= partitioned[1] = D_{(2)} (the 2nd-smallest),
+    # which implies partitioned[0] = D_{(1)} (the minimum).
+    partitioned = np.partition(d_nz, 1)
+    D1 = float(partitioned[0])
+    D2 = float(partitioned[1])
 
     if D2 == D1:
         warnings.warn(
@@ -827,13 +877,13 @@ def stute_test(
         )
 
     a_hat, b_hat, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
-    # Degenerate case: zero dose variation. Residual variance under the
-    # linear null is just Var(dy), but the CvM under "no signal" regressor
-    # carries no information; emit NaN.
-    if np.var(d_arr) <= 0.0 or np.var(eps) <= 0.0:
+    # Genuine degeneracy: zero dose variation. The CvM cusum is defined
+    # against the regressor, and constant d carries no signal to test
+    # linearity against - emit NaN.
+    if np.var(d_arr) <= 0.0:
         warnings.warn(
-            "stute_test: degenerate inputs (constant d or zero residual "
-            "variance). Returning NaN result.",
+            "stute_test: constant d (zero dose variation); the Stute "
+            "linearity test requires regressor variation. Returning NaN result.",
             UserWarning,
             stacklevel=2,
         )
@@ -847,8 +897,26 @@ def stute_test(
             seed=seed,
         )
 
+    # Numerically exact linear fit: Assumption 8 holds to IEEE precision,
+    # so the Stute CvM statistic is formally 0 and every bootstrap draw is
+    # also 0. Short-circuit to p=1 to avoid FP-noise-driven bootstrap
+    # comparisons where cvm_stat and S_b are both at machine-epsilon scale.
+    eps_norm_sq = float(np.sum(eps * eps))
+    dy_norm_sq = float(np.sum(dy_arr * dy_arr))
+    if eps_norm_sq <= _EXACT_LINEAR_RELATIVE_TOL * max(dy_norm_sq, 1.0):
+        return StuteTestResults(
+            cvm_stat=0.0,
+            p_value=1.0,
+            reject=False,
+            alpha=alpha,
+            n_bootstrap=int(n_bootstrap),
+            n_obs=G,
+            seed=seed,
+        )
+
     idx = np.argsort(d_arr, kind="stable")
-    S = _cvm_statistic(eps[idx])
+    d_sorted = d_arr[idx]
+    S = _cvm_statistic(eps[idx], d_sorted)
 
     rng = np.random.default_rng(seed)
     bootstrap_S = np.empty(n_bootstrap, dtype=np.float64)
@@ -857,7 +925,7 @@ def stute_test(
         eta = _generate_mammen_weights(G, rng)
         dy_b = fitted + eps * eta
         _, _, eps_b = _fit_ols_intercept_slope(d_arr, dy_b)
-        bootstrap_S[b] = _cvm_statistic(eps_b[idx])
+        bootstrap_S[b] = _cvm_statistic(eps_b[idx], d_sorted)
 
     p_value = float((1.0 + float(np.sum(bootstrap_S >= S))) / (n_bootstrap + 1.0))
     reject = p_value <= alpha
@@ -959,6 +1027,31 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
     _, _, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
     sigma2_lin = float(np.mean(eps * eps))
 
+    # Numerically exact linear fit: same short-circuit as `stute_test`.
+    # Assumption 8 holds to IEEE precision; the Yatchew statistic is
+    # formally -inf (finite-negative numerator over zero denominator),
+    # which maps to p = 1 under the one-sided standard-normal critical
+    # value. Short-circuit so FP noise in ``sigma4_W`` cannot produce a
+    # spuriously large finite ``T_hr``.
+    eps_norm_sq = float(np.sum(eps * eps))
+    dy_norm_sq = float(np.sum(dy_arr * dy_arr))
+    if eps_norm_sq <= _EXACT_LINEAR_RELATIVE_TOL * max(dy_norm_sq, 1.0):
+        # For reporting, compute sigma2_diff on the sorted dy (finite,
+        # well-defined even in the exact-linear case).
+        idx_early = np.argsort(d_arr, kind="stable")
+        sigma2_diff_exact = float(np.sum(np.diff(dy_arr[idx_early]) ** 2) / (2.0 * G))
+        return YatchewTestResults(
+            t_stat_hr=float("-inf"),
+            p_value=1.0,
+            reject=False,
+            alpha=alpha,
+            critical_value=critical_value,
+            sigma2_lin=sigma2_lin,
+            sigma2_diff=sigma2_diff_exact,
+            sigma2_W=0.0,
+            n_obs=G,
+        )
+
     idx = np.argsort(d_arr, kind="stable")
     dy_s = dy_arr[idx]
     eps_s = eps[idx]
@@ -973,14 +1066,16 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
     # review line 171.
     sigma4_W = float(np.mean(eps_s[1:] ** 2 * eps_s[:-1] ** 2))
     if sigma4_W <= 0.0:
-        warnings.warn(
-            "yatchew_hr_test: sigma4_W <= 0 (zero residual variance); returning NaN result.",
-            UserWarning,
-            stacklevel=2,
-        )
+        # sigma4_W = 0 implies OLS residuals are zero (or effectively zero),
+        # i.e. the linear fit reproduces dy exactly. Under H_0 (linearity),
+        # Assumption 8 holds exactly; the Yatchew statistic is formally -inf
+        # (finite-negative numerator over zero denominator), which corresponds
+        # to p-value = 1 (fail-to-reject). Return p = 1, reject = False with
+        # t_stat_hr = -inf as the formal-limit value. This matches the
+        # Stute-bootstrap behavior on the same exact-linear input.
         return YatchewTestResults(
-            t_stat_hr=float("nan"),
-            p_value=float("nan"),
+            t_stat_hr=float("-inf"),
+            p_value=1.0,
             reject=False,
             alpha=alpha,
             critical_value=critical_value,
@@ -1093,7 +1188,18 @@ def did_had_pretest_workflow(
     stute_res = stute_test(d_arr, dy_arr, alpha=alpha, n_bootstrap=n_bootstrap, seed=seed)
     yatchew_res = yatchew_hr_test(d_arr, dy_arr, alpha=alpha)
 
-    all_pass = not (qug_res.reject or stute_res.reject or yatchew_res.reject)
+    # `all_pass` must be conclusive: require every constituent p-value to be
+    # finite AND no test to reject. A NaN p-value means the test is
+    # inconclusive, not a pass, so `all_pass = False` on any NaN result
+    # (even when none of the tests set `reject = True`). This keeps
+    # `all_pass` semantically aligned with the verdict string.
+    finite_all = (
+        np.isfinite(qug_res.p_value)
+        and np.isfinite(stute_res.p_value)
+        and np.isfinite(yatchew_res.p_value)
+    )
+    any_reject = qug_res.reject or stute_res.reject or yatchew_res.reject
+    all_pass = bool(finite_all and not any_reject)
     verdict = _compose_verdict(qug_res, stute_res, yatchew_res)
 
     return HADPretestReport(

@@ -2288,7 +2288,7 @@ Shipped in `diff_diff/had_pretests.py` as `stute_test()`. Tests whether `E(ΔY |
    - Repeat B times; the p-value is the fraction of `S*` exceeding `S`.
 5. Properties (page 26): asymptotic size, consistency under any fixed alternative, non-trivial local power at rate `G^{-1/2}`.
 6. Vectorized implementation (Appendix D): with `L` a `G × G` lower-triangular matrix of ones, `S = (1/G²) · 1ᵀ (L · E)^{∘2}`. Bootstrap uses a `G × G` realization matrix `H` of Mammen weights; memory-bounded at `G ≈ 100,000`.
-- **Note:** Default `n_bootstrap = 499` is a diff-diff choice; the paper does not prescribe.
+- **Note:** Default `n_bootstrap = 999` is a diff-diff choice; the paper does not prescribe. A front-door `ValueError` is raised for `n_bootstrap < 99` (below which the discretised bootstrap p-value grid `1/(B+1)` is too coarse to be meaningful).
 
 *Algorithm variant - Yatchew (1997) heteroskedasticity-robust linearity test (Appendix E, Theorem 7):*
 Shipped in `diff_diff/had_pretests.py` as `yatchew_hr_test()`. Alternative to Stute when `G` is large or heteroskedasticity is suspected.

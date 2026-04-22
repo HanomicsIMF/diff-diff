@@ -164,6 +164,13 @@ class TestQUGTest:
         with pytest.raises(ValueError, match="must be 1-dimensional"):
             qug_test(np.array([[0.1, 0.5], [0.3, 0.9]]))
 
+    def test_negative_dose_raises(self):
+        """P2 fix: HAD doses must be non-negative; qug_test rejects negatives
+        at the front door rather than silently folding them into the
+        zero-exclusion counter."""
+        with pytest.raises(ValueError, match="negative value"):
+            qug_test(np.array([0.1, -0.3, 0.5, 0.9]))
+
 
 # =============================================================================
 # Stute test
@@ -188,15 +195,17 @@ class TestStuteTest:
         assert r.p_value < 0.05
 
     def test_cvm_statistic_manual_equivalence(self):
-        """Verify the simplified CvM form matches the paper's stated form.
+        """Verify the simplified CvM form matches the paper's stated form
+        in the no-ties case.
 
         Paper: S = Σ(g/G)^2 · ((1/g) Σ eps_(h))^2
-        Code:  S = (1/G^2) Σ (cumsum_g)^2
-        These are algebraically identical.
+        Code (no ties):  S = (1/G^2) Σ (cumsum_g)^2
+        These are algebraically identical when all dose values are unique.
         """
         from diff_diff.had_pretests import _cvm_statistic
 
         eps = np.array([1.0, -0.5, 0.3, -0.2, 0.1])
+        d_sorted = np.array([0.1, 0.2, 0.3, 0.4, 0.5])  # all unique -> no ties
         G = len(eps)
 
         # Paper form
@@ -206,16 +215,68 @@ class TestStuteTest:
             c_g = cumsum[g - 1]
             paper_S += (g / G) ** 2 * (c_g / g) ** 2
 
-        # Simplified form (what the code uses)
-        code_S = _cvm_statistic(eps)
-
+        code_S = _cvm_statistic(eps, d_sorted)
         np.testing.assert_allclose(code_S, paper_S, atol=1e-14)
+
+    def test_cvm_statistic_tie_safe_order_invariance(self):
+        """CRITICAL P1 fix: tie-safe CvM is order-invariant within tie blocks.
+
+        Under the paper definition, at a tied dose ``D_g == D_{g+1}``, the
+        cusum ``c_G`` evaluated at both tied observations includes ALL
+        tie-block members. So the CvM statistic must not depend on the
+        within-tie ordering of residuals. A naive per-observation cumsum
+        (without tie-block collapse) would give different S values when
+        the within-tie residual order is permuted.
+        """
+        from diff_diff.had_pretests import _cvm_statistic
+
+        # 6 observations with two tie blocks: d = [0.1, 0.1, 0.1, 0.5, 0.5, 0.9]
+        d_sorted = np.array([0.1, 0.1, 0.1, 0.5, 0.5, 0.9])
+        eps_a = np.array([1.0, -0.5, 0.3, 0.7, -0.2, 0.1])
+        # Permute within-tie residual order (positions 0-2 and 3-4 permuted):
+        eps_b = np.array([0.3, 1.0, -0.5, -0.2, 0.7, 0.1])
+        S_a = _cvm_statistic(eps_a, d_sorted)
+        S_b = _cvm_statistic(eps_b, d_sorted)
+        np.testing.assert_allclose(S_a, S_b, atol=1e-14)
+
+    def test_stute_order_invariance_with_duplicate_doses(self):
+        """End-to-end P1 fix: stute_test on duplicate-dose inputs is invariant
+        to within-tie row ordering (tie-safe CvM contract propagates)."""
+        G = 40
+        # Build d with ties and a matched dy
+        rng = np.random.default_rng(42)
+        d_unique = np.array([0.1, 0.3, 0.5, 0.8])
+        d = np.repeat(d_unique, G // len(d_unique))
+        dy = 2.0 * d + rng.normal(0.0, 0.1, size=G)
+        # Permute order within each tie block
+        perm = np.arange(G)
+        rng_perm = np.random.default_rng(123)
+        for start in range(0, G, G // len(d_unique)):
+            block = perm[start : start + G // len(d_unique)]
+            rng_perm.shuffle(block)
+            perm[start : start + G // len(d_unique)] = block
+        r_a = stute_test(d, dy, n_bootstrap=199, seed=42)
+        r_b = stute_test(d[perm], dy[perm], n_bootstrap=199, seed=42)
+        # Observed cvm_stat must be bit-identical (tie-safe).
+        np.testing.assert_allclose(r_a.cvm_stat, r_b.cvm_stat, atol=1e-14)
 
     def test_n_bootstrap_below_99_raises(self):
         """Commit criterion 8: n_bootstrap < 99 -> ValueError."""
         d, dy = _linear_dgp(G=50)
         with pytest.raises(ValueError, match=r"n_bootstrap must be >= 99"):
             stute_test(d, dy, n_bootstrap=50)
+
+    def test_exact_linear_returns_p1_not_nan(self):
+        """P1 fix: exact linear fit (eps=0) must fail-to-reject with p=1,
+        NOT return NaN. Assumption 8 holds exactly in this case."""
+        G = 50
+        d = np.linspace(0.1, 1.0, G)
+        dy = 1.0 + 2.0 * d  # exact linear, residuals are zero
+        r = stute_test(d, dy, n_bootstrap=199, seed=42)
+        assert np.isfinite(r.p_value)
+        assert r.p_value == 1.0  # all bootstrap S_b tied at 0 with observed S
+        assert r.reject is False
+        assert r.cvm_stat == 0.0
 
     def test_mismatched_lengths_raise(self):
         with pytest.raises(ValueError, match="same length"):
@@ -280,6 +341,21 @@ class TestYatchewHRTest:
         with pytest.raises(ValueError, match="alpha must satisfy"):
             yatchew_hr_test(d, dy, alpha=-0.1)
 
+    def test_exact_linear_returns_p1_not_nan(self):
+        """P1 fix: exact linear fit (eps=0) must fail-to-reject with p=1,
+        NOT NaN. Yatchew statistic is formally -inf (finite-negative numerator
+        over zero denominator), which corresponds to p=1 under the one-sided
+        standard-normal critical value."""
+        G = 50
+        d = np.linspace(0.1, 1.0, G)
+        dy = 1.0 + 2.0 * d  # exact linear, residuals are zero
+        r = yatchew_hr_test(d, dy)
+        assert np.isfinite(r.p_value)
+        assert r.p_value == 1.0
+        assert r.reject is False
+        # t_stat_hr is formally -inf for the exact-linear limit.
+        assert r.t_stat_hr == float("-inf")
+
 
 # =============================================================================
 # Composite workflow
@@ -343,6 +419,27 @@ class TestCompositeWorkflow:
         # At least QUG and one of {Stute, Yatchew} rejected.
         assert report.qug.reject is True
         assert report.stute.reject or report.yatchew.reject
+
+    def test_all_pass_false_when_any_test_nan(self):
+        """P1 fix: all_pass must NOT be True when any constituent test is
+        NaN. Previously all_pass was computed from `not reject` only, so a
+        NaN-statistic test (reject=False by convention) incorrectly tripped
+        all_pass=True while verdict was "inconclusive"."""
+        G = 40
+        # Constant dose triggers QUG tie (D_(1) == D_(2)) -> NaN.
+        d = np.full(G, 0.5)
+        dy = np.linspace(0.0, 2.0, G)
+        panel = _make_two_period_panel(G, d, dy, seed=42)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            report = did_had_pretest_workflow(
+                panel, "y", "d", "time", "unit", n_bootstrap=199, seed=42
+            )
+        # At least one test produces NaN, so `all_pass` MUST be False even
+        # though none of the tests set reject=True.
+        assert np.isnan(report.qug.p_value)
+        assert report.all_pass is False
+        assert report.verdict.startswith("inconclusive")
 
     def test_workflow_seed_controls_stute_only(self):
         """Workflow seed forwards to Stute only; re-run with same seed is reproducible."""
