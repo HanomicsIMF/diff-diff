@@ -501,10 +501,12 @@ variables appear to the left of the `|` separator.
    `zeta=1.0`). Regularization parameters `zeta_omega` and `zeta_lambda` are now
    computed automatically from the data noise level (N_tr * sigma^2) as specified in
    Appendix D of Arkhangelsky et al. (2021), matching R's default behavior.
-4. **Bootstrap SE uses fixed weights matching R's `bootstrap_sample`** (was
-   re-estimating all weights). The bootstrap variance procedure now holds unit and time
-   weights fixed at their point estimates and only re-estimates the treatment effect,
-   matching the approach in R's `synthdid::bootstrap_sample()`.
+4. **Bootstrap SE is paper-faithful refit (Algorithm 2 step 2), matching R's default
+   `synthdid::vcov(method="bootstrap")`.** On each pairs-bootstrap draw, ω and λ are
+   re-estimated via Frank-Wolfe on the resampled panel using the fit-time normalized-
+   scale zeta. *(Historical note: an earlier release shipped a fixed-weight shortcut
+   here that matched neither the paper nor R's default vcov; that path was removed
+   in PR #351 along with its R-parity fixture, which had also been mis-anchored.)*
 5. **Default `variance_method` changed to `"placebo"`** matching R's default. The R
    package uses placebo variance by default (`synthdid_estimate` returns an object whose
    `vcov()` uses the placebo method); our default now matches.

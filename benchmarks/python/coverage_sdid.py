@@ -293,7 +293,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
             "SDID coverage Monte Carlo study — rejection rates across "
-            "placebo / bootstrap / bootstrap_refit / jackknife on representative DGPs."
+            "placebo / bootstrap / jackknife on representative DGPs."
         )
     )
     p.add_argument("--n-seeds", type=int, default=500, help="MC replications per DGP (default 500)")

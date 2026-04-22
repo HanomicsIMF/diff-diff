@@ -235,13 +235,14 @@ class SyntheticDiD(DifferenceInDifferences):
             out before computing the SDID estimator.
         survey_design : SurveyDesign, optional
             Survey design specification. Only pweight weight_type is supported.
-            Strata/PSU/FPC are supported via Rao-Wu rescaled bootstrap when
-            variance_method='bootstrap'. Non-bootstrap variance methods
-            (placebo, jackknife) do not support strata/PSU/FPC; use
-            variance_method='bootstrap' for full designs.
-            ``variance_method='bootstrap_refit'`` rejects any survey design
-            (including pweight-only) — Rao-Wu rescaled weights composed with
-            Frank-Wolfe re-estimation requires a separate derivation.
+            ``variance_method='placebo'`` and ``variance_method='jackknife'``
+            accept pweight-only surveys (composed via ``w_control`` /
+            ``w_treated``). ``variance_method='bootstrap'`` rejects all
+            survey designs (including pweight-only) and strata/PSU/FPC are
+            not supported by any variance method on this release —
+            composing Rao-Wu rescaled weights with paper-faithful
+            Frank-Wolfe re-estimation requires a separate derivation
+            (tracked in TODO.md, sketched in REGISTRY.md §SyntheticDiD).
 
         Returns
         -------
@@ -255,10 +256,9 @@ class SyntheticDiD(DifferenceInDifferences):
             If required parameters are missing, data validation fails,
             or a non-pweight survey design is provided.
         NotImplementedError
-            If ``variance_method`` is ``'bootstrap_refit'`` and
-            ``survey_design`` is provided, or if ``variance_method`` is
-            not ``'bootstrap'`` and the survey design includes
-            strata/PSU/FPC.
+            If ``survey_design`` is provided with strata/PSU/FPC, or if
+            ``variance_method='bootstrap'`` is provided with any survey
+            design (including pweight-only).
         """
         # Validate inputs
         if outcome is None or treatment is None or unit is None or time is None:

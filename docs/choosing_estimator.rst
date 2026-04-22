@@ -610,8 +610,8 @@ differences helps interpret results and choose appropriate inference.
      - Analytical (influence function)
      - Uses influence-function SEs with WIF adjustment by default. Set ``n_bootstrap=999`` for multiplier bootstrap inference (weight types: ``rademacher``, ``mammen``, ``webb``).
    * - ``SyntheticDiD``
-     - Placebo or bootstrap
-     - Default uses placebo-based variance (``variance_method="placebo"``). Set ``variance_method="bootstrap"`` for bootstrap inference. Both methods use ``n_bootstrap`` replications (default 200).
+     - Placebo, paper-faithful refit bootstrap, or jackknife
+     - Default uses placebo-based variance (``variance_method="placebo"``). Set ``variance_method="bootstrap"`` for paper-faithful Algorithm 2 bootstrap (re-estimates ω and λ via Frank-Wolfe per draw; ~10–100× slower than placebo). Both methods use ``n_bootstrap`` replications (default 200). ``variance_method="jackknife"`` is also available.
    * - ``ContinuousDiD``
      - Analytical (influence function)
      - Uses influence-function-based SEs by default. Use ``n_bootstrap=199`` (or higher) for multiplier bootstrap inference with proper CIs.
@@ -783,10 +783,10 @@ estimation. The depth of support varies by estimator:
      - Full (analytical)
      - Multiplier at PSU
    * - ``SyntheticDiD``
-     - pweight only
-     - Via bootstrap
+     - pweight only (placebo / jackknife)
      - --
-     - Rao-Wu rescaled
+     - --
+     - --
    * - ``TROP``
      - pweight only
      - Via bootstrap
@@ -807,16 +807,20 @@ estimation. The depth of support varies by estimator:
 
 - **Full**: All weight types (pweight/fweight/aweight) + strata/PSU/FPC + Taylor Series Linearization variance
 - **Full (pweight only)**: Full TSL with strata/PSU/FPC, but only ``pweight`` accepted (``fweight``/``aweight`` rejected because composition changes weight semantics)
-- **Via bootstrap**: Strata/PSU/FPC supported only with bootstrap variance. ``SyntheticDiD`` requires ``variance_method='bootstrap'``; ``TROP`` uses bootstrap by default. ``SyntheticDiD`` placebo does not support strata/PSU/FPC.
+- **Via bootstrap**: Strata/PSU/FPC supported only with bootstrap variance. ``TROP`` uses bootstrap by default. ``SyntheticDiD`` does **not** support strata/PSU/FPC on any variance method in this release — see the deferred-composition note in REGISTRY.md §SyntheticDiD.
 - **pweight only** (Weights column): Only ``pweight`` accepted; ``fweight``/``aweight`` raise an error
 - **Diagnostic**: Weighted descriptive statistics only (no inference)
 - **--**: Not supported
 
 .. note::
 
-   ``SyntheticDiD`` with ``variance_method='placebo'`` does not support
-   strata/PSU/FPC. Use ``variance_method='bootstrap'`` for full survey
-   design support.
+   ``SyntheticDiD`` does not support strata/PSU/FPC on any variance method
+   in this release. Pweight-only survey weights work with
+   ``variance_method='placebo'`` or ``variance_method='jackknife'``;
+   ``variance_method='bootstrap'`` rejects all survey designs because
+   composing Rao-Wu rescaled weights with paper-faithful Frank-Wolfe
+   re-estimation requires a separate derivation (tracked in
+   ``TODO.md``).
 
 For the full walkthrough with code examples, see the
 `survey tutorial <https://github.com/igerber/diff-diff/blob/main/docs/tutorials/16_survey_did.ipynb>`_.

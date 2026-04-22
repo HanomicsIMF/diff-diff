@@ -234,14 +234,20 @@ serves a different purpose: R-parity accuracy). They complement it.
   ```python
   SyntheticDiD(variance_method="jackknife", n_bootstrap=0).fit(...)
   # then also variance_method="bootstrap", n_bootstrap=200 for comparison
+  # NOTE: bootstrap is now paper-faithful refit (re-estimates ω and λ via
+  # Frank-Wolfe per draw); ~10–100× slower than placebo or the previous
+  # release's fixed-weight bootstrap. Plan accordingly when timing.
   ```
 - **Operation chain.** (1) SDiD fit with `variance_method="jackknife"` -
   exercises the leave-one-out refit loop; (2) SDiD fit with
-  `variance_method="bootstrap"`, `n_bootstrap=200` for SE comparison;
-  (3) `results.in_time_placebo()`; (4) `results.get_loo_effects_df()`;
-  (5) `results.sensitivity_to_zeta_omega()`; (6)
-  `results.get_weight_concentration()`. The jackknife loop is the primary
-  time sink; `sensitivity_to_zeta_omega` also refits.
+  `variance_method="bootstrap"`, `n_bootstrap=200` for SE comparison
+  (paper-faithful refit; expect order-of-magnitude longer wall-clock
+  than jackknife on this scale); (3) `results.in_time_placebo()`;
+  (4) `results.get_loo_effects_df()`; (5)
+  `results.sensitivity_to_zeta_omega()`; (6)
+  `results.get_weight_concentration()`. The bootstrap refit and the
+  jackknife loop are now both significant time sinks;
+  `sensitivity_to_zeta_omega` also refits.
 - **Source anchor.** `docs/tutorials/18_geo_experiments.ipynb`,
   Arkhangelsky et al. (2021), Mercado Libre geo-experiment writeup
   (medium.com/mercadolibre-tech), Meta GeoLift methodology docs
