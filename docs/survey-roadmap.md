@@ -49,9 +49,12 @@ Weighted `solve_logit()` in `linalg.py` — survey weights enter IRLS as
 
 ### Phase 6: Advanced Features (v2.7.6)
 
-- **Survey-aware bootstrap** for all 8 bootstrap-using estimators:
+- **Survey-aware bootstrap** for bootstrap-using estimators:
   multiplier at PSU (CS, Imputation, TwoStage, Continuous, Efficient)
-  and Rao-Wu rescaled (SA, SyntheticDiD, TROP)
+  and Rao-Wu rescaled (SA, TROP). SyntheticDiD bootstrap no longer supports
+  survey designs: the previous fixed-weight + Rao-Wu path was not paper-
+  faithful and was removed, and composing Rao-Wu with paper-faithful refit
+  Frank-Wolfe requires a separate derivation (tracked in TODO.md)
 - **Replicate weight variance**: BRR, Fay's BRR, JK1, JKn, SDR.
   12 of 16 estimators supported (not SyntheticDiD, TROP, BaconDecomposition, or WooldridgeDiD)
 - **DEFF diagnostics**: per-coefficient design effects vs SRS baseline

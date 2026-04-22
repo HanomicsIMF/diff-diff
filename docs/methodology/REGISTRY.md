@@ -2696,7 +2696,7 @@ should be a deliberate user choice.
 | SunAbraham | Cluster-robust + delta method | Pairs bootstrap |
 | ImputationDiD | Conservative clustered (Thm 3) | Multiplier bootstrap (library extension; percentile CIs and empirical p-values, consistent with CS/SA) |
 | TwoStageDiD | GMM sandwich (Newey & McFadden 1994) | Multiplier bootstrap on GMM influence function |
-| SyntheticDiD | Placebo variance (Alg 4) | Unit-level bootstrap (fixed weights) |
+| SyntheticDiD | Placebo variance (Alg 4) | Unit-level pairs bootstrap (paper-faithful refit, Alg 2 step 2); jackknife (Alg 3) |
 | TripleDifference | Influence function (all methods) | SE = std(IF) / sqrt(n) |
 | StackedDiD | Cluster-robust (unit) | Cluster at unit × sub-experiment |
 | TROP | Block bootstrap | — |
@@ -2886,7 +2886,7 @@ ContinuousDiD, EfficientDiD):
   `ATT_boot[b] = ATT + w_b^T @ psi_psu` where `psi_psu` are PSU-aggregated IF sums.
 - **Note:** When no strata/PSU/FPC, degenerates to standard unit-level multiplier bootstrap.
 
-**Rao-Wu Rescaled Bootstrap** (SunAbraham, SyntheticDiD, TROP):
+**Rao-Wu Rescaled Bootstrap** (SunAbraham, TROP):
 
 - **Reference**: Rao & Wu (1988) "Resampling Inference with Complex Survey Data",
   JASA 83(401); Rao, Wu & Yue (1992) "Some Recent Work on Resampling Methods for
@@ -2896,12 +2896,19 @@ ContinuousDiD, EfficientDiD):
   Rescaled weight: `w*_i = w_i * (n_h / m_h) * r_hi` where `r_hi` = count of PSU *i* drawn.
 - **Note:** FPC enters through the resample size `m_h`, not as a post-hoc scaling factor.
   When `f_h >= 1` (census stratum), observations keep original weights (zero variance).
+- **Note:** SyntheticDiD is intentionally excluded from this list. Paper-faithful
+  refit bootstrap (Arkhangelsky et al. 2021 Algorithm 2 step 2) re-estimates ω̂
+  and λ̂ via Frank-Wolfe on each draw; composing that with Rao-Wu rescaled
+  weights requires a weighted-FW derivation that is not yet implemented (sketch
+  in §SyntheticDiD survey-regression Note; tracked in TODO.md). The previous
+  SyntheticDiD Rao-Wu path composed fixed-ω with rescaled weights, which was
+  not paper-faithful and was removed.
 - **Note:** Bootstrap paths support all three `lonely_psu` modes: `"remove"`, `"certainty"`,
   and `"adjust"`. For `"adjust"`, singleton PSUs from different strata are pooled into a
   combined pseudo-stratum and weights are generated for the pooled group. This is the
   bootstrap analogue of the TSL "adjust" behavior (centering around the global mean).
   Applies to both multiplier bootstrap (CallawaySantAnna, ImputationDiD, TwoStageDiD,
-  ContinuousDiD, EfficientDiD) and Rao-Wu bootstrap (SunAbraham, SyntheticDiD, TROP).
+  ContinuousDiD, EfficientDiD) and Rao-Wu bootstrap (SunAbraham, TROP).
   FPC scaling is skipped for pooled singletons (conservative). When only one singleton
   stratum exists total, pooling is not possible — the singleton contributes zero bootstrap
   variance (same as `remove`), with a `UserWarning` emitted. This is a library-specific

@@ -855,11 +855,16 @@ class SyntheticDiD(DifferenceInDifferences):
         unchanged on each bootstrap draw because the resampled panel shares
         the original noise scale.
 
-        Survey designs are rejected upstream in ``fit()``. ``unit_weights`` and
-        ``time_weights`` are passed for signature parity with the result-
-        assembly call path but are not used inside the loop — every draw
-        re-estimates from scratch (using the normalized-scale zetas). The
-        original ω / λ remain on the result object as the fit-time weights.
+        Survey designs are rejected upstream in ``fit()``. The fit-time
+        ``unit_weights`` (ω̂) and ``time_weights`` (λ̂) are not reused as fixed
+        estimator weights — every draw re-estimates ω̂_b and λ̂_b from scratch
+        (using the normalized-scale zetas) — but they ARE used as Frank-Wolfe
+        warm-start initializations: ``_sum_normalize(unit_weights[boot_ctrl])``
+        seeds ω̂_b's first pass, and ``time_weights`` seeds λ̂_b's. This
+        matches R's ``vcov.R::bootstrap_sample`` shape (see the warm-start
+        comment below, and the ``Deviation`` / warm-start discussion in
+        ``docs/methodology/REGISTRY.md`` §SyntheticDiD). The original ω / λ
+        remain on the result object as the fit-time weights.
 
         Retry-to-B: matches R's ``synthdid::bootstrap_sample`` while-loop. A
         bounded attempt guard of ``20 * n_bootstrap`` prevents pathological-
