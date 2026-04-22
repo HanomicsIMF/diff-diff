@@ -986,9 +986,37 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
     is undefined; the function emits ``UserWarning`` and returns NaN
     rather than raising.
 
-    Dose ties: stable sort (``np.argsort(d, kind="stable")``) preserves
-    the input order among tied ``d`` values. The paper does not specify
-    a tie-break policy; stability suffices.
+    Dose ties: REJECTED with ``UserWarning`` + all-NaN result. The
+    difference-based variance estimator ``sigma2_diff`` and the
+    heteroskedasticity-robust scale ``sigma4_W`` both use adjacent
+    differences of quantities sorted by ``d``; under tied doses the
+    within-tie row ordering is arbitrary (stable sort falls back to input
+    order) so the statistic becomes order-dependent rather than
+    data-dependent. Callers with tied doses (mass-point designs,
+    discretised dose registers) should use :func:`stute_test` instead -
+    its tie-safe Cramer-von Mises statistic collapses tie blocks to the
+    post-tie cumulative sum and is provably order-invariant under
+    within-tie permutations.
+
+    Exact-linear short-circuit: when the OLS residual sum-of-squares is
+    below IEEE precision relative to the centered total sum of squares
+    (``sum(eps^2) <= 1e-24 * sum((dy - dybar)^2)``, i.e. essentially
+    ``1 - R^2 == 0``), the test short-circuits to ``t_stat_hr=-inf,
+    p_value=1.0, reject=False`` - Assumption 8 holds exactly, the formal
+    statistic is ``-inf`` under the one-sided critical value, and the
+    correct decision is fail-to-reject. This shortcut is translation-
+    invariant because the comparison is against centered TSS (not raw
+    ``sum(dy^2)``).
+
+    Degenerate ``sigma4_W = 0`` with non-zero residuals: when the
+    adjacent-residual-product sum vanishes AFTER the exact-linear
+    shortcut is bypassed (e.g. residuals alternate zero/non-zero after
+    sorting), the formal statistic is ``+inf`` or ``-inf`` depending on
+    the sign of the numerator ``sigma2_lin - sigma2_diff``. The function
+    returns the sign-aware limit (``p=0, reject=True`` for positive
+    numerator; ``p=1, reject=False`` for negative; ``NaN`` for zero)
+    with a ``UserWarning``, rather than unconditionally mapping this to
+    ``p=1`` (which would flip a legitimate rejection).
 
     References
     ----------
@@ -1105,17 +1133,42 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
     # review line 171.
     sigma4_W = float(np.mean(eps_s[1:] ** 2 * eps_s[:-1] ** 2))
     if sigma4_W <= 0.0:
-        # sigma4_W = 0 implies OLS residuals are zero (or effectively zero),
-        # i.e. the linear fit reproduces dy exactly. Under H_0 (linearity),
-        # Assumption 8 holds exactly; the Yatchew statistic is formally -inf
-        # (finite-negative numerator over zero denominator), which corresponds
-        # to p-value = 1 (fail-to-reject). Return p = 1, reject = False with
-        # t_stat_hr = -inf as the formal-limit value. This matches the
-        # Stute-bootstrap behavior on the same exact-linear input.
+        # sigma4_W = 0 AFTER the exact-linear short-circuit means OLS
+        # residuals are NOT zero (the shortcut already caught that case)
+        # but every adjacent pair of sorted squared residuals contains a
+        # zero (e.g. residuals alternate zero / nonzero after sort).
+        # The formal test statistic is ±inf depending on the sign of the
+        # numerator ``sigma2_lin - sigma2_diff``; mapping every such case
+        # to p=1 (as an earlier revision did) can flip a legitimate
+        # rejection into a fail-to-reject.
+        warnings.warn(
+            f"yatchew_hr_test: sigma4_W = 0 with non-zero residuals "
+            f"(sigma2_lin = {sigma2_lin:.6g}, sigma2_diff = {sigma2_diff:.6g}); "
+            f"the formal test statistic is infinite. Returning the "
+            f"sign-aware limit decision.",
+            UserWarning,
+            stacklevel=2,
+        )
+        numerator = sigma2_lin - sigma2_diff
+        if numerator > 0.0:
+            # T_hr -> +inf: reject (far into right tail).
+            t_stat_hr_val = float("inf")
+            p_value_val = 0.0
+            reject_val = True
+        elif numerator < 0.0:
+            # T_hr -> -inf: fail-to-reject.
+            t_stat_hr_val = float("-inf")
+            p_value_val = 1.0
+            reject_val = False
+        else:
+            # 0/0: genuinely indeterminate.
+            t_stat_hr_val = float("nan")
+            p_value_val = float("nan")
+            reject_val = False
         return YatchewTestResults(
-            t_stat_hr=float("-inf"),
-            p_value=1.0,
-            reject=False,
+            t_stat_hr=t_stat_hr_val,
+            p_value=p_value_val,
+            reject=reject_val,
             alpha=alpha,
             critical_value=critical_value,
             sigma2_lin=sigma2_lin,

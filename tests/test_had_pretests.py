@@ -440,6 +440,43 @@ class TestYatchewHRTest:
         assert np.isnan(r.t_stat_hr)
         assert r.reject is False
 
+    def test_sigma4_W_zero_with_positive_numerator_rejects(self):
+        """P0 fix: when sigma4_W = 0 AFTER the exact-linear shortcut
+        (i.e., residuals are NOT all zero but adjacent-residual-product
+        sums vanish), the Yatchew statistic is formally +inf or -inf
+        depending on numerator sign. A unit-dose, non-exact-linear
+        input where residuals alternate zero/non-zero must NOT be
+        silently mapped to p=1 (fail-to-reject).
+
+        Counterexample from CI R3 reviewer: d=[1,2,3,4,5],
+        dy=[1,0,-2,0,1]. OLS slope = 0, residuals = dy itself,
+        sigma2_lin = 1.2, sigma2_diff = 1.0, sigma4_W = 0 (each
+        adjacent residual product includes a zero factor), and the
+        formal statistic is sqrt(5) * 0.2 / 0 = +inf -> reject=True.
+        Previously the sigma4_W <= 0 branch unconditionally returned
+        p=1, which flipped a legitimate rejection.
+        """
+        d = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        dy = np.array([1.0, 0.0, -2.0, 0.0, 1.0])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            r = yatchew_hr_test(d, dy, alpha=0.05)
+            msgs = [str(w.message) for w in caught]
+        # Must NOT silently fail-to-reject.
+        assert not (r.p_value == 1.0 and r.reject is False), (
+            "sigma4_W=0 with positive numerator was silently mapped to "
+            "p=1, reject=False; expected +inf reject path."
+        )
+        # Positive numerator -> +inf statistic, p=0, reject=True.
+        assert r.t_stat_hr == float("inf")
+        assert r.p_value == 0.0
+        assert r.reject is True
+        # The caller should have been warned.
+        assert any("sigma4_W = 0" in m for m in msgs)
+        # Sanity: sigma2_lin and sigma2_diff preserved for inspection.
+        np.testing.assert_allclose(r.sigma2_lin, 1.2, atol=1e-12)
+        np.testing.assert_allclose(r.sigma2_diff, 1.0, atol=1e-12)
+
 
 # =============================================================================
 # Composite workflow
