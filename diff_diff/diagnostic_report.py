@@ -38,7 +38,9 @@ from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-DIAGNOSTIC_REPORT_SCHEMA_VERSION = "1.0"
+from diff_diff._reporting_helpers import describe_target_parameter  # noqa: E402 (top-level import)
+
+DIAGNOSTIC_REPORT_SCHEMA_VERSION = "2.0"
 
 __all__ = [
     "DiagnosticReport",
@@ -926,7 +928,57 @@ class DiagnosticReport:
             }
 
         # Headline metric — best-effort across estimator types.
-        headline = self._extract_headline_metric()
+        # PR #347 R4 P1: the dCDH ``trends_linear=True`` + ``L_max>=2``
+        # configuration does not produce a scalar headline by design
+        # (``overall_att`` is intentionally NaN per
+        # ``chaisemartin_dhaultfoeuille.py:2828-2834``). Route the
+        # headline through a dedicated no-scalar block when the
+        # target-parameter helper flags this case so prose does not
+        # narrate it as an estimation failure.
+        _tp_agg = describe_target_parameter(self._results).get("aggregation")
+        if _tp_agg == "no_scalar_headline":
+            # PR #347 R12 P1: distinguish populated vs empty per-horizon
+            # surface. Pointing users at ``linear_trends_effects`` is
+            # dead-end guidance when that dict is ``None``.
+            _surface_empty = getattr(self._results, "linear_trends_effects", None) is None
+            # PR #347 R14 P1: control-aware empty-surface label.
+            _has_controls = getattr(self._results, "covariate_residuals", None) is not None
+            _empty_surface_label = "DID^{X,fd}_l" if _has_controls else "DID^{fd}_l"
+            if _surface_empty:
+                headline_name = "no scalar headline (empty per-horizon surface)"
+                headline_reason = (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``), and on "
+                    f"this fit no cumulated level effects ``{_empty_surface_label}`` "
+                    "survived estimation — the per-horizon surface is "
+                    "empty. Re-fit with a larger ``L_max`` or with "
+                    "``trends_linear=False`` if you need a reportable "
+                    "estimand."
+                )
+            else:
+                headline_name = "no scalar headline (see linear_trends_effects)"
+                headline_reason = (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``). Per-horizon "
+                    "cumulated level effects are on "
+                    "``results.linear_trends_effects[l]``."
+                )
+            headline = {
+                "status": "no_scalar_by_design",
+                "name": headline_name,
+                "value": None,
+                "se": None,
+                "p_value": None,
+                "conf_int": (None, None),
+                "alpha": self._alpha,
+                "is_significant": False,
+                "sign": "none",
+                "reason": headline_reason,
+            }
+        else:
+            headline = self._extract_headline_metric()
 
         # Pull suggested next steps from the practitioner workflow.
         next_steps = self._collect_next_steps(sections)
@@ -962,6 +1014,7 @@ class DiagnosticReport:
             "schema_version": DIAGNOSTIC_REPORT_SCHEMA_VERSION,
             "estimator": type(self._results).__name__,
             "headline_metric": headline,
+            "target_parameter": describe_target_parameter(self._results),
             "parallel_trends": sections["parallel_trends"],
             "pretrends_power": sections["pretrends_power"],
             "sensitivity": sections["sensitivity"],
@@ -2976,7 +3029,25 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
     ci = headline.get("conf_int") if isinstance(headline, dict) else None
     p = headline.get("p_value") if isinstance(headline, dict) else None
     val_finite = isinstance(val, (int, float)) and np.isfinite(val)
-    if val is not None and not val_finite:
+    # PR #347 R4 P1: if the estimator intentionally produces no scalar
+    # aggregate (dCDH ``trends_linear=True`` + ``L_max>=2``), route
+    # through explicit no-scalar prose rather than the
+    # estimation-failure branch below. The headline block carries
+    # ``status="no_scalar_by_design"`` in that case.
+    if isinstance(headline, dict) and headline.get("status") == "no_scalar_by_design":
+        # PR #347 R13 P1: route through the headline-level ``reason``
+        # field so the DR interpretation never drifts from the
+        # schema-level populated-vs-empty branching.
+        reason = headline.get("reason")
+        base = (
+            f"On {est}, {treatment} does not produce a scalar aggregate "
+            f"effect on {outcome} under this configuration."
+        )
+        if isinstance(reason, str) and reason:
+            sentences.append(f"{base} {reason}")
+        else:
+            sentences.append(base + " (by design)")
+    elif val is not None and not val_finite:
         sentences.append(
             f"On {est}, {treatment}'s effect on {outcome} is non-finite "
             "(the estimation did not produce a usable point estimate). "
@@ -3003,7 +3074,19 @@ def _render_overall_interpretation(schema: Dict[str, Any], labels: Dict[str, str
             f"On {est}, {treatment} {direction} {outcome} by {val:.3g}{ci_str}{p_str}."
         )
 
-    # Sentence 2: parallel trends + power (method-aware prose per the
+    # Sentence 2: name the target parameter (BR/DR gap #6). Rendered
+    # right after the headline so the reader sees what the scalar
+    # represents before pre-trends / sensitivity context. Only the
+    # terse ``name`` goes in the interpretation paragraph; the full
+    # ``definition`` lives in DR's "## Target Parameter" markdown
+    # section and in the structured ``schema["target_parameter"]``
+    # dict for agents that want the long form.
+    tp = schema.get("target_parameter") or {}
+    tp_name = tp.get("name")
+    if tp_name:
+        sentences.append(f"Target parameter: {tp_name}.")
+
+    # Sentence 3: parallel trends + power (method-aware prose per the
     # round-8 CI review on PR #318; PT method can be slope_difference
     # (2x2), joint_wald / bonferroni (event study), hausman (EfficientDiD
     # PT-All vs PT-Post), synthetic_fit (SDiD), or factor (TROP), and the
@@ -3215,12 +3298,45 @@ def _render_dr_full_report(results: "DiagnosticReportResults") -> str:
     lines.append(f"**Estimator**: `{schema.get('estimator')}`")
     headline = schema.get("headline_metric")
     if headline:
-        lines.append(
-            f"**Headline**: {headline.get('name')} = "
-            f"{headline.get('value')} "
-            f"(SE {headline.get('se')}, p = {headline.get('p_value')})"
-        )
+        # PR #347 R5 P2: the no-scalar-by-design branch
+        # (``trends_linear=True`` + ``L_max>=2`` on dCDH) has
+        # ``value`` / ``se`` / ``p_value`` all ``None``. Formatting
+        # those straight into the ``**Headline**: ... = None`` line
+        # would produce a malformed top headline even though the
+        # "## Target Parameter" section below correctly explains
+        # the design. Route to explicit no-scalar markdown.
+        if headline.get("status") == "no_scalar_by_design":
+            lines.append("**Headline**: no scalar aggregate by design.")
+            reason = headline.get("reason")
+            if reason:
+                lines.append("")
+                lines.append(reason)
+        else:
+            lines.append(
+                f"**Headline**: {headline.get('name')} = "
+                f"{headline.get('value')} "
+                f"(SE {headline.get('se')}, p = {headline.get('p_value')})"
+            )
     lines.append("")
+
+    # BR/DR gap #6: target-parameter section between headline metadata
+    # and the overall-interpretation paragraph.
+    tp = schema.get("target_parameter") or {}
+    if tp.get("name") or tp.get("definition"):
+        lines.append("## Target Parameter")
+        lines.append("")
+        if tp.get("name"):
+            lines.append(f"- **{tp['name']}**")
+        if tp.get("definition"):
+            lines.append(f"- {tp['definition']}")
+        if tp.get("aggregation"):
+            lines.append(f"- Aggregation tag: `{tp['aggregation']}`")
+        if tp.get("headline_attribute"):
+            lines.append(f"- Headline attribute: `{tp['headline_attribute']}`")
+        if tp.get("reference"):
+            lines.append(f"- Reference: {tp['reference']}")
+        lines.append("")
+
     lines.append("## Overall Interpretation")
     lines.append("")
     lines.append(schema.get("overall_interpretation", "") or "_No synthesis available._")

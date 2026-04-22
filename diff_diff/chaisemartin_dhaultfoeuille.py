@@ -260,9 +260,7 @@ def _validate_and_aggregate_to_cells(
     non_constant_mask = cell["d_min"] != cell["d_max"]
     if non_constant_mask.any():
         n_non_constant = int(non_constant_mask.sum())
-        example_cells = cell.loc[
-            non_constant_mask, [group, time, "d_gt", "d_min", "d_max"]
-        ].head(5)
+        example_cells = cell.loc[non_constant_mask, [group, time, "d_gt", "d_min", "d_max"]].head(5)
         raise ValueError(
             f"Within-cell-varying treatment detected in {n_non_constant} "
             f"(group, time) cell(s). dCDH requires treatment to be "
@@ -727,8 +725,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # ------------------------------------------------------------------
         from diff_diff.survey import _resolve_survey_for_fit
 
-        resolved_survey, survey_weights, _, survey_metadata = (
-            _resolve_survey_for_fit(survey_design, data, "analytical")
+        resolved_survey, survey_weights, _, survey_metadata = _resolve_survey_for_fit(
+            survey_design, data, "analytical"
         )
 
         # dCDH contract: the group is the effective sampling unit for
@@ -762,11 +760,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # fine — let the auto-inject proceed. Only the
             # ``nest=False`` + varying-strata + omitted-psu triple
             # warrants an up-front targeted error.
-            if resolved_survey.strata is not None and not getattr(
-                survey_design, "nest", False
-            ):
+            if resolved_survey.strata is not None and not getattr(survey_design, "nest", False):
                 _strata_varies_pre, _ = _strata_psu_vary_within_group(
-                    resolved_survey, data, group, survey_weights,
+                    resolved_survey,
+                    data,
+                    group,
+                    survey_weights,
                 )
                 if _strata_varies_pre:
                     raise ValueError(
@@ -821,8 +820,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 nest=getattr(survey_design, "nest", False),
                 lonely_psu=getattr(survey_design, "lonely_psu", "remove"),
             )
-            resolved_survey, survey_weights, _, survey_metadata = (
-                _resolve_survey_for_fit(eff_design, synth_data, "analytical")
+            resolved_survey, survey_weights, _, survey_metadata = _resolve_survey_for_fit(
+                eff_design, synth_data, "analytical"
             )
 
         if resolved_survey is not None:
@@ -850,7 +849,11 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # group-constant regimes through the legacy group-level
             # path for bit-identity with prior releases).
             _validate_cell_constant_strata_psu(
-                resolved_survey, data, group, time, survey_weights,
+                resolved_survey,
+                data,
+                group,
+                time,
+                survey_weights,
             )
 
         # Design-2 precondition: requires drop_larger_lower=False
@@ -980,9 +983,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     g_agg[c] = g_agg[f"_wx_{c}"] / w_safe
                 x_cell_agg = g_agg[[group, time] + controls]
             else:
-                x_cell_agg = x_agg_input.groupby(
-                    [group, time], as_index=False
-                )[controls].mean()
+                x_cell_agg = x_agg_input.groupby([group, time], as_index=False)[controls].mean()
             cell = cell.merge(x_cell_agg, on=[group, time], how="left")
 
         # ------------------------------------------------------------------
@@ -1305,9 +1306,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # Pivot covariates to (n_groups, n_periods, n_covariates)
             X_pivots = []
             for c in controls:
-                x_piv = cell.pivot(
-                    index=group, columns=time, values=c
-                ).reindex(index=all_groups, columns=all_periods)
+                x_piv = cell.pivot(index=group, columns=time, values=c).reindex(
+                    index=all_groups, columns=all_periods
+                )
                 X_pivots.append(x_piv.to_numpy())
             X_cell = np.stack(X_pivots, axis=2)
 
@@ -1377,9 +1378,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 )
                 _switch_metadata_computed = True
             # Count and warn about excluded groups (F_g < 3 -> f_g < 2)
-            n_excluded_fd = int(
-                ((first_switch_idx_arr >= 0) & (first_switch_idx_arr < 2)).sum()
-            )
+            n_excluded_fd = int(((first_switch_idx_arr >= 0) & (first_switch_idx_arr < 2)).sum())
             if n_excluded_fd > 0:
                 warnings.warn(
                     f"DID^{{fd}} (trends_linear=True): {n_excluded_fd} "
@@ -1455,9 +1454,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 )
             # Extract set membership per group aligned with all_groups
             set_map = data_tnp.groupby(group)[set_col].first()
-            set_ids_arr = np.array(
-                [set_map.loc[g] for g in all_groups], dtype=object
-            )
+            set_ids_arr = np.array([set_map.loc[g] for g in all_groups], dtype=object)
 
         # ------------------------------------------------------------------
         # Step 8-9: Switching-cell counts and per-period DIDs (Theorem 3)
@@ -1483,7 +1480,11 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # contract (Web Appendix Section 1.2).
             # Use raw outcomes for per-period DID when controls or
             # trends_linear is active (both transform Y_mat).
-            Y_mat=Y_mat_raw if controls is not None else (y_pivot.to_numpy() if _is_trends_linear else Y_mat),
+            Y_mat=(
+                Y_mat_raw
+                if controls is not None
+                else (y_pivot.to_numpy() if _is_trends_linear else Y_mat)
+            ),
             N_mat=N_mat_orig,
             periods=all_periods,
         )
@@ -1524,9 +1525,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 "differs from the previous period."
             )
         if N_S > 0:
-            overall_att = float(
-                (n_10_t_arr @ did_plus_t_arr + n_01_t_arr @ did_minus_t_arr) / N_S
-            )
+            overall_att = float((n_10_t_arr @ did_plus_t_arr + n_01_t_arr @ did_minus_t_arr) / N_S)
         else:
             # Non-binary treatment with L_max: per-period DID is not
             # applicable. The multi-horizon path will provide overall_att
@@ -1753,7 +1752,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 else:
                     U_centered_pp_l = None
                 N_l_h = multi_horizon_dids[l_h]["N_l"]
-                _elig_groups_l = [all_groups[g] for g in range(len(all_groups)) if eligible_mask_var[g]]
+                _elig_groups_l = [
+                    all_groups[g] for g in range(len(all_groups)) if eligible_mask_var[g]
+                ]
                 se_l, n_valid_l = _compute_se(
                     U_centered=U_centered_l,
                     divisor=N_l_h,
@@ -1767,7 +1768,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
                 did_l_val = multi_horizon_dids[l_h]["did_l"]
                 _df_s = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
-                t_l, p_l, ci_l = safe_inference(did_l_val, se_l, alpha=self.alpha, df=_inference_df(_df_s, resolved_survey))
+                t_l, p_l, ci_l = safe_inference(
+                    did_l_val, se_l, alpha=self.alpha, df=_inference_df(_df_s, resolved_survey)
+                )
                 multi_horizon_inference[l_h] = {
                     "effect": did_l_val,
                     "se": se_l,
@@ -1895,7 +1898,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         _pl_pp_cache[lag_l] = U_centered_pp_pl_l
                     else:
                         U_centered_pp_pl_l = None
-                    _elig_groups_pl = [all_groups[g] for g in range(len(all_groups)) if eligible_mask_pl[g]]
+                    _elig_groups_pl = [
+                        all_groups[g] for g in range(len(all_groups)) if eligible_mask_pl[g]
+                    ]
                     se_pl_l, n_valid_pl_l = _compute_se(
                         U_centered=U_centered_pl_l,
                         divisor=pl_data["N_pl_l"],
@@ -1909,7 +1914,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     pl_val = pl_data["placebo_l"]
                     _df_s = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
                     t_pl_l, p_pl_l, ci_pl_l = safe_inference(
-                        pl_val, se_pl_l, alpha=self.alpha,
+                        pl_val,
+                        se_pl_l,
+                        alpha=self.alpha,
                         df=_inference_df(_df_s, resolved_survey),
                     )
                     placebo_horizon_inference[lag_l] = {
@@ -1936,13 +1943,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # Cost-benefit delta (only meaningful when L_max >= 2)
             if L_max >= 2:
                 cost_benefit_result = _compute_cost_benefit_delta(
-                multi_horizon_dids=multi_horizon_dids,
-                D_mat=D_mat,
-                baselines=baselines,
-                first_switch_idx=first_switch_idx_arr,
-                switch_direction=switch_direction_arr,
-                L_max=L_max,
-            )
+                    multi_horizon_dids=multi_horizon_dids,
+                    D_mat=D_mat,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    switch_direction=switch_direction_arr,
+                    L_max=L_max,
+                )
                 if cost_benefit_result.get("has_leavers", False):
                     warnings.warn(
                         "Assumption 7 (D_{g,t} >= D_{g,1}) is violated: leavers "
@@ -1973,7 +1980,11 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             D_mat=D_mat,
             # Phase 1 IF uses per-period structure: use raw outcomes
             # when controls or trends_linear transform Y_mat.
-            Y_mat=Y_mat_raw if controls is not None else (y_pivot.to_numpy() if _is_trends_linear else Y_mat),
+            Y_mat=(
+                Y_mat_raw
+                if controls is not None
+                else (y_pivot.to_numpy() if _is_trends_linear else Y_mat)
+            ),
             N_mat=N_mat_orig,
             n_10_t_arr=n_10_t_arr,
             n_00_t_arr=n_00_t_arr,
@@ -2022,7 +2033,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             )
         _df_survey = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
         overall_t, overall_p, overall_ci = safe_inference(
-            overall_att, overall_se, alpha=self.alpha,
+            overall_att,
+            overall_se,
+            alpha=self.alpha,
             df=_inference_df(_df_survey, resolved_survey),
         )
 
@@ -2039,7 +2052,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 _replicate_n_valid_list.append(n_valid_joiners)
             _df_survey = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
             joiners_t, joiners_p, joiners_ci = safe_inference(
-                joiners_att, joiners_se, alpha=self.alpha,
+                joiners_att,
+                joiners_se,
+                alpha=self.alpha,
                 df=_inference_df(_df_survey, resolved_survey),
             )
         else:
@@ -2063,7 +2078,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 _replicate_n_valid_list.append(n_valid_leavers)
             _df_survey = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
             leavers_t, leavers_p, leavers_ci = safe_inference(
-                leavers_att, leavers_se, alpha=self.alpha,
+                leavers_att,
+                leavers_se,
+                alpha=self.alpha,
                 df=_inference_df(_df_survey, resolved_survey),
             )
         else:
@@ -2148,9 +2165,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     psu_varies_within_warn = False
                 else:
                     obs_gids_warn = np.asarray(_obs_survey_info["group_ids"])
-                    obs_ws_warn = np.asarray(
-                        _obs_survey_info["weights"], dtype=np.float64
-                    )
+                    obs_ws_warn = np.asarray(_obs_survey_info["weights"], dtype=np.float64)
                     pos_mask_warn = obs_ws_warn > 0
                     psu_codes_warn = np.asarray(psu_arr_warn)
                     eligible_gid_set = set(_eligible_group_ids)
@@ -2160,18 +2175,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     )
                     if elig_obs_mask_warn.any():
                         elig_psu_labels_arr = psu_codes_warn[elig_obs_mask_warn]
-                        n_psu_eff_warn = int(
-                            len(np.unique(elig_psu_labels_arr))
-                        )
+                        n_psu_eff_warn = int(len(np.unique(elig_psu_labels_arr)))
                         n_groups_eff_warn = len(_eligible_group_ids)
                         # Detect within-group-varying PSU on the
                         # eligible subset so we can suppress the
                         # "strictly coarser PSU" warning there.
                         psu_varies_within_warn = bool(
-                            pd.DataFrame({
-                                "g": obs_gids_warn[elig_obs_mask_warn],
-                                "p": elig_psu_labels_arr,
-                            })
+                            pd.DataFrame(
+                                {
+                                    "g": obs_gids_warn[elig_obs_mask_warn],
+                                    "p": elig_psu_labels_arr,
+                                }
+                            )
                             .groupby("g")["p"]
                             .nunique()
                             .gt(1)
@@ -2180,10 +2195,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     else:
                         n_psu_eff_warn, n_groups_eff_warn = -1, -1
                         psu_varies_within_warn = False
-                if (
-                    0 <= n_psu_eff_warn < n_groups_eff_warn
-                    and not psu_varies_within_warn
-                ):
+                if 0 <= n_psu_eff_warn < n_groups_eff_warn and not psu_varies_within_warn:
                     warnings.warn(
                         f"Bootstrap with survey_design uses Hall-Mammen "
                         f"wild multiplier weights at the PSU level "
@@ -2201,11 +2213,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     )
             joiners_inputs = (
                 (U_centered_joiners, joiner_total, joiners_att, U_centered_pp_joiners)
-                if joiners_available else None
+                if joiners_available
+                else None
             )
             leavers_inputs = (
                 (U_centered_leavers, leaver_total, leavers_att, U_centered_pp_leavers)
-                if leavers_available else None
+                if leavers_available
+                else None
             )
             # Phase 1 placebo bootstrap: the Phase 1 per-period placebo
             # DID_M^pl still uses NaN SE (no IF derivation for the
@@ -2345,13 +2359,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 obs_psu_codes = np.asarray(resolved_survey.psu)
                 obs_gids_boot = np.asarray(_obs_survey_info["group_ids"])
                 obs_tids_boot = np.asarray(_obs_survey_info["time_ids"])
-                obs_weights_boot = np.asarray(
-                    _obs_survey_info["weights"], dtype=np.float64
-                )
+                obs_weights_boot = np.asarray(_obs_survey_info["weights"], dtype=np.float64)
                 pos_mask_boot = obs_weights_boot > 0
-                gid_to_idx = {
-                    gid: i for i, gid in enumerate(_eligible_group_ids)
-                }
+                gid_to_idx = {gid: i for i, gid in enumerate(_eligible_group_ids)}
                 tid_to_idx = {t: i for i, t in enumerate(all_periods)}
                 n_elig_boot = len(_eligible_group_ids)
                 n_per_boot = len(all_periods)
@@ -2372,18 +2382,19 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # is exact: no gaps from singleton-baseline-excluded
                 # groups that would silently trigger the identity
                 # fast path in `_generate_psu_or_group_weights`.
-                elig_obs_mask = (
-                    pos_mask_boot & (g_idx_arr >= 0) & (t_idx_arr >= 0)
-                )
+                elig_obs_mask = pos_mask_boot & (g_idx_arr >= 0) & (t_idx_arr >= 0)
                 elig_psu_labels = obs_psu_codes[elig_obs_mask]
                 dense_per_row: Optional[np.ndarray] = None
                 if elig_psu_labels.size > 0:
                     _, elig_dense_codes = np.unique(
-                        elig_psu_labels, return_inverse=True,
+                        elig_psu_labels,
+                        return_inverse=True,
                     )
                     elig_dense_codes = np.asarray(elig_dense_codes, dtype=np.int64)
                     dense_per_row = np.full(
-                        len(obs_psu_codes), -1, dtype=np.int64,
+                        len(obs_psu_codes),
+                        -1,
+                        dtype=np.int64,
                     )
                     dense_per_row[elig_obs_mask] = elig_dense_codes
 
@@ -2397,7 +2408,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # ignores sentinel entries row-wise.
                 if dense_per_row is not None:
                     psu_codes_per_cell = np.full(
-                        (n_elig_boot, n_per_boot), -1, dtype=np.int64,
+                        (n_elig_boot, n_per_boot),
+                        -1,
+                        dtype=np.int64,
                     )
                     psu_codes_per_cell[
                         g_idx_arr[elig_obs_mask],
@@ -2425,14 +2438,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         else:
                             group_psu_labels.append(int(valid[0]))
                     group_id_to_psu_code_bootstrap = {
-                        gid: code
-                        for gid, code in zip(
-                            _eligible_group_ids, group_psu_labels
-                        )
+                        gid: code for gid, code in zip(_eligible_group_ids, group_psu_labels)
                     }
-                    eligible_group_ids_bootstrap = np.asarray(
-                        _eligible_group_ids
-                    )
+                    eligible_group_ids_bootstrap = np.asarray(_eligible_group_ids)
 
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
@@ -2476,17 +2484,32 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 overall_se = br.overall_se
                 overall_p = br.overall_p_value if br.overall_p_value is not None else np.nan
                 overall_ci = br.overall_ci if br.overall_ci is not None else (np.nan, np.nan)
-                overall_t = safe_inference(overall_att, overall_se, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))[0]
+                overall_t = safe_inference(
+                    overall_att,
+                    overall_se,
+                    alpha=self.alpha,
+                    df=_inference_df(_df_survey, resolved_survey),
+                )[0]
             if joiners_available and br.joiners_se is not None and np.isfinite(br.joiners_se):
                 joiners_se = br.joiners_se
                 joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
                 joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
-                joiners_t = safe_inference(joiners_att, joiners_se, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))[0]
+                joiners_t = safe_inference(
+                    joiners_att,
+                    joiners_se,
+                    alpha=self.alpha,
+                    df=_inference_df(_df_survey, resolved_survey),
+                )[0]
             if leavers_available and br.leavers_se is not None and np.isfinite(br.leavers_se):
                 leavers_se = br.leavers_se
                 leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
                 leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
-                leavers_t = safe_inference(leavers_att, leavers_se, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))[0]
+                leavers_t = safe_inference(
+                    leavers_att,
+                    leavers_se,
+                    alpha=self.alpha,
+                    df=_inference_df(_df_survey, resolved_survey),
+                )[0]
 
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
@@ -2561,11 +2584,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # When L_max >= 1 and the per-group path is active, sync
         # overall_* from event_study_effects[1] AFTER bootstrap propagation
         # so that bootstrap SE/p/CI flow to the top-level surface.
-        if (
-            L_max is not None
-            and L_max >= 1
-            and 1 in event_study_effects
-        ):
+        if L_max is not None and L_max >= 1 and 1 in event_study_effects:
             es1 = event_study_effects[1]
             overall_att = es1["effect"]
             overall_se = es1["se"]
@@ -2648,7 +2667,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 if np.isfinite(delta_se):
                     effective_overall_se = delta_se
                     effective_overall_t, effective_overall_p, effective_overall_ci = safe_inference(
-                        delta_val, delta_se, alpha=self.alpha,
+                        delta_val,
+                        delta_se,
+                        alpha=self.alpha,
                         df=_inference_df(_df_survey, resolved_survey),
                     )
                 else:
@@ -2666,10 +2687,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             for lag_l, pl_data in multi_horizon_placebos.items():
                 if pl_data["N_pl_l"] > 0:
                     # Pull analytical SE from placebo IF computation
-                    if (
-                        placebo_horizon_inference is not None
-                        and lag_l in placebo_horizon_inference
-                    ):
+                    if placebo_horizon_inference is not None and lag_l in placebo_horizon_inference:
                         inf = placebo_horizon_inference[lag_l]
                         placebo_event_study_dict[-lag_l] = {
                             "effect": inf["effect"],
@@ -2683,7 +2701,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         # Fallback: NaN SE (Phase 1 path or missing IF)
                         pl_se = float("nan")
                         pl_t, pl_p, pl_ci = safe_inference(
-                            pl_data["placebo_l"], pl_se, alpha=self.alpha,
+                            pl_data["placebo_l"],
+                            pl_se,
+                            alpha=self.alpha,
                             df=_inference_df(_df_survey, resolved_survey),
                         )
                         placebo_event_study_dict[-lag_l] = {
@@ -2735,7 +2755,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             bs_ci if bs_ci is not None else (np.nan, np.nan)
                         )
                         placebo_event_study_dict[neg_key]["t_stat"] = safe_inference(
-                            eff, bs_se, alpha=self.alpha,
+                            eff,
+                            bs_se,
+                            alpha=self.alpha,
                             df=_inference_df(_df_survey, resolved_survey),
                         )[0]
 
@@ -2749,7 +2771,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # SE via delta method: SE(DID^n_l) = SE(DID_l) / delta^D_l
                 se_did_l = multi_horizon_se.get(l_h, float("nan"))
                 se_norm = se_did_l / denom if np.isfinite(denom) and denom > 0 else float("nan")
-                t_n, p_n, ci_n = safe_inference(eff, se_norm, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey))
+                t_n, p_n, ci_n = safe_inference(
+                    eff, se_norm, alpha=self.alpha, df=_inference_df(_df_survey, resolved_survey)
+                )
                 normalized_effects_out[l_h] = {
                     "effect": eff,
                     "se": se_norm,
@@ -2778,8 +2802,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 if l_h not in multi_horizon_dids:
                     continue
                 mh = multi_horizon_dids[l_h]
-                did_g_l = mh["did_g_l"]         # (n_groups,) per-group DID
-                eligible = mh["eligible_mask"]   # (n_groups,) bool
+                did_g_l = mh["did_g_l"]  # (n_groups,) per-group DID
+                eligible = mh["eligible_mask"]  # (n_groups,) bool
                 N_l = mh["N_l"]
                 if N_l == 0:
                     continue
@@ -2790,9 +2814,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 # Average the cumulated sum over groups eligible at THIS horizon
                 # Weight by S_g (switch direction) and divide by N_l
                 S_arr = switch_direction_arr.astype(float)
-                cum_effect = float(
-                    np.sum(S_arr[eligible] * running_per_group[eligible]) / N_l
-                )
+                cum_effect = float(np.sum(S_arr[eligible] * running_per_group[eligible]) / N_l)
                 # SE: conservative upper bound (sum of per-horizon SEs).
                 # NaN-consistency: if ANY component SE up to horizon l is
                 # non-finite, the cumulated SE is NaN (not 0.0).
@@ -2808,7 +2830,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 else:
                     running_se_ub = float("nan")
                 cum_t, cum_p, cum_ci = safe_inference(
-                    cum_effect, running_se_ub, alpha=self.alpha,
+                    cum_effect,
+                    running_se_ub,
+                    alpha=self.alpha,
                     df=_inference_df(_df_survey, resolved_survey),
                 )
                 cumulated[l_h] = {
@@ -2845,9 +2869,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 )
             het_col = str(heterogeneity)
             if het_col not in data.columns:
-                raise ValueError(
-                    f"heterogeneity column {het_col!r} not found in data."
-                )
+                raise ValueError(f"heterogeneity column {het_col!r} not found in data.")
             # R's predict_het disallows controls; our partial implementation
             # follows this restriction to avoid inconsistent behavior.
             if controls is not None:
@@ -2888,9 +2910,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     f"{len(het_varying)} group(s) have varying values."
                 )
             het_map = data_het.groupby(group)[het_col].first()
-            X_het = np.array(
-                [float(het_map.loc[g]) for g in all_groups]
-            )
+            X_het = np.array([float(het_map.loc[g]) for g in all_groups])
             # Use original Y_mat (not first-differenced) for heterogeneity
             # test, since it operates on level differences Y[out] - Y[ref].
             # When trends_linear, the DID^{fd} second-differences are in
@@ -2943,9 +2963,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             if not is_binary:
                 # For non-binary: count all observations where treatment
                 # differs from baseline
-                effective_n_treated = int(
-                    N_mat[D_mat != D_mat[:, 0:1]].sum()
-                ) if D_mat.shape[1] > 1 else 0
+                effective_n_treated = (
+                    int(N_mat[D_mat != D_mat[:, 0:1]].sum()) if D_mat.shape[1] > 1 else 0
+                )
             if not is_binary:
                 # Suppress binary-only Phase 1 artifacts on non-binary
                 # panels: per_period_effects and single-period placebo
@@ -2973,9 +2993,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # anti-conservative relative to `survey_metadata.df_survey`
         # and HonestDiD. Re-run safe_inference with the FINAL
         # effective df so every surface agrees.
-        _final_eff_df = _effective_df_survey(
-            resolved_survey, _replicate_n_valid_list
-        )
+        _final_eff_df = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
         if _replicate_n_valid_list:
             _final_inf_df = _inference_df(_final_eff_df, resolved_survey)
             # Recompute `effective_overall_*` directly — that's what
@@ -2984,34 +3002,42 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # (cost-benefit) path at L_max >= 2; recomputing from
             # `effective_*` ensures both paths get the final df.
             if np.isfinite(effective_overall_se):
-                effective_overall_t, effective_overall_p, effective_overall_ci = (
-                    safe_inference(
-                        effective_overall_att, effective_overall_se,
-                        alpha=self.alpha, df=_final_inf_df,
-                    )
+                effective_overall_t, effective_overall_p, effective_overall_ci = safe_inference(
+                    effective_overall_att,
+                    effective_overall_se,
+                    alpha=self.alpha,
+                    df=_final_inf_df,
                 )
             # Keep `overall_*` in sync for any downstream code that
             # reads them directly (e.g., placebo_event_study_dict
             # construction flows from overall_*).
             overall_t, overall_p, overall_ci = safe_inference(
-                overall_att, overall_se,
-                alpha=self.alpha, df=_final_inf_df,
+                overall_att,
+                overall_se,
+                alpha=self.alpha,
+                df=_final_inf_df,
             )
             if joiners_available:
                 joiners_t, joiners_p, joiners_ci = safe_inference(
-                    joiners_att, joiners_se,
-                    alpha=self.alpha, df=_final_inf_df,
+                    joiners_att,
+                    joiners_se,
+                    alpha=self.alpha,
+                    df=_final_inf_df,
                 )
             if leavers_available:
                 leavers_t, leavers_p, leavers_ci = safe_inference(
-                    leavers_att, leavers_se,
-                    alpha=self.alpha, df=_final_inf_df,
+                    leavers_att,
+                    leavers_se,
+                    alpha=self.alpha,
+                    df=_final_inf_df,
                 )
             if multi_horizon_inference is not None:
                 for _lag_r2, _info_r2 in list(multi_horizon_inference.items()):
                     _t_r2, _p_r2, _ci_r2 = safe_inference(
-                        _info_r2["effect"], _info_r2["se"],
-                        alpha=self.alpha, df=_final_inf_df,
+                        _info_r2["effect"],
+                        _info_r2["se"],
+                        alpha=self.alpha,
+                        df=_final_inf_df,
                     )
                     _info_r2["t_stat"] = _t_r2
                     _info_r2["p_value"] = _p_r2
@@ -3019,8 +3045,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             if placebo_horizon_inference is not None:
                 for _lag_r2, _info_r2 in list(placebo_horizon_inference.items()):
                     _t_r2, _p_r2, _ci_r2 = safe_inference(
-                        _info_r2["effect"], _info_r2["se"],
-                        alpha=self.alpha, df=_final_inf_df,
+                        _info_r2["effect"],
+                        _info_r2["se"],
+                        alpha=self.alpha,
+                        df=_final_inf_df,
                     )
                     _info_r2["t_stat"] = _t_r2
                     _info_r2["p_value"] = _p_r2
@@ -3042,8 +3070,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 for _lag_r2, _info_r2 in list(heterogeneity_effects.items()):
                     if np.isfinite(_info_r2["se"]):
                         _t_r2, _p_r2, _ci_r2 = safe_inference(
-                            _info_r2["beta"], _info_r2["se"],
-                            alpha=self.alpha, df=_final_inf_df,
+                            _info_r2["beta"],
+                            _info_r2["se"],
+                            alpha=self.alpha,
+                            df=_final_inf_df,
                         )
                         _info_r2["t_stat"] = _t_r2
                         _info_r2["p_value"] = _p_r2
@@ -3055,8 +3085,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             if normalized_effects_out is not None:
                 for _lag_r2, _info_r2 in list(normalized_effects_out.items()):
                     _t_r2, _p_r2, _ci_r2 = safe_inference(
-                        _info_r2["effect"], _info_r2["se"],
-                        alpha=self.alpha, df=_final_inf_df,
+                        _info_r2["effect"],
+                        _info_r2["se"],
+                        alpha=self.alpha,
+                        df=_final_inf_df,
                     )
                     _info_r2["t_stat"] = _t_r2
                     _info_r2["p_value"] = _p_r2
@@ -3082,7 +3114,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             joiners_se=joiners_se if effective_joiners_available else float("nan"),
             joiners_t_stat=joiners_t if effective_joiners_available else float("nan"),
             joiners_p_value=joiners_p if effective_joiners_available else float("nan"),
-            joiners_conf_int=joiners_ci if effective_joiners_available else (float("nan"), float("nan")),
+            joiners_conf_int=(
+                joiners_ci if effective_joiners_available else (float("nan"), float("nan"))
+            ),
             n_joiner_cells=n_joiner_cells if effective_joiners_available else 0,
             n_joiner_obs=n_joiner_obs if effective_joiners_available else 0,
             joiners_available=effective_joiners_available,
@@ -3090,7 +3124,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             leavers_se=leavers_se if effective_leavers_available else float("nan"),
             leavers_t_stat=leavers_t if effective_leavers_available else float("nan"),
             leavers_p_value=leavers_p if effective_leavers_available else float("nan"),
-            leavers_conf_int=leavers_ci if effective_leavers_available else (float("nan"), float("nan")),
+            leavers_conf_int=(
+                leavers_ci if effective_leavers_available else (float("nan"), float("nan"))
+            ),
             n_leaver_cells=n_leaver_cells if effective_leavers_available else 0,
             n_leaver_obs=n_leaver_obs if effective_leavers_available else 0,
             leavers_available=effective_leavers_available,
@@ -3137,6 +3173,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 else None
             ),
             linear_trends_effects=linear_trends_effects,
+            trends_linear=_is_trends_linear,
             heterogeneity_effects=heterogeneity_effects,
             design2_effects=(
                 _compute_design2_effects(
@@ -3166,7 +3203,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 from diff_diff.honest_did import compute_honest_did
 
                 results.honest_did_results = compute_honest_did(
-                    results, method="relative_magnitude", M=1.0,
+                    results,
+                    method="relative_magnitude",
+                    M=1.0,
                     alpha=self.alpha,
                 )
             except (ValueError, np.linalg.LinAlgError) as exc:
@@ -3699,7 +3738,7 @@ def _compute_covariate_residualization(
 
         # Extract covariate coefficients (indices 1..n_covariates;
         # index 0 is the intercept)
-        theta_hat = coefs[1:1 + n_covariates]
+        theta_hat = coefs[1 : 1 + n_covariates]
 
         # R-squared of first-stage regression
         ss_res = float(np.sum(residuals**2))
@@ -3887,9 +3926,7 @@ def _compute_heterogeneity_test(
 
     # Survey setup (once, before horizon loop). When inactive, df_s=None and
     # the existing plain-OLS path runs unchanged.
-    use_survey = (
-        obs_survey_info is not None and group_ids_order is not None
-    )
+    use_survey = obs_survey_info is not None and group_ids_order is not None
     if use_survey:
         from diff_diff.survey import (
             compute_replicate_if_variance,
@@ -3908,9 +3945,7 @@ def _compute_heterogeneity_test(
         # surfaces (R2 P1a). `list(... or [])` avoids accidental
         # mutation of the caller's shared tracker at this site; the
         # explicit append happens inside the horizon loop below.
-        df_s = _effective_df_survey(
-            resolved, list(replicate_n_valid_list or [])
-        )
+        df_s = _effective_df_survey(resolved, list(replicate_n_valid_list or []))
         # Contract: only obs whose group is in the canonical post-filter
         # list contribute. Groups dropped upstream (Step 5b interior gaps,
         # Step 6 multi-switch) appear in obs_gids_raw but must be
@@ -3956,15 +3991,15 @@ def _compute_heterogeneity_test(
             eligible.append(g)
             dep_var.append(S_g * y_diff)
             x_vals.append(X_het[g])
-            cohort_keys.append(
-                (float(baselines[g]), int(f_g), int(switch_direction[g]))
-            )
+            cohort_keys.append((float(baselines[g]), int(f_g), int(switch_direction[g])))
 
         n_obs = len(eligible)
         if n_obs < 3:
             results[l_h] = {
-                "beta": float("nan"), "se": float("nan"),
-                "t_stat": float("nan"), "p_value": float("nan"),
+                "beta": float("nan"),
+                "se": float("nan"),
+                "t_stat": float("nan"),
+                "p_value": float("nan"),
                 "conf_int": (float("nan"), float("nan")),
                 "n_obs": n_obs,
             }
@@ -3995,8 +4030,10 @@ def _compute_heterogeneity_test(
         n_params = design.shape[1]
         if n_obs <= n_params:
             results[l_h] = {
-                "beta": float("nan"), "se": float("nan"),
-                "t_stat": float("nan"), "p_value": float("nan"),
+                "beta": float("nan"),
+                "se": float("nan"),
+                "t_stat": float("nan"),
+                "p_value": float("nan"),
                 "conf_int": (float("nan"), float("nan")),
                 "n_obs": n_obs,
             }
@@ -4005,7 +4042,8 @@ def _compute_heterogeneity_test(
         if not use_survey:
             # Plain OLS path (unchanged): standard inference per Lemma 7.
             coefs, _residuals, vcov = solve_ols(
-                design, dep_arr,
+                design,
+                dep_arr,
                 return_vcov=True,
                 rank_deficient_action=rank_deficient_action,
             )
@@ -4021,8 +4059,10 @@ def _compute_heterogeneity_test(
             # weight_type='pweight' (linalg.py). Skip vcov — we compute
             # design-based variance ourselves below.
             coefs, _residuals, _vcov_ignored = solve_ols(
-                design, dep_arr,
-                weights=W_elig, weight_type="pweight",
+                design,
+                dep_arr,
+                weights=W_elig,
+                weight_type="pweight",
                 return_vcov=False,
                 rank_deficient_action=rank_deficient_action,
             )
@@ -4031,8 +4071,10 @@ def _compute_heterogeneity_test(
             # IF would describe different estimands.
             if not np.all(np.isfinite(coefs)):
                 results[l_h] = {
-                    "beta": float("nan"), "se": float("nan"),
-                    "t_stat": float("nan"), "p_value": float("nan"),
+                    "beta": float("nan"),
+                    "se": float("nan"),
+                    "t_stat": float("nan"),
+                    "p_value": float("nan"),
                     "conf_int": (float("nan"), float("nan")),
                     "n_obs": n_obs,
                 }
@@ -4090,12 +4132,8 @@ def _compute_heterogeneity_test(
                     mask_g = (obs_gids_raw == gid) & valid
                     w_sum_g = obs_w_raw[mask_g].sum()
                     if w_sum_g > 0:
-                        psi_obs[mask_g] = psi_g[e_idx] * (
-                            obs_w_raw[mask_g] / w_sum_g
-                        )
-                var_s, n_valid_het = compute_replicate_if_variance(
-                    psi_obs, resolved
-                )
+                        psi_obs[mask_g] = psi_g[e_idx] * (obs_w_raw[mask_g] / w_sum_g)
+                var_s, n_valid_het = compute_replicate_if_variance(psi_obs, resolved)
                 if replicate_n_valid_list is not None:
                     replicate_n_valid_list.append(n_valid_het)
                 # Reduce df_s to reflect this horizon's n_valid.
@@ -4118,25 +4156,17 @@ def _compute_heterogeneity_test(
                     gid = gid_list[g_idx]
                     out_idx = first_switch_idx[g_idx] - 1 + l_h
                     t_val_out = periods_arr[out_idx]
-                    mask_cell = (
-                        (obs_gids_raw == gid)
-                        & (obs_tids == t_val_out)
-                        & valid
-                    )
+                    mask_cell = (obs_gids_raw == gid) & (obs_tids == t_val_out) & valid
                     w_cell = obs_w_raw[mask_cell].sum()
                     if w_cell > 0:
-                        psi_obs[mask_cell] = psi_g[e_idx] * (
-                            obs_w_raw[mask_cell] / w_cell
-                        )
+                        psi_obs[mask_cell] = psi_g[e_idx] * (obs_w_raw[mask_cell] / w_cell)
                 var_s = compute_survey_if_variance(psi_obs, resolved)
                 df_s_local = df_s
-            se_het = (
-                float(np.sqrt(var_s))
-                if np.isfinite(var_s) and var_s > 0
-                else float("nan")
-            )
+            se_het = float(np.sqrt(var_s)) if np.isfinite(var_s) and var_s > 0 else float("nan")
             t_stat, p_val, ci = safe_inference(
-                beta_het, se_het, alpha=alpha,
+                beta_het,
+                se_het,
+                alpha=alpha,
                 df=_inference_df(df_s_local, resolved),
             )
 
@@ -4593,9 +4623,7 @@ def _compute_per_group_if_multi_horizon(
     for l in range(1, L_max + 1):  # noqa: E741
         U_l = np.zeros(n_groups, dtype=float)
         U_per_period_l: Optional[np.ndarray] = (
-            np.zeros((n_groups, n_periods), dtype=float)
-            if compute_per_period
-            else None
+            np.zeros((n_groups, n_periods), dtype=float) if compute_per_period else None
         )
 
         for g in range(n_groups):
@@ -4709,9 +4737,7 @@ def _compute_per_group_if_placebo_horizon(
     for l in range(1, L_max + 1):  # noqa: E741
         U_pl = np.zeros(n_groups, dtype=float)
         U_per_period_pl: Optional[np.ndarray] = (
-            np.zeros((n_groups, n_periods), dtype=float)
-            if compute_per_period
-            else None
+            np.zeros((n_groups, n_periods), dtype=float) if compute_per_period else None
         )
 
         for g in range(n_groups):
@@ -5178,9 +5204,7 @@ def _compute_full_per_group_contributions(
     n_groups, n_periods = D_mat.shape
     U = np.zeros(n_groups, dtype=float)
     U_per_period: Optional[np.ndarray] = (
-        np.zeros((n_groups, n_periods), dtype=float)
-        if compute_per_period
-        else None
+        np.zeros((n_groups, n_periods), dtype=float) if compute_per_period else None
     )
 
     include_joiners_side = side in ("overall", "joiners")
@@ -5318,13 +5342,13 @@ def _compute_cohort_recentered_inputs(
     singleton_baseline_groups: List[Any],
     compute_per_period: bool = True,
 ) -> Tuple[
-    np.ndarray,            # U_centered_overall (n_eligible,)
-    int,                    # n_groups_for_overall
-    int,                    # n_cohorts
-    int,                    # n_groups_dropped_never_switching
-    np.ndarray,            # U_centered_joiners
-    np.ndarray,            # U_centered_leavers
-    List[Any],             # eligible_group_ids
+    np.ndarray,  # U_centered_overall (n_eligible,)
+    int,  # n_groups_for_overall
+    int,  # n_cohorts
+    int,  # n_groups_dropped_never_switching
+    np.ndarray,  # U_centered_joiners
+    np.ndarray,  # U_centered_leavers
+    List[Any],  # eligible_group_ids
     Optional[np.ndarray],  # U_centered_per_period_overall (n_eligible, n_periods) or None
     Optional[np.ndarray],  # U_centered_per_period_joiners or None
     Optional[np.ndarray],  # U_centered_per_period_leavers or None
@@ -5775,11 +5799,7 @@ def _compute_se(
     # compute_survey_if_variance() expects estimator-scale psi.
     # Scale by 1/divisor to normalize before survey expansion.
     U_scaled = U_centered / divisor
-    U_pp_scaled = (
-        U_centered_per_period / divisor
-        if U_centered_per_period is not None
-        else None
-    )
+    U_pp_scaled = U_centered_per_period / divisor if U_centered_per_period is not None else None
     return _survey_se_from_group_if(
         U_centered=U_scaled,
         eligible_groups=eligible_groups,
@@ -5854,7 +5874,7 @@ def _survey_se_from_group_if(
     # ATT, placebos, normalized/cumulated, heterogeneity).
     if U_centered.size == 0:
         return float("nan"), None
-    if float((U_centered ** 2).sum()) <= 0:
+    if float((U_centered**2).sum()) <= 0:
         return float("nan"), None
 
     group_ids = obs_survey_info["group_ids"]
@@ -5910,24 +5930,26 @@ def _survey_se_from_group_if(
     # A replicate allocator contract is asserted by
     # `tests/test_survey_dcdh_replicate_psu.py::TestReplicateClassA::
     # test_att_cell_allocator_with_varying_replicate_ratios`.
-    if use_cell_allocator and not getattr(
-        resolved, "uses_replicate_variance", False
-    ):
+    if use_cell_allocator and not getattr(resolved, "uses_replicate_variance", False):
         psu_arr = getattr(resolved, "psu", None)
         if psu_arr is None:
             use_cell_allocator = False
         else:
             psu_eff = np.asarray(psu_arr)[pos_mask]
             eligible_set = set(eligible_groups)
-            elig_row_mask = np.array(
-                [g in eligible_set for g in gids_eff], dtype=bool
-            )
+            elig_row_mask = np.array([g in eligible_set for g in gids_eff], dtype=bool)
             if elig_row_mask.any():
                 psu_varies_within = bool(
-                    pd.DataFrame({
-                        "g": gids_eff[elig_row_mask],
-                        "p": psu_eff[elig_row_mask],
-                    }).groupby("g")["p"].nunique().gt(1).any()
+                    pd.DataFrame(
+                        {
+                            "g": gids_eff[elig_row_mask],
+                            "p": psu_eff[elig_row_mask],
+                        }
+                    )
+                    .groupby("g")["p"]
+                    .nunique()
+                    .gt(1)
+                    .any()
                 )
                 if not psu_varies_within:
                     use_cell_allocator = False
@@ -5948,9 +5970,7 @@ def _survey_se_from_group_if(
         # (should be rare in practice — positive-weight rows almost
         # always survive cell aggregation; if one slips through we
         # treat it like an ineligible row rather than crash).
-        col_idx_eff = np.asarray(
-            pd.Index(periods).get_indexer(tids_eff), dtype=np.int64
-        )
+        col_idx_eff = np.asarray(pd.Index(periods).get_indexer(tids_eff), dtype=np.int64)
         valid_cell = (elig_idx_eff >= 0) & (col_idx_eff >= 0)
         n_eligible = len(eligible_groups)
         n_periods_pp = U_centered_per_period.shape[1]
@@ -5974,17 +5994,13 @@ def _survey_se_from_group_if(
         missing_cell_mask = W_cell == 0
         if missing_cell_mask.any():
             leaked = U_centered_per_period[missing_cell_mask]
-            if leaked.size > 0 and bool(
-                np.any(np.abs(leaked) > 1e-12)
-            ):
+            if leaked.size > 0 and bool(np.any(np.abs(leaked) > 1e-12)):
                 # Branch the wording on replicate-vs-TSL so replicate
                 # ATT users debugging this error are not misdirected
                 # to "within-group-varying PSU" (replicate designs
                 # have no PSU structure). Core mechanics and the
                 # pre-processing workaround are shared.
-                is_replicate = bool(
-                    getattr(resolved, "uses_replicate_variance", False)
-                )
+                is_replicate = bool(getattr(resolved, "uses_replicate_variance", False))
                 path_name = (
                     "Rao-Wu replicate-weight ATT variance"
                     if is_replicate
@@ -6022,9 +6038,7 @@ def _survey_se_from_group_if(
             elig_idx_eff[valid_cell], col_idx_eff[valid_cell]
         ]
         w_cell_at_row = np.zeros(w_eff.shape[0], dtype=np.float64)
-        w_cell_at_row[valid_cell] = W_cell[
-            elig_idx_eff[valid_cell], col_idx_eff[valid_cell]
-        ]
+        w_cell_at_row[valid_cell] = W_cell[elig_idx_eff[valid_cell], col_idx_eff[valid_cell]]
         safe_w = np.where(w_cell_at_row > 0, w_cell_at_row, 1.0)
         psi[pos_mask] = u_obs_cell * (w_eff / safe_w)
     else:
@@ -6196,9 +6210,7 @@ def _compute_twfe_diagnostic(
     weights_df = cell[[group_col, time_col]].copy()
     weights_df["weight"] = contribution_weights
 
-    fraction_negative = float(
-        (contribution_weights[treated_mask] < 0).sum() / treated_mask.sum()
-    )
+    fraction_negative = float((contribution_weights[treated_mask] < 0).sum() / treated_mask.sum())
 
     # Step 5: plain TWFE regression of y on (FE + d_gt)
     X_with_d = np.column_stack([X, d_arr.reshape(-1, 1)])
@@ -6367,9 +6379,7 @@ def twowayfeweights(
     if survey_design is not None:
         from diff_diff.survey import _resolve_survey_for_fit
 
-        resolved, survey_weights, _, _ = _resolve_survey_for_fit(
-            survey_design, data, "analytical"
-        )
+        resolved, survey_weights, _, _ = _resolve_survey_for_fit(survey_design, data, "analytical")
         if resolved is not None and resolved.weight_type != "pweight":
             raise ValueError(
                 f"twowayfeweights() survey support requires "

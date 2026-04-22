@@ -42,9 +42,10 @@ from typing import Any, Dict, FrozenSet, List, Optional, Union
 
 import numpy as np
 
+from diff_diff._reporting_helpers import describe_target_parameter
 from diff_diff.diagnostic_report import DiagnosticReport, DiagnosticReportResults
 
-BUSINESS_REPORT_SCHEMA_VERSION = "1.0"
+BUSINESS_REPORT_SCHEMA_VERSION = "2.0"
 
 __all__ = [
     "BusinessReport",
@@ -432,7 +433,67 @@ class BusinessReport:
             diagnostics_results.schema if diagnostics_results is not None else None
         )
 
-        headline = self._extract_headline(dr_schema)
+        # PR #347 R4 P1: compute target_parameter BEFORE extracting
+        # the headline so the no-scalar-by-design case
+        # (``aggregation == "no_scalar_headline"``, e.g., dCDH
+        # ``trends_linear=True`` with ``L_max >= 2``) can route the
+        # headline through a dedicated branch that names the intentional
+        # NaN rather than an estimation-failure path.
+        target_parameter = describe_target_parameter(self._results)
+        if target_parameter.get("aggregation") == "no_scalar_headline":
+            # PR #347 R12 P1: the no-scalar ``reason`` must distinguish
+            # the populated-surface case (per-horizon table exists) from
+            # the empty-surface subcase (``linear_trends_effects=None``
+            # — no horizons survived estimation). Telling a user with
+            # an empty surface to "see linear_trends_effects" is
+            # dead-end guidance.
+            _surface_empty = getattr(self._results, "linear_trends_effects", None) is None
+            # PR #347 R14 P1: the empty-surface reason must use the
+            # covariate-adjusted label when covariates are active.
+            _has_controls = getattr(self._results, "covariate_residuals", None) is not None
+            _empty_surface_label = "DID^{X,fd}_l" if _has_controls else "DID^{fd}_l"
+            if _surface_empty:
+                no_scalar_reason = (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``), and on "
+                    f"this fit no cumulated level effects ``{_empty_surface_label}`` "
+                    "survived estimation — the per-horizon surface is "
+                    "empty. Re-fit with a larger ``L_max`` or with "
+                    "``trends_linear=False`` if you need a reportable "
+                    "estimand."
+                )
+            else:
+                no_scalar_reason = (
+                    "The fitted estimator intentionally does not produce a "
+                    "scalar overall ATT on this configuration "
+                    "(``trends_linear=True`` with ``L_max >= 2``). Per-horizon "
+                    "cumulated level effects are on "
+                    "``results.linear_trends_effects[l]``."
+                )
+            headline = {
+                "status": "no_scalar_by_design",
+                "effect": None,
+                "se": None,
+                "ci_lower": None,
+                "ci_upper": None,
+                "alpha_was_honored": True,
+                "alpha_override_caveat": None,
+                "ci_level": int(round((1.0 - self._context.alpha) * 100)),
+                "p_value": None,
+                "is_significant": False,
+                "near_significance_threshold": False,
+                "unit": self._context.outcome_unit,
+                "unit_kind": _UNIT_KINDS.get(
+                    self._context.outcome_unit.lower() if self._context.outcome_unit else "",
+                    "unknown",
+                ),
+                "sign": "none",
+                "breakdown_M": None,
+                "reason": no_scalar_reason,
+            }
+        else:
+            headline = self._extract_headline(dr_schema)
         sample = self._extract_sample()
         heterogeneity = _lift_heterogeneity(dr_schema)
         pre_trends = _lift_pre_trends(dr_schema)
@@ -475,6 +536,7 @@ class BusinessReport:
                 "alpha": self._context.alpha,
             },
             "headline": headline,
+            "target_parameter": target_parameter,
             "assumption": assumption,
             "pre_trends": pre_trends,
             "sensitivity": sensitivity,
@@ -1167,9 +1229,18 @@ def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, 
         has_controls = (
             results is not None and getattr(results, "covariate_residuals", None) is not None
         )
-        has_trends = (
-            results is not None and getattr(results, "linear_trends_effects", None) is not None
-        )
+        # PR #347 R10 P1: read the persisted ``trends_linear`` flag
+        # first — empty-horizon trends-linear fits set
+        # ``linear_trends_effects=None`` but are still trends-linear
+        # per the estimator contract. Legacy fit objects predating
+        # the persisted field fall back to the presence inference.
+        _trends_persisted = getattr(results, "trends_linear", None) if results is not None else None
+        if isinstance(_trends_persisted, bool):
+            has_trends = _trends_persisted
+        else:
+            has_trends = (
+                results is not None and getattr(results, "linear_trends_effects", None) is not None
+            )
         has_heterogeneity = (
             results is not None and getattr(results, "heterogeneity_effects", None) is not None
         )
@@ -1928,6 +1999,31 @@ def _render_headline_sentence(schema: Dict[str, Any]) -> str:
     """
     ctx = schema.get("context", {})
     h = schema.get("headline", {})
+    # PR #347 R4 P1: the dCDH ``trends_linear=True`` + ``L_max>=2``
+    # configuration does not produce a scalar headline by design —
+    # ``overall_att`` is intentionally NaN (per
+    # ``chaisemartin_dhaultfoeuille.py:2828-2834``). Render explicit
+    # "no scalar headline by design" prose instead of routing through
+    # the non-finite / estimation-failure path.
+    if h.get("status") == "no_scalar_by_design":
+        # PR #347 R13 P1: the headline-level ``reason`` field is the
+        # single source for the no-scalar prose and is already
+        # branched on populated-vs-empty surface in ``_build_schema``.
+        # Use it verbatim so the headline sentence never drifts from
+        # the schema-level message on the empty-surface subcase.
+        treatment = ctx.get("treatment_label", "the treatment")
+        outcome_label = ctx.get("outcome_label", "the outcome")
+        treatment_sentence = _sentence_first_upper(treatment)
+        reason = h.get("reason")
+        if isinstance(reason, str) and reason:
+            return (
+                f"{treatment_sentence} does not produce a scalar aggregate "
+                f"effect on {outcome_label} under this configuration. " + reason
+            )
+        return (
+            f"{treatment_sentence} does not produce a scalar aggregate effect "
+            f"on {outcome_label} under this configuration (by design)."
+        )
     effect = h.get("effect")
     outcome = ctx.get("outcome_label", "the outcome")
     treatment = ctx.get("treatment_label", "the treatment")
@@ -1993,6 +2089,17 @@ def _render_summary(schema: Dict[str, Any]) -> str:
 
     # Headline sentence with significance phrase.
     sentences.append(_render_headline_sentence(schema))
+    # BR/DR gap #6 (target-parameter clarity): name what the headline
+    # scalar actually represents so the stakeholder can map the number
+    # to a specific estimand. Rendered immediately after the headline
+    # and before the significance phrase. The summary surfaces only
+    # the short ``name`` so the paragraph stays within the
+    # 6-10-sentence target; ``definition`` lives in the full report
+    # and in the structured schema for agents that want the long form.
+    tp = schema.get("target_parameter", {}) or {}
+    tp_name = tp.get("name")
+    if tp_name:
+        sentences.append(f"Target parameter: {tp_name}.")
     h = schema.get("headline", {})
     p = h.get("p_value")
     alpha = ctx.get("alpha", 0.05)
@@ -2313,6 +2420,21 @@ def _render_full_report(schema: Dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"Statistically, {_significance_phrase(p, alpha)}.")
     lines.append("")
+
+    # Target parameter (BR/DR gap #6): name what the headline scalar
+    # represents so the stakeholder can map the number to a specific
+    # estimand. Rendered between "Headline" and "Identifying Assumption"
+    # because the target parameter is about what the scalar IS, whereas
+    # identifying assumption is about what makes it valid.
+    tp = schema.get("target_parameter", {}) or {}
+    if tp.get("name") or tp.get("definition"):
+        lines.append("## Target Parameter")
+        lines.append("")
+        if tp.get("name"):
+            lines.append(f"- **{tp['name']}**")
+        if tp.get("definition"):
+            lines.append(f"- {tp['definition']}")
+        lines.append("")
 
     # Identifying assumption
     lines.append("## Identifying Assumption")

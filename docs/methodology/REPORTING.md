@@ -53,6 +53,146 @@ effects, pre-period and reference-marker rows excluded). These are
 reporting-layer aggregations of inputs already in the result object,
 not new inference.
 
+## Target parameter
+
+The BusinessReport and DiagnosticReport schemas both carry a
+top-level `target_parameter` block that names what scalar the
+headline number actually represents. The 16 result classes have
+meaningfully different estimands — a stakeholder reading
+`overall_att = -0.0214` on a Callaway-Sant'Anna fit cannot tell
+whether that is the simple-weighted average across `ATT(g,t)`
+cells, an event-study-weighted aggregate, or a group-weighted
+aggregate. Baker et al. (2025) Step 2 is "Define the target
+parameter"; BR/DR does that work for the user.
+
+Schema shape:
+
+```json
+"target_parameter": {
+  "name": "overall ATT (cohort-size-weighted average of ATT(g,t))",
+  "definition": "A cohort-size-weighted average of group-time ATTs ...",
+  "aggregation": "simple",
+  "headline_attribute": "overall_att",
+  "reference": "Callaway & Sant'Anna (2021); REGISTRY.md Sec. CallawaySantAnna"
+}
+```
+
+Field semantics:
+
+- `name` — short stakeholder-facing name. Rendered verbatim in
+  BR's summary paragraph and DR's overall-interpretation
+  paragraph. Always non-empty.
+- `definition` — plain-English description of what the scalar is
+  and how it is aggregated. Rendered in BR's and DR's full-report
+  markdown (under "## Target Parameter") but omitted from the
+  summary paragraph so stakeholder prose stays within the 6-10-
+  sentence target.
+- `aggregation` — machine-readable tag dispatching agents can
+  branch on. Complete enumeration per estimator:
+  - `"did_or_twfe"` (DiDResults / TwoWayFixedEffects both route here — neutral tag; ambiguous at the result-class level until estimator provenance is persisted)
+  - `"event_study"` (MultiPeriodDiDResults)
+  - `"simple"` (CallawaySantAnna / Imputation / TwoStage / Wooldridge)
+  - `"iw"` (SunAbraham)
+  - `"stacked"` (StackedDiD)
+  - `"pt_all_combined"` / `"pt_post_single_baseline"` (EfficientDiD
+    branched on `pt_assumption`)
+  - `"dose_overall"` (ContinuousDiD)
+  - `"ddd"` / `"staggered_ddd"` (TripleDifference / StaggeredTripleDiff)
+  - dCDH dynamic branches follow the exact `overall_att`
+    contract: `"M"` / `"M_x"` / `"M_fd"` / `"M_x_fd"` for
+    `L_max=None`; `"DID_1"` / `"DID_1_x"` / `"DID_1_fd"` /
+    `"DID_1_x_fd"` for `L_max=1`; `"delta"` / `"delta_x"` for
+    `L_max>=2` without trend suppression; and
+    `"no_scalar_headline"` when `trends_linear=True` AND
+    `L_max>=2` (the scalar is intentionally NaN).
+  - `"synthetic"` (SyntheticDiD) / `"factor_model"` (TROP) /
+    `"twfe"` (BaconDecomposition read-out) / `"unknown"` (default
+    fallback).
+- `headline_attribute` — the raw result attribute the scalar
+  comes from (`"overall_att"` / `"att"` / `"avg_att"` /
+  `"twfe_estimate"`), OR `None` when `aggregation ==
+  "no_scalar_headline"` (the dCDH `trends_linear=True,
+  L_max>=2` branch where `overall_att` is intentionally NaN by
+  design). Agents dispatching on this field must handle `None` by
+  inspecting `headline.reason` (BR) / `headline_metric.reason`
+  (DR), which distinguishes two subcases:
+
+  - **Populated-surface subcase** (per-horizon
+    `linear_trends_effects` dict is non-empty): `reason`
+    directs callers to `results.linear_trends_effects[l]` for
+    per-horizon cumulated level effects.
+  - **Empty-surface subcase** (`linear_trends_effects is None`
+    because no horizons survived estimation): `reason` names
+    the empty state explicitly and directs callers toward
+    re-fit remediation (larger `L_max` or
+    `trends_linear=False`) rather than a nonexistent dict. The
+    dCDH native estimand label is also branched — on this
+    subcase `_estimand_label()` returns
+    `DID^{fd}_l (no cumulated level effects survived estimation)`
+    (or `DID^{X,fd}_l (...)` when covariates are active).
+
+  Different result classes use different attribute names; agents
+  that want to re-read the raw value can dispatch on
+  `headline_attribute`.
+- `reference` — one-line citation pointer to the canonical paper
+  and the REGISTRY.md section.
+
+Per-estimator dispatch lives in
+`diff_diff/_reporting_helpers.py::describe_target_parameter`. Each
+branch is sourced from the corresponding estimator's section in
+REGISTRY.md; new result classes must add an explicit branch (the
+exhaustiveness test `TestTargetParameterCoversEveryResultClass`
+locks this in).
+
+A few branches read fit-time config from the result object:
+
+- `EfficientDiDResults.pt_assumption`: `"all"` (over-identified
+  combined) vs `"post"` (just-identified single-baseline) branches
+  `aggregation` between `"pt_all_combined"` and
+  `"pt_post_single_baseline"`.
+- `StackedDiDResults.clean_control`: `"never_treated"` /
+  `"strict"` / `"not_yet_treated"` varies the `definition` clause
+  describing which units qualify as controls.
+- `ChaisemartinDHaultfoeuilleResults.L_max` +
+  `covariate_residuals` + `linear_trends_effects`: branches the
+  dCDH estimand tag per the exact `overall_att` contract in
+  `chaisemartin_dhaultfoeuille.py:2602-2634` and
+  `chaisemartin_dhaultfoeuille.py:2828-2834`:
+  - `L_max=None` → `DID_M` (Phase 1 per-period aggregate;
+    `aggregation="M"`).
+  - `L_max=1` → `DID_1` (single-horizon per-group estimand,
+    Equation 3 of the dynamic companion paper;
+    `aggregation="DID_1"`).
+  - `L_max>=2` → cost-benefit `delta` (Lemma 4 cross-horizon
+    aggregate; `aggregation="delta"`).
+  - `trends_linear=True` AND `L_max>=2` → `overall_att` is
+    intentionally NaN (no scalar aggregate; per-horizon level
+    effects live on `results.linear_trends_effects[l]`).
+    `aggregation="no_scalar_headline"` and
+    `headline_attribute` is `None`.
+
+  Covariates (`has_controls`) and/or linear trends
+  (`has_trends`, when `L_max < 2`) add `_x` / `_fd` /
+  `_x_fd` suffixes to the `aggregation` tag and the
+  corresponding `^X` / `^{fd}` / `^{X,fd}` superscripts to the
+  `name` (e.g. `DID^X_1`, `delta^X`, `DID^{fd}_M`), matching the
+  result class's own `_estimand_label()` helper at
+  `chaisemartin_dhaultfoeuille_results.py:454-490`.
+
+A few branches emit a fixed tag regardless of fit-time config —
+notably `CallawaySantAnna`, `ImputationDiD`, `TwoStageDiD`, and
+`WooldridgeDiD`. For these estimators the `overall_att`
+(or `att` / `avg_att`) scalar is ALWAYS the simple weighted
+aggregation; the fit-time `aggregate` kwarg populates additional
+horizon / group tables on the result object but does not change
+the headline scalar. Disambiguating those tables in prose is
+tracked under BR/DR gap #9 (per-cohort narrative rendering).
+
+`ContinuousDiDResults` emits a single `"dose_overall"` tag with a
+disjunctive definition (`ATT^loc` under PT; `ATT^glob` under
+SPT) because the PT-vs-SPT regime is a user-level assumption, not
+a library setting.
+
 ## Design deviations
 
 - **Note:** No hard pass/fail gates. `DiagnosticReport` does not produce
@@ -233,6 +373,17 @@ not new inference.
   The v3.2 CHANGELOG marks both schemas experimental so users do not
   anchor tooling on them prematurely; a formal deprecation policy will
   land within two subsequent PRs.
+
+- **Note:** Schema version 2.0 (both BR and DR). The BR/DR gap #6
+  target-parameter PR adds the `headline.status` /
+  `headline_metric.status` value `"no_scalar_by_design"` (used for
+  the dCDH `trends_linear=True, L_max>=2` configuration where
+  `overall_att` is intentionally NaN). Per the stability policy
+  above, new enum values are breaking changes, so
+  `BUSINESS_REPORT_SCHEMA_VERSION` and
+  `DIAGNOSTIC_REPORT_SCHEMA_VERSION` bumped from `"1.0"` to
+  `"2.0"`. The schemas remain marked experimental, so the formal
+  deprecation policy does not yet apply.
 
 ## Reference implementation(s)
 

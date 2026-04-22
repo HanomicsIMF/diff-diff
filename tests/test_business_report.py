@@ -49,6 +49,7 @@ _BR_TOP_LEVEL_KEYS = {
     "estimator",
     "context",
     "headline",
+    "target_parameter",
     "assumption",
     "pre_trends",
     "sensitivity",
@@ -958,7 +959,7 @@ class TestMethodAwarePTProse:
         from diff_diff.diagnostic_report import DiagnosticReportResults
 
         fake_schema = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "estimator": "DiDResults",
             "headline_metric": {"name": "att", "value": 1.0},
             "parallel_trends": {
@@ -1057,7 +1058,7 @@ class TestFullReportMethodAwarePTLabel:
             pt_block["joint_p_value"] = 0.40
 
         fake_schema = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "estimator": "DiDResults",
             "headline_metric": {"name": "att", "value": 1.0},
             "parallel_trends": pt_block,
@@ -2320,7 +2321,7 @@ class TestDiagFallbackDowngradeAppliedCentrally:
         from diff_diff.diagnostic_report import DiagnosticReportResults
 
         schema = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "estimator": "CallawaySantAnnaResults",
             "headline_metric": {"name": "overall_att", "value": 1.0},
             "parallel_trends": {
@@ -4027,7 +4028,7 @@ class TestCanonicalValidationSurfaceFixes:
             for row in grid
         ]
         schema = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "estimator": {"class_name": "CallawaySantAnnaResults", "display_name": "CS"},
             "headline_metric": {},
             "parallel_trends": {"status": "skipped", "reason": "stub"},
@@ -4214,7 +4215,7 @@ class TestBaconCaveatEstimatorAware:
         from diff_diff.diagnostic_report import DiagnosticReportResults
 
         schema = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "estimator": {"class_name": "Stub", "display_name": "Stub"},
             "headline_metric": {},
             "parallel_trends": {"status": "skipped", "reason": "stub"},
