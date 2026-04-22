@@ -2690,6 +2690,74 @@ class TestEventStudyPanelContract:
                 panel, "outcome", "dose", "period", "unit", aggregate="event_study"
             )
 
+    def test_time_varying_post_F_dose_rejected(self):
+        """Within-unit dose variation across post-periods raises.
+
+        Paper Appendix B.2 assumes "once treated, stay treated with the
+        same dose"; the aggregation uses ``D_{g, F}`` as the single
+        regressor for every horizon. Silent acceptance of time-varying
+        post-treatment doses would misattribute later-horizon effects.
+        Covers CI reviewer round 1 P0: `_aggregate_multi_period_first_differences`
+        would otherwise use period-F dose for all horizons.
+        """
+        rng = np.random.default_rng(0)
+        G = 50
+        rows = []
+        for g in range(G):
+            d_F = float(rng.uniform(0.1, 0.5))
+            d_F_plus_1 = d_F + 0.3  # time-varying: dose changes after F
+            for t in range(1, 6):
+                if t < 3:
+                    dose = 0.0
+                elif t == 3:
+                    dose = d_F
+                else:
+                    dose = d_F_plus_1  # different from d_F
+                rows.append(
+                    {
+                        "unit": g,
+                        "period": t,
+                        "dose": dose,
+                        "outcome": rng.standard_normal(),
+                    }
+                )
+        panel = pd.DataFrame(rows)
+        with pytest.raises(ValueError, match="constant dose|time-varying"):
+            HeterogeneousAdoptionDiD(design="auto").fit(
+                panel, "outcome", "dose", "period", "unit", aggregate="event_study"
+            )
+
+    def test_staggered_without_first_treat_col_rejected(self):
+        """Multi-cohort panel without first_treat_col raises (not silent).
+
+        Without cohort metadata, the dose-invariant period classification
+        would silently treat later-cohort units as zero-dose "controls"
+        at the inferred F, violating Appendix B.2's last-cohort-only
+        contract. Covers CI reviewer round 1 P1.
+        """
+        rng = np.random.default_rng(0)
+        G = 100
+        rows = []
+        for g in range(G):
+            # Assign cohort: half treat at t=3, half at t=5.
+            F_g = 3 if g < G // 2 else 5
+            d_g = float(rng.uniform(0.1, 1.0))
+            for t in range(1, 7):
+                dose = d_g if t >= F_g else 0.0
+                rows.append(
+                    {
+                        "unit": g,
+                        "period": t,
+                        "dose": dose,
+                        "outcome": rng.standard_normal(),
+                    }
+                )
+        panel = pd.DataFrame(rows)
+        with pytest.raises(ValueError, match="Staggered-timing|first_treat_col"):
+            HeterogeneousAdoptionDiD(design="auto").fit(
+                panel, "outcome", "dose", "period", "unit", aggregate="event_study"
+            )
+
 
 class TestEventStudyGuardsPreserved:
     """Phase 2a policy guards fire on the event-study path too."""

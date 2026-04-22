@@ -1116,6 +1116,73 @@ def _validate_had_panel_event_study(
             f"column."
         )
 
+    # Staggered-without-``first_treat_col`` detection. When cohort metadata
+    # is not supplied, the dose-invariant period classification still
+    # declares t=F=min-post-period based on "any unit has nonzero dose".
+    # That silently accepts staggered panels where units have DIFFERENT
+    # first-positive-dose periods: the later-treated cohorts enter
+    # ``d_arr`` as zero-dose "controls" at the inferred F, violating
+    # paper Appendix B.2's last-cohort-only contract. Compute per-unit
+    # first-positive-dose period directly from the dose path and raise
+    # if multiple cohorts are present, directing users to pass
+    # ``first_treat_col`` (which activates the last-cohort auto-filter)
+    # or to use ChaisemartinDHaultfoeuille for full staggered support.
+    if first_treat_col is None:
+        df_sorted = data_filtered.sort_values([unit_col, time_col])
+        # For each unit, the first period at which dose > 0.
+        pos_mask_global = df_sorted[dose_col] > 0
+        first_pos_per_unit = df_sorted.loc[pos_mask_global].groupby(unit_col)[time_col].first()
+        cohort_labels = list(first_pos_per_unit.unique())
+        if len(cohort_labels) > 1:
+            try:
+                distinct_cohorts = sorted(cohort_labels, key=lambda x: (x is None, x))
+            except TypeError:
+                distinct_cohorts = list(cohort_labels)
+            raise ValueError(
+                f"Staggered-timing panel detected (first_treat_col is "
+                f"None): {len(distinct_cohorts)} distinct first-positive-"
+                f"dose periods {distinct_cohorts!r} across units. HAD's "
+                f"last-cohort auto-filter (paper Appendix B.2) only runs "
+                f"when first_treat_col is supplied so the estimator can "
+                f"identify cohorts. Pass first_treat_col=<column> to "
+                f"enable the auto-filter to the last cohort, or use "
+                f"ChaisemartinDHaultfoeuille (did_multiplegt_dyn) for "
+                f"full staggered support."
+            )
+
+    # Constant post-period dose check. Paper Appendix B.2 assumes
+    # "once treated, stay treated with the same dose"; the event-study
+    # aggregation uses ``D_{g, F}`` as the single regressor for every
+    # event-time horizon. Panels where a unit's dose varies across
+    # post-periods (e.g., phased adoption, dose changes after F) would
+    # silently misattribute later-horizon effects to the period-F dose.
+    # Reject front-door with a redirect to ChaisemartinDHaultfoeuille
+    # for genuinely time-varying post-treatment doses.
+    if len(t_post_list) > 1:
+        post_data = data_filtered.loc[post_mask]
+        dose_spread_per_unit = post_data.groupby(unit_col)[dose_col].agg(
+            lambda x: float(x.max() - x.min())
+        )
+        abs_max_dose = float(np.max(np.abs(post_doses))) if post_doses.size else 0.0
+        tol = 1e-12 * max(1.0, abs_max_dose)
+        bad_mask = dose_spread_per_unit > tol
+        if bool(bad_mask.any()):
+            n_bad = int(bad_mask.sum())
+            max_spread = float(dose_spread_per_unit.max())
+            raise ValueError(
+                f"HAD event-study requires constant dose within unit for "
+                f"all post-treatment periods t >= F={F!r}. {n_bad} unit(s) "
+                f"have time-varying doses across post-periods "
+                f"{t_post_list!r} (max within-unit spread={max_spread!r}, "
+                f"tolerance={tol!r}). The aggregation uses D_{{g, F}} as "
+                f"the single regressor for every event-time horizon "
+                f"(paper Appendix B.2 constant-dose convention), so "
+                f"silently accepting time-varying post-treatment doses "
+                f"would misattribute later-horizon effects. For genuinely "
+                f"time-varying post-treatment doses use "
+                f"ChaisemartinDHaultfoeuille (did_multiplegt_dyn)."
+            )
+
     return F, t_pre_list, t_post_list, data_filtered, filter_info
 
 
