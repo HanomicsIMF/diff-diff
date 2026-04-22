@@ -172,6 +172,23 @@ class TestQUGTest:
             qug_test(np.array([0.1, -0.3, 0.5, 0.9]))
 
 
+class TestNegativeDoseGuardsOnLinearityTests:
+    """R6 P1 fix: stute_test and yatchew_hr_test must enforce the same
+    HAD non-negative-dose contract as qug_test and the panel validator."""
+
+    def test_stute_negative_dose_raises(self):
+        d = np.linspace(-0.2, 0.8, 30)  # contains negatives
+        dy = 2.0 * d + np.random.default_rng(42).normal(0.0, 0.1, size=30)
+        with pytest.raises(ValueError, match="negative value"):
+            stute_test(d, dy, n_bootstrap=199, seed=42)
+
+    def test_yatchew_negative_dose_raises(self):
+        d = np.linspace(-0.2, 0.8, 30)
+        dy = 2.0 * d + np.random.default_rng(42).normal(0.0, 0.1, size=30)
+        with pytest.raises(ValueError, match="negative value"):
+            yatchew_hr_test(d, dy)
+
+
 # =============================================================================
 # Stute test
 # =============================================================================
@@ -944,6 +961,49 @@ class TestComposeVerdictLogic:
         assert "inconclusive" not in verdict
         assert verdict.startswith("QUG and linearity diagnostics fail-to-reject")
         assert "Stute NaN - skipped" in verdict
+
+    def test_qug_reject_with_both_linearity_nan_surfaces_rejection(self):
+        """R6 P1 fix: a conclusive QUG rejection must NOT be hidden by
+        "inconclusive" just because BOTH linearity tests are NaN. Paper
+        rule is one-way: TWFE is admissible only if NO test rejects, so
+        any conclusive rejection dominates unresolved-step notes.
+        """
+        q = _mk_qug(reject=True)
+        s = _mk_stute(reject=False, p=float("nan"))
+        y = _mk_yatchew(reject=False, p=float("nan"))
+        verdict = _compose_verdict(q, s, y)
+        # Rejection must be surfaced as the primary verdict.
+        assert "support infimum rejected" in verdict
+        assert not verdict.startswith("inconclusive")
+        # Unresolved linearity step is appended, not replacing the rejection.
+        assert "additional steps unresolved" in verdict
+        assert "both Stute and Yatchew" in verdict
+
+    def test_linearity_reject_with_qug_nan_surfaces_rejection(self):
+        """R6 P1 fix: a conclusive linearity rejection (Stute or Yatchew)
+        must NOT be hidden by "inconclusive - QUG NaN"."""
+        q = _mk_qug(reject=False, p=float("nan"))
+        s = _mk_stute(reject=True)
+        y = _mk_yatchew(reject=False)
+        verdict = _compose_verdict(q, s, y)
+        assert "linearity rejected" in verdict
+        assert "Stute" in verdict
+        assert not verdict.startswith("inconclusive")
+        assert "additional steps unresolved" in verdict
+        assert "QUG NaN" in verdict
+
+    def test_all_three_reject_with_qug_nan_keeps_conclusive_rejections(self):
+        """Mixed case: Stute and Yatchew both conclusively reject, QUG
+        unresolved. All conclusive rejections must be reported."""
+        q = _mk_qug(reject=False, p=float("nan"))
+        s = _mk_stute(reject=True)
+        y = _mk_yatchew(reject=True)
+        verdict = _compose_verdict(q, s, y)
+        assert "linearity rejected" in verdict
+        assert "Stute" in verdict
+        assert "Yatchew" in verdict
+        assert "QUG NaN" in verdict
+        assert not verdict.startswith("inconclusive")
 
     def test_none_reject_flags_assumption7_gap(self):
         """(b) None reject -> verdict flags the Assumption 7 pre-trends gap

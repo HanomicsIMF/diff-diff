@@ -396,27 +396,36 @@ class HADPretestReport:
         PARTIAL indicator: it does not certify Assumption 7 (pre-trends),
         which is not tested by Phase 3.
     verdict : str
-        Human-readable classification. The paper's step 3 accepts either
-        Stute OR Yatchew, so a conclusive Stute alone can adjudicate
-        linearity even if Yatchew is NaN (e.g. tied-dose panels), and
-        vice versa. Priority-ordered first-match:
+        Human-readable classification. Paper rule: TWFE is admissible
+        only if NONE of the implemented tests rejects. A conclusive
+        rejection must therefore never be hidden by a purely-inconclusive
+        verdict just because another step happens to be NaN.
 
-        1. QUG NaN -> ``"inconclusive - QUG NaN"`` (step 1 is required).
-        2. BOTH Stute AND Yatchew NaN -> ``"inconclusive - both Stute
-           and Yatchew linearity tests NaN"`` (step 3 requires at least
-           one).
-        3. None of the CONCLUSIVE tests reject -> partial-workflow
-           fail-to-reject verdict. Format: ``"QUG and linearity
-           diagnostics fail-to-reject[ (Yatchew NaN - skipped)];
-           Assumption 7 pre-trends test NOT run (paper step 2 deferred
-           to Phase 3 follow-up)"``. The ``" (... - skipped)"`` suffix
-           appears when Stute or Yatchew was NaN but the other was
-           conclusive.
-        4. At least one conclusive test rejects -> bundled string
-           naming each failed assumption: ``"support infimum rejected
-           - continuous_at_zero design invalid (QUG)"`` and/or
-           ``"linearity rejected - heterogeneity bias
-           ({Stute[,Yatchew]})"``.
+        Priority:
+
+        1. If any CONCLUSIVE test rejected, that is the primary verdict:
+           a bundled string naming each failed assumption,
+           ``"support infimum rejected - continuous_at_zero design
+           invalid (QUG)"`` and/or ``"linearity rejected - heterogeneity
+           bias ({Stute[,Yatchew]})"``. If another step is unresolved
+           (QUG NaN, or BOTH linearity tests NaN), an
+           ``"; additional steps unresolved: ..."`` suffix is APPENDED
+           rather than replacing the rejection.
+        2. If no conclusive rejection but a required step is unresolved,
+           the verdict is ``"inconclusive - QUG NaN"`` when step 1 is
+           the only unresolved piece, ``"inconclusive - both Stute and
+           Yatchew linearity tests NaN"`` when step 3 lacks any
+           conclusive linearity test, or ``"inconclusive - QUG NaN;
+           both Stute and Yatchew linearity tests NaN"`` when both are
+           unresolved.
+        3. Otherwise (all required steps conclusive and none reject),
+           the partial-workflow fail-to-reject verdict:
+           ``"QUG and linearity diagnostics fail-to-reject[ (Yatchew
+           NaN - skipped)]; Assumption 7 pre-trends test NOT run (paper
+           step 2 deferred to Phase 3 follow-up)"``. The
+           ``" (... - skipped)"`` suffix appears when Stute OR Yatchew
+           was NaN but the other was conclusive (step 3 resolved via
+           the paper's "Stute OR Yatchew" wording).
     alpha : float
         Significance level shared across tests.
     n_obs : int
@@ -616,43 +625,36 @@ def _compose_verdict(
     conclusive Stute result alone suffices even when Yatchew is NaN
     (e.g. tied doses, which Yatchew rejects by contract).
 
-    Priority-ordered first-match:
+    Paper logic: TWFE is admissible only if NONE of the implemented
+    tests rejects. A conclusive rejection must therefore never be hidden
+    by a purely-inconclusive verdict just because another step is NaN -
+    it is reported as the primary outcome and any unresolved steps are
+    appended as a suffix.
 
-    1. QUG NaN -> ``"inconclusive - QUG NaN"`` (step 1 required).
-    2. BOTH Stute AND Yatchew NaN -> ``"inconclusive - both Stute and
-       Yatchew linearity tests NaN"`` (step 3 requires at least one).
-    3. Otherwise, count rejections from CONCLUSIVE tests only:
-       3a. None of the conclusive tests reject -> partial-workflow
-           fail-to-reject verdict flagging the Assumption 7 gap, plus
-           a ``" (Yatchew NaN - skipped)"`` suffix when applicable.
-       3b. At least one conclusive test rejects -> bundle each
-           rejection reason naming the failed assumption.
+    Priority:
+
+    1. Collect all rejection reasons from CONCLUSIVE tests. If any
+       conclusive test rejected, that is the primary verdict. Unresolved
+       steps (QUG NaN, or BOTH linearity tests NaN) are appended as
+       ``"; additional steps unresolved: ..."`` rather than replacing
+       the rejection.
+    2. If no conclusive test rejected but a required step is unresolved,
+       return a pure ``"inconclusive - ..."`` verdict naming the
+       unresolved step(s).
+    3. Otherwise (all required steps conclusive and none reject),
+       return the partial-workflow fail-to-reject verdict flagging the
+       Assumption 7 gap, with a ``" (Yatchew NaN - skipped)"`` suffix
+       when ONE linearity test was NaN and the other was conclusive.
     """
     qug_ok = bool(np.isfinite(qug.p_value))
     stute_ok = bool(np.isfinite(stute.p_value))
     yatchew_ok = bool(np.isfinite(yatchew.p_value))
 
-    if not qug_ok:
-        return "inconclusive - QUG NaN"
-    if not stute_ok and not yatchew_ok:
-        return "inconclusive - both Stute and Yatchew linearity tests NaN"
-
-    qug_rej = qug.reject
-    stute_rej = bool(stute_ok and stute.reject)
-    yatchew_rej = bool(yatchew_ok and yatchew.reject)
-
-    if not (qug_rej or stute_rej or yatchew_rej):
-        skipped = []
-        if not stute_ok:
-            skipped.append("Stute NaN")
-        if not yatchew_ok:
-            skipped.append("Yatchew NaN")
-        skip_note = f" ({'; '.join(skipped)} - skipped)" if skipped else ""
-        return (
-            "QUG and linearity diagnostics fail-to-reject"
-            f"{skip_note}; Assumption 7 pre-trends test NOT run "
-            "(paper step 2 deferred to Phase 3 follow-up)"
-        )
+    # Rejections from conclusive tests only. NaN-p tests have reject=False
+    # by convention, so the ``ok and reject`` guard is defensive.
+    qug_rej = qug_ok and qug.reject
+    stute_rej = stute_ok and stute.reject
+    yatchew_rej = yatchew_ok and yatchew.reject
 
     reasons = []
     if qug_rej:
@@ -662,7 +664,40 @@ def _compose_verdict(
             name for name, rejected in (("Stute", stute_rej), ("Yatchew", yatchew_rej)) if rejected
         )
         reasons.append(f"linearity rejected - heterogeneity bias ({which})")
-    return "; ".join(reasons)
+
+    # Unresolved steps: QUG is required; step 3 requires at least one
+    # conclusive linearity test.
+    unresolved = []
+    if not qug_ok:
+        unresolved.append("QUG NaN")
+    if not stute_ok and not yatchew_ok:
+        unresolved.append("both Stute and Yatchew linearity tests NaN")
+
+    if reasons:
+        # A conclusive rejection is the primary outcome. Append any
+        # unresolved-step note rather than replacing the rejection.
+        verdict = "; ".join(reasons)
+        if unresolved:
+            verdict += "; additional steps unresolved: " + "; ".join(unresolved)
+        return verdict
+
+    if unresolved:
+        return "inconclusive - " + "; ".join(unresolved)
+
+    # All required steps conclusive, none reject. Note any single skipped
+    # linearity test (the OTHER linearity test was conclusive and
+    # fail-to-reject, so step 3 IS resolved).
+    skipped = []
+    if not stute_ok:
+        skipped.append("Stute NaN")
+    if not yatchew_ok:
+        skipped.append("Yatchew NaN")
+    skip_note = f" ({'; '.join(skipped)} - skipped)" if skipped else ""
+    return (
+        "QUG and linearity diagnostics fail-to-reject"
+        f"{skip_note}; Assumption 7 pre-trends test NOT run "
+        "(paper step 2 deferred to Phase 3 follow-up)"
+    )
 
 
 # =============================================================================
@@ -848,7 +883,8 @@ def stute_test(
     ------
     ValueError
         If ``d`` / ``dy`` are not 1D numeric, contain NaN, have unequal
-        lengths, or if ``alpha`` is outside ``(0, 1)``, or if
+        lengths, if any ``d`` value is negative (paper Section 2 HAD
+        support restriction), if ``alpha`` is outside ``(0, 1)``, or if
         ``n_bootstrap < 99``.
 
     Notes
@@ -885,6 +921,15 @@ def stute_test(
         raise ValueError(
             f"d and dy must have the same length; got d.shape={d_arr.shape}, "
             f"dy.shape={dy_arr.shape}."
+        )
+    # HAD support restriction (paper Section 2): doses must be non-negative.
+    # Mirror the front-door guard from qug_test / _validate_had_panel.
+    if (d_arr < 0).any():
+        n_neg = int((d_arr < 0).sum())
+        raise ValueError(
+            f"stute_test: d contains {n_neg} negative value(s); HAD doses "
+            f"must be non-negative (paper Section 2). Check your dose "
+            f"column or pre-process before calling stute_test."
         )
 
     G = int(d_arr.shape[0])
@@ -1027,7 +1072,8 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
     ------
     ValueError
         If ``d`` / ``dy`` are not 1D numeric, contain NaN, have unequal
-        lengths, or if ``alpha`` is outside ``(0, 1)``.
+        lengths, if any ``d`` value is negative (paper Section 2 HAD
+        support restriction), or if ``alpha`` is outside ``(0, 1)``.
 
     Notes
     -----
@@ -1082,6 +1128,15 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
         raise ValueError(
             f"d and dy must have the same length; got d.shape={d_arr.shape}, "
             f"dy.shape={dy_arr.shape}."
+        )
+    # HAD support restriction (paper Section 2): doses must be non-negative.
+    # Mirror the front-door guard from qug_test / _validate_had_panel.
+    if (d_arr < 0).any():
+        n_neg = int((d_arr < 0).sum())
+        raise ValueError(
+            f"yatchew_hr_test: d contains {n_neg} negative value(s); HAD "
+            f"doses must be non-negative (paper Section 2). Check your "
+            f"dose column or pre-process before calling yatchew_hr_test."
         )
 
     G = int(d_arr.shape[0])
