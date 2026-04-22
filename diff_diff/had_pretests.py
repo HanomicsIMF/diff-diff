@@ -61,13 +61,17 @@ _MIN_G_YATCHEW = 3
 _MIN_N_BOOTSTRAP = 99
 _STUTE_LARGE_G_THRESHOLD = 100_000
 
-# Scale-relative tolerance for detecting a numerically exact linear OLS fit,
-# i.e., ``sum(eps^2) / sum(dy^2) < _EXACT_LINEAR_RELATIVE_TOL`` means the
-# OLS residuals are IEEE-arithmetic noise rather than signal. Under exact
+# Scale-relative tolerance for detecting a numerically exact linear OLS fit.
+# The ratio SSR / TSS = sum(eps^2) / sum((dy - dybar)^2) equals 1 - R^2
+# and is TRANSLATION-INVARIANT under additive shifts in dy. Under exact
 # Assumption 8, residuals are mathematically zero; in practice FP round-off
 # leaves eps on the order of machine-epsilon (~1e-16). Squared that is
 # ~1e-32. The threshold ~1e-24 leaves ~10^8 accumulated FP operations of
-# margin so genuinely-noisy data is never mis-classified.
+# margin so genuinely-noisy data is never mis-classified. We compare
+# against centered TSS rather than raw sum(dy^2) because scaling against
+# the raw magnitude is NOT translation-invariant: adding a large constant
+# to dy would inflate sum(dy^2) and spuriously trip the branch on noisy
+# data.
 _EXACT_LINEAR_RELATIVE_TOL = 1e-24
 
 
@@ -901,9 +905,10 @@ def stute_test(
     # so the Stute CvM statistic is formally 0 and every bootstrap draw is
     # also 0. Short-circuit to p=1 to avoid FP-noise-driven bootstrap
     # comparisons where cvm_stat and S_b are both at machine-epsilon scale.
+    # Comparison is against CENTERED TSS (translation-invariant).
     eps_norm_sq = float(np.sum(eps * eps))
-    dy_norm_sq = float(np.sum(dy_arr * dy_arr))
-    if eps_norm_sq <= _EXACT_LINEAR_RELATIVE_TOL * max(dy_norm_sq, 1.0):
+    dy_centered_sq = float(np.sum((dy_arr - dy_arr.mean()) ** 2))
+    if eps_norm_sq <= _EXACT_LINEAR_RELATIVE_TOL * max(dy_centered_sq, 1.0):
         return StuteTestResults(
             cvm_stat=0.0,
             p_value=1.0,
@@ -1024,6 +1029,39 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
             n_obs=G,
         )
 
+    # Tie / constant-dose front-door guard. Yatchew's difference-based
+    # variance estimator uses adjacent differences of dy sorted by d;
+    # under tied doses the within-tie ordering is arbitrary (stable sort
+    # falls back to input row order), so the statistic becomes
+    # non-methodological and order-dependent. Reject at the front door
+    # with a UserWarning + NaN result rather than silently permuting.
+    # Mass-point designs and other tied-dose panels should use
+    # `stute_test` instead (its tie-safe CvM handles ties correctly).
+    n_unique_d = int(np.unique(d_arr).shape[0])
+    if n_unique_d < G:
+        n_dups = G - n_unique_d
+        warnings.warn(
+            f"yatchew_hr_test: d contains {n_dups} duplicate value(s) "
+            f"(only {n_unique_d} distinct dose values out of G={G}); "
+            f"the difference-based variance estimator is not well-defined "
+            f"under ties because adjacent-difference statistics depend on "
+            f"arbitrary within-tie row ordering. Use stute_test() instead "
+            f"(its tie-safe CvM handles ties correctly). Returning NaN result.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return YatchewTestResults(
+            t_stat_hr=float("nan"),
+            p_value=float("nan"),
+            reject=False,
+            alpha=alpha,
+            critical_value=critical_value,
+            sigma2_lin=float("nan"),
+            sigma2_diff=float("nan"),
+            sigma2_W=float("nan"),
+            n_obs=G,
+        )
+
     _, _, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
     sigma2_lin = float(np.mean(eps * eps))
 
@@ -1032,10 +1070,11 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
     # formally -inf (finite-negative numerator over zero denominator),
     # which maps to p = 1 under the one-sided standard-normal critical
     # value. Short-circuit so FP noise in ``sigma4_W`` cannot produce a
-    # spuriously large finite ``T_hr``.
+    # spuriously large finite ``T_hr``. Comparison is against CENTERED
+    # TSS (translation-invariant).
     eps_norm_sq = float(np.sum(eps * eps))
-    dy_norm_sq = float(np.sum(dy_arr * dy_arr))
-    if eps_norm_sq <= _EXACT_LINEAR_RELATIVE_TOL * max(dy_norm_sq, 1.0):
+    dy_centered_sq = float(np.sum((dy_arr - dy_arr.mean()) ** 2))
+    if eps_norm_sq <= _EXACT_LINEAR_RELATIVE_TOL * max(dy_centered_sq, 1.0):
         # For reporting, compute sigma2_diff on the sorted dy (finite,
         # well-defined even in the exact-linear case).
         idx_early = np.argsort(d_arr, kind="stable")

@@ -278,6 +278,39 @@ class TestStuteTest:
         assert r.reject is False
         assert r.cvm_stat == 0.0
 
+    def test_exact_linear_shortcut_does_not_fire_on_shifted_noisy_data(self):
+        """P0 fix: the exact-linear short-circuit must NOT fire on noisy
+        data after an additive shift. Previously the short-circuit scaled
+        against raw ``sum(dy^2)``, which is NOT translation-invariant:
+        adding a large constant to dy inflated ``sum(dy^2)`` and
+        spuriously tripped the "exact linear" branch on genuinely noisy
+        data. Fix scales against ``sum((dy - dybar)^2)`` (centered TSS,
+        translation-invariant).
+
+        Exact numerical equivalence of the two bootstrap runs is NOT
+        expected (FP cancellation at 1e12 scale costs ~4 digits of
+        precision), but the short-circuit behavior and decision MUST
+        match.
+        """
+        rng = np.random.default_rng(42)
+        G = 50
+        d = rng.uniform(0.0, 1.0, size=G)
+        dy = 2.0 * d + rng.normal(0.0, 1.0, size=G)
+        dy_shifted = dy + 1e12
+
+        r_raw = stute_test(d, dy, n_bootstrap=199, seed=42)
+        r_shift = stute_test(d, dy_shifted, n_bootstrap=199, seed=42)
+
+        # Neither run may hit the exact-linear short-circuit (both have
+        # unit-scale noise; neither should register as effectively-zero
+        # residuals relative to centered TSS).
+        assert r_raw.cvm_stat > 0.0, "shortcut fired on raw noisy data"
+        assert r_shift.cvm_stat > 0.0, "shortcut fired on shifted noisy data"
+        # Decision must be preserved across translation.
+        assert r_raw.reject == r_shift.reject
+        # P-values match at moderate tolerance (FP cancellation limits precision).
+        np.testing.assert_allclose(r_raw.p_value, r_shift.p_value, rtol=5e-3)
+
     def test_mismatched_lengths_raise(self):
         with pytest.raises(ValueError, match="same length"):
             stute_test(np.array([0.1, 0.2, 0.3]), np.array([1.0, 2.0]))
@@ -355,6 +388,57 @@ class TestYatchewHRTest:
         assert r.reject is False
         # t_stat_hr is formally -inf for the exact-linear limit.
         assert r.t_stat_hr == float("-inf")
+
+    def test_exact_linear_shortcut_does_not_fire_on_shifted_noisy_data(self):
+        """P0 fix: the Yatchew exact-linear short-circuit must NOT fire
+        on noisy data after an additive shift (same rationale as Stute
+        fix: scale-ratio is translation-invariant only against centered
+        TSS)."""
+        rng = np.random.default_rng(42)
+        G = 50
+        d = rng.uniform(0.0, 1.0, size=G)
+        dy = 2.0 * d + rng.normal(0.0, 1.0, size=G)
+        dy_shifted = dy + 1e12
+
+        r_raw = yatchew_hr_test(d, dy)
+        r_shift = yatchew_hr_test(d, dy_shifted)
+
+        # Neither run may hit the short-circuit (t_stat_hr would be -inf).
+        assert np.isfinite(r_raw.t_stat_hr), "shortcut fired on raw noisy data"
+        assert np.isfinite(r_shift.t_stat_hr), "shortcut fired on shifted noisy data"
+        # Decision preserved across translation.
+        assert r_raw.reject == r_shift.reject
+        # T-stats match at moderate tolerance (FP cancellation at 1e12 scale).
+        np.testing.assert_allclose(r_raw.t_stat_hr, r_shift.t_stat_hr, rtol=1e-3)
+
+    def test_duplicate_doses_return_nan(self):
+        """P1 fix: yatchew_hr_test rejects duplicate doses with UserWarning
+        + NaN result. Adjacent differences depend on within-tie row order,
+        which is non-methodological; users with tied doses should use
+        stute_test (tie-safe CvM)."""
+        d = np.array([0.1, 0.2, 0.2, 0.5, 0.8])  # one duplicate at 0.2
+        dy = np.array([1.0, 2.0, 2.5, 3.0, 4.0])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            r = yatchew_hr_test(d, dy)
+            msgs = [str(w.message) for w in caught]
+        assert any("duplicate" in m for m in msgs)
+        assert np.isnan(r.t_stat_hr)
+        assert np.isnan(r.p_value)
+        assert r.reject is False
+
+    def test_constant_d_returns_nan(self):
+        """P1 fix: yatchew_hr_test rejects constant d (degenerate case of
+        duplicate doses: all observations tied)."""
+        d = np.full(10, 0.5)
+        dy = np.linspace(0.0, 2.0, 10)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            r = yatchew_hr_test(d, dy)
+            msgs = [str(w.message) for w in caught]
+        assert any("duplicate" in m for m in msgs)
+        assert np.isnan(r.t_stat_hr)
+        assert r.reject is False
 
 
 # =============================================================================
