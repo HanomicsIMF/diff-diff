@@ -349,20 +349,32 @@ class HADPretestReport:
 
     Bundles the three individual tests with an overall verdict string.
 
+    .. important::
+        This report reflects a **partial** workflow: Phase 3 ships paper
+        Sections 4.2-4.3 steps 1 (QUG) and 3 (linearity via Stute +
+        Yatchew-HR), but **NOT** step 2 (Assumption 7 pre-trends test via
+        Equation 18). Even when ``all_pass`` is ``True``, the paper's
+        four-step certification for TWFE validity is incomplete — pre-
+        trends testing is a separate diagnostic that must be run via the
+        user's own event-study / placebo analysis until the Phase 3
+        follow-up patch lands the joint Equation 18 Stute test.
+
     Attributes
     ----------
     qug : QUGTestResults
     stute : StuteTestResults
     yatchew : YatchewTestResults
     all_pass : bool
-        ``True`` iff none of the three tests rejects. When ``True``,
-        paper Section 4.2-4.3 states TWFE (``beta_fe``) is valid under
-        Assumptions 5-8.
+        ``True`` iff none of the three IMPLEMENTED tests rejects. This is
+        a PARTIAL indicator: it does not certify Assumption 7 (pre-trends),
+        which is not tested by Phase 3.
     verdict : str
         Human-readable classification. Priority-ordered first-match:
 
         1. Any NaN p-value -> ``"inconclusive - {names} NaN"``
-        2. None reject -> ``"TWFE safe under Section 4 assumptions"``
+        2. None reject -> ``"QUG and linearity diagnostics fail-to-reject;
+           Assumption 7 pre-trends test NOT run (paper step 2 deferred to
+           Phase 3 follow-up)"``
         3. Otherwise -> bundled string naming each rejected assumption:
            ``"support infimum rejected - continuous_at_zero design
            invalid (QUG)"`` and/or ``"linearity rejected - heterogeneity
@@ -559,7 +571,11 @@ def _compose_verdict(
 
     any_reject = qug.reject or stute.reject or yatchew.reject
     if not any_reject:
-        return "TWFE safe under Section 4 assumptions"
+        return (
+            "QUG and linearity diagnostics fail-to-reject; "
+            "Assumption 7 pre-trends test NOT run "
+            "(paper step 2 deferred to Phase 3 follow-up)"
+        )
 
     reasons = []
     if qug.reject:
@@ -998,14 +1014,28 @@ def did_had_pretest_workflow(
     n_bootstrap: int = 999,
     seed: Optional[int] = None,
 ) -> HADPretestReport:
-    """Run all three HAD pre-tests on a two-period panel and return a
-    composite report (paper Section 4.2-4.3).
+    """Run a PARTIAL HAD pre-test workflow on a two-period panel
+    (paper Section 4.2-4.3, steps 1 and 3 only; step 2 deferred).
+
+    Phase 3 scope runs:
+
+    - Step 1: :func:`qug_test` (``H_0: d_lower = 0``, Theorem 4).
+    - Step 3: :func:`stute_test` and :func:`yatchew_hr_test` (linearity
+      of ``E[ΔY | D_2]``, Assumption 8).
+
+    Phase 3 does **NOT** run step 2 (Assumption 7 pre-trends test via
+    paper Equation 18); that joint cross-horizon Stute variant is
+    deferred to a follow-up patch. Users should continue to perform their
+    own pre-trends / placebo analysis until the follow-up ships. The
+    returned :class:`HADPretestReport` verdict explicitly flags the
+    Assumption 7 gap when all implemented diagnostics fail-to-reject, so
+    callers do not receive a misleading "TWFE safe" signal.
 
     The workflow reduces the panel to unit-level first differences using
-    the Phase 2a validator + aggregator, then calls :func:`qug_test`,
-    :func:`stute_test`, and :func:`yatchew_hr_test` with shared ``alpha``
-    and a single-source seed passthrough (``seed`` is forwarded to
-    :func:`stute_test` only; the other two are deterministic).
+    the Phase 2a validator + aggregator, then calls the three tests with
+    shared ``alpha`` and a single-source seed passthrough (``seed`` is
+    forwarded to :func:`stute_test` only; QUG and Yatchew are
+    deterministic).
 
     Parameters
     ----------
@@ -1044,7 +1074,14 @@ def did_had_pretest_workflow(
         data, outcome_col, dose_col, time_col, unit_col, first_treat_col
     )
     d_arr, dy_arr, _, _ = _aggregate_first_difference(
-        data, outcome_col, dose_col, time_col, unit_col, t_pre, t_post, None
+        data,
+        outcome_col,
+        dose_col,
+        time_col,
+        unit_col,
+        t_pre,
+        t_post,
+        cluster_col=None,  # pretests do not use cluster-robust SE
     )
 
     qug_res = qug_test(d_arr, alpha=alpha)

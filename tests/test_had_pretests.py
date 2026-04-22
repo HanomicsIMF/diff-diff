@@ -289,8 +289,9 @@ class TestYatchewHRTest:
 class TestCompositeWorkflow:
     """Tests for :func:`did_had_pretest_workflow`."""
 
-    def test_all_pass_on_linear_no_pretrend(self):
-        """Commit criterion 11: linear DGP -> all_pass, 'TWFE safe' verdict."""
+    def test_all_pass_on_linear_flags_assumption7_gap(self):
+        """Commit criterion 11: linear DGP -> all_pass, verdict flags
+        Assumption 7 pre-trends gap per Phase 3 partial-workflow scope."""
         d, dy = _linear_dgp(G=200, beta=2.0, sigma=0.3, seed=42)
         panel = _make_two_period_panel(200, d, dy, seed=42)
         report = did_had_pretest_workflow(
@@ -304,7 +305,14 @@ class TestCompositeWorkflow:
             seed=42,
         )
         assert report.all_pass is True
-        assert report.verdict == "TWFE safe under Section 4 assumptions"
+        # Partial-workflow verdict: explicitly names the Assumption 7 gap
+        # so callers do not receive a misleading "TWFE safe" signal.
+        assert "QUG and linearity diagnostics fail-to-reject" in report.verdict
+        assert "Assumption 7" in report.verdict
+        assert "pre-trends" in report.verdict
+        assert "paper step 2 deferred" in report.verdict
+        # Verdict must NOT claim unconditional TWFE safety.
+        assert "TWFE safe" not in report.verdict
         assert report.n_obs == 200
         assert isinstance(report.qug, QUGTestResults)
         assert isinstance(report.stute, StuteTestResults)
@@ -612,13 +620,18 @@ class TestComposeVerdictLogic:
         assert verdict.startswith("inconclusive")
         assert "Stute" in verdict
 
-    def test_none_reject_twfe_safe(self):
-        """(b) None reject -> 'TWFE safe under Section 4 assumptions'."""
+    def test_none_reject_flags_assumption7_gap(self):
+        """(b) None reject -> verdict flags the Assumption 7 pre-trends gap
+        rather than claiming unconditional TWFE safety."""
         q = _mk_qug(reject=False)
         s = _mk_stute(reject=False)
         y = _mk_yatchew(reject=False)
         verdict = _compose_verdict(q, s, y)
-        assert verdict == "TWFE safe under Section 4 assumptions"
+        assert "QUG and linearity diagnostics fail-to-reject" in verdict
+        assert "Assumption 7" in verdict
+        assert "pre-trends" in verdict
+        assert "paper step 2 deferred" in verdict
+        assert "TWFE safe" not in verdict
 
     def test_only_qug_rejects(self):
         """(c) Only QUG rejects -> QUG-only message."""
