@@ -717,8 +717,8 @@ def _check_sdid_placebo_data(
             f"treated units, but the generated data has n_control={n_control}, "
             f"n_treated={n_treated}. Either adjust your data_generator so that "
             f"n_control > n_treated, or use "
-            f"SyntheticDiD(variance_method='bootstrap') "
-            f"or SyntheticDiD(variance_method='bootstrap_refit')."
+            f"SyntheticDiD(variance_method='bootstrap') (paper-faithful refit; "
+            f"~10-100x slower than placebo) or SyntheticDiD(variance_method='jackknife')."
         )
 
 
@@ -2046,8 +2046,9 @@ def simulate_power(
                 f"treated units (got n_control={n_control}, "
                 f"n_treated={effective_n_treated}). Either lower "
                 f"treatment_fraction so that n_control > n_treated, or use "
-                f"SyntheticDiD(variance_method='bootstrap') "
-                f"or SyntheticDiD(variance_method='bootstrap_refit')."
+                f"SyntheticDiD(variance_method='bootstrap') (paper-faithful refit; "
+                f"~10-100x slower than placebo) or "
+                f"SyntheticDiD(variance_method='jackknife')."
             )
 
     # Warn if staggered estimator settings don't match auto DGP

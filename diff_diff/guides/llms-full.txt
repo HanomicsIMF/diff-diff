@@ -468,7 +468,7 @@ SyntheticDiD(
     zeta_omega: float | None = None,        # Unit weight regularization (auto-computed if None)
     zeta_lambda: float | None = None,       # Time weight regularization (auto-computed if None)
     alpha: float = 0.05,
-    variance_method: str = "placebo",       # "placebo", "bootstrap", "bootstrap_refit", or "jackknife"
+    variance_method: str = "placebo",       # "placebo", "bootstrap", or "jackknife"
     n_bootstrap: int = 200,                 # Replications for variance estimation
     seed: int | None = None,
 )
@@ -1021,7 +1021,7 @@ Returned by `SyntheticDiD.fit()`.
 | `time_weights` | `dict` | Pre-treatment time weights |
 | `pre_periods` | `list` | Pre-treatment periods |
 | `post_periods` | `list` | Post-treatment periods |
-| `variance_method` | `str` | "bootstrap", "bootstrap_refit", "jackknife", or "placebo" |
+| `variance_method` | `str` | "bootstrap", "jackknife", or "placebo" |
 | `noise_level` | `float` | Estimated noise level |
 | `zeta_omega` | `float` | Unit weight regularization |
 | `zeta_lambda` | `float` | Time weight regularization |

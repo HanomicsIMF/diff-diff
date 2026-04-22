@@ -4655,18 +4655,18 @@ class TestBusinessReportPrecomputedPassthrough:
         )
 
 
-class TestSyntheticDiDBootstrapRefitInferenceLabel:
-    """Cross-surface guard: ``variance_method='bootstrap_refit'`` must be
+class TestSyntheticDiDBootstrapInferenceLabel:
+    """Cross-surface guard: ``variance_method='bootstrap'`` must be
     recognized by the BR inference-label allow-list at
     ``business_report.py:602``.
 
-    Without the allow-list extension, BR's alpha-override fallback would
-    emit ``"analytical (native degrees of freedom)"`` as the inference
-    label for refit fits — a user-visible regression that silently
+    Without the allow-list, BR's alpha-override fallback would emit
+    ``"analytical (native degrees of freedom)"`` as the inference label
+    for SDID bootstrap fits — a user-visible regression that silently
     mis-describes the fit's variance method.
     """
 
-    def test_refit_fit_uses_bootstrap_refit_label_on_alpha_override(self):
+    def test_bootstrap_fit_uses_bootstrap_label_on_alpha_override(self):
         import warnings as _warnings
 
         from diff_diff import SyntheticDiD, generate_factor_data
@@ -4675,14 +4675,14 @@ class TestSyntheticDiDBootstrapRefitInferenceLabel:
         fdf = generate_factor_data(n_units=25, n_pre=8, n_post=4, n_treated=4, seed=11)
         with _warnings.catch_warnings():
             _warnings.simplefilter("ignore", UserWarning)
-            fit = SyntheticDiD(variance_method="bootstrap_refit", n_bootstrap=50, seed=1).fit(
+            fit = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=1).fit(
                 fdf,
                 outcome="outcome",
                 unit="unit",
                 time="period",
                 treatment="treat",
             )
-        assert fit.variance_method == "bootstrap_refit"
+        assert fit.variance_method == "bootstrap"
 
         # Alpha mismatch (fit at 0.05, BR requesting 0.10) activates the
         # inference-label branch at business_report.py:593-638.
@@ -4693,10 +4693,10 @@ class TestSyntheticDiDBootstrapRefitInferenceLabel:
             len(override_caveats) == 1
         ), f"expected one alpha_override_preserved caveat, got {caveats}"
         message = override_caveats[0].get("message", "")
-        assert "bootstrap_refit variance" in message, (
-            f"expected 'bootstrap_refit variance' in caveat message, " f"got: {message!r}"
+        assert "bootstrap variance" in message, (
+            f"expected 'bootstrap variance' in caveat message, " f"got: {message!r}"
         )
         assert "analytical (native degrees of freedom)" not in message, (
-            f"allow-list regression: refit fits must not fall through to the "
+            f"allow-list regression: bootstrap fits must not fall through to the "
             f"analytical label. caveat message: {message!r}"
         )

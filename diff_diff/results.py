@@ -811,21 +811,17 @@ class SyntheticDiDResults:
     post_periods : list
         List of post-treatment period identifiers.
     variance_method : str
-        Method used for variance estimation: ``"bootstrap"``,
-        ``"bootstrap_refit"``, ``"jackknife"``, or ``"placebo"``.
-        ``"bootstrap_refit"`` is the paper-faithful pairs bootstrap that
-        re-estimates ω and λ via Frank-Wolfe on each draw
-        (Arkhangelsky et al. 2021 Algorithm 2 step 2, and the behavior of
-        R's default ``synthdid::vcov(method="bootstrap")``); ``"bootstrap"``
-        is a fixed-weight shortcut documented in REGISTRY.md as a deviation
-        from R's default.
+        Method used for variance estimation: ``"bootstrap"`` (paper-faithful
+        pairs bootstrap re-estimating ω and λ via Frank-Wolfe on each draw;
+        Arkhangelsky et al. 2021 Algorithm 2 step 2, and R's default
+        ``synthdid::vcov(method="bootstrap")``), ``"jackknife"``, or
+        ``"placebo"``.
     placebo_effects : np.ndarray, optional
         Method-specific per-iteration estimates: placebo treatment effects
-        (for ``"placebo"``), bootstrap ATT estimates with fixed weights
-        (for ``"bootstrap"``), bootstrap ATT estimates with re-estimated
-        weights per draw (for ``"bootstrap_refit"``), or leave-one-out
-        estimates (for ``"jackknife"``). The ``variance_method`` field
-        disambiguates the contents.
+        (for ``"placebo"``), bootstrap ATT estimates with re-estimated
+        weights per draw (for ``"bootstrap"``), or leave-one-out estimates
+        (for ``"jackknife"``). The ``variance_method`` field disambiguates
+        the contents.
     synthetic_pre_trajectory : np.ndarray, optional
         Synthetic control trajectory in pre-treatment periods, shape
         ``(n_pre,)``. Equal to ``Y_pre_control @ omega_eff`` where
@@ -966,10 +962,7 @@ class SyntheticDiDResults:
 
         # Variance method info
         lines.append(f"{'Variance method:':<25} {self.variance_method:>10}")
-        if (
-            self.variance_method in ("bootstrap", "bootstrap_refit")
-            and self.n_bootstrap is not None
-        ):
+        if self.variance_method == "bootstrap" and self.n_bootstrap is not None:
             lines.append(f"{'Bootstrap replications:':<25} {self.n_bootstrap:>10}")
 
         # Add survey design info

@@ -9,14 +9,14 @@
     "methods": [
       "placebo",
       "bootstrap",
-      "bootstrap_refit",
       "jackknife"
     ],
     "alphas": [
       0.01,
       0.05,
       0.1
-    ]
+    ],
+    "transitional_note": "Transitional artifact between commits in PR #351: the bootstrap column has been swapped from the removed fixed-weight values to the refit values (bootstrap is now refit per Algorithm 2 step 2). A subsequent commit regenerates this file from a fresh 500-seed re-run."
   },
   "dgps": {
     "balanced": "Balanced / exchangeable: N_co=20, N_tr=3, T_pre=8, T_post=4",
@@ -37,17 +37,6 @@
         "se_over_truesd": 1.0452856078446147
       },
       "bootstrap": {
-        "n_successful_fits": 500,
-        "rejection_rate": {
-          "0.01": 0.106,
-          "0.05": 0.16,
-          "0.10": 0.23
-        },
-        "mean_se": 0.17696578355413664,
-        "true_sd_tau_hat": 0.2093529148687405,
-        "se_over_truesd": 0.8452988756573566
-      },
-      "bootstrap_refit": {
         "n_successful_fits": 500,
         "rejection_rate": {
           "0.01": 0.028,
@@ -86,17 +75,6 @@
       "bootstrap": {
         "n_successful_fits": 500,
         "rejection_rate": {
-          "0.01": 0.036,
-          "0.05": 0.098,
-          "0.10": 0.14
-        },
-        "mean_se": 0.1271146413893293,
-        "true_sd_tau_hat": 0.135562270427217,
-        "se_over_truesd": 0.9376845119865176
-      },
-      "bootstrap_refit": {
-        "n_successful_fits": 500,
-        "rejection_rate": {
           "0.01": 0.008,
           "0.05": 0.038,
           "0.10": 0.08
@@ -131,17 +109,6 @@
         "se_over_truesd": 0.9944276252542481
       },
       "bootstrap": {
-        "n_successful_fits": 500,
-        "rejection_rate": {
-          "0.01": 0.034,
-          "0.05": 0.092,
-          "0.10": 0.162
-        },
-        "mean_se": 0.23705681707169346,
-        "true_sd_tau_hat": 0.2696262336703088,
-        "se_over_truesd": 0.879205312646097
-      },
-      "bootstrap_refit": {
         "n_successful_fits": 500,
         "rejection_rate": {
           "0.01": 0.01,

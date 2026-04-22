@@ -51,26 +51,21 @@ class SyntheticDiD(DifferenceInDifferences):
         Method for variance estimation:
         - "placebo": Placebo-based variance matching R's synthdid::vcov(method="placebo").
           Implements Algorithm 4 from Arkhangelsky et al. (2021). This is R's default.
-        - "bootstrap": Bootstrap at unit level with **fixed weights** (renormalized
-          original ω, original λ). Deviation from R's default
-          synthdid::vcov(method="bootstrap"), which re-estimates per draw (the
-          renormalized ω is used only as Frank-Wolfe initialization); see
-          REGISTRY.md SyntheticDiD section. Anti-conservative under H0 relative
-          to the paper and R's default — see the coverage MC calibration table
-          in REGISTRY.md.
-        - "bootstrap_refit": Paper-faithful pairs bootstrap (Arkhangelsky et al. 2021
-          Algorithm 2 step 2), also the behavior of R's default
-          synthdid::vcov(method="bootstrap"); re-estimates ω̂_b and λ̂_b via
-          Frank-Wolfe on each bootstrap draw. Expected ~10–100× slower per fit
-          than the fixed-weight shortcut. Survey designs composed with this
-          method raise NotImplementedError.
+        - "bootstrap": Paper-faithful pairs bootstrap — Arkhangelsky et al. (2021)
+          Algorithm 2 step 2, also the behavior of R's default
+          synthdid::vcov(method="bootstrap") (which rebinds ``attr(estimate, "opts")``
+          with ``update.omega=TRUE``, so the renormalized ω is only Frank-Wolfe
+          initialization). Re-estimates ω̂_b and λ̂_b via two-pass sparsified
+          Frank-Wolfe on each bootstrap draw. Survey designs (including pweight-only)
+          raise NotImplementedError; Rao-Wu rescaled weights composed with Frank-Wolfe
+          re-estimation requires a separate derivation (tracked in TODO.md).
         - "jackknife": Jackknife variance matching R's synthdid::vcov(method="jackknife").
           Implements Algorithm 3 from Arkhangelsky et al. (2021). Deterministic
           (N_control + N_treated iterations), uses fixed weights (no re-estimation).
           The ``n_bootstrap`` parameter is ignored for this method.
     n_bootstrap : int, default=200
         Number of replications for variance estimation. Used for:
-        - Bootstrap / Bootstrap_refit: Number of bootstrap samples
+        - Bootstrap: Number of bootstrap samples
         - Placebo: Number of random permutations (matches R's `replications` argument)
         Ignored when ``variance_method="jackknife"``.
     seed : int, optional
@@ -184,7 +179,7 @@ class SyntheticDiD(DifferenceInDifferences):
         self._unit_weights = None
         self._time_weights = None
 
-    _VALID_VARIANCE_METHODS = ("bootstrap", "bootstrap_refit", "jackknife", "placebo")
+    _VALID_VARIANCE_METHODS = ("bootstrap", "jackknife", "placebo")
 
     def _validate_config(self) -> None:
         """Validate ``variance_method`` and ``n_bootstrap`` on the current state.
@@ -294,39 +289,45 @@ class SyntheticDiD(DifferenceInDifferences):
                 "SyntheticDiD does not yet support replicate-weight survey "
                 "designs. Use a TSL-based survey design (strata/psu/fpc)."
             )
-        # Validate pweight only (strata/PSU/FPC are allowed for Rao-Wu bootstrap)
+        # Validate pweight only
         if resolved_survey is not None and resolved_survey.weight_type != "pweight":
             raise ValueError(
                 "SyntheticDiD survey support requires weight_type='pweight'. "
                 f"Got '{resolved_survey.weight_type}'."
             )
 
-        # Reject non-bootstrap + full survey design (strata/PSU/FPC need Rao-Wu)
-        if (
-            resolved_survey is not None
-            and (
-                resolved_survey.strata is not None
-                or resolved_survey.psu is not None
-                or resolved_survey.fpc is not None
-            )
-            and self.variance_method != "bootstrap"
+        # Reject strata/PSU/FPC for any variance method. Previously the
+        # fixed-weight bootstrap accepted these via Rao-Wu rescaling, but that
+        # path was not paper-faithful and is removed; Rao-Wu composed with
+        # Frank-Wolfe re-estimation (paper-faithful) requires a separate
+        # derivation (tracked in TODO.md, sketched in REGISTRY.md).
+        if resolved_survey is not None and (
+            resolved_survey.strata is not None
+            or resolved_survey.psu is not None
+            or resolved_survey.fpc is not None
         ):
             raise NotImplementedError(
-                f"SyntheticDiD with variance_method='{self.variance_method}' does not "
-                "support strata/PSU/FPC. "
-                "Use variance_method='bootstrap' for full survey design support."
+                "SyntheticDiD does not yet support survey designs with "
+                "strata/PSU/FPC. Pweight-only pseudo-population weights work "
+                "with variance_method='placebo' or 'jackknife'. Rao-Wu "
+                "rescaled weights composed with paper-faithful refit "
+                "bootstrap is tracked as a follow-up; see "
+                "docs/methodology/REGISTRY.md §SyntheticDiD for the sketch."
             )
 
-        # Reject bootstrap_refit + any survey design (including pweight-only).
-        # Refit re-estimates ω̂ and λ̂ via Frank-Wolfe on each bootstrap draw;
-        # composing that with Rao-Wu rescaled weights requires a separate
-        # derivation that is not yet implemented.
-        if self.variance_method == "bootstrap_refit" and resolved_survey is not None:
+        # Reject bootstrap + any survey design (including pweight-only). The
+        # paper-faithful refit bootstrap re-estimates ω̂ and λ̂ via Frank-Wolfe
+        # on each bootstrap draw; composing that with Rao-Wu rescaled weights
+        # (or even a pweight composition in the weighted FW loss) requires a
+        # separate derivation that is not yet implemented.
+        if self.variance_method == "bootstrap" and resolved_survey is not None:
             raise NotImplementedError(
-                "SyntheticDiD with variance_method='bootstrap_refit' does not yet "
-                "support survey designs (including pweight-only). Use "
-                "variance_method='bootstrap' for the fixed-weight shortcut under "
-                "survey designs, or variance_method='placebo' (default)."
+                "SyntheticDiD with variance_method='bootstrap' does not yet "
+                "support survey designs (including pweight-only). Rao-Wu "
+                "rescaled weights composed with Frank-Wolfe re-estimation "
+                "requires a separate derivation (tracked in TODO.md). Use "
+                "variance_method='placebo' or 'jackknife' for pweight-only "
+                "surveys."
             )
 
         # Validate treatment is binary
@@ -399,29 +400,13 @@ class SyntheticDiD(DifferenceInDifferences):
                 f"diff_diff.prep.balance_panel() to balance the panel first."
             )
 
-        # Validate and extract survey weights
-        # Build unit-level ResolvedSurveyDesign for Rao-Wu bootstrap when
-        # strata/PSU/FPC are present (survey columns are unit-constant).
-        _unit_resolved_survey = None
+        # Validate and extract survey weights. Strata/PSU/FPC are rejected
+        # upstream, so we only reach here with pweight-only surveys, which
+        # placebo and jackknife consume via ``w_control`` directly.
         if resolved_survey is not None:
             _validate_unit_constant_survey(data, unit, survey_design)
             w_treated = _extract_unit_survey_weights(data, unit, survey_design, treated_units)
             w_control = _extract_unit_survey_weights(data, unit, survey_design, control_units)
-
-            # Build unit-level resolved survey for Rao-Wu bootstrap
-            _has_design = (
-                resolved_survey.strata is not None
-                or resolved_survey.psu is not None
-                or resolved_survey.fpc is not None
-            )
-            if _has_design:
-                _unit_resolved_survey = self._build_unit_resolved_survey(
-                    data,
-                    unit,
-                    survey_design,
-                    control_units,
-                    treated_units,
-                )
         else:
             w_treated = None
             w_control = None
@@ -595,11 +580,10 @@ class SyntheticDiD(DifferenceInDifferences):
         # Compute standard errors on normalized Y, rescale to original units.
         # Variance procedures resample / permute indices (independent of Y
         # values) so RNG streams stay aligned across scales.
-        if self.variance_method in ("bootstrap", "bootstrap_refit"):
-            # Refit (Algorithm 2 step 2) re-estimates ω̂_b and λ̂_b via Frank-Wolfe
-            # on each bootstrap draw, using the fit-time normalized-scale zetas.
-            # Fixed-weight (R's vcov shortcut) renormalizes the original ω.
-            refit = self.variance_method == "bootstrap_refit"
+        if self.variance_method == "bootstrap":
+            # Paper-faithful pairs bootstrap (Algorithm 2 step 2): re-estimate
+            # ω̂_b and λ̂_b via Frank-Wolfe on each draw. Survey designs are
+            # rejected upstream in the survey guards.
             se_n, bootstrap_estimates_n = self._bootstrap_se(
                 Y_pre_control_n,
                 Y_post_control_n,
@@ -607,17 +591,13 @@ class SyntheticDiD(DifferenceInDifferences):
                 Y_post_treated_n,
                 unit_weights,
                 time_weights,
-                w_treated=w_treated,
-                w_control=w_control,
-                resolved_survey=_unit_resolved_survey,
-                refit=refit,
                 zeta_omega_n=zeta_omega_n,
                 zeta_lambda_n=zeta_lambda_n,
                 min_decrease=min_decrease,
             )
             se = se_n * Y_scale
             placebo_effects = np.asarray(bootstrap_estimates_n) * Y_scale
-            inference_method = self.variance_method
+            inference_method = "bootstrap"
         elif self.variance_method == "jackknife":
             # Fixed-weight jackknife (R's synthdid Algorithm 3)
             se_n, jackknife_estimates_n = self._jackknife_se(
@@ -738,9 +718,7 @@ class SyntheticDiD(DifferenceInDifferences):
             zeta_lambda=zeta_lambda,
             pre_treatment_fit=pre_fit_rmse,
             placebo_effects=placebo_effects if len(placebo_effects) > 0 else None,
-            n_bootstrap=(
-                self.n_bootstrap if inference_method in ("bootstrap", "bootstrap_refit") else None
-            ),
+            n_bootstrap=self.n_bootstrap if inference_method == "bootstrap" else None,
             survey_metadata=survey_metadata,
             synthetic_pre_trajectory=synthetic_pre_trajectory,
             synthetic_post_trajectory=synthetic_post_trajectory,
@@ -842,63 +820,6 @@ class SyntheticDiD(DifferenceInDifferences):
 
         return data
 
-    @staticmethod
-    def _build_unit_resolved_survey(data, unit_col, survey_design, control_units, treated_units):
-        """Build a unit-level ResolvedSurveyDesign for Rao-Wu bootstrap.
-
-        Extracts one row per unit (survey columns are unit-constant) in
-        control-then-treated order matching the panel matrix columns.
-        """
-        from diff_diff.linalg import _factorize_cluster_ids
-        from diff_diff.survey import ResolvedSurveyDesign
-
-        all_units = list(control_units) + list(treated_units)
-        # Take first row per unit in the specified order
-        first_rows = data.groupby(unit_col).first().loc[all_units]
-        n_units = len(all_units)
-
-        # Weights (normalized pweights, mean=1)
-        if survey_design.weights is not None:
-            raw_w = first_rows[survey_design.weights].values.astype(np.float64)
-            weights = raw_w * (n_units / np.sum(raw_w))
-        else:
-            weights = np.ones(n_units, dtype=np.float64)
-
-        # Strata
-        strata_arr = None
-        n_strata = 0
-        if survey_design.strata is not None:
-            strata_arr = _factorize_cluster_ids(first_rows[survey_design.strata].values)
-            n_strata = len(np.unique(strata_arr))
-
-        # PSU
-        psu_arr = None
-        n_psu = 0
-        if survey_design.psu is not None:
-            psu_raw = first_rows[survey_design.psu].values
-            if survey_design.nest and strata_arr is not None:
-                combined = np.array([f"{s}_{p}" for s, p in zip(strata_arr, psu_raw)])
-                psu_arr = _factorize_cluster_ids(combined)
-            else:
-                psu_arr = _factorize_cluster_ids(psu_raw)
-            n_psu = len(np.unique(psu_arr))
-
-        # FPC
-        fpc_arr = None
-        if survey_design.fpc is not None:
-            fpc_arr = first_rows[survey_design.fpc].values.astype(np.float64)
-
-        return ResolvedSurveyDesign(
-            weights=weights,
-            weight_type=survey_design.weight_type,
-            strata=strata_arr,
-            psu=psu_arr,
-            fpc=fpc_arr,
-            n_strata=n_strata,
-            n_psu=n_psu,
-            lonely_psu=survey_design.lonely_psu,
-        )
-
     def _bootstrap_se(
         self,
         Y_pre_control: np.ndarray,
@@ -907,54 +828,46 @@ class SyntheticDiD(DifferenceInDifferences):
         Y_post_treated: np.ndarray,
         unit_weights: np.ndarray,
         time_weights: np.ndarray,
-        w_treated=None,
-        w_control=None,
-        resolved_survey=None,
-        refit: bool = False,
         zeta_omega_n: float = 0.0,
         zeta_lambda_n: float = 0.0,
         min_decrease: float = 1e-5,
-        _bootstrap_indices: Optional[np.ndarray] = None,
     ) -> Tuple[float, np.ndarray]:
-        """Compute pairs-bootstrap standard error for SDID.
+        """Compute pairs-bootstrap standard error for SDID (Algorithm 2 step 2).
 
-        Resamples all units (control + treated) with replacement, then either
-        renormalizes the original unit weights (``refit=False``, default —
-        a fixed-weight shortcut) or re-estimates ω̂_b and λ̂_b via Frank-Wolfe
-        on each bootstrap draw (``refit=True`` — Arkhangelsky et al. 2021
-        Algorithm 2 step 2, and R's default ``synthdid::vcov(method="bootstrap")``).
-
-        **Deviation from R (fixed-weight path only):** R's default
-        ``synthdid::vcov(method="bootstrap")`` rebinds the original fit's
-        ``opts`` (including ``update.omega=TRUE``) back into
-        ``synthdid_estimate`` inside its bootstrap loop, so the renormalized ω
-        is used only as Frank-Wolfe initialization. This library's
-        ``refit=False`` path holds the renormalized ω exactly — it does not
-        re-run Frank-Wolfe. Under-estimates SE relative to the paper and R's
-        default; see the coverage MC calibration table in
-        ``docs/methodology/REGISTRY.md`` §SyntheticDiD.
-
-        When ``resolved_survey`` is provided (unit-level ResolvedSurveyDesign
-        with strata/PSU/FPC), uses Rao-Wu rescaled bootstrap instead of the
-        simple pairs bootstrap.  The Rao-Wu weights are per-unit rescaled
-        survey weights; they composite with SDID unit weights the same way
-        pweights do in the weights-only path. ``refit=True`` composed with any
-        survey design is rejected upstream in ``fit()``; it never reaches here.
+        Paper-faithful refit bootstrap: resamples all units (control + treated)
+        with replacement, then re-estimates ω̂_b and λ̂_b via two-pass sparsified
+        Frank-Wolfe on each resampled panel (Arkhangelsky et al. 2021
+        Algorithm 2 step 2). Also matches R's default
+        ``synthdid::vcov(method="bootstrap")`` behavior: R rebinds
+        ``attr(estimate, "opts")`` (including ``update.omega=TRUE``) back into
+        ``synthdid_estimate`` on each draw, so the renormalized ω serves only
+        as Frank-Wolfe initialization.
 
         ``zeta_omega_n`` / ``zeta_lambda_n`` are the fit-time normalized-scale
-        regularization parameters (``ζ_ω / Y_scale``, ``ζ_λ / Y_scale``) used
-        to rerun Frank-Wolfe on each bootstrap draw under ``refit=True``;
-        ignored in the fixed-weight path.
+        regularization parameters (``ζ_ω / Y_scale``, ``ζ_λ / Y_scale``), used
+        unchanged on each bootstrap draw because the resampled panel shares
+        the original noise scale.
 
-        ``_bootstrap_indices`` is a test-only seam: when provided (shape
-        ``(n_bootstrap, n_total)``), the pairs-bootstrap branch uses row ``b``
-        of the array instead of ``rng.choice``. Used by the fixed-weight
-        parity test to feed pre-computed R indices through an invocation
-        whose weight semantics match a manual ``synthdid_estimate`` call
-        without the ``opts`` rebind (see the R-parity Note in REGISTRY.md).
-        Ignored by the Rao-Wu branch.
+        Survey designs are rejected upstream in ``fit()``. ``unit_weights`` and
+        ``time_weights`` are passed for signature parity with the result-
+        assembly call path but are not used inside the loop — every draw
+        re-estimates from scratch (using the normalized-scale zetas). The
+        original ω / λ remain on the result object as the fit-time weights.
+
+        Retry-to-B: matches R's ``synthdid::bootstrap_sample`` while-loop. A
+        bounded attempt guard of ``20 * n_bootstrap`` prevents pathological-
+        input hangs; normal fits finish well inside this budget because
+        degenerate-draw probability scales as ``(N_co/N)^N + (N_tr/N)^N``.
+        Per-draw Frank-Wolfe non-convergence UserWarnings are suppressed
+        inside the loop and aggregated into one summary warning after the
+        loop if the rate of draws with any non-convergence event exceeds 5%
+        of valid draws (counted once per draw, not once per solver call).
         """
-        from diff_diff.bootstrap_utils import generate_rao_wu_weights
+        # unit_weights and time_weights from the fit-time solver are not used
+        # inside the refit loop (each draw re-estimates). Kept in the signature
+        # so the fit() call site and the result-assembly path stay symmetric
+        # across variance methods.
+        del unit_weights, time_weights
 
         rng = np.random.default_rng(self.seed)
         n_control = Y_pre_control.shape[1]
@@ -965,196 +878,84 @@ class SyntheticDiD(DifferenceInDifferences):
         Y_full = np.block([[Y_pre_control, Y_pre_treated], [Y_post_control, Y_post_treated]])
         n_pre = Y_pre_control.shape[0]
 
-        # Determine whether to use Rao-Wu (full design) or pairs bootstrap
-        _use_rao_wu = resolved_survey is not None
-
-        # Check for unidentified variance (single unstratified PSU)
-        if (
-            _use_rao_wu
-            and resolved_survey.psu is not None
-            and resolved_survey.n_psu < 2
-            and resolved_survey.strata is None
-        ):
-            return np.nan, np.array([])
-
         bootstrap_estimates: List[float] = []
 
         # Retry-until-B-valid semantic: matches R's synthdid::bootstrap_sample
         # (`while (count < replications) { ...; if !is.na(est) count = count+1 }`)
-        # and paper Algorithm 2 (B bootstrap replicates). A bounded attempt
-        # guard (20x) prevents pathological-input hangs; normal fits finish
-        # well inside this budget because degenerate-draw probability scales
-        # as (N_co/N)^N + (N_tr/N)^N, which is small for any non-trivial
-        # N_co/N_tr split.
+        # and paper Algorithm 2 (B bootstrap replicates).
         max_attempts = 20 * self.n_bootstrap
         attempts = 0
-        # Fixture-driven path uses deterministic index iteration instead of
-        # retry: R's generator already encodes retry semantics into the stored
-        # B x N indices, so every row is pre-validated.
-        fixture_row = 0
-        # Tally Frank-Wolfe non-convergence warnings inside the refit loop;
-        # per-draw UserWarnings are suppressed and aggregated into one summary
-        # after the loop (avoids 200+ warning spam on a typical refit fit).
+        # Tally draws with any Frank-Wolfe non-convergence; per-draw
+        # UserWarnings are suppressed inside the loop and aggregated into
+        # one summary warning after the loop (avoids 200+ warnings per fit).
         fw_nonconvergence_count = 0
 
         while len(bootstrap_estimates) < self.n_bootstrap and attempts < max_attempts:
             attempts += 1
-            if _use_rao_wu:
-                # --- Rao-Wu rescaled bootstrap path ---
-                # generate_rao_wu_weights returns per-unit rescaled survey
-                # weights (shape n_total).  Units whose PSU was not drawn
-                # get weight 0, effectively dropping them.
-                try:
-                    boot_rw = generate_rao_wu_weights(resolved_survey, rng)
+            boot_idx = rng.choice(n_total, size=n_total, replace=True)
 
-                    rw_control = boot_rw[:n_control]
-                    rw_treated = boot_rw[n_control:]
+            # Split resampled units into control vs treated
+            boot_is_control = boot_idx < n_control
+            n_co_b = int(boot_is_control.sum())
 
-                    # Retry if all control or all treated weights are zero
-                    if rw_control.sum() == 0 or rw_treated.sum() == 0:
-                        continue
+            # Retry if no control or no treated units in bootstrap sample
+            if n_co_b == 0 or n_co_b == n_total:
+                continue
 
-                    # Composite SDID unit weights with Rao-Wu rescaled weights
-                    boot_omega_eff = unit_weights * rw_control
-                    if boot_omega_eff.sum() > 0:
-                        boot_omega_eff = boot_omega_eff / boot_omega_eff.sum()
-                    else:
-                        continue
+            try:
+                # Extract resampled outcome matrices
+                Y_boot = Y_full[:, boot_idx]
+                Y_boot_pre_c = Y_boot[:n_pre, boot_is_control]
+                Y_boot_post_c = Y_boot[n_pre:, boot_is_control]
+                Y_boot_pre_t = Y_boot[:n_pre, ~boot_is_control]
+                Y_boot_post_t = Y_boot[n_pre:, ~boot_is_control]
 
-                    # Treated mean weighted by Rao-Wu weights
-                    Y_boot_pre_t_mean = np.average(
-                        Y_pre_treated,
-                        axis=1,
-                        weights=rw_treated,
-                    )
-                    Y_boot_post_t_mean = np.average(
-                        Y_post_treated,
-                        axis=1,
-                        weights=rw_treated,
-                    )
+                # Unweighted treated-unit mean — survey weights are rejected
+                # upstream in fit(), so every path here is unweighted.
+                Y_boot_pre_t_mean = np.mean(Y_boot_pre_t, axis=1)
+                Y_boot_post_t_mean = np.mean(Y_boot_post_t, axis=1)
 
-                    tau = compute_sdid_estimator(
-                        Y_pre_control,
-                        Y_post_control,
+                # Algorithm 2 step 2: re-estimate ω̂_b and λ̂_b via two-pass
+                # sparsified Frank-Wolfe on the resampled panel, using the
+                # fit-time normalized-scale zeta. Per-draw convergence
+                # warnings are captured and aggregated below.
+                with warnings.catch_warnings(record=True) as _fw_draw_warnings:
+                    warnings.simplefilter("always")
+                    boot_omega = compute_sdid_unit_weights(
+                        Y_boot_pre_c,
                         Y_boot_pre_t_mean,
-                        Y_boot_post_t_mean,
-                        boot_omega_eff,
-                        time_weights,
+                        zeta_omega=zeta_omega_n,
+                        min_decrease=min_decrease,
                     )
-                    if np.isfinite(tau):
-                        bootstrap_estimates.append(float(tau))
-
-                except (ValueError, LinAlgError):
-                    continue
-            else:
-                # --- Standard pairs bootstrap path (weights-only or no survey) ---
-                # Resample ALL units with replacement (or use pre-computed
-                # indices from the test-only _bootstrap_indices seam).
-                if _bootstrap_indices is not None:
-                    if fixture_row >= len(_bootstrap_indices):
-                        break
-                    boot_idx = np.asarray(_bootstrap_indices[fixture_row], dtype=np.int64)
-                    fixture_row += 1
-                else:
-                    boot_idx = rng.choice(n_total, size=n_total, replace=True)
-
-                # Identify which resampled units are control vs treated
-                boot_is_control = boot_idx < n_control
-                boot_control_idx = boot_idx[boot_is_control]
-                boot_treated_idx = boot_idx[~boot_is_control]
-
-                # Retry if no control or no treated units in bootstrap sample
-                if len(boot_control_idx) == 0 or len(boot_treated_idx) == 0:
-                    continue
-
-                try:
-                    # Extract resampled outcome matrices (shared by both paths)
-                    Y_boot = Y_full[:, boot_idx]
-                    Y_boot_pre_c = Y_boot[:n_pre, boot_is_control]
-                    Y_boot_post_c = Y_boot[n_pre:, boot_is_control]
-                    Y_boot_pre_t = Y_boot[:n_pre, ~boot_is_control]
-                    Y_boot_post_t = Y_boot[n_pre:, ~boot_is_control]
-
-                    # Treated-unit mean (weighted if w_treated is present).
-                    # boot_idx[~boot_is_control] maps to original index space;
-                    # subtract n_control to index into w_treated. Duplicate draws
-                    # carry identical weights -> alignment is safe.
-                    if w_treated is not None:
-                        boot_w_t = w_treated[boot_idx[~boot_is_control] - n_control]
-                        Y_boot_pre_t_mean = np.average(
-                            Y_boot_pre_t,
-                            axis=1,
-                            weights=boot_w_t,
-                        )
-                        Y_boot_post_t_mean = np.average(
-                            Y_boot_post_t,
-                            axis=1,
-                            weights=boot_w_t,
-                        )
-                    else:
-                        Y_boot_pre_t_mean = np.mean(Y_boot_pre_t, axis=1)
-                        Y_boot_post_t_mean = np.mean(Y_boot_post_t, axis=1)
-
-                    if refit:
-                        # Algorithm 2 step 2 (Arkhangelsky et al. 2021): re-estimate
-                        # ω̂_b and λ̂_b via Frank-Wolfe on the resampled panel, using
-                        # the fit-time normalized-scale zeta. Two-pass sparsified FW
-                        # (max_iter_pre_sparsify=100, max_iter=10000) matches
-                        # fit-time defaults. Per-draw convergence warnings are
-                        # captured and aggregated into one summary UserWarning below.
-                        with warnings.catch_warnings(record=True) as _fw_draw_warnings:
-                            warnings.simplefilter("always")
-                            boot_omega = compute_sdid_unit_weights(
-                                Y_boot_pre_c,
-                                Y_boot_pre_t_mean,
-                                zeta_omega=zeta_omega_n,
-                                min_decrease=min_decrease,
-                            )
-                            boot_lambda = compute_time_weights(
-                                Y_boot_pre_c,
-                                Y_boot_post_c,
-                                zeta_lambda=zeta_lambda_n,
-                                min_decrease=min_decrease,
-                            )
-                        # Count draws with ANY non-convergence (boolean per draw),
-                        # not raw solver warnings — a single draw can emit up to
-                        # three UserWarnings (omega pre-sparsify, omega main,
-                        # lambda). The registry text below describes the rate
-                        # relative to valid bootstrap draws, not solver calls.
-                        if any(
-                            issubclass(_w.category, UserWarning)
-                            and "did not converge" in str(_w.message)
-                            for _w in _fw_draw_warnings
-                        ):
-                            fw_nonconvergence_count += 1
-                        # Refit + survey composition is rejected upstream in fit();
-                        # w_control / w_treated are None here by construction.
-                        boot_omega_eff = boot_omega
-                    else:
-                        # Fixed-weight: renormalize original unit weights for
-                        # the resampled controls (R's vcov shortcut).
-                        boot_omega = _sum_normalize(unit_weights[boot_control_idx])
-                        if w_control is not None:
-                            boot_w_c = w_control[boot_idx[boot_is_control]]
-                            boot_omega_eff = boot_omega * boot_w_c
-                            boot_omega_eff = boot_omega_eff / boot_omega_eff.sum()
-                        else:
-                            boot_omega_eff = boot_omega
-                        boot_lambda = time_weights  # unchanged
-
-                    tau = compute_sdid_estimator(
+                    boot_lambda = compute_time_weights(
                         Y_boot_pre_c,
                         Y_boot_post_c,
-                        Y_boot_pre_t_mean,
-                        Y_boot_post_t_mean,
-                        boot_omega_eff,
-                        boot_lambda,
+                        zeta_lambda=zeta_lambda_n,
+                        min_decrease=min_decrease,
                     )
-                    if np.isfinite(tau):
-                        bootstrap_estimates.append(float(tau))
+                # Count draws with ANY non-convergence (boolean per draw),
+                # not raw solver warnings — a single draw can emit up to
+                # three UserWarnings (ω pre-sparsify, ω main, λ). The
+                # registry text describes the rate per valid draw.
+                if any(
+                    issubclass(_w.category, UserWarning) and "did not converge" in str(_w.message)
+                    for _w in _fw_draw_warnings
+                ):
+                    fw_nonconvergence_count += 1
 
-                except (ValueError, LinAlgError):
-                    continue
+                tau = compute_sdid_estimator(
+                    Y_boot_pre_c,
+                    Y_boot_post_c,
+                    Y_boot_pre_t_mean,
+                    Y_boot_post_t_mean,
+                    boot_omega,
+                    boot_lambda,
+                )
+                if np.isfinite(tau):
+                    bootstrap_estimates.append(float(tau))
+
+            except (ValueError, LinAlgError):
+                continue
 
         bootstrap_estimates = np.array(bootstrap_estimates)
 
@@ -1198,15 +999,15 @@ class SyntheticDiD(DifferenceInDifferences):
                 stacklevel=2,
             )
 
-        # Aggregate Frank-Wolfe non-convergence across refit draws. Per-draw
+        # Aggregate Frank-Wolfe non-convergence across bootstrap draws. Per-draw
         # convergence warnings from compute_sdid_unit_weights / compute_time_weights
         # are suppressed inside the loop; emit one summary here if the rate
         # exceeds the same 5% threshold used for retry exhaustion.
-        if refit and fw_nonconvergence_count > 0.05 * max(n_successful, 1):
+        if fw_nonconvergence_count > 0.05 * max(n_successful, 1):
             warnings.warn(
-                f"Frank-Wolfe did not converge on {fw_nonconvergence_count} weight "
-                f"recomputations across {n_successful} valid bootstrap draws "
-                f"(variance_method='bootstrap_refit'). SE is still reported from "
+                f"Frank-Wolfe did not converge on {fw_nonconvergence_count} of "
+                f"{n_successful} valid bootstrap draws "
+                f"(variance_method='bootstrap'). SE is still reported from "
                 f"the final iterate of each draw, but non-convergent draws may be "
                 f"noisier; consider relaxing min_decrease or increasing pre-period "
                 f"length if regularization is already moderate.",

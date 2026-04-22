@@ -2,9 +2,10 @@
 """Coverage Monte Carlo study for SDID variance methods.
 
 Generates null-panel Monte Carlo samples (no treatment effect) across
-three representative DGPs, fits SyntheticDiD under each of the four
-variance methods, and records rejection rates at α ∈ {0.01, 0.05, 0.10}
-plus the ratio of mean estimated SE to the empirical sampling SD of τ̂.
+three representative DGPs, fits SyntheticDiD under each of the three
+variance methods (placebo, bootstrap, jackknife), and records rejection
+rates at α ∈ {0.01, 0.05, 0.10} plus the ratio of mean estimated SE to
+the empirical sampling SD of τ̂.
 
 The output JSON underwrites the calibration table in
 ``docs/methodology/REGISTRY.md`` §SyntheticDiD.
@@ -60,7 +61,7 @@ import pandas as pd  # noqa: E402
 import diff_diff  # noqa: E402 — imports after env var gate the backend
 from diff_diff import HAS_RUST_BACKEND, SyntheticDiD  # noqa: E402
 
-ALL_METHODS = ("placebo", "bootstrap", "bootstrap_refit", "jackknife")
+ALL_METHODS = ("placebo", "bootstrap", "jackknife")
 ALL_DGPS = ("balanced", "unbalanced", "aer63")
 ALPHAS = (0.01, 0.05, 0.10)
 

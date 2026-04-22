@@ -599,9 +599,7 @@ class BusinessReport:
                 inference_label = "bootstrap"
             elif getattr(r, "bootstrap_distribution", None) is not None:
                 inference_label = "bootstrap"
-            elif getattr(r, "variance_method", None) in {
-                "bootstrap", "bootstrap_refit", "jackknife", "placebo",
-            }:
+            elif getattr(r, "variance_method", None) in {"bootstrap", "jackknife", "placebo"}:
                 variance_method = getattr(r, "variance_method", None)
                 inference_label = f"{variance_method} variance"
             else:

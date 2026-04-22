@@ -498,7 +498,13 @@ class TestPlaceboSE:
 
 
 class TestBootstrapSE:
-    """Verify bootstrap SE with fixed weights."""
+    """Verify the paper-faithful refit pairs bootstrap.
+
+    ``variance_method="bootstrap"`` re-estimates ω̂_b and λ̂_b via two-pass
+    sparsified Frank-Wolfe on each bootstrap draw (Arkhangelsky et al. 2021
+    Algorithm 2 step 2, and R's default ``synthdid::vcov(method="bootstrap")``).
+    Survey designs are rejected upstream in ``fit()``.
+    """
 
     def test_bootstrap_se_positive(self, ci_params):
         """Bootstrap SE should be positive."""
@@ -515,6 +521,7 @@ class TestBootstrapSE:
 
         assert results.se > 0
         assert results.variance_method == "bootstrap"
+        assert results.n_bootstrap == n_boot
 
     def test_bootstrap_with_zeta_overrides(self, ci_params):
         """Bootstrap SE should work with user-specified zeta overrides."""
@@ -535,76 +542,13 @@ class TestBootstrapSE:
         assert results.variance_method == "bootstrap"
         assert results.se > 0
 
+    def test_bootstrap_se_tracks_placebo_se_exchangeable(self, ci_params):
+        """Bootstrap SE tracks placebo SE under control-pool exchangeability.
 
-# =============================================================================
-# Bootstrap SE (refit; paper-faithful Algorithm 2 step 2)
-# =============================================================================
-
-
-class TestBootstrapRefitSE:
-    """Verify the paper-faithful refit bootstrap (``variance_method='bootstrap_refit'``).
-
-    Refit re-estimates ω̂_b and λ̂_b via Frank-Wolfe on each pairs-bootstrap
-    draw (Arkhangelsky et al. 2021, Algorithm 2 step 2). Fixed-weight
-    bootstrap (``variance_method='bootstrap'``) is the R-compatible shortcut
-    that renormalizes the original ω.
-    """
-
-    def test_refit_se_positive(self, ci_params):
-        """Refit SE is positive and populates the result fields correctly."""
-        df = _make_panel(n_control=20, n_treated=3, seed=42)
-        n_boot = ci_params.bootstrap(50)
-        r = SyntheticDiD(
-            variance_method="bootstrap_refit", n_bootstrap=n_boot, seed=42,
-        ).fit(
-            df, outcome="outcome", treatment="treated",
-            unit="unit", time="period",
-            post_periods=[5, 6, 7],
-        )
-        assert r.se > 0
-        assert r.variance_method == "bootstrap_refit"
-        assert r.n_bootstrap == n_boot
-
-    def test_refit_se_differs_from_fixed(self, ci_params):
-        """Refit SE differs from fixed-weight SE on a non-sparse-ω DGP.
-
-        Regression guard: if the refit branch accidentally reuses the fixed
-        ω, refit SE collapses to the fixed-weight SE and this assertion fails.
-        """
-        df = _make_panel(n_control=20, n_treated=3, seed=42)
-        n_boot = ci_params.bootstrap(100)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            r_fixed = SyntheticDiD(
-                variance_method="bootstrap", n_bootstrap=n_boot, seed=1
-            ).fit(
-                df, outcome="outcome", treatment="treated",
-                unit="unit", time="period", post_periods=[5, 6, 7],
-            )
-            r_refit = SyntheticDiD(
-                variance_method="bootstrap_refit", n_bootstrap=n_boot, seed=1
-            ).fit(
-                df, outcome="outcome", treatment="treated",
-                unit="unit", time="period", post_periods=[5, 6, 7],
-            )
-        # Point estimates are identical (fit-time ω/λ are shared).
-        assert abs(r_fixed.att - r_refit.att) < 1e-10
-        # SEs are produced by different resampling procedures and must diverge.
-        rel_diff = abs(r_refit.se - r_fixed.se) / r_fixed.se
-        assert rel_diff > 0.02, (
-            f"refit SE {r_refit.se:.6f} too close to fixed-weight SE "
-            f"{r_fixed.se:.6f} (rel diff {rel_diff:.4f}); refit branch may "
-            f"not be re-estimating weights"
-        )
-
-    def test_refit_se_tracks_placebo_se_exchangeable(self, ci_params):
-        """Refit SE tracks placebo SE under control-pool exchangeability.
-
-        Tertiary validation anchor from ``project_sdid_bundle_a_plan.md``:
-        placebo (Algorithm 4) already re-estimates ω and λ per permutation,
+        Placebo (Algorithm 4) already re-estimates ω and λ per permutation,
         so under exchangeability of the control pool it should produce a
-        similar variance to the refit bootstrap. Divergence would flag
-        either a refit implementation bug or a genuine exchangeability
+        similar variance to the paper-faithful refit bootstrap. Divergence
+        flags either a refit implementation bug or a genuine exchangeability
         violation in the DGP.
         """
         df = _make_panel(n_control=20, n_treated=3, seed=42)
@@ -617,33 +561,34 @@ class TestBootstrapRefitSE:
                 df, outcome="outcome", treatment="treated",
                 unit="unit", time="period", post_periods=[5, 6, 7],
             )
-            r_refit = SyntheticDiD(
-                variance_method="bootstrap_refit", n_bootstrap=n_boot, seed=1
+            r_boot = SyntheticDiD(
+                variance_method="bootstrap", n_bootstrap=n_boot, seed=1
             ).fit(
                 df, outcome="outcome", treatment="treated",
                 unit="unit", time="period", post_periods=[5, 6, 7],
             )
-        rel_diff = abs(r_refit.se - r_placebo.se) / r_placebo.se
+        rel_diff = abs(r_boot.se - r_placebo.se) / r_placebo.se
         # Tolerance chosen for B=100–200 with MC noise floor ~7–10% on the
         # SE ratio; 0.40 leaves headroom without hiding order-of-magnitude
         # regressions.
         assert rel_diff < 0.40, (
-            f"refit SE {r_refit.se:.6f} does not track placebo SE "
+            f"bootstrap SE {r_boot.se:.6f} does not track placebo SE "
             f"{r_placebo.se:.6f} on exchangeable DGP (rel diff {rel_diff:.4f})"
         )
 
-    def test_refit_raises_on_pweight_survey(self):
-        """Survey + refit raises NotImplementedError (pweight-only path).
+    def test_bootstrap_raises_on_pweight_survey(self):
+        """Survey + bootstrap raises NotImplementedError (pweight-only path).
 
-        Guard lives upstream in ``fit()`` before the bootstrap dispatcher;
-        reaches the same ``NotImplementedError`` for any survey design.
+        Rao-Wu rescaled weights composed with paper-faithful Frank-Wolfe
+        re-estimation is a separate derivation that is not yet implemented;
+        the guard lives upstream in ``fit()`` before the bootstrap dispatcher.
         """
         from diff_diff.survey import SurveyDesign
         df = _make_panel(n_control=20, n_treated=3, seed=42)
         df["wt"] = 1.0
-        with pytest.raises(NotImplementedError, match="bootstrap_refit"):
+        with pytest.raises(NotImplementedError, match="bootstrap"):
             SyntheticDiD(
-                variance_method="bootstrap_refit", n_bootstrap=50, seed=1
+                variance_method="bootstrap", n_bootstrap=50, seed=1
             ).fit(
                 df, outcome="outcome", treatment="treated",
                 unit="unit", time="period",
@@ -651,15 +596,19 @@ class TestBootstrapRefitSE:
                 survey_design=SurveyDesign(weights="wt"),
             )
 
-    def test_refit_raises_on_full_design_survey(self):
-        """Survey + refit with strata/PSU also raises NotImplementedError."""
+    def test_bootstrap_raises_on_full_design_survey(self):
+        """Survey + bootstrap with strata/PSU raises NotImplementedError.
+
+        No SDID variance method currently supports strata/PSU/FPC; the guard
+        on line ~300 of ``fit()`` rejects the combination unconditionally.
+        """
         from diff_diff.survey import SurveyDesign
         df = _make_panel(n_control=20, n_treated=3, seed=42)
         df["wt"] = 1.0
         df["stratum"] = df["unit"] % 2
-        with pytest.raises(NotImplementedError, match="bootstrap_refit"):
+        with pytest.raises(NotImplementedError, match="strata"):
             SyntheticDiD(
-                variance_method="bootstrap_refit", n_bootstrap=50, seed=1
+                variance_method="bootstrap", n_bootstrap=50, seed=1
             ).fit(
                 df, outcome="outcome", treatment="treated",
                 unit="unit", time="period",
@@ -667,51 +616,24 @@ class TestBootstrapRefitSE:
                 survey_design=SurveyDesign(weights="wt", strata="stratum"),
             )
 
-    def test_refit_p_value_uses_analytical_dispatch(self):
-        """Refit p-value must equal safe_inference(att, se)[1].
+    def test_bootstrap_summary_shows_replications(self, ci_params):
+        """result.summary() shows "Bootstrap replications" line for bootstrap.
 
-        Mirrors the fixed-weight bootstrap regression guard: refit draws
-        approximate the sampling distribution of τ̂ (centered on τ̂), so
-        the empirical null formula is invalid; dispatch must route to the
-        analytical normal-theory p-value from the refit SE.
+        Cross-surface guard: the result-class gating at ``results.py:960``
+        must keep ``"bootstrap"`` in its allow-list so the replications row
+        renders for bootstrap fits.
         """
-        df = _make_panel(seed=42)
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        n_boot = ci_params.bootstrap(50)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             r = SyntheticDiD(
-                variance_method="bootstrap_refit", n_bootstrap=100, seed=1
+                variance_method="bootstrap", n_bootstrap=n_boot, seed=1
             ).fit(
                 df, outcome="outcome", treatment="treated",
                 unit="unit", time="period",
                 post_periods=[5, 6, 7],
             )
-        _, expected_p, _ = safe_inference(r.att, r.se, alpha=0.05)
-        assert abs(r.p_value - expected_p) < 1e-12, (
-            f"refit p_value={r.p_value} != analytical {expected_p}"
-        )
-
-    def test_refit_validates_variance_method_enum(self):
-        """bootstrap_refit is accepted; unknown strings still raise ValueError."""
-        SyntheticDiD(variance_method="bootstrap_refit", n_bootstrap=10)  # OK
-        with pytest.raises(ValueError, match="bootstrap_refit"):
-            SyntheticDiD(variance_method="not_a_method", n_bootstrap=10)
-
-    def test_refit_summary_shows_bootstrap_replications(self, ci_params):
-        """result.summary() shows "Bootstrap replications" line for refit.
-
-        Cross-surface guard: the result-class gating at ``results.py:960``
-        must include ``bootstrap_refit`` in its allow-list so the
-        replications row renders for refit fits (not only fixed-weight).
-        """
-        df = _make_panel(n_control=20, n_treated=3, seed=42)
-        n_boot = ci_params.bootstrap(50)
-        r = SyntheticDiD(
-            variance_method="bootstrap_refit", n_bootstrap=n_boot, seed=1
-        ).fit(
-            df, outcome="outcome", treatment="treated",
-            unit="unit", time="period",
-            post_periods=[5, 6, 7],
-        )
         summary = r.summary()
         assert "Bootstrap replications" in summary
         assert str(n_boot) in summary
@@ -1053,79 +975,6 @@ class TestJackknifeSERParity:
         )
         assert abs(results.se - self.R_JACKKNIFE_SE) < 1e-10
 
-    def test_bootstrap_se_matches_r(self, r_panel_df):
-        """Fixed-weight bootstrap SE is bit-identical to a manual R
-        fixed-weight invocation given the same bootstrap indices.
-
-        **Scope caveat:** this is NOT parity against R's default
-        ``synthdid::vcov(method="bootstrap")``. R's default bootstrap
-        rebinds ``attr(estimate, "opts")`` (including
-        ``update.omega=TRUE``) back into ``synthdid_estimate`` inside its
-        bootstrap loop, so the renormalized ω is used only as Frank-Wolfe
-        initialization and weights are re-estimated per draw — i.e., R's
-        default is refit, not fixed-weight. The fixture generator in
-        ``benchmarks/R/generate_sdid_bootstrap_parity_fixture.R`` calls
-        ``synthdid_estimate(weights = weights_boot)`` **without** rebinding
-        ``opts``; that path defaults ``update.omega = is.null(weights$omega)``
-        to ``FALSE`` given non-null weights and therefore runs a manual
-        fixed-weight bootstrap. This test anchors our ``variance_method="bootstrap"``
-        (also fixed-weight, documented in REGISTRY.md as a deviation from
-        R's default) against that manual R invocation, not against R's
-        real ``vcov`` behavior. The corresponding refit-parity anchor
-        (Python ``variance_method="bootstrap_refit"`` vs R's default) is
-        a follow-up tracked via the Julia ``Synthdid.jl`` refit cross-
-        language anchor noted in ``project_sdid_bundle_a_plan.md``.
-
-        Scope of the bit-identity check: RNG streams differ between Python
-        (PCG64) and R (Mersenne Twister), so a shared integer ``seed``
-        value draws different resamples in each language. The fixture
-        pins R's B × N index matrix and the test feeds it through the
-        Python bootstrap loop via the ``_bootstrap_indices`` seam, so
-        both implementations traverse the *same* resamples. What the
-        1e-10 match verifies is the deterministic math downstream of the
-        indices — per-draw fixed-weight estimator (weight renormalization
-        + SDID formula) and SE aggregation (``sqrt((r-1)/r) × sd(ddof=1)``).
-        It does NOT verify that independently-seeded runs agree at any
-        finite B; that would require a shared RNG stream or a Monte-Carlo
-        tolerance at large B, both out of scope here.
-        """
-        import json
-        import pathlib
-
-        fixture = pathlib.Path(__file__).parent / "data" / "sdid_bootstrap_indices_r.json"
-        if not fixture.exists():
-            pytest.skip(
-                f"Missing R-parity fixture {fixture}; regenerate via "
-                "`Rscript benchmarks/R/generate_sdid_bootstrap_parity_fixture.R`."
-            )
-        payload = json.loads(fixture.read_text())
-        # R indices are 1-based; convert to 0-based for numpy.
-        indices = np.asarray(payload["indices"], dtype=np.int64) - 1
-        r_bootstrap_se = float(payload["se"])
-
-        n_bootstrap = indices.shape[0]
-        sdid = SyntheticDiD(
-            variance_method="bootstrap",
-            n_bootstrap=n_bootstrap,
-            seed=42,
-        )
-        # Route the pinned indices through the hidden _bootstrap_indices seam
-        # on _bootstrap_se. Patch the bound method at the class level so the
-        # sdid.fit() call picks it up.
-        orig = SyntheticDiD._bootstrap_se
-
-        def _patched(self, *args, **kwargs):
-            kwargs["_bootstrap_indices"] = indices
-            return orig(self, *args, **kwargs)
-
-        with patch.object(SyntheticDiD, "_bootstrap_se", _patched):
-            results = sdid.fit(
-                r_panel_df, outcome="outcome", treatment="treated",
-                unit="unit", time="time",
-                post_periods=[5, 6, 7],
-            )
-        assert abs(results.se - r_bootstrap_se) < 1e-10
-
 
 # =============================================================================
 # Edge Cases
@@ -1347,12 +1196,6 @@ class TestGetSetParams:
         with pytest.raises(ValueError, match="Unknown parameter"):
             sdid.set_params(nonexistent_param=1.0)
 
-    def test_set_params_accepts_bootstrap_refit(self):
-        """set_params(variance_method='bootstrap_refit') succeeds."""
-        sdid = SyntheticDiD()
-        sdid.set_params(variance_method="bootstrap_refit")
-        assert sdid.variance_method == "bootstrap_refit"
-
     def test_set_params_rejects_invalid_variance_method(self):
         """set_params with invalid variance_method raises ValueError.
 
@@ -1370,7 +1213,7 @@ class TestGetSetParams:
         """
         sdid = SyntheticDiD()
         with pytest.raises(ValueError, match="n_bootstrap must be >= 2"):
-            sdid.set_params(variance_method="bootstrap_refit", n_bootstrap=1)
+            sdid.set_params(variance_method="bootstrap", n_bootstrap=1)
 
     def test_set_params_allows_n_bootstrap_one_for_jackknife(self):
         """Jackknife is deterministic; n_bootstrap is ignored and need not be >= 2."""
@@ -1387,7 +1230,7 @@ class TestGetSetParams:
         """
         sdid = SyntheticDiD(variance_method="placebo", n_bootstrap=200)
         with pytest.raises(ValueError):
-            sdid.set_params(variance_method="bootstrap_refit", n_bootstrap=1)
+            sdid.set_params(variance_method="bootstrap", n_bootstrap=1)
         # Pre-call values preserved despite mid-sequence setattr on the
         # (now-partially-applied) instance.
         assert sdid.variance_method == "placebo"
@@ -2484,10 +2327,14 @@ class TestScaleEquivariance:
     # Hard-coded baselines captured pre-fix on a well-scaled panel. If these
     # drift the fix is not a true no-op on normal data and review is warranted.
     _BASELINE = {
-        "placebo":         (4.603349837478791,   0.29385822261006445, 0.004975124378109453,    200),
-        "bootstrap":       (4.603349837478791,   0.16272527384941657, 4.707563471218442e-176,  200),
-        "bootstrap_refit": (4.6033498374787865,  0.21424970247101688, 2.1089088107241648e-102, 200),
-        "jackknife":       (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,   23),
+        "placebo":   (4.603349837478791,   0.29385822261006445, 0.004975124378109453,    200),
+        # bootstrap = paper-faithful refit. Previously captured under the
+        # "bootstrap_refit" enum value that has since been folded into
+        # "bootstrap"; the numerics are bit-identical (same rng.choice
+        # sequence, same compute_sdid_{unit,time}_weights + compute_sdid_estimator
+        # call chain).
+        "bootstrap": (4.6033498374787865,  0.21424970247101688, 2.1089088107241648e-102, 200),
+        "jackknife": (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,   23),
     }
 
     # (a, b) pairs. Includes extreme scales where pre-fix SDID loses
@@ -2513,25 +2360,29 @@ class TestScaleEquivariance:
             post_periods=[5, 6, 7],
         )
 
-    @pytest.mark.parametrize(
-        "variance_method", ["placebo", "bootstrap", "bootstrap_refit", "jackknife"]
-    )
+    @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
     def test_baseline_parity_small_scale(self, variance_method):
-        """Existing-fixture results match pre-fix literals — guards against
-        drift; a true no-op should hit float epsilon relative to baseline."""
+        """Existing-fixture results match captured literals at bit-identity
+        tolerance.
+
+        The bootstrap refactor that removed the fixed-weight path reuses the
+        same rng.choice sequence and the same compute_sdid_{unit,time}_weights
+        + compute_sdid_estimator call chain that the refit branch already ran
+        under the previous enum name. Any drift above machine epsilon means
+        the numerical path changed, not just a rename — investigate before
+        accepting. Placebo / jackknife are untouched by that refactor.
+        """
         att0, se0, p0, n0 = self._BASELINE[variance_method]
         data = _make_panel(seed=42)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             r = self._fit(data, variance_method)
-        assert r.att == pytest.approx(att0, rel=1e-8)
-        assert r.se == pytest.approx(se0, rel=1e-8)
-        assert r.p_value == pytest.approx(p0, rel=1e-8)
+        assert r.att == pytest.approx(att0, rel=1e-14)
+        assert r.se == pytest.approx(se0, rel=1e-14)
+        assert r.p_value == pytest.approx(p0, rel=1e-14)
         assert len(r.placebo_effects) == n0
 
-    @pytest.mark.parametrize(
-        "variance_method", ["placebo", "bootstrap", "bootstrap_refit", "jackknife"]
-    )
+    @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
     def test_scale_equivariance(self, variance_method):
         """τ/a, SE/|a|, p-value, and n_successful must be invariant under
         (Y → a*Y + b) across ~15 orders of magnitude."""
@@ -2563,9 +2414,7 @@ class TestScaleEquivariance:
             assert r.noise_level / abs(a) == pytest.approx(noise0, rel=1e-8)
             assert r.zeta_omega / abs(a) == pytest.approx(zeta_omega0, rel=1e-8)
 
-    @pytest.mark.parametrize(
-        "variance_method", ["placebo", "bootstrap", "bootstrap_refit", "jackknife"]
-    )
+    @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
     def test_detects_true_effect_at_extreme_scale(self, variance_method):
         """Pre-fix regression: catastrophic cancellation at Y~1e9 degraded
         SEs so p-values clustered near 0.5 regardless of true effect. Here
@@ -2645,29 +2494,6 @@ class TestPValueSemantics:
         _, expected_p, _ = safe_inference(r.att, r.se, alpha=0.05)
         assert abs(r.p_value - expected_p) < 1e-12, (
             f"bootstrap p_value={r.p_value} != analytical {expected_p}"
-        )
-
-    def test_refit_p_value_matches_analytical(self):
-        """Refit bootstrap p-value must equal safe_inference(att, se)[1].
-
-        Symmetric with the fixed-weight test: refit draws still approximate
-        the sampling distribution of τ̂ (centered on τ̂), so the empirical
-        null formula is invalid and dispatch must route to the analytical
-        p-value.
-        """
-        df = _make_panel(seed=42)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            r = SyntheticDiD(
-                variance_method="bootstrap_refit", n_bootstrap=100, seed=1
-            ).fit(
-                df, outcome="outcome", treatment="treated",
-                unit="unit", time="period",
-                post_periods=[5, 6, 7],
-            )
-        _, expected_p, _ = safe_inference(r.att, r.se, alpha=0.05)
-        assert abs(r.p_value - expected_p) < 1e-12, (
-            f"refit p_value={r.p_value} != analytical {expected_p}"
         )
 
     def test_placebo_p_value_uses_empirical_formula(self):
@@ -3069,14 +2895,17 @@ class TestCoverageMCArtifact:
             f"n_seeds={meta['n_seeds']} too small; the REGISTRY calibration "
             "table cites 500-seed rates — regenerate with documented settings."
         )
-        assert "bootstrap_refit" in meta["methods"], (
-            "coverage artifact must include bootstrap_refit"
+        assert set(meta["methods"]) == {"placebo", "bootstrap", "jackknife"}, (
+            "coverage artifact methods list must be exactly the 3 supported "
+            "SDID variance methods (placebo / bootstrap / jackknife); the old "
+            "fixed-weight 'bootstrap' and the additive 'bootstrap_refit' "
+            "enum value are both gone."
         )
 
         for dgp in ("balanced", "unbalanced", "aer63"):
             assert dgp in payload["per_dgp"], f"missing DGP block: {dgp}"
             per_method = payload["per_dgp"][dgp]
-            for method in ("placebo", "bootstrap", "bootstrap_refit", "jackknife"):
+            for method in ("placebo", "bootstrap", "jackknife"):
                 assert method in per_method, (
                     f"missing method block {method!r} under DGP {dgp!r}"
                 )
