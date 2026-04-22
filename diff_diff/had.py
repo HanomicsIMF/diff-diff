@@ -127,10 +127,17 @@ _TARGET_PARAMETER = {
 class HeterogeneousAdoptionDiDResults:
     """Estimator output for :class:`HeterogeneousAdoptionDiD`.
 
-    All inference fields (``att``, ``se``, ``t_stat``, ``p_value``,
-    ``conf_int``) are routed through :func:`diff_diff.utils.safe_inference`
-    at fit time; when SE is non-finite, zero, or negative, every inference
-    field is NaN.
+    NaN-safe inference: the three downstream fields ``t_stat``,
+    ``p_value``, and ``conf_int`` are routed through
+    :func:`diff_diff.utils.safe_inference`, which returns NaN on all
+    three whenever ``se`` is non-finite, zero, or negative. ``att`` and
+    ``se`` themselves are raw estimator outputs - when the estimator's
+    fit path detects a degenerate configuration (constant outcome,
+    no-variation-above-``d_lower``, divide-by-zero), it returns
+    ``(att=nan, se=nan)`` directly, which the safe-inference gate then
+    propagates into the remaining three fields. Net effect: users can
+    safely check ``np.isfinite(result.se)`` and expect all five fields
+    to be finite or all NaN together on the current fit paths.
 
     Attributes
     ----------
@@ -992,6 +999,21 @@ class HeterogeneousAdoptionDiD:
             )
         if not (0.0 < float(self.alpha) < 1.0):
             raise ValueError(f"alpha must be in (0, 1); got {self.alpha!r}.")
+        # d_lower must be None or a finite scalar. NaN / +/-inf would
+        # bypass every downstream comparison-based guard (`>`, `<=`,
+        # tolerance-abs-diff) because those return False for NaN, so we
+        # front-door reject non-finite values here. This fires under
+        # __init__ and set_params (which dry-runs through the
+        # constructor), keeping the contract uniform across all entry
+        # points.
+        if self.d_lower is not None:
+            d_lower_float = float(self.d_lower)
+            if not np.isfinite(d_lower_float):
+                raise ValueError(
+                    f"d_lower must be None or a finite scalar; got "
+                    f"d_lower={self.d_lower!r}. NaN and +/-inf are not "
+                    f"valid support-infimum values."
+                )
         if self.vcov_type is not None:
             if self.vcov_type.lower() in _MASS_POINT_VCOV_UNSUPPORTED:
                 # Don't raise here — the raise happens at fit() time on

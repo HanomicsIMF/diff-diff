@@ -1224,6 +1224,28 @@ class TestConstructorValidation:
         est = HeterogeneousAdoptionDiD(d_lower=0.3)
         assert est.d_lower == 0.3
 
+    def test_d_lower_nan_raises(self):
+        """Review P1 round 13: d_lower=NaN must be rejected in __init__."""
+        with pytest.raises(ValueError, match=r"d_lower.*finite"):
+            HeterogeneousAdoptionDiD(d_lower=float("nan"))
+
+    def test_d_lower_posinf_raises(self):
+        with pytest.raises(ValueError, match=r"d_lower.*finite"):
+            HeterogeneousAdoptionDiD(d_lower=float("inf"))
+
+    def test_d_lower_neginf_raises(self):
+        with pytest.raises(ValueError, match=r"d_lower.*finite"):
+            HeterogeneousAdoptionDiD(d_lower=float("-inf"))
+
+    def test_d_lower_nan_via_set_params_raises(self):
+        """d_lower=NaN through set_params must also raise (atomic rollback)."""
+        est = HeterogeneousAdoptionDiD(d_lower=0.3)
+        baseline = est.get_params()
+        with pytest.raises(ValueError, match=r"d_lower.*finite"):
+            est.set_params(d_lower=float("nan"))
+        # Atomic rollback: d_lower unchanged after failure.
+        assert est.get_params() == baseline
+
 
 # =============================================================================
 # Explicit design override (don't auto-reject)
