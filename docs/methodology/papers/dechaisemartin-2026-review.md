@@ -183,14 +183,15 @@ Alternative to Stute when `G` is large or heteroskedasticity is suspected.
 - [ ] Separate code paths for Design 1' (`d̲ = 0`), Design 1 mass-point (`d̲ > 0` discrete), and Design 1 continuous-near-`d̲`.
 - [ ] Local-linear regression backend (kernel weights, bandwidth selector).
 - [ ] Integration with bias-corrected CI from Calonico-Cattaneo-Farrell.
-- [ ] QUG null test (`T = D_{2,(1)} / (D_{2,(2)} - D_{2,(1)})`, rejection region `{T > 1/α - 1}`).
-- [ ] Stute Cramér-von Mises test with Mammen wild bootstrap.
-- [ ] Yatchew heteroskedasticity-robust linearity test.
+- [x] QUG null test (`T = D_{2,(1)} / (D_{2,(2)} - D_{2,(1)})`, rejection region `{T > 1/α - 1}`). **Phase 3 implementation (2026-04):** `qug_test()` in `diff_diff/had_pretests.py`. Asymptotic p-value `1/(1+T)` under Exp(1)/Exp(1) limit law. Zero-dose observations filtered upfront with `UserWarning`; tie-break `D_{(1)} == D_{(2)}` returns all-NaN inference. Tight closed-form parity at `atol=1e-12`.
+- [x] Stute Cramér-von Mises test with Mammen wild bootstrap. **Phase 3 implementation (2026-04):** `stute_test()` in `diff_diff/had_pretests.py`. Literal per-iteration OLS refit per paper Appendix D Algorithm. `n_bootstrap=999` default, `n_bootstrap >= 99` validated. Single-horizon only; joint Equation 18 cross-horizon Stute (Paper Section 5.2 Pierce-Schott application) deferred to a Phase 3 follow-up patch.
+- [x] Yatchew heteroskedasticity-robust linearity test. **Phase 3 implementation (2026-04):** `yatchew_hr_test()` in `diff_diff/had_pretests.py`. Test statistic `T_hr = sqrt(G)·(σ²_lin - σ²_diff)/σ²_W` from paper Equation 29. `σ²_diff` normalizes by `2G` (paper-literal), NOT `2(G-1)` (finite-sample equivalent but tests pin the paper-literal form). Standard-normal critical value, one-sided.
+- [x] Composite workflow `did_had_pretest_workflow()` (paper Section 4.2-4.3). **Phase 3 implementation (2026-04):** Two-period panel entry point runs all three tests and returns `HADPretestReport` with priority-ordered verdict string. The paper's step 2 (pre-trends test of Assumption 7) requires Equation 18 and is deferred to the Phase 3 follow-up patch.
 - [ ] Warnings for staggered treatment timing (direct users to existing `ChaisemartinDHaultfoeuille` in diff-diff).
 - [ ] Warnings for extensive-margin effects / positive mass of untreated (not fatal; suggests running existing DiD).
 - [ ] Documentation of non-testability of Assumptions 5 and 6.
 - [x] Multi-period event-study extension (Appendix B.2). **Phase 2b implementation (2026-04):** `aggregate="event_study"` returns per-event-time WAS estimates using uniform `F-1` anchor. Staggered timing auto-filtered to last cohort with `UserWarning` per Appendix B.2 prescription. Pointwise CIs per horizon (no joint cross-horizon covariance; matches paper's Pierce-Schott Figure 2). Pre-period placebos at `e <= -2`; the anchor `e = -1` is skipped since `ΔY = 0` there by construction.
-- [ ] Joint Stute test (Equation 18) across pre-periods. Deferred to Phase 3 (pre-test diagnostics).
+- [ ] Joint Stute test (Equation 18) across pre-periods. Deferred to a **Phase 3 follow-up patch** — Phase 3 (2026-04) shipped the single-horizon Stute test but not the joint cross-horizon variant; the exact stacked-residual formula needs extraction from the paper PDF (not reproduced in this review). Tracked in `TODO.md`.
 
 ---
 

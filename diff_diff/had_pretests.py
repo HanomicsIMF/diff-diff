@@ -1,0 +1,1065 @@
+"""Pre-test diagnostics for the HeterogeneousAdoptionDiD estimator.
+
+Paper Section 4 (de Chaisemartin, Ciccia, D'Haultfoeuille, Knau 2026,
+arXiv:2405.04465v6) prescribes three pre-test diagnostics that practitioners
+should run BEFORE trusting HAD estimates:
+
+1. :func:`qug_test` - order-statistic ratio test of the support infimum
+   ``H_0: d_lower = 0`` (paper Theorem 4). Closed-form, tuning-free.
+2. :func:`stute_test` - Cramer-von Mises cusum test of linearity of
+   ``E[ΔY | D_2]`` with Mammen (1993) wild bootstrap p-value (paper
+   Appendix D).
+3. :func:`yatchew_hr_test` - heteroskedasticity-robust variance-ratio
+   linearity test (paper Theorem 7 / Equation 29). Feasible at
+   ``G >= 100k``.
+
+Paper Section 4.2-4.3: if all three fail-to-reject, the TWFE estimator
+(``beta_fe``) is valid; rejection guides users to alternative estimators.
+
+The composite :func:`did_had_pretest_workflow` runs all three in sequence on
+a two-period HAD panel and returns a :class:`HADPretestReport` with a
+text verdict.
+
+Equation 18 (joint cross-horizon Stute over pre-period placebos) is deferred
+to a Phase 3 follow-up patch pending formula extraction from the paper PDF;
+see ``docs/methodology/REGISTRY.md`` and ``TODO.md``.
+"""
+
+from __future__ import annotations
+
+import warnings
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+from diff_diff.had import (
+    _aggregate_first_difference,
+    _json_safe_scalar,
+    _validate_had_panel,
+)
+from diff_diff.utils import _generate_mammen_weights
+
+__all__ = [
+    "QUGTestResults",
+    "StuteTestResults",
+    "YatchewTestResults",
+    "HADPretestReport",
+    "qug_test",
+    "stute_test",
+    "yatchew_hr_test",
+    "did_had_pretest_workflow",
+]
+
+
+_MIN_G_QUG = 2
+_MIN_G_STUTE = 10
+_MIN_G_YATCHEW = 3
+_MIN_N_BOOTSTRAP = 99
+_STUTE_LARGE_G_THRESHOLD = 100_000
+
+
+# =============================================================================
+# Result dataclasses
+# =============================================================================
+
+
+@dataclass
+class QUGTestResults:
+    """Result of :func:`qug_test` (paper Theorem 4).
+
+    The QUG test rejects ``H_0: d_lower = 0`` when the order-statistic
+    ratio ``T = D_{(1)} / (D_{(2)} - D_{(1)})`` exceeds ``1/alpha - 1``.
+    Under the null, the asymptotic limit law of ``T`` is the ratio of two
+    independent Exp(1) random variables, with CDF ``F(t) = t / (1 + t)``,
+    so ``p_value = 1 / (1 + T)``.
+
+    Attributes
+    ----------
+    t_stat : float
+        ``D_{(1)} / (D_{(2)} - D_{(1)})``. NaN when fewer than 2 non-zero
+        observations remain or when the two smallest doses tie.
+    p_value : float
+        ``1 / (1 + t_stat)`` under the null. NaN when ``t_stat`` is NaN.
+    reject : bool
+        ``True`` iff ``t_stat > critical_value``. ``False`` on NaN statistic.
+    alpha : float
+        Significance level used.
+    critical_value : float
+        ``1 / alpha - 1``. Populated even when the statistic is NaN so
+        downstream readers can inspect the decision threshold.
+    n_obs : int
+        Number of observations after filtering to ``d > 0``.
+    n_excluded_zero : int
+        Number of zero-dose observations excluded from the sample.
+    d_order_1 : float
+        Smallest positive dose ``D_{(1)}``. NaN when ``n_obs < 2``.
+    d_order_2 : float
+        Second-smallest positive dose ``D_{(2)}``. NaN when ``n_obs < 2``.
+    """
+
+    t_stat: float
+    p_value: float
+    reject: bool
+    alpha: float
+    critical_value: float
+    n_obs: int
+    n_excluded_zero: int
+    d_order_1: float
+    d_order_2: float
+
+    def __repr__(self) -> str:
+        return (
+            f"QUGTestResults(t_stat={self.t_stat:.4f}, p_value={self.p_value:.4f}, "
+            f"reject={self.reject}, alpha={self.alpha}, n_obs={self.n_obs})"
+        )
+
+    def summary(self) -> str:
+        """Formatted summary table."""
+        width = 64
+        lines = [
+            "=" * width,
+            "QUG null test (H_0: d_lower = 0)".center(width),
+            "=" * width,
+            f"{'Statistic T:':<30} {self.t_stat:>20.4f}",
+            f"{'p-value:':<30} {self.p_value:>20.4f}",
+            f"{'Critical value (1/alpha-1):':<30} {self.critical_value:>20.4f}",
+            f"{'Reject H_0:':<30} {str(self.reject):>20}",
+            f"{'alpha:':<30} {self.alpha:>20.4f}",
+            f"{'Observations:':<30} {self.n_obs:>20}",
+            f"{'Excluded (d == 0):':<30} {self.n_excluded_zero:>20}",
+            f"{'D_(1):':<30} {self.d_order_1:>20.4f}",
+            f"{'D_(2):':<30} {self.d_order_2:>20.4f}",
+            "=" * width,
+        ]
+        return "\n".join(lines)
+
+    def print_summary(self) -> None:
+        """Print the summary to stdout."""
+        print(self.summary())
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return results as a JSON-safe dict."""
+        return {
+            "test": "qug",
+            "t_stat": _json_safe_scalar(self.t_stat),
+            "p_value": _json_safe_scalar(self.p_value),
+            "reject": bool(self.reject),
+            "alpha": float(self.alpha),
+            "critical_value": _json_safe_scalar(self.critical_value),
+            "n_obs": int(self.n_obs),
+            "n_excluded_zero": int(self.n_excluded_zero),
+            "d_order_1": _json_safe_scalar(self.d_order_1),
+            "d_order_2": _json_safe_scalar(self.d_order_2),
+        }
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Return a one-row DataFrame of the result dict."""
+        return pd.DataFrame([self.to_dict()])
+
+
+@dataclass
+class StuteTestResults:
+    """Result of :func:`stute_test` (paper Appendix D).
+
+    The Stute test rejects the null that ``E[ΔY | D_2]`` is linear in
+    ``D_2`` (paper Assumption 8) when the sorted-residual CvM statistic
+    ``S = (1/G^2) Σ (Σ_{h=1}^g eps_{(h)})^2`` exceeds the Mammen wild
+    bootstrap ``1 - alpha`` quantile.
+
+    Attributes
+    ----------
+    cvm_stat : float
+        CvM statistic. NaN when ``G < 10`` (below the threshold the
+        statistic is not well-calibrated).
+    p_value : float
+        Bootstrap p-value ``(1 + sum(S_b >= S)) / (B + 1)``. NaN when
+        the statistic is NaN.
+    reject : bool
+        ``True`` iff ``p_value <= alpha``. ``False`` on NaN.
+    alpha : float
+        Significance level used.
+    n_bootstrap : int
+        Number of Mammen wild bootstrap replications.
+    n_obs : int
+        Number of observations.
+    seed : int or None
+        Seed passed to ``np.random.default_rng``. ``None`` when unseeded.
+    """
+
+    cvm_stat: float
+    p_value: float
+    reject: bool
+    alpha: float
+    n_bootstrap: int
+    n_obs: int
+    seed: Optional[int]
+
+    def __repr__(self) -> str:
+        return (
+            f"StuteTestResults(cvm_stat={self.cvm_stat:.4f}, "
+            f"p_value={self.p_value:.4f}, reject={self.reject}, "
+            f"alpha={self.alpha}, n_bootstrap={self.n_bootstrap}, "
+            f"n_obs={self.n_obs})"
+        )
+
+    def summary(self) -> str:
+        """Formatted summary table."""
+        width = 64
+        lines = [
+            "=" * width,
+            "Stute CvM linearity test (H_0: linear E[dY|D])".center(width),
+            "=" * width,
+            f"{'CvM statistic:':<30} {self.cvm_stat:>20.4f}",
+            f"{'Bootstrap p-value:':<30} {self.p_value:>20.4f}",
+            f"{'Reject H_0:':<30} {str(self.reject):>20}",
+            f"{'alpha:':<30} {self.alpha:>20.4f}",
+            f"{'Bootstrap replications:':<30} {self.n_bootstrap:>20}",
+            f"{'Observations:':<30} {self.n_obs:>20}",
+            f"{'Seed:':<30} {str(self.seed):>20}",
+            "=" * width,
+        ]
+        return "\n".join(lines)
+
+    def print_summary(self) -> None:
+        """Print the summary to stdout."""
+        print(self.summary())
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return results as a JSON-safe dict."""
+        return {
+            "test": "stute",
+            "cvm_stat": _json_safe_scalar(self.cvm_stat),
+            "p_value": _json_safe_scalar(self.p_value),
+            "reject": bool(self.reject),
+            "alpha": float(self.alpha),
+            "n_bootstrap": int(self.n_bootstrap),
+            "n_obs": int(self.n_obs),
+            "seed": None if self.seed is None else int(self.seed),
+        }
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Return a one-row DataFrame of the result dict."""
+        return pd.DataFrame([self.to_dict()])
+
+
+@dataclass
+class YatchewTestResults:
+    """Result of :func:`yatchew_hr_test` (paper Theorem 7 / Equation 29).
+
+    Heteroskedasticity-robust test of the same linearity null as
+    :func:`stute_test`, but using Yatchew's difference-based variance
+    estimator. The test statistic
+    ``T_hr = sqrt(G) * (sigma2_lin - sigma2_diff) / sigma2_W``
+    is asymptotically N(0, 1) under H_0; rejection uses the one-sided
+    standard-normal critical value.
+
+    Attributes
+    ----------
+    t_stat_hr : float
+        Test statistic ``T_hr`` from paper Equation 29. NaN when
+        ``G < 3``.
+    p_value : float
+        ``1 - Phi(T_hr)``. NaN when the statistic is NaN.
+    reject : bool
+        ``True`` iff ``T_hr >= critical_value``. ``False`` on NaN.
+    alpha : float
+        Significance level used.
+    critical_value : float
+        One-sided standard-normal critical value ``z_{1 - alpha}``.
+    sigma2_lin : float
+        Residual variance from OLS of ``dy`` on ``d``.
+    sigma2_diff : float
+        Yatchew differencing variance
+        ``(1 / (2G)) * sum((dy_{(g)} - dy_{(g-1)})^2)`` - divisor is ``2G``
+        (paper-literal), NOT ``2(G-1)``.
+    sigma2_W : float
+        Heteroskedasticity-robust scale
+        ``sqrt((1 / (G-1)) * sum(eps_{(g)}^2 * eps_{(g-1)}^2))``.
+    n_obs : int
+        Number of observations.
+    """
+
+    t_stat_hr: float
+    p_value: float
+    reject: bool
+    alpha: float
+    critical_value: float
+    sigma2_lin: float
+    sigma2_diff: float
+    sigma2_W: float
+    n_obs: int
+
+    def __repr__(self) -> str:
+        return (
+            f"YatchewTestResults(t_stat_hr={self.t_stat_hr:.4f}, "
+            f"p_value={self.p_value:.4f}, reject={self.reject}, "
+            f"alpha={self.alpha}, n_obs={self.n_obs})"
+        )
+
+    def summary(self) -> str:
+        """Formatted summary table."""
+        width = 64
+        lines = [
+            "=" * width,
+            "Yatchew-HR linearity test (H_0: linear E[dY|D])".center(width),
+            "=" * width,
+            f"{'T_hr statistic:':<30} {self.t_stat_hr:>20.4f}",
+            f"{'p-value:':<30} {self.p_value:>20.4f}",
+            f"{'Critical value (1-sided z):':<30} {self.critical_value:>20.4f}",
+            f"{'Reject H_0:':<30} {str(self.reject):>20}",
+            f"{'alpha:':<30} {self.alpha:>20.4f}",
+            f"{'sigma^2_lin (OLS):':<30} {self.sigma2_lin:>20.4f}",
+            f"{'sigma^2_diff (Yatchew):':<30} {self.sigma2_diff:>20.4f}",
+            f"{'sigma^2_W (HR scale):':<30} {self.sigma2_W:>20.4f}",
+            f"{'Observations:':<30} {self.n_obs:>20}",
+            "=" * width,
+        ]
+        return "\n".join(lines)
+
+    def print_summary(self) -> None:
+        """Print the summary to stdout."""
+        print(self.summary())
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return results as a JSON-safe dict."""
+        return {
+            "test": "yatchew_hr",
+            "t_stat_hr": _json_safe_scalar(self.t_stat_hr),
+            "p_value": _json_safe_scalar(self.p_value),
+            "reject": bool(self.reject),
+            "alpha": float(self.alpha),
+            "critical_value": _json_safe_scalar(self.critical_value),
+            "sigma2_lin": _json_safe_scalar(self.sigma2_lin),
+            "sigma2_diff": _json_safe_scalar(self.sigma2_diff),
+            "sigma2_W": _json_safe_scalar(self.sigma2_W),
+            "n_obs": int(self.n_obs),
+        }
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Return a one-row DataFrame of the result dict."""
+        return pd.DataFrame([self.to_dict()])
+
+
+@dataclass
+class HADPretestReport:
+    """Composite output of :func:`did_had_pretest_workflow`.
+
+    Bundles the three individual tests with an overall verdict string.
+
+    Attributes
+    ----------
+    qug : QUGTestResults
+    stute : StuteTestResults
+    yatchew : YatchewTestResults
+    all_pass : bool
+        ``True`` iff none of the three tests rejects. When ``True``,
+        paper Section 4.2-4.3 states TWFE (``beta_fe``) is valid under
+        Assumptions 5-8.
+    verdict : str
+        Human-readable classification. Priority-ordered first-match:
+
+        1. Any NaN p-value -> ``"inconclusive - {names} NaN"``
+        2. None reject -> ``"TWFE safe under Section 4 assumptions"``
+        3. Otherwise -> bundled string naming each rejected assumption:
+           ``"support infimum rejected - continuous_at_zero design
+           invalid (QUG)"`` and/or ``"linearity rejected - heterogeneity
+           bias ({Stute[,Yatchew]})"``.
+    alpha : float
+        Significance level shared across tests.
+    n_obs : int
+        Unit count after aggregation to the two-period first-difference.
+    """
+
+    qug: QUGTestResults
+    stute: StuteTestResults
+    yatchew: YatchewTestResults
+    all_pass: bool
+    verdict: str
+    alpha: float
+    n_obs: int
+
+    def __repr__(self) -> str:
+        return (
+            f"HADPretestReport(all_pass={self.all_pass}, "
+            f"verdict={self.verdict!r}, n_obs={self.n_obs})"
+        )
+
+    def summary(self) -> str:
+        """Formatted summary of all three tests and the verdict."""
+        width = 72
+        parts = [
+            "=" * width,
+            "HAD pre-test workflow".center(width),
+            "=" * width,
+            self.qug.summary(),
+            "",
+            self.stute.summary(),
+            "",
+            self.yatchew.summary(),
+            "",
+            "=" * width,
+            f"{'All pass:':<30} {str(self.all_pass):>40}",
+            f"Verdict: {self.verdict}",
+            "=" * width,
+        ]
+        return "\n".join(parts)
+
+    def print_summary(self) -> None:
+        """Print the summary to stdout."""
+        print(self.summary())
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-safe nested dict of the full report."""
+        return {
+            "qug": self.qug.to_dict(),
+            "stute": self.stute.to_dict(),
+            "yatchew": self.yatchew.to_dict(),
+            "all_pass": bool(self.all_pass),
+            "verdict": str(self.verdict),
+            "alpha": float(self.alpha),
+            "n_obs": int(self.n_obs),
+        }
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Return a tidy 3-row DataFrame (one row per test).
+
+        Columns (in order): ``[test, statistic_name, statistic_value,
+        p_value, reject, alpha, n_obs]``.
+        """
+        rows = [
+            {
+                "test": "qug",
+                "statistic_name": "t_stat",
+                "statistic_value": _json_safe_scalar(self.qug.t_stat),
+                "p_value": _json_safe_scalar(self.qug.p_value),
+                "reject": bool(self.qug.reject),
+                "alpha": float(self.qug.alpha),
+                "n_obs": int(self.qug.n_obs),
+            },
+            {
+                "test": "stute",
+                "statistic_name": "cvm_stat",
+                "statistic_value": _json_safe_scalar(self.stute.cvm_stat),
+                "p_value": _json_safe_scalar(self.stute.p_value),
+                "reject": bool(self.stute.reject),
+                "alpha": float(self.stute.alpha),
+                "n_obs": int(self.stute.n_obs),
+            },
+            {
+                "test": "yatchew_hr",
+                "statistic_name": "t_stat_hr",
+                "statistic_value": _json_safe_scalar(self.yatchew.t_stat_hr),
+                "p_value": _json_safe_scalar(self.yatchew.p_value),
+                "reject": bool(self.yatchew.reject),
+                "alpha": float(self.yatchew.alpha),
+                "n_obs": int(self.yatchew.n_obs),
+            },
+        ]
+        cols = [
+            "test",
+            "statistic_name",
+            "statistic_value",
+            "p_value",
+            "reject",
+            "alpha",
+            "n_obs",
+        ]
+        return pd.DataFrame(rows).reindex(columns=cols)
+
+
+# =============================================================================
+# Private helpers
+# =============================================================================
+
+
+def _validate_1d_numeric(arr: np.ndarray, name: str) -> np.ndarray:
+    """Return ``arr`` as a 1D float ndarray or raise ``ValueError``."""
+    a = np.asarray(arr)
+    if a.ndim != 1:
+        raise ValueError(f"{name} must be 1-dimensional, got shape {a.shape}.")
+    a = a.astype(np.float64, copy=False)
+    if np.isnan(a).any():
+        raise ValueError(f"{name} contains NaN values.")
+    if not np.isfinite(a).all():
+        raise ValueError(f"{name} contains non-finite values (inf).")
+    return a
+
+
+def _fit_ols_intercept_slope(d: np.ndarray, dy: np.ndarray) -> "tuple[float, float, np.ndarray]":
+    """Fit ``dy = a + b*d + eps`` via closed-form OLS.
+
+    Returns ``(a_hat, b_hat, residuals)`` where ``residuals`` has the
+    same length as ``d`` in the ORIGINAL input order (not sorted).
+    """
+    d_mean = d.mean()
+    dy_mean = dy.mean()
+    d_dev = d - d_mean
+    var_d = np.dot(d_dev, d_dev)
+    if var_d <= 0.0:
+        # Degenerate case: all dose values equal. Slope undefined.
+        # Caller is responsible for gating before we reach here; if we
+        # do reach here, return (mean(dy), 0, dy - mean(dy)).
+        return float(dy_mean), 0.0, dy - dy_mean
+    b_hat = float(np.dot(d_dev, dy - dy_mean) / var_d)
+    a_hat = float(dy_mean - b_hat * d_mean)
+    residuals = dy - a_hat - b_hat * d
+    return a_hat, b_hat, residuals
+
+
+def _cvm_statistic(eps_sorted: np.ndarray) -> float:
+    """Compute the sorted-residual Cramer-von Mises statistic.
+
+    Equivalent to paper's ``S = Σ (g/G)^2 · ((1/g) Σ_{h=1}^g eps_(h))^2``:
+
+        (g/G)^2 * (C_g / g)^2 = C_g^2 / G^2
+
+    where ``C_g = Σ_{h=1}^g eps_(h)`` is the cumulative residual sum.
+    Implementation uses the simplified form for numerical stability.
+
+    Parameters
+    ----------
+    eps_sorted : np.ndarray, shape (G,)
+        Residuals sorted by the associated regressor ``d``.
+
+    Returns
+    -------
+    float
+        ``S = (1 / G^2) * sum(cumsum(eps_sorted)^2)``.
+    """
+    G = eps_sorted.shape[0]
+    cumsum = np.cumsum(eps_sorted)
+    return float(np.sum(cumsum * cumsum) / (G * G))
+
+
+def _compose_verdict(
+    qug: QUGTestResults, stute: StuteTestResults, yatchew: YatchewTestResults
+) -> str:
+    """Build the :class:`HADPretestReport` verdict string.
+
+    Priority-ordered first-match:
+
+    1. Any NaN p-value -> ``"inconclusive - {names} NaN"``
+    2. None reject -> ``"TWFE safe under Section 4 assumptions"``
+    3. Otherwise bundle each rejection reason.
+    """
+    nan_tests = [
+        name
+        for name, res in (
+            ("QUG", qug),
+            ("Stute", stute),
+            ("Yatchew", yatchew),
+        )
+        if not np.isfinite(res.p_value)
+    ]
+    if nan_tests:
+        return f"inconclusive - {', '.join(nan_tests)} NaN"
+
+    any_reject = qug.reject or stute.reject or yatchew.reject
+    if not any_reject:
+        return "TWFE safe under Section 4 assumptions"
+
+    reasons = []
+    if qug.reject:
+        reasons.append("support infimum rejected - continuous_at_zero design invalid (QUG)")
+    if stute.reject or yatchew.reject:
+        which = ",".join(name for name, r in (("Stute", stute), ("Yatchew", yatchew)) if r.reject)
+        reasons.append(f"linearity rejected - heterogeneity bias ({which})")
+    return "; ".join(reasons)
+
+
+# =============================================================================
+# Public test functions
+# =============================================================================
+
+
+def qug_test(d: np.ndarray, alpha: float = 0.05) -> QUGTestResults:
+    """Run the QUG null test for the support infimum (paper Theorem 4).
+
+    Tests ``H_0: d_lower = 0`` using the order-statistic ratio
+    ``T = D_{(1)} / (D_{(2)} - D_{(1)})``, rejecting when ``T > 1/alpha - 1``.
+    Under the null, the asymptotic limit law of ``T`` is the ratio of two
+    independent Exp(1) variables with CDF ``F(t) = t / (1 + t)``, so the
+    one-sided p-value is ``1 / (1 + T)``.
+
+    Zero-dose observations are filtered out (the test targets the infimum
+    of the treated support). A ``UserWarning`` is emitted naming the
+    exclusion count. When fewer than two positive doses remain, the test
+    returns all-NaN inference with ``reject=False``.
+
+    Parameters
+    ----------
+    d : np.ndarray, shape (G,)
+        Post-period dose vector. Must be 1D numeric and contain no NaN.
+    alpha : float, default 0.05
+        One-sided significance level. Must satisfy ``0 < alpha < 1``.
+
+    Returns
+    -------
+    QUGTestResults
+        Result dataclass with ``t_stat``, ``p_value``, ``reject``, and
+        sample metadata.
+
+    Raises
+    ------
+    ValueError
+        If ``d`` is not 1D numeric or contains NaN, or if ``alpha`` is
+        not in ``(0, 1)``.
+
+    Notes
+    -----
+    Tie-break: when ``D_{(1)} == D_{(2)}`` the statistic is undefined.
+    The test returns ``t_stat=NaN, p_value=NaN, reject=False`` with a
+    ``UserWarning`` rather than raising.
+
+    References
+    ----------
+    de Chaisemartin, Ciccia, D'Haultfoeuille, Knau (2026, arXiv:2405.04465v6),
+    Theorem 4 and Section 4.2.
+    """
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must satisfy 0 < alpha < 1, got {alpha}.")
+
+    d_arr = _validate_1d_numeric(d, "d")
+    critical_value = 1.0 / alpha - 1.0
+
+    mask = d_arr > 0
+    d_nz = d_arr[mask]
+    n_excluded = int(d_arr.shape[0] - d_nz.shape[0])
+    if n_excluded > 0:
+        warnings.warn(
+            f"qug_test: excluded {n_excluded} observation(s) with d == 0 "
+            f"(the QUG null test targets the infimum of the treated-dose "
+            f"support; zero-dose observations are not in scope).",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    n_obs = int(d_nz.shape[0])
+    if n_obs < _MIN_G_QUG:
+        warnings.warn(
+            f"qug_test: only {n_obs} positive-dose observation(s); need "
+            f"at least {_MIN_G_QUG}. Returning NaN result.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return QUGTestResults(
+            t_stat=float("nan"),
+            p_value=float("nan"),
+            reject=False,
+            alpha=alpha,
+            critical_value=critical_value,
+            n_obs=n_obs,
+            n_excluded_zero=n_excluded,
+            d_order_1=float("nan"),
+            d_order_2=float("nan"),
+        )
+
+    d_sorted = np.sort(d_nz)
+    D1 = float(d_sorted[0])
+    D2 = float(d_sorted[1])
+
+    if D2 == D1:
+        warnings.warn(
+            "qug_test: D_(1) == D_(2); the test statistic is undefined "
+            "(ties at the minimum positive dose). Returning NaN result.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return QUGTestResults(
+            t_stat=float("nan"),
+            p_value=float("nan"),
+            reject=False,
+            alpha=alpha,
+            critical_value=critical_value,
+            n_obs=n_obs,
+            n_excluded_zero=n_excluded,
+            d_order_1=D1,
+            d_order_2=D2,
+        )
+
+    t_stat = D1 / (D2 - D1)
+    p_value = 1.0 / (1.0 + t_stat)
+    reject = t_stat > critical_value
+
+    return QUGTestResults(
+        t_stat=float(t_stat),
+        p_value=float(p_value),
+        reject=bool(reject),
+        alpha=alpha,
+        critical_value=critical_value,
+        n_obs=n_obs,
+        n_excluded_zero=n_excluded,
+        d_order_1=D1,
+        d_order_2=D2,
+    )
+
+
+def stute_test(
+    d: np.ndarray,
+    dy: np.ndarray,
+    alpha: float = 0.05,
+    n_bootstrap: int = 999,
+    seed: Optional[int] = None,
+) -> StuteTestResults:
+    """Run the Stute Cramer-von Mises linearity test (paper Appendix D).
+
+    Tests ``H_0: E[ΔY | D_2]`` is linear in ``D_2`` (paper Assumption 8).
+    The test statistic is the sorted-residual cusum CvM
+
+        S = (1 / G^2) * sum_{g=1}^G (sum_{h=1}^g eps_(h))^2
+
+    where ``eps_(h)`` is the ``h``-th OLS residual after sorting by ``d``.
+    The p-value is the bootstrap tail probability
+    ``(1 + sum(S_b >= S)) / (B + 1)`` under the Mammen (1993) two-point
+    wild bootstrap; each bootstrap iteration refits OLS on
+    ``dy_b = a_hat + b_hat * d + eps * eta`` with multiplier weights ``eta``.
+
+    Parameters
+    ----------
+    d, dy : np.ndarray, shape (G,)
+        Dose and first-difference outcome vectors.
+    alpha : float, default 0.05
+        Significance level. Must satisfy ``0 < alpha < 1``.
+    n_bootstrap : int, default 999
+        Number of Mammen wild bootstrap replications. Must be ``>= 99``
+        (below which the discretised p-value grid is too coarse).
+    seed : int or None, default None
+        Seed for ``np.random.default_rng``. Pass an integer for
+        reproducible results.
+
+    Returns
+    -------
+    StuteTestResults
+
+    Raises
+    ------
+    ValueError
+        If ``d`` / ``dy`` are not 1D numeric, contain NaN, have unequal
+        lengths, or if ``alpha`` is outside ``(0, 1)``, or if
+        ``n_bootstrap < 99``.
+
+    Notes
+    -----
+    Sample-size gate: below ``G = 10`` the CvM statistic is not
+    well-calibrated. In that case the function emits ``UserWarning`` and
+    returns all-NaN inference rather than raising.
+
+    Large-G warning: at ``G > 100_000`` the per-iteration refit dominates
+    runtime; the function emits a ``UserWarning`` pointing users to
+    :func:`yatchew_hr_test`. Memory usage remains ``O(G)`` regardless
+    (no G x G matrix).
+
+    References
+    ----------
+    Stute, W. (1997). Nonparametric model checks for regression. Annals
+    of Statistics 25, 613-641.
+    Mammen, E. (1993). Bootstrap and wild bootstrap for high-dimensional
+    linear models. Annals of Statistics 21, 255-285.
+    de Chaisemartin et al. (2026), Appendix D.
+    """
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must satisfy 0 < alpha < 1, got {alpha}.")
+    if n_bootstrap < _MIN_N_BOOTSTRAP:
+        raise ValueError(
+            f"n_bootstrap must be >= {_MIN_N_BOOTSTRAP} (below this the "
+            f"discretised p-value grid is too coarse to be meaningful). "
+            f"Got n_bootstrap={n_bootstrap}."
+        )
+
+    d_arr = _validate_1d_numeric(d, "d")
+    dy_arr = _validate_1d_numeric(dy, "dy")
+    if d_arr.shape[0] != dy_arr.shape[0]:
+        raise ValueError(
+            f"d and dy must have the same length; got d.shape={d_arr.shape}, "
+            f"dy.shape={dy_arr.shape}."
+        )
+
+    G = int(d_arr.shape[0])
+    if G < _MIN_G_STUTE:
+        warnings.warn(
+            f"stute_test: G = {G} is below the minimum {_MIN_G_STUTE} for "
+            f"the CvM statistic to be well-calibrated. Returning NaN result.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return StuteTestResults(
+            cvm_stat=float("nan"),
+            p_value=float("nan"),
+            reject=False,
+            alpha=alpha,
+            n_bootstrap=int(n_bootstrap),
+            n_obs=G,
+            seed=seed,
+        )
+    if G > _STUTE_LARGE_G_THRESHOLD:
+        warnings.warn(
+            f"stute_test: G = {G} exceeds {_STUTE_LARGE_G_THRESHOLD}; the "
+            f"per-iteration refit is O(G) per iteration so the "
+            f"{n_bootstrap}-replication loop may take tens of seconds or "
+            f"more. Consider yatchew_hr_test() instead (paper Theorem 7 "
+            f"recommends Yatchew-HR at large G).",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    a_hat, b_hat, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
+    # Degenerate case: zero dose variation. Residual variance under the
+    # linear null is just Var(dy), but the CvM under "no signal" regressor
+    # carries no information; emit NaN.
+    if np.var(d_arr) <= 0.0 or np.var(eps) <= 0.0:
+        warnings.warn(
+            "stute_test: degenerate inputs (constant d or zero residual "
+            "variance). Returning NaN result.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return StuteTestResults(
+            cvm_stat=float("nan"),
+            p_value=float("nan"),
+            reject=False,
+            alpha=alpha,
+            n_bootstrap=int(n_bootstrap),
+            n_obs=G,
+            seed=seed,
+        )
+
+    idx = np.argsort(d_arr, kind="stable")
+    S = _cvm_statistic(eps[idx])
+
+    rng = np.random.default_rng(seed)
+    bootstrap_S = np.empty(n_bootstrap, dtype=np.float64)
+    fitted = a_hat + b_hat * d_arr  # baseline fitted values under H_0
+    for b in range(n_bootstrap):
+        eta = _generate_mammen_weights(G, rng)
+        dy_b = fitted + eps * eta
+        _, _, eps_b = _fit_ols_intercept_slope(d_arr, dy_b)
+        bootstrap_S[b] = _cvm_statistic(eps_b[idx])
+
+    p_value = float((1.0 + float(np.sum(bootstrap_S >= S))) / (n_bootstrap + 1.0))
+    reject = p_value <= alpha
+
+    return StuteTestResults(
+        cvm_stat=float(S),
+        p_value=p_value,
+        reject=bool(reject),
+        alpha=alpha,
+        n_bootstrap=int(n_bootstrap),
+        n_obs=G,
+        seed=seed,
+    )
+
+
+def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> YatchewTestResults:
+    """Run the Yatchew heteroskedasticity-robust linearity test.
+
+    Tests ``H_0: E[ΔY | D_2]`` is linear in ``D_2`` (paper Assumption 8,
+    Theorem 7) via the variance-ratio statistic
+
+        T_hr = sqrt(G) * (sigma2_lin - sigma2_diff) / sigma2_W
+
+    where
+
+        sigma2_lin   = (1/G) * sum(eps^2)                        # OLS residuals
+        sigma2_diff  = (1/(2G)) * sum((dy_{(g)} - dy_{(g-1)})^2) # Yatchew differencing
+        sigma2_W     = sqrt((1/(G-1)) * sum(eps_{(g)}^2 * eps_{(g-1)}^2))
+
+    and ``_{(g)}`` denotes sort by ``d``. Rejection uses the one-sided
+    standard-normal critical value ``z_{1-alpha}``.
+
+    Parameters
+    ----------
+    d, dy : np.ndarray, shape (G,)
+        Dose and first-difference outcome vectors.
+    alpha : float, default 0.05
+        One-sided significance level.
+
+    Returns
+    -------
+    YatchewTestResults
+
+    Raises
+    ------
+    ValueError
+        If ``d`` / ``dy`` are not 1D numeric, contain NaN, have unequal
+        lengths, or if ``alpha`` is outside ``(0, 1)``.
+
+    Notes
+    -----
+    Sample-size gate: below ``G = 3`` the difference-variance estimator
+    is undefined; the function emits ``UserWarning`` and returns NaN
+    rather than raising.
+
+    Dose ties: stable sort (``np.argsort(d, kind="stable")``) preserves
+    the input order among tied ``d`` values. The paper does not specify
+    a tie-break policy; stability suffices.
+
+    References
+    ----------
+    Yatchew, A. (1997). An elementary estimator of the partial linear
+    model. Economics Letters 57, 135-143.
+    de Chaisemartin et al. (2026), Theorem 7 / Equation 29.
+    """
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must satisfy 0 < alpha < 1, got {alpha}.")
+
+    d_arr = _validate_1d_numeric(d, "d")
+    dy_arr = _validate_1d_numeric(dy, "dy")
+    if d_arr.shape[0] != dy_arr.shape[0]:
+        raise ValueError(
+            f"d and dy must have the same length; got d.shape={d_arr.shape}, "
+            f"dy.shape={dy_arr.shape}."
+        )
+
+    G = int(d_arr.shape[0])
+    critical_value = float(stats.norm.ppf(1.0 - alpha))
+
+    if G < _MIN_G_YATCHEW:
+        warnings.warn(
+            f"yatchew_hr_test: G = {G} is below the minimum {_MIN_G_YATCHEW} "
+            f"(need at least 2 sorted differences). Returning NaN result.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return YatchewTestResults(
+            t_stat_hr=float("nan"),
+            p_value=float("nan"),
+            reject=False,
+            alpha=alpha,
+            critical_value=critical_value,
+            sigma2_lin=float("nan"),
+            sigma2_diff=float("nan"),
+            sigma2_W=float("nan"),
+            n_obs=G,
+        )
+
+    _, _, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
+    sigma2_lin = float(np.mean(eps * eps))
+
+    idx = np.argsort(d_arr, kind="stable")
+    dy_s = dy_arr[idx]
+    eps_s = eps[idx]
+
+    diff_dy = np.diff(dy_s)  # length G - 1
+    # Paper-literal divisor: 2G (NOT 2(G-1)). This matches paper review
+    # line 168: sigma2_diff := (1/(2G)) * sum((dy_{(g)} - dy_{(g-1)})^2).
+    sigma2_diff = float(np.sum(diff_dy * diff_dy) / (2.0 * G))
+
+    # sigma4_W = (1/(G-1)) * sum(eps_(g)^2 * eps_(g-1)^2) using np.mean
+    # which divides by the length of the input (G-1 here). Matches paper
+    # review line 171.
+    sigma4_W = float(np.mean(eps_s[1:] ** 2 * eps_s[:-1] ** 2))
+    if sigma4_W <= 0.0:
+        warnings.warn(
+            "yatchew_hr_test: sigma4_W <= 0 (zero residual variance). " "Returning NaN result.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return YatchewTestResults(
+            t_stat_hr=float("nan"),
+            p_value=float("nan"),
+            reject=False,
+            alpha=alpha,
+            critical_value=critical_value,
+            sigma2_lin=sigma2_lin,
+            sigma2_diff=sigma2_diff,
+            sigma2_W=0.0,
+            n_obs=G,
+        )
+    sigma2_W = float(np.sqrt(sigma4_W))
+
+    t_stat_hr = float(np.sqrt(G) * (sigma2_lin - sigma2_diff) / sigma2_W)
+    p_value = float(1.0 - stats.norm.cdf(t_stat_hr))
+    reject = t_stat_hr >= critical_value
+
+    return YatchewTestResults(
+        t_stat_hr=t_stat_hr,
+        p_value=p_value,
+        reject=bool(reject),
+        alpha=alpha,
+        critical_value=critical_value,
+        sigma2_lin=sigma2_lin,
+        sigma2_diff=sigma2_diff,
+        sigma2_W=sigma2_W,
+        n_obs=G,
+    )
+
+
+def did_had_pretest_workflow(
+    data: pd.DataFrame,
+    outcome_col: str,
+    dose_col: str,
+    time_col: str,
+    unit_col: str,
+    first_treat_col: Optional[str] = None,
+    alpha: float = 0.05,
+    n_bootstrap: int = 999,
+    seed: Optional[int] = None,
+) -> HADPretestReport:
+    """Run all three HAD pre-tests on a two-period panel and return a
+    composite report (paper Section 4.2-4.3).
+
+    The workflow reduces the panel to unit-level first differences using
+    the Phase 2a validator + aggregator, then calls :func:`qug_test`,
+    :func:`stute_test`, and :func:`yatchew_hr_test` with shared ``alpha``
+    and a single-source seed passthrough (``seed`` is forwarded to
+    :func:`stute_test` only; the other two are deterministic).
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Balanced two-period HAD panel. The dose column must be 0 for all
+        units at the pre-period (HAD no-unit-untreated pre-period
+        contract).
+    outcome_col, dose_col, time_col, unit_col : str
+        Column names.
+    first_treat_col : str or None, default None
+        Optional first-treatment-period column for cross-validation
+        (see :func:`HeterogeneousAdoptionDiD.fit`).
+    alpha : float, default 0.05
+    n_bootstrap : int, default 999
+        Replication count for :func:`stute_test`.
+    seed : int or None, default None
+        Seed forwarded to :func:`stute_test` only.
+
+    Returns
+    -------
+    HADPretestReport
+
+    Notes
+    -----
+    Phase 3 scope is two-period overall-path only. For multi-period
+    panels, slice to ``(F - 1, F)`` before calling. A future patch will
+    add a multi-period dispatch and the joint Equation 18 pre-trend
+    Stute test.
+
+    References
+    ----------
+    de Chaisemartin et al. (2026), Section 4.2-4.3, Theorem 4, Appendix D,
+    Theorem 7.
+    """
+    t_pre, t_post = _validate_had_panel(
+        data, outcome_col, dose_col, time_col, unit_col, first_treat_col
+    )
+    d_arr, dy_arr, _, _ = _aggregate_first_difference(
+        data, outcome_col, dose_col, time_col, unit_col, t_pre, t_post, None
+    )
+
+    qug_res = qug_test(d_arr, alpha=alpha)
+    stute_res = stute_test(d_arr, dy_arr, alpha=alpha, n_bootstrap=n_bootstrap, seed=seed)
+    yatchew_res = yatchew_hr_test(d_arr, dy_arr, alpha=alpha)
+
+    all_pass = not (qug_res.reject or stute_res.reject or yatchew_res.reject)
+    verdict = _compose_verdict(qug_res, stute_res, yatchew_res)
+
+    return HADPretestReport(
+        qug=qug_res,
+        stute=stute_res,
+        yatchew=yatchew_res,
+        all_pass=all_pass,
+        verdict=verdict,
+        alpha=alpha,
+        n_obs=int(d_arr.shape[0]),
+    )
