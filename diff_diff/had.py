@@ -38,8 +38,13 @@ family) or the Wald-IV ratio (mass-point), then route inference through
    error via the structural-residual 2SLS sandwich
    (see ``_fit_mass_point_2sls``).
 
-Phase 2a ships the single-period path only; the multi-period event-study
-extension (paper Appendix B.2) is queued for Phase 2b.
+Phase 2a ships the single-period WAS estimator (``aggregate="overall"``).
+Phase 2b adds the multi-period event-study extension (paper Appendix B.2)
+via ``aggregate="event_study"``: per-horizon WAS estimates with pointwise
+CIs, including pre-period placebos, reusing the three Phase 2a design
+paths on per-horizon first differences anchored at ``Y_{g, F-1}``.
+Staggered-timing panels are auto-filtered to the last-treatment cohort
+per paper Appendix B.2 prescription.
 
 Infrastructure reused from Phase 1:
 - ``diff_diff.local_linear.bias_corrected_local_linear`` (Phase 1c)
@@ -61,7 +66,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -76,6 +81,7 @@ from diff_diff.utils import safe_inference
 __all__ = [
     "HeterogeneousAdoptionDiD",
     "HeterogeneousAdoptionDiDResults",
+    "HeterogeneousAdoptionDiDEventStudyResults",
 ]
 
 
@@ -370,6 +376,263 @@ class HeterogeneousAdoptionDiDResults:
         return pd.DataFrame([self.to_dict()])
 
 
+@dataclass
+class HeterogeneousAdoptionDiDEventStudyResults:
+    """Event-study results for :class:`HeterogeneousAdoptionDiD` (Phase 2b).
+
+    Per-horizon arrays align with ``event_times`` by index; all per-horizon
+    arrays have shape ``(n_horizons,)``. The anchor horizon ``e = -1``
+    (i.e., ``t = F - 1``) is NOT included because
+    ``Y_{g, F-1} - Y_{g, F-1} = 0`` trivially and the WAS is not identified
+    there.
+
+    Per-horizon inference fields (``t_stat``, ``p_value``, ``conf_int_low``,
+    ``conf_int_high``) are NaN-coupled to the per-horizon ``se`` via
+    :func:`diff_diff.utils.safe_inference`; ``att`` and ``se`` themselves
+    are raw estimator outputs from the chosen design path on each
+    horizon's first differences.
+
+    Design resolution is SHARED across horizons: the design, ``d_lower``,
+    ``target_parameter``, and ``inference_method`` are single scalars
+    determined once from the post-period dose distribution ``D_{g, F}``
+    (paper Appendix B.2 convention — the dose regressor is invariant
+    across event-time horizons).
+
+    Attributes
+    ----------
+    event_times : np.ndarray, shape (n_horizons,)
+        Integer event-time labels ``e = t - F``, sorted ascending.
+        Excludes ``e = -1`` (the anchor). Post-period horizons have
+        ``e >= 0``; pre-period placebos have ``e <= -2``.
+    att : np.ndarray, shape (n_horizons,)
+        Per-horizon WAS point estimate on the beta-scale (see
+        :class:`HeterogeneousAdoptionDiDResults.att` for the per-design
+        formula, applied to ``ΔY_t = Y_{g,t} - Y_{g,F-1}``).
+    se : np.ndarray, shape (n_horizons,)
+        Per-horizon standard error on the beta-scale. Each horizon uses
+        the INDEPENDENT per-period sandwich from the chosen design path
+        (continuous: CCT-2014 robust divided by ``|den|``; mass-point:
+        structural-residual 2SLS sandwich). Pointwise CIs only — joint
+        cross-horizon covariance is not computed in Phase 2b (paper
+        reports pointwise CIs per Pierce-Schott).
+    t_stat, p_value : np.ndarray, shape (n_horizons,)
+        Per-horizon inference triple element.
+    conf_int_low, conf_int_high : np.ndarray, shape (n_horizons,)
+        Per-horizon CI endpoints at level ``alpha``.
+    n_obs_per_horizon : np.ndarray, shape (n_horizons,)
+        Per-horizon sample size (units contributing at that event time).
+        In Phase 2b this equals ``n_units`` for every horizon because the
+        validator rejects NaN in outcome / dose / unit columns upstream;
+        tracked as a field for future flexibility (e.g., per-period
+        missingness).
+    alpha : float
+        CI level used at fit time (0.05 for a 95% CI).
+    design : str
+        Resolved design mode, shared across horizons:
+        ``"continuous_at_zero"``, ``"continuous_near_d_lower"``, or
+        ``"mass_point"``.
+    target_parameter : str
+        Estimand label: ``"WAS"`` for Design 1' (continuous_at_zero),
+        ``"WAS_d_lower"`` for the other two.
+    d_lower : float
+        Support infimum used for all horizons. ``0.0`` for Design 1';
+        ``float(d.min())`` otherwise.
+    dose_mean : float
+        ``D_bar = (1/G) * sum(D_{g,F})`` computed on the fit sample (after
+        the staggered last-cohort filter, if applied).
+    F : object
+        First-treatment period label (arbitrary dtype — int, str,
+        datetime). Identified by the multi-period dose invariant from the
+        fitted data.
+    n_units : int
+        Number of unique units contributing to the fit. After staggered
+        auto-filter: only last-cohort units.
+    inference_method : str
+        ``"analytical_nonparametric"`` (continuous designs) or
+        ``"analytical_2sls"`` (mass-point). Shared across horizons.
+    vcov_type : str or None
+        Effective variance-covariance family used on the mass-point path
+        (``"classical"``, ``"hc1"``, or ``"cr1"`` when cluster supplied).
+        ``None`` on the continuous paths (they use CCT-2014 robust SE).
+    cluster_name : str or None
+        Column name of the cluster variable when cluster-robust SE is
+        requested. ``None`` otherwise.
+    survey_metadata : object or None
+        Always ``None`` in Phase 2b. Field shape kept for future-compat.
+    bandwidth_diagnostics : list[BandwidthResult] or None
+        Per-horizon bandwidth diagnostics on the continuous paths;
+        ``None`` on the mass-point path. When non-None, aligned with
+        ``event_times`` by index.
+    bias_corrected_fit : list[BiasCorrectedFit] or None
+        Per-horizon bias-corrected fit on the continuous paths; ``None``
+        on the mass-point path. When non-None, aligned with
+        ``event_times`` by index.
+    filter_info : dict or None
+        Populated when the staggered-timing last-cohort auto-filter fires.
+        Keys: ``"F_last"`` (kept cohort label), ``"n_kept"`` (units
+        retained), ``"n_dropped"`` (units dropped), ``"dropped_cohorts"``
+        (list of dropped cohort labels). ``None`` when no filter was
+        applied.
+    """
+
+    # Per-horizon arrays
+    event_times: np.ndarray
+    att: np.ndarray
+    se: np.ndarray
+    t_stat: np.ndarray
+    p_value: np.ndarray
+    conf_int_low: np.ndarray
+    conf_int_high: np.ndarray
+    n_obs_per_horizon: np.ndarray
+
+    # Shared metadata
+    alpha: float
+    design: str
+    target_parameter: str
+    d_lower: float
+    dose_mean: float
+    F: Any
+    n_units: int
+    inference_method: str
+    vcov_type: Optional[str]
+    cluster_name: Optional[str]
+    survey_metadata: Optional[Any]
+
+    # Per-horizon diagnostics (lists, None on mass-point).
+    # List entries may be None for horizons where the continuous-path fit
+    # caught a degenerate bandwidth-selector failure (constant / perfectly-
+    # linear outcome); att / se for those horizons are NaN as well.
+    bandwidth_diagnostics: Optional[List[Optional[BandwidthResult]]]
+    bias_corrected_fit: Optional[List[Optional[BiasCorrectedFit]]]
+
+    # Staggered auto-filter metadata
+    filter_info: Optional[Dict[str, Any]]
+
+    def __repr__(self) -> str:
+        return (
+            f"HeterogeneousAdoptionDiDEventStudyResults("
+            f"n_horizons={len(self.event_times)}, "
+            f"design={self.design!r}, n_units={self.n_units})"
+        )
+
+    def summary(self) -> str:
+        """Formatted per-horizon summary table."""
+        width = 80
+        conf_level = int((1 - self.alpha) * 100)
+        lines = [
+            "=" * width,
+            "HeterogeneousAdoptionDiD Event-Study Results".center(width),
+            "=" * width,
+            "",
+            f"{'Design:':<30} {self.design:>20}",
+            f"{'Target parameter:':<30} {self.target_parameter:>20}",
+            f"{'d_lower:':<30} {self.d_lower:>20.6g}",
+            f"{'D_bar (dose mean):':<30} {self.dose_mean:>20.6g}",
+            f"{'First-treatment period (F):':<30} {str(self.F):>20}",
+            f"{'Observations (units):':<30} {self.n_units:>20}",
+            f"{'Horizons:':<30} {len(self.event_times):>20}",
+            f"{'Inference method:':<30} {self.inference_method:>20}",
+        ]
+        if self.vcov_type is not None:
+            if self.cluster_name is not None:
+                label = f"CR1 at {self.cluster_name}"
+            else:
+                label = self.vcov_type
+            lines.append(f"{'Variance:':<30} {label:>20}")
+        if self.filter_info is not None:
+            lines.append(
+                f"{'Last-cohort filter (F_last):':<30} "
+                f"{str(self.filter_info.get('F_last')):>20}"
+            )
+            lines.append(
+                f"{'  Units kept / dropped:':<30} "
+                f"{self.filter_info.get('n_kept', 0)} / "
+                f"{self.filter_info.get('n_dropped', 0):<8}".rjust(51)
+            )
+        lines.extend(
+            [
+                "",
+                "-" * width,
+                (
+                    f"{'Event-time':>10} {'Estimate':>12} {'Std. Err.':>12} "
+                    f"{'t-stat':>10} {'P>|t|':>10} "
+                    f"{str(conf_level) + '% CI':>22}"
+                ),
+                "-" * width,
+            ]
+        )
+        for i, e in enumerate(self.event_times):
+            ci_str = f"[{self.conf_int_low[i]:.4f}, {self.conf_int_high[i]:.4f}]"
+            # Render NaN inference values as "NaN" rather than "nan" for
+            # readability.
+            se_i = self.se[i]
+            t_i = self.t_stat[i]
+            p_i = self.p_value[i]
+            lines.append(
+                f"{int(e):>10} {self.att[i]:>12.4f} "
+                f"{se_i:>12.4f} {t_i:>10.3f} {p_i:>10.4f} {ci_str:>22}"
+            )
+        lines.extend(
+            [
+                "-" * width,
+                "",
+                "=" * width,
+            ]
+        )
+        return "\n".join(lines)
+
+    def print_summary(self) -> None:
+        """Print the summary to stdout."""
+        print(self.summary())
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return results as a dict with per-horizon arrays and scalars.
+
+        Per-horizon arrays are returned as Python lists for JSON-
+        serialization friendliness.
+        """
+        return {
+            "event_times": list(self.event_times),
+            "att": list(self.att),
+            "se": list(self.se),
+            "t_stat": list(self.t_stat),
+            "p_value": list(self.p_value),
+            "conf_int_low": list(self.conf_int_low),
+            "conf_int_high": list(self.conf_int_high),
+            "n_obs_per_horizon": list(self.n_obs_per_horizon),
+            "alpha": self.alpha,
+            "design": self.design,
+            "target_parameter": self.target_parameter,
+            "d_lower": self.d_lower,
+            "dose_mean": self.dose_mean,
+            "F": self.F,
+            "n_units": self.n_units,
+            "inference_method": self.inference_method,
+            "vcov_type": self.vcov_type,
+            "cluster_name": self.cluster_name,
+            "filter_info": self.filter_info,
+        }
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Return a tidy per-horizon DataFrame.
+
+        Columns: ``event_time, att, se, t_stat, p_value, conf_int_low,
+        conf_int_high, n_obs``. One row per event-time horizon.
+        """
+        return pd.DataFrame(
+            {
+                "event_time": self.event_times,
+                "att": self.att,
+                "se": self.se,
+                "t_stat": self.t_stat,
+                "p_value": self.p_value,
+                "conf_int_low": self.conf_int_low,
+                "conf_int_high": self.conf_int_high,
+                "n_obs": self.n_obs_per_horizon,
+            }
+        )
+
+
 # =============================================================================
 # Panel validation and aggregation
 # =============================================================================
@@ -430,18 +693,12 @@ def _validate_had_panel(
             f"period(s) in column {time_col!r}."
         )
     if len(periods_list) > 2:
-        if first_treat_col is None:
-            raise ValueError(
-                f"HAD Phase 2a requires exactly two time periods "
-                f"(got {len(periods_list)} in {time_col!r}) when "
-                f"first_treat_col=None. Multi-period / staggered adoption "
-                f"support is queued for Phase 2b (Appendix B.2 event-study)."
-            )
         raise ValueError(
-            f"HAD Phase 2a requires exactly two time periods "
-            f"(got {len(periods_list)} in {time_col!r}). Staggered adoption "
-            f"reduction (first_treat_col supplied with >2 periods) is "
-            f"queued for Phase 2b (Appendix B.2 event-study)."
+            f"HAD with aggregate='overall' requires exactly two time "
+            f"periods (got {len(periods_list)} in {time_col!r}). For "
+            f"multi-period panels, pass aggregate='event_study' (paper "
+            f"Appendix B.2 multi-period event-study extension) which "
+            f"produces per-event-time WAS estimates."
         )
 
     # Balanced-panel check: every unit appears exactly once per period.
@@ -574,6 +831,271 @@ def _validate_had_panel(
     return t_pre, t_post
 
 
+def _validate_had_panel_event_study(
+    data: pd.DataFrame,
+    outcome_col: str,
+    dose_col: str,
+    time_col: str,
+    unit_col: str,
+    first_treat_col: Optional[str],
+) -> Tuple[Any, List[Any], List[Any], pd.DataFrame, Optional[Dict[str, Any]]]:
+    """Validate a HAD panel for multi-period event-study mode (Phase 2b).
+
+    Implements paper Appendix B.2 contract: a common treatment date ``F``
+    where ``D_{g,t} = 0`` for all units at ``t < F`` and some units have
+    ``D_{g,t} > 0`` for ``t >= F``. Requires ``len(periods) > 2`` with at
+    least one pre-period (``t < F``, all D=0) and at least one post-period
+    (``t >= F``, some D > 0).
+
+    Staggered-timing handling: when ``first_treat_col`` is supplied and
+    indicates more than one nonzero cohort, the panel is auto-filtered to
+    the LAST cohort (``F_last = max(cohorts)``) per paper Appendix B.2
+    prescription "did_had may be used only for the last treatment cohort
+    in a staggered design". A ``UserWarning`` is emitted with drop-counts.
+
+    Parameters
+    ----------
+    data, outcome_col, dose_col, time_col, unit_col, first_treat_col
+        As in :func:`_validate_had_panel`.
+
+    Returns
+    -------
+    F : period label
+        First-treatment period (the earliest period where any unit has
+        ``D > 0`` in the filtered data).
+    t_pre_list : list
+        Pre-period labels (``t < F``, all D=0), sorted by natural ordering
+        on the column dtype.
+    t_post_list : list
+        Post-period labels (``t >= F``, some D > 0), sorted.
+    data_filtered : pd.DataFrame
+        Input with earlier cohorts dropped (if staggered), otherwise the
+        input unchanged.
+    filter_info : dict or None
+        Populated on staggered filter with keys ``F_last``, ``n_kept``,
+        ``n_dropped``, ``dropped_cohorts``. ``None`` otherwise.
+
+    Raises
+    ------
+    ValueError
+        On missing columns, NaN in key columns, malformed panel, dose-
+        invariant violations, or no-treatment detected.
+    """
+    required = [outcome_col, dose_col, time_col, unit_col]
+    if first_treat_col is not None:
+        required.append(first_treat_col)
+    missing = [c for c in required if c not in data.columns]
+    if missing:
+        raise ValueError(f"Missing column(s) in data: {missing}. Required: {required}.")
+
+    periods_list = list(data[time_col].unique())
+    if len(periods_list) < 3:
+        raise ValueError(
+            f"HAD with aggregate='event_study' requires more than two "
+            f"time periods (got {len(periods_list)} in {time_col!r}). "
+            f"For two-period panels, pass aggregate='overall' (Phase 2a "
+            f"single-period WAS)."
+        )
+
+    # NaN checks on key columns (before any filter).
+    for col in [outcome_col, dose_col, unit_col]:
+        if bool(data[col].isna().any()):
+            n_nan = int(data[col].isna().sum())
+            raise ValueError(
+                f"{n_nan} NaN value(s) found in column {col!r}. HAD "
+                f"does not silently drop NaN rows; drop or impute before "
+                f"calling fit()."
+            )
+
+    # Cohort detection and staggered-timing auto-filter.
+    filter_info: Optional[Dict[str, Any]] = None
+    data_filtered = data
+    if first_treat_col is not None:
+        ft_raw = data[first_treat_col]
+        if bool(ft_raw.isna().any()):
+            n_nan = int(ft_raw.isna().sum())
+            raise ValueError(
+                f"first_treat_col={first_treat_col!r} contains "
+                f"{n_nan} NaN value(s) at the row level. Use 0 for "
+                f"never-treated units and the treatment-start period "
+                f"for treated units. Drop or impute any NaN rows "
+                f"before calling fit()."
+            )
+        # Within-unit constancy check.
+        ft_per_unit_nunique = data.groupby(unit_col)[first_treat_col].nunique(dropna=False)
+        if (ft_per_unit_nunique > 1).any():
+            n_bad = int((ft_per_unit_nunique > 1).sum())
+            raise ValueError(
+                f"first_treat_col={first_treat_col!r} is not constant "
+                f"within unit for {n_bad} unit(s). Each unit must have "
+                f"a single first_treat value across all observed periods."
+            )
+        # Identify cohorts (nonzero first_treat values).
+        # Use pd.unique to preserve dtype; sort with a stable key.
+        ft_unique = list(pd.unique(ft_raw))
+        cohorts = sorted(
+            [v for v in ft_unique if v != 0 and not (isinstance(v, float) and np.isnan(v))],
+            key=lambda x: (x is None, x),
+        )
+        if len(cohorts) == 0:
+            raise ValueError(
+                f"first_treat_col={first_treat_col!r} has no nonzero "
+                f"cohort values (all units appear never-treated). HAD "
+                f"requires at least one treated cohort with "
+                f"first_treat > 0 to identify a WAS effect."
+            )
+        if len(cohorts) > 1:
+            F_last = cohorts[-1]
+            dropped_cohorts = cohorts[:-1]
+            # Filter: keep only units whose first_treat == F_last.
+            keep_mask = data[first_treat_col] == F_last
+            dropped_unit_ids = set(data.loc[~keep_mask, unit_col].unique())
+            kept_unit_ids = set(data.loc[keep_mask, unit_col].unique())
+            data_filtered = data.loc[keep_mask].copy()
+            n_dropped = len(dropped_unit_ids - kept_unit_ids)
+            n_kept = len(kept_unit_ids)
+            if n_kept == 0:
+                raise ValueError(
+                    f"Staggered auto-filter to last cohort "
+                    f"(F_last={F_last!r}) left 0 units. Verify "
+                    f"first_treat_col={first_treat_col!r} contains the "
+                    f"expected cohort labels."
+                )
+            filter_info = {
+                "F_last": F_last,
+                "n_kept": n_kept,
+                "n_dropped": n_dropped,
+                "dropped_cohorts": dropped_cohorts,
+            }
+            warnings.warn(
+                f"Staggered-timing panel detected: {len(cohorts)} distinct "
+                f"nonzero cohorts in first_treat_col={first_treat_col!r} "
+                f"({cohorts!r}). Auto-filtering to the last cohort "
+                f"(F_last={F_last!r}): {n_kept} units kept, {n_dropped} "
+                f"units dropped (from cohorts {dropped_cohorts!r} and/or "
+                f"first_treat=0). HAD applies only to the last treatment "
+                f"cohort in staggered designs (paper Appendix B.2). For "
+                f"earlier-cohort effects, use "
+                f"ChaisemartinDHaultfoeuille (did_multiplegt_dyn).",
+                UserWarning,
+                stacklevel=3,
+            )
+            # After filter, re-read periods_list (cohort filter may have
+            # dropped some periods if earlier cohorts contributed uniquely).
+            periods_list = list(data_filtered[time_col].unique())
+            if len(periods_list) < 3:
+                raise ValueError(
+                    f"After staggered auto-filter to last cohort "
+                    f"(F_last={F_last!r}), only {len(periods_list)} "
+                    f"distinct time periods remain in {time_col!r}. "
+                    f"Event-study requires >2 periods; the filtered "
+                    f"panel is too small. Pass aggregate='overall' on "
+                    f"a two-period subset, or supply data with more "
+                    f"pre- or post-periods for the last cohort."
+                )
+
+    # Balanced panel on the (possibly-filtered) data: every unit appears
+    # exactly once per period.
+    counts = data_filtered.groupby([unit_col, time_col]).size()
+    if (counts != 1).any():
+        n_bad = int((counts != 1).sum())
+        raise ValueError(
+            f"Unbalanced panel: {n_bad} unit-period cells have != 1 "
+            f"observation. HAD requires a balanced panel (each unit "
+            f"observed exactly once at each period)."
+        )
+    unit_counts = data_filtered.groupby(unit_col)[time_col].nunique()
+    incomplete = unit_counts[unit_counts != len(periods_list)]
+    if len(incomplete) > 0:
+        raise ValueError(
+            f"Unbalanced panel: {len(incomplete)} unit(s) do not appear "
+            f"in all {len(periods_list)} periods. HAD requires a balanced "
+            f"panel (each unit observed at every period)."
+        )
+
+    # Dose-invariant period classification on filtered data.
+    per_period_nonzero: Dict[Any, int] = {}
+    for p in periods_list:
+        p_doses = np.asarray(
+            data_filtered.loc[data_filtered[time_col] == p, dose_col], dtype=np.float64
+        )
+        per_period_nonzero[p] = int((p_doses != 0).sum())
+    t_pre_list_unsorted = [p for p, nz in per_period_nonzero.items() if nz == 0]
+    t_post_list_unsorted = [p for p, nz in per_period_nonzero.items() if nz > 0]
+
+    if len(t_pre_list_unsorted) == 0:
+        stats_str = ", ".join(f"{p!r}: {nz} nonzero" for p, nz in per_period_nonzero.items())
+        raise ValueError(
+            f"HAD requires D_{{g,t}} = 0 for all units in at least one "
+            f"pre-period. No period in column {time_col!r} has all-zero "
+            f"dose ({stats_str}). The panel has no identifiable baseline."
+        )
+    if len(t_post_list_unsorted) == 0:
+        raise ValueError(
+            f"HAD requires at least one period with nonzero dose for "
+            f"some unit. All periods in column {time_col!r} have all-"
+            f"zero dose; there is no treatment to estimate."
+        )
+
+    # Sort by natural ordering on the time column dtype. Tuple key with
+    # str fallback handles mixed-dtype panels (e.g., None + int).
+    t_pre_list = sorted(t_pre_list_unsorted, key=lambda x: (x is None, x))
+    t_post_list = sorted(t_post_list_unsorted, key=lambda x: (x is None, x))
+
+    # Contiguity check: all pre < all post in the natural ordering.
+    # The HAD dose invariant requires a single transition from all-zero
+    # to any-nonzero; interleaved pre/post periods indicate a malformed
+    # panel (e.g., dose going back to zero after treatment, or mixing
+    # never-treated units with out-of-order labels).
+    if t_pre_list and t_post_list:
+        max_pre = t_pre_list[-1]
+        min_post = t_post_list[0]
+        # Check all pre-periods are less than all post-periods via the
+        # natural order. If types are comparable, direct comparison works;
+        # otherwise fall back to the sorted-key view.
+        try:
+            contiguous = max_pre < min_post
+        except TypeError:
+            # Mixed incomparable dtypes (e.g., None vs int after removing
+            # None above). Fall back to sorted-position check.
+            contiguous = True
+            for pre_p in t_pre_list:
+                for post_p in t_post_list:
+                    if not (pre_p < post_p):
+                        contiguous = False
+                        break
+        if not contiguous:
+            raise ValueError(
+                f"HAD dose invariant violated: pre-periods (all D=0) "
+                f"and post-periods (some D>0) are not contiguous. "
+                f"Pre-periods: {t_pre_list!r}; post-periods: "
+                f"{t_post_list!r}. The dose sequence must transition "
+                f"from all-zero to nonzero exactly once. For panels "
+                f"where dose varies non-monotonically (e.g., reversed "
+                f"treatment, switching), use "
+                f"ChaisemartinDHaultfoeuille (did_multiplegt_dyn)."
+            )
+
+    F = t_post_list[0]  # earliest post-period
+
+    # Post-period nonnegative-dose check on the filtered data.
+    post_mask = data_filtered[time_col].isin(t_post_list)
+    post_doses = np.asarray(data_filtered.loc[post_mask, dose_col], dtype=np.float64)
+    neg_post = post_doses < 0
+    if neg_post.any():
+        n_neg = int(neg_post.sum())
+        min_neg = float(post_doses[neg_post].min())
+        raise ValueError(
+            f"HAD requires D_{{g,t}} >= 0 for all units in post-periods "
+            f"(paper Section 2 dose definition). {n_neg} unit-period "
+            f"cell(s) have negative dose at t >= F={F!r} "
+            f"(min={min_neg!r}). Drop these units or verify the dose "
+            f"column."
+        )
+
+    return F, t_pre_list, t_post_list, data_filtered, filter_info
+
+
 def _aggregate_first_difference(
     data: pd.DataFrame,
     outcome_col: str,
@@ -647,6 +1169,124 @@ def _aggregate_first_difference(
         cluster_arr = df.groupby(unit_col)[cluster_col].first().sort_index().to_numpy()
 
     return d_arr, dy_arr, cluster_arr, unit_ids
+
+
+def _aggregate_multi_period_first_differences(
+    data: pd.DataFrame,
+    outcome_col: str,
+    dose_col: str,
+    time_col: str,
+    unit_col: str,
+    F: Any,
+    t_pre_list: List[Any],
+    t_post_list: List[Any],
+    cluster_col: Optional[str],
+) -> Tuple[np.ndarray, Dict[int, np.ndarray], Optional[np.ndarray], np.ndarray, Any]:
+    """Reduce a multi-period HAD panel to per-horizon first differences.
+
+    For each period ``t`` other than the anchor ``t_anchor = F - 1`` (the
+    last pre-period), computes the unit-level first difference
+    ``ΔY_{g,t} = Y_{g,t} - Y_{g, t_anchor}`` and stores it under the event
+    time ``e = rank(t) - rank(F)`` where ``rank`` is the natural ordering
+    on the period column (so ``e = 0`` at ``t = F``, ``e = 1`` at the next
+    post-period, etc., and ``e <= -2`` for pre-period placebos).
+
+    The single dose regressor is ``D_{g, F}`` (the dose at the first
+    treatment period), reused for every horizon. Paper Appendix B.2
+    convention assumes "once treated, stay treated with same dose"; this
+    helper uses the period-F dose for every horizon, so time-varying
+    post-period dose is treated as the realized F-period dose.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Validated multi-period panel (already passed
+        ``_validate_had_panel_event_study`` and any staggered filter).
+    outcome_col, dose_col, time_col, unit_col, cluster_col : str
+        Column names.
+    F : period label
+        First-treatment period (from the validator).
+    t_pre_list, t_post_list : list
+        Period labels partitioned by the dose invariant, sorted
+        ascending.
+
+    Returns
+    -------
+    d_arr : np.ndarray, shape (G,)
+        Post-period dose ``D_{g, F}`` per unit.
+    dy_dict : dict[int, np.ndarray]
+        Maps event time ``e`` to first-difference outcome
+        ``Y_{g, t} - Y_{g, F-1}`` per unit, for every ``t`` except the
+        anchor. Keys cover all horizons EXCEPT ``e = -1`` (the anchor
+        gives ``ΔY = 0`` trivially).
+    cluster_arr : np.ndarray or None, shape (G,)
+        Cluster IDs per unit when ``cluster_col`` is supplied.
+    unit_ids : np.ndarray, shape (G,)
+        Sorted unit identifiers.
+    t_anchor : period label
+        The anchor period used (``F - 1`` in the natural period ordering;
+        equal to the LAST pre-period).
+    """
+    df = data.sort_values([unit_col, time_col]).reset_index(drop=True)
+    all_periods = sorted(t_pre_list + t_post_list, key=lambda x: (x is None, x))
+    # Event-time mapping: natural rank of each period relative to F.
+    F_idx = all_periods.index(F)
+    period_to_event_time: Dict[Any, int] = {p: (i - F_idx) for i, p in enumerate(all_periods)}
+    # Anchor = F-1 in natural rank (i.e., the last pre-period). By the
+    # validator's contiguity guarantee, this IS t_pre_list[-1].
+    if not t_pre_list:
+        raise ValueError(
+            "Internal error: event-study aggregation called with no "
+            "pre-periods. _validate_had_panel_event_study should have "
+            "rejected this upstream."
+        )
+    t_anchor = t_pre_list[-1]
+
+    # Pivot to wide: units x periods.
+    wide_y = df.pivot(index=unit_col, columns=time_col, values=outcome_col)
+    wide_y = wide_y.sort_index()
+    unit_ids = np.asarray(wide_y.index)
+
+    # Dose at F (the single regressor for ALL horizons).
+    d_at_F = (
+        df[df[time_col] == F].set_index(unit_col).sort_index()[dose_col].to_numpy(dtype=np.float64)
+    )
+
+    dy_dict: Dict[int, np.ndarray] = {}
+    anchor_y = wide_y[t_anchor].to_numpy(dtype=np.float64)
+    for p in all_periods:
+        if p == t_anchor:
+            continue  # anchor gives ΔY = 0 trivially; skipped by contract
+        e = period_to_event_time[p]
+        # e = -1 corresponds to t_anchor, which we've already skipped.
+        # All other periods get a horizon. The F-1 anchor / e=-1 coincidence
+        # is preserved: event time -1 means "one period before F", which is
+        # by definition the anchor.
+        y_t = wide_y[p].to_numpy(dtype=np.float64)
+        dy_dict[int(e)] = y_t - anchor_y
+
+    cluster_arr: Optional[np.ndarray] = None
+    if cluster_col is not None:
+        if cluster_col not in data.columns:
+            raise ValueError(f"cluster column {cluster_col!r} not found in data.")
+        cluster_raw = data[cluster_col]
+        if bool(cluster_raw.isna().any()):
+            n_nan = int(cluster_raw.isna().sum())
+            raise ValueError(
+                f"cluster column {cluster_col!r} contains {n_nan} NaN "
+                f"value(s) at the row level. Silent row dropping is "
+                f"disabled; drop or impute cluster ids before calling fit()."
+            )
+        cluster_per_unit = df.groupby(unit_col)[cluster_col].nunique(dropna=False)
+        if (cluster_per_unit > 1).any():
+            n_bad = int((cluster_per_unit > 1).sum())
+            raise ValueError(
+                f"cluster column {cluster_col!r} is not constant within "
+                f"unit for {n_bad} unit(s). Cluster must be unit-level."
+            )
+        cluster_arr = df.groupby(unit_col)[cluster_col].first().sort_index().to_numpy()
+
+    return d_at_F, dy_dict, cluster_arr, unit_ids, t_anchor
 
 
 # =============================================================================
@@ -1120,12 +1760,13 @@ class HeterogeneousAdoptionDiD:
     ) -> HeterogeneousAdoptionDiDResults:
         """Fit the HAD estimator on a two-period panel.
 
-        Phase 2a is **panel-only**: the paper (Section 2) defines HAD on
-        panel or repeated-cross-section data, but this implementation
-        requires a balanced two-period panel with a unit identifier so
-        that unit-level first differences ``ΔY_g = Y_{g,2} - Y_{g,1}``
-        can be formed. Repeated-cross-section inputs (disjoint unit IDs
-        between periods) are rejected by the balanced-panel validator.
+        Both the overall and event-study paths are **panel-only**: the paper
+        (Section 2) defines HAD on panel or repeated-cross-section data,
+        but this implementation requires a balanced panel with a unit
+        identifier so that unit-level first differences
+        ``ΔY_{g,t} = Y_{g,t} - Y_{g,t_anchor}`` can be formed.
+        Repeated-cross-section inputs (disjoint unit IDs between
+        periods) are rejected by the balanced-panel validator.
         Repeated-cross-section support is queued for a follow-up PR
         (tracked in ``TODO.md``); it requires a separate identification
         path based on pre/post cell means rather than unit-level
@@ -1137,11 +1778,26 @@ class HeterogeneousAdoptionDiD:
         outcome_col, dose_col, time_col, unit_col : str
             Column names.
         first_treat_col : str or None
-            Optional first-treatment column for cross-validation.
-            Required when the panel has more than two periods (raises
-            for >2 periods in Phase 2a; Phase 2b handles staggered).
-        aggregate : {"overall"}
-            ``"event_study"`` raises ``NotImplementedError`` (Phase 2b).
+            Optional first-treatment column (the period at which each
+            unit first receives treatment; ``0`` for never-treated).
+            Required on the event-study path when the panel has more
+            than two distinct first-treat values (staggered timing):
+            the estimator auto-filters to the last-treatment cohort
+            with a ``UserWarning`` per paper Appendix B.2 prescription.
+            For common-adoption panels the column is optional; when
+            omitted, the event-study path infers the first-treatment
+            period ``F`` from the dose invariant.
+        aggregate : {"overall", "event_study"}
+            ``"overall"`` (default): returns a single-period
+            :class:`HeterogeneousAdoptionDiDResults` (Phase 2a). Requires
+            exactly two time periods.
+            ``"event_study"`` (Phase 2b): returns a
+            :class:`HeterogeneousAdoptionDiDEventStudyResults` with per-
+            event-time WAS estimates on the multi-period panel (paper
+            Appendix B.2). Requires more than two time periods. Pointwise
+            CIs per horizon; joint cross-horizon covariance is deferred
+            to a follow-up PR. Staggered-timing panels are auto-filtered
+            to the last-treatment cohort with a ``UserWarning``.
         survey : SurveyDesign or None
             Reserved for a follow-up survey-integration PR. Must be
             ``None`` in Phase 2a.
@@ -1152,28 +1808,38 @@ class HeterogeneousAdoptionDiD:
         -------
         HeterogeneousAdoptionDiDResults
         """
-        # ---- Phase 2a scaffolding rejections (before any work) ----
+        # ---- aggregate / survey / weights scaffolding rejections ----
         if aggregate not in _VALID_AGGREGATES:
             raise ValueError(
                 f"Invalid aggregate={aggregate!r}. Must be one of " f"{_VALID_AGGREGATES}."
             )
-        if aggregate == "event_study":
-            raise NotImplementedError(
-                "aggregate='event_study' (multi-period event study per "
-                "paper Appendix B.2) is queued for Phase 2b. Phase 2a "
-                "supports aggregate='overall' (single-period WAS) only."
-            )
         if survey is not None:
             raise NotImplementedError(
                 "survey=<SurveyDesign> support on HeterogeneousAdoptionDiD "
-                "is queued for a follow-up PR after Phase 2a. Pass "
-                "survey=None for now."
+                "is queued for a follow-up PR. Pass survey=None for now."
             )
         if weights is not None:
             raise NotImplementedError(
                 "weights=<array> support on HeterogeneousAdoptionDiD is "
                 "queued for a follow-up PR (paired with survey "
                 "integration). Pass weights=None for now."
+            )
+        # Dispatch the event-study path to a dedicated method so the
+        # single-period path stays unchanged (Phase 2a contract preserved).
+        # Note: event_study returns HeterogeneousAdoptionDiDEventStudyResults
+        # (distinct type from the overall path's HeterogeneousAdoptionDiDResults);
+        # the static return-type annotation reflects the common "overall" case
+        # to keep Phase 2a call-sites type-clean. Users explicitly passing
+        # aggregate="event_study" should annotate the result as
+        # HeterogeneousAdoptionDiDEventStudyResults.
+        if aggregate == "event_study":
+            return self._fit_event_study(  # type: ignore[return-value]
+                data=data,
+                outcome_col=outcome_col,
+                dose_col=dose_col,
+                time_col=time_col,
+                unit_col=unit_col,
+                first_treat_col=first_treat_col,
             )
 
         # ---- Resolve effective fit-time state (local vars only, per
@@ -1609,3 +2275,272 @@ class HeterogeneousAdoptionDiD:
             se = float(bc_fit.se_robust) / abs(den)
 
         return att, se, bc_fit, bc_fit.bandwidth_diagnostics
+
+    # ------------------------------------------------------------------
+    # Event-study dispatch (Phase 2b, paper Appendix B.2)
+    # ------------------------------------------------------------------
+
+    def _fit_event_study(
+        self,
+        data: pd.DataFrame,
+        outcome_col: str,
+        dose_col: str,
+        time_col: str,
+        unit_col: str,
+        first_treat_col: Optional[str],
+    ) -> HeterogeneousAdoptionDiDEventStudyResults:
+        """Multi-period event-study fit (paper Appendix B.2).
+
+        Delegates to the multi-period panel validator (including staggered
+        last-cohort auto-filter), aggregates per-horizon first differences
+        against a common anchor ``Y_{g, F-1}``, resolves the design ONCE
+        on the period-F dose distribution, and then fits the chosen design
+        path independently on each event-time horizon's first differences.
+
+        Per-horizon sandwich independence is the paper-faithful convention
+        (Pierce-Schott Figure 2 pointwise CIs). Joint cross-horizon
+        covariance is deferred to a follow-up PR.
+        """
+        # ---- Resolve effective fit-time state (local vars only,
+        # feedback_fit_does_not_mutate_config). ----
+        design_arg = self.design
+        d_lower_arg = self.d_lower
+        vcov_type_arg = self.vcov_type
+        robust_arg = self.robust
+        cluster_arg = self.cluster
+
+        # ---- Validate multi-period panel and apply staggered filter ----
+        F, t_pre_list, t_post_list, data_filtered, filter_info = _validate_had_panel_event_study(
+            data, outcome_col, dose_col, time_col, unit_col, first_treat_col
+        )
+
+        # ---- Aggregate to per-horizon first differences ----
+        # Cluster extraction is deferred until after design resolution.
+        d_arr, dy_dict, _, _, _ = _aggregate_multi_period_first_differences(
+            data_filtered,
+            outcome_col,
+            dose_col,
+            time_col,
+            unit_col,
+            F,
+            t_pre_list,
+            t_post_list,
+            None,
+        )
+
+        n_units = int(d_arr.shape[0])
+        if n_units < 3:
+            raise ValueError(
+                f"HAD event-study requires at least 3 units for inference; "
+                f"got n_units={n_units} after aggregation."
+            )
+
+        # ---- Resolve design (once, from D_{g, F} distribution) ----
+        if design_arg == "auto":
+            resolved_design = _detect_design(d_arr)
+        else:
+            resolved_design = design_arg
+
+        # ---- Resolve d_lower ----
+        if resolved_design == "continuous_at_zero":
+            if d_lower_arg is not None:
+                scale = max(1.0, float(np.max(np.abs(d_arr))))
+                if abs(float(d_lower_arg)) > 1e-12 * scale:
+                    raise ValueError(
+                        f"design='continuous_at_zero' (Design 1') requires "
+                        f"d_lower == 0 within float tolerance (paper Section "
+                        f"3.2 Design 1' regime). Got d_lower="
+                        f"{float(d_lower_arg)!r}. For d_lower > 0 use "
+                        f"design='continuous_near_d_lower' or "
+                        f"design='mass_point', or design='auto'."
+                    )
+            d_lower_val = 0.0
+        elif d_lower_arg is None:
+            d_lower_val = float(d_arr.min())
+        else:
+            d_lower_val = float(d_lower_arg)
+
+        # ---- Regime-partition guards (mirror Phase 2a) ----
+        if resolved_design in ("mass_point", "continuous_near_d_lower"):
+            scale = max(1.0, float(np.max(np.abs(d_arr))))
+            if abs(d_lower_val) <= 1e-12 * scale:
+                raise ValueError(
+                    f"design={resolved_design!r} requires d_lower > 0 (paper "
+                    f"Section 3.2 reserves the d_lower=0 regime for Design 1' "
+                    f"/ `continuous_at_zero`). Got d_lower={d_lower_val!r}."
+                )
+
+        if resolved_design in ("continuous_near_d_lower", "mass_point"):
+            d_min_orig = float(d_arr.min())
+            if d_min_orig > 0:
+                eps_mp = 1e-12 * max(1.0, abs(d_min_orig))
+                at_d_min_mask_orig = np.abs(d_arr - d_min_orig) <= eps_mp
+                modal_fraction_orig = float(np.mean(at_d_min_mask_orig))
+                if (
+                    resolved_design == "continuous_near_d_lower"
+                    and modal_fraction_orig > _MASS_POINT_THRESHOLD
+                ):
+                    raise ValueError(
+                        f"design='continuous_near_d_lower' cannot be used on a "
+                        f"mass-point sample (modal fraction {modal_fraction_orig:.4f} "
+                        f"at d.min()={d_min_orig!r} exceeds the "
+                        f"{_MASS_POINT_THRESHOLD:.2f} threshold)."
+                    )
+                if resolved_design == "mass_point" and modal_fraction_orig <= _MASS_POINT_THRESHOLD:
+                    raise ValueError(
+                        f"design='mass_point' requires a modal mass at d.min() "
+                        f"exceeding the {_MASS_POINT_THRESHOLD:.2f} threshold "
+                        f"(paper Section 3.2.4). Got modal fraction "
+                        f"{modal_fraction_orig:.4f} at d.min()={d_min_orig!r}."
+                    )
+
+        if resolved_design in ("mass_point", "continuous_near_d_lower") and d_lower_arg is not None:
+            d_min = float(d_arr.min())
+            tol = 1e-12 * max(1.0, abs(d_min))
+            if abs(d_lower_val - d_min) > tol:
+                raise ValueError(
+                    f"design={resolved_design!r} requires d_lower to equal "
+                    f"the support infimum float(d.min())={d_min!r}; got "
+                    f"d_lower={d_lower_val!r}."
+                )
+            d_lower_val = d_min  # snap
+
+        dose_mean = float(d_arr.mean())
+
+        # ---- Extract cluster IDs on mass-point path only ----
+        cluster_arr: Optional[np.ndarray] = None
+        if resolved_design == "mass_point" and cluster_arg is not None:
+            _, _, cluster_arr, _, _ = _aggregate_multi_period_first_differences(
+                data_filtered,
+                outcome_col,
+                dose_col,
+                time_col,
+                unit_col,
+                F,
+                t_pre_list,
+                t_post_list,
+                cluster_arg,
+            )
+
+        # ---- One-time warnings (per fit call, not per horizon) ----
+        if resolved_design in ("continuous_near_d_lower", "mass_point"):
+            warnings.warn(
+                f"design={resolved_design!r} (Design 1, d_lower > 0) requires "
+                f"Assumption 6 from de Chaisemartin et al. (2026) for point "
+                f"identification of WAS_{{d_lower}}, or Assumption 5 for "
+                f"sign identification only. Neither is testable via "
+                f"pre-trends.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        if resolved_design in ("continuous_at_zero", "continuous_near_d_lower"):
+            if vcov_type_arg is not None:
+                warnings.warn(
+                    f"vcov_type={vcov_type_arg!r} is ignored on the "
+                    f"'{resolved_design}' path (continuous designs use the "
+                    f"CCT-2014 robust SE from Phase 1c).",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            if robust_arg:
+                warnings.warn(
+                    f"robust=True is ignored on the '{resolved_design}' " f"path.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            if cluster_arg is not None:
+                warnings.warn(
+                    f"cluster={cluster_arg!r} is ignored on the "
+                    f"'{resolved_design}' path in Phase 2b (estimator-"
+                    f"level cluster threading on the nonparametric path "
+                    f"is queued for a follow-up PR).",
+                    UserWarning,
+                    stacklevel=3,
+                )
+
+        # ---- Resolve vcov label for mass-point ----
+        if resolved_design == "mass_point":
+            if vcov_type_arg is None:
+                vcov_requested = "hc1" if robust_arg else "classical"
+            else:
+                vcov_requested = vcov_type_arg.lower()
+            inference_method = "analytical_2sls"
+            vcov_label: Optional[str] = "cr1" if cluster_arg is not None else vcov_requested
+            cluster_label: Optional[str] = cluster_arg if cluster_arg is not None else None
+        else:
+            vcov_requested = ""
+            inference_method = "analytical_nonparametric"
+            vcov_label = None
+            cluster_label = None
+
+        # ---- Per-horizon loop ----
+        event_times_sorted = sorted(dy_dict.keys())
+        n_horizons = len(event_times_sorted)
+        att_arr = np.full(n_horizons, np.nan, dtype=np.float64)
+        se_arr = np.full(n_horizons, np.nan, dtype=np.float64)
+        t_arr = np.full(n_horizons, np.nan, dtype=np.float64)
+        p_arr = np.full(n_horizons, np.nan, dtype=np.float64)
+        ci_lo_arr = np.full(n_horizons, np.nan, dtype=np.float64)
+        ci_hi_arr = np.full(n_horizons, np.nan, dtype=np.float64)
+        n_obs_arr = np.full(n_horizons, n_units, dtype=np.int64)
+
+        # Collect per-horizon diagnostics on continuous paths. Entries may be
+        # None for horizons where ``_fit_continuous`` caught a degenerate
+        # bandwidth-selector failure (constant/perfectly-linear outcome).
+        bc_fits: Optional[List[Optional[BiasCorrectedFit]]] = (
+            [] if resolved_design in ("continuous_at_zero", "continuous_near_d_lower") else None
+        )
+        bw_diags: Optional[List[Optional[BandwidthResult]]] = (
+            [] if resolved_design in ("continuous_at_zero", "continuous_near_d_lower") else None
+        )
+
+        for i, e in enumerate(event_times_sorted):
+            dy_e = dy_dict[e]
+            if resolved_design in ("continuous_at_zero", "continuous_near_d_lower"):
+                att_e, se_e, bc_fit_e, bw_diag_e = self._fit_continuous(
+                    d_arr, dy_e, resolved_design, d_lower_val
+                )
+                if bc_fits is not None:
+                    bc_fits.append(bc_fit_e)
+                if bw_diags is not None:
+                    bw_diags.append(bw_diag_e)
+            elif resolved_design == "mass_point":
+                att_e, se_e = _fit_mass_point_2sls(
+                    d_arr, dy_e, d_lower_val, cluster_arr, vcov_requested
+                )
+            else:
+                raise ValueError(f"Internal error: unhandled design={resolved_design!r}.")
+
+            t_stat_e, p_value_e, conf_int_e = safe_inference(att_e, se_e, alpha=float(self.alpha))
+            att_arr[i] = float(att_e)
+            se_arr[i] = float(se_e)
+            t_arr[i] = float(t_stat_e)
+            p_arr[i] = float(p_value_e)
+            ci_lo_arr[i] = float(conf_int_e[0])
+            ci_hi_arr[i] = float(conf_int_e[1])
+
+        return HeterogeneousAdoptionDiDEventStudyResults(
+            event_times=np.asarray(event_times_sorted, dtype=np.int64),
+            att=att_arr,
+            se=se_arr,
+            t_stat=t_arr,
+            p_value=p_arr,
+            conf_int_low=ci_lo_arr,
+            conf_int_high=ci_hi_arr,
+            n_obs_per_horizon=n_obs_arr,
+            alpha=float(self.alpha),
+            design=resolved_design,
+            target_parameter=_TARGET_PARAMETER[resolved_design],
+            d_lower=d_lower_val,
+            dose_mean=dose_mean,
+            F=F,
+            n_units=n_units,
+            inference_method=inference_method,
+            vcov_type=vcov_label,
+            cluster_name=cluster_label,
+            survey_metadata=None,
+            bandwidth_diagnostics=bw_diags,
+            bias_corrected_fit=bc_fits,
+            filter_info=filter_info,
+        )

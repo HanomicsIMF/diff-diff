@@ -57,6 +57,7 @@ from diff_diff.local_linear import (
 )
 from diff_diff.had import (
     HeterogeneousAdoptionDiD,
+    HeterogeneousAdoptionDiDEventStudyResults,
     HeterogeneousAdoptionDiDResults,
 )
 from diff_diff.estimators import (
@@ -436,9 +437,10 @@ __all__ = [
     # Bias-corrected local-linear (Phase 1c for HeterogeneousAdoptionDiD)
     "BiasCorrectedFit",
     "bias_corrected_local_linear",
-    # HeterogeneousAdoptionDiD (Phase 2a)
+    # HeterogeneousAdoptionDiD (Phase 2a single-period, Phase 2b event study)
     "HeterogeneousAdoptionDiD",
     "HeterogeneousAdoptionDiDResults",
+    "HeterogeneousAdoptionDiDEventStudyResults",
     "HAD",
     # Datasets
     "load_card_krueger",

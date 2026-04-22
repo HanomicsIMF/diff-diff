@@ -189,7 +189,8 @@ Alternative to Stute when `G` is large or heteroskedasticity is suspected.
 - [ ] Warnings for staggered treatment timing (direct users to existing `ChaisemartinDHaultfoeuille` in diff-diff).
 - [ ] Warnings for extensive-margin effects / positive mass of untreated (not fatal; suggests running existing DiD).
 - [ ] Documentation of non-testability of Assumptions 5 and 6.
-- [ ] Multi-period event-study extension (Appendix B.2) with joint Stute test across post-periods.
+- [x] Multi-period event-study extension (Appendix B.2). **Phase 2b implementation (2026-04):** `aggregate="event_study"` returns per-event-time WAS estimates using uniform `F-1` anchor. Staggered timing auto-filtered to last cohort with `UserWarning` per Appendix B.2 prescription. Pointwise CIs per horizon (no joint cross-horizon covariance; matches paper's Pierce-Schott Figure 2). Pre-period placebos at `e <= -2`; the anchor `e = -1` is skipped since `ΔY = 0` there by construction.
+- [ ] Joint Stute test (Equation 18) across pre-periods. Deferred to Phase 3 (pre-test diagnostics).
 
 ---
 
