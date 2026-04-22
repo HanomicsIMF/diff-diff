@@ -906,9 +906,24 @@ class SyntheticDiD(DifferenceInDifferences):
         ):
             return np.nan, np.array([])
 
-        bootstrap_estimates = []
+        bootstrap_estimates: List[float] = []
 
-        for b in range(self.n_bootstrap):
+        # Retry-until-B-valid semantic: matches R's synthdid::bootstrap_sample
+        # (`while (count < replications) { ...; if !is.na(est) count = count+1 }`)
+        # and paper Algorithm 2 (B bootstrap replicates). A bounded attempt
+        # guard (20x) prevents pathological-input hangs; normal fits finish
+        # well inside this budget because degenerate-draw probability scales
+        # as (N_co/N)^N + (N_tr/N)^N, which is small for any non-trivial
+        # N_co/N_tr split.
+        max_attempts = 20 * self.n_bootstrap
+        attempts = 0
+        # Fixture-driven path uses deterministic index iteration instead of
+        # retry: R's generator already encodes retry semantics into the stored
+        # B x N indices, so every row is pre-validated.
+        fixture_row = 0
+
+        while len(bootstrap_estimates) < self.n_bootstrap and attempts < max_attempts:
+            attempts += 1
             if _use_rao_wu:
                 # --- Rao-Wu rescaled bootstrap path ---
                 # generate_rao_wu_weights returns per-unit rescaled survey
@@ -920,7 +935,7 @@ class SyntheticDiD(DifferenceInDifferences):
                     rw_control = boot_rw[:n_control]
                     rw_treated = boot_rw[n_control:]
 
-                    # Skip if all control or all treated weights are zero
+                    # Retry if all control or all treated weights are zero
                     if rw_control.sum() == 0 or rw_treated.sum() == 0:
                         continue
 
@@ -952,7 +967,7 @@ class SyntheticDiD(DifferenceInDifferences):
                         time_weights,
                     )
                     if np.isfinite(tau):
-                        bootstrap_estimates.append(tau)
+                        bootstrap_estimates.append(float(tau))
 
                 except (ValueError, LinAlgError):
                     continue
@@ -961,7 +976,10 @@ class SyntheticDiD(DifferenceInDifferences):
                 # Resample ALL units with replacement (or use pre-computed
                 # indices from the test-only _bootstrap_indices seam).
                 if _bootstrap_indices is not None:
-                    boot_idx = np.asarray(_bootstrap_indices[b], dtype=np.int64)
+                    if fixture_row >= len(_bootstrap_indices):
+                        break
+                    boot_idx = np.asarray(_bootstrap_indices[fixture_row], dtype=np.int64)
+                    fixture_row += 1
                 else:
                     boot_idx = rng.choice(n_total, size=n_total, replace=True)
 
@@ -970,7 +988,7 @@ class SyntheticDiD(DifferenceInDifferences):
                 boot_control_idx = boot_idx[boot_is_control]
                 boot_treated_idx = boot_idx[~boot_is_control]
 
-                # Skip if no control or no treated units in bootstrap sample
+                # Retry if no control or no treated units in bootstrap sample
                 if len(boot_control_idx) == 0 or len(boot_treated_idx) == 0:
                     continue
 
@@ -1022,21 +1040,23 @@ class SyntheticDiD(DifferenceInDifferences):
                         time_weights,
                     )
                     if np.isfinite(tau):
-                        bootstrap_estimates.append(tau)
+                        bootstrap_estimates.append(float(tau))
 
                 except (ValueError, LinAlgError):
                     continue
 
         bootstrap_estimates = np.array(bootstrap_estimates)
 
-        # Check bootstrap success rate and handle failures
+        # Check bootstrap success rate and handle failures.
+        # n_successful should equal self.n_bootstrap under the retry contract;
+        # it only falls short if max_attempts was exhausted on pathological data.
         n_successful = len(bootstrap_estimates)
         failure_rate = 1 - (n_successful / self.n_bootstrap)
 
         if n_successful == 0:
             raise ValueError(
-                f"All {self.n_bootstrap} bootstrap iterations failed. "
-                f"This typically occurs when:\n"
+                f"Could not produce any valid bootstrap draw in {attempts} "
+                f"attempts (target {self.n_bootstrap}). This typically occurs when:\n"
                 f"  - Sample size is too small for reliable resampling\n"
                 f"  - Weight matrices are singular or near-singular\n"
                 f"  - Insufficient pre-treatment periods for weight estimation\n"
@@ -1046,10 +1066,11 @@ class SyntheticDiD(DifferenceInDifferences):
             )
         if n_successful == 1:
             warnings.warn(
-                f"Only 1/{self.n_bootstrap} bootstrap iteration succeeded. "
-                f"Standard error cannot be computed reliably (requires at least 2). "
-                f"Returning SE=0.0. Consider using variance_method='placebo' or "
-                f"increasing the regularization (zeta_omega, zeta_lambda).",
+                f"Only 1/{self.n_bootstrap} valid bootstrap draw accumulated in "
+                f"{attempts} attempts. Standard error cannot be computed reliably "
+                f"(requires at least 2). Returning SE=0.0. Consider using "
+                f"variance_method='placebo' or increasing the regularization "
+                f"(zeta_omega, zeta_lambda).",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1057,9 +1078,11 @@ class SyntheticDiD(DifferenceInDifferences):
 
         if failure_rate > 0.05:
             warnings.warn(
-                f"Only {n_successful}/{self.n_bootstrap} bootstrap iterations succeeded "
-                f"({failure_rate:.1%} failure rate). Standard errors may be unreliable. "
-                f"This can occur with small samples or insufficient pre-treatment periods.",
+                f"Bootstrap attempt budget exhausted: only {n_successful}/"
+                f"{self.n_bootstrap} valid draws accumulated in {attempts} "
+                f"attempts. Standard errors may be unreliable; pathological "
+                f"inputs can produce this signal (e.g., extreme treated/control "
+                f"imbalance or singular weight matrices).",
                 UserWarning,
                 stacklevel=2,
             )

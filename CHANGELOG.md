@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - SyntheticDiD `variance_method="bootstrap"` now computes p-values from the analytical normal-theory formula using the bootstrap SE (matching R's `synthdid::vcov()` convention), rather than an empirical null-distribution formula that is not valid for bootstrap draws. `is_significant` and `significance_stars` are derived from `p_value` and will also change for bootstrap fits. Placebo and jackknife are unchanged. Point estimates and standard errors are unaffected.
-- SyntheticDiD bootstrap SE formula applies the `sqrt((r-1)/r)` correction matching R's synthdid and the placebo SE formula (approximately 0.25% SE change at `n_bootstrap=200`).
+- SyntheticDiD bootstrap SE formula applies the `sqrt((r-1)/r)` correction matching R's synthdid and the placebo SE formula.
+- SyntheticDiD bootstrap now retries degenerate resamples (all-control or all-treated, or non-finite `τ_b`) until exactly `n_bootstrap` valid replicates are accumulated, matching R's `synthdid::bootstrap_sample` and Arkhangelsky et al. (2021) Algorithm 2. Previously the Python path counted attempts (with degenerate draws silently dropped), producing fewer valid replicates than requested. A bounded-attempt guard (`20 × n_bootstrap`) prevents pathological-input hangs.
 
 ## [3.2.0] - 2026-04-19
 

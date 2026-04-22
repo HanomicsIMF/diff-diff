@@ -996,7 +996,15 @@ class TestEdgeCases:
             assert np.isnan(results.conf_int[1])
 
     def test_nonfinite_tau_filtered_in_bootstrap(self):
-        """Non-finite tau values are filtered in Python bootstrap path (matches Rust)."""
+        """Non-finite tau values trigger retry in Python bootstrap path.
+
+        Under the R-matching retry-to-B contract, a non-finite estimator
+        result is treated like a degenerate draw: it triggers another
+        attempt rather than being silently dropped. The output must
+        accumulate exactly `n_bootstrap` finite draws, and the estimator
+        must have been called strictly more than `n_bootstrap` times
+        (the retry path fired).
+        """
         call_count = [0]
 
         def mock_estimator(*args, **kwargs):
@@ -1024,10 +1032,15 @@ class TestEdgeCases:
                 unit_weights, time_weights,
             )
 
-        # All retained estimates must be finite (non-finite filtered out)
+        # All retained estimates must be finite (non-finite never leaks).
         assert np.all(np.isfinite(estimates)), "Non-finite tau leaked into bootstrap estimates"
-        # Some estimates should have been filtered (every 3rd call returns inf)
-        assert len(estimates) < 20
+        # Retry contract: accumulate exactly B valid draws (matches R).
+        assert len(estimates) == 20
+        # Retry fired: estimator was called more than B times because every
+        # third call returned inf and triggered another attempt.
+        assert call_count[0] > 20, (
+            f"expected retry path to fire (call_count > 20); got {call_count[0]}"
+        )
 
     def test_nonfinite_tau_filtered_in_placebo(self):
         """Non-finite tau values are filtered in Python placebo path (matches Rust)."""
@@ -2226,7 +2239,7 @@ class TestScaleEquivariance:
     # drift the fix is not a true no-op on normal data and review is warranted.
     _BASELINE = {
         "placebo":   (4.603349837478791,   0.29385822261006445, 0.004975124378109453,    200),
-        "bootstrap": (4.603349837478791,   0.1585306149536113,  2.2063514347386345e-185, 191),
+        "bootstrap": (4.603349837478791,   0.16272527384941657, 4.707563471218442e-176,  200),
         "jackknife": (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,   23),
     }
 
