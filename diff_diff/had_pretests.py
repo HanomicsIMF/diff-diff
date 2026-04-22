@@ -1,8 +1,9 @@
 """Pre-test diagnostics for the HeterogeneousAdoptionDiD estimator.
 
 Paper Section 4 (de Chaisemartin, Ciccia, D'Haultfoeuille, Knau 2026,
-arXiv:2405.04465v6) prescribes three pre-test diagnostics that practitioners
-should run BEFORE trusting HAD estimates:
+arXiv:2405.04465v6) prescribes a four-step pre-testing workflow for TWFE
+validity in HADs. Phase 3 ships steps 1 and 3 of that workflow (step 2 is
+deferred):
 
 1. :func:`qug_test` - order-statistic ratio test of the support infimum
    ``H_0: d_lower = 0`` (paper Theorem 4). Closed-form, tuning-free.
@@ -13,16 +14,16 @@ should run BEFORE trusting HAD estimates:
    linearity test (paper Theorem 7 / Equation 29). Feasible at
    ``G >= 100k``.
 
-Paper Section 4.2-4.3: if all three fail-to-reject, the TWFE estimator
-(``beta_fe``) is valid; rejection guides users to alternative estimators.
+The composite :func:`did_had_pretest_workflow` runs the three implemented
+tests in sequence on a two-period HAD panel and returns a
+:class:`HADPretestReport` with a partial-workflow verdict. When all three
+fail-to-reject, the verdict explicitly flags that **the paper's step 2
+pre-trends test (Assumption 7) is NOT run** — callers do not receive an
+unconditional "TWFE safe" signal; the Assumption 7 check must be performed
+separately (e.g., via an event-study / placebo analysis) until the Phase 3
+follow-up patch lands the joint Equation 18 cross-horizon Stute variant.
 
-The composite :func:`did_had_pretest_workflow` runs all three in sequence on
-a two-period HAD panel and returns a :class:`HADPretestReport` with a
-text verdict.
-
-Equation 18 (joint cross-horizon Stute over pre-period placebos) is deferred
-to a Phase 3 follow-up patch pending formula extraction from the paper PDF;
-see ``docs/methodology/REGISTRY.md`` and ``TODO.md``.
+See ``docs/methodology/REGISTRY.md`` and ``TODO.md`` for the deferred items.
 """
 
 from __future__ import annotations
@@ -554,8 +555,12 @@ def _compose_verdict(
     Priority-ordered first-match:
 
     1. Any NaN p-value -> ``"inconclusive - {names} NaN"``
-    2. None reject -> ``"TWFE safe under Section 4 assumptions"``
-    3. Otherwise bundle each rejection reason.
+    2. None of the implemented tests reject -> partial-workflow verdict
+       flagging the Assumption 7 / pre-trends gap (paper step 2 deferred):
+       ``"QUG and linearity diagnostics fail-to-reject; Assumption 7
+       pre-trends test NOT run (paper step 2 deferred to Phase 3
+       follow-up)"``.
+    3. Otherwise bundle each rejection reason naming the failed assumption.
     """
     nan_tests = [
         name
@@ -969,7 +974,7 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
     sigma4_W = float(np.mean(eps_s[1:] ** 2 * eps_s[:-1] ** 2))
     if sigma4_W <= 0.0:
         warnings.warn(
-            "yatchew_hr_test: sigma4_W <= 0 (zero residual variance). " "Returning NaN result.",
+            "yatchew_hr_test: sigma4_W <= 0 (zero residual variance); returning NaN result.",
             UserWarning,
             stacklevel=2,
         )
