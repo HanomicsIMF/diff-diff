@@ -227,26 +227,23 @@ class TestSyntheticDiDSurvey:
     def test_placebo_with_pweight_only_full_design_stripped_att_match(
         self, sdid_survey_data
     ):
-        """Placebo ATT with pweight-only matches ATT when strata/PSU are
-        stripped (never attached to the SurveyDesign).
+        """Placebo ATT with pweight-only is unchanged when stratum/psu
+        columns are physically dropped from the input DataFrame.
 
         Point estimates depend only on the pseudo-population weights, not on
         the strata/PSU structure — full-design bootstrap previously exploited
         that structure via Rao-Wu rescaling and is now rejected upstream (see
         ``test_full_design_bootstrap_raises`` /
-        ``test_full_design_placebo_raises``). This asserts ATT-equivalence
-        between an explicit pweight-only design and an otherwise identical
-        pweight-only design — i.e., the strata/psu columns in the DataFrame
-        are not tacitly read by the estimator unless the SurveyDesign
-        references them.
+        ``test_full_design_placebo_raises``). A silent pickup of ``stratum``
+        or ``psu`` by the estimator (e.g., by name-matching a convention
+        column) would cause the two fits to diverge, so comparing a
+        DataFrame with those columns present against one with them dropped
+        is the real contract.
         """
         sd_pweight_only = SurveyDesign(weights="weight")
-        # Same pweight-only design, but constructed via the full helper shape
-        # to confirm no silent column pickup:
-        sd_pweight_explicit = SurveyDesign(weights="weight", weight_type="pweight")
         est = SyntheticDiD(variance_method="placebo", n_bootstrap=100, seed=42)
 
-        result_a = est.fit(
+        result_with_cols = est.fit(
             sdid_survey_data,
             outcome="outcome",
             treatment="treated",
@@ -255,21 +252,22 @@ class TestSyntheticDiDSurvey:
             post_periods=[6, 7, 8, 9],
             survey_design=sd_pweight_only,
         )
-        result_b = est.fit(
-            sdid_survey_data,
+        sdid_survey_data_stripped = sdid_survey_data.drop(columns=["stratum", "psu"])
+        result_stripped = est.fit(
+            sdid_survey_data_stripped,
             outcome="outcome",
             treatment="treated",
             unit="unit",
             time="time",
             post_periods=[6, 7, 8, 9],
-            survey_design=sd_pweight_explicit,
+            survey_design=sd_pweight_only,
         )
-        assert np.isfinite(result_a.att)
-        assert np.isfinite(result_a.se)
-        assert result_a.se > 0
-        # ATT is a deterministic function of the pweight-only design — the
-        # two equivalent pweight-only constructions must agree bit-for-bit.
-        assert result_a.att == pytest.approx(result_b.att, abs=1e-12)
+        assert np.isfinite(result_with_cols.att)
+        assert np.isfinite(result_with_cols.se)
+        assert result_with_cols.se > 0
+        # ATT depends only on pweight — silent pickup of stratum/psu would
+        # make the with-columns fit differ from the stripped fit.
+        assert result_with_cols.att == pytest.approx(result_stripped.att, abs=1e-12)
 
     def test_fweight_aweight_raises(self, sdid_survey_data):
         """Non-pweight raises ValueError."""
