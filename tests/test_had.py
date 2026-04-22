@@ -2727,6 +2727,115 @@ class TestEventStudyPanelContract:
                 panel, "outcome", "dose", "period", "unit", aggregate="event_study"
             )
 
+    def test_first_treat_col_mismatch_with_dose_raises(self):
+        """first_treat_col disagreeing with observed dose path must raise.
+
+        A mislabeled cohort column would otherwise silently select the
+        wrong cohort as F_last in the last-cohort auto-filter and
+        produce event-study estimates for the wrong units. Covers CI
+        reviewer round 2 P1.
+        """
+        rng = np.random.default_rng(0)
+        G = 40
+        rows = []
+        for g in range(G):
+            # Actual first-positive-dose period: t=3 for half, t=5 for half.
+            F_actual = 3 if g < G // 2 else 5
+            # But deliberately mislabel: swap the first_treat labels so
+            # G/2 units declare 5 when actual is 3, and vice versa.
+            F_declared = 5 if g < G // 2 else 3
+            d_g = float(rng.uniform(0.1, 1.0))
+            for t in range(1, 7):
+                dose = d_g if t >= F_actual else 0.0
+                rows.append(
+                    {
+                        "unit": g,
+                        "period": t,
+                        "dose": dose,
+                        "outcome": rng.standard_normal(),
+                        "first_treat": F_declared,
+                    }
+                )
+        panel = pd.DataFrame(rows)
+        with pytest.raises(ValueError, match="disagrees with the observed dose"):
+            HeterogeneousAdoptionDiD(design="auto").fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                first_treat_col="first_treat",
+                aggregate="event_study",
+            )
+
+    def test_unordered_string_time_col_rejected(self):
+        """Object/string time columns raise on event-study path.
+
+        Raw sort on arbitrary string labels is lexicographic, not
+        chronological (e.g., 'pre1'/'pre2'/'post1'/'post2' would map
+        to wrong event-time horizons). Covers CI reviewer round 2 P1.
+        """
+        rng = np.random.default_rng(0)
+        G = 50
+        rows = []
+        d_post = rng.uniform(0.0, 1.0, G)
+        d_post[0] = 0.0
+        for g in range(G):
+            for label, dose in [
+                ("pre1", 0.0),
+                ("pre2", 0.0),
+                ("post1", d_post[g]),
+                ("post2", d_post[g]),
+            ]:
+                rows.append(
+                    {
+                        "unit": g,
+                        "period": label,  # object dtype
+                        "dose": dose,
+                        "outcome": rng.standard_normal(),
+                    }
+                )
+        panel = pd.DataFrame(rows)
+        with pytest.raises(ValueError, match="ordered time column|dtype"):
+            HeterogeneousAdoptionDiD(design="auto").fit(
+                panel, "outcome", "dose", "period", "unit", aggregate="event_study"
+            )
+
+    def test_ordered_categorical_time_col_accepted(self):
+        """Ordered categorical time dtype passes the ordered-time check."""
+        rng = np.random.default_rng(0)
+        G = 50
+        labels = ["pre1", "pre2", "post1", "post2"]
+        cat_dtype = pd.CategoricalDtype(categories=labels, ordered=True)
+        rows = []
+        d_post = rng.uniform(0.1, 1.0, G)
+        d_post[0] = 0.0
+        for g in range(G):
+            for label, dose in [
+                ("pre1", 0.0),
+                ("pre2", 0.0),
+                ("post1", d_post[g]),
+                ("post2", d_post[g]),
+            ]:
+                rows.append(
+                    {
+                        "unit": g,
+                        "period": label,
+                        "dose": dose,
+                        "outcome": rng.standard_normal(),
+                    }
+                )
+        panel = pd.DataFrame(rows)
+        panel["period"] = panel["period"].astype(cat_dtype)
+        # Should fit without raising the ordered-time error.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            result = HeterogeneousAdoptionDiD(design="auto").fit(
+                panel, "outcome", "dose", "period", "unit", aggregate="event_study"
+            )
+        # post1 is F; e=-2 (pre1) and e=0 (post1), e=1 (post2) expected.
+        assert result.F == "post1"
+
     def test_staggered_without_first_treat_col_rejected(self):
         """Multi-cohort panel without first_treat_col raises (not silent).
 

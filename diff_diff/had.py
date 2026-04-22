@@ -903,6 +903,36 @@ def _validate_had_panel_event_study(
             f"single-period WAS)."
         )
 
+    # Ordered-time-type check. Paper Appendix B.2 event-time horizons
+    # require chronological ordering of periods (anchor at F-1, horizons
+    # e = t - F relative to F). Phase 2a two-period panels can use the
+    # dose invariant alone to distinguish pre from post without needing
+    # chronological order, so string labels ("pre", "post") work there.
+    # For multi-period event-study, multiple pre-periods all have D=0
+    # and multiple post-periods may both have D>0, so dose alone cannot
+    # recover chronology: we must trust the time column's natural order.
+    # Raw lexicographic sort on object/string labels silently misorders
+    # panels like "pre1"/"pre2"/"post1"/"post2" or month-name labels.
+    # Require an explicitly-ordered time representation.
+    time_dtype = data[time_col].dtype
+    if not (
+        pd.api.types.is_numeric_dtype(time_dtype)
+        or pd.api.types.is_datetime64_any_dtype(time_dtype)
+        or (isinstance(time_dtype, pd.CategoricalDtype) and bool(time_dtype.ordered))
+    ):
+        raise ValueError(
+            f"HAD aggregate='event_study' requires an ordered time "
+            f"column. time_col={time_col!r} has dtype={time_dtype!r}, "
+            f"which has no defined chronological order; raw sort would "
+            f"fall back to lexicographic ordering and silently misindex "
+            f"event-time horizons (e.g., 'pre1'/'pre2'/'post1'/'post2' "
+            f"sorts lexicographically but not chronologically). "
+            f"Convert time_col to numeric (e.g., integer year), "
+            f"datetime, or ordered categorical "
+            f"(``pd.Categorical(..., ordered=True, categories=[...])``) "
+            f"before calling fit() with aggregate='event_study'."
+        )
+
     # NaN checks on key columns (before any filter).
     for col in [outcome_col, dose_col, unit_col]:
         if bool(data[col].isna().any()):
@@ -935,6 +965,45 @@ def _validate_had_panel_event_study(
                 f"first_treat_col={first_treat_col!r} is not constant "
                 f"within unit for {n_bad} unit(s). Each unit must have "
                 f"a single first_treat value across all observed periods."
+            )
+        # Cross-validate first_treat_col against observed first-positive-
+        # dose period for every unit. A mislabeled cohort column would
+        # otherwise silently select the wrong cohort as F_last and return
+        # event-study estimates for the wrong units. Contract:
+        #   - declared first_treat == 0: unit must have D == 0 at all t
+        #     (never-treated)
+        #   - declared first_treat == F_g > 0: unit's first period with
+        #     D > 0 must equal F_g
+        df_for_check = data.sort_values([unit_col, time_col])
+        pos_rows = df_for_check.loc[df_for_check[dose_col] > 0]
+        actual_first_pos = pos_rows.groupby(unit_col)[time_col].first()
+        declared_ft = df_for_check.groupby(unit_col)[first_treat_col].first()
+        n_mismatch = 0
+        example_mismatch: Optional[Tuple[Any, Any, Any]] = None
+        for u, declared in declared_ft.items():
+            actual = actual_first_pos.get(u, None)
+            if declared == 0:
+                if actual is not None:
+                    n_mismatch += 1
+                    if example_mismatch is None:
+                        example_mismatch = (u, declared, actual)
+            else:
+                if actual is None or actual != declared:
+                    n_mismatch += 1
+                    if example_mismatch is None:
+                        example_mismatch = (u, declared, actual)
+        if n_mismatch > 0:
+            u, declared, actual = example_mismatch  # type: ignore[misc]
+            raise ValueError(
+                f"first_treat_col={first_treat_col!r} disagrees with the "
+                f"observed dose path for {n_mismatch} unit(s). Example: "
+                f"unit={u!r} declares first_treat={declared!r} but the "
+                f"unit's first period with D>0 is {actual!r} "
+                f"(None means never-treated). A mislabeled cohort column "
+                f"would silently select the wrong cohort as F_last in the "
+                f"last-cohort auto-filter. Fix the first_treat_col values "
+                f"to equal each unit's first positive-dose period (or 0 "
+                f"for never-treated) before calling fit()."
             )
         # Identify cohorts (nonzero first_treat values).
         # Use pd.unique to preserve dtype; sort with a stable key.
@@ -1015,8 +1084,9 @@ def _validate_had_panel_event_study(
                 )
 
     # Balanced panel on the (possibly-filtered) data: every unit appears
-    # exactly once per period.
-    counts = data_filtered.groupby([unit_col, time_col]).size()
+    # exactly once per period. ``observed=False`` preserves current
+    # behavior on categorical time columns (pandas' default is changing).
+    counts = data_filtered.groupby([unit_col, time_col], observed=False).size()
     if (counts != 1).any():
         n_bad = int((counts != 1).sum())
         raise ValueError(
@@ -1057,36 +1127,35 @@ def _validate_had_panel_event_study(
             f"zero dose; there is no treatment to estimate."
         )
 
-    # Sort by natural ordering on the time column dtype. Tuple key
-    # ``(x is None, x)`` places None at the end and sorts the rest by
-    # natural order (works for int/float/str/datetime when the dtype is
-    # homogeneous; mixed dtypes would raise at comparison time, which is
-    # the desired failure mode).
-    t_pre_list = sorted(t_pre_list_unsorted, key=lambda x: (x is None, x))
-    t_post_list = sorted(t_post_list_unsorted, key=lambda x: (x is None, x))
+    # Sort by natural ordering on the time column dtype. For ordered
+    # categorical dtypes, use the declared category order (since
+    # ``list(categorical)`` strips the ordered semantics and falls back
+    # to string comparison). For numeric / datetime, use natural Python
+    # order. Tuple key places None at the end.
+    if isinstance(time_dtype, pd.CategoricalDtype) and time_dtype.ordered:
+        _cat_order = {c: i for i, c in enumerate(time_dtype.categories)}
+
+        def _sort_key(x: Any) -> Tuple[bool, Any]:
+            return (x is None, _cat_order.get(x, len(_cat_order)))
+
+    else:
+
+        def _sort_key(x: Any) -> Tuple[bool, Any]:
+            return (x is None, x)
+
+    t_pre_list = sorted(t_pre_list_unsorted, key=_sort_key)
+    t_post_list = sorted(t_post_list_unsorted, key=_sort_key)
 
     # Contiguity check: all pre < all post in the natural ordering.
     # The HAD dose invariant requires a single transition from all-zero
     # to any-nonzero; interleaved pre/post periods indicate a malformed
     # panel (e.g., dose going back to zero after treatment, or mixing
-    # never-treated units with out-of-order labels).
+    # never-treated units with out-of-order labels). Uses ``_sort_key``
+    # so ordered categoricals respect their declared category order.
     if t_pre_list and t_post_list:
         max_pre = t_pre_list[-1]
         min_post = t_post_list[0]
-        # Check all pre-periods are less than all post-periods via the
-        # natural order. If types are comparable, direct comparison works;
-        # otherwise fall back to the sorted-key view.
-        try:
-            contiguous = max_pre < min_post
-        except TypeError:
-            # Mixed incomparable dtypes (e.g., None vs int after removing
-            # None above). Fall back to sorted-position check.
-            contiguous = True
-            for pre_p in t_pre_list:
-                for post_p in t_post_list:
-                    if not (pre_p < post_p):
-                        contiguous = False
-                        break
+        contiguous = _sort_key(max_pre) < _sort_key(min_post)
         if not contiguous:
             raise ValueError(
                 f"HAD dose invariant violated: pre-periods (all D=0) "
@@ -1318,7 +1387,23 @@ def _aggregate_multi_period_first_differences(
         equal to the LAST pre-period).
     """
     df = data.sort_values([unit_col, time_col]).reset_index(drop=True)
-    all_periods = sorted(t_pre_list + t_post_list, key=lambda x: (x is None, x))
+    # Period sort respects ordered categorical dtypes (matches
+    # ``_validate_had_panel_event_study``). The validator already
+    # enforces a numeric / datetime / ordered-categorical dtype on the
+    # event-study path, so ``_sort_key`` lookups are well-defined here.
+    time_dtype = data[time_col].dtype
+    if isinstance(time_dtype, pd.CategoricalDtype) and time_dtype.ordered:
+        _cat_order = {c: i for i, c in enumerate(time_dtype.categories)}
+
+        def _sort_key(x: Any) -> Tuple[bool, Any]:
+            return (x is None, _cat_order.get(x, len(_cat_order)))
+
+    else:
+
+        def _sort_key(x: Any) -> Tuple[bool, Any]:
+            return (x is None, x)
+
+    all_periods = sorted(t_pre_list + t_post_list, key=_sort_key)
     # Event-time mapping: natural rank of each period relative to F.
     F_idx = all_periods.index(F)
     period_to_event_time: Dict[Any, int] = {p: (i - F_idx) for i, p in enumerate(all_periods)}
@@ -1604,9 +1689,16 @@ class HeterogeneousAdoptionDiD:
     Weighted-Average-Slope (WAS) estimator with three design-dispatch
     paths: Design 1' (continuous-at-zero), Design 1 continuous-near-
     d_lower, and Design 1 mass-point (2SLS sample-average per paper
-    Section 3.2.4). Phase 2a ships the single-period path only; the
-    multi-period event-study extension (Appendix B.2) is queued for
-    Phase 2b.
+    Section 3.2.4). Two aggregation modes:
+
+    - ``aggregate="overall"`` (Phase 2a, default) returns a single-period
+      :class:`HeterogeneousAdoptionDiDResults` on a two-period panel.
+    - ``aggregate="event_study"`` (Phase 2b, paper Appendix B.2) returns
+      a :class:`HeterogeneousAdoptionDiDEventStudyResults` with per-
+      event-time WAS estimates on a multi-period panel, using a uniform
+      ``F-1`` anchor and pointwise CIs per horizon. Staggered-timing
+      panels auto-filter to the last-treatment cohort plus never-treated
+      units (paper Appendix B.2 prescription).
 
     Parameters
     ----------
