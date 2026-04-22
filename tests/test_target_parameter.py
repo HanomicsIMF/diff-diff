@@ -791,6 +791,103 @@ class TestTargetParameterRealFitIntegration:
         assert "= None (SE None" not in md
         assert "p = None)" not in md
 
+    def test_dcdh_empty_surface_propagates_to_assumption_and_native_label(self):
+        """PR #347 R10 P1 regression: the persisted ``trends_linear``
+        flag must drive every downstream consumer that previously
+        inferred trends-linear from ``linear_trends_effects``. This
+        test exercises two consumers the R9 patch missed:
+
+        (a) ``ChaisemartinDHaultfoeuilleResults._estimand_label()``
+            and its dependencies (``_horizon_label``,
+            ``to_dataframe("overall")``) — must return a
+            ``DID^{fd}_l`` / ``DID^{X,fd}_l`` label rather than
+            ``delta`` on an empty-surface fit.
+        (b) ``BusinessReport._describe_assumption`` — must emit the
+            ``DID^{fd}_l`` identification clause rather than the
+            non-trends default.
+
+        Builds a stub ``ChaisemartinDHaultfoeuilleResults`` with
+        ``trends_linear=True``, ``L_max=2``, and
+        ``linear_trends_effects=None`` (the empty-surface case).
+        """
+        from diff_diff import BusinessReport
+        from diff_diff.chaisemartin_dhaultfoeuille_results import (
+            ChaisemartinDHaultfoeuilleResults,
+        )
+
+        stub = ChaisemartinDHaultfoeuilleResults(
+            overall_att=float("nan"),
+            overall_se=float("nan"),
+            overall_t_stat=float("nan"),
+            overall_p_value=float("nan"),
+            overall_conf_int=(float("nan"), float("nan")),
+            joiners_att=float("nan"),
+            joiners_se=float("nan"),
+            joiners_t_stat=float("nan"),
+            joiners_p_value=float("nan"),
+            joiners_conf_int=(float("nan"), float("nan")),
+            n_joiner_cells=0,
+            n_joiner_obs=0,
+            joiners_available=False,
+            leavers_att=float("nan"),
+            leavers_se=float("nan"),
+            leavers_t_stat=float("nan"),
+            leavers_p_value=float("nan"),
+            leavers_conf_int=(float("nan"), float("nan")),
+            n_leaver_cells=0,
+            n_leaver_obs=0,
+            leavers_available=False,
+            placebo_effect=float("nan"),
+            placebo_se=float("nan"),
+            placebo_t_stat=float("nan"),
+            placebo_p_value=float("nan"),
+            placebo_conf_int=(float("nan"), float("nan")),
+            placebo_available=False,
+            per_period_effects={},
+            groups=[1, 2, 3],
+            time_periods=[1, 2, 3, 4],
+            n_obs=100,
+            n_treated_obs=50,
+            n_switcher_cells=10,
+            n_cohorts=2,
+            n_groups_dropped_crossers=0,
+            n_groups_dropped_singleton_baseline=0,
+            n_groups_dropped_never_switching=0,
+            L_max=2,
+            # The load-bearing configuration: trends_linear with empty
+            # horizon surface.
+            trends_linear=True,
+            linear_trends_effects=None,
+        )
+
+        # (a) Native result label: must NOT be "delta", must name DID^{fd}_l.
+        label = stub._estimand_label()
+        assert "delta" not in label, (
+            f"Empty-surface trends_linear fit must not be labeled delta. "
+            f"Got _estimand_label={label!r}"
+        )
+        assert "DID^{fd}_l" in label or "DID^{X,fd}_l" in label, (
+            f"Empty-surface trends_linear fit must name DID^{{fd}}_l. " f"Got: {label!r}"
+        )
+
+        # to_dataframe("overall") uses _estimand_label() — same guarantee.
+        row = stub.to_dataframe("overall").iloc[0]
+        assert "delta" not in row["estimand"]
+
+        # (b) BR assumption description: must mention linear trends /
+        # first-differences clause.
+        br = BusinessReport(stub, auto_diagnostics=False)
+        desc = br.to_dict()["assumption"]["description"]
+        assert (
+            "first-differenced" in desc.lower()
+            or "linear pre-trend" in desc.lower()
+            or "linear trends" in desc.lower()
+        ), (
+            "BR's identifying-assumption description must include the "
+            f"linear-trends identification clause on an empty-surface "
+            f"trends_linear fit. Got: {desc!r}"
+        )
+
     def test_dcdh_trends_linear_with_l_max_geq_2_fit_real(self):
         """Real ``trends_linear=True`` + ``L_max>=2`` fit: the library
         intentionally sets ``overall_att=NaN`` and populates the

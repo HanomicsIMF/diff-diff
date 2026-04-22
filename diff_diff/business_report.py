@@ -1205,9 +1205,18 @@ def _describe_assumption(estimator_name: str, results: Any = None) -> Dict[str, 
         has_controls = (
             results is not None and getattr(results, "covariate_residuals", None) is not None
         )
-        has_trends = (
-            results is not None and getattr(results, "linear_trends_effects", None) is not None
-        )
+        # PR #347 R10 P1: read the persisted ``trends_linear`` flag
+        # first — empty-horizon trends-linear fits set
+        # ``linear_trends_effects=None`` but are still trends-linear
+        # per the estimator contract. Legacy fit objects predating
+        # the persisted field fall back to the presence inference.
+        _trends_persisted = getattr(results, "trends_linear", None) if results is not None else None
+        if isinstance(_trends_persisted, bool):
+            has_trends = _trends_persisted
+        else:
+            has_trends = (
+                results is not None and getattr(results, "linear_trends_effects", None) is not None
+            )
         has_heterogeneity = (
             results is not None and getattr(results, "heterogeneity_effects", None) is not None
         )

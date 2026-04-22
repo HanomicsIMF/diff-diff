@@ -449,10 +449,26 @@ class ChaisemartinDHaultfoeuilleResults:
     # Repr / properties
     # ------------------------------------------------------------------
 
+    def _has_trends_linear(self) -> bool:
+        """Return whether ``trends_linear=True`` was active on this fit.
+
+        PR #347 R9/R10: prefer the persisted fit-time flag. Fall back
+        to ``linear_trends_effects is not None`` for legacy result
+        objects that predate the persisted field. The inference
+        fallback is correct on populated-surface fits but fails on
+        empty-surface fits (``trends_linear=True``, ``L_max>=2`` with
+        no estimable horizons) because ``linear_trends_effects`` is
+        set to ``None`` in that case; the persisted flag handles it.
+        """
+        persisted = self.trends_linear
+        if isinstance(persisted, bool):
+            return persisted
+        return self.linear_trends_effects is not None
+
     def _horizon_label(self, h) -> str:
         """Return per-horizon estimand label for event study rows."""
         has_controls = self.covariate_residuals is not None
-        has_trends = self.linear_trends_effects is not None
+        has_trends = self._has_trends_linear()
         if has_controls and has_trends:
             return f"DID^{{X,fd}}_{h}"
         elif has_controls:
@@ -464,7 +480,7 @@ class ChaisemartinDHaultfoeuilleResults:
     def _estimand_label(self) -> str:
         """Return the estimand label based on active features."""
         has_controls = self.covariate_residuals is not None
-        has_trends = self.linear_trends_effects is not None
+        has_trends = self._has_trends_linear()
 
         # When trends_linear + L_max>=2, overall is NaN (no aggregate).
         # Label reflects that per-horizon effects are in linear_trends_effects.
@@ -603,7 +619,7 @@ class ChaisemartinDHaultfoeuilleResults:
 
         # --- Overall ---
         has_controls = self.covariate_residuals is not None
-        has_trends = self.linear_trends_effects is not None
+        has_trends = self._has_trends_linear()
         adj_tag = ""
         if has_controls and has_trends:
             adj_tag = " (Covariate-and-Trend-Adjusted)"
