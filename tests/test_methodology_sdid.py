@@ -550,7 +550,26 @@ class TestBootstrapSE:
         similar variance to the paper-faithful refit bootstrap. Divergence
         flags either a refit implementation bug or a genuine exchangeability
         violation in the DGP.
+
+        Skipped under pure-Python mode: ``ci_params.bootstrap(min_n=...)``
+        caps ``min_n`` at 49 to keep pure-Python CI fast (see
+        ``tests/conftest.py:210``), but the 0.40 tolerance is calibrated
+        for B∈[100, 200] — at B=49 MC noise on the bootstrap SE can push
+        rel-diff beyond 0.40 without any correctness issue (B=100/200
+        runs converge to rel-diff ≈ 0.27 on the same seed). The 15
+        Rust-backed matrix jobs (macOS/Linux x86/Linux ARM/Windows × 3
+        Python versions) exercise the regression guard at the designed
+        B=200, so the contract is still covered for the default user
+        install path.
         """
+        from diff_diff import utils as dd_utils
+
+        if not dd_utils.HAS_RUST_BACKEND:
+            pytest.skip(
+                "Pure-Python mode caps ci_params.bootstrap min_n at 49, "
+                "but the 0.40 tolerance requires B≥100. Rust-backend CI "
+                "jobs exercise this regression guard at B=200."
+            )
         df = _make_panel(n_control=20, n_treated=3, seed=42)
         n_boot = ci_params.bootstrap(200, min_n=100)
         with warnings.catch_warnings():
