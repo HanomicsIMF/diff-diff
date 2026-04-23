@@ -975,13 +975,6 @@ class SyntheticDiD(DifferenceInDifferences):
                     init_weights=boot_lambda_init,
                     return_convergence=True,
                 )
-                # Count draws with ANY non-convergence (boolean per draw),
-                # not raw solver warnings — a single draw can emit up to
-                # three non-convergence events (ω pre-sparsify, ω main, λ).
-                # The registry text describes the rate per valid draw.
-                if not (omega_converged and lambda_converged):
-                    fw_nonconvergence_count += 1
-
                 tau = compute_sdid_estimator(
                     Y_boot_pre_c,
                     Y_boot_post_c,
@@ -992,6 +985,17 @@ class SyntheticDiD(DifferenceInDifferences):
                 )
                 if np.isfinite(tau):
                     bootstrap_estimates.append(float(tau))
+                    # Count draws with ANY non-convergence (boolean per
+                    # draw), not raw solver warnings — a single draw can
+                    # emit up to three non-convergence events (ω
+                    # pre-sparsify, ω main, λ). Increment the counter only
+                    # after the finite-τ gate so the registry's "share of
+                    # valid bootstrap draws" denominator matches the
+                    # numerator (draws that failed the finite-τ gate are
+                    # retried, so they shouldn't inflate the non-
+                    # convergence rate).
+                    if not (omega_converged and lambda_converged):
+                        fw_nonconvergence_count += 1
 
             except (ValueError, LinAlgError):
                 continue
