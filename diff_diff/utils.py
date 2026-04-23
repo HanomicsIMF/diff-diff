@@ -1503,11 +1503,23 @@ def compute_time_weights(
         through; this matches R's ``synthdid::bootstrap_sample`` shape
         (which passes ``weights$lambda`` as FW init per draw). Used by
         ``SyntheticDiD._bootstrap_se`` on the refit loop.
+    return_convergence : bool, default False
+        If True, returns a tuple ``(weights, converged)`` where ``converged``
+        is the AND of the first-pass and second-pass convergence flags from
+        the underlying ``_sc_weight_fw`` calls (True iff the min-decrease
+        criterion fired on BOTH passes; False if either hit ``max_iter``).
+        Setting this flag also forces the Python two-pass dispatcher even
+        when ``init_weights`` is None, because the Rust top-level fast-path
+        is silent on non-convergence. Used by SDID bootstrap to surface
+        per-draw FW non-convergence explicitly; standalone callers can
+        leave this at the default to preserve the legacy ABI.
 
     Returns
     -------
-    np.ndarray
-        Time weights of shape (n_pre,) on the simplex.
+    np.ndarray or Tuple[np.ndarray, bool]
+        Time weights of shape (n_pre,) on the simplex. With
+        ``return_convergence=True``, additionally the two-pass convergence
+        flag (as described above).
     """
     if Y_post_control.shape[0] == 0:
         raise ValueError(
@@ -1636,11 +1648,23 @@ def compute_sdid_unit_weights(
         through; this matches R's ``synthdid::bootstrap_sample`` shape
         (which passes ``sum_normalize(weights$omega[...])`` as FW init per
         draw). Used by ``SyntheticDiD._bootstrap_se`` on the refit loop.
+    return_convergence : bool, default False
+        If True, returns a tuple ``(weights, converged)`` where ``converged``
+        is the AND of the first-pass and second-pass convergence flags from
+        the underlying ``_sc_weight_fw`` calls (True iff the min-decrease
+        criterion fired on BOTH passes; False if either hit ``max_iter``).
+        Setting this flag also forces the Python two-pass dispatcher even
+        when ``init_weights`` is None, because the Rust top-level fast-path
+        is silent on non-convergence. Used by SDID bootstrap to surface
+        per-draw FW non-convergence explicitly; standalone callers can
+        leave this at the default to preserve the legacy ABI.
 
     Returns
     -------
-    np.ndarray
-        Unit weights of shape (n_control,) on the simplex.
+    np.ndarray or Tuple[np.ndarray, bool]
+        Unit weights of shape (n_control,) on the simplex. With
+        ``return_convergence=True``, additionally the two-pass convergence
+        flag (as described above).
     """
     n_control = Y_pre_control.shape[1]
 
