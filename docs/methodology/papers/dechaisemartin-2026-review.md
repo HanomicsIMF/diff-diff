@@ -184,14 +184,26 @@ Alternative to Stute when `G` is large or heteroskedasticity is suspected.
 - [ ] Local-linear regression backend (kernel weights, bandwidth selector).
 - [ ] Integration with bias-corrected CI from Calonico-Cattaneo-Farrell.
 - [x] QUG null test (`T = D_{2,(1)} / (D_{2,(2)} - D_{2,(1)})`, rejection region `{T > 1/α - 1}`). **Phase 3 implementation (2026-04):** `qug_test()` in `diff_diff/had_pretests.py`. Asymptotic p-value `1/(1+T)` under Exp(1)/Exp(1) limit law. Zero-dose observations filtered upfront with `UserWarning`; tie-break `D_{(1)} == D_{(2)}` returns all-NaN inference. Tight closed-form parity at `atol=1e-12`.
-- [x] Stute Cramér-von Mises test with Mammen wild bootstrap. **Phase 3 implementation (2026-04):** `stute_test()` in `diff_diff/had_pretests.py`. Literal per-iteration OLS refit per paper Appendix D Algorithm. `n_bootstrap=999` default, `n_bootstrap >= 99` validated. Single-horizon only; joint Equation 18 cross-horizon Stute (Paper Section 5.2 Pierce-Schott application) deferred to a Phase 3 follow-up patch.
+- [x] Stute Cramér-von Mises test with Mammen wild bootstrap. **Phase 3 implementation (2026-04):** `stute_test()` in `diff_diff/had_pretests.py`. Literal per-iteration OLS refit per paper Appendix D Algorithm. `n_bootstrap=999` default, `n_bootstrap >= 99` validated.
 - [x] Yatchew heteroskedasticity-robust linearity test. **Phase 3 implementation (2026-04):** `yatchew_hr_test()` in `diff_diff/had_pretests.py`. Test statistic `T_hr = sqrt(G)·(σ²_lin - σ²_diff)/σ²_W` from paper Equation 29. `σ²_diff` normalizes by `2G` (paper-literal), NOT `2(G-1)` (finite-sample equivalent but tests pin the paper-literal form). Standard-normal critical value, one-sided.
-- [x] Composite workflow `did_had_pretest_workflow()` (paper Section 4.2-4.3). **Phase 3 implementation (2026-04):** Two-period panel entry point runs all three tests and returns `HADPretestReport` with priority-ordered verdict string. The paper's step 2 (pre-trends test of Assumption 7) requires Equation 18 and is deferred to the Phase 3 follow-up patch.
+- [x] Composite workflow `did_had_pretest_workflow()` (paper Section 4.2-4.3). **Phase 3 implementation (2026-04):** `aggregate="overall"` (default, two-period) runs QUG + Stute + Yatchew on a two-period panel; step 2 is NOT run on this path because a two-period panel has no pre-period placebo horizon. **Phase 3 follow-up (2026-04):** `aggregate="event_study"` (multi-period) runs QUG at F + joint pre-trends Stute + joint homogeneity-linearity Stute; closes the paper step-2 gap.
 - [ ] Warnings for staggered treatment timing (direct users to existing `ChaisemartinDHaultfoeuille` in diff-diff).
 - [ ] Warnings for extensive-margin effects / positive mass of untreated (not fatal; suggests running existing DiD).
 - [ ] Documentation of non-testability of Assumptions 5 and 6.
 - [x] Multi-period event-study extension (Appendix B.2). **Phase 2b implementation (2026-04):** `aggregate="event_study"` returns per-event-time WAS estimates using uniform `F-1` anchor. Staggered timing auto-filtered to last cohort with `UserWarning` per Appendix B.2 prescription. Pointwise CIs per horizon (no joint cross-horizon covariance; matches paper's Pierce-Schott Figure 2). Pre-period placebos at `e <= -2`; the anchor `e = -1` is skipped since `ΔY = 0` there by construction.
-- [ ] Joint Stute test (Equation 18) across pre-periods. Deferred to a **Phase 3 follow-up patch** — Phase 3 (2026-04) shipped the single-horizon Stute test but not the joint cross-horizon variant; the exact stacked-residual formula needs extraction from the paper PDF (not reproduced in this review). Tracked in `TODO.md`.
+- [x] Joint Stute tests (paper Section 4.2 step 2 + Section 4.3 joint extension, pages 23-25 + 32). **Phase 3 follow-up (2026-04):** `stute_joint_pretest()` (residuals-in core) + `joint_pretrends_test()` (mean-independence null) + `joint_homogeneity_test()` (linearity null) in `diff_diff/had_pretests.py`. Sum-of-CvMs aggregation, shared-η Mammen wild bootstrap across horizons (Delgado-Manteiga 2001), per-horizon exact-linear short-circuit. Paper Eq (18) linear-trend detrending variant (Section 5.2 Pierce-Schott p=0.51) deferred to Phase 4 replication harness where the published value serves as parity anchor.
+
+**Eq (18) transcription (paper page 31):** The Pierce-Schott linear-trend-detrended joint Stute test of pre-trends reads
+```
+E( Y_{g,t} − Y_{g,1999} − (t − 1999)·(Y_{g,2000} − Y_{g,1999}) | D_{g,2001} ) = μ_t  ∀ t ∈ {1998, 1997}
+```
+The paper reports p=0.51 on US-China tariff data. The detrended outcome replaces a raw first-difference: `Y_{g,t}` is first linearly-detrended using the `(Y_{g,2000} − Y_{g,1999})` pre-period slope per unit, then tested against `D_{g,2001}` via the joint CvM. The Phase 3 follow-up ships the simpler mean-independence joint Stute (no detrending); Phase 4 extends it with the Eq (18) detrending wired to the Pierce-Schott replication.
+
+**Joint Stute construction (paper Section 4.2-4.3 non-linear-trend variant, Phase 3 follow-up delivery):** For a set of horizons `{t_1, ..., t_K}` with residuals `{ε̂_{g,k}}_{k}` per unit and shared doses `D_g`:
+1. Per-horizon CvM `S_k = (1/G²) · Σ_g (Σ_{h ≤ g(dose-order)} ε̂_{(h),k})²` (tie-safe via block-collapsed cumsum).
+2. Joint statistic `S_joint = Σ_k S_k`.
+3. Wild bootstrap p-value `p = (1 + #{S*_b ≥ S_joint}) / (B+1)`, with `η_g` drawn once per iteration and applied SHARED across horizons per unit (vector-valued empirical-process convention). Per-horizon OLS refit on the same design matrix each iteration; `(X'X)^{-1}X'` precomputed.
+The paper's text does not prescribe the joint aggregation rule; sum-of-CvMs is the standard joint specification-test construction (Delgado 1993; Escanciano 2006).
 
 ---
 
