@@ -811,12 +811,17 @@ class SyntheticDiDResults:
     post_periods : list
         List of post-treatment period identifiers.
     variance_method : str
-        Method used for variance estimation: "bootstrap", "jackknife", or "placebo".
+        Method used for variance estimation: ``"bootstrap"`` (paper-faithful
+        pairs bootstrap re-estimating ω and λ via Frank-Wolfe on each draw;
+        Arkhangelsky et al. 2021 Algorithm 2 step 2, and R's default
+        ``synthdid::vcov(method="bootstrap")``), ``"jackknife"``, or
+        ``"placebo"``.
     placebo_effects : np.ndarray, optional
         Method-specific per-iteration estimates: placebo treatment effects
-        (for "placebo"), bootstrap ATT estimates (for "bootstrap"), or
-        leave-one-out estimates (for "jackknife"). The ``variance_method``
-        field disambiguates the contents.
+        (for ``"placebo"``), bootstrap ATT estimates with re-estimated
+        weights per draw (for ``"bootstrap"``), or leave-one-out estimates
+        (for ``"jackknife"``). The ``variance_method`` field disambiguates
+        the contents.
     synthetic_pre_trajectory : np.ndarray, optional
         Synthetic control trajectory in pre-treatment periods, shape
         ``(n_pre,)``. Equal to ``Y_pre_control @ omega_eff`` where

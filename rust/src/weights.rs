@@ -127,7 +127,7 @@ fn sc_weight_fw_gram(
     n: usize,
     min_decrease_sq: f64,
     max_iter: usize,
-) {
+) -> bool {
     let t0 = lam.len();
 
     // Precompute Gram matrix and related quantities — O(N×T0²) once
@@ -148,6 +148,7 @@ fn sc_weight_fw_gram(
     let mut half_grad = Array1::zeros(t0);
 
     let mut prev_val = f64::INFINITY;
+    let mut converged = false;
 
     for t in 0..max_iter {
         // Step 1: half_grad[j] = ata_x[j] - atb[j] + eta * lam[j]
@@ -168,6 +169,7 @@ fn sc_weight_fw_gram(
             let atb_dot_lam: f64 = atb.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
             let val = zeta * zeta * lam_norm_sq + (xt_ata_x - 2.0 * atb_dot_lam + b_norm_sq) / n as f64;
             if t >= 1 && prev_val - val < min_decrease_sq {
+                converged = true;
                 break;
             }
             prev_val = val;
@@ -183,6 +185,7 @@ fn sc_weight_fw_gram(
             let atb_dot_lam: f64 = atb.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
             let val = zeta * zeta * lam_norm_sq + (xt_ata_x - 2.0 * atb_dot_lam + b_norm_sq) / n as f64;
             if t >= 1 && prev_val - val < min_decrease_sq {
+                converged = true;
                 break;
             }
             prev_val = val;
@@ -222,10 +225,12 @@ fn sc_weight_fw_gram(
 
         // Step 10: Convergence check
         if t >= 1 && prev_val - val < min_decrease_sq {
+            converged = true;
             break;
         }
         prev_val = val;
     }
+    converged
 }
 
 /// Allocation-free standard Frank-Wolfe loop for the T0 >= N case (unit weights).
@@ -243,7 +248,7 @@ fn sc_weight_fw_standard(
     n: usize,
     min_decrease_sq: f64,
     max_iter: usize,
-) {
+) -> bool {
     let t0 = lam.len();
 
     // Precompute column norms: col_norms_sq[j] = ||A[:,j]||²
@@ -259,6 +264,7 @@ fn sc_weight_fw_standard(
     let mut diff = Array1::zeros(n); // Reusable buffer for ax - b
 
     let mut prev_val = f64::INFINITY;
+    let mut converged = false;
 
     for t in 0..max_iter {
         // Step 1-2: Compute half_grad = A^T @ (ax - b) + eta * lam
@@ -284,6 +290,7 @@ fn sc_weight_fw_standard(
             }
             let val = zeta * zeta * lam_norm_sq + err_sq / n as f64;
             if t >= 1 && prev_val - val < min_decrease_sq {
+                converged = true;
                 break;
             }
             prev_val = val;
@@ -306,6 +313,7 @@ fn sc_weight_fw_standard(
             }
             let val = zeta * zeta * lam_norm_sq + err_sq / n as f64;
             if t >= 1 && prev_val - val < min_decrease_sq {
+                converged = true;
                 break;
             }
             prev_val = val;
@@ -340,10 +348,12 @@ fn sc_weight_fw_standard(
         let val = zeta * zeta * lam_norm_sq + err_sq / n as f64;
 
         if t >= 1 && prev_val - val < min_decrease_sq {
+            converged = true;
             break;
         }
         prev_val = val;
     }
+    converged
 }
 
 /// Compute synthetic control weights via Frank-Wolfe optimization.
@@ -373,12 +383,13 @@ fn sc_weight_fw_internal(
     init_weights: Option<&Array1<f64>>,
     min_decrease: f64,
     max_iter: usize,
-) -> Array1<f64> {
+) -> (Array1<f64>, bool) {
     let t0 = y.ncols() - 1;
     let n = y.nrows();
 
     if t0 == 0 {
-        return Array1::ones(1);
+        // Degenerate case: no weights to optimize; treat as trivially converged.
+        return (Array1::ones(1), true);
     }
 
     // Column-center if using intercept — owned Array2 for the centered case
@@ -401,15 +412,15 @@ fn sc_weight_fw_internal(
     let min_decrease_sq = min_decrease * min_decrease;
 
     // Dispatch to optimized loop based on problem dimensions
-    if t0 < n {
+    let converged = if t0 < n {
         // Gram path: precompute A^T@A for O(T0) per iteration
-        sc_weight_fw_gram(&a, &b, &mut lam, eta, zeta, n, min_decrease_sq, max_iter);
+        sc_weight_fw_gram(&a, &b, &mut lam, eta, zeta, n, min_decrease_sq, max_iter)
     } else {
         // Standard path: allocation-free with 1 GEMV per iteration
-        sc_weight_fw_standard(&a, &b, &mut lam, eta, zeta, n, min_decrease_sq, max_iter);
-    }
+        sc_weight_fw_standard(&a, &b, &mut lam, eta, zeta, n, min_decrease_sq, max_iter)
+    };
 
-    lam
+    (lam, converged)
 }
 
 /// Compute noise level from first-differences of control outcomes.
@@ -493,7 +504,7 @@ pub fn sc_weight_fw<'py>(
         let v = w.as_array();
         v.to_owned()
     });
-    let result = sc_weight_fw_internal(
+    let (result, _converged) = sc_weight_fw_internal(
         &y_arr,
         zeta,
         intercept,
@@ -502,6 +513,45 @@ pub fn sc_weight_fw<'py>(
         max_iter,
     );
     Ok(result.to_pyarray(py))
+}
+
+/// Compute synthetic control weights via Frank-Wolfe optimization, returning
+/// a convergence flag alongside the weight vector.
+///
+/// Identical numeric contract to `sc_weight_fw`; the returned tuple's second
+/// element is `true` iff the solver's min-decrease criterion fired (rather
+/// than `max_iter` being reached). Callers that need to surface FW non-
+/// convergence explicitly (e.g., SDID bootstrap aggregate warnings) should
+/// use this function instead of `sc_weight_fw`, because the top-level Rust
+/// FW entry point is otherwise silent on non-convergence.
+///
+/// # Returns
+/// Tuple of `(weights, converged)`.
+#[pyfunction]
+#[pyo3(signature = (y, zeta, intercept=true, init_weights=None, min_decrease=1e-5, max_iter=10000))]
+pub fn sc_weight_fw_with_convergence<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray2<'py, f64>,
+    zeta: f64,
+    intercept: bool,
+    init_weights: Option<PyReadonlyArray1<'py, f64>>,
+    min_decrease: f64,
+    max_iter: usize,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, bool)> {
+    let y_arr = y.as_array();
+    let init = init_weights.map(|w| {
+        let v = w.as_array();
+        v.to_owned()
+    });
+    let (result, converged) = sc_weight_fw_internal(
+        &y_arr,
+        zeta,
+        intercept,
+        init.as_ref(),
+        min_decrease,
+        max_iter,
+    );
+    Ok((result.to_pyarray(py), converged))
 }
 
 /// Compute SDID time weights via Frank-Wolfe optimization.
@@ -572,14 +622,19 @@ pub(crate) fn compute_time_weights_internal(
     }
 
     // Two-pass sparsification (matching R's default sparsify=sparsify_function)
-    // First pass: limited iterations
-    let lam = sc_weight_fw_internal(&y_time.view(), zeta_lambda, intercept, None, min_decrease, max_iter_pre_sparsify);
+    // First pass: limited iterations. This entry point discards the inner
+    // convergence flag — Python callers that need convergence tracking use
+    // `compute_time_weights` (Python wrapper in utils.py) with
+    // `return_convergence=True`, which runs the two-pass in Python against
+    // `sc_weight_fw_with_convergence`.
+    let (lam, _) = sc_weight_fw_internal(&y_time.view(), zeta_lambda, intercept, None, min_decrease, max_iter_pre_sparsify);
 
     // Sparsify
     let lam_sparse = sparsify_internal(&lam);
 
     // Second pass: from sparsified initialization
-    sc_weight_fw_internal(&y_time.view(), zeta_lambda, intercept, Some(&lam_sparse), min_decrease, max_iter)
+    let (lam2, _) = sc_weight_fw_internal(&y_time.view(), zeta_lambda, intercept, Some(&lam_sparse), min_decrease, max_iter);
+    lam2
 }
 
 /// Compute SDID unit weights via Frank-Wolfe with two-pass sparsification.
@@ -646,8 +701,9 @@ pub(crate) fn compute_sdid_unit_weights_internal(
         y_unit[[t, n_control]] = y_pre_treated_mean[t];
     }
 
-    // First pass: limited iterations
-    let omega = sc_weight_fw_internal(
+    // First pass: limited iterations. See note in compute_time_weights_internal
+    // about convergence-tracking contract.
+    let (omega, _) = sc_weight_fw_internal(
         &y_unit.view(), zeta_omega, intercept, None, min_decrease, max_iter_pre_sparsify,
     );
 
@@ -655,9 +711,10 @@ pub(crate) fn compute_sdid_unit_weights_internal(
     let omega = sparsify_internal(&omega);
 
     // Second pass: from sparsified initialization
-    sc_weight_fw_internal(
+    let (omega2, _) = sc_weight_fw_internal(
         &y_unit.view(), zeta_omega, intercept, Some(&omega), min_decrease, max_iter,
-    )
+    );
+    omega2
 }
 
 #[cfg(test)]
@@ -752,7 +809,7 @@ mod tests {
     fn test_fw_weights_on_simplex() {
         // Simple 3x3 problem: 2 pre-periods + 1 target column
         let y = array![[1.0, 2.0, 1.5], [3.0, 4.0, 3.5], [5.0, 6.0, 5.5]];
-        let result = sc_weight_fw_internal(&y.view(), 0.1, true, None, 1e-3, 100);
+        let (result, _converged) = sc_weight_fw_internal(&y.view(), 0.1, true, None, 1e-3, 100);
         let sum: f64 = result.sum();
         assert!((sum - 1.0).abs() < 1e-6, "FW weights should sum to 1, got {}", sum);
         assert!(result.iter().all(|&w| w >= -1e-6), "FW weights should be non-negative");
@@ -843,7 +900,7 @@ mod tests {
         let vals: Vec<f64> = (0..45).map(|i| ((i * 13 + 5) % 53) as f64 / 53.0).collect();
         let y = Array2::from_shape_vec((5, 9), vals).unwrap();
 
-        let result = sc_weight_fw_internal(&y.view(), 0.5, true, None, 1e-5, 10000);
+        let (result, _converged) = sc_weight_fw_internal(&y.view(), 0.5, true, None, 1e-5, 10000);
 
         // Verify valid simplex weights
         let sum: f64 = result.sum();
@@ -863,7 +920,7 @@ mod tests {
         let y = Array2::from_shape_vec((20, 10), vals).unwrap();
 
         // Run with enough iterations to exercise the refresh mechanism
-        let result = sc_weight_fw_internal(&y.view(), 0.1, true, None, 1e-8, 1000);
+        let (result, _converged) = sc_weight_fw_internal(&y.view(), 0.1, true, None, 1e-8, 1000);
 
         // Verify valid result (convergence with correct weights)
         let sum: f64 = result.sum();
@@ -881,7 +938,7 @@ mod tests {
         let vals: Vec<f64> = (0..36).map(|i| ((i * 11 + 7) % 41) as f64 / 41.0).collect();
         let y = Array2::from_shape_vec((6, 6), vals).unwrap();
 
-        let result = sc_weight_fw_internal(&y.view(), 0.2, true, None, 1e-5, 10000);
+        let (result, _converged) = sc_weight_fw_internal(&y.view(), 0.2, true, None, 1e-5, 10000);
 
         let sum: f64 = result.sum();
         assert!((sum - 1.0).abs() < 1e-6, "Weights should sum to 1, got {}", sum);
@@ -939,7 +996,7 @@ mod tests {
         // Gram path: N=15, T0=4 (T0 < N)
         let vals_gram: Vec<f64> = (0..75).map(|i| ((i * 3 + 1) % 37) as f64 / 37.0).collect();
         let y_gram = Array2::from_shape_vec((15, 5), vals_gram).unwrap();
-        let result_gram = sc_weight_fw_internal(&y_gram.view(), 0.3, false, None, 1e-5, 10000);
+        let (result_gram, _converged_gram) = sc_weight_fw_internal(&y_gram.view(), 0.3, false, None, 1e-5, 10000);
         let sum_gram: f64 = result_gram.sum();
         assert!((sum_gram - 1.0).abs() < 1e-6, "Gram intercept=false: weights should sum to 1, got {}", sum_gram);
         assert!(result_gram.iter().all(|&w| w >= -1e-6), "Gram intercept=false: weights should be non-negative");
@@ -947,7 +1004,7 @@ mod tests {
         // Standard path: N=4, T0=10 (T0 >= N)
         let vals_std: Vec<f64> = (0..44).map(|i| ((i * 5 + 2) % 29) as f64 / 29.0).collect();
         let y_std = Array2::from_shape_vec((4, 11), vals_std).unwrap();
-        let result_std = sc_weight_fw_internal(&y_std.view(), 0.3, false, None, 1e-5, 10000);
+        let (result_std, _converged_std) = sc_weight_fw_internal(&y_std.view(), 0.3, false, None, 1e-5, 10000);
         let sum_std: f64 = result_std.sum();
         assert!((sum_std - 1.0).abs() < 1e-6, "Standard intercept=false: weights should sum to 1, got {}", sum_std);
         assert!(result_std.iter().all(|&w| w >= -1e-6), "Standard intercept=false: weights should be non-negative");

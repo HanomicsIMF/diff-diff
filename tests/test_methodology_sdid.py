@@ -498,7 +498,13 @@ class TestPlaceboSE:
 
 
 class TestBootstrapSE:
-    """Verify bootstrap SE with fixed weights."""
+    """Verify the paper-faithful refit pairs bootstrap.
+
+    ``variance_method="bootstrap"`` re-estimates ω̂_b and λ̂_b via two-pass
+    sparsified Frank-Wolfe on each bootstrap draw (Arkhangelsky et al. 2021
+    Algorithm 2 step 2, and R's default ``synthdid::vcov(method="bootstrap")``).
+    Survey designs are rejected upstream in ``fit()``.
+    """
 
     def test_bootstrap_se_positive(self, ci_params):
         """Bootstrap SE should be positive."""
@@ -515,6 +521,7 @@ class TestBootstrapSE:
 
         assert results.se > 0
         assert results.variance_method == "bootstrap"
+        assert results.n_bootstrap == n_boot
 
     def test_bootstrap_with_zeta_overrides(self, ci_params):
         """Bootstrap SE should work with user-specified zeta overrides."""
@@ -534,6 +541,178 @@ class TestBootstrapSE:
         assert results.zeta_lambda == 0.5
         assert results.variance_method == "bootstrap"
         assert results.se > 0
+
+    def test_bootstrap_se_tracks_placebo_se_exchangeable(self, ci_params):
+        """Bootstrap SE tracks placebo SE under control-pool exchangeability.
+
+        Placebo (Algorithm 4) already re-estimates ω and λ per permutation,
+        so under exchangeability of the control pool it should produce a
+        similar variance to the paper-faithful refit bootstrap. Divergence
+        flags either a refit implementation bug or a genuine exchangeability
+        violation in the DGP.
+
+        Skipped under pure-Python mode: ``ci_params.bootstrap(min_n=...)``
+        caps ``min_n`` at 49 to keep pure-Python CI fast (see
+        ``tests/conftest.py:210``), but the 0.40 tolerance is calibrated
+        for B∈[100, 200] — at B=49 MC noise on the bootstrap SE can push
+        rel-diff beyond 0.40 without any correctness issue (B=100/200
+        runs converge to rel-diff ≈ 0.27 on the same seed). The 15
+        Rust-backed matrix jobs (macOS/Linux x86/Linux ARM/Windows × 3
+        Python versions) exercise the regression guard at the designed
+        B=200, so the contract is still covered for the default user
+        install path.
+        """
+        from diff_diff import utils as dd_utils
+
+        if not dd_utils.HAS_RUST_BACKEND:
+            pytest.skip(
+                "Pure-Python mode caps ci_params.bootstrap min_n at 49, "
+                "but the 0.40 tolerance requires B≥100. Rust-backend CI "
+                "jobs exercise this regression guard at B=200."
+            )
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        n_boot = ci_params.bootstrap(200, min_n=100)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_placebo = SyntheticDiD(
+                variance_method="placebo", n_bootstrap=n_boot, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period", post_periods=[5, 6, 7],
+            )
+            r_boot = SyntheticDiD(
+                variance_method="bootstrap", n_bootstrap=n_boot, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period", post_periods=[5, 6, 7],
+            )
+        rel_diff = abs(r_boot.se - r_placebo.se) / r_placebo.se
+        # Tolerance chosen for B=100–200 with MC noise floor ~7–10% on the
+        # SE ratio; 0.40 leaves headroom without hiding order-of-magnitude
+        # regressions.
+        assert rel_diff < 0.40, (
+            f"bootstrap SE {r_boot.se:.6f} does not track placebo SE "
+            f"{r_placebo.se:.6f} on exchangeable DGP (rel diff {rel_diff:.4f})"
+        )
+
+    def test_bootstrap_raises_on_pweight_survey(self):
+        """Survey + bootstrap raises NotImplementedError (pweight-only path).
+
+        Rao-Wu rescaled weights composed with paper-faithful Frank-Wolfe
+        re-estimation is a separate derivation that is not yet implemented;
+        the guard lives upstream in ``fit()`` before the bootstrap dispatcher.
+        """
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        with pytest.raises(NotImplementedError, match="bootstrap"):
+            SyntheticDiD(
+                variance_method="bootstrap", n_bootstrap=50, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt"),
+            )
+
+    def test_bootstrap_raises_on_full_design_survey(self):
+        """Survey + bootstrap with strata/PSU raises NotImplementedError.
+
+        No SDID variance method currently supports strata/PSU/FPC; the guard
+        on line ~300 of ``fit()`` rejects the combination unconditionally.
+        """
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        df["stratum"] = df["unit"] % 2
+        with pytest.raises(NotImplementedError, match="strata"):
+            SyntheticDiD(
+                variance_method="bootstrap", n_bootstrap=50, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt", strata="stratum"),
+            )
+
+    def test_bootstrap_summary_shows_replications(self, ci_params):
+        """result.summary() shows "Bootstrap replications" line for bootstrap.
+
+        Cross-surface guard: the result-class gating at ``results.py:960``
+        must keep ``"bootstrap"`` in its allow-list so the replications row
+        renders for bootstrap fits.
+        """
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        n_boot = ci_params.bootstrap(50)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = SyntheticDiD(
+                variance_method="bootstrap", n_bootstrap=n_boot, seed=1
+            ).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+            )
+        summary = r.summary()
+        assert "Bootstrap replications" in summary
+        assert str(n_boot) in summary
+
+    def test_bootstrap_fw_nonconvergence_warning_fires_under_rust(self, monkeypatch):
+        """Aggregate FW non-convergence warning surfaces on the Rust backend.
+
+        Regression against the silent-failure mode previously masked by the
+        ``warnings.catch_warnings`` tally: the Rust FW solver is silent on
+        ``max_iter`` exhaustion, so a purely warnings-based per-draw count
+        read zero even when the Rust solver did not converge. After wiring
+        ``return_convergence=True`` through
+        ``compute_sdid_unit_weights`` / ``compute_time_weights`` via the new
+        ``sc_weight_fw_with_convergence`` Rust entry point, the helpers
+        thread an explicit bool per pass and the aggregate warning above 5%
+        of valid draws fires.
+
+        We force every Rust FW call to report ``converged=False`` by monkey-
+        patching the helper; under the fixed wiring, the aggregate warning
+        must fire. Prior to the fix, this same monkeypatch would have had
+        no effect on the tally.
+        """
+        from diff_diff import utils as dd_utils
+
+        if not dd_utils.HAS_RUST_BACKEND:
+            pytest.skip("Test targets the Rust backend specifically.")
+
+        real_rust = dd_utils._rust_sc_weight_fw_with_convergence
+
+        def _always_not_converged(Y, zeta, intercept, init, min_decrease, max_iter):
+            weights, _ = real_rust(Y, zeta, intercept, init, min_decrease, max_iter)
+            return weights, False
+
+        monkeypatch.setattr(
+            dd_utils, "_rust_sc_weight_fw_with_convergence", _always_not_converged
+        )
+
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        sdid = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=42)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sdid.fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=list(range(5, 8)),
+            )
+
+        fw_warnings = [
+            w for w in caught
+            if issubclass(w.category, UserWarning)
+            and "Frank-Wolfe did not converge" in str(w.message)
+        ]
+        assert len(fw_warnings) >= 1, (
+            "Expected the aggregate Frank-Wolfe non-convergence warning "
+            "to fire when every FW call reports converged=False under "
+            "the Rust backend. Got no such warning — the Rust FW path is "
+            "silent on non-convergence and the bootstrap loop is not "
+            "surfacing it."
+        )
 
 
 # =============================================================================
@@ -872,60 +1051,6 @@ class TestJackknifeSERParity:
         )
         assert abs(results.se - self.R_JACKKNIFE_SE) < 1e-10
 
-    def test_bootstrap_se_matches_r(self, r_panel_df):
-        """Bootstrap SE should match R's vcov(method='bootstrap') given the
-        same bootstrap indices.
-
-        Scope of parity: RNG streams differ between Python (PCG64) and R
-        (Mersenne Twister), so a shared integer `seed` value draws
-        different resamples in each language. The fixture pins R's B × N
-        index matrix and the test feeds it through the Python bootstrap
-        loop via the `_bootstrap_indices` seam, so both implementations
-        traverse the *same* resamples. What the 1e-10 match verifies is
-        the deterministic math downstream of the indices — per-draw
-        estimator (weight renormalization + SDID formula) and SE
-        aggregation (`sqrt((r-1)/r) × sd(ddof=1)`). It does NOT verify
-        that independently-seeded runs of the two bootstraps agree at any
-        finite B; that would require a shared RNG stream or a Monte-
-        Carlo-tolerance comparison at large B, both out of scope here.
-        """
-        import json
-        import pathlib
-
-        fixture = pathlib.Path(__file__).parent / "data" / "sdid_bootstrap_indices_r.json"
-        if not fixture.exists():
-            pytest.skip(
-                f"Missing R-parity fixture {fixture}; regenerate via "
-                "`Rscript benchmarks/R/generate_sdid_bootstrap_parity_fixture.R`."
-            )
-        payload = json.loads(fixture.read_text())
-        # R indices are 1-based; convert to 0-based for numpy.
-        indices = np.asarray(payload["indices"], dtype=np.int64) - 1
-        r_bootstrap_se = float(payload["se"])
-
-        n_bootstrap = indices.shape[0]
-        sdid = SyntheticDiD(
-            variance_method="bootstrap",
-            n_bootstrap=n_bootstrap,
-            seed=42,
-        )
-        # Route the pinned indices through the hidden _bootstrap_indices seam
-        # on _bootstrap_se. Patch the bound method at the class level so the
-        # sdid.fit() call picks it up.
-        orig = SyntheticDiD._bootstrap_se
-
-        def _patched(self, *args, **kwargs):
-            kwargs["_bootstrap_indices"] = indices
-            return orig(self, *args, **kwargs)
-
-        with patch.object(SyntheticDiD, "_bootstrap_se", _patched):
-            results = sdid.fit(
-                r_panel_df, outcome="outcome", treatment="treated",
-                unit="unit", time="time",
-                post_periods=[5, 6, 7],
-            )
-        assert abs(results.se - r_bootstrap_se) < 1e-10
-
 
 # =============================================================================
 # Edge Cases
@@ -1146,6 +1271,46 @@ class TestGetSetParams:
         sdid = SyntheticDiD()
         with pytest.raises(ValueError, match="Unknown parameter"):
             sdid.set_params(nonexistent_param=1.0)
+
+    def test_set_params_rejects_invalid_variance_method(self):
+        """set_params with invalid variance_method raises ValueError.
+
+        Parity with __init__: the setter path must enforce the same enum
+        contract, not silently accept arbitrary strings.
+        """
+        sdid = SyntheticDiD()
+        with pytest.raises(ValueError, match="variance_method must be one of"):
+            sdid.set_params(variance_method="not_a_method")
+
+    def test_set_params_rejects_incoherent_n_bootstrap(self):
+        """set_params(variance_method='bootstrap', n_bootstrap=1) raises.
+
+        Parity with __init__: n_bootstrap >= 2 required unless jackknife.
+        """
+        sdid = SyntheticDiD()
+        with pytest.raises(ValueError, match="n_bootstrap must be >= 2"):
+            sdid.set_params(variance_method="bootstrap", n_bootstrap=1)
+
+    def test_set_params_allows_n_bootstrap_one_for_jackknife(self):
+        """Jackknife is deterministic; n_bootstrap is ignored and need not be >= 2."""
+        sdid = SyntheticDiD()
+        sdid.set_params(variance_method="jackknife", n_bootstrap=1)
+        assert sdid.variance_method == "jackknife"
+        assert sdid.n_bootstrap == 1
+
+    def test_set_params_rolls_back_on_validation_failure(self):
+        """On validation failure, ``set_params`` restores the pre-call state.
+
+        Guards against leaving the instance in a partially-mutated invalid
+        state if one of multiple simultaneous updates fails validation.
+        """
+        sdid = SyntheticDiD(variance_method="placebo", n_bootstrap=200)
+        with pytest.raises(ValueError):
+            sdid.set_params(variance_method="bootstrap", n_bootstrap=1)
+        # Pre-call values preserved despite mid-sequence setattr on the
+        # (now-partially-applied) instance.
+        assert sdid.variance_method == "placebo"
+        assert sdid.n_bootstrap == 200
 
 
 class TestDeprecatedParams:
@@ -2239,7 +2404,17 @@ class TestScaleEquivariance:
     # drift the fix is not a true no-op on normal data and review is warranted.
     _BASELINE = {
         "placebo":   (4.603349837478791,   0.29385822261006445, 0.004975124378109453,    200),
-        "bootstrap": (4.603349837478791,   0.16272527384941657, 4.707563471218442e-176,  200),
+        # bootstrap = paper-faithful refit with R-default warm-start: FW is
+        # initialized with ``sum_normalize(unit_weights[boot_control_idx])``
+        # for ω and with the fit-time ``time_weights`` for λ on each draw,
+        # matching R's ``vcov.R::bootstrap_sample`` opts-rebind shape.
+        # Drift from the cold-start capture (0.21424970…) is confined to
+        # a handful of bootstrap draws where the 100-iter pre-sparsify pass
+        # converged to a different sparsification pattern under uniform
+        # init; strict-convexity of the FW objective means the converged
+        # answer is unique, so the warm-start matches R more faithfully on
+        # problems where the pre-sparsify budget is tight.
+        "bootstrap": (4.6033498374787865,  0.21427381053829253, 2.2215821875845446e-102, 200),
         "jackknife": (4.603349837478791,   0.19908075946622925, 2.716551077849484e-118,   23),
     }
 
@@ -2268,16 +2443,24 @@ class TestScaleEquivariance:
 
     @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
     def test_baseline_parity_small_scale(self, variance_method):
-        """Existing-fixture results match pre-fix literals — guards against
-        drift; a true no-op should hit float epsilon relative to baseline."""
+        """Existing-fixture results match captured literals at bit-identity
+        tolerance.
+
+        The bootstrap refactor that removed the fixed-weight path reuses the
+        same rng.choice sequence and the same compute_sdid_{unit,time}_weights
+        + compute_sdid_estimator call chain that the refit branch already ran
+        under the previous enum name. Any drift above machine epsilon means
+        the numerical path changed, not just a rename — investigate before
+        accepting. Placebo / jackknife are untouched by that refactor.
+        """
         att0, se0, p0, n0 = self._BASELINE[variance_method]
         data = _make_panel(seed=42)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             r = self._fit(data, variance_method)
-        assert r.att == pytest.approx(att0, rel=1e-8)
-        assert r.se == pytest.approx(se0, rel=1e-8)
-        assert r.p_value == pytest.approx(p0, rel=1e-8)
+        assert r.att == pytest.approx(att0, rel=1e-14)
+        assert r.se == pytest.approx(se0, rel=1e-14)
+        assert r.p_value == pytest.approx(p0, rel=1e-14)
         assert len(r.placebo_effects) == n0
 
     @pytest.mark.parametrize("variance_method", ["placebo", "bootstrap", "jackknife"])
@@ -2437,26 +2620,28 @@ class TestPValueSemantics:
         )
 
     @pytest.mark.slow
-    def test_bootstrap_p_value_null_calibration(self):
-        """Bootstrap p-values on null data must be spread (not clustered)
-        and reject within a plausible band for the fixed-weight regime.
+    def test_bootstrap_p_value_null_dispersion(self):
+        """Bootstrap p-values on null data must be dispersed and fall in a
+        loose calibration-agnostic band — regression guard against the
+        pre-fix p-clustering dispatch bug and against SE-collapse.
 
-        Semantic: this is a characterization test, not a nominal-
-        calibration assertion. Fixed-weight bootstrap deviates from
-        Arkhangelsky et al. (2021) Algorithm 2 by ignoring weight-
-        estimation uncertainty, which biases SE downward and over-
-        rejects under H0. On this DGP at n=500 seeds the empirical
-        rejection rate at α=0.05 runs ~0.18 (≈3.7× nominal) — see the
-        SyntheticDiD calibration note in REGISTRY.md.
+        Semantic: this is a calibration-agnostic regression test, not a
+        nominal-calibration assertion. Under paper-faithful refit
+        bootstrap (Arkhangelsky et al. 2021 Algorithm 2 step 2) the
+        REGISTRY-cited coverage MC puts α=0.05 rejection near nominal on
+        this DGP (≈0.08 at 500 seeds × B=200); the previous fixed-weight
+        path over-rejected at ~0.18. We deliberately do NOT assert
+        directionally on rejection rate because the reviewer's P2 was
+        that the prior lower bound (`> 0.05`) biased the test toward
+        anti-conservative behavior.
 
-        Assertions are wide enough to accommodate Monte Carlo noise at
-        n=100 seeds (rejection rate SE ≈ 0.04 under fixed-weight) and
-        remain valid if future calibration improves toward nominal:
+        Assertions (calibration-agnostic):
 
-        - rejection rate > α = 0.05: catches the pre-fix dispatch bug
-          where p clustered at ~0.5 on every seed (rejection rate → 0).
-        - rejection rate < 0.5: upper sanity bound — catches new
-          catastrophic miscalibration (e.g. SE collapsing to 0).
+        - ``np.std(p_values) > 0.10``: dispersion floor — catches the
+          pre-fix dispatch bug where p clustered at ~0.5 on every seed
+          (std → 0).
+        - ``0.01 <= rejection_rate <= 0.40``: loose band — catches both
+          SE-collapse (rate → 1) and SE-explosion (rate → 0).
         """
         p_values = []
         for seed in range(100):
@@ -2474,14 +2659,20 @@ class TestPValueSemantics:
                 p_values.append(r.p_value)
         p_arr = np.asarray(p_values)
         assert len(p_arr) >= 90, f"only {len(p_arr)}/100 fits produced finite p-values"
-        rejection_rate = float(np.mean(p_arr < 0.05))
-        assert rejection_rate > 0.05, (
-            f"rejection rate {rejection_rate:.3f} <= 0.05 — p-values likely "
-            "clustered (dispatch-bug regression)"
+
+        p_std = float(np.std(p_arr))
+        assert p_std > 0.10, (
+            f"p-value std {p_std:.3f} <= 0.10 — p-values too tightly "
+            "clustered (pre-fix dispatch bug regression; fixed-weight→"
+            "refit porting bug would manifest as p≈0.5 on every seed)"
         )
-        assert rejection_rate < 0.5, (
-            f"rejection rate {rejection_rate:.3f} >= 0.5 — catastrophic "
-            "miscalibration (SE → 0 regression?)"
+
+        rejection_rate = float(np.mean(p_arr < 0.05))
+        assert 0.01 <= rejection_rate <= 0.40, (
+            f"rejection rate {rejection_rate:.3f} outside loose "
+            "calibration-agnostic band [0.01, 0.40] — likely SE-collapse "
+            "or SE-explosion regression (compare against the REGISTRY "
+            "coverage MC table for the nominal band on this DGP)"
         )
 
 
@@ -2748,3 +2939,72 @@ class TestHeterogeneousAndRampingScale:
         sens = r.sensitivity_to_zeta_omega()
         assert np.all(np.isfinite(sens["att"]))
         assert np.all(np.isfinite(sens["pre_fit_rmse"]))
+
+
+# =============================================================================
+# Coverage MC calibration artifact (generated by benchmarks/python/coverage_sdid.py)
+# =============================================================================
+
+
+class TestCoverageMCArtifact:
+    """Schema smoke-check on ``benchmarks/data/sdid_coverage.json``.
+
+    The full Monte Carlo study (500 seeds × B=200 × 3 DGPs × 3 methods)
+    runs outside CI; its JSON output underwrites the calibration table in
+    REGISTRY.md §SyntheticDiD. This test verifies the artifact is present
+    and structured correctly. Per ``feedback_golden_file_pytest_skip.md``,
+    skip if missing — CI's isolated-install job copies only ``tests/``,
+    not ``benchmarks/``.
+    """
+
+    def test_coverage_artifacts_present(self):
+        import json
+        import pathlib
+
+        artifact = (
+            pathlib.Path(__file__).parent.parent
+            / "benchmarks" / "data" / "sdid_coverage.json"
+        )
+        if not artifact.exists():
+            pytest.skip(
+                f"Missing coverage MC artifact {artifact}; regenerate via "
+                "`python benchmarks/python/coverage_sdid.py --n-seeds 500 "
+                "--n-bootstrap 200 --output benchmarks/data/sdid_coverage.json`."
+            )
+        payload = json.loads(artifact.read_text())
+
+        for key in ("metadata", "dgps", "per_dgp"):
+            assert key in payload, f"missing top-level key: {key}"
+
+        meta = payload["metadata"]
+        for key in ("n_seeds", "n_bootstrap", "library_version", "backend",
+                    "generated_at", "methods", "alphas"):
+            assert key in meta, f"missing metadata key: {key}"
+        assert meta["n_seeds"] >= 100, (
+            f"n_seeds={meta['n_seeds']} too small; the REGISTRY calibration "
+            "table cites 500-seed rates — regenerate with documented settings."
+        )
+        assert set(meta["methods"]) == {"placebo", "bootstrap", "jackknife"}, (
+            "coverage artifact methods list must be exactly the 3 supported "
+            "SDID variance methods (placebo / bootstrap / jackknife); the old "
+            "fixed-weight 'bootstrap' and the additive 'bootstrap_refit' "
+            "enum value are both gone."
+        )
+
+        for dgp in ("balanced", "unbalanced", "aer63"):
+            assert dgp in payload["per_dgp"], f"missing DGP block: {dgp}"
+            per_method = payload["per_dgp"][dgp]
+            for method in ("placebo", "bootstrap", "jackknife"):
+                assert method in per_method, (
+                    f"missing method block {method!r} under DGP {dgp!r}"
+                )
+                block = per_method[method]
+                for field in ("rejection_rate", "mean_se", "true_sd_tau_hat",
+                              "se_over_truesd", "n_successful_fits"):
+                    assert field in block, (
+                        f"missing field {field!r} in {dgp}/{method}"
+                    )
+                for alpha_key in ("0.01", "0.05", "0.10"):
+                    assert alpha_key in block["rejection_rate"], (
+                        f"missing alpha {alpha_key} in {dgp}/{method} rejection_rate"
+                    )

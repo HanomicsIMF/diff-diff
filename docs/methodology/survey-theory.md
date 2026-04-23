@@ -722,9 +722,17 @@ Two bootstrap strategies interact with survey designs:
   Generates multiplier weights at the PSU level within strata, with FPC
   scaling. Each bootstrap draw reweights the IF values.
 
-- **Rao-Wu rescaled bootstrap** (SunAbraham, SyntheticDiD, TROP): Draws PSUs
+- **Rao-Wu rescaled bootstrap** (SunAbraham, TROP): Draws PSUs
   with replacement within strata and rescales observation weights. Each draw
-  re-runs the full estimator on the resampled data.
+  re-runs the full estimator on the resampled data. *SyntheticDiD is
+  intentionally excluded in this release:* the paper-faithful refit
+  bootstrap rejects every survey design because composing Rao-Wu rescaled
+  weights with Frank-Wolfe re-estimation requires a weighted-FW derivation
+  that is not yet implemented. Pweight-only SDID users should use
+  ``variance_method="placebo"`` or ``"jackknife"``; strata/PSU/FPC users
+  have no SDID variance option. See TODO.md and
+  ``docs/methodology/REGISTRY.md`` §SyntheticDiD for the deferred-
+  composition sketch.
 
 ---
 

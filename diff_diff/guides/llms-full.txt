@@ -468,7 +468,7 @@ SyntheticDiD(
     zeta_omega: float | None = None,        # Unit weight regularization (auto-computed if None)
     zeta_lambda: float | None = None,       # Time weight regularization (auto-computed if None)
     alpha: float = 0.05,
-    variance_method: str = "placebo",       # "placebo" or "bootstrap"
+    variance_method: str = "placebo",       # "placebo", "bootstrap", or "jackknife"
     n_bootstrap: int = 200,                 # Replications for variance estimation
     seed: int | None = None,
 )
@@ -1673,7 +1673,7 @@ sd_female, data_female = sd.subpopulation(data, mask=lambda df: df['sex'] == 'F'
 **Key features:**
 - Taylor Series Linearization (TSL) variance with strata + PSU + FPC
 - Replicate weight variance: BRR, Fay's BRR, JK1, JKn, SDR (13 of 16 estimators, including dCDH)
-- Survey-aware bootstrap: multiplier at PSU (Hall-Mammen wild; dCDH, staggered) or Rao-Wu rescaled (SyntheticDiD, SunAbraham)
+- Survey-aware bootstrap: multiplier at PSU (Hall-Mammen wild; dCDH, staggered) or Rao-Wu rescaled (SunAbraham, TROP). SyntheticDiD bootstrap is non-survey only: the paper-faithful refit path re-estimates weights via Frank-Wolfe per draw, and Rao-Wu + refit composition is not yet implemented (tracked in TODO.md)
 - DEFF diagnostics, subpopulation analysis, weight trimming (`trim_weights`)
 - Repeated cross-sections: `CallawaySantAnna(panel=False)`
 - Compatibility matrix: see `docs/choosing_estimator.rst` Survey Design Support section

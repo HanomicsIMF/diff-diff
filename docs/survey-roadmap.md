@@ -49,9 +49,12 @@ Weighted `solve_logit()` in `linalg.py` — survey weights enter IRLS as
 
 ### Phase 6: Advanced Features (v2.7.6)
 
-- **Survey-aware bootstrap** for all 8 bootstrap-using estimators:
+- **Survey-aware bootstrap** for bootstrap-using estimators:
   multiplier at PSU (CS, Imputation, TwoStage, Continuous, Efficient)
-  and Rao-Wu rescaled (SA, SyntheticDiD, TROP)
+  and Rao-Wu rescaled (SA, TROP). SyntheticDiD bootstrap no longer supports
+  survey designs: the previous fixed-weight + Rao-Wu path was not paper-
+  faithful and was removed, and composing Rao-Wu with paper-faithful refit
+  Frank-Wolfe requires a separate derivation (tracked in TODO.md)
 - **Replicate weight variance**: BRR, Fay's BRR, JK1, JKn, SDR.
   12 of 16 estimators supported (not SyntheticDiD, TROP, BaconDecomposition, or WooldridgeDiD)
 - **DEFF diagnostics**: per-coefficient design effects vs SRS baseline
@@ -216,10 +219,11 @@ the limitation and suggested alternative.
 
 | Estimator | Limitation | Alternative |
 |-----------|-----------|-------------|
-| SyntheticDiD | Replicate weights | Use strata/PSU/FPC design with Rao-Wu rescaled bootstrap |
+| SyntheticDiD | Strata/PSU/FPC (any variance method) | No SDID variance option in this release. Pweight-only works with `variance_method='placebo'` or `'jackknife'`. Strata/PSU/FPC + SDID requires composing Rao-Wu rescaled weights with paper-faithful Frank-Wolfe re-estimation; sketch in REGISTRY.md §SyntheticDiD. |
+| SyntheticDiD | `variance_method='bootstrap'` + any survey design (including pweight-only) | Use `variance_method='placebo'` or `'jackknife'` for pweight-only surveys. Refit bootstrap composed with survey weights requires the same weighted-FW derivation noted above. |
+| SyntheticDiD | Replicate weights | Pre-existing limitation: no replicate-weight survey support on SDID. |
 | TROP | Replicate weights | Use strata/PSU/FPC design with Rao-Wu rescaled bootstrap |
 | BaconDecomposition | Replicate weights | Diagnostic only, no inference |
-| SyntheticDiD | `variance_method='placebo'` + strata/PSU/FPC | Use `variance_method='bootstrap'` |
 | ImputationDiD | `pretrends=True` + replicate weights | Use analytical survey design instead |
 | ImputationDiD | `pretrend_test()` + replicate weights | Use analytical survey design instead |
 | DiD, TWFE | `inference='wild_bootstrap'` + `survey_design` | Use analytical survey inference (default) |

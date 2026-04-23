@@ -21,6 +21,7 @@ from diff_diff._backend import (
     _rust_compute_time_weights,
     _rust_compute_noise_level,
     _rust_sc_weight_fw,
+    _rust_sc_weight_fw_with_convergence,
 )
 
 # Numerical constants for optimization algorithms
@@ -1304,7 +1305,8 @@ def _sc_weight_fw(
     init_weights: Optional[np.ndarray] = None,
     min_decrease: float = 1e-5,
     max_iter: int = 10000,
-) -> np.ndarray:
+    return_convergence: bool = False,
+):
     """Compute synthetic control weights via Frank-Wolfe optimization.
 
     Matches R's ``sc.weight.fw()`` from the synthdid package. Solves::
@@ -1329,13 +1331,37 @@ def _sc_weight_fw(
         should pass the data-dependent value for best results.
     max_iter : int, default 10000
         Maximum number of iterations. Matches R's default.
+    return_convergence : bool, default False
+        If True, returns a tuple ``(weights, converged)`` where
+        ``converged`` is ``True`` iff the min-decrease criterion fired
+        rather than ``max_iter`` being reached. Dispatches to the Rust
+        ``sc_weight_fw_with_convergence`` entry point when available, and
+        to ``_sc_weight_fw_numpy(return_convergence=True)`` otherwise. Used
+        by SDID bootstrap to surface per-draw FW non-convergence
+        explicitly instead of relying on ``warnings.catch_warnings`` (the
+        default Rust FW entry point is silent on non-convergence).
 
     Returns
     -------
-    np.ndarray
-        Weights of shape (T0,) on the simplex.
+    np.ndarray or Tuple[np.ndarray, bool]
+        Weights of shape (T0,) on the simplex; with
+        ``return_convergence=True``, additionally the convergence flag.
     """
     if HAS_RUST_BACKEND:
+        if return_convergence:
+            weights, converged = _rust_sc_weight_fw_with_convergence(
+                np.ascontiguousarray(Y, dtype=np.float64),
+                zeta,
+                intercept,
+                (
+                    np.ascontiguousarray(init_weights, dtype=np.float64)
+                    if init_weights is not None
+                    else None
+                ),
+                min_decrease,
+                max_iter,
+            )
+            return np.asarray(weights), converged
         return np.asarray(
             _rust_sc_weight_fw(
                 np.ascontiguousarray(Y, dtype=np.float64),
@@ -1350,7 +1376,10 @@ def _sc_weight_fw(
                 max_iter,
             )
         )
-    return _sc_weight_fw_numpy(Y, zeta, intercept, init_weights, min_decrease, max_iter)
+    return _sc_weight_fw_numpy(
+        Y, zeta, intercept, init_weights, min_decrease, max_iter,
+        return_convergence=return_convergence,
+    )
 
 
 def _sc_weight_fw_numpy(
@@ -1360,13 +1389,22 @@ def _sc_weight_fw_numpy(
     init_weights: Optional[np.ndarray] = None,
     min_decrease: float = 1e-5,
     max_iter: int = 10000,
-) -> np.ndarray:
-    """Pure NumPy implementation of Frank-Wolfe SC weight solver."""
+    return_convergence: bool = False,
+):
+    """Pure NumPy implementation of Frank-Wolfe SC weight solver.
+
+    When ``return_convergence=True``, returns a tuple ``(weights, converged)``
+    and suppresses the default ``warn_if_not_converged`` side effect — the
+    caller is responsible for deciding how to surface non-convergence.
+    """
     T0 = Y.shape[1] - 1
     N = Y.shape[0]
 
     if T0 <= 0:
-        return np.ones(max(T0, 1))
+        lam_trivial = np.ones(max(T0, 1))
+        if return_convergence:
+            return lam_trivial, True
+        return lam_trivial
 
     # Column-center if using intercept (matches R's intercept=TRUE default)
     if intercept:
@@ -1390,6 +1428,8 @@ def _sc_weight_fw_numpy(
         if t >= 1 and vals[t - 1] - vals[t] < min_decrease**2:
             converged = True
             break
+    if return_convergence:
+        return lam, converged
     warn_if_not_converged(converged, "Frank-Wolfe SC weight solver", max_iter, min_decrease)
 
     return lam
@@ -1427,7 +1467,9 @@ def compute_time_weights(
     min_decrease: float = 1e-5,
     max_iter_pre_sparsify: int = 100,
     max_iter: int = 10000,
-) -> np.ndarray:
+    init_weights: Optional[np.ndarray] = None,
+    return_convergence: bool = False,
+):
     """Compute SDID time weights via Frank-Wolfe optimization.
 
     Matches R's ``synthdid::sc.weight.fw(Yc[1:N0, ], zeta=zeta.lambda,
@@ -1452,11 +1494,32 @@ def compute_time_weights(
     max_iter : int, default 10000
         Maximum iterations for second pass (after sparsification).
         Matches R's default.
+    init_weights : np.ndarray, optional
+        Warm-start weights for the first Frank-Wolfe pass, shape ``(n_pre,)``.
+        If None (default), the solver starts from uniform, matching the
+        top-level ``synthdid_estimate(update.lambda=TRUE)`` path. When
+        provided, the Rust fast-path is skipped in favor of the Python
+        two-pass dispatcher so the first-pass init can be threaded
+        through; this matches R's ``synthdid::bootstrap_sample`` shape
+        (which passes ``weights$lambda`` as FW init per draw). Used by
+        ``SyntheticDiD._bootstrap_se`` on the refit loop.
+    return_convergence : bool, default False
+        If True, returns a tuple ``(weights, converged)`` where ``converged``
+        is the AND of the first-pass and second-pass convergence flags from
+        the underlying ``_sc_weight_fw`` calls (True iff the min-decrease
+        criterion fired on BOTH passes; False if either hit ``max_iter``).
+        Setting this flag also forces the Python two-pass dispatcher even
+        when ``init_weights`` is None, because the Rust top-level fast-path
+        is silent on non-convergence. Used by SDID bootstrap to surface
+        per-draw FW non-convergence explicitly; standalone callers can
+        leave this at the default to preserve the legacy ABI.
 
     Returns
     -------
-    np.ndarray
-        Time weights of shape (n_pre,) on the simplex.
+    np.ndarray or Tuple[np.ndarray, bool]
+        Time weights of shape (n_pre,) on the simplex. With
+        ``return_convergence=True``, additionally the two-pass convergence
+        flag (as described above).
     """
     if Y_post_control.shape[0] == 0:
         raise ValueError(
@@ -1464,7 +1527,10 @@ def compute_time_weights(
             "is required for time weight computation."
         )
 
-    if HAS_RUST_BACKEND:
+    # When the caller asks for convergence tracking, skip the Rust top-level
+    # fast-path even if init_weights is None — that entry point bypasses the
+    # Python two-pass dispatcher and is silent on FW non-convergence.
+    if HAS_RUST_BACKEND and init_weights is None and not return_convergence:
         return np.asarray(
             _rust_compute_time_weights(
                 np.ascontiguousarray(Y_pre_control, dtype=np.float64),
@@ -1480,25 +1546,55 @@ def compute_time_weights(
     n_pre = Y_pre_control.shape[0]
 
     if n_pre <= 1:
-        return np.ones(n_pre)
+        lam_trivial = np.ones(n_pre)
+        if return_convergence:
+            return lam_trivial, True
+        return lam_trivial
 
     # Build collapsed form: (N_co, T_pre + 1), last col = per-control post mean
     post_means = np.mean(Y_post_control, axis=0)  # (N_co,)
     Y_time = np.column_stack([Y_pre_control.T, post_means])  # (N_co, T_pre+1)
 
-    # First pass: limited iterations (matching R's max.iter.pre.sparsify)
-    lam = _sc_weight_fw(
-        Y_time,
-        zeta=zeta_lambda,
-        intercept=intercept,
-        min_decrease=min_decrease,
-        max_iter=max_iter_pre_sparsify,
-    )
+    # First pass: limited iterations (matching R's max.iter.pre.sparsify).
+    # init_weights is either None (uniform start) or the caller-supplied
+    # warm-start; the inner _sc_weight_fw still dispatches to Rust for the
+    # 100-iter run, so we only pay a Python-level dispatch overhead.
+    if return_convergence:
+        lam, conv1 = _sc_weight_fw(
+            Y_time,
+            zeta=zeta_lambda,
+            intercept=intercept,
+            init_weights=init_weights,
+            min_decrease=min_decrease,
+            max_iter=max_iter_pre_sparsify,
+            return_convergence=True,
+        )
+    else:
+        lam = _sc_weight_fw(
+            Y_time,
+            zeta=zeta_lambda,
+            intercept=intercept,
+            init_weights=init_weights,
+            min_decrease=min_decrease,
+            max_iter=max_iter_pre_sparsify,
+        )
 
     # Sparsify: zero out small weights, renormalize (R's sparsify_function)
     lam = _sparsify(lam)
 
     # Second pass: from sparsified initialization (matching R's max.iter)
+    if return_convergence:
+        lam, conv2 = _sc_weight_fw(
+            Y_time,
+            zeta=zeta_lambda,
+            intercept=intercept,
+            init_weights=lam,
+            min_decrease=min_decrease,
+            max_iter=max_iter,
+            return_convergence=True,
+        )
+        return lam, bool(conv1 and conv2)
+
     lam = _sc_weight_fw(
         Y_time,
         zeta=zeta_lambda,
@@ -1519,7 +1615,9 @@ def compute_sdid_unit_weights(
     min_decrease: float = 1e-5,
     max_iter_pre_sparsify: int = 100,
     max_iter: int = 10000,
-) -> np.ndarray:
+    init_weights: Optional[np.ndarray] = None,
+    return_convergence: bool = False,
+):
     """Compute SDID unit weights via Frank-Wolfe with two-pass sparsification.
 
     Matches R's ``synthdid::sc.weight.fw(t(Yc[, 1:T0]), zeta=zeta.omega,
@@ -1541,20 +1639,50 @@ def compute_sdid_unit_weights(
         Iterations for first pass (before sparsification).
     max_iter : int, default 10000
         Iterations for second pass (after sparsification). Matches R's default.
+    init_weights : np.ndarray, optional
+        Warm-start weights for the first Frank-Wolfe pass, shape
+        ``(n_control,)``. If None (default), the solver starts from
+        uniform — matching the top-level ``synthdid_estimate(update.omega=TRUE)``
+        path. When provided, the Rust fast-path is skipped in favor of the
+        Python two-pass dispatcher so the first-pass init can be threaded
+        through; this matches R's ``synthdid::bootstrap_sample`` shape
+        (which passes ``sum_normalize(weights$omega[...])`` as FW init per
+        draw). Used by ``SyntheticDiD._bootstrap_se`` on the refit loop.
+    return_convergence : bool, default False
+        If True, returns a tuple ``(weights, converged)`` where ``converged``
+        is the AND of the first-pass and second-pass convergence flags from
+        the underlying ``_sc_weight_fw`` calls (True iff the min-decrease
+        criterion fired on BOTH passes; False if either hit ``max_iter``).
+        Setting this flag also forces the Python two-pass dispatcher even
+        when ``init_weights`` is None, because the Rust top-level fast-path
+        is silent on non-convergence. Used by SDID bootstrap to surface
+        per-draw FW non-convergence explicitly; standalone callers can
+        leave this at the default to preserve the legacy ABI.
 
     Returns
     -------
-    np.ndarray
-        Unit weights of shape (n_control,) on the simplex.
+    np.ndarray or Tuple[np.ndarray, bool]
+        Unit weights of shape (n_control,) on the simplex. With
+        ``return_convergence=True``, additionally the two-pass convergence
+        flag (as described above).
     """
     n_control = Y_pre_control.shape[1]
 
     if n_control == 0:
-        return np.asarray([])
+        empty = np.asarray([])
+        if return_convergence:
+            return empty, True
+        return empty
     if n_control == 1:
-        return np.asarray([1.0])
+        singleton = np.asarray([1.0])
+        if return_convergence:
+            return singleton, True
+        return singleton
 
-    if HAS_RUST_BACKEND:
+    # When the caller asks for convergence tracking, skip the Rust top-level
+    # fast-path even if init_weights is None — that entry point bypasses the
+    # Python two-pass dispatcher and is silent on FW non-convergence.
+    if HAS_RUST_BACKEND and init_weights is None and not return_convergence:
         return np.asarray(
             _rust_sdid_unit_weights(
                 np.ascontiguousarray(Y_pre_control, dtype=np.float64),
@@ -1570,19 +1698,46 @@ def compute_sdid_unit_weights(
     # Build collapsed form: (T_pre, N_co + 1), last col = treated pre means
     Y_unit = np.column_stack([Y_pre_control, Y_pre_treated_mean.reshape(-1, 1)])
 
-    # First pass: limited iterations
-    omega = _sc_weight_fw(
-        Y_unit,
-        zeta=zeta_omega,
-        intercept=intercept,
-        max_iter=max_iter_pre_sparsify,
-        min_decrease=min_decrease,
-    )
+    # First pass: limited iterations. init_weights is either None (uniform
+    # start) or the caller-supplied warm-start; the inner _sc_weight_fw
+    # still dispatches to Rust for the 100-iter run, so we only pay a
+    # Python-level dispatch overhead.
+    if return_convergence:
+        omega, conv1 = _sc_weight_fw(
+            Y_unit,
+            zeta=zeta_omega,
+            intercept=intercept,
+            init_weights=init_weights,
+            max_iter=max_iter_pre_sparsify,
+            min_decrease=min_decrease,
+            return_convergence=True,
+        )
+    else:
+        omega = _sc_weight_fw(
+            Y_unit,
+            zeta=zeta_omega,
+            intercept=intercept,
+            init_weights=init_weights,
+            max_iter=max_iter_pre_sparsify,
+            min_decrease=min_decrease,
+        )
 
     # Sparsify: zero out weights <= max/4, renormalize
     omega = _sparsify(omega)
 
     # Second pass: from sparsified initialization
+    if return_convergence:
+        omega, conv2 = _sc_weight_fw(
+            Y_unit,
+            zeta=zeta_omega,
+            intercept=intercept,
+            init_weights=omega,
+            max_iter=max_iter,
+            min_decrease=min_decrease,
+            return_convergence=True,
+        )
+        return omega, bool(conv1 and conv2)
+
     omega = _sc_weight_fw(
         Y_unit,
         zeta=zeta_omega,

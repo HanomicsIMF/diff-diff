@@ -501,13 +501,26 @@ variables appear to the left of the `|` separator.
    `zeta=1.0`). Regularization parameters `zeta_omega` and `zeta_lambda` are now
    computed automatically from the data noise level (N_tr * sigma^2) as specified in
    Appendix D of Arkhangelsky et al. (2021), matching R's default behavior.
-4. **Bootstrap SE uses fixed weights matching R's `bootstrap_sample`** (was
-   re-estimating all weights). The bootstrap variance procedure now holds unit and time
-   weights fixed at their point estimates and only re-estimates the treatment effect,
-   matching the approach in R's `synthdid::bootstrap_sample()`.
-5. **Default `variance_method` changed to `"placebo"`** matching R's default. The R
-   package uses placebo variance by default (`synthdid_estimate` returns an object whose
-   `vcov()` uses the placebo method); our default now matches.
+4. **Bootstrap SE is paper-faithful refit (Algorithm 2 step 2), matching R's default
+   `synthdid::vcov(method="bootstrap")` including its warm-start shape.** On each
+   pairs-bootstrap draw, ω and λ are re-estimated via Frank-Wolfe on the resampled
+   panel using the fit-time normalized-scale zeta. The Frank-Wolfe first pass is
+   warm-started from the fit-time ω (renormalized over the resampled controls via
+   `_sum_normalize`) and the fit-time λ (unchanged), matching R's `bootstrap_sample`
+   which rebinds `attr(estimate, "opts")` so those weights serve as the FW
+   initialization per `update.omega=TRUE` / `update.lambda=TRUE`.
+   *(Historical note: an earlier release shipped a fixed-weight shortcut here
+   that matched neither the paper nor R's default vcov; that path was removed
+   in PR #351 along with its R-parity fixture, which had also been mis-anchored.
+   The same PR added the warm-start plumbing to `compute_sdid_unit_weights` /
+   `compute_time_weights` via new `init_weights=` kwargs.)*
+5. **Default `variance_method` changed to `"placebo"`** — intentional deviation from
+   R's default (R's `synthdid::vcov()` defaults to `"bootstrap"`). The library default
+   is placebo for two reasons: (a) placebo is unconditionally available on pweight-only
+   survey designs, whereas refit bootstrap rejects every survey design in this release;
+   (b) placebo sidesteps the ~5–30× slowdown of per-draw Frank-Wolfe re-estimation in
+   refit bootstrap. See REGISTRY.md §SyntheticDiD `Note (default variance_method
+   deviation from R)` for details.
 6. **Deprecated `lambda_reg` and `zeta` params; new params are `zeta_omega` and
    `zeta_lambda`**. The old parameters had unclear semantics and did not correspond to
    the paper's notation. The new parameters directly match the paper and R package
