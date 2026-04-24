@@ -2986,12 +2986,14 @@ class TestHeterogeneousAndRampingScale:
 class TestCoverageMCArtifact:
     """Schema smoke-check on ``benchmarks/data/sdid_coverage.json``.
 
-    The full Monte Carlo study (500 seeds × B=200 × 3 DGPs × 3 methods)
-    runs outside CI; its JSON output underwrites the calibration table in
-    REGISTRY.md §SyntheticDiD. This test verifies the artifact is present
-    and structured correctly. Per ``feedback_golden_file_pytest_skip.md``,
-    skip if missing — CI's isolated-install job copies only ``tests/``,
-    not ``benchmarks/``.
+    The full Monte Carlo study (500 seeds × B=200 × 4 DGPs × 3 methods,
+    PR #352) runs outside CI; its JSON output underwrites the calibration
+    table in REGISTRY.md §SyntheticDiD. The 4th DGP (``stratified_survey``)
+    is bootstrap-only — placebo / jackknife reject strata/PSU/FPC at
+    fit-time. This test verifies the artifact is present and structured
+    correctly. Per ``feedback_golden_file_pytest_skip.md``, skip if
+    missing — CI's isolated-install job copies only ``tests/``, not
+    ``benchmarks/``.
     """
 
     def test_coverage_artifacts_present(self):
@@ -3028,7 +3030,7 @@ class TestCoverageMCArtifact:
             "enum value are both gone."
         )
 
-        for dgp in ("balanced", "unbalanced", "aer63"):
+        for dgp in ("balanced", "unbalanced", "aer63", "stratified_survey"):
             assert dgp in payload["per_dgp"], f"missing DGP block: {dgp}"
             per_method = payload["per_dgp"][dgp]
             for method in ("placebo", "bootstrap", "jackknife"):
@@ -3045,3 +3047,28 @@ class TestCoverageMCArtifact:
                     assert alpha_key in block["rejection_rate"], (
                         f"missing alpha {alpha_key} in {dgp}/{method} rejection_rate"
                     )
+
+        # PR #352: stratified_survey is bootstrap-only — placebo and
+        # jackknife reject strata/PSU/FPC at fit-time, so their blocks
+        # report n_successful_fits=0. Bootstrap must have the full 500
+        # successful fits + finite rejection rate at α=0.05 inside the
+        # calibration gate [0.02, 0.10].
+        survey_block = payload["per_dgp"]["stratified_survey"]
+        assert survey_block["bootstrap"]["n_successful_fits"] >= 100, (
+            "stratified_survey bootstrap must have ≥100 successful fits; "
+            "the survey-bootstrap path is broken if this drops to 0."
+        )
+        rej_05 = survey_block["bootstrap"]["rejection_rate"]["0.05"]
+        assert 0.02 <= rej_05 <= 0.10, (
+            f"stratified_survey bootstrap α=0.05 rejection {rej_05} outside "
+            "calibration gate [0.02, 0.10]; weighted FW + Rao-Wu is "
+            "miscalibrated. See PR #352 §3c rollback protocol."
+        )
+        assert survey_block["placebo"]["n_successful_fits"] == 0, (
+            "stratified_survey placebo should have 0 successful fits "
+            "(strata/PSU/FPC raises NotImplementedError at fit-time)"
+        )
+        assert survey_block["jackknife"]["n_successful_fits"] == 0, (
+            "stratified_survey jackknife should have 0 successful fits "
+            "(strata/PSU/FPC raises NotImplementedError at fit-time)"
+        )

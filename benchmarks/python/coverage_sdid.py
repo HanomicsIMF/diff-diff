@@ -64,7 +64,7 @@ import diff_diff  # noqa: E402 — imports after env var gate the backend
 from diff_diff import HAS_RUST_BACKEND, SyntheticDiD  # noqa: E402
 
 ALL_METHODS = ("placebo", "bootstrap", "jackknife")
-ALL_DGPS = ("balanced", "unbalanced", "aer63")
+ALL_DGPS = ("balanced", "unbalanced", "aer63", "stratified_survey")
 ALPHAS = (0.01, 0.05, 0.10)
 
 
@@ -74,6 +74,12 @@ class DGPSpec:
     description: str
     # generator returns (DataFrame, post_periods)
     generator: Callable[[int], Tuple[pd.DataFrame, List[int]]]
+    # Optional factory: returns (SurveyDesign, methods_supported_set) given a
+    # DataFrame. None for non-survey DGPs. The methods_supported set lets the
+    # harness skip the methods that raise NotImplementedError on this design
+    # (e.g., placebo/jackknife under strata/PSU/FPC). For non-survey DGPs all
+    # methods are supported.
+    survey_design_factory: Optional[Callable[[pd.DataFrame], Tuple[Any, Tuple[str, ...]]]] = None
 
 
 def _balanced_dgp(seed: int) -> Tuple[pd.DataFrame, List[int]]:
@@ -169,6 +175,53 @@ def _aer63_dgp(seed: int) -> Tuple[pd.DataFrame, List[int]]:
     return pd.DataFrame(rows), list(range(n_pre, n_pre + n_post))
 
 
+def _stratified_survey_dgp(seed: int) -> Tuple[pd.DataFrame, List[int]]:
+    """BRFSS/ACS-style stratified survey panel, null treatment (PR #352).
+
+    N=40 (10 per PSU × 4 PSUs across 2 strata), T=12 (6 pre, 6 post),
+    moderate weight variation (Kish DEFF ≈ 1.4), psu_re_sd=1.5 (modest
+    ICC). Each unit is a respondent with constant per-unit survey
+    weight, stratum, and PSU columns. Used to validate the SDID
+    survey-bootstrap calibration: the bootstrap row should land near
+    nominal at α=0.05 (PR #352 §3c calibration gate, [0.02, 0.10]).
+    """
+    from diff_diff.prep_dgp import generate_survey_did_data
+    df = generate_survey_did_data(
+        n_units=40,
+        n_periods=12,
+        cohort_periods=[7],
+        never_treated_frac=0.2,
+        treatment_effect=0.0,  # null for coverage MC
+        n_strata=2,
+        psu_per_stratum=2,
+        fpc_per_stratum=200.0,
+        weight_variation="moderate",
+        psu_re_sd=1.5,
+        psu_period_factor=0.5,
+        seed=seed,
+    )
+    # generate_survey_did_data emits per-observation 'treated' (post-only
+    # for treated units); SDID requires a unit-level ever-treated indicator
+    # (constant across time). Derive from 'first_treat' (cohort, 0 for
+    # never-treated). Block-treatment cohort is 7 → post = 7..11.
+    df = df.copy()
+    df["treated"] = (df["first_treat"] > 0).astype(int)
+    return df, list(range(7, 12))
+
+
+def _stratified_survey_design(df: pd.DataFrame) -> Tuple[Any, Tuple[str, ...]]:
+    """Build the SurveyDesign for the stratified_survey DGP.
+
+    Methods supported: bootstrap only — placebo / jackknife reject
+    strata/PSU/FPC at fit-time (separate methodology gap).
+    """
+    from diff_diff import SurveyDesign
+    return (
+        SurveyDesign(weights="weight", strata="stratum", psu="psu", fpc="fpc"),
+        ("bootstrap",),
+    )
+
+
 DGPS: Dict[str, DGPSpec] = {
     "balanced": DGPSpec(
         "balanced",
@@ -185,6 +238,12 @@ DGPS: Dict[str, DGPSpec] = {
         "Arkhangelsky et al. (2021) AER §6.3: N=100, N1=20, T=120, T1=5, rank=2, σ=2",
         _aer63_dgp,
     ),
+    "stratified_survey": DGPSpec(
+        "stratified_survey",
+        "BRFSS-style: N=40, strata=2, PSU=2/stratum, psu_re_sd=1.5 (PR #352)",
+        _stratified_survey_dgp,
+        survey_design_factory=_stratified_survey_design,
+    ),
 }
 
 
@@ -194,23 +253,33 @@ def _fit_one(
     post_periods: List[int],
     n_bootstrap: int,
     seed: int,
+    survey_design: Optional[Any] = None,
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """Fit SDID and return (att, se, p_value); (None, None, None) on failure."""
+    """Fit SDID and return (att, se, p_value); (None, None, None) on failure.
+
+    For survey DGPs the harness passes a SurveyDesign via ``survey_design``;
+    fit() routes it through the bootstrap survey path (PR #352) when
+    method=='bootstrap'. The DGP's ``survey_design_factory`` declares which
+    methods are supported, so the caller skips unsupported methods entirely
+    rather than catching the resulting NotImplementedError here.
+    """
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            r = SyntheticDiD(
-                variance_method=method,
-                n_bootstrap=n_bootstrap,
-                seed=seed,
-            ).fit(
-                df,
+            fit_kwargs = dict(
                 outcome="outcome",
                 treatment="treated",
                 unit="unit",
                 time="period",
                 post_periods=post_periods,
             )
+            if survey_design is not None:
+                fit_kwargs["survey_design"] = survey_design
+            r = SyntheticDiD(
+                variance_method=method,
+                n_bootstrap=n_bootstrap,
+                seed=seed,
+            ).fit(df, **fit_kwargs)
         att = float(r.att) if np.isfinite(r.att) else None
         se = float(r.se) if np.isfinite(r.se) else None
         p_value = float(r.p_value) if np.isfinite(r.p_value) else None
@@ -258,7 +327,14 @@ def _run_dgp(
     n_bootstrap: int,
     methods: Tuple[str, ...],
 ) -> Dict[str, Any]:
-    """Run all methods × n_seeds for one DGP. Returns summary dict."""
+    """Run all methods × n_seeds for one DGP. Returns summary dict.
+
+    For survey DGPs (``spec.survey_design_factory is not None``) the harness
+    constructs the SurveyDesign once per seed (it depends only on the column
+    names, not the DataFrame contents) and skips methods not in
+    ``supported_methods`` — those rows in the artifact have
+    ``n_successful_fits=0``.
+    """
     print(f"\n=== DGP: {name} ({spec.description}) ===", flush=True)
 
     # Preallocate per-method arrays
@@ -269,8 +345,17 @@ def _run_dgp(
     start = time.time()
     for seed in range(n_seeds):
         df, post = spec.generator(seed)
+        if spec.survey_design_factory is not None:
+            survey_design, supported_methods = spec.survey_design_factory(df)
+        else:
+            survey_design = None
+            supported_methods = methods
         for method in methods:
-            att, se, p = _fit_one(method, df, post, n_bootstrap, seed)
+            if method not in supported_methods:
+                # Method-specific guard fires (e.g., placebo + strata).
+                # Leave NaN; the summary will report n_successful_fits=0.
+                continue
+            att, se, p = _fit_one(method, df, post, n_bootstrap, seed, survey_design)
             if att is not None:
                 atts[method][seed] = att
             if se is not None:

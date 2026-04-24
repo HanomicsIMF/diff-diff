@@ -63,9 +63,14 @@ class SyntheticDiD(DifferenceInDifferences):
           synthdid::vcov(method="bootstrap") (which rebinds ``attr(estimate, "opts")``
           with ``update.omega=TRUE``, so the renormalized ω is only Frank-Wolfe
           initialization). Re-estimates ω̂_b and λ̂_b via two-pass sparsified
-          Frank-Wolfe on each bootstrap draw. Survey designs (including pweight-only)
-          raise NotImplementedError; Rao-Wu rescaled weights composed with Frank-Wolfe
-          re-estimation requires a separate derivation (tracked in TODO.md).
+          Frank-Wolfe on each bootstrap draw. **Survey support (PR #352):**
+          pweight-only fits use the constant per-control survey weight as ``rw``;
+          full-design fits (strata/PSU/FPC) use Rao-Wu rescaled weights per draw.
+          Both compose with the **weighted Frank-Wolfe** kernel
+          (``min ||A·diag(rw)·ω - b||² + ζ²·Σ rw_i ω_i²``); the FW returns ω on the
+          standard simplex, then ``ω_eff = rw·ω/Σ(rw·ω)`` is composed for the SDID
+          estimator. See REGISTRY.md §SyntheticDiD ``Note (survey + bootstrap
+          composition)`` for the argmin-set caveat.
         - "jackknife": Jackknife variance matching R's synthdid::vcov(method="jackknife").
           Implements Algorithm 3 from Arkhangelsky et al. (2021). Deterministic
           (N_control + N_treated iterations), uses fixed weights (no re-estimation).

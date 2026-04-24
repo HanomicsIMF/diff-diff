@@ -722,17 +722,18 @@ Two bootstrap strategies interact with survey designs:
   Generates multiplier weights at the PSU level within strata, with FPC
   scaling. Each bootstrap draw reweights the IF values.
 
-- **Rao-Wu rescaled bootstrap** (SunAbraham, TROP): Draws PSUs
+- **Rao-Wu rescaled bootstrap** (SunAbraham, SyntheticDiD, TROP): Draws PSUs
   with replacement within strata and rescales observation weights. Each draw
-  re-runs the full estimator on the resampled data. *SyntheticDiD is
-  intentionally excluded in this release:* the paper-faithful refit
-  bootstrap rejects every survey design because composing Rao-Wu rescaled
-  weights with Frank-Wolfe re-estimation requires a weighted-FW derivation
-  that is not yet implemented. Pweight-only SDID users should use
-  ``variance_method="placebo"`` or ``"jackknife"``; strata/PSU/FPC users
-  have no SDID variance option. See TODO.md and
-  ``docs/methodology/REGISTRY.md`` §SyntheticDiD for the deferred-
-  composition sketch.
+  re-runs the full estimator on the resampled data. *SyntheticDiD composes
+  the Rao-Wu rescaled per-draw weights with the* **weighted Frank-Wolfe**
+  *kernel (PR #352)*: each draw solves
+  ``min ||A·diag(rw)·ω - b||² + ζ²·Σ rw_i ω_i²`` and composes
+  ``ω_eff = rw·ω / Σ(rw·ω)`` for the SDID estimator. See REGISTRY.md
+  §SyntheticDiD ``Note (survey + bootstrap composition)`` for the full
+  objective and the argmin-set caveat. SDID's `placebo` and `jackknife`
+  methods still reject strata/PSU/FPC (the placebo permutation allocator
+  and jackknife LOO mass need their own weighted derivations; tracked in
+  TODO.md as a follow-up).
 
 ---
 

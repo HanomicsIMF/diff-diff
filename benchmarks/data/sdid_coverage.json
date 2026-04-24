@@ -4,8 +4,8 @@
     "n_bootstrap": 200,
     "library_version": "3.2.0",
     "backend": "rust",
-    "generated_at": "2026-04-22T20:48:18.361220+00:00",
-    "total_elapsed_sec": 2424.92,
+    "generated_at": "2026-04-24T00:58:22.180577+00:00",
+    "total_elapsed_sec": 2420.61,
     "methods": [
       "placebo",
       "bootstrap",
@@ -20,7 +20,8 @@
   "dgps": {
     "balanced": "Balanced / exchangeable: N_co=20, N_tr=3, T_pre=8, T_post=4",
     "unbalanced": "Unbalanced: N_co=30, N_tr=8, heterogeneous unit-FE variance",
-    "aer63": "Arkhangelsky et al. (2021) AER \u00a76.3: N=100, N1=20, T=120, T1=5, rank=2, \u03c3=2"
+    "aer63": "Arkhangelsky et al. (2021) AER \u00a76.3: N=100, N1=20, T=120, T1=5, rank=2, \u03c3=2",
+    "stratified_survey": "BRFSS-style: N=40, strata=2, PSU=2/stratum, psu_re_sd=1.5 (PR #352)"
   },
   "per_dgp": {
     "balanced": {
@@ -42,9 +43,9 @@
           "0.05": 0.078,
           "0.10": 0.116
         },
-        "mean_se": 0.21962976414466187,
+        "mean_se": 0.2195984748876297,
         "true_sd_tau_hat": 0.2093529148687405,
-        "se_over_truesd": 1.0490886371578094
+        "se_over_truesd": 1.0489391801652868
       },
       "jackknife": {
         "n_successful_fits": 500,
@@ -57,7 +58,7 @@
         "true_sd_tau_hat": 0.2093529148687405,
         "se_over_truesd": 1.0756639338270981
       },
-      "_elapsed_sec": 78.62
+      "_elapsed_sec": 71.24
     },
     "unbalanced": {
       "placebo": {
@@ -78,9 +79,9 @@
           "0.05": 0.038,
           "0.10": 0.08
         },
-        "mean_se": 0.15072674925763238,
+        "mean_se": 0.15070173940119225,
         "true_sd_tau_hat": 0.135562270427217,
-        "se_over_truesd": 1.1118635648593473
+        "se_over_truesd": 1.1116790750572711
       },
       "jackknife": {
         "n_successful_fits": 500,
@@ -93,7 +94,7 @@
         "true_sd_tau_hat": 0.135562270427217,
         "se_over_truesd": 0.990639682456852
       },
-      "_elapsed_sec": 90.61
+      "_elapsed_sec": 78.91
     },
     "aer63": {
       "placebo": {
@@ -114,9 +115,9 @@
           "0.05": 0.04,
           "0.10": 0.078
         },
-        "mean_se": 0.28291769703671454,
+        "mean_se": 0.28265726432861016,
         "true_sd_tau_hat": 0.2696262336703088,
-        "se_over_truesd": 1.0492958833622181
+        "se_over_truesd": 1.0483299806584672
       },
       "jackknife": {
         "n_successful_fits": 500,
@@ -129,7 +130,43 @@
         "true_sd_tau_hat": 0.2696262336703088,
         "se_over_truesd": 0.9015870263136688
       },
-      "_elapsed_sec": 2255.69
+      "_elapsed_sec": 2237.29
+    },
+    "stratified_survey": {
+      "placebo": {
+        "n_successful_fits": 0,
+        "rejection_rate": {
+          "0.01": NaN,
+          "0.05": NaN,
+          "0.10": NaN
+        },
+        "mean_se": NaN,
+        "true_sd_tau_hat": NaN,
+        "se_over_truesd": NaN
+      },
+      "bootstrap": {
+        "n_successful_fits": 500,
+        "rejection_rate": {
+          "0.01": 0.014,
+          "0.05": 0.042,
+          "0.10": 0.088
+        },
+        "mean_se": 0.5689806467245018,
+        "true_sd_tau_hat": 0.45569672831386343,
+        "se_over_truesd": 1.2485949785722699
+      },
+      "jackknife": {
+        "n_successful_fits": 0,
+        "rejection_rate": {
+          "0.01": NaN,
+          "0.05": NaN,
+          "0.10": NaN
+        },
+        "mean_se": NaN,
+        "true_sd_tau_hat": NaN,
+        "se_over_truesd": NaN
+      },
+      "_elapsed_sec": 33.17
     }
   }
 }
