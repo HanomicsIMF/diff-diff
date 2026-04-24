@@ -1407,11 +1407,15 @@ class TestStuteJointPretest:
                 seed=0,
             )
 
-    def test_small_G_raises(self):
+    def test_small_G_warns_returns_nan(self):
+        """R5: G < _MIN_G_STUTE mirrors single-horizon stute_test -
+        warn + NaN result instead of raise. Prevents event-study
+        workflow crash when a last-cohort filter leaves fewer than 10
+        units."""
         G = 5  # below _MIN_G_STUTE (10)
         resid, fit, d = _multi_period_residuals(G, K=2)
-        with pytest.raises(ValueError, match="G >="):
-            stute_joint_pretest(
+        with pytest.warns(UserWarning, match="below the minimum"):
+            result = stute_joint_pretest(
                 residuals_by_horizon=resid,
                 fitted_by_horizon=fit,
                 doses=d,
@@ -1419,6 +1423,13 @@ class TestStuteJointPretest:
                 n_bootstrap=199,
                 seed=0,
             )
+        assert np.isnan(result.cvm_stat_joint)
+        assert np.isnan(result.p_value)
+        assert result.reject is False
+        assert result.n_obs == G
+        # Full diagnostic surface preserved on the NaN result
+        assert set(result.per_horizon_stats.keys()) == set(str(k) for k in resid.keys())
+        assert all(np.isnan(v) for v in result.per_horizon_stats.values())
 
     def test_small_bootstrap_raises(self):
         G = 50
@@ -2452,6 +2463,60 @@ class TestMultiPeriodWorkflow:
         )
         verdict = _compose_verdict_event_study(qug, pretrends, homogeneity)
         assert "TWFE admissible under Section 4" in verdict
+
+    def test_event_study_small_panel_after_filter_inconclusive_not_crash(self):
+        """R5: staggered-panel last-cohort filter can leave fewer than
+        `_MIN_G_STUTE` (10) units. The joint Stute core must warn +
+        return NaN on small G (matching single-horizon stute_test) so
+        the event-study workflow surfaces an inconclusive report
+        rather than crashing. Regression against the original
+        ValueError-on-G<10 contract."""
+        parts = []
+        # First cohort: 40 units treated at 1999 - will be DROPPED by
+        # the last-cohort filter (F_last=2000 > 1999).
+        # Second cohort: only 6 units treated at 2000 - kept. After
+        # filter G = 6 < _MIN_G_STUTE, so the joint CvM is ill-
+        # calibrated and must return NaN via warn.
+        for cohort_ft, cohort_range in [(1999, (0, 40)), (2000, (40, 46))]:
+            for g in range(*cohort_range):
+                dose = 0.05 + 0.01 * (g - cohort_range[0])
+                for t in [1997, 1998, 1999, 2000, 2001]:
+                    is_post = t >= cohort_ft
+                    parts.append(
+                        {
+                            "unit": g,
+                            "period": t,
+                            "y": 0.1 * g + (0.3 * dose if is_post else 0.0),
+                            "d": dose if is_post else 0.0,
+                            "first_treat": cohort_ft,
+                        }
+                    )
+        df = pd.DataFrame(parts)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "period",
+                "unit",
+                first_treat_col="first_treat",
+                aggregate="event_study",
+                n_bootstrap=199,
+                seed=0,
+            )
+        # Workflow must complete (no crash) and surface an inconclusive
+        # report. Both joint tests (pretrends + homogeneity) should
+        # return NaN on the post-filter G=6 panel.
+        assert report.aggregate == "event_study"
+        if report.pretrends_joint is not None:
+            assert np.isnan(report.pretrends_joint.p_value)
+        assert report.homogeneity_joint is not None
+        assert np.isnan(report.homogeneity_joint.p_value)
+        assert report.all_pass is False
+        # At least one "below the minimum" warning from the joint core.
+        msgs = [str(w.message) for w in caught]
+        assert any("below the minimum" in m for m in msgs)
 
 
 class TestOrderedCategoricalChronology:

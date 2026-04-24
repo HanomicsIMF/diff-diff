@@ -2,8 +2,9 @@
 
 Paper Section 4 (de Chaisemartin, Ciccia, D'Haultfoeuille, Knau 2026,
 arXiv:2405.04465v6) prescribes a four-step pre-testing workflow for TWFE
-validity in HADs. Phase 3 ships steps 1 and 3 of that workflow (step 2 is
-deferred):
+validity in HADs. This module ships the tests and the composite workflow:
+
+Single-horizon tests:
 
 1. :func:`qug_test` - order-statistic ratio test of the support infimum
    ``H_0: d_lower = 0`` (paper Theorem 4). Closed-form, tuning-free.
@@ -14,16 +15,43 @@ deferred):
    linearity test (paper Theorem 7 / Equation 29). Feasible at
    ``G >= 100k``.
 
-The composite :func:`did_had_pretest_workflow` runs the three implemented
-tests in sequence on a two-period HAD panel and returns a
-:class:`HADPretestReport` with a partial-workflow verdict. When all three
-fail-to-reject, the verdict explicitly flags that **the paper's step 2
-pre-trends test (Assumption 7) is NOT run** — callers do not receive an
-unconditional "TWFE safe" signal; the Assumption 7 check must be performed
-separately (e.g., via an event-study / placebo analysis) until the Phase 3
-follow-up patch lands the joint Equation 18 cross-horizon Stute variant.
+Joint / multi-period tests (Phase 3 follow-up):
 
-See ``docs/methodology/REGISTRY.md`` and ``TODO.md`` for the deferred items.
+4. :func:`stute_joint_pretest` - residuals-in core that generalizes the
+   single-horizon Stute CvM to K horizons with shared-η wild bootstrap
+   and sum-of-CvMs aggregation (Delgado 1993; Escanciano 2006).
+5. :func:`joint_pretrends_test` - data-in wrapper for the mean-
+   independence null (paper step 2 pre-trends across pre-period
+   placebos, Section 4.2 footnote 6 + Section 4.3 paragraph 1).
+6. :func:`joint_homogeneity_test` - data-in wrapper for the linearity
+   null across post-periods (paper Section 4.3 joint extension,
+   page 32).
+
+Composite workflow:
+
+:func:`did_had_pretest_workflow` has two dispatch modes:
+
+- ``aggregate="overall"`` (default, two-period panel): runs steps 1 + 3
+  via :func:`qug_test` + :func:`stute_test` + :func:`yatchew_hr_test`.
+  Paper step 2 is NOT run on this path (a two-period panel has no pre-
+  period placebo); the verdict explicitly flags the Assumption 7 gap
+  via the ``"paper step 2 deferred"`` caveat so callers do not get an
+  unconditional "TWFE safe" signal.
+- ``aggregate="event_study"`` (multi-period panel, >= 3 periods): runs
+  QUG at ``F`` + joint pre-trends Stute across earlier pre-periods +
+  joint homogeneity-linearity Stute across post-periods. Closes the
+  paper step-2 gap and does NOT emit the step-2-deferred caveat in the
+  verdict when at least one earlier pre-period is available. Step 4
+  (alternative linearity via Yatchew) is subsumed by joint Stute on
+  this path; the paper does not derive a joint Yatchew variant, so
+  users who need Yatchew robustness under multi-period data can call
+  :func:`yatchew_hr_test` on each ``(base, post)`` pair manually.
+
+Eq. 18 linear-trend detrending (paper Section 5.2 Pierce-Schott
+application, published p=0.51) is the one remaining deferred item;
+tracked in ``TODO.md`` and slated for Phase 4 alongside the replication
+harness. See ``docs/methodology/REGISTRY.md`` for the full algorithm
+narrative, invariants, and deviation notes.
 """
 
 from __future__ import annotations
@@ -1963,8 +1991,16 @@ def stute_joint_pretest(
             f"Found {int(np.sum(doses_arr < 0))} negative value(s)."
         )
 
-    if G < _MIN_G_STUTE:
-        raise ValueError(f"Joint Stute test requires G >= {_MIN_G_STUTE} units; got " f"G = {G}.")
+    # G < _MIN_G_STUTE (CvM statistic not well-calibrated): mirror the
+    # single-horizon `stute_test` contract - warn + return NaN result
+    # rather than raise, so callers (including the event-study workflow
+    # on a staggered panel whose last-cohort filter leaves fewer than
+    # 10 units) get an inconclusive diagnostic instead of a crash. The
+    # NaN return still satisfies the workflow's `np.isfinite(p_value)`
+    # gating, so `all_pass` becomes False downstream.
+    # Note: the actual `warn + return` happens below after horizon
+    # labels are validated and collision-checked, so the NaN result
+    # carries full per-horizon diagnostic keys.
     if n_bootstrap < _MIN_N_BOOTSTRAP:
         raise ValueError(f"n_bootstrap must be >= {_MIN_N_BOOTSTRAP}; got " f"{n_bootstrap}.")
     if not isinstance(alpha, (int, float)) or not (0 < float(alpha) < 1):
@@ -2024,6 +2060,35 @@ def stute_joint_pretest(
     # horizon_labels contract. The collision guard above ensures this
     # stringification is injective on the provided keys.
     horizon_labels = str_labels
+
+    # Small-G NaN result (paired with the comment near the top of this
+    # function): mirror the single-horizon stute_test contract so the
+    # event-study workflow on a small or staggered-filtered panel gets
+    # an inconclusive diagnostic rather than an exception. Positioned
+    # AFTER the label-collision / shape-alignment guards so the NaN
+    # result carries a consistent per-horizon diagnostic surface.
+    if G < _MIN_G_STUTE:
+        warnings.warn(
+            f"stute_joint_pretest: G = {G} is below the minimum "
+            f"{_MIN_G_STUTE} for the CvM statistic to be well-calibrated. "
+            f"Returning NaN result.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return StuteJointResult(
+            cvm_stat_joint=float("nan"),
+            p_value=float("nan"),
+            reject=False,
+            alpha=float(alpha),
+            horizon_labels=horizon_labels,
+            per_horizon_stats={k: float("nan") for k in horizon_labels},
+            n_bootstrap=int(n_bootstrap),
+            n_obs=int(G),
+            n_horizons=int(K),
+            seed=None if seed is None else int(seed),
+            null_form=str(null_form),
+            exact_linear_short_circuited=False,
+        )
 
     if any_nan:
         return StuteJointResult(
