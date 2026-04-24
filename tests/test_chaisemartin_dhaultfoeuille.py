@@ -4593,6 +4593,90 @@ class TestByPathBootstrap:
             f"Messages: {[str(w.message) for w in overflow_warnings]}"
         )
 
+    def test_bootstrap_se_tracks_analytical_on_mixed_path_cohorts(self):
+        """
+        On mixed-path cohort panels — where a ``(D_{g,1}, F_g, S_g)``
+        cohort spans multiple observed paths — the analytical by_path
+        SE diverges from R's per-path re-run convention (documented in
+        REGISTRY.md as the "cross-path cohort-sharing SE" deviation).
+        Because ``_collect_path_bootstrap_inputs`` feeds the multiplier
+        bootstrap the exact same full-panel cohort-centered path IF as
+        the analytical path, bootstrap SE is a Monte Carlo analog of
+        analytical SE — it inherits the same divergence from R rather
+        than fixing it.
+
+        This regression pins that property: on a hand-built panel with
+        two paths sharing one cohort, bootstrap SE tracks analytical
+        SE within Monte Carlo noise (~30% rtol at n=500). If a future
+        refactor switched bootstrap target construction to a per-path
+        re-run (would fix the R divergence but break this parity),
+        the test fails and the REGISTRY note would need a compensating
+        update.
+        """
+        # Hand-built panel: cohort (D_{g,1}=0, F_g=2, S_g=+1) contains
+        # two paths — (0, 1, 1) and (0, 1, 0) — at L_max=2. Plus
+        # never-treated controls.
+        rng = np.random.default_rng(1234)
+        rows = []
+        # Groups 1-6: F_g=2, path (0, 1, 1)
+        for g in (1, 2, 3, 4, 5, 6):
+            D = [0, 1, 1]
+            for t, d in enumerate(D):
+                y = d * 2.0 + rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Groups 7-9: F_g=2, path (0, 1, 0) — SAME cohort as above
+        for g in (7, 8, 9):
+            D = [0, 1, 0]
+            for t, d in enumerate(D):
+                y = d * 2.0 + rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Never-treated controls
+        for g in (10, 11, 12, 13):
+            for t in range(3):
+                y = rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        data = pd.DataFrame(rows)
+
+        _est_a, res_a = _fit_by_path(data, by_path=2, L_max=2)
+        _est_b, res_b = self._fit_with_bootstrap(
+            data, by_path=2, L_max=2, n_bootstrap=500, seed=2026
+        )
+        assert res_a.path_effects is not None
+        assert res_b.path_effects is not None
+
+        checked = 0
+        for path, entry_a in res_a.path_effects.items():
+            for l_h, h_a in entry_a["horizons"].items():
+                h_b = res_b.path_effects[path]["horizons"][l_h]
+                se_a, se_b = h_a["se"], h_b["se"]
+                if not (np.isfinite(se_a) and np.isfinite(se_b)):
+                    continue
+                # Bootstrap SE is a Monte Carlo analog of analytical
+                # SE: both use the same full-panel cohort-centered IF,
+                # so on mixed-path cohorts they agree with each other
+                # even as they jointly diverge from R's per-path re-
+                # run convention. 30% rtol covers n=500 Monte Carlo
+                # variance at this sample size.
+                rtol = abs(se_b - se_a) / se_a
+                assert rtol < 0.30, (
+                    f"path={path} l={l_h}: bootstrap SE diverges from "
+                    f"analytical beyond Monte Carlo envelope on mixed-"
+                    f"path cohort panel — "
+                    f"analytical={se_a:.4f} bootstrap={se_b:.4f} "
+                    f"rtol={rtol:.3f}. The REGISTRY Bootstrap SE note "
+                    f"says bootstrap SE is a Monte Carlo analog of "
+                    f"analytical SE; if this test fails, either the "
+                    f"implementation changed to a per-path re-run or "
+                    f"the Monte Carlo noise is higher than expected — "
+                    f"bump n_bootstrap or review the bootstrap "
+                    f"propagation path."
+                )
+                checked += 1
+        assert checked > 0, (
+            "Expected at least one (path, horizon) with finite "
+            "analytical + bootstrap SE for the parity check"
+        )
+
     def test_nan_contract_extends_to_placebo_event_study_horizons(self):
         """
         Dynamic placebo horizons go through their own bootstrap
