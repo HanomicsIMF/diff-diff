@@ -1005,15 +1005,19 @@ class LprobustResult:
     V_Y_cl: np.ndarray
     V_Y_bc: np.ndarray
     influence_function: Optional[np.ndarray] = None
-    """Per-observation influence function of the CLASSICAL intercept
-    ``mu_hat`` (deriv=0 case), aligned with the ORIGINAL x ordering. Shape
-    ``(N,)``. Set only when ``return_influence=True``; ``None`` otherwise.
-    Observations outside the active kernel window have IF=0.
+    """Per-observation influence function of the BIAS-CORRECTED point
+    estimate at ``deriv`` (``tau_bc`` for the deriv=0 case), aligned
+    with the ORIGINAL x ordering. Shape ``(N,)``. Set only when
+    ``return_influence=True``; ``None`` otherwise. Observations outside
+    the active kernel window have IF=0.
 
-    Surface used by estimator-level Binder (1983) TSL composition for
-    survey-design variance (Phase 4.5 HAD continuous path). The variance
-    check ``sum(IF^2) == V_Y_cl[0, 0]`` (up to BLAS ordering) holds when
-    weights are uniform and cluster=None."""
+    Derived from ``Q_q`` + ``res_b``, so the variance self-check is
+    ``sum(IF^2) == V_Y_bc[deriv, deriv]`` (up to BLAS ordering) under
+    unclustered HC0. Used by estimator-level Binder (1983) TSL
+    composition for survey-design variance on HAD's continuous path — the
+    bias-corrected scale matches the ATT which itself uses ``tau_bc``.
+    Using the classical IF here would silently under-estimate survey SE
+    by ignoring the bias-correction variance inflation."""
 
 
 def lprobust(
@@ -1352,23 +1356,30 @@ def lprobust(
     se_cl = float(np.sqrt((deriv_fact**2) * V_Y_cl[deriv, deriv]))
     se_rb = float(np.sqrt((deriv_fact**2) * V_Y_bc[deriv, deriv]))
 
-    # --- Per-observation influence function for the classical point
+    # --- Per-observation influence function for the BIAS-CORRECTED point
     # estimate at ``deriv`` (Phase 4.5 survey composition).
-    # Weighted OLS IF decomposition:
-    #   beta_hat - beta  =  invG_p @ sum_g [(R_p[g] * W_h[g]) * res[g]]
-    # so psi_g = invG_p[deriv, :] @ (R_p[g] * W_h[g]) * res[g] scaled by
-    # deriv_fact. Observations outside the active kernel window have
-    # W_h[g]=0 and contribute IF=0. Length-N, aligned with the ORIGINAL
-    # x ordering (inverse-permuted when vce="nn" sorts). ---
+    # Aligned with ``V_Y_bc`` (NOT ``V_Y_cl``) so survey-composed variance
+    # through ``compute_survey_if_variance`` targets the same estimator
+    # scale that HAD's beta-scale ATT uses (``tau_bc``-based). Using the
+    # classical IF here would under-estimate the variance by ignoring the
+    # bias-correction inflation, producing a silently wrong survey SE.
+    #
+    # Bias-corrected WLS IF decomposition (mirrors the ``V_Y_bc`` sandwich
+    # inner at lprobust.R:244): beta_bc - beta  =  invG_p @ sum_g [ Q_q[g] · res_b[g] ],
+    # so psi_g = deriv_fact · invG_p[deriv, :] · Q_q[g, :] · res_b[g].
+    # The self-check ``sum(psi^2) == V_Y_bc[deriv, deriv]`` holds under
+    # unclustered HC0; under clustering, compute_survey_if_variance
+    # aggregates by PSU, which is what the survey path wants.
+    # Observations outside the active window have Q_q[g, :]=0 row and
+    # contribute IF=0. Length-N, aligned with ORIGINAL x ordering (inverse-
+    # permuted when vce="nn" sorts). ---
     influence_function: Optional[np.ndarray] = None
     if return_influence:
-        # For active-window observations only.
-        row_deriv = invG_p[deriv, :]  # (p+1,)
-        # (R_p * W_h)[g, :] has shape (p+1,); einsum for clarity.
-        coeff_active = (R_p_W_h @ row_deriv).ravel()  # (eN,)
-        # res_h is shape (eN, 1); squeeze + multiply.
-        res_flat = np.asarray(res_h).ravel()
-        if_active = deriv_fact * coeff_active * res_flat  # (eN,)
+        # Bias-corrected IF using Q_q + res_b (active-window only).
+        row_deriv_bc = invG_p[deriv, :]  # (p+1,)
+        coeff_active_bc = (Q_q @ row_deriv_bc).ravel()  # (eN,)
+        res_b_flat = np.asarray(res_b).ravel()
+        if_active = deriv_fact * coeff_active_bc * res_b_flat  # (eN,)
         # Map back to full N; zeros for obs outside window.
         if_full_sorted = np.zeros(N, dtype=np.float64)
         if_full_sorted[ind] = if_active

@@ -277,9 +277,15 @@ class HeterogeneousAdoptionDiDResults:
     cluster_name : str or None
         Column name of the cluster variable on the mass-point path when
         cluster-robust SE is requested. ``None`` otherwise.
-    survey_metadata : object or None
-        Always ``None`` in Phase 2a. Field shape kept for future-compat
-        with a planned survey integration PR.
+    survey_metadata : dict or None
+        ``None`` when ``fit()`` was called without ``survey=`` or
+        ``weights=``. Under weighted fits (continuous-dose paths only,
+        per Phase 4.5 A), carries a dict with keys ``method`` ('pweight'
+        vs 'survey_binder_tsl'), ``source``, ``variance_formula``,
+        ``n_units_weighted``, ``weight_sum``, ``effective_sample_size``,
+        ``n_strata`` / ``n_psu`` (int or None), and ``df_survey`` (int
+        or None — the survey t-distribution degrees of freedom, routed
+        through inference under the SurveyDesign path only).
     bandwidth_diagnostics : BandwidthResult or None
         Full Phase 1b MSE-DPI selector output on the continuous paths
         (when bandwidths were auto-selected). ``None`` on the mass-point
@@ -2262,10 +2268,28 @@ class HeterogeneousAdoptionDiD:
             to a follow-up PR. Staggered-timing panels are auto-filtered
             to the last-treatment cohort with a ``UserWarning``.
         survey : SurveyDesign or None
-            Reserved for a follow-up survey-integration PR. Must be
-            ``None`` in Phase 2a.
+            Survey design (sampling weights + optional strata / PSU / FPC)
+            for design-based inference on the two continuous-dose paths
+            (``continuous_at_zero``, ``continuous_near_d_lower``). Passes
+            through :func:`compute_survey_if_variance` (Binder 1983 TSL)
+            for the SE; weights propagate pointwise into the lprobust
+            kernel composition. Only ``weight_type="pweight"`` is
+            supported in Phase 4.5 A — ``aweight`` / ``fweight`` raise
+            ``NotImplementedError``. Survey design columns (strata / PSU /
+            FPC) must be constant within unit (sampling-unit-level
+            assignment); within-unit variance raises ``ValueError``.
+            Replicate-weight designs raise ``NotImplementedError``
+            (Phase 4.5 C). ``design="mass_point"`` and
+            ``aggregate="event_study"`` raise ``NotImplementedError`` on
+            survey/weights (Phase 4.5 B).
         weights : np.ndarray or None
-            Reserved for a follow-up PR. Must be ``None`` in Phase 2a.
+            Per-row sampling weights as a lightweight shortcut equivalent
+            to ``survey=SurveyDesign(weights=<col>)``. Produces the same
+            ATT; the SE uses lprobust's weighted-robust CCT-2014 formula
+            rather than Binder-TSL (no PSU/strata composition). Mutually
+            exclusive with ``survey=`` — passing both raises
+            ``ValueError``. Must be constant within each unit (same
+            invariant as ``survey=``).
 
         Returns
         -------
@@ -2362,6 +2386,25 @@ class HeterogeneousAdoptionDiD:
                     "survey= without weights is not yet supported. Pass "
                     "survey=SurveyDesign(weights='<col>', ...) with a "
                     "per-row weight column."
+                )
+            # HAD's weighted local-linear treats ``weights`` as sampling
+            # (probability) weights: the kernel-composition formula
+            # ``W_combined = k((D-d̲)/h) · w`` is the inverse-probability
+            # weighting convention. Frequency weights (``fweight``)
+            # would imply replicating observations, and analytic weights
+            # (``aweight``, inverse-variance) would imply a different
+            # inferential target. Reject those up front rather than
+            # silently reinterpreting.
+            weight_type = getattr(survey, "weight_type", "pweight")
+            if weight_type != "pweight":
+                raise NotImplementedError(
+                    f"survey=SurveyDesign(weight_type={weight_type!r}) is "
+                    f"not supported on HeterogeneousAdoptionDiD's "
+                    f"continuous path. Only ``weight_type='pweight'`` "
+                    f"(sampling / inverse-probability weights) is "
+                    f"implemented in Phase 4.5 A. Frequency weights "
+                    f"(fweight) and analytic weights (aweight) would "
+                    f"imply different estimands and are not yet derived."
                 )
             # Resolve the SurveyDesign against the long-panel data. This
             # validates column names, applies pweight/aweight normalization
@@ -2665,7 +2708,17 @@ class HeterogeneousAdoptionDiD:
             raise ValueError(f"Internal error: unhandled design={resolved_design!r}.")
 
         # ---- Route all inference fields through safe_inference ----
-        t_stat, p_value, conf_int = safe_inference(att, se, alpha=float(self.alpha))
+        # Survey path: use t-distribution with ``df_survey = n_psu -
+        # n_strata`` (or replicate-QR rank − 1) so small-PSU designs
+        # don't get Normal-theory inference that overstates precision.
+        # Non-survey path (``weights=`` shortcut or unweighted): use
+        # the existing Normal-theory default.
+        df_infer: Optional[int] = None
+        if resolved_survey_unit is not None:
+            df_infer = resolved_survey_unit.df_survey
+        t_stat, p_value, conf_int = safe_inference(
+            att, se, alpha=float(self.alpha), df=df_infer
+        )
 
         # Build survey metadata when weights/survey were supplied. When a
         # ResolvedSurveyDesign is available (full survey= path), surface
@@ -2681,12 +2734,14 @@ class HeterogeneousAdoptionDiD:
                 source = "SurveyDesign"
                 n_strata = int(resolved_survey_unit.n_strata)
                 n_psu = int(resolved_survey_unit.n_psu)
+                df_survey_meta: Optional[int] = resolved_survey_unit.df_survey
             else:
                 method = "pweight"
                 variance_formula = "weighted-robust (CCT 2014)"
                 source = "weights_arr"
                 n_strata = None
                 n_psu = None
+                df_survey_meta = None
             survey_metadata = {
                 "method": method,
                 "source": source,
@@ -2696,6 +2751,7 @@ class HeterogeneousAdoptionDiD:
                 "effective_sample_size": float(ess),
                 "n_strata": n_strata,
                 "n_psu": n_psu,
+                "df_survey": df_survey_meta,
             }
 
         return HeterogeneousAdoptionDiDResults(
