@@ -277,6 +277,13 @@ class SyntheticDiD(DifferenceInDifferences):
               (``w_control.sum() == 0`` or ``w_treated.sum() == 0``).
               Every unit on that arm would have weight 0, encoding an
               unidentified target population (PR #355 R7 P1).
+            - The composed effective-control mass
+              ``(unit_weights * w_control).sum()`` is zero. Frank-Wolfe
+              sparsifies ``unit_weights`` to exact zeros by design, so
+              even when at least one control has positive survey weight,
+              the FW solution may concentrate all mass on controls whose
+              survey weights are 0. Raising up front avoids a silent
+              ``0/0`` in the ``omega_eff`` normalization (PR #355 R12 P1).
             - ``survey_design`` declares ``fpc`` with no explicit
               ``psu=``. SDID Rao-Wu then treats each unit as its own
               PSU, so ``fpc`` must be ``>=`` the number of units
@@ -656,7 +663,32 @@ class SyntheticDiD(DifferenceInDifferences):
         # population importance post-optimization.
         if w_control is not None:
             omega_eff = unit_weights * w_control
-            omega_eff = omega_eff / omega_eff.sum()
+            # Front-door effective-control guard (PR #355 R12 P1). The R7 P1
+            # check (``w_control.sum() > 0`` at the raw level, synthetic_did.py
+            # L470-L499) is insufficient here: Frank-Wolfe sparsifies
+            # ``unit_weights`` to exact zeros by design, so even when at least
+            # one control has positive survey weight, FW may concentrate all
+            # mass on a subset whose survey weights are all 0. The composed
+            # vector ``unit_weights * w_control`` would then sum to 0, the
+            # downstream ``omega_eff / omega_eff.sum()`` would emit NaN, and
+            # the fit would return NaN ATT / SE silently. The analogous
+            # guards already exist for the bootstrap loop
+            # (``omega_scaled.sum() <= 0`` retry) and jackknife
+            # (``effective_control > 0`` support gate); this restores the
+            # contract at fit time.
+            omega_eff_sum = float(omega_eff.sum())
+            if omega_eff_sum <= 0:
+                raise ValueError(
+                    "SDID point estimate is unidentified: the Frank-Wolfe "
+                    "solution concentrates all synthetic-control mass on "
+                    "units with zero survey weight, so the composed "
+                    "omega_eff = unit_weights * w_control sums to "
+                    f"{omega_eff_sum:.3g}. Every control unit with positive "
+                    "fit-time weight has survey weight 0. Drop zero-weight "
+                    "controls, or omit survey_design if unweighted "
+                    "estimation is intended."
+                )
+            omega_eff = omega_eff / omega_eff_sum
         else:
             omega_eff = unit_weights
 

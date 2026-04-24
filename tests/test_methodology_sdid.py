@@ -909,6 +909,101 @@ class TestBootstrapSE:
                 survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
             )
 
+    def test_fit_raises_on_zero_effective_control_support(self, monkeypatch):
+        """Fit-time guard: FW mass concentrated on zero-weight controls raises.
+
+        Zero survey weights are valid input (``survey.py`` L171-L176
+        rejects only negatives), and ``compute_sdid_unit_weights``
+        sparsifies ``unit_weights`` to exact zeros by design. If FW
+        concentrates on a control whose survey weight is 0, the composed
+        ``omega_eff = unit_weights * w_control`` has zero total mass and
+        the subsequent normalization hits ``0/0``, silently propagating
+        NaN into the ATT / SE / CI. The R7 P1 guard
+        (``w_control.sum() > 0``) is not sufficient here because at least
+        one control has positive weight — the degeneracy is in the
+        composed vector, not the raw survey mass.
+
+        Regression against PR #355 R12 P1: the fit-time guard must raise
+        a targeted ``ValueError`` before the normalization step.
+
+        We monkeypatch ``compute_sdid_unit_weights`` to return a
+        canonical sparse unit-weight vector concentrated on the first
+        control, bypassing FW convergence dynamics. This makes the test
+        about the guard contract (behavior when the degenerate
+        configuration is reached), not about how easy it is to force FW
+        into that configuration on synthetic data.
+        """
+        from diff_diff import synthetic_did as sdid_mod
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=5, n_treated=2, seed=42)
+        # First control gets survey weight 0; others get weight 1.
+        unique_units = np.sort(df["unit"].unique())
+        treated_ids = set(df.loc[df["treated"] == 1, "unit"].unique())
+        control_ids = [u for u in unique_units if u not in treated_ids]
+        zero_weight_unit = control_ids[0]
+        df["wt"] = np.where(df["unit"] == zero_weight_unit, 0.0, 1.0).astype(float)
+
+        # Force unit_weights to concentrate on control_ids[0]. The call
+        # sites in fit() use _create_outcome_matrices with control_units
+        # in sorted order (same order _make_panel produces), so index 0
+        # of the unit-weights vector corresponds to control_ids[0].
+        def sparse_unit_weights(Y_pre_control, *args, **kwargs):
+            n_ctrl = Y_pre_control.shape[1]
+            w = np.zeros(n_ctrl)
+            w[0] = 1.0
+            return w
+
+        monkeypatch.setattr(
+            sdid_mod, "compute_sdid_unit_weights", sparse_unit_weights
+        )
+
+        with pytest.raises(ValueError, match=r"unidentified|zero survey weight"):
+            SyntheticDiD(variance_method="placebo", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt"),
+            )
+
+    def test_fit_raises_on_zero_effective_control_support_full_design(self, monkeypatch):
+        """Fit-time effective-control guard fires under strata/PSU/FPC too.
+
+        Mirror of the pweight-only zero-effective-control case (PR #355
+        R12 P1) under a full survey design. The guard is part of the
+        ``w_control is not None`` branch, which fires for both
+        pweight-only and strata/PSU/FPC fits.
+        """
+        from diff_diff import synthetic_did as sdid_mod
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=5, n_treated=2, seed=42)
+        unique_units = np.sort(df["unit"].unique())
+        treated_ids = set(df.loc[df["treated"] == 1, "unit"].unique())
+        control_ids = [u for u in unique_units if u not in treated_ids]
+        zero_weight_unit = control_ids[0]
+        df["wt"] = np.where(df["unit"] == zero_weight_unit, 0.0, 1.0).astype(float)
+        df["stratum"] = df["unit"] % 2
+        df["psu"] = df["unit"]
+
+        def sparse_unit_weights(Y_pre_control, *args, **kwargs):
+            n_ctrl = Y_pre_control.shape[1]
+            w = np.zeros(n_ctrl)
+            w[0] = 1.0
+            return w
+
+        monkeypatch.setattr(
+            sdid_mod, "compute_sdid_unit_weights", sparse_unit_weights
+        )
+
+        with pytest.raises(ValueError, match=r"unidentified|zero survey weight"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
+            )
+
     def test_fit_raises_on_implicit_psu_fpc_below_unit_count_unstratified(self):
         """Fit-time FPC validation fires when psu=None and FPC < n_units.
 
