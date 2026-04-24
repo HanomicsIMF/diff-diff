@@ -402,14 +402,23 @@ def test_all_nan_treatment_is_categorical():
 
 
 def test_top_level_import_surface():
-    """profile_panel, PanelProfile, and Alert must be importable from the
-    top-level namespace so `help(diff_diff)` points at real symbols."""
+    """profile_panel, PanelProfile, Alert, OutcomeShape, and
+    TreatmentDoseShape must be importable from the top-level namespace
+    so `help(diff_diff)` points at real symbols."""
     import diff_diff
 
     assert callable(diff_diff.profile_panel)
     assert diff_diff.PanelProfile.__name__ == "PanelProfile"
     assert diff_diff.Alert.__name__ == "Alert"
-    for name in ("profile_panel", "PanelProfile", "Alert"):
+    assert diff_diff.OutcomeShape.__name__ == "OutcomeShape"
+    assert diff_diff.TreatmentDoseShape.__name__ == "TreatmentDoseShape"
+    for name in (
+        "profile_panel",
+        "PanelProfile",
+        "Alert",
+        "OutcomeShape",
+        "TreatmentDoseShape",
+    ):
         assert name in diff_diff.__all__, f"{name} missing from __all__"
 
 
