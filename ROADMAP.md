@@ -137,15 +137,17 @@ Long-running program, framed as "building toward" rather than with discrete ship
 
 - Baker et al. (2025) 8-step workflow enforcement in `diff_diff/practitioner.py`.
 - `practitioner_next_steps()` context-aware guidance.
-- Runtime LLM guides via `get_llm_guide(...)` (`llms.txt`, `llms-full.txt`, `llms-practitioner.txt`), bundled in the wheel.
+- Runtime LLM guides via `get_llm_guide(...)` (`llms.txt`, `llms-full.txt`, `llms-practitioner.txt`, `llms-autonomous.txt`), bundled in the wheel.
+- `profile_panel(df, ...)` returns a `PanelProfile` dataclass of structural facts about the panel - factual, not opinionated. Pairs with the `"autonomous"` guide variant (reference-shaped: estimator-support matrix + per-design-feature reasoning) so agents describe the data then consult a bundled reference rather than calling a deterministic recommender.
+- Package docstring leads with an "For AI agents" entry block so `help(diff_diff)` surfaces the agent entry points automatically.
 - Silent-operation warnings so agents and humans see the same signals at the same time.
 
 **Next blocks toward the vision.**
 
-- **BusinessReport / DiagnosticReport** (in Shipping Next) - the output form the vision assumes.
+- **Post-hoc mismatch detection in BR/DR output** - surfaces structured warnings like "you fit TWFE on staggered data with 37% forbidden-comparison weights" when the profile and the fitted estimator disagree. Safety net, not a pre-emptive rules engine.
+- **Structured `sanity_checks` block in BR/DR** - machine-legible pass / warn / fail signals (pretrends, power, forbidden-comparisons, event-study cleanliness, placebo, sensitivity) so agents can dispatch on a stable schema rather than parsing prose.
 - **Context-aware `practitioner_next_steps()`** that substitutes actual column names - turns guidance into executable recommendations.
-- **AI-legible diagnostic surfaces** - once BusinessReport ships, a structured JSON counterpart that agents can parse without screen-scraping human text.
-- **Scenario-to-estimator selection guidance** - agent-facing extension of `docs/practitioner_decision_tree.rst` that returns a specific estimator choice plus rationale for a given scenario description.
+- **Unified `assess_*` verb** across estimator native-diagnostic methods for a single discoverable convention.
 - **End-to-end scenario walkthrough templates** - reusable orchestration recipes an agent can adapt from data ingest through business-ready output.
 
 ---

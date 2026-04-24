@@ -4,14 +4,20 @@ diff-diff: A library for Difference-in-Differences analysis.
 This library provides sklearn-like estimators for causal inference
 using the difference-in-differences methodology.
 
-For rigorous analysis, follow the 8-step practitioner workflow based
-on Baker et al. (2025). After estimation, call
-``practitioner_next_steps(results)`` for context-aware guidance on
-remaining diagnostic steps.
+For AI agents:
 
-AI agents: call ``diff_diff.get_llm_guide()`` for a complete API reference.
-Use ``get_llm_guide("practitioner")`` for the 8-step workflow or
-``get_llm_guide("full")`` for comprehensive documentation.
+    1. Describe your data:    ``diff_diff.profile_panel(df, unit=..., time=...,
+                              treatment=..., outcome=...)``
+    2. Consult the reference: ``diff_diff.get_llm_guide("autonomous")``
+                              (estimator-support matrix + reasoning)
+    3. Follow the workflow:   ``diff_diff.get_llm_guide("practitioner")``
+                              (Baker et al. (2025) 8-step recipe)
+    4. Report results:        ``diff_diff.BusinessReport(results)``
+                              (structured agent-legible output)
+
+For a comprehensive API reference call ``diff_diff.get_llm_guide("full")``;
+``practitioner_next_steps(results)`` returns context-aware guidance after
+any estimator's ``fit()``.
 """
 
 # Import backend detection from dedicated module (avoids circular imports)
@@ -244,6 +250,7 @@ from diff_diff.diagnostic_report import (
     DiagnosticReportResults,
 )
 from diff_diff._guides_api import get_llm_guide
+from diff_diff.profile import Alert, PanelProfile, profile_panel
 from diff_diff.datasets import (
     clear_cache,
     list_datasets,
@@ -487,6 +494,10 @@ __all__ = [
     "DiagnosticReport",
     "DiagnosticReportResults",
     "DIAGNOSTIC_REPORT_SCHEMA_VERSION",
+    # Panel profiling (agent-facing pre-fit describe utility)
+    "profile_panel",
+    "PanelProfile",
+    "Alert",
     # LLM guide accessor
     "get_llm_guide",
 ]

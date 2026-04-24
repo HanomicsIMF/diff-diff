@@ -1,4 +1,5 @@
 """Runtime accessor for bundled LLM guide files."""
+
 from __future__ import annotations
 
 from importlib.resources import files
@@ -7,6 +8,7 @@ _VARIANT_TO_FILE = {
     "concise": "llms.txt",
     "full": "llms-full.txt",
     "practitioner": "llms-practitioner.txt",
+    "autonomous": "llms-autonomous.txt",
 }
 
 
@@ -21,6 +23,10 @@ def get_llm_guide(variant: str = "concise") -> str:
         - ``"concise"`` -- compact API reference (llms.txt)
         - ``"full"`` -- complete API documentation (llms-full.txt)
         - ``"practitioner"`` -- 8-step practitioner workflow (llms-practitioner.txt)
+        - ``"autonomous"`` -- reference guide for AI-agent use: estimator-support
+          matrix, per-design-feature reasoning, post-fit validation index, and
+          BR/DR schema (llms-autonomous.txt). Pair with
+          :func:`diff_diff.profile_panel` for pre-fit data description.
 
     Returns
     -------
@@ -42,7 +48,5 @@ def get_llm_guide(variant: str = "concise") -> str:
         filename = _VARIANT_TO_FILE[variant]
     except (KeyError, TypeError):
         valid = ", ".join(repr(k) for k in _VARIANT_TO_FILE)
-        raise ValueError(
-            f"Unknown guide variant {variant!r}. Valid options: {valid}."
-        ) from None
+        raise ValueError(f"Unknown guide variant {variant!r}. Valid options: {valid}.") from None
     return files("diff_diff.guides").joinpath(filename).read_text(encoding="utf-8")

@@ -1,0 +1,714 @@
+"""Descriptive panel-profiling utility for agent-facing use.
+
+``profile_panel()`` inspects a DiD panel and returns a :class:`PanelProfile`
+dataclass of structural facts — panel balance, treatment-type classification,
+outcome characteristics, and a list of factual :class:`Alert` observations.
+
+This module is descriptive, not opinionated. Alerts report what is (e.g.
+"smallest cohort has 7 units"), never what to do about it. Estimator
+selection is the caller's responsibility; consult
+``diff_diff.get_llm_guide("autonomous")`` for the estimator-support matrix
+and per-design-feature reasoning.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional, Tuple, cast
+
+import numpy as np
+import pandas as pd
+
+_OBSERVATION_COVERAGE_THRESHOLD = 0.70
+_MIN_COHORT_SIZE_THRESHOLD = 10
+_SHORT_PRE_PANEL_THRESHOLD = 3
+_SHORT_POST_PANEL_THRESHOLD = 3
+
+
+@dataclass(frozen=True)
+class Alert:
+    """A factual observation about a panel.
+
+    ``severity`` is ``"info"`` (descriptive) or ``"warn"`` (descriptive and
+    likely relevant to the caller's estimator choice). Alerts never
+    recommend a specific estimator.
+    """
+
+    code: str
+    severity: str
+    message: str
+    observed: Any
+
+
+@dataclass(frozen=True)
+class PanelProfile:
+    """Structural facts about a DiD panel.
+
+    Returned by :func:`profile_panel`. Mirrors the ``BusinessContext``
+    frozen-dataclass pattern. Consume ``.to_dict()`` for a JSON-serializable
+    representation and reason against the bundled
+    ``llms-autonomous.txt`` guide.
+    """
+
+    n_units: int
+    n_periods: int
+    n_obs: int
+    is_balanced: bool  # every (unit, time) cell appears at least once
+    observation_coverage: float  # unique (unit, time) keys / (n_units * n_periods)
+
+    treatment_type: str
+    is_staggered: bool
+    n_cohorts: int
+    cohort_sizes: Mapping[Any, int]
+    has_never_treated: bool
+    has_always_treated: bool
+    treatment_varies_within_unit: bool
+
+    first_treatment_period: Optional[Any]
+    last_treatment_period: Optional[Any]
+    min_pre_periods: Optional[int]
+    min_post_periods: Optional[int]
+
+    outcome_dtype: str
+    outcome_is_binary: bool
+    outcome_has_zeros: bool
+    outcome_has_negatives: bool
+    outcome_missing_fraction: float
+    outcome_summary: Mapping[str, float]
+
+    alerts: Tuple[Alert, ...]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-serializable dict representation of the profile."""
+        return {
+            "n_units": self.n_units,
+            "n_periods": self.n_periods,
+            "n_obs": self.n_obs,
+            "is_balanced": self.is_balanced,
+            "observation_coverage": self.observation_coverage,
+            "treatment_type": self.treatment_type,
+            "is_staggered": self.is_staggered,
+            "n_cohorts": self.n_cohorts,
+            "cohort_sizes": {_jsonable_key(k): int(v) for k, v in self.cohort_sizes.items()},
+            "has_never_treated": self.has_never_treated,
+            "has_always_treated": self.has_always_treated,
+            "treatment_varies_within_unit": self.treatment_varies_within_unit,
+            "first_treatment_period": _jsonable(self.first_treatment_period),
+            "last_treatment_period": _jsonable(self.last_treatment_period),
+            "min_pre_periods": self.min_pre_periods,
+            "min_post_periods": self.min_post_periods,
+            "outcome_dtype": self.outcome_dtype,
+            "outcome_is_binary": self.outcome_is_binary,
+            "outcome_has_zeros": self.outcome_has_zeros,
+            "outcome_has_negatives": self.outcome_has_negatives,
+            "outcome_missing_fraction": self.outcome_missing_fraction,
+            "outcome_summary": {k: float(v) for k, v in self.outcome_summary.items()},
+            "alerts": [
+                {
+                    "code": a.code,
+                    "severity": a.severity,
+                    "message": a.message,
+                    "observed": _jsonable(a.observed),
+                }
+                for a in self.alerts
+            ],
+        }
+
+
+def profile_panel(
+    df: pd.DataFrame,
+    *,
+    unit: str,
+    time: str,
+    treatment: str,
+    outcome: str,
+) -> PanelProfile:
+    """Describe the structure of a DiD panel.
+
+    Reports structural facts — balance, treatment-type classification,
+    outcome characteristics, factual alerts. Descriptive, not opinionated:
+    the profile says what is, never what to do about it. Estimator
+    selection is up to the caller.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Long-format panel data containing the four named columns.
+    unit : str
+        Column identifying the cross-sectional unit.
+    time : str
+        Column identifying the time period.
+    treatment : str
+        Column holding the treatment indicator or dose. See Notes for the
+        classification rules.
+    outcome : str
+        Column holding the outcome variable.
+
+    Returns
+    -------
+    PanelProfile
+        Frozen dataclass. Call ``.to_dict()`` for a JSON-serializable view.
+
+    Raises
+    ------
+    ValueError
+        If any of the four column names is not present in ``df``.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> from diff_diff import profile_panel
+    >>> df = pd.DataFrame({
+    ...     "u":  [1, 1, 2, 2],
+    ...     "t":  [0, 1, 0, 1],
+    ...     "tr": [0, 0, 1, 1],
+    ...     "y":  [0.1, 0.2, 0.1, 0.9],
+    ... })
+    >>> profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    >>> profile.is_balanced
+    True
+    >>> profile.treatment_type
+    'binary_absorbing'
+
+    Notes
+    -----
+    Classification rules for ``treatment_type``:
+
+    - ``"binary_absorbing"``: numeric treatment whose observed non-NaN
+      values are a subset of :math:`\\{0, 1\\}` (one or two distinct
+      values) AND each unit's treatment sequence (ordered by ``time``)
+      is weakly monotone non-decreasing. All-zero and all-one panels
+      are valid degenerate cases.
+    - ``"binary_non_absorbing"``: values a subset of :math:`\\{0, 1\\}`
+      with at least two distinct values observed, where at least one
+      unit switches from 1 back to 0.
+    - ``"continuous"``: numeric treatment with more than two distinct
+      values, or a 2-valued numeric whose values are not in
+      :math:`\\{0, 1\\}` (matches the ``ContinuousDiD`` convention).
+    - ``"categorical"``: non-numeric dtype (object / category) or a
+      column that is entirely NaN.
+
+    Bool-dtype columns (``True`` / ``False``) are classified the same
+    way as numeric ``{0, 1}``: the library's binary estimators validate
+    on value support via :func:`diff_diff.utils.validate_binary`, so
+    ``True`` / ``False`` behave like ``1`` / ``0`` for absorbing /
+    non-absorbing classification.
+
+    ``has_never_treated`` is computed across both binary and
+    continuous numeric treatment types: some unit has ``treatment ==
+    0`` in every observed non-NaN row. For binary this flags the
+    clean-control group; for continuous this flags zero-dose controls
+    (required by ``ContinuousDiD``). Always ``False`` for
+    ``"categorical"``.
+
+    ``has_always_treated`` has binary-only semantics: some unit has
+    ``treatment == 1`` in every observed non-NaN row (no pre-treatment
+    information in the DiD sense). For ``"continuous"`` and
+    ``"categorical"`` treatment this field is always ``False``
+    regardless of dose positivity — pre-treatment periods on
+    continuous DiD are determined by the separate ``first_treat``
+    column passed to ``ContinuousDiD.fit``, not by whether the dose
+    is strictly positive.
+
+    Rows with ``NaN`` in ``unit`` or ``time`` are dropped up front and
+    surfaced via the ``missing_id_rows_dropped`` alert; all subsequent
+    structural facts are computed on the non-missing subset, so
+    ``observation_coverage`` is always in ``[0, 1]``. Duplicate
+    ``(unit, time)`` rows are surfaced separately via the
+    ``duplicate_unit_time_rows`` alert.
+
+    The profile does not recommend an estimator. Consult
+    ``diff_diff.get_llm_guide("autonomous")`` for the estimator-support
+    matrix and per-design-feature reasoning.
+    """
+    _validate_columns(df, unit=unit, time=time, treatment=treatment, outcome=outcome)
+
+    input_row_count = int(len(df))
+    if input_row_count == 0:
+        raise ValueError("profile_panel: DataFrame is empty; at least one row is required.")
+
+    missing_id_mask = cast(pd.Series, df[[unit, time]].isna().any(axis=1))
+    n_rows_with_missing_id = int(missing_id_mask.sum())
+    if n_rows_with_missing_id > 0:
+        df = df.loc[~missing_id_mask]
+    n_obs = int(len(df))
+    if n_obs == 0:
+        raise ValueError(
+            f"profile_panel: no rows remain after dropping "
+            f"{n_rows_with_missing_id} row(s) with missing unit or time "
+            "identifier; at least one valid row is required."
+        )
+
+    n_units = int(df[unit].nunique())
+    n_periods = int(df[time].nunique())
+    n_unique_keys = int(df[[unit, time]].drop_duplicates().shape[0])
+    denom = n_units * n_periods
+    observation_coverage = float(n_unique_keys / denom) if denom > 0 else 0.0
+    is_balanced = n_unique_keys == denom
+    n_duplicate_rows = n_obs - n_unique_keys
+
+    (
+        treatment_type,
+        is_staggered,
+        cohort_sizes,
+        has_never_treated,
+        has_always_treated,
+        first_tp,
+        last_tp,
+    ) = _classify_treatment(df, unit=unit, time=time, treatment=treatment)
+
+    if pd.api.types.is_numeric_dtype(df[treatment]) or pd.api.types.is_bool_dtype(df[treatment]):
+        per_unit_distinct = df.groupby(unit)[treatment].nunique(dropna=True)
+        treatment_varies_within_unit = bool((per_unit_distinct > 1).any())
+    else:
+        treatment_varies_within_unit = False
+
+    min_pre, min_post = _compute_pre_post(
+        df,
+        unit=unit,
+        time=time,
+        treatment=treatment,
+        treatment_type=treatment_type,
+    )
+
+    outcome_col = cast(pd.Series, df[outcome])
+    outcome_dtype = str(outcome_col.dtype)
+    valid = cast(pd.Series, outcome_col.dropna())
+    outcome_missing_fraction = (
+        float(1.0 - len(valid) / len(outcome_col)) if len(outcome_col) > 0 else 0.0
+    )
+    outcome_is_binary, outcome_has_zeros, outcome_has_negatives = _classify_outcome(valid)
+    outcome_summary = _summarize_outcome(valid)
+
+    dtype_kind = getattr(outcome_col.dtype, "kind", "O")
+    alerts = _compute_alerts(
+        n_periods=n_periods,
+        observation_coverage=observation_coverage,
+        cohort_sizes=cohort_sizes,
+        has_never_treated=has_never_treated,
+        has_always_treated=has_always_treated,
+        min_pre_periods=min_pre,
+        min_post_periods=min_post,
+        outcome_is_binary=outcome_is_binary,
+        outcome_dtype_kind=dtype_kind,
+        n_duplicate_rows=n_duplicate_rows,
+        n_rows_with_missing_id=n_rows_with_missing_id,
+    )
+
+    return PanelProfile(
+        n_units=n_units,
+        n_periods=n_periods,
+        n_obs=n_obs,
+        is_balanced=is_balanced,
+        observation_coverage=observation_coverage,
+        treatment_type=treatment_type,
+        is_staggered=is_staggered,
+        n_cohorts=len(cohort_sizes),
+        cohort_sizes=cohort_sizes,
+        has_never_treated=has_never_treated,
+        has_always_treated=has_always_treated,
+        treatment_varies_within_unit=treatment_varies_within_unit,
+        first_treatment_period=first_tp,
+        last_treatment_period=last_tp,
+        min_pre_periods=min_pre,
+        min_post_periods=min_post,
+        outcome_dtype=outcome_dtype,
+        outcome_is_binary=outcome_is_binary,
+        outcome_has_zeros=outcome_has_zeros,
+        outcome_has_negatives=outcome_has_negatives,
+        outcome_missing_fraction=outcome_missing_fraction,
+        outcome_summary=outcome_summary,
+        alerts=tuple(alerts),
+    )
+
+
+def _validate_columns(df: pd.DataFrame, **cols: str) -> None:
+    missing = [(role, name) for role, name in cols.items() if name not in df.columns]
+    if missing:
+        pairs = ", ".join(f"{role}={name!r}" for role, name in missing)
+        raise ValueError(
+            f"profile_panel: column(s) not found in DataFrame: {pairs}. "
+            f"Provided columns: {list(df.columns)}"
+        )
+
+
+def _classify_treatment(
+    df: pd.DataFrame,
+    *,
+    unit: str,
+    time: str,
+    treatment: str,
+) -> Tuple[
+    str,
+    bool,
+    Dict[Any, int],
+    bool,
+    bool,
+    Optional[Any],
+    Optional[Any],
+]:
+    """Return (type, is_staggered, cohort_sizes, has_never, has_always, first_tp, last_tp)."""
+    col = df[treatment]
+    is_numeric = pd.api.types.is_numeric_dtype(col)
+    is_bool = pd.api.types.is_bool_dtype(col)
+
+    # Bool-dtype treatment columns are treated as binary 0/1 inputs.
+    # The library's binary estimators validate value support via
+    # `validate_binary`, which accepts bool because True/False coerce
+    # to 1/0 numerically. Classifying bool columns as "categorical"
+    # here would route a valid binary design away from the supported
+    # estimator set.
+    if (not is_numeric) and (not is_bool):
+        return ("categorical", False, {}, False, False, None, None)
+
+    distinct = col.dropna().unique()
+    n_distinct = len(distinct)
+    values_set = set(distinct.tolist())
+    if n_distinct == 0:
+        return ("categorical", False, {}, False, False, None, None)
+
+    # has_never_treated has a single well-defined meaning across binary
+    # and continuous numeric treatment: some unit has treatment == 0 in
+    # every observed non-NaN row. For binary this is the clean-control
+    # group; for continuous this is the zero-dose control required by
+    # ContinuousDiD (P(D=0) > 0).
+    unit_max = df.groupby(unit)[treatment].max().to_numpy()
+    unit_min = df.groupby(unit)[treatment].min().to_numpy()
+    has_never_treated = bool(np.any(unit_max == 0))
+
+    is_binary_valued = values_set <= {0, 1, 0.0, 1.0}
+    # has_always_treated has binary-only semantics: "unit is treated in
+    # every observed period" = unit_min == 1 on a binary panel (no
+    # pre-treatment information). For continuous panels, positive dose
+    # throughout does not mean "always treated in the DiD sense"
+    # (pre-treatment periods are determined by `first_treat`, not by
+    # whether the dose is positive), so this field is False for
+    # continuous / categorical types.
+    has_always_treated = is_binary_valued and bool(np.any(unit_min == 1))
+
+    if not is_binary_valued:
+        return (
+            "continuous",
+            False,
+            {},
+            has_never_treated,
+            has_always_treated,
+            None,
+            None,
+        )
+
+    sorted_df = df.sort_values([unit, time])
+
+    # Monotonicity check on the observed non-NaN subsequence per unit.
+    # A path like [0, 1, NaN, 0] must be detected as non-absorbing: the
+    # non-NaN subsequence [0, 1, 0] violates weak monotonicity.
+    is_absorbing = True
+    for _, group in sorted_df.groupby(unit, sort=False):
+        vals = group[treatment].to_numpy()
+        mask = ~pd.isna(vals)
+        # Cast to int so np.diff on a bool-dtype column performs
+        # arithmetic (1 - 0 = 1, 0 - 1 = -1) rather than XOR (which
+        # would mask a True -> False transition).
+        observed = vals[mask].astype(np.int64, copy=False)
+        if len(observed) >= 2 and bool(np.any(np.diff(observed) < 0)):
+            is_absorbing = False
+            break
+
+    if not is_absorbing:
+        return (
+            "binary_non_absorbing",
+            False,
+            {},
+            has_never_treated,
+            has_always_treated,
+            None,
+            None,
+        )
+
+    first_treat = sorted_df[sorted_df[treatment] == 1].groupby(unit, sort=False)[time].min()
+    cohort_counts = first_treat.value_counts().sort_index()
+    cohort_sizes: Dict[Any, int] = {k: int(v) for k, v in cohort_counts.items()}
+    first_tp = min(cohort_sizes) if cohort_sizes else None
+    last_tp = max(cohort_sizes) if cohort_sizes else None
+    is_staggered = len(cohort_sizes) >= 2
+
+    return (
+        "binary_absorbing",
+        is_staggered,
+        cohort_sizes,
+        has_never_treated,
+        has_always_treated,
+        first_tp,
+        last_tp,
+    )
+
+
+def _compute_pre_post(
+    df: pd.DataFrame,
+    *,
+    unit: str,
+    time: str,
+    treatment: str,
+    treatment_type: str,
+) -> Tuple[Optional[int], Optional[int]]:
+    """Return (min_pre, min_post) across treated units using each unit's
+    observed (unit, time) support. On unbalanced panels this correctly
+    reflects the actual pre/post exposure of the least-supported treated
+    unit, rather than the global panel period set which could overstate
+    exposure and suppress short-panel alerts.
+    """
+    if treatment_type != "binary_absorbing":
+        return None, None
+
+    support = df[[unit, time]].drop_duplicates()
+    sorted_df = df.sort_values([unit, time])
+    first_treat_per_unit = (
+        sorted_df[sorted_df[treatment] == 1].groupby(unit, sort=False)[time].min()
+    )
+    if first_treat_per_unit.empty:
+        return None, None
+
+    pre_counts: List[int] = []
+    post_counts: List[int] = []
+    treated_units = first_treat_per_unit.index.tolist()
+    for u in treated_units:
+        c_u = first_treat_per_unit.loc[u]
+        unit_periods = support.loc[support[unit] == u, time]
+        pre_counts.append(int((unit_periods < c_u).sum()))
+        post_counts.append(int((unit_periods >= c_u).sum()))
+
+    return int(min(pre_counts)), int(min(post_counts))
+
+
+def _classify_outcome(valid: pd.Series) -> Tuple[bool, bool, bool]:
+    n_distinct = valid.nunique(dropna=False)
+    if n_distinct == 0:
+        return False, False, False
+
+    is_numeric = pd.api.types.is_numeric_dtype(valid)
+    if is_numeric:
+        distinct_set = set(valid.unique().tolist())
+        is_binary = n_distinct == 2 and (distinct_set <= {0, 1} or distinct_set <= {0.0, 1.0})
+        has_zeros = bool((valid == 0).any())
+        has_negatives = bool((valid < 0).any())
+        return is_binary, has_zeros, has_negatives
+
+    return False, False, False
+
+
+def _summarize_outcome(valid: pd.Series) -> Dict[str, float]:
+    if len(valid) == 0 or not pd.api.types.is_numeric_dtype(valid):
+        return {}
+    return {
+        "min": float(valid.min()),
+        "max": float(valid.max()),
+        "mean": float(valid.mean()),
+        "std": float(valid.std(ddof=1)) if len(valid) > 1 else 0.0,
+    }
+
+
+def _compute_alerts(
+    *,
+    n_periods: int,
+    observation_coverage: float,
+    cohort_sizes: Mapping[Any, int],
+    has_never_treated: bool,
+    has_always_treated: bool,
+    min_pre_periods: Optional[int],
+    min_post_periods: Optional[int],
+    outcome_is_binary: bool,
+    outcome_dtype_kind: str,
+    n_duplicate_rows: int,
+    n_rows_with_missing_id: int,
+) -> List[Alert]:
+    alerts: List[Alert] = []
+
+    if n_rows_with_missing_id > 0:
+        alerts.append(
+            Alert(
+                code="missing_id_rows_dropped",
+                severity="warn",
+                message=(
+                    f"Dropped {n_rows_with_missing_id} row(s) with missing "
+                    "unit or time identifier; structural facts are computed "
+                    "from the non-missing subset."
+                ),
+                observed=int(n_rows_with_missing_id),
+            )
+        )
+
+    if n_duplicate_rows > 0:
+        alerts.append(
+            Alert(
+                code="duplicate_unit_time_rows",
+                severity="warn",
+                message=(
+                    f"Found {n_duplicate_rows} duplicate (unit, time) row(s); "
+                    "balance and coverage are computed from the unique support."
+                ),
+                observed=int(n_duplicate_rows),
+            )
+        )
+
+    if cohort_sizes:
+        smallest = min(cohort_sizes.values())
+        if smallest < _MIN_COHORT_SIZE_THRESHOLD:
+            alerts.append(
+                Alert(
+                    code="min_cohort_size_below_10",
+                    severity="warn",
+                    message=(
+                        f"Smallest cohort has {smallest} units; "
+                        "cohort-level inference will be noisy."
+                    ),
+                    observed=int(smallest),
+                )
+            )
+        if len(cohort_sizes) == 1:
+            alerts.append(
+                Alert(
+                    code="only_one_cohort",
+                    severity="info",
+                    message=("All treated units adopt at the same time " "(non-staggered design)."),
+                    observed=1,
+                )
+            )
+            if not has_never_treated:
+                alerts.append(
+                    Alert(
+                        code="all_units_treated_simultaneously",
+                        severity="info",
+                        message=(
+                            "Every unit is treated and every treated unit "
+                            "adopts in the same period; no untreated "
+                            "comparison group exists in the panel."
+                        ),
+                        observed=None,
+                    )
+                )
+
+    if min_pre_periods is not None and min_pre_periods < _SHORT_PRE_PANEL_THRESHOLD:
+        alerts.append(
+            Alert(
+                code="short_pre_panel",
+                severity="warn",
+                message=(
+                    f"Minimum pre-treatment periods across treated units is "
+                    f"{min_pre_periods}; parallel-trends and event-study "
+                    "diagnostics have limited power."
+                ),
+                observed=int(min_pre_periods),
+            )
+        )
+    if min_post_periods is not None and min_post_periods < _SHORT_POST_PANEL_THRESHOLD:
+        alerts.append(
+            Alert(
+                code="short_post_panel",
+                severity="info",
+                message=(
+                    f"Minimum post-treatment periods across treated units is "
+                    f"{min_post_periods}; dynamic-effect estimation is "
+                    "limited."
+                ),
+                observed=int(min_post_periods),
+            )
+        )
+
+    if cohort_sizes and not has_never_treated:
+        alerts.append(
+            Alert(
+                code="no_never_treated",
+                severity="info",
+                message=(
+                    "No never-treated comparison units; every unit in the "
+                    "panel is eventually treated."
+                ),
+                observed=False,
+            )
+        )
+
+    if has_always_treated:
+        alerts.append(
+            Alert(
+                code="has_always_treated_units",
+                severity="info",
+                message=(
+                    "Some units are treated in every observed period; they "
+                    "provide no pre-treatment information."
+                ),
+                observed=True,
+            )
+        )
+
+    if observation_coverage < _OBSERVATION_COVERAGE_THRESHOLD:
+        alerts.append(
+            Alert(
+                code="panel_highly_unbalanced",
+                severity="warn",
+                message=(
+                    f"Observation coverage is {observation_coverage:.1%}; "
+                    "panel is highly unbalanced."
+                ),
+                observed=float(observation_coverage),
+            )
+        )
+
+    if n_periods == 2:
+        alerts.append(
+            Alert(
+                code="only_two_periods",
+                severity="info",
+                message="Only two time periods are observed (2x2 design).",
+                observed=2,
+            )
+        )
+
+    if outcome_is_binary and outcome_dtype_kind == "f":
+        alerts.append(
+            Alert(
+                code="outcome_looks_binary_but_dtype_float",
+                severity="info",
+                message=("Outcome takes values in {0, 1} but is stored with a " "float dtype."),
+                observed=None,
+            )
+        )
+
+    return alerts
+
+
+def _jsonable(x: Any) -> Any:
+    """Coerce a value to a JSON-serializable primitive."""
+    if x is None:
+        return None
+    if isinstance(x, bool):
+        return bool(x)
+    if isinstance(x, (int, float, str)):
+        return x
+    if isinstance(x, np.bool_):
+        return bool(x)
+    if isinstance(x, np.integer):
+        return int(x)
+    if isinstance(x, np.floating):
+        return float(x)
+    if isinstance(x, (pd.Timestamp, np.datetime64)):
+        return str(x)
+    if isinstance(x, dict):
+        return {_jsonable_key(k): _jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_jsonable(v) for v in x]
+    return str(x)
+
+
+def _jsonable_key(k: Any) -> Any:
+    """Coerce a mapping key to a JSON-compatible primitive."""
+    if isinstance(k, bool):
+        return bool(k)
+    if isinstance(k, (int, float, str)):
+        return k
+    if isinstance(k, np.bool_):
+        return bool(k)
+    if isinstance(k, np.integer):
+        return int(k)
+    if isinstance(k, np.floating):
+        return float(k)
+    return str(k)
