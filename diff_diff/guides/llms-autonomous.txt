@@ -500,13 +500,39 @@ intensity of exposure differs):
 ### §4.10 Repeated cross-sections (no panel structure)
 
 `profile_panel` assumes long-format panel data. When the same units are
-not observed across time (true repeated cross-sections), most estimators
-remain applicable but:
+not observed across time (true repeated cross-sections), only the
+estimators whose documented contract explicitly admits RCS are
+applicable. Do not route RCS data to any other estimator in the suite -
+most of them are panel-only by construction and will either raise at
+fit time or estimate under a misspecified identifying assumption.
 
-- Clustered SE must cluster on the unit proxy (state, region) rather
-  than individual.
-- The `CallawaySantAnna` estimator has an explicit repeated-cross-
-  section mode; see its `panel` kwarg.
+Explicit RCS support in this library:
+
+- `CallawaySantAnna(panel=False)` - repeated-cross-section mode per
+  REGISTRY.md §CallawaySantAnna; use this variant on RCS data.
+- `TripleDifference` / `StaggeredTripleDifference` - DDD cross-sectional
+  use cases are documented in `docs/choosing_estimator.rst`; the DDD
+  estimators do not require within-unit tracking when the third
+  comparison axis carries the identification.
+
+Explicitly rejected for RCS (panel-only):
+
+- `EfficientDiD` - REGISTRY notes "does not handle ... repeated
+  cross-sections."
+- `HeterogeneousAdoptionDiD` - panel-only (requires a balanced panel
+  with per-unit adoption timing).
+- `SyntheticDiD` - requires balanced panel with per-unit donor matching.
+- `ContinuousDiD` - requires balanced panel with per-unit constant
+  dose.
+
+Treat other estimators in this guide as panel-only unless their own
+docs explicitly say otherwise. When routing, also:
+
+- Cluster SE on the unit proxy (state, region) rather than the
+  individual cross-section respondent.
+- Confirm the treatment assignment is at the cluster level, not at
+  the individual-respondent level, before interpreting the estimate
+  as a group-time ATT.
 
 
 ## §5. Post-fit validation utilities

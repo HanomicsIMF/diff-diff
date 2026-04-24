@@ -745,6 +745,30 @@ def test_guide_api_strings_resolve_against_public_api():
             f"{phrase!r}: SUTVA is assumed across the estimator suite."
         )
 
+    # Repeated-cross-section (§4.10) must not claim broad
+    # applicability. The documented RCS-capable estimators are
+    # CallawaySantAnna(panel=False), TripleDifference, and
+    # StaggeredTripleDifference; EfficientDiD and
+    # HeterogeneousAdoptionDiD explicitly reject RCS per REGISTRY.md.
+    assert "most estimators remain applicable" not in text, (
+        "§4.10 must not claim broad RCS applicability; only the "
+        "explicitly documented RCS-capable subset is applicable."
+    )
+    assert "panel=False" in text, (
+        "§4.10 must point at CallawaySantAnna(panel=False) as the " "explicit RCS mode"
+    )
+    # The section must explicitly name at least one panel-only
+    # estimator as rejected for RCS, so agents do not silently route
+    # RCS data to it.
+    rcs_section_start = text.find("§4.10 Repeated cross-sections")
+    assert rcs_section_start >= 0
+    rcs_section = text[rcs_section_start : rcs_section_start + 2500]
+    for panel_only in ("EfficientDiD", "HeterogeneousAdoptionDiD"):
+        assert panel_only in rcs_section, (
+            f"§4.10 must explicitly name {panel_only!r} as panel-only "
+            "so RCS data is not routed to it"
+        )
+
 
 def test_min_pre_post_use_per_unit_observed_support():
     """On an unbalanced panel where one treated unit is missing its
