@@ -439,6 +439,47 @@ class SyntheticDiD(DifferenceInDifferences):
             resolved_survey_unit = collapse_survey_to_unit_level(
                 resolved_survey, data, unit, all_units_for_bootstrap,
             )
+            # Front-door FPC validation for implicit-PSU Rao-Wu (PR #355
+            # R8 P1). When psu is None but fpc is set,
+            # ``generate_rao_wu_weights`` (bootstrap_utils.py L654-L655)
+            # treats each unit as its own PSU and rejects
+            # ``FPC < n_units`` per stratum mid-draw. ``_bootstrap_se``
+            # catches that ``ValueError`` and keeps retrying, so the user
+            # sees a generic bootstrap-exhaustion message instead of a
+            # targeted FPC/design error. Validate upstream so the user
+            # gets a clean error before the bootstrap loop even starts.
+            if (
+                resolved_survey_unit.psu is None
+                and resolved_survey_unit.fpc is not None
+            ):
+                if resolved_survey_unit.strata is None:
+                    n_units_total = len(resolved_survey_unit.weights)
+                    fpc_val = float(resolved_survey_unit.fpc[0])
+                    if fpc_val < n_units_total:
+                        raise ValueError(
+                            f"FPC ({fpc_val}) is less than the number of "
+                            f"units ({n_units_total}). With no explicit "
+                            "psu= column, SDID Rao-Wu treats each unit as "
+                            "its own PSU; FPC must be >= the number of "
+                            "units. Declare an explicit psu= column or "
+                            "increase FPC."
+                        )
+                else:
+                    unique_strata = np.unique(resolved_survey_unit.strata)
+                    for h in unique_strata:
+                        mask_h = resolved_survey_unit.strata == h
+                        n_h_units = int(mask_h.sum())
+                        fpc_h = float(resolved_survey_unit.fpc[mask_h][0])
+                        if fpc_h < n_h_units:
+                            raise ValueError(
+                                f"FPC ({fpc_h}) in stratum {h} is less than "
+                                f"the number of units in that stratum "
+                                f"({n_h_units}). With no explicit psu= "
+                                "column, SDID Rao-Wu treats each unit as "
+                                "its own PSU within strata; FPC must be "
+                                ">= the per-stratum unit count. Declare an "
+                                "explicit psu= column or increase FPC."
+                            )
             # Source w_control / w_treated from resolved_survey_unit.weights
             # rather than re-extracting raw panel columns. resolved_survey.weights
             # is normalized to mean=1 by SurveyDesign.resolve() (survey.py L189-

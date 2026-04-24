@@ -909,6 +909,57 @@ class TestBootstrapSE:
                 survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
             )
 
+    def test_fit_raises_on_implicit_psu_fpc_below_unit_count_unstratified(self):
+        """Fit-time FPC validation fires when psu=None and FPC < n_units.
+
+        When ``SurveyDesign(fpc=...)`` is declared without an explicit
+        ``psu=``, SDID Rao-Wu (via ``bootstrap_utils.generate_rao_wu_weights``
+        L654-L655) treats each unit as its own PSU. The helper rejects
+        ``FPC < n_PSU`` mid-draw (``bootstrap_utils.py`` L684-L688); without
+        a front-door guard, every bootstrap draw raises, ``_bootstrap_se``
+        swallows the ``ValueError`` in its retry loop, and the user sees a
+        generic bootstrap-exhaustion error. Regression against PR #355 R8
+        P1: ``fit()`` must validate FPC vs unit count before dispatching
+        the bootstrap.
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        # 13 units total; FPC says population size is 5 — infeasible for
+        # 13 implicit PSUs.
+        df["fpc_pop"] = 5.0
+        with pytest.raises(ValueError, match=r"FPC.*less than the number of units"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt", fpc="fpc_pop"),
+            )
+
+    def test_fit_raises_on_implicit_psu_fpc_below_stratum_unit_count(self):
+        """Fit-time FPC validation fires per stratum under implicit PSU.
+
+        Mirror of the unstratified case but with strata present. Each
+        stratum's FPC must be >= its unit count (PR #355 R8 P1).
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=12, n_treated=4, seed=42)
+        df["wt"] = 1.0
+        df["stratum"] = df["unit"] % 2  # 2 strata, ~8 units each
+        # FPC says 3 per stratum — infeasible for 8 implicit PSUs/stratum.
+        df["fpc_pop"] = 3.0
+        with pytest.raises(ValueError, match=r"FPC.*less than the number of units in that stratum"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(
+                    weights="wt", strata="stratum", fpc="fpc_pop",
+                ),
+            )
+
     def test_bootstrap_scale_invariance_under_pweight_rescaling(self):
         """Survey-bootstrap SE / p / CI are invariant to a global pweight rescaling.
 
