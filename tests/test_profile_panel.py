@@ -1025,10 +1025,10 @@ def test_outcome_shape_to_dict_roundtrips_through_json():
 # ---------------------------------------------------------------------------
 
 
-def test_treatment_dose_continuous_zero_baseline_time_invariant():
-    """Continuous panel with zero-dose controls and constant treated dose
-    must populate treatment_dose with has_zero_dose=True, is_time_invariant
-    =True, and the correct n_distinct_doses."""
+def test_treatment_dose_continuous_zero_baseline():
+    """Continuous panel with zero-dose controls and multiple distinct
+    treated doses populates treatment_dose with has_zero_dose=True and
+    the correct n_distinct_doses + dose support."""
     rng = np.random.default_rng(19)
     rows = []
     for u in range(1, 21):
@@ -1049,67 +1049,76 @@ def test_treatment_dose_continuous_zero_baseline_time_invariant():
     assert profile.treatment_type == "continuous"
     assert dose is not None
     assert dose.has_zero_dose is True
-    assert dose.is_time_invariant is True
     assert dose.n_distinct_doses == 4  # {0, 1, 2.5, 4}
     assert dose.dose_min == pytest.approx(1.0)
     assert dose.dose_max == pytest.approx(4.0)
 
 
-def test_treatment_dose_continuous_time_varying_within_unit():
-    """If a treated unit's nonzero dose changes across periods,
-    is_time_invariant must be False — gating ContinuousDiD pre-fit."""
-    rng = np.random.default_rng(23)
-    rows = []
+def test_treatment_dose_does_not_gate_continuous_did():
+    """Regression: TreatmentDoseShape fields are descriptive only, not
+    ContinuousDiD prerequisites. The authoritative gates are
+    `has_never_treated` (unit-level) and `treatment_varies_within_unit`
+    (per-unit full-path constancy). Two contradictory cases verify the
+    distinction:
+
+    1. `0,0,d,d` within-unit dose path: a single unit toggles between
+       zero (pre-treatment) and a single nonzero dose `d` (post). The
+       PanelProfile.treatment_varies_within_unit field correctly fires
+       True (matching ContinuousDiD.fit()'s
+       `df.groupby(unit)[dose].nunique() > 1` rejection at line 224 of
+       continuous_did.py). TreatmentDoseShape carries descriptive
+       context only.
+    2. Row-level zeros without never-treated: every unit eventually
+       gets treated, but pre-treatment rows have dose=0. has_zero_dose
+       fires True (row-level), while has_never_treated correctly fires
+       False (unit-level). ContinuousDiD requires has_never_treated,
+       which is the authoritative gate the agent must consult."""
+    # Case 1: 0,0,d,d within-unit path
+    rows1 = []
     for u in range(1, 21):
         for t in range(4):
             if u <= 5:
-                dose = 0.0
+                dose = 0.0  # never-treated controls
             else:
-                # Treated units have nonzero dose that varies with t.
-                dose = float(rng.uniform(0.5, 3.0))
-            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
-    df = pd.DataFrame(rows)
-    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
-    dose = profile.treatment_dose
-    assert dose is not None
-    assert dose.is_time_invariant is False
+                # 0,0,2.5,2.5 path - constant nonzero dose, but full
+                # path nunique == 2
+                dose = 0.0 if t < 2 else 2.5
+            rows1.append({"u": u, "t": t, "tr": dose, "y": 0.0})
+    df1 = pd.DataFrame(rows1)
+    profile1 = profile_panel(df1, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile1.treatment_type == "continuous"
+    assert profile1.treatment_varies_within_unit is True, (
+        "treatment_varies_within_unit must fire True on `0,0,d,d` paths "
+        "(matching ContinuousDiD.fit() unit-level full-path nunique check); "
+        "this is the authoritative gate, not any TreatmentDoseShape field."
+    )
 
-
-def test_treatment_dose_distinguishes_doses_at_high_precision():
-    """`is_time_invariant` uses EXACT distinct-count on observed non-zero
-    doses; a unit with two non-equal doses must be flagged as
-    time-varying even when the values differ only at sub-1e-8 precision.
-    Guards against an earlier implementation that rounded to 8 decimals
-    before comparing, silently treating tiny-but-real dose variation as
-    time-invariant. Required by the documented contract "per-unit
-    non-zero doses have at most one distinct value."""
-    rows = []
+    # Case 2: row-level zeros, no never-treated units
+    rows2 = []
     for u in range(1, 21):
+        # Every unit eventually treated; pre-treatment dose=0, post-treatment
+        # constant nonzero dose. No unit is never-treated.
+        adopt_period = 1 if u <= 10 else 2
         for t in range(4):
-            if u <= 5:
-                dose = 0.0
-            elif u == 10:
-                # Unit 10 has two distinct nonzero doses separated by
-                # 1e-9 - smaller than the previous 1e-8 rounding window.
-                dose = 2.5 if t < 2 else 2.5 + 1e-9
-            else:
-                dose = 2.5
-            rows.append({"u": u, "t": t, "tr": dose, "y": 0.0})
-    df = pd.DataFrame(rows)
-    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
-    dose = profile.treatment_dose
-    assert dose is not None
-    assert dose.is_time_invariant is False, (
-        "Expected is_time_invariant=False for a unit with non-equal "
-        "non-zero doses, even at sub-1e-8 precision; the field's "
-        "documented contract is exact distinct-count on observed values."
+            dose = 1.5 if t >= adopt_period else 0.0
+            rows2.append({"u": u, "t": t, "tr": dose, "y": 0.0})
+    df2 = pd.DataFrame(rows2)
+    profile2 = profile_panel(df2, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile2.treatment_type == "continuous"
+    dose2 = profile2.treatment_dose
+    assert dose2 is not None
+    assert dose2.has_zero_dose is True, "row-level zero dose rows are present"
+    assert profile2.has_never_treated is False, (
+        "every unit eventually treated -> has_never_treated must be False; "
+        "ContinuousDiD requires has_never_treated, so this panel fails the "
+        "authoritative gate even though row-level has_zero_dose==True."
     )
 
 
 def test_treatment_dose_continuous_no_zero_dose():
     """If every unit has a strictly positive dose throughout, has_zero_dose
-    must be False — flagging the absence of zero-dose controls required by
-    ContinuousDiD."""
+    must be False — descriptive flag for the absence of dose-zero rows in
+    the panel."""
     rng = np.random.default_rng(29)
     rows = []
     for u in range(1, 21):
@@ -1121,7 +1130,6 @@ def test_treatment_dose_continuous_no_zero_dose():
     dose = profile.treatment_dose
     assert dose is not None
     assert dose.has_zero_dose is False
-    assert dose.is_time_invariant is True
 
 
 def test_treatment_dose_binary_treatment_returns_none():
@@ -1167,7 +1175,6 @@ def test_treatment_dose_to_dict_roundtrips_through_json():
         "dose_min",
         "dose_max",
         "dose_mean",
-        "is_time_invariant",
     }
 
 
@@ -1203,7 +1210,6 @@ def test_treatment_dose_dataclass_is_frozen():
         dose_min=1.0,
         dose_max=3.0,
         dose_mean=2.0,
-        is_time_invariant=True,
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         d.has_zero_dose = False  # type: ignore[misc]

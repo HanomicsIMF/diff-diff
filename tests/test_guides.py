@@ -42,7 +42,9 @@ def test_content_stability_autonomous_fingerprints():
     assert "outcome_shape" in text
     assert "treatment_dose" in text
     assert "is_count_like" in text
-    assert "is_time_invariant" in text
+    # has_never_treated is the authoritative ContinuousDiD gate;
+    # treatment_dose fields are descriptive only.
+    assert "has_never_treated" in text
 
 
 def test_autonomous_contains_worked_examples_section():
@@ -61,7 +63,12 @@ def test_autonomous_contains_worked_examples_section():
     assert "TreatmentDoseShape(" in text
     # §5.3: count-shaped outcome -> WooldridgeDiD QMLE
     assert "§5.3 Count-shaped outcome" in text
-    assert 'WooldridgeDiD(family="poisson")' in text
+    assert 'WooldridgeDiD(method="poisson")' in text
+    assert 'WooldridgeDiD(family="poisson")' not in text, (
+        "WooldridgeDiD takes `method=` not `family=`; the wrong kwarg "
+        "in the autonomous guide would produce runtime errors when an "
+        "agent follows the worked example."
+    )
 
 
 def test_autonomous_worked_examples_avoid_recommender_language():

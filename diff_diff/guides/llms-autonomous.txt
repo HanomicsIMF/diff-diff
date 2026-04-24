@@ -197,18 +197,27 @@ view. Every field below appears as a top-level key in that dict.
       model can predict outside `[0, 1]`).
 - **`treatment_dose: Optional[TreatmentDoseShape]`** - distributional
   facts for continuous-treatment dose columns; `None` unless
-  `treatment_type == "continuous"`. Sub-fields:
+  `treatment_type == "continuous"`. **Descriptive only — none of these
+  sub-fields are `ContinuousDiD` prerequisites.** The authoritative
+  pre-fit gates are `has_never_treated` (unit-level, above) for the
+  zero-dose-control requirement and `treatment_varies_within_unit ==
+  False` (above) for per-unit full-path dose constancy, matching
+  `ContinuousDiD.fit()`'s `df.groupby(unit)[dose].nunique() > 1`
+  rejection. Sub-fields:
     - `n_distinct_doses: int` - count of distinct non-NaN dose values
-      (including zero if observed).
+      (including zero if observed). Useful supplement to the gate
+      checks for understanding the dose support.
     - `has_zero_dose: bool` - at least one unit-period has dose
-      exactly zero. Required by `ContinuousDiD` (`P(D=0) > 0`); when
-      `False` the estimator cannot identify the dose-response curve.
-    - `dose_min: float`, `dose_max: float`, `dose_mean: float` - over
-      the strictly non-zero doses (NaN if no non-zero values exist).
-    - `is_time_invariant: bool` - within every unit, the set of
-      distinct non-zero dose values has size at most one (always-zero
-      units are skipped). Required by `ContinuousDiD`; when `False`,
-      `fit()` will raise. See §5.2 for a worked example.
+      exactly zero. **Row-level fact**: a panel can have
+      `has_zero_dose == True` (some pre-treatment rows are zero) while
+      `has_never_treated == False` (every unit eventually treated), in
+      which case the panel still fails the ContinuousDiD never-treated
+      gate. Consult `has_never_treated` for the unit-level gate.
+    - `dose_min: float`, `dose_max: float`, `dose_mean: float` -
+      computed over the strictly non-zero doses; useful for effect-size
+      context and dose-response interpretation. See §5.2 for a worked
+      example showing how these fields supplement (not replace) the
+      authoritative gates.
 
 ### Alerts
 
@@ -334,8 +343,10 @@ estimator from the remaining rows (CS/SA/dCDH/Imputation/TwoStage/
 Stacked/ETWFE all accept unbalanced input, with some caveats in
 their own docs).
 
-For two common prerequisite-resolution patterns walked through end-to-end
-(continuous dose with `treatment_dose` introspection, and count-shaped
+For two common reasoning patterns walked through end-to-end (continuous
+dose checked against the existing `has_never_treated` /
+`treatment_varies_within_unit` / `is_balanced` gates with
+`treatment_dose` providing descriptive context, and count-shaped
 outcome with `outcome_shape` introspection), see §5.2 and §5.3.
 
 
@@ -485,10 +496,15 @@ When `treatment_type == "continuous"`:
   scalar first-stage adoption summary. Useful when adoption is
   graded rather than binary.
 
-The new `PanelProfile.treatment_dose` sub-fields (`has_zero_dose`,
-`is_time_invariant`, `n_distinct_doses`) let you check the three
-ContinuousDiD prerequisites pre-fit; §5.2 walks through the full
-profile -> reasoning -> validation flow.
+The authoritative ContinuousDiD pre-fit gates are
+`has_never_treated == True` (unit-level never-treated control) and
+`treatment_varies_within_unit == False` (per-unit full-path dose
+constancy, including pre-treatment zeros) plus `is_balanced == True`.
+The `PanelProfile.treatment_dose` sub-fields (`n_distinct_doses`,
+`dose_min/max/mean`, `has_zero_dose`) provide descriptive context
+about the dose support, but are NOT themselves prerequisite gates;
+§5.2 walks through the full profile -> reasoning -> validation flow
+including the gate check.
 
 ### §4.8 Few treated units (one or a handful)
 
@@ -700,7 +716,6 @@ PanelProfile(
         n_distinct_doses=4,
         has_zero_dose=True,
         dose_min=1.0, dose_max=4.0, dose_mean=2.4,
-        is_time_invariant=True,
     ),
     outcome_shape=OutcomeShape(
         is_count_like=False, is_bounded_unit=False, ...
@@ -714,18 +729,33 @@ Reasoning chain:
 1. `treatment_type == "continuous"` -> §3 row narrows to
    `ContinuousDiD` (`✓`) and `HeterogeneousAdoptionDiD` (`partial`,
    for graded adoption). All other estimators are `✗` on continuous.
-2. ContinuousDiD prerequisites map directly onto the new dose fields:
-   `treatment_dose.has_zero_dose == True` (P(D=0) > 0 satisfied),
-   `treatment_dose.is_time_invariant == True` (per-unit constant
-   dose), `is_balanced == True`. All three pass, so `ContinuousDiD`
-   is in scope. (If any failed, `fit()` would raise `ValueError`.)
-3. Counter-example: had `is_time_invariant == False` (a unit's
-   nonzero dose changed across periods), `ContinuousDiD` would not
-   apply. The two paths from there are (a)
-   `HeterogeneousAdoptionDiD` if a scalar adoption summary fits, or
-   (b) aggregate the dose to a binary indicator and fall back to a
-   binary staggered estimator.
-4. Fit `ContinuousDiD`; the result object exposes the dose-response
+2. ContinuousDiD prerequisites are checked against the authoritative
+   gates (the existing top-level `PanelProfile` fields, not
+   `treatment_dose`): `has_never_treated == True` (unit-level
+   never-treated control, mapping to `first_treat == 0` units in
+   `ContinuousDiD.fit()`), `treatment_varies_within_unit == False`
+   (per-unit full-path dose constancy, matching
+   `ContinuousDiD.fit()`'s `df.groupby(unit)[dose].nunique() > 1`
+   check), and `is_balanced == True`. All three pass, so
+   `ContinuousDiD` is in scope. The `treatment_dose` sub-fields
+   (`n_distinct_doses`, `has_zero_dose`, `dose_min/max/mean`)
+   provide descriptive context — useful for reasoning about dose
+   support and the eventual dose-response interpretation, but not
+   themselves gates.
+3. Counter-example: had `treatment_varies_within_unit == True` (any
+   unit's full dose path - including pre-treatment zeros - has more
+   than one distinct value, e.g., a `0,0,d,d` adoption path with
+   varying nonzero `d`), `ContinuousDiD` would not apply. The two
+   paths from there are (a) `HeterogeneousAdoptionDiD` if a scalar
+   adoption summary fits, or (b) aggregate the dose to a binary
+   indicator and fall back to a binary staggered estimator.
+4. Counter-example: had `has_never_treated == False` (every unit
+   eventually treated, even if pre-treatment rows have zero dose so
+   `treatment_dose.has_zero_dose == True`), `ContinuousDiD` would
+   reject the panel under default `control_group="never_treated"`.
+   Row-level zeros are not a substitute for unit-level
+   never-treated controls.
+5. Fit `ContinuousDiD`; the result object exposes the dose-response
    curve (`ATT(d)`) and average causal response (`ACRT(d)`); choose
    the headline estimand based on the business question (overall
    ATT under PT, or the dose-response curve under Strong PT).
@@ -765,10 +795,10 @@ Reasoning chain:
    raw count gives unbiased point estimates of the additive effect
    but its asymptotic SEs assume normal-shaped errors, which a
    right-skewed count distribution violates. `WooldridgeDiD`
-   (`family="poisson"`) estimates the multiplicative
+   (`method="poisson"`) estimates the multiplicative
    (log-link) effect under QMLE with correct asymptotic SEs, and
    maps onto the staggered design natively.
-3. Decision: fit `WooldridgeDiD(family="poisson")` for the
+3. Decision: fit `WooldridgeDiD(method="poisson")` for the
    primary estimate; report the multiplicative effect (proportional
    change) rather than the additive effect. Optionally fit a linear
    DiD as a robustness check and document which scale the headline

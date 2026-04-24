@@ -66,14 +66,20 @@ class TreatmentDoseShape:
     """Distributional shape of a continuous treatment dose.
 
     Populated on :class:`PanelProfile` only when ``treatment_type ==
-    "continuous"``; ``None`` otherwise. Descriptive only — these fields
-    surface what is observed in the treatment column.
+    "continuous"``; ``None`` otherwise. **Descriptive only** — none of
+    these fields are ``ContinuousDiD`` prerequisites. The authoritative
+    gates are ``PanelProfile.has_never_treated`` (unit-level
+    never-treated existence), ``PanelProfile.treatment_varies_within_unit
+    == False`` (per-unit full-path dose constancy, matching
+    ``ContinuousDiD.fit()``'s ``df.groupby(unit)[dose].nunique() > 1``
+    rejection), and ``PanelProfile.is_balanced``.
 
-    ``is_time_invariant`` is ``True`` when, within every unit, the set of
-    distinct non-zero dose values has size at most one (i.e., a unit either
-    is untreated or holds a single dose level across all treated periods).
-    Always-zero (untreated) units are skipped from the check; they do not
-    invalidate time-invariance.
+    ``has_zero_dose`` is a row-level fact ("at least one observation has
+    dose == 0"); it is NOT a substitute for ``has_never_treated``, which
+    is the unit-level field ContinuousDiD actually requires. A panel can
+    have ``has_zero_dose == True`` (pre-treatment zero rows) while
+    ``has_never_treated == False`` (every unit eventually treated), in
+    which case ContinuousDiD would still reject the panel.
     """
 
     n_distinct_doses: int
@@ -81,7 +87,6 @@ class TreatmentDoseShape:
     dose_min: float
     dose_max: float
     dose_mean: float
-    is_time_invariant: bool
 
 
 @dataclass(frozen=True)
@@ -181,7 +186,6 @@ class PanelProfile:
                     "dose_min": float(self.treatment_dose.dose_min),
                     "dose_max": float(self.treatment_dose.dose_max),
                     "dose_mean": float(self.treatment_dose.dose_mean),
-                    "is_time_invariant": bool(self.treatment_dose.is_time_invariant),
                 }
             ),
             "alerts": [
@@ -363,9 +367,7 @@ def profile_panel(
 
     dtype_kind = getattr(outcome_col.dtype, "kind", "O")
     outcome_shape = _compute_outcome_shape(valid, dtype_kind)
-    treatment_dose = _compute_treatment_dose(
-        df, unit=unit, treatment=treatment, treatment_type=treatment_type
-    )
+    treatment_dose = _compute_treatment_dose(df, treatment=treatment, treatment_type=treatment_type)
     alerts = _compute_alerts(
         n_periods=n_periods,
         observation_coverage=observation_coverage,
@@ -656,15 +658,15 @@ def _compute_outcome_shape(valid: pd.Series, outcome_dtype_kind: str) -> Optiona
 def _compute_treatment_dose(
     df: pd.DataFrame,
     *,
-    unit: str,
     treatment: str,
     treatment_type: str,
 ) -> Optional[TreatmentDoseShape]:
     """Compute distributional shape for a continuous-treatment dose column.
 
     Returns ``None`` unless ``treatment_type == "continuous"``.
-    ``is_time_invariant`` is computed across non-zero dose values within
-    each unit; always-zero (untreated) units are skipped from the check.
+    Descriptive only — these fields do not gate ``ContinuousDiD``;
+    consult ``PanelProfile.has_never_treated`` and
+    ``PanelProfile.treatment_varies_within_unit`` for that.
     """
     if treatment_type != "continuous":
         return None
@@ -686,28 +688,12 @@ def _compute_treatment_dose(
     dose_max = float(nonzero.max())
     dose_mean = float(nonzero.mean())
 
-    is_time_invariant = True
-    for _, group in df.groupby(unit, sort=False):
-        unit_doses = group[treatment].dropna().to_numpy()
-        unit_nonzero = unit_doses[unit_doses != 0]
-        if len(unit_nonzero) == 0:
-            continue
-        # Exact distinct-count on observed non-zero values, matching the
-        # documented contract "per-unit non-zero doses have at most one
-        # distinct value." No tolerance is applied: continuous-DiD
-        # eligibility is gated downstream by `ContinuousDiD.fit()`,
-        # which itself uses exact equality on the dose column.
-        if int(np.unique(unit_nonzero).size) > 1:
-            is_time_invariant = False
-            break
-
     return TreatmentDoseShape(
         n_distinct_doses=n_distinct_doses,
         has_zero_dose=has_zero_dose,
         dose_min=dose_min,
         dose_max=dose_max,
         dose_mean=dose_mean,
-        is_time_invariant=is_time_invariant,
     )
 
 
