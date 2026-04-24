@@ -2420,25 +2420,37 @@ class TestTROPRustEdgeCaseParity:
             f"Rust={res_rust.se:.16f}, Python={res_py.se:.16f}",
         )
 
-    @pytest.mark.parametrize("seed", [0, 42, 12345])
-    def test_bootstrap_seed_reproducibility_local(self, seed):
+    @pytest.mark.parametrize(
+        "seed,lambda_nn",
+        [
+            (0, np.inf),
+            (42, np.inf),
+            (12345, np.inf),
+            (42, 0.1),
+        ],
+    )
+    def test_bootstrap_seed_reproducibility_local(self, seed, lambda_nn):
         """Backend-invariant bootstrap SE parity for the local method.
 
-        Post-methodology-alignment regression guard. With the Rust weight-
-        matrix normalization dropped and the Python ``_precomputed``
-        cache-fallthrough removed, local-method Rust and Python bootstraps
-        consume bit-identical stratified indices AND bit-identical raw-
-        exponential weights. Main-fit ATT is bit-identical across backends
-        (see ``test_local_method_main_fit_parity``), but per-replicate
-        bootstrap fits route through Rust's ``estimate_model`` vs numpy's
-        ``lstsq``, which use different matrix factorization paths and
-        accumulate different BLAS roundoff. Empirically the residual gap
-        is ~1e-7 relative; asserted at ``atol=1e-5`` which is ~100x the
-        observed gap and comfortable across CI runner variance.
+        Post-methodology-alignment regression guard covering both the
+        ``lambda_nn=inf`` regime (no-lowrank path, closed by the Python
+        ``_precomputed`` cache-fallthrough removal) and the finite
+        ``lambda_nn`` regime (with-lowrank FISTA path, closed by the Rust
+        weight-matrix normalization removal). With the RNG fix from
+        PR #354 plus both methodology fixes landed here, local-method
+        Rust and Python bootstraps consume bit-identical stratified
+        indices AND bit-identical raw-exponential weights. Main-fit ATT
+        is bit-identical (see ``test_local_method_main_fit_parity``),
+        but per-replicate bootstrap fits route through Rust's
+        ``estimate_model`` vs numpy's ``lstsq``, which use different
+        matrix factorization paths and accumulate different BLAS
+        roundoff. Empirically the residual gap is ~1e-7 relative;
+        asserted at ``atol=1e-5`` which is ~100x the observed gap and
+        comfortable across CI runner variance.
 
-        Follow-up to tighten to ``atol=1e-14``: unify Rust ``estimate_model``
-        to use ``solve_wls_svd`` (the same SVD path used by global-method
-        since PR #348). Tracked in ``TODO.md``.
+        Follow-up to tighten to ``atol=1e-14``: unify Rust
+        ``estimate_model`` to use ``solve_wls_svd`` (the same SVD path
+        used by global-method since PR #348). Tracked in ``TODO.md``.
         """
         import sys
         from unittest.mock import patch
@@ -2450,7 +2462,7 @@ class TestTROPRustEdgeCaseParity:
             method="local",
             lambda_time_grid=[1.0],
             lambda_unit_grid=[1.0],
-            lambda_nn_grid=[np.inf],
+            lambda_nn_grid=[lambda_nn],
             n_bootstrap=10,
             seed=seed,
         )
@@ -2466,7 +2478,8 @@ class TestTROPRustEdgeCaseParity:
 
         np.testing.assert_allclose(
             res_rust.se, res_py.se, atol=1e-5, rtol=1e-5,
-            err_msg=f"Local-method bootstrap SE divergence under seed={seed}: "
+            err_msg=f"Local-method bootstrap SE divergence under "
+            f"seed={seed}, lambda_nn={lambda_nn}: "
             f"Rust={res_rust.se:.16f}, Python={res_py.se:.16f}",
         )
 

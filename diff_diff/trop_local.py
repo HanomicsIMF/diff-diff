@@ -385,11 +385,12 @@ class TROPLocalMixin:
         - Time weights theta_s^{i,t} = exp(-lambda_time * |t - s|)
         - Unit weights omega_j^{i,t} = exp(-lambda_unit * dist_unit_{-t}(j, i))
 
-        IMPORTANT (Issue A fix): The paper's objective sums over ALL observations
-        where (1 - W_js) is non-zero, which includes pre-treatment observations of
-        eventually-treated units since W_js = 0 for those. This method computes
-        weights for ALL units where D[t, j] = 0 at the target period, not just
-        never-treated units.
+        Weights are assigned for every unit ``j != i`` (distance-based, per
+        Eq. 2/3). Treated-cell exclusion is handled by the `(1 - W_{js})`
+        factor applied inside ``_estimate_model`` via the control mask, not
+        by gating ``ω_j`` on ``D[t, j]``. Same-cohort donors therefore
+        contribute via their pre-treatment rows, and future-cohort donors
+        contribute via rows where both units are still untreated.
 
         Always computes from the function-argument ``Y, D``; does not read
         ``self._precomputed``. Under bootstrap the caller passes resampled

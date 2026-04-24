@@ -548,9 +548,11 @@ fn compute_unit_distance_for_obs(
 /// Unit weights: ω_j = exp(-λ_unit × dist(j, i))
 ///
 /// Paper alignment notes:
-/// - ALL units get weights (not just those untreated at target period)
+/// - ALL units with `j != target_unit` get distance-based weights
+///   (same-cohort donors contribute via their pre-treatment rows)
 /// - The (1 - D_js) masking in the loss naturally excludes treated cells
-/// - Weights are normalized to sum to 1 (probability weights)
+///   via the control mask applied inside `estimate_model`
+/// - Weights are unnormalized raw exponentials per REGISTRY Eq. 2/3
 /// - Distance excludes target period t per Equation 3
 #[allow(clippy::too_many_arguments)]
 fn compute_weight_matrix(
