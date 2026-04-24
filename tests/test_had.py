@@ -4851,7 +4851,13 @@ class TestEventStudySurveyCband:
         """Review R2 P1: mass-point + (weights= or survey=) + cluster=
         must raise NotImplementedError on the static path. Previously
         the weighted path silently overrode the CR1 SE with Binder-TSL
-        while the result still reported vcov_type='cr1'."""
+        while the result still reported vcov_type='cr1'. Narrowed in
+        R4: only survey= + cluster= is rejected (weights= shortcut +
+        cluster= is the weighted-CR1 pweight sandwich, which is valid
+        and parity-tested). This test therefore uses survey= to
+        trigger the narrowed guard."""
+        from diff_diff.survey import SurveyDesign
+
         rng = np.random.default_rng(0)
         G = 200
         d = np.concatenate([np.full(40, 0.3), rng.uniform(0.3, 1.0, G - 40)])
@@ -4864,20 +4870,15 @@ class TestEventStudySurveyCband:
                 "dose": np.column_stack([np.zeros(G), d]).ravel(),
                 "outcome": np.column_stack([np.zeros(G), dy]).ravel(),
                 "state": np.repeat(np.arange(G) // 20, 2),
+                "w": np.ones(2 * G),
             }
         )
+        sd = SurveyDesign(weights="w")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             est = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="hc1", cluster="state")
             with pytest.raises(NotImplementedError, match="cluster"):
-                est.fit(
-                    panel,
-                    "outcome",
-                    "dose",
-                    "period",
-                    "unit",
-                    weights=np.ones(panel.shape[0]),
-                )
+                est.fit(panel, "outcome", "dose", "period", "unit", survey=sd)
 
     def test_mass_point_survey_plus_cluster_rejected_event_study(self):
         """Review R2 P1 (event-study arm): same rejection must fire on
@@ -5133,3 +5134,157 @@ class TestEventStudySurveyCband:
             )
         assert r.variance_formula == "pweight_2sls"
         assert r.cband_crit_value is None
+
+    def test_mass_point_weights_plus_cluster_shortcut_allowed(self):
+        """Review R4 P1: weights= shortcut + cluster= is the weighted-CR1
+        pweight sandwich (parity-tested vs estimatr::iv_robust
+        se_type='stata') and must NOT be rejected. Narrowed guard only
+        rejects survey= + cluster=, not weights= + cluster=."""
+        rng = np.random.default_rng(40)
+        G = 300
+        d = np.concatenate([np.full(60, 0.3), rng.uniform(0.3, 1.0, G - 60)])
+        rng.shuffle(d)
+        dy = 2.0 * d + 0.3 * rng.standard_normal(G)
+        cluster = np.repeat(np.arange(G // 20), 20)
+        rng.shuffle(cluster)
+        panel = pd.DataFrame(
+            {
+                "unit": np.repeat(np.arange(G), 2),
+                "period": np.tile([1, 2], G),
+                "dose": np.column_stack([np.zeros(G), d]).ravel(),
+                "outcome": np.column_stack([np.zeros(G), dy]).ravel(),
+                "state": np.repeat(cluster, 2),
+            }
+        )
+        w_unit = 1.0 + 0.3 * rng.standard_normal(G)
+        w_unit = np.clip(w_unit, 0.1, None)
+        w_row = panel["unit"].map(lambda g: w_unit[g]).to_numpy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="hc1", cluster="state")
+            r = est.fit(panel, "outcome", "dose", "period", "unit", weights=w_row)
+        assert r.vcov_type == "cr1"
+        assert r.cluster_name == "state"
+        assert r.variance_formula == "pweight_2sls"
+        assert np.isfinite(r.se) and r.se > 0
+
+    def test_mass_point_weights_plus_cluster_event_study_cband_false_allowed(self):
+        """Review R4 P1: event-study + weights= + cluster= + cband=False
+        is valid (no IF consumption; per-horizon CR1 sandwich)."""
+        rng = np.random.default_rng(41)
+        G, T = 180, 4
+        d_mp = np.concatenate([np.full(36, 0.3), rng.uniform(0.3, 1.0, G - 36)])
+        rng.shuffle(d_mp)
+        cluster_per_unit = np.repeat(np.arange(G // 15), 15)
+        rng.shuffle(cluster_per_unit)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_mp[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y, cluster_per_unit[g]))
+        panel = pd.DataFrame(rows, columns=["unit", "period", "dose", "outcome", "state"])
+        w_unit = 1.0 + 0.3 * rng.standard_normal(G)
+        w_unit = np.clip(w_unit, 0.1, None)
+        w_row = panel["unit"].map(lambda g: w_unit[g]).to_numpy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(
+                design="mass_point",
+                vcov_type="hc1",
+                cluster="state",
+                seed=0,
+            )
+            r = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                aggregate="event_study",
+                weights=w_row,
+                cband=False,
+            )
+        assert r.vcov_type == "cr1"
+        assert r.cluster_name == "state"
+        assert r.variance_formula == "pweight_2sls"
+        assert r.cband_crit_value is None
+
+    def test_mass_point_weights_plus_cluster_event_study_cband_true_rejected(self):
+        """Review R4 P1: event-study + weights= + cluster= + cband=True
+        IS rejected (HC1-scale bootstrap perturbations normalized by
+        CR1 analytical SE would mix variance families in the bootstrap
+        t-distribution)."""
+        rng = np.random.default_rng(42)
+        G, T = 180, 4
+        d_mp = np.concatenate([np.full(36, 0.3), rng.uniform(0.3, 1.0, G - 36)])
+        rng.shuffle(d_mp)
+        cluster_per_unit = np.repeat(np.arange(G // 15), 15)
+        rng.shuffle(cluster_per_unit)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_mp[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y, cluster_per_unit[g]))
+        panel = pd.DataFrame(rows, columns=["unit", "period", "dose", "outcome", "state"])
+        w_unit = 1.0 + 0.3 * rng.standard_normal(G)
+        w_unit = np.clip(w_unit, 0.1, None)
+        w_row = panel["unit"].map(lambda g: w_unit[g]).to_numpy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(
+                design="mass_point",
+                vcov_type="hc1",
+                cluster="state",
+                seed=0,
+                n_bootstrap=100,
+            )
+            with pytest.raises(NotImplementedError, match="cband=True"):
+                est.fit(
+                    panel,
+                    "outcome",
+                    "dose",
+                    "period",
+                    "unit",
+                    aggregate="event_study",
+                    weights=w_row,
+                    cband=True,
+                )
+
+    def test_event_study_zero_weight_units_excluded_from_n_units(self):
+        """Review R4 P2: weighted event-study reports the POSITIVE-WEIGHT
+        contributing sample size in n_units / n_obs_per_horizon (matches
+        the static-path n_obs contract). survey_metadata still carries
+        the full-design effective_n / n_psu."""
+        rng = np.random.default_rng(50)
+        G, T = 200, 4
+        d_post = rng.uniform(0.0, 1.0, G)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_post[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y))
+        panel = pd.DataFrame(rows, columns=["unit", "period", "dose", "outcome"])
+        w_unit = np.ones(G)
+        w_unit[:30] = 0.0  # 30 zero-weight units; 170 contribute.
+        w_row = panel["unit"].map(lambda g: w_unit[g]).to_numpy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="continuous_at_zero", seed=0)
+            r = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                aggregate="event_study",
+                weights=w_row,
+                cband=False,
+            )
+        assert r.n_units == 170, (
+            f"n_units should report positive-weight contributing count "
+            f"(170), not full-design size (200); got {r.n_units}"
+        )
+        assert np.all(r.n_obs_per_horizon == 170)

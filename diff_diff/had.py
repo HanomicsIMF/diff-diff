@@ -537,18 +537,29 @@ class HeterogeneousAdoptionDiDEventStudyResults:
         :class:`HeterogeneousAdoptionDiDResults.att` for the per-design
         formula, applied to ``ΔY_t = Y_{g,t} - Y_{g,F-1}``).
     se : np.ndarray, shape (n_horizons,)
-        Per-horizon standard error on the beta-scale. On unweighted fits
-        each horizon uses the INDEPENDENT per-period sandwich from the
-        chosen design path (continuous: CCT-2014 robust divided by
-        ``|den|``; mass-point: structural-residual 2SLS sandwich). On
-        weighted fits (``weights=`` shortcut or ``survey=``) each horizon
-        uses the Binder (1983) Taylor-series linearization via
-        :func:`compute_survey_if_variance` on the per-unit β̂-scale IF
-        (continuous + mass-point both route through the same helper).
+        Per-horizon standard error on the beta-scale. Three regimes:
+
+        - **Unweighted**: per-horizon INDEPENDENT analytical sandwich
+          (continuous: CCT-2014 weighted-robust divided by ``|den|``;
+          mass-point: structural-residual 2SLS sandwich via
+          ``_fit_mass_point_2sls``). No cross-horizon covariance.
+        - **``weights=`` shortcut**: continuous paths still use the
+          CCT-2014 weighted-robust SE from lprobust (``bc_fit.se_robust
+          / |den|``); mass-point uses the analytical weighted 2SLS
+          pweight sandwich (HC1 / classical / CR1 depending on
+          ``vcov_type`` + ``cluster=``). No Binder-TSL composition
+          on this path — inference is Normal (``df=None``).
+        - **``survey=``**: each horizon composes Binder (1983)
+          Taylor-series linearization via
+          :func:`compute_survey_if_variance` on the per-unit β̂-scale
+          IF (continuous + mass-point both route through the same
+          helper). ``df_survey`` threads into ``safe_inference`` for
+          t-inference.
+
         Pointwise CIs are always populated; a simultaneous confidence
         band is available only on the weighted path via ``cband_*``
-        below. Joint cross-horizon analytical covariance is not computed
-        in this release (tracked in TODO.md).
+        below. Joint cross-horizon analytical covariance is not
+        computed in this release (tracked in TODO.md).
     t_stat, p_value : np.ndarray, shape (n_horizons,)
         Per-horizon inference triple element.
     conf_int_low, conf_int_high : np.ndarray, shape (n_horizons,)
@@ -3304,24 +3315,30 @@ class HeterogeneousAdoptionDiD:
             vcov_label: Optional[str] = None
             cluster_label: Optional[str] = None
         elif resolved_design == "mass_point":
-            # Review R2 P1: mass-point + weights + cluster is a silent
-            # inference mismatch because the weighted path overrides the
-            # CR1 SE with Binder-TSL while result metadata still reports
-            # CR1. Reject the combination front-door until a combined
-            # cluster + survey variance is derived. Unweighted CR1
-            # continues to work unchanged; weighted pweight sandwich
-            # without cluster continues to work unchanged.
-            if cluster_arg is not None and weights_unit_full is not None:
+            # Review R4 P1: narrow the cluster+weighted rejection. Only
+            # survey= + cluster= is a silent-mismatch case (the
+            # Binder-TSL override would overwrite the CR1 sandwich while
+            # result metadata still advertises vcov_type='cr1'). The
+            # weights= shortcut + cluster= path just returns the
+            # weighted-CR1 sandwich from _fit_mass_point_2sls directly
+            # (no survey composition) and matches estimatr::iv_robust
+            # (se_type="stata") bit-exactly — see
+            # tests/test_estimatr_iv_robust_parity.py::TestEstimatrIVRobustCR1Parity.
+            if cluster_arg is not None and resolved_survey_unit_full is not None:
                 raise NotImplementedError(
-                    f"cluster={cluster_arg!r} + survey=/weights= on "
+                    f"cluster={cluster_arg!r} + survey= on "
                     f"design='mass_point' is not yet supported: the "
-                    f"weighted path composes Binder-TSL variance and "
-                    f"would silently override the CR1 cluster-robust "
-                    f"sandwich. Pass either cluster= alone (unweighted "
-                    f"CR1) or survey=/weights= alone (weighted 2SLS "
-                    f"pweight sandwich → Binder-TSL under survey=); "
-                    f"combined cluster-robust survey inference is "
-                    f"deferred to a follow-up PR."
+                    f"survey path composes Binder-TSL variance via "
+                    f"compute_survey_if_variance and would silently "
+                    f"override the CR1 cluster-robust sandwich while "
+                    f"result metadata still advertises "
+                    f"vcov_type='cr1'. Pass cluster= alone "
+                    f"(unweighted CR1), or weights= + cluster= "
+                    f"(weighted-CR1 pweight sandwich; parity-tested vs "
+                    f"estimatr::iv_robust se_type='stata'), or "
+                    f"survey= alone (Binder-TSL). Combined cluster-"
+                    f"robust + survey inference is deferred to a "
+                    f"follow-up PR."
                 )
             # Review R3 P1: the weighted mass-point path returns an
             # HC1-scaled influence function (the IF scale convention
@@ -3943,21 +3960,42 @@ class HeterogeneousAdoptionDiD:
         # ---- Extract cluster IDs on mass-point path only ----
         cluster_arr: Optional[np.ndarray] = None
         if resolved_design == "mass_point" and cluster_arg is not None:
-            # Review R2 P1: reject cluster= + weights/survey on
-            # mass-point (mirrors the static-path rejection) —
-            # the weighted path would compose Binder-TSL variance
-            # and silently override CR1 while result metadata still
-            # claims cluster-robust inference.
-            if weights_unit_full is not None:
+            # Review R4 P1: narrow the cluster+weighted guard (mirrors
+            # the static-path narrowing). Incompatible cases on the
+            # event-study path:
+            #   (a) survey= + cluster=: Binder-TSL override would
+            #       silently overwrite CR1.
+            #   (b) weights= shortcut + cluster= + cband=True: the
+            #       sup-t bootstrap normalizes HC1-scale perturbations
+            #       by the CR1 analytical SE, producing an inconsistent
+            #       variance family in the bootstrap t-distribution.
+            # weights= shortcut + cluster= + cband=False is fine: the
+            # per-horizon CR1 sandwich is returned as-is and no IF is
+            # consumed. Unweighted + cluster= also unchanged.
+            if resolved_survey_unit_full is not None:
                 raise NotImplementedError(
-                    f"cluster={cluster_arg!r} + survey=/weights= on "
-                    f"design='mass_point' (event-study) is not yet "
-                    f"supported: the weighted path composes Binder-TSL "
-                    f"variance and would silently override the CR1 "
-                    f"cluster-robust sandwich. Pass either cluster= "
-                    f"alone (unweighted CR1) or survey=/weights= alone; "
-                    f"combined cluster-robust survey inference is "
-                    f"deferred to a follow-up PR."
+                    f"cluster={cluster_arg!r} + survey= on "
+                    f"design='mass_point' event-study is not yet "
+                    f"supported: the survey path composes Binder-TSL "
+                    f"variance per horizon and would silently override "
+                    f"the CR1 cluster-robust sandwich. Pass cluster= "
+                    f"alone (unweighted CR1), or weights= + cluster= "
+                    f"+ cband=False (weighted-CR1 per horizon), or "
+                    f"survey= alone (Binder-TSL). Combined cluster-"
+                    f"robust + survey event-study inference is deferred."
+                )
+            if weights_unit_full is not None and cband:
+                raise NotImplementedError(
+                    f"cluster={cluster_arg!r} + weights= + cband=True "
+                    f"on design='mass_point' event-study is not yet "
+                    f"supported: the sup-t bootstrap uses an HC1-scale "
+                    f"influence function and normalizes by the CR1 "
+                    f"analytical SE, mixing variance families in the "
+                    f"bootstrap t-distribution. Pass cband=False to "
+                    f"disable the simultaneous band (pointwise CIs "
+                    f"still use the weighted-CR1 sandwich per horizon), "
+                    f"or drop cluster= to use the weighted-HC1 sandwich "
+                    f"with sup-t."
                 )
             _, _, cluster_arr, _, _ = _aggregate_multi_period_first_differences(
                 data_filtered,
@@ -4070,7 +4108,12 @@ class HeterogeneousAdoptionDiD:
         p_arr = np.full(n_horizons, np.nan, dtype=np.float64)
         ci_lo_arr = np.full(n_horizons, np.nan, dtype=np.float64)
         ci_hi_arr = np.full(n_horizons, np.nan, dtype=np.float64)
-        n_obs_arr = np.full(n_horizons, G_full if weighted_es else n_units, dtype=np.int64)
+        # Review R4 P2: report the POSITIVE-WEIGHT contributing sample
+        # size, not the full pre-filter design size. Matches the
+        # static-path n_obs contract where zero-weight units are
+        # excluded from the reported count (survey_metadata still
+        # carries the full-design effective_n / n_psu / etc.).
+        n_obs_arr = np.full(n_horizons, n_units, dtype=np.int64)
 
         # Per-horizon IF matrix on the weighted path (shape (G, H)); drives
         # both per-horizon Binder-TSL variance (already composed inside
@@ -4274,7 +4317,10 @@ class HeterogeneousAdoptionDiD:
             d_lower=d_lower_val,
             dose_mean=dose_mean,
             F=F,
-            n_units=G_full if weighted_es else n_units,
+            # Review R4 P2: report positive-weight contributing count
+            # (matches n_obs_per_horizon; full-design size surfaces
+            # through survey_metadata.n_psu / effective_n / etc.).
+            n_units=n_units,
             inference_method=inference_method,
             vcov_type=vcov_label,
             cluster_name=cluster_label,
