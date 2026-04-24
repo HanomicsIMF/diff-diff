@@ -259,6 +259,15 @@ supported / out of scope; `warn` supported but with documented caveats;
 - `HeterogeneousAdoptionDiD` continuous: supports partial-adoption
   intensity as a continuous first-stage variable; not a pure
   dose-response estimator - use `ContinuousDiD` for that.
+- `HeterogeneousAdoptionDiD` staggered support is `partial`, not
+  general. Paper Appendix B.2 restricts staggered use to the
+  **last treatment cohort plus never-treated units**. With
+  `aggregate="event_study"` and a `first_treat_col` kwarg,
+  `fit()` auto-filters to `F_last = max(cohorts)` and emits a
+  `UserWarning` naming kept/dropped counts; earlier-cohort units
+  are dropped. Without `first_treat_col`, a multi-cohort panel
+  raises `ValueError`. For full staggered support that retains
+  every cohort, use `ChaisemartinDHaultfoeuille` instead.
 
 **Balanced-panel eligibility.** The following estimators hard-reject
 unbalanced panels (each raises `ValueError` at `fit()` when a unit is
@@ -458,6 +467,19 @@ intensity of exposure differs):
   (uniform continuity / no extensive-margin jump) is not testable; the
   pre-test battery does not and cannot validate it. Not ATT-shaped; do
   not relabel the headline as ATT in report text.
+
+  **Staggered-timing scope is last-cohort-only (Appendix B.2).**
+  HAD's staggered support is the `partial` cell in §3: on a
+  multi-cohort panel passed to `aggregate="event_study"`, `fit()`
+  auto-filters to the last treatment cohort (`F_last =
+  max(cohorts)`) plus never-treated units and emits a
+  `UserWarning` naming kept/dropped counts; earlier treated
+  cohorts are dropped. The `first_treat_col` kwarg is
+  **required** for the auto-filter to activate; without it a
+  multi-cohort panel raises `ValueError` pointing the caller at
+  `ChaisemartinDHaultfoeuille` for full staggered support. The
+  resulting estimand is a **last-cohort-only WAS**, not a
+  multi-cohort average — report it as such.
 
 ### §4.10 Repeated cross-sections (no panel structure)
 
