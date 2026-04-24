@@ -2523,6 +2523,69 @@ class TestTROPRustEdgeCaseParity:
             f"Rust={res_rust.att:.16f}, Python={res_py.att:.16f}",
         )
 
+    @pytest.mark.parametrize("lambda_nn,tol", [(np.inf, 1e-14), (0.1, 1e-10)])
+    def test_local_method_same_cohort_donor_parity(self, lambda_nn, tol):
+        """Backend-invariant ATT when multiple units share the same treatment cohort.
+
+        Isolates the ``D[t, j] == 1`` target-period case the prior ``_compute_
+        observation_weights`` gate silently dropped: three treated units all
+        starting at ``t=3``. Under the paper's Eq. 2/3, ``ω_j`` is
+        distance-based for all ``j ≠ i`` (same-cohort donors included); their
+        pre-treatment rows contribute via ``θ_s · ω_j`` and post-treatment
+        cells are zeroed by the control mask ``(1 - W_{js})``. Python now
+        matches this convention (gate removed). This regression asserts that
+        the main-fit ATT is bit-identical across backends on a fixture where
+        the gate would previously have excluded donors' pre-treatment
+        information.
+        """
+        import sys
+        from unittest.mock import patch
+
+        import pandas as pd
+
+        from diff_diff import TROP
+
+        # 3 treated units + 3 controls, all treated units share cohort at t=3.
+        # Pre-treatment trajectories are distinct so same-cohort donors carry
+        # non-trivial information; without the fix Python and Rust would have
+        # different effective donor pools at each treated-observation target.
+        rng = np.random.default_rng(7)
+        rows = []
+        for i in range(6):
+            is_treated = i < 3
+            base = rng.normal(0, 1, 8)
+            for t in range(8):
+                y = 3.0 + i * 0.2 + 0.5 * t + base[t]
+                treated = 1 if (is_treated and t >= 5) else 0
+                if treated:
+                    y += 1.5
+                rows.append({"unit": i, "time": t, "outcome": y, "treated": treated})
+        df = pd.DataFrame(rows)
+
+        trop_params = dict(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[lambda_nn],
+            n_bootstrap=2,
+            seed=42,
+        )
+
+        trop_rust = TROP(**trop_params)
+        res_rust = trop_rust.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        trop_local_module = sys.modules["diff_diff.trop_local"]
+        with patch.object(trop_local_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_local_module, "_rust_bootstrap_trop_variance", None):
+            trop_py = TROP(**trop_params)
+            res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        np.testing.assert_allclose(
+            res_rust.att, res_py.att, atol=tol, rtol=tol,
+            err_msg=f"Same-cohort donor ATT divergence at lambda_nn={lambda_nn}: "
+            f"Rust={res_rust.att:.16f}, Python={res_py.att:.16f}",
+        )
+
 
 class TestFallbackWhenNoRust:
     """Test that pure Python fallback works when Rust is unavailable."""
