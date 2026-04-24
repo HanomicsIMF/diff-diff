@@ -4550,6 +4550,49 @@ class TestByPathBootstrap:
             "between path_effects inference fields and bootstrap_results"
         )
 
+    def test_overflow_warning_fires_exactly_once_under_bootstrap(self):
+        """
+        When ``by_path > n_observed_paths``, ``_enumerate_treatment_paths``
+        emits a ``UserWarning``. The bootstrap helper
+        ``_collect_path_bootstrap_inputs`` re-calls the enumerator, so
+        without suppression the warning would fire twice on a bootstrap
+        fit — once from the analytical pass and once from the bootstrap
+        pass. Pin that the bootstrap path surfaces the warning exactly
+        once (analytical-pass emission only; bootstrap-pass emission
+        suppressed because it is a spurious duplicate of the same
+        fact).
+        """
+        data = _by_path_three_path_data()  # 3 observed paths
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=10,  # overflow: more than 3 observed paths
+                n_bootstrap=50,
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+        overflow_warnings = [
+            w for w in caught
+            if "exceeds the number of observed paths" in str(w.message)
+            or "more than the observed number of paths" in str(w.message)
+            or "requested but only" in str(w.message)
+        ]
+        assert len(overflow_warnings) == 1, (
+            f"Expected exactly one overflow UserWarning under "
+            f"by_path + n_bootstrap, got {len(overflow_warnings)}. "
+            f"Messages: {[str(w.message) for w in overflow_warnings]}"
+        )
+
     def test_degenerate_bootstrap_distribution_yields_nan_tuple(self):
         """
         When the bootstrap SE comes back non-finite for a ``(path,

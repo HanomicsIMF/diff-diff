@@ -5268,14 +5268,25 @@ def _collect_path_bootstrap_inputs(
     the 4th slot is always ``None`` because per-path survey-cell IFs
     are a future wave item (the ``by_path + survey_design`` combination
     is gated out before this helper runs).
+
+    ``_enumerate_treatment_paths`` is called again here (the analytical
+    pass already called it inside ``_compute_path_effects``). The
+    enumeration result is deterministic given identical arguments, so
+    the selected paths and group masks will match bit-for-bit. The
+    surrounding ``warnings.catch_warnings`` suppresses the overflow
+    ``UserWarning`` from the re-enumeration — the analytical pass has
+    already surfaced that warning to the caller, and re-emitting it
+    from the bootstrap helper would be a spurious duplicate.
     """
-    selected_paths, path_to_group_mask, _ = _enumerate_treatment_paths(
-        D_mat=D_mat,
-        first_switch_idx=first_switch_idx,
-        N_mat=N_mat,
-        L_max=L_max,
-        by_path=by_path,
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        selected_paths, path_to_group_mask, _ = _enumerate_treatment_paths(
+            D_mat=D_mat,
+            first_switch_idx=first_switch_idx,
+            N_mat=N_mat,
+            L_max=L_max,
+            by_path=by_path,
+        )
 
     n_groups = D_mat.shape[0]
     cohort_keys = [
