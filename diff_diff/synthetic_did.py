@@ -1128,8 +1128,6 @@ class SyntheticDiD(DifferenceInDifferences):
             treated_post_trajectory=treated_post_trajectory,
             time_weights_array=time_weights,
         )
-        self.results_._loo_unit_ids = loo_unit_ids
-        self.results_._loo_roles = loo_roles
         # Explicit LOO granularity flag for ``get_loo_effects_df``. The
         # non-survey and pweight-only jackknife paths run unit-level LOO
         # (one estimate per unit, matching ``control_unit_ids +
@@ -1143,6 +1141,18 @@ class SyntheticDiD(DifferenceInDifferences):
             )
         else:
             self.results_._loo_granularity = None
+        # Only populate unit-level LOO bookkeeping when the granularity
+        # is actually unit-level (R7 P3). Leaving ``_loo_unit_ids`` /
+        # ``_loo_roles`` populated on the PSU path would cause
+        # ``_loo_unit_ids is not None`` availability checks (e.g.,
+        # ``practitioner.py`` / canned guidance) to call
+        # ``get_loo_effects_df()`` and hit ``NotImplementedError``.
+        if self.results_._loo_granularity == "unit":
+            self.results_._loo_unit_ids = loo_unit_ids
+            self.results_._loo_roles = loo_roles
+        else:
+            self.results_._loo_unit_ids = None
+            self.results_._loo_roles = None
         self.results_._fit_snapshot = fit_snapshot
 
         self._unit_weights = unit_weights

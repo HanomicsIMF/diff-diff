@@ -297,10 +297,14 @@ def _fit_one(
     """Fit SDID and return (att, se, p_value); (None, None, None) on failure.
 
     For survey DGPs the harness passes a SurveyDesign via ``survey_design``;
-    fit() routes it through the bootstrap survey path (PR #352) when
-    method=='bootstrap'. The DGP's ``survey_design_factory`` declares which
-    methods are supported, so the caller skips unsupported methods entirely
-    rather than catching the resulting NotImplementedError here.
+    ``fit()`` routes strata/PSU/FPC designs through the method-specific
+    survey variance path — bootstrap (PR #355 weighted-FW + Rao-Wu),
+    placebo (stratified permutation + weighted-FW), or jackknife (PSU-
+    level LOO with stratum aggregation). The DGP's
+    ``survey_design_factory`` declares which methods are supported on
+    that specific DGP, so the caller skips unsupported methods entirely
+    rather than catching the resulting NotImplementedError / Case B-D
+    ValueError here.
     """
     try:
         with warnings.catch_warnings():
