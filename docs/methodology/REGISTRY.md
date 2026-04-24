@@ -2325,13 +2325,32 @@ Shipped in `diff_diff/had_pretests.py` as `yatchew_hr_test()`. Alternative to St
 7. Inference on `β̂_{fe}` conditional on accepting the linearity test is asymptotically valid (Theorem 7, Point 1; citing de Chaisemartin and D'Haultfœuille 2024 arXiv:2407.03725).
 
 *Four-step pre-testing workflow (Section 4.2-4.3):*
-Shipped as `did_had_pretest_workflow()` in Phase 3. The paper's decision rule for TWFE reliability in HADs:
+Shipped as `did_had_pretest_workflow()` in Phase 3 (two-period `aggregate="overall"`) and extended in the Phase 3 follow-up with `aggregate="event_study"` dispatch that closes the step-2 pre-trends gap on multi-period panels. The paper's decision rule for TWFE reliability in HADs:
 1. Test the null of a QUG (`H_0: d̲ = 0`) using `qug_test()`.
-2. Run a pre-trends test of Assumption 7 (requires a pre-period `t=0`).
-3. Test that `E(ΔY | D_2)` is linear (`stute_test` or `yatchew_hr_test`).
+2. Run a pre-trends test of Assumption 7 (requires at least one earlier pre-period).
+3. Test that `E(ΔY | D_2)` is linear (`stute_test` or `yatchew_hr_test`; or the joint Stute variants below in event-study dispatch).
 4. If NONE of the three is rejected, `β̂_{fe}` from TWFE may be used to estimate the treatment effect.
 
-**Phase 3 delivery:** `did_had_pretest_workflow()` runs steps 1 + 3 (QUG + Stute + Yatchew) on a two-period panel and returns a verdict. Step 2 (pre-trends test via Equation 18 joint cross-horizon Stute on pre-period placebos) is deferred to a Phase 3 follow-up patch; see `TODO.md`. The `practitioner_next_steps()` integration is queued for Phase 5.
+**Phase 3 delivery (`aggregate="overall"`, two-period):** `did_had_pretest_workflow()` runs steps 1 + 3 (QUG + Stute + Yatchew). Step 2 is NOT run on this path because a two-period panel has no pre-period placebo horizon to test against; the verdict explicitly flags the Assumption 7 gap via the "paper step 2 deferred" caveat.
+
+**Phase 3 follow-up delivery (`aggregate="event_study"`, multi-period):** `did_had_pretest_workflow(..., aggregate="event_study")` dispatches on a balanced ≥3-period panel. Runs QUG at `F` + joint pre-trends Stute across earlier pre-periods (step 2, mean-independence null) + joint homogeneity-linearity Stute across post-periods (step 3 joint extension, linearity null). Step 2 closure requires at least TWO pre-periods (the base pre-period plus one earlier placebo); on panels with only a single pre-period (the base `F-1`) the workflow emits `pretrends_joint=None` and the verdict flags the skip ("joint pre-trends skipped (no earlier pre-period)"). `all_pass` is False in this degenerate case. The verdict on the event-study path does NOT emit the "paper step 2 deferred" caveat when step 2 runs.
+
+*Algorithm variant - Joint Stute tests (Section 4.2-4.3 joint; Phase 3 follow-up 2026-04):*
+Shipped in `diff_diff/had_pretests.py` as `stute_joint_pretest()` (residuals-in core) plus two thin data-in wrappers `joint_pretrends_test()` (mean-independence null) and `joint_homogeneity_test()` (linearity null). Generalizes the single-horizon Stute CvM (above) to K horizons with joint inference.
+1. Per-horizon statistic: for each horizon `k`, compute `S_k` via the tie-safe CvM on residuals `ε̂_{g,k}` sorted by dose `D_g`.
+2. Joint aggregation: `S_joint = Σ_k S_k` (sum-of-CvMs).
+3. Wild bootstrap with **shared** Mammen multiplier `η_g` across horizons per unit — preserves the vector-valued empirical process's unit-level dependence (Delgado-Manteiga 2001; Hlávka-Hušková 2020 for related vector wild-bootstrap theory). Per-horizon OLS refit with shared design matrix precomputes `(X'X)^{-1} X'` once; the bootstrap loop cost per draw is `O(G·p·K)` for K horizons.
+4. Per-horizon exact-linear short-circuit: scale- and translation-invariant `Σ eps_k² / centered_TSS_k < _EXACT_LINEAR_RELATIVE_TOL` test applied per horizon. Joint short-circuit fires only when EVERY horizon is machine-exact linear; a single degenerate horizon does not collapse the test when others have nontrivial residuals.
+5. Two data-in wrappers:
+   - `joint_pretrends_test(pre_periods, base_period)`: `null_form="mean_independence"`, design matrix `[1]`; residuals from `OLS(Y_t - Y_base ~ 1)` per pre-period (paper Section 4.2 footnote 6 + Section 4.3 paragraph 1: "regress Y_1 − Y_0 on a constant [only], then apply CvM to residuals vs D_2").
+   - `joint_homogeneity_test(post_periods, base_period)`: `null_form="linearity"`, design matrix `[1, D]`; residuals from `OLS(Y_t - Y_base ~ 1 + D)` per post-period (paper Section 4.3 page 32 joint across post-periods, Pierce-Schott reports p=0.40).
+- **Note:** Sum-of-CvMs aggregation is a standard joint specification-test construction (Delgado 1993; Escanciano 2006); the paper does not prescribe an aggregation rule. Sum-of-CvMs balances power across diffuse vs concentrated alternatives and bootstraps cleanly with shared-η.
+- **Note:** Event-study dispatch adjudicates step 3 via joint Stute only; there is no joint Yatchew variant because the paper does not derive one. The overall two-period path still uses the Phase 3 "Stute OR Yatchew" adjudication. Users who need Yatchew-style adjacent-difference variance-ratio robustness under multi-period data can run `yatchew_hr_test` on each (base, post) pair manually.
+- **Note:** Eq 18 linear-trend detrending (paper Section 5.2 Pierce-Schott application, p=0.51) is DEFERRED to Phase 4 where the Pierce-Schott replication harness exercises the exact detrending formula against the published value. The Phase 3 follow-up ships the simpler mean-independence null that paper step 2 requires.
+- **Note:** Horizon labels in `StuteJointResult.horizon_labels` are `str(t)` verbatim and carry STRING IDENTITY ONLY — NOT a chronological ordering key. Callers who need chronological order must preserve the original period values alongside (e.g. from the `pre_periods` / `post_periods` argument).
+- **Note:** NaN propagation is explicit: when any horizon has NaN in residuals, `cvm_stat_joint=NaN`, `p_value=NaN`, `reject=False`, AND `per_horizon_stats={label: np.nan for every horizon}` (full dict preserved with NaN values — not empty, not partial).
+
+**Phase 3 follow-up delivery:** `stute_joint_pretest()`, `joint_pretrends_test()`, `joint_homogeneity_test()`, `StuteJointResult`, and `did_had_pretest_workflow(aggregate="event_study")` shipped together in PR #353 (2026-04). The `practitioner_next_steps()` integration and tutorial are queued for Phase 5.
 
 **Reference implementation(s):**
 - R: `did_had` (de Chaisemartin, Ciccia, D'Haultfœuille, Knau 2024a); `stute_test` (2024c); `yatchew_test` (Online Appendix, Table 3).

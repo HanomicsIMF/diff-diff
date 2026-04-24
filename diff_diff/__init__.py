@@ -63,10 +63,14 @@ from diff_diff.had import (
 from diff_diff.had_pretests import (
     HADPretestReport,
     QUGTestResults,
+    StuteJointResult,
     StuteTestResults,
     YatchewTestResults,
     did_had_pretest_workflow,
+    joint_homogeneity_test,
+    joint_pretrends_test,
     qug_test,
+    stute_joint_pretest,
     stute_test,
     yatchew_hr_test,
 )
@@ -461,6 +465,12 @@ __all__ = [
     "StuteTestResults",
     "YatchewTestResults",
     "HADPretestReport",
+    # HAD joint pre-tests (Phase 3 follow-up) — multi-period event-study
+    # workflow dispatch via did_had_pretest_workflow(aggregate="event_study")
+    "stute_joint_pretest",
+    "joint_pretrends_test",
+    "joint_homogeneity_test",
+    "StuteJointResult",
     # Datasets
     "load_card_krueger",
     "load_castle_doctrine",
