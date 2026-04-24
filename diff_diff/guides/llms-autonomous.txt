@@ -269,15 +269,24 @@ supported / out of scope; `warn` supported but with documented caveats;
   raises `ValueError`. For full staggered support that retains
   every cohort, use `ChaisemartinDHaultfoeuille` instead.
 
-**Balanced-panel eligibility.** The following estimators hard-reject
-unbalanced panels (each raises `ValueError` at `fit()` when a unit is
-missing any period): `ContinuousDiD`, `EfficientDiD`, `SyntheticDiD`,
-`HeterogeneousAdoptionDiD`. Gate these on
-`PanelProfile.is_balanced == True`; if `False`, pre-process with
-`diff_diff.prep.balance_panel()` or pick a balance-tolerant
+**Balanced-panel eligibility.** The following estimators require
+exactly one observation per `(unit, time)` cell with every unit
+observed in every period: `ContinuousDiD`, `EfficientDiD`,
+`SyntheticDiD`, `HeterogeneousAdoptionDiD`. Gate these on BOTH
+`PanelProfile.is_balanced == True` AND the absence of the
+`duplicate_unit_time_rows` alert (`is_balanced` is computed from the
+unique-key support and stays `True` when duplicates exist; the
+alert is the separate signal for duplicates). Treat both
+conditions as hard gates: `EfficientDiD` and
+`HeterogeneousAdoptionDiD` raise `ValueError` at `fit()` on
+duplicate cells, and `ContinuousDiD`'s precompute path resolves
+duplicates with last-row-wins (silent overwrite that can change
+the estimand). If either condition fails, pre-process with
+`diff_diff.prep.balance_panel()` and a
+`drop_duplicates([unit, time])` pass, or pick a balance-tolerant
 estimator from the remaining rows (CS/SA/dCDH/Imputation/TwoStage/
-Stacked/ETWFE all accept unbalanced input, with some caveats in their
-own docs).
+Stacked/ETWFE all accept unbalanced input, with some caveats in
+their own docs).
 
 
 ## §4. Estimator-choice reasoning by design feature

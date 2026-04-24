@@ -675,6 +675,22 @@ def test_guide_api_strings_resolve_against_public_api():
         "for full staggered support"
     )
 
+    # Balanced-panel gate is incomplete with `is_balanced` alone because
+    # duplicate (unit, time) rows don't flip is_balanced. Guide must
+    # require BOTH is_balanced == True AND absence of the
+    # duplicate_unit_time_rows alert before routing to the duplicate-
+    # intolerant estimators (ContinuousDiD silently overwrites
+    # duplicates via last-row-wins; EfficientDiD/HAD raise).
+    assert "duplicate_unit_time_rows" in text, (
+        "Guide must name the duplicate_unit_time_rows alert as part of "
+        "the balanced-panel eligibility gate"
+    )
+    assert "BOTH" in text or "both" in text, (
+        "Guide must require BOTH is_balanced and absence of the "
+        "duplicate_unit_time_rows alert before routing to duplicate-"
+        "intolerant estimators"
+    )
+
 
 def test_min_pre_post_use_per_unit_observed_support():
     """On an unbalanced panel where one treated unit is missing its
