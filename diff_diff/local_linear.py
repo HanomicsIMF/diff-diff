@@ -934,11 +934,17 @@ class BiasCorrectedFit:
     kernel: str
     boundary: float
     influence_function: Optional[np.ndarray] = None
-    """Per-observation influence function of the CLASSICAL mu-scale
-    point estimate ``tau.cl`` (Phase 4.5 survey composition). Aligned
-    with the original caller-supplied ``d``/``y`` ordering; observations
+    """Per-observation influence function of the BIAS-CORRECTED point
+    estimate ``tau.bc`` (Phase 4.5 survey composition). Aligned with
+    the original caller-supplied ``d``/``y`` ordering; observations
     outside the active kernel window have IF=0. Populated only when
-    ``return_influence=True``; ``None`` otherwise."""
+    ``return_influence=True``; ``None`` otherwise.
+
+    Derived from ``Q_q`` + ``res_b`` so the variance self-check is
+    ``sum(IF^2) == V_Y_bc[0, 0]`` under unclustered HC0 — matching the
+    bias-corrected scale of ``estimate_bias_corrected``. Using the
+    classical IF here would silently under-estimate survey SE by
+    ignoring the CCT-2014 bias-correction variance inflation."""
 
 
 def bias_corrected_local_linear(

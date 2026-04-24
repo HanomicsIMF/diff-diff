@@ -31,12 +31,17 @@ variance and bias estimator will also compose these helpers.
 
 Deviations from nprobust (documented):
 
-* ``weights=`` is not supported here or in the public wrapper
-  (nprobust's ``lpbwselect`` has no weight argument, so Phase 1b has
-  no parity anchor). Weighted-data support is queued for Phase 2+
-  (survey-design adaptation). The public wrapper
-  ``mse_optimal_bandwidth`` raises ``NotImplementedError`` when a
-  ``weights`` array is passed.
+* ``weights=`` in ``lprobust`` (Phase 4.5 survey support): supported.
+  User weights multiply into the kernel weights pointwise
+  (``W_combined = k((x-c)/h) · w``) and propagate through design
+  matrices, Q.q, and variance matrices. When ``weights=np.ones(N)`` the
+  function is bit-identical to the unweighted path (regression-tested
+  at atol=1e-14). ``return_influence=True`` surfaces the per-obs IF of
+  the BIAS-CORRECTED point estimate (aligned with V_Y_bc) for survey-
+  composed variance at the estimator level. The bandwidth selector
+  ``lpbwselect_mse_dpi`` and its public wrapper ``mse_optimal_bandwidth``
+  remain unweighted in this release (no DPI-selector weight derivation
+  shipped); pass user-specified ``h``/``b`` for weight-aware bandwidths.
 * ``vce="nn"`` is the default and is fully ported. ``vce in
   {"hc0", "hc1", "hc2", "hc3"}`` is implemented in ``lprobust_res`` /
   ``lprobust_vce`` but has not been separately golden-tested; use at

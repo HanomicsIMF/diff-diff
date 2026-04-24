@@ -3320,8 +3320,8 @@ class TestHADSurvey:
         # ATTs match (same weighted lprobust estimate).
         np.testing.assert_allclose(r_w.att, r_sd.att, atol=1e-12, rtol=1e-12)
         # SEs differ (different inference paths).
-        assert r_w.survey_metadata["method"] == "pweight"
-        assert r_sd.survey_metadata["method"] == "survey_binder_tsl"
+        assert r_w.variance_formula == "pweight"
+        assert r_sd.variance_formula == "survey_binder_tsl"
 
     # ---------- Validator contract ----------
 
@@ -3423,11 +3423,11 @@ class TestHADSurvey:
         est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
         r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
         assert r.survey_metadata is not None
-        assert r.survey_metadata["method"] == "pweight"
-        assert r.survey_metadata["source"] == "weights_arr"
-        assert r.survey_metadata["n_units_weighted"] == 200
-        assert r.survey_metadata["weight_sum"] > 0
-        assert r.survey_metadata["effective_sample_size"] > 0
+        # Repo-standard SurveyMetadata with attribute access.
+        assert r.survey_metadata.weight_type == "pweight"
+        assert r.survey_metadata.sum_weights > 0
+        assert r.survey_metadata.effective_n > 0
+        assert r.variance_formula == "pweight"
 
     def test_survey_metadata_none_when_unweighted(self):
         panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
@@ -3441,7 +3441,9 @@ class TestHADSurvey:
         r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
         d = r.to_dict()
         assert "survey_metadata" in d
-        assert d["survey_metadata"]["method"] == "pweight"
+        # survey_metadata is now a SurveyMetadata dataclass; consumers
+        # access attributes on the returned object.
+        assert d["survey_metadata"].weight_type == "pweight"
 
     def test_to_dict_survey_metadata_none_key_present(self):
         """Even on unweighted fits, the key is present (value None) so
@@ -3458,7 +3460,7 @@ class TestHADSurvey:
         est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
         r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
         s = r.summary()
-        assert "Survey method" in s
+        assert "Variance formula" in s
         assert "Effective sample size" in s
 
     # ---------- SurveyDesign full composition (PSU / strata / FPC) ----------
@@ -3503,8 +3505,8 @@ class TestHADSurvey:
             )
         np.testing.assert_allclose(r_basic.att, r_strat.att, atol=1e-14, rtol=1e-14)
         assert r_basic.se != r_strat.se
-        assert r_strat.survey_metadata["n_strata"] == 4
-        assert r_basic.survey_metadata["n_strata"] == 1
+        assert r_strat.survey_metadata.n_strata == 4
+        assert r_basic.survey_metadata.n_strata is None
 
     def test_survey_with_psu_clustering(self):
         """Adding PSU clustering changes the SE (within-PSU correlation
@@ -3523,9 +3525,10 @@ class TestHADSurvey:
             )
         np.testing.assert_allclose(r_strat.att, r_psu.att, atol=1e-14, rtol=1e-14)
         assert r_psu.se != r_strat.se
-        assert r_psu.survey_metadata["n_psu"] > 1
+        assert r_psu.survey_metadata.n_psu is not None
+        assert r_psu.survey_metadata.n_psu > 1
         # PSU count is strictly less than unit count (clustering is actual).
-        assert r_psu.survey_metadata["n_psu"] < 200
+        assert r_psu.survey_metadata.n_psu < 200
 
     def test_survey_metadata_records_binder_tsl_method(self):
         panel, SurveyDesign = self._panel_with_survey_cols(G=200)
@@ -3537,9 +3540,14 @@ class TestHADSurvey:
                 survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
             )
         sm = r.survey_metadata
-        assert sm["method"] == "survey_binder_tsl"
-        assert sm["source"] == "SurveyDesign"
-        assert "Binder 1983 TSL" in sm["variance_formula"]
+        assert sm is not None
+        # Repo-standard SurveyMetadata attributes populated.
+        assert sm.weight_type == "pweight"
+        assert sm.effective_n > 0
+        assert sm.df_survey is not None
+        # HAD-specific variance-formula label lives on the result,
+        # orthogonal to the shared SurveyMetadata.
+        assert r.variance_formula == "survey_binder_tsl"
 
     def test_survey_design_column_varies_within_unit_raises(self):
         """Strata that varies within a unit → ValueError (HAD requires
@@ -3656,8 +3664,9 @@ class TestHADSurvey:
                 weights=panel["w"].to_numpy(),
             )
         # df_survey surfaced in metadata.
-        assert r_sd.survey_metadata["df_survey"] is not None
-        assert r_sd.survey_metadata["df_survey"] > 0
+        assert r_sd.survey_metadata is not None
+        assert r_sd.survey_metadata.df_survey is not None
+        assert r_sd.survey_metadata.df_survey > 0
         # Under the same SE (approximately), t-based CI > Normal CI.
         # (SE itself differs a bit because Binder-TSL vs weighted-robust
         # at the same fit, but df_survey inflates the t-critical-value
@@ -3686,7 +3695,8 @@ class TestHADSurvey:
                 "unit",
                 survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
             )
-        df = r_sd.survey_metadata["df_survey"]
+        assert r_sd.survey_metadata is not None
+        df = r_sd.survey_metadata.df_survey
         assert df is not None and df > 0
         # CI width check: given att, se, and df, CI should match t-interval.
         z_norm = stats.norm.ppf(1 - r_sd.alpha / 2)
@@ -3739,6 +3749,109 @@ class TestHADSurvey:
                 est.fit(df, "outcome", "dose", "period", "unit", survey=sd)
 
     # ---------- P2 fix: SRS equivalence with weights= shortcut ----------
+
+    # ---------- P2 fix: weighted denominator contract ----------
+
+    def test_effective_dose_mean_matches_weighted_mean_continuous_at_zero(self):
+        """``effective_dose_mean`` must equal the weighted mean of D used
+        in the β-scale rescaling — this is what the estimator actually
+        uses, vs ``dose_mean`` which is the raw-sample mean (preserved
+        for backward compatibility). Regression test for P2 from round 2
+        CI review."""
+        panel, row_w, w_unit, d, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        assert r.effective_dose_mean is not None
+        expected = float(np.average(d, weights=w_unit))
+        np.testing.assert_allclose(
+            r.effective_dose_mean, expected, atol=1e-12, rtol=1e-12
+        )
+        # dose_mean stays as raw-sample mean — orthogonal to the
+        # weighted denominator actually used in the fit.
+        np.testing.assert_allclose(
+            r.dose_mean, float(d.mean()), atol=1e-12, rtol=1e-12
+        )
+
+    def test_effective_dose_mean_matches_weighted_mean_near_d_lower(self):
+        """For ``continuous_near_d_lower``, the estimator auto-resolves
+        ``d_lower = d.min()`` (not the theoretical lower bound of the
+        DGP), so the expected weighted denominator uses
+        ``d - r.d_lower``, not the DGP's ``d_lower``."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            panel, row_w, w_unit, d, _, _ = self._panel_with_unit_weights(
+                G=200, design="continuous_near_d_lower"
+            )
+            est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower")
+            r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        assert r.effective_dose_mean is not None
+        # Use the estimator's auto-resolved d_lower (== d.min()), not the
+        # DGP's theoretical lower bound.
+        expected = float(np.average(d - r.d_lower, weights=w_unit))
+        np.testing.assert_allclose(
+            r.effective_dose_mean, expected, atol=1e-12, rtol=1e-12
+        )
+
+    def test_effective_dose_mean_none_when_unweighted(self):
+        """On unweighted fits, ``effective_dose_mean`` is ``None`` —
+        ``dose_mean`` is the sole denominator there (raw == weighted
+        when w=1, so the duplicate field would be noise)."""
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        assert r.effective_dose_mean is None
+
+    def test_effective_dose_mean_equals_dose_mean_under_uniform_weights(self):
+        """Uniform weights → effective_dose_mean ≡ dose_mean at 1e-14."""
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(
+            panel, "outcome", "dose", "period", "unit",
+            weights=np.ones(panel.shape[0]),
+        )
+        assert r.effective_dose_mean is not None
+        np.testing.assert_allclose(
+            r.effective_dose_mean, r.dose_mean, atol=1e-14, rtol=1e-14
+        )
+
+    # ---------- P1 fix: SurveyMetadata contract for downstream consumers ----------
+
+    def test_survey_metadata_is_surveymetadata_instance(self):
+        """HAD survey results expose ``survey_metadata`` as the repo-
+        standard :class:`diff_diff.survey.SurveyMetadata` dataclass, so
+        shared reporting consumers (BusinessReport, DiagnosticReport)
+        can read ``df_survey`` / ``effective_n`` / ``n_strata`` /
+        ``n_psu`` via attribute access uniformly across estimators.
+        Regression lock for P1 from round 2 CI review."""
+        from diff_diff.survey import SurveyDesign, SurveyMetadata
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        panel_with_w = panel.assign(w=row_w)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            # Both entry paths produce SurveyMetadata (not dict).
+            r_w = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit", weights=row_w
+            )
+            r_sd = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w"),
+            )
+        assert isinstance(r_w.survey_metadata, SurveyMetadata)
+        assert isinstance(r_sd.survey_metadata, SurveyMetadata)
+        # Attribute access for the fields downstream consumers read.
+        for r in (r_w, r_sd):
+            _ = r.survey_metadata.weight_type
+            _ = r.survey_metadata.effective_n
+            _ = r.survey_metadata.design_effect
+            _ = r.survey_metadata.sum_weights
+            _ = r.survey_metadata.n_strata
+            _ = r.survey_metadata.n_psu
+            _ = r.survey_metadata.df_survey
+            _ = r.survey_metadata.weight_range
 
     def test_survey_no_psu_no_strata_se_matches_weights_hc1(self):
         """Under ``SurveyDesign(weights='col')`` with no strata / PSU /
