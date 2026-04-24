@@ -24,7 +24,10 @@ from diff_diff._backend import (
     _rust_bootstrap_trop_variance_global,
     _rust_loocv_grid_search_global,
 )
-from diff_diff.bootstrap_utils import warn_bootstrap_failure_rate
+from diff_diff.bootstrap_utils import (
+    stratified_bootstrap_indices,
+    warn_bootstrap_failure_rate,
+)
 from diff_diff.trop_local import _soft_threshold_svd, _validate_and_pivot_treatment
 from diff_diff.trop_results import TROPResults
 from diff_diff.utils import safe_inference, warn_if_not_converged
@@ -961,6 +964,21 @@ class TROPGlobalMixin:
                 survey_design,
             )
 
+        # Stratified bootstrap pools (shared by Rust and Python paths)
+        unit_ever_treated = data.groupby(unit)[treatment].max()
+        treated_units = np.array(unit_ever_treated[unit_ever_treated == 1].index.tolist())
+        control_units = np.array(unit_ever_treated[unit_ever_treated == 0].index.tolist())
+        n_treated_units = len(treated_units)
+        n_control_units = len(control_units)
+
+        # Pre-generate stratified bootstrap indices via numpy (Python-canonical RNG).
+        # Both backends consume these indices so SE is identical under the same seed
+        # (silent-failures finding #23, bootstrap half).
+        rng = np.random.default_rng(self.seed)
+        control_idx, treated_idx = stratified_bootstrap_indices(
+            rng, n_control_units, n_treated_units, self.n_bootstrap
+        )
+
         # Try Rust backend for parallel bootstrap (5-15x speedup)
         # Only used for pweight-only designs (no strata/PSU/FPC)
         if HAS_RUST_BACKEND and _rust_bootstrap_trop_variance_global is not None:
@@ -991,7 +1009,8 @@ class TROPGlobalMixin:
                     self.n_bootstrap,
                     self.max_iter,
                     self.tol,
-                    self.seed if self.seed is not None else 0,
+                    control_idx,
+                    treated_idx,
                     unit_weight_arr,
                 )
 
@@ -1015,32 +1034,17 @@ class TROPGlobalMixin:
                     stacklevel=2,
                 )
 
-        # Python fallback implementation
-        rng = np.random.default_rng(self.seed)
-
-        # Stratified bootstrap sampling
-        unit_ever_treated = data.groupby(unit)[treatment].max()
-        treated_units = np.array(unit_ever_treated[unit_ever_treated == 1].index.tolist())
-        control_units = np.array(unit_ever_treated[unit_ever_treated == 0].index.tolist())
-
-        n_treated_units = len(treated_units)
-        n_control_units = len(control_units)
-
+        # Python fallback: consume the same indices the Rust branch would have used.
         bootstrap_estimates_list: List[float] = []
         nonconverg_tracker: List[int] = []
 
-        for _ in range(self.n_bootstrap):
-            # Stratified sampling
-            if n_control_units > 0:
-                sampled_control = rng.choice(control_units, size=n_control_units, replace=True)
-            else:
-                sampled_control = np.array([], dtype=object)
-
-            if n_treated_units > 0:
-                sampled_treated = rng.choice(treated_units, size=n_treated_units, replace=True)
-            else:
-                sampled_treated = np.array([], dtype=object)
-
+        for b in range(self.n_bootstrap):
+            sampled_control = (
+                control_units[control_idx[b]] if n_control_units > 0 else np.array([], dtype=object)
+            )
+            sampled_treated = (
+                treated_units[treated_idx[b]] if n_treated_units > 0 else np.array([], dtype=object)
+            )
             sampled_units = np.concatenate([sampled_control, sampled_treated])
 
             # Create bootstrap sample

@@ -951,6 +951,14 @@ class TestTROPRustBackend:
         # Check first_failed is None or a valid (unit, time) tuple
         assert first_failed is None or (isinstance(first_failed, tuple) and len(first_failed) == 2)
 
+    @staticmethod
+    def _stratified_indices(n_control, n_treated, n_bootstrap, seed):
+        """Build stratified bootstrap index arrays via the shared helper."""
+        from diff_diff.bootstrap_utils import stratified_bootstrap_indices
+
+        rng = np.random.default_rng(seed)
+        return stratified_bootstrap_indices(rng, n_control, n_treated, n_bootstrap)
+
     def test_bootstrap_variance_shape(self):
         """Test bootstrap returns correct shapes."""
         from diff_diff._rust_backend import bootstrap_trop_variance
@@ -969,10 +977,14 @@ class TestTROPRustBackend:
         ).astype(np.int64)
 
         n_bootstrap = 20
+        # Stratified pools: 1 treated unit (index 0), 5 control units
+        ctrl_idx, trt_idx = self._stratified_indices(
+            n_control=5, n_treated=1, n_bootstrap=n_bootstrap, seed=42
+        )
         estimates, se = bootstrap_trop_variance(
             Y, D, control_mask, time_dist,
             1.0, 1.0, 0.1,  # lambda values
-            n_bootstrap, 100, 1e-6, 42
+            n_bootstrap, 100, 1e-6, ctrl_idx, trt_idx,
         )
 
         # Should return array of bootstrap estimates and SE
@@ -996,18 +1008,72 @@ class TestTROPRustBackend:
             np.arange(n_periods)[:, np.newaxis] - np.arange(n_periods)[np.newaxis, :]
         ).astype(np.int64)
 
-        # Run twice with same seed
+        # Run twice with same seed (helper is deterministic given the same seed)
+        ctrl_idx_a, trt_idx_a = self._stratified_indices(
+            n_control=5, n_treated=1, n_bootstrap=20, seed=42
+        )
+        ctrl_idx_b, trt_idx_b = self._stratified_indices(
+            n_control=5, n_treated=1, n_bootstrap=20, seed=42
+        )
         est1, se1 = bootstrap_trop_variance(
             Y, D, control_mask, time_dist,
-            1.0, 1.0, 0.1, 20, 100, 1e-6, 42
+            1.0, 1.0, 0.1, 20, 100, 1e-6, ctrl_idx_a, trt_idx_a,
         )
         est2, se2 = bootstrap_trop_variance(
             Y, D, control_mask, time_dist,
-            1.0, 1.0, 0.1, 20, 100, 1e-6, 42
+            1.0, 1.0, 0.1, 20, 100, 1e-6, ctrl_idx_b, trt_idx_b,
         )
 
         np.testing.assert_array_almost_equal(est1, est2)
         assert abs(se1 - se2) < 1e-10
+
+    def test_bootstrap_rejects_negative_index(self):
+        """Rust local bootstrap must raise PyValueError on a negative index."""
+        from diff_diff._rust_backend import bootstrap_trop_variance
+
+        np.random.seed(42)
+        n_periods, n_units = 8, 6
+        Y = np.random.randn(n_periods, n_units)
+        D = np.zeros((n_periods, n_units))
+        D[6:, 0] = 1.0
+        control_mask = (D == 0).astype(np.uint8)
+        time_dist = np.abs(
+            np.arange(n_periods)[:, np.newaxis] - np.arange(n_periods)[np.newaxis, :]
+        ).astype(np.int64)
+
+        ctrl_idx, trt_idx = self._stratified_indices(
+            n_control=5, n_treated=1, n_bootstrap=5, seed=0
+        )
+        ctrl_idx[2, 3] = -1  # negative
+        with pytest.raises(ValueError, match="control_indices.*out-of-range"):
+            bootstrap_trop_variance(
+                Y, D, control_mask, time_dist,
+                1.0, 1.0, 0.1, 5, 100, 1e-6, ctrl_idx, trt_idx,
+            )
+
+    def test_bootstrap_rejects_out_of_range_index(self):
+        """Rust local bootstrap must raise PyValueError on an index >= pool size."""
+        from diff_diff._rust_backend import bootstrap_trop_variance
+
+        np.random.seed(42)
+        n_periods, n_units = 8, 6
+        Y = np.random.randn(n_periods, n_units)
+        D = np.zeros((n_periods, n_units))
+        D[6:, 0] = 1.0
+        control_mask = (D == 0).astype(np.uint8)
+        time_dist = np.abs(
+            np.arange(n_periods)[:, np.newaxis] - np.arange(n_periods)[np.newaxis, :]
+        ).astype(np.int64)
+
+        ctrl_idx, trt_idx = self._stratified_indices(
+            n_control=5, n_treated=1, n_bootstrap=5, seed=0
+        )
+        trt_idx[1, 0] = 99  # >> n_treated=1
+        with pytest.raises(ValueError, match="treated_indices.*out-of-range"):
+            bootstrap_trop_variance(
+                Y, D, control_mask, time_dist,
+                1.0, 1.0, 0.1, 5, 100, 1e-6, ctrl_idx, trt_idx,
+            )
 
 
 @pytest.mark.skipif(not HAS_RUST_BACKEND, reason="Rust backend not available")
@@ -1171,6 +1237,14 @@ class TestTROPGlobalRustBackend:
         # Without subsampling, results should be deterministic
         assert result1[:4] == result2[:4]
 
+    @staticmethod
+    def _global_stratified_indices(n_control, n_treated, n_bootstrap, seed):
+        """Build stratified bootstrap index arrays via the shared helper."""
+        from diff_diff.bootstrap_utils import stratified_bootstrap_indices
+
+        rng = np.random.default_rng(seed)
+        return stratified_bootstrap_indices(rng, n_control, n_treated, n_bootstrap)
+
     def test_bootstrap_trop_variance_global_shape(self):
         """Test bootstrap_trop_variance_global returns valid output."""
         from diff_diff._rust_backend import bootstrap_trop_variance_global
@@ -1184,8 +1258,12 @@ class TestTROPGlobalRustBackend:
         D = np.zeros((n_periods, n_units))
         D[-n_post:, :n_treated] = 1.0
 
+        # Stratified pools: 4 treated units, 11 control units
+        ctrl_idx, trt_idx = self._global_stratified_indices(
+            n_control=n_units - n_treated, n_treated=n_treated, n_bootstrap=50, seed=42
+        )
         estimates, se = bootstrap_trop_variance_global(
-            Y, D, 0.5, 0.5, 0.1, 50, 50, 1e-6, 42
+            Y, D, 0.5, 0.5, 0.1, 50, 50, 1e-6, ctrl_idx, trt_idx,
         )
 
         assert isinstance(estimates, np.ndarray)
@@ -1206,15 +1284,61 @@ class TestTROPGlobalRustBackend:
         D = np.zeros((n_periods, n_units))
         D[-n_post:, :n_treated] = 1.0
 
+        ctrl_a, trt_a = self._global_stratified_indices(
+            n_control=n_units - n_treated, n_treated=n_treated, n_bootstrap=50, seed=42
+        )
+        ctrl_b, trt_b = self._global_stratified_indices(
+            n_control=n_units - n_treated, n_treated=n_treated, n_bootstrap=50, seed=42
+        )
         est1, se1 = bootstrap_trop_variance_global(
-            Y, D, 0.5, 0.5, 0.1, 50, 50, 1e-6, 42
+            Y, D, 0.5, 0.5, 0.1, 50, 50, 1e-6, ctrl_a, trt_a,
         )
         est2, se2 = bootstrap_trop_variance_global(
-            Y, D, 0.5, 0.5, 0.1, 50, 50, 1e-6, 42
+            Y, D, 0.5, 0.5, 0.1, 50, 50, 1e-6, ctrl_b, trt_b,
         )
 
         np.testing.assert_array_almost_equal(est1, est2)
         np.testing.assert_almost_equal(se1, se2)
+
+    def test_bootstrap_global_rejects_negative_index(self):
+        """Rust global bootstrap must raise PyValueError on a negative index."""
+        from diff_diff._rust_backend import bootstrap_trop_variance_global
+
+        np.random.seed(42)
+        n_periods, n_units = 8, 15
+        n_treated = 4
+        Y = np.random.randn(n_periods, n_units)
+        D = np.zeros((n_periods, n_units))
+        D[-2:, :n_treated] = 1.0
+
+        ctrl_idx, trt_idx = self._global_stratified_indices(
+            n_control=n_units - n_treated, n_treated=n_treated, n_bootstrap=10, seed=0
+        )
+        ctrl_idx[3, 2] = -5  # negative
+        with pytest.raises(ValueError, match="control_indices.*out-of-range"):
+            bootstrap_trop_variance_global(
+                Y, D, 0.5, 0.5, 0.1, 10, 50, 1e-6, ctrl_idx, trt_idx,
+            )
+
+    def test_bootstrap_global_rejects_out_of_range_index(self):
+        """Rust global bootstrap must raise PyValueError on an index >= pool size."""
+        from diff_diff._rust_backend import bootstrap_trop_variance_global
+
+        np.random.seed(42)
+        n_periods, n_units = 8, 15
+        n_treated = 4
+        Y = np.random.randn(n_periods, n_units)
+        D = np.zeros((n_periods, n_units))
+        D[-2:, :n_treated] = 1.0
+
+        ctrl_idx, trt_idx = self._global_stratified_indices(
+            n_control=n_units - n_treated, n_treated=n_treated, n_bootstrap=10, seed=0
+        )
+        trt_idx[5, 1] = 99  # >> n_treated=4
+        with pytest.raises(ValueError, match="treated_indices.*out-of-range"):
+            bootstrap_trop_variance_global(
+                Y, D, 0.5, 0.5, 0.1, 10, 50, 1e-6, ctrl_idx, trt_idx,
+            )
 
 
 @pytest.mark.slow
@@ -2253,22 +2377,17 @@ class TestTROPRustEdgeCaseParity:
             f"Rust={res_rust.att:.8f}, Python={res_py.att:.8f}",
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Rust bootstrap uses its own RNG (rand crate) while Python uses "
-        "numpy's default_rng; same `seed=42` produces different bootstrap "
-        "replicate indices. Empirical SE divergence ~28%. Unifying the RNG "
-        "across backends is a P1 follow-up (TODO.md). This xfail baselines "
-        "the gap so we notice if/when the backends share an RNG seed-to-"
-        "bytestream mapping. Grid-search ATT parity is validated in the "
-        "previous test (rank-deficient Y path).",
-    )
-    def test_bootstrap_seed_reproducibility(self):
-        """Bootstrap SE parity under a fixed seed.
+    @pytest.mark.parametrize("seed", [0, 42, 12345])
+    def test_bootstrap_seed_reproducibility(self, seed):
+        """Bootstrap SE parity under a fixed seed (global method).
 
-        Known to fail: Rust and Python use different RNG backends, so
-        identical ``seed=42`` produces different bootstrap replicates.
-        See xfail reason for follow-up plan.
+        Silent-failures audit Finding #23 (bootstrap half) regression guard.
+        Previously a ~28% SE divergence on tiny panels because Rust seeded
+        ``rand_xoshiro::Xoshiro256PlusPlus`` per replicate while Python
+        consumed ``numpy.random.default_rng`` (PCG64). Fixed by pre-generating
+        stratified bootstrap indices via numpy on the Python side and passing
+        them to Rust through the PyO3 surface (Python-canonical RNG); both
+        backends now consume bit-identical index streams under the same seed.
         """
         import sys
         from unittest.mock import patch
@@ -2282,7 +2401,7 @@ class TestTROPRustEdgeCaseParity:
             lambda_unit_grid=[1.0],
             lambda_nn_grid=[np.inf],
             n_bootstrap=10,
-            seed=42,
+            seed=seed,
         )
 
         trop_rust = TROP(**trop_params)
@@ -2296,9 +2415,62 @@ class TestTROPRustEdgeCaseParity:
             res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
 
         np.testing.assert_allclose(
-            res_rust.se, res_py.se, atol=1e-8,
-            err_msg=f"Bootstrap SE divergence under seed=42: "
-            f"Rust={res_rust.se:.10f}, Python={res_py.se:.10f}",
+            res_rust.se, res_py.se, atol=1e-14, rtol=1e-14,
+            err_msg=f"Bootstrap SE divergence under seed={seed}: "
+            f"Rust={res_rust.se:.16f}, Python={res_py.se:.16f}",
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="Local-method TROP has additional Rust-vs-Python backend "
+        "divergences beyond RNG (weight-matrix normalization in "
+        "`compute_weight_matrix` is Rust-only; Python "
+        "`_compute_observation_weights` reads `self._precomputed['Y']` "
+        "instead of the bootstrap-sample `Y`). RNG parity infrastructure "
+        "is in place (both backends now consume the same Python-canonical "
+        "stratified indices), but post-resampling computations diverge so "
+        "SE is not yet bit-identical. Tracked as a separate finding in "
+        "TODO.md. This xfail baselines the gap so we notice when both "
+        "downstream divergences are closed.",
+    )
+    @pytest.mark.parametrize("seed", [0, 42, 12345])
+    def test_bootstrap_seed_reproducibility_local(self, seed):
+        """Bootstrap SE parity under a fixed seed (local method).
+
+        Currently xfail(strict=True) — see decorator. The local-method
+        path has additional backend divergences beyond RNG that this PR
+        does not address. Companion to the global-method parity test
+        above; once the downstream divergences close, this test will
+        XPASS and should be promoted to a regression guard.
+        """
+        import sys
+        from unittest.mock import patch
+
+        from diff_diff import TROP
+
+        df = self._make_correlated_panel(n_units=6, n_periods=6, n_treated=2)
+        trop_params = dict(
+            method="local",
+            lambda_time_grid=[1.0],
+            lambda_unit_grid=[1.0],
+            lambda_nn_grid=[np.inf],
+            n_bootstrap=10,
+            seed=seed,
+        )
+
+        trop_rust = TROP(**trop_params)
+        res_rust = trop_rust.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        trop_local_module = sys.modules["diff_diff.trop_local"]
+        with patch.object(trop_local_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_local_module, "_rust_bootstrap_trop_variance", None):
+            trop_py = TROP(**trop_params)
+            res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        np.testing.assert_allclose(
+            res_rust.se, res_py.se, atol=1e-14, rtol=1e-14,
+            err_msg=f"Local-method bootstrap SE divergence under seed={seed}: "
+            f"Rust={res_rust.se:.16f}, Python={res_py.se:.16f}",
         )
 
 
