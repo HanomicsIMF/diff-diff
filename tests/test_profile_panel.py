@@ -317,6 +317,8 @@ def test_to_dict_is_json_serializable():
         "outcome_has_negatives",
         "outcome_missing_fraction",
         "outcome_summary",
+        "outcome_shape",
+        "treatment_dose",
         "alerts",
     }
 
@@ -866,3 +868,311 @@ def test_empty_after_id_drop_raises_value_error():
     )
     with pytest.raises(ValueError, match="no rows remain"):
         profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+
+
+# ---------------------------------------------------------------------------
+# Outcome shape (numeric outcome distributional facts)
+# ---------------------------------------------------------------------------
+
+
+def test_outcome_shape_count_like_poisson():
+    """A Poisson-distributed outcome (integer-valued, has zeros, right-skewed)
+    must satisfy is_count_like=True so an agent can gate WooldridgeDiD over
+    linear OLS pre-fit. Uses Poisson(lambda=0.5) on a 200-unit panel for a
+    reliably-skewed empirical sample (theoretical skew = 1/sqrt(0.5) ~ 1.41)."""
+    rng = np.random.default_rng(7)
+    first_treat = {u: 2 for u in range(101, 201)}
+    df = _make_panel(
+        n_units=200,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: int(rng.poisson(0.5 + 0.2 * tr)),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.is_integer_valued is True
+    assert shape.is_count_like is True
+    assert shape.pct_zeros > 0.1
+    assert shape.skewness is not None and shape.skewness > 0.5
+    assert shape.n_distinct_values >= 3
+
+
+def test_outcome_shape_binary_outcome_not_count_like():
+    """Binary 0/1 outcome must NOT trigger is_count_like (only 2 distinct
+    values; skewness gate fires None) and is_bounded_unit must be True."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: int(tr),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.is_count_like is False
+    assert shape.is_bounded_unit is True
+    assert shape.skewness is None
+    assert shape.excess_kurtosis is None
+    assert shape.n_distinct_values == 2
+
+
+def test_outcome_shape_continuous_normal():
+    """Normally-distributed float outcome must have is_integer_valued=False,
+    is_count_like=False, is_bounded_unit=False (signed values exit [0,1])."""
+    rng = np.random.default_rng(11)
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: float(rng.normal(0.0, 1.0)),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.is_integer_valued is False
+    assert shape.is_count_like is False
+    assert shape.is_bounded_unit is False
+    assert shape.skewness is not None
+    assert shape.excess_kurtosis is not None
+
+
+def test_outcome_shape_bounded_unit():
+    """Outcome confined to [0, 1] (e.g., a proportion / probability) must
+    set is_bounded_unit=True so an agent can flag the bounded-support
+    consideration when interpreting linear-OLS estimates."""
+    rng = np.random.default_rng(13)
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: float(rng.uniform(0.0, 1.0)),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.is_bounded_unit is True
+    assert 0.0 <= shape.value_min <= shape.value_max <= 1.0
+
+
+def test_outcome_shape_categorical_returns_none():
+    """Object-dtype outcome (string labels) must return outcome_shape=None;
+    skewness/kurtosis are not defined for non-numeric data."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    rows = []
+    for u in range(1, 21):
+        for t in range(4):
+            tr = 1 if (u in first_treat and t >= first_treat[u]) else 0
+            rows.append({"u": u, "t": t, "tr": tr, "y": "high" if tr else "low"})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.outcome_shape is None
+
+
+def test_outcome_shape_skewness_kurtosis_gated_on_distinct_values():
+    """Outcomes with fewer than 3 distinct values must report
+    skewness=None and excess_kurtosis=None — moments are undefined or
+    degenerate at that distinctness floor."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: float(tr),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.n_distinct_values == 2
+    assert shape.skewness is None
+    assert shape.excess_kurtosis is None
+
+
+def test_outcome_shape_to_dict_roundtrips_through_json():
+    """outcome_shape must serialize to a JSON-compatible nested dict and
+    survive ``json.loads(json.dumps(...))`` without loss."""
+    rng = np.random.default_rng(17)
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: int(rng.poisson(2.0)),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    payload = profile.to_dict()
+    roundtrip = json.loads(json.dumps(payload))
+    shape_dict = roundtrip["outcome_shape"]
+    assert shape_dict is not None
+    assert set(shape_dict.keys()) == {
+        "n_distinct_values",
+        "pct_zeros",
+        "value_min",
+        "value_max",
+        "skewness",
+        "excess_kurtosis",
+        "is_integer_valued",
+        "is_count_like",
+        "is_bounded_unit",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Treatment dose (continuous-treatment distributional facts)
+# ---------------------------------------------------------------------------
+
+
+def test_treatment_dose_continuous_zero_baseline_time_invariant():
+    """Continuous panel with zero-dose controls and constant treated dose
+    must populate treatment_dose with has_zero_dose=True, is_time_invariant
+    =True, and the correct n_distinct_doses."""
+    rng = np.random.default_rng(19)
+    rows = []
+    for u in range(1, 21):
+        # 5 zero-dose units, 15 with one of three nonzero dose levels
+        if u <= 5:
+            dose = 0.0
+        elif u <= 10:
+            dose = 1.0
+        elif u <= 15:
+            dose = 2.5
+        else:
+            dose = 4.0
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    dose = profile.treatment_dose
+    assert profile.treatment_type == "continuous"
+    assert dose is not None
+    assert dose.has_zero_dose is True
+    assert dose.is_time_invariant is True
+    assert dose.n_distinct_doses == 4  # {0, 1, 2.5, 4}
+    assert dose.dose_min == pytest.approx(1.0)
+    assert dose.dose_max == pytest.approx(4.0)
+
+
+def test_treatment_dose_continuous_time_varying_within_unit():
+    """If a treated unit's nonzero dose changes across periods,
+    is_time_invariant must be False — gating ContinuousDiD pre-fit."""
+    rng = np.random.default_rng(23)
+    rows = []
+    for u in range(1, 21):
+        for t in range(4):
+            if u <= 5:
+                dose = 0.0
+            else:
+                # Treated units have nonzero dose that varies with t.
+                dose = float(rng.uniform(0.5, 3.0))
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    dose = profile.treatment_dose
+    assert dose is not None
+    assert dose.is_time_invariant is False
+
+
+def test_treatment_dose_continuous_no_zero_dose():
+    """If every unit has a strictly positive dose throughout, has_zero_dose
+    must be False — flagging the absence of zero-dose controls required by
+    ContinuousDiD."""
+    rng = np.random.default_rng(29)
+    rows = []
+    for u in range(1, 21):
+        dose = float(rng.uniform(0.5, 3.0))
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    dose = profile.treatment_dose
+    assert dose is not None
+    assert dose.has_zero_dose is False
+    assert dose.is_time_invariant is True
+
+
+def test_treatment_dose_binary_treatment_returns_none():
+    """Binary treatment must produce treatment_dose=None — dose semantics
+    only apply to continuous treatments."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(n_units=20, periods=range(0, 4), first_treat=first_treat)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "binary_absorbing"
+    assert profile.treatment_dose is None
+
+
+def test_treatment_dose_categorical_treatment_returns_none():
+    """Categorical (object-dtype) treatment must produce treatment_dose=None."""
+    rows = []
+    for u in range(1, 11):
+        arm = "A" if u <= 5 else "B"
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": arm, "y": float(u) + 0.1 * t})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "categorical"
+    assert profile.treatment_dose is None
+
+
+def test_treatment_dose_to_dict_roundtrips_through_json():
+    """treatment_dose must serialize to a JSON-compatible nested dict."""
+    rng = np.random.default_rng(31)
+    rows = []
+    for u in range(1, 21):
+        dose = 0.0 if u <= 5 else 2.5
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    payload = profile.to_dict()
+    roundtrip = json.loads(json.dumps(payload))
+    dose_dict = roundtrip["treatment_dose"]
+    assert dose_dict is not None
+    assert set(dose_dict.keys()) == {
+        "n_distinct_doses",
+        "has_zero_dose",
+        "dose_min",
+        "dose_max",
+        "dose_mean",
+        "is_time_invariant",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Frozen invariants
+# ---------------------------------------------------------------------------
+
+
+def test_outcome_shape_dataclass_is_frozen():
+    from diff_diff.profile import OutcomeShape
+
+    s = OutcomeShape(
+        n_distinct_values=3,
+        pct_zeros=0.1,
+        value_min=0.0,
+        value_max=1.0,
+        skewness=0.5,
+        excess_kurtosis=0.0,
+        is_integer_valued=False,
+        is_count_like=False,
+        is_bounded_unit=True,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        s.n_distinct_values = 999  # type: ignore[misc]
+
+
+def test_treatment_dose_dataclass_is_frozen():
+    from diff_diff.profile import TreatmentDoseShape
+
+    d = TreatmentDoseShape(
+        n_distinct_doses=3,
+        has_zero_dose=True,
+        dose_min=1.0,
+        dose_max=3.0,
+        dose_mean=2.0,
+        is_time_invariant=True,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        d.has_zero_dose = False  # type: ignore[misc]

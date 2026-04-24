@@ -38,6 +38,52 @@ def test_content_stability_autonomous_fingerprints():
     text = get_llm_guide("autonomous")
     assert "profile_panel" in text
     assert "estimator-support matrix" in text.lower()
+    # Wave 2 additions: outcome / dose shape field references.
+    assert "outcome_shape" in text
+    assert "treatment_dose" in text
+    assert "is_count_like" in text
+    assert "is_time_invariant" in text
+
+
+def test_autonomous_contains_worked_examples_section():
+    """The §5 worked-examples section walks an agent through three
+    end-to-end PanelProfile -> reasoning -> validation flows. Each
+    example carries a unique fingerprint phrase keyed off its
+    PanelProfile -> estimator path; these regressions guard the
+    examples from accidental deletion or scope drift."""
+    text = get_llm_guide("autonomous")
+    assert "## §5. Worked examples" in text
+    # §5.1: binary staggered with never-treated -> CallawaySantAnna
+    assert "§5.1 Binary staggered panel with never-treated controls" in text
+    assert 'control_group="never_treated"' in text
+    # §5.2: continuous dose -> ContinuousDiD prerequisites via treatment_dose
+    assert "§5.2 Continuous-dose panel with zero baseline" in text
+    assert "TreatmentDoseShape(" in text
+    # §5.3: count-shaped outcome -> WooldridgeDiD QMLE
+    assert "§5.3 Count-shaped outcome" in text
+    assert 'WooldridgeDiD(family="poisson")' in text
+
+
+def test_autonomous_worked_examples_avoid_recommender_language():
+    """Worked examples must mirror the rest of the guide's discipline:
+    no prescriptive language in the example reasoning. Multiple paths
+    must remain explicit."""
+    text = get_llm_guide("autonomous")
+    # Locate the §5 block; check its body for forbidden phrasing.
+    start = text.index("## §5. Worked examples")
+    end = text.index("## §6. Post-fit validation utilities")
+    section_5 = text[start:end].lower()
+    forbidden = (
+        "you should always",
+        "always pick",
+        "we recommend",
+        "the best estimator is",
+    )
+    for phrase in forbidden:
+        assert phrase not in section_5, (
+            f"§5 worked examples contain prescriptive phrase {phrase!r}; "
+            "the guide must keep multiple paths explicit."
+        )
 
 
 def test_autonomous_contains_intact_estimator_matrix():

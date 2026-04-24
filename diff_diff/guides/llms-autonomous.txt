@@ -26,10 +26,11 @@ discusses and that this guide does not pretend to resolve.
 - §2. PanelProfile field reference
 - §3. Estimator-support matrix
 - §4. Estimator-choice reasoning by design feature
-- §5. Post-fit validation utilities
-- §6. How to read BusinessReport / DiagnosticReport output
-- §7. Glossary + citations
-- §8. Intentional omissions
+- §5. Worked examples
+- §6. Post-fit validation utilities
+- §7. How to read BusinessReport / DiagnosticReport output
+- §8. Glossary + citations
+- §9. Intentional omissions
 
 
 ## §1. What this guide is (and is not)
@@ -37,14 +38,16 @@ discusses and that this guide does not pretend to resolve.
 **What it is.** A reference you consult after running `profile_panel()` and
 before calling any estimator's `fit()`. The matrix in §3 and the per-design-
 feature discussions in §4 tell you which estimators are well-suited to the
-panel shape reported by the profile; the post-fit index in §5 tells you
+panel shape reported by the profile; the worked examples in §5 walk through
+several end-to-end PanelProfile -> reasoning -> validation flows; the
+post-fit index in §6 tells you
 which diagnostics apply once you have a fitted result.
 
 **What it is not.** A deterministic recommender. No function in diff-diff
 returns "pick estimator X." This guide does not either. When several
 estimators fit a design, it enumerates them and names the trade-offs. The
 agent is responsible for weighing those trade-offs (often with the cited
-references in §7) and justifying the choice in the final write-up.
+references in §8) and justifying the choice in the final write-up.
 
 **Why this shape.** A rules-engine recommender would lock in a policy that
 ages poorly as new estimators land and as the applied-econometrics
@@ -169,6 +172,43 @@ view. Every field below appears as a top-level key in that dict.
   outcome column is NaN, in `[0, 1]`.
 - **`outcome_summary: Mapping[str, float]`** - `{min, max, mean, std}`
   computed with NaN-skipping; empty for non-numeric outcomes.
+- **`outcome_shape: Optional[OutcomeShape]`** - distributional facts for
+  numeric outcomes; `None` when the outcome dtype is non-numeric. Sub-fields:
+    - `n_distinct_values: int` - count of distinct non-NaN outcome values.
+    - `pct_zeros: float` - share of non-NaN observations equal to zero,
+      in `[0, 1]`.
+    - `value_min: float`, `value_max: float` - range of observed values.
+    - `skewness: Optional[float]` - sample skewness via the canonical
+      `m3 / std^3` form. `None` when `n_distinct_values < 3` or variance
+      is zero.
+    - `excess_kurtosis: Optional[float]` - `m4 / m2^2 - 3`, gated the
+      same way as `skewness`.
+    - `is_integer_valued: bool` - all non-NaN values are whole numbers
+      (covers integer dtype and floats that happen to be integer-valued).
+    - `is_count_like: bool` - heuristic for count-shaped outcomes:
+      `is_integer_valued AND pct_zeros > 0 AND skewness > 0.5 AND
+      n_distinct_values > 2`. When `True`, an OLS DiD on the raw
+      outcome may have well-behaved point estimates but questionable
+      asymptotic SEs; consider `WooldridgeDiD` (QMLE Poisson family)
+      or document the choice. See §5.3 for a worked example.
+    - `is_bounded_unit: bool` - all non-NaN values lie in `[0, 1]`.
+      When `True` and the linear-DiD point estimate is near the
+      boundary of feasible support, interpret with care (the linear
+      model can predict outside `[0, 1]`).
+- **`treatment_dose: Optional[TreatmentDoseShape]`** - distributional
+  facts for continuous-treatment dose columns; `None` unless
+  `treatment_type == "continuous"`. Sub-fields:
+    - `n_distinct_doses: int` - count of distinct non-NaN dose values
+      (including zero if observed).
+    - `has_zero_dose: bool` - at least one unit-period has dose
+      exactly zero. Required by `ContinuousDiD` (`P(D=0) > 0`); when
+      `False` the estimator cannot identify the dose-response curve.
+    - `dose_min: float`, `dose_max: float`, `dose_mean: float` - over
+      the strictly non-zero doses (NaN if no non-zero values exist).
+    - `is_time_invariant: bool` - within every unit, the set of
+      distinct non-zero dose values has size at most one (always-zero
+      units are skipped). Required by `ContinuousDiD`; when `False`,
+      `fit()` will raise. See §5.2 for a worked example.
 
 ### Alerts
 
@@ -293,6 +333,10 @@ the estimand). If either condition fails, pre-process with
 estimator from the remaining rows (CS/SA/dCDH/Imputation/TwoStage/
 Stacked/ETWFE all accept unbalanced input, with some caveats in
 their own docs).
+
+For two common prerequisite-resolution patterns walked through end-to-end
+(continuous dose with `treatment_dose` introspection, and count-shaped
+outcome with `outcome_shape` introspection), see §5.2 and §5.3.
 
 
 ## §4. Estimator-choice reasoning by design feature
@@ -441,6 +485,11 @@ When `treatment_type == "continuous"`:
   scalar first-stage adoption summary. Useful when adoption is
   graded rather than binary.
 
+The new `PanelProfile.treatment_dose` sub-fields (`has_zero_dose`,
+`is_time_invariant`, `n_distinct_doses`) let you check the three
+ContinuousDiD prerequisites pre-fit; §5.2 walks through the full
+profile -> reasoning -> validation flow.
+
 ### §4.8 Few treated units (one or a handful)
 
 When few treated units exist (not a separate `PanelProfile` field yet,
@@ -540,8 +589,199 @@ docs explicitly say otherwise. When routing, also:
   the individual-respondent level, before interpreting the estimate
   as a group-time ATT.
 
+### §4.11 Outcome-shape considerations
 
-## §5. Post-fit validation utilities
+The matrix in §3 routes by treatment shape. Outcome shape is a separate
+axis: a panel that is binary-absorbing and staggered may still have a
+count-shaped outcome (e.g., number of incidents per unit-period) for
+which linear DiD point estimates are unbiased but asymptotic SEs may
+mislead. `PanelProfile.outcome_shape` exposes the relevant facts:
+
+- `outcome_shape.is_count_like == True` (integer-valued, has zeros,
+  right-skewed, more than two distinct values) - linear-OLS DiD on the
+  raw count works for the point estimate but inference may be off.
+  Consider `WooldridgeDiD` (QMLE Poisson) which estimates the
+  multiplicative effect directly and gives correctly-calibrated SEs
+  under quasi-MLE. Linear-OLS DiD with cluster-robust SEs remains a
+  defensible choice when the count is large enough that the normal
+  approximation holds; the shape field flags the consideration, not a
+  rule. §5.3 walks through this pattern with a concrete profile.
+- `outcome_shape.is_bounded_unit == True` (values in `[0, 1]`,
+  e.g. a proportion) - linear DiD can produce predictions outside
+  `[0, 1]` and inference at the boundary is questionable. No
+  estimator in the suite handles this differently from a numeric
+  outcome; flag the consideration in the write-up.
+- `outcome_shape.is_integer_valued == True` without
+  `is_count_like` (e.g., 0/1 binary, ordinal Likert) - the binary
+  case has its own caveats (logit/log-odds alternative per Roth
+  and Sant'Anna 2023). Ordinal outcomes generally need a
+  domain-specific design that the current suite does not provide.
+
+
+## §5. Worked examples
+
+Each subsection shows a realistic `profile_panel` output, traces the
+agent reasoning that maps it to an estimator (or rules estimators out),
+and points at the validation step. Examples are illustrative: they do
+not exhaust the design space and they do not collapse a multi-path
+choice to a single mandated answer.
+
+### §5.1 Binary staggered panel with never-treated controls
+
+A long panel of 200 stores observed across 20 quarters, with treatment
+applied to subsets of stores in three different quarters and a fourth
+group never treated. `profile_panel(...)` returns:
+
+```
+PanelProfile(
+    n_units=200, n_periods=20, n_obs=4000,
+    is_balanced=True, observation_coverage=1.0,
+    treatment_type="binary_absorbing",
+    is_staggered=True, n_cohorts=3,
+    cohort_sizes={5: 40, 9: 35, 13: 45},
+    has_never_treated=True, has_always_treated=False,
+    treatment_varies_within_unit=True,
+    first_treatment_period=5, last_treatment_period=13,
+    min_pre_periods=4, min_post_periods=7,
+    outcome_dtype="float64", outcome_is_binary=False,
+    outcome_has_zeros=False, outcome_has_negatives=False,
+    outcome_missing_fraction=0.0,
+    outcome_summary={"min": 12.4, "max": 88.1,
+                     "mean": 47.3, "std": 14.2},
+    outcome_shape=OutcomeShape(
+        n_distinct_values=2841, pct_zeros=0.0,
+        value_min=12.4, value_max=88.1,
+        skewness=0.18, excess_kurtosis=-0.41,
+        is_integer_valued=False,
+        is_count_like=False, is_bounded_unit=False,
+    ),
+    treatment_dose=None,
+    alerts=(),
+)
+```
+
+Reasoning chain:
+
+1. `treatment_type == "binary_absorbing"` and `is_staggered == True` ->
+   §3 row narrows to the staggered-robust set: `CallawaySantAnna`,
+   `SunAbraham`, `ChaisemartinDHaultfoeuille`, `ImputationDiD`,
+   `TwoStageDiD`, `StackedDiD`, `WooldridgeDiD` (ETWFE),
+   `EfficientDiD`. `TwoWayFixedEffects` is `warn` per the §3 footnote
+   on cohort weights. `SyntheticDiD` is `✗` on staggered (block
+   treatment only). `ContinuousDiD` and `HeterogeneousAdoptionDiD`
+   are out (binary).
+2. `has_never_treated == True` AND `n_cohorts == 3` (multi-cohort) ->
+   `CallawaySantAnna(control_group="never_treated")` and `SunAbraham`
+   are both well-suited; the never-treated controls preserve power.
+   `EfficientDiD` (Hausman-pretested between PT-All and PT-Post) is
+   another applicable path with the same control set.
+3. `min_pre_periods == 4` -> parallel-trends and event-study pretests
+   have meaningful power; no `short_pre_panel` alert fires.
+4. Pick `CallawaySantAnna(control_group="never_treated")` for the
+   group-time ATT decomposition; fit; then validate via
+   `compute_pretrends_power(results)` and
+   `compute_honest_did(results)` before reporting through
+   `BusinessReport(results, data=df)`.
+
+### §5.2 Continuous-dose panel with zero baseline
+
+A panel of 100 firms observed across 6 years, with 20 untreated firms
+(dose 0), 30 firms at dose 1.0, 30 at dose 2.5, and 20 at dose 4.0,
+each holding their dose constant once treated (block-style adoption in
+year 3). `profile_panel(...)` returns the relevant facts:
+
+```
+PanelProfile(
+    treatment_type="continuous",
+    treatment_varies_within_unit=False,
+    has_never_treated=True,
+    is_balanced=True,
+    treatment_dose=TreatmentDoseShape(
+        n_distinct_doses=4,
+        has_zero_dose=True,
+        dose_min=1.0, dose_max=4.0, dose_mean=2.4,
+        is_time_invariant=True,
+    ),
+    outcome_shape=OutcomeShape(
+        is_count_like=False, is_bounded_unit=False, ...
+    ),
+    alerts=(),
+)
+```
+
+Reasoning chain:
+
+1. `treatment_type == "continuous"` -> §3 row narrows to
+   `ContinuousDiD` (`✓`) and `HeterogeneousAdoptionDiD` (`partial`,
+   for graded adoption). All other estimators are `✗` on continuous.
+2. ContinuousDiD prerequisites map directly onto the new dose fields:
+   `treatment_dose.has_zero_dose == True` (P(D=0) > 0 satisfied),
+   `treatment_dose.is_time_invariant == True` (per-unit constant
+   dose), `is_balanced == True`. All three pass, so `ContinuousDiD`
+   is in scope. (If any failed, `fit()` would raise `ValueError`.)
+3. Counter-example: had `is_time_invariant == False` (a unit's
+   nonzero dose changed across periods), `ContinuousDiD` would not
+   apply. The two paths from there are (a)
+   `HeterogeneousAdoptionDiD` if a scalar adoption summary fits, or
+   (b) aggregate the dose to a binary indicator and fall back to a
+   binary staggered estimator.
+4. Fit `ContinuousDiD`; the result object exposes the dose-response
+   curve (`ATT(d)`) and average causal response (`ACRT(d)`); choose
+   the headline estimand based on the business question (overall
+   ATT under PT, or the dose-response curve under Strong PT).
+
+### §5.3 Count-shaped outcome on a binary-staggered panel
+
+A panel of 300 retail outlets observed across 12 months, with three
+adoption cohorts. The outcome is "number of customer complaints per
+outlet per month" - integer-valued, lots of zero months, right-skewed.
+`profile_panel(...)` returns:
+
+```
+PanelProfile(
+    treatment_type="binary_absorbing", is_staggered=True,
+    has_never_treated=True, n_cohorts=3,
+    outcome_dtype="int64", outcome_is_binary=False,
+    outcome_has_zeros=True, outcome_has_negatives=False,
+    outcome_summary={"min": 0, "max": 47, "mean": 1.8, "std": 3.2},
+    outcome_shape=OutcomeShape(
+        n_distinct_values=18, pct_zeros=0.43,
+        value_min=0, value_max=47,
+        skewness=2.1, excess_kurtosis=6.4,
+        is_integer_valued=True,
+        is_count_like=True,
+        is_bounded_unit=False,
+    ),
+    treatment_dose=None,
+    alerts=(),
+)
+```
+
+Reasoning chain:
+
+1. Same staggered-binary narrowing as §5.1 (CS/SA/dCDH/Imputation/
+   TwoStage/Stacked/ETWFE/EfficientDiD applicable).
+2. `outcome_shape.is_count_like == True` -> linear-OLS DiD on the
+   raw count gives unbiased point estimates of the additive effect
+   but its asymptotic SEs assume normal-shaped errors, which a
+   right-skewed count distribution violates. `WooldridgeDiD`
+   (`family="poisson"`) estimates the multiplicative
+   (log-link) effect under QMLE with correct asymptotic SEs, and
+   maps onto the staggered design natively.
+3. Decision: fit `WooldridgeDiD(family="poisson")` for the
+   primary estimate; report the multiplicative effect (proportional
+   change) rather than the additive effect. Optionally fit a linear
+   DiD as a robustness check and document which scale the headline
+   uses.
+4. Caveat: when the outcome includes structural zeros that violate
+   Poisson conditional moments (overdispersion), consider negative
+   binomial QMLE or a hurdle model; the current suite does not
+   provide these natively, but the linear DiD with cluster-robust
+   SEs remains defensible at sufficient sample size. The shape
+   field flags the consideration; the choice is yours.
+
+
+## §6. Post-fit validation utilities
 
 After any `fit()`, the Baker et al. (2025) 8-step workflow recommends a
 diagnostic sequence. The library exposes utilities covering each step.
@@ -625,7 +865,7 @@ Event-study plots are also a diagnostic - pre-treatment coefficients
 close to zero support parallel trends.
 
 
-## §6. How to read BusinessReport / DiagnosticReport output
+## §7. How to read BusinessReport / DiagnosticReport output
 
 `BusinessReport(results)` and `DiagnosticReport(results)` are experimental
 in the 3.2 line. Their schema is versioned (`BUSINESS_REPORT_SCHEMA_VERSION`
@@ -728,7 +968,7 @@ Forthcoming schema additions (not yet shipped): a top-level
 queued for a later wave. Treat their current absence as expected.
 
 
-## §7. Glossary + citations
+## §8. Glossary + citations
 
 **ATT**: Average Treatment Effect on the Treated. The target parameter
 of most DiD estimators.
@@ -820,14 +1060,14 @@ or the outcome model is correctly specified.
   (Callaway-Sant'Anna).
 
 
-## §8. Intentional omissions
+## §9. Intentional omissions
 
 This guide does **not**:
 
 - Recommend a specific estimator for a specific dataset. When multiple
   estimators fit, §4 lists them and names the trade-offs; the choice is
   the agent's.
-- Enumerate every possible design edge case. The literature cited in §7
+- Enumerate every possible design edge case. The literature cited in §8
   covers them; this guide is a navigation aid, not a substitute.
 - Promise forward-compatibility of the BR / DR schema or the alert
   catalogue. Treat these as experimental until the 12-item foundation-
@@ -840,5 +1080,5 @@ This guide does **not**:
   treated unit). When those apply, point the user at dedicated
   libraries.
 
-**If in doubt, consult the primary references in §7 and use
+**If in doubt, consult the primary references in §8 and use
 `get_llm_guide("practitioner")` for the Baker et al. workflow.**

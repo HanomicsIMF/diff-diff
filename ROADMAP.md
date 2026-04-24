@@ -138,14 +138,14 @@ Long-running program, framed as "building toward" rather than with discrete ship
 - Baker et al. (2025) 8-step workflow enforcement in `diff_diff/practitioner.py`.
 - `practitioner_next_steps()` context-aware guidance.
 - Runtime LLM guides via `get_llm_guide(...)` (`llms.txt`, `llms-full.txt`, `llms-practitioner.txt`, `llms-autonomous.txt`), bundled in the wheel.
-- `profile_panel(df, ...)` returns a `PanelProfile` dataclass of structural facts about the panel - factual, not opinionated. Pairs with the `"autonomous"` guide variant (reference-shaped: estimator-support matrix + per-design-feature reasoning) so agents describe the data then consult a bundled reference rather than calling a deterministic recommender.
+- `profile_panel(df, ...)` returns a `PanelProfile` dataclass of structural facts about the panel - factual, not opinionated. Pairs with the `"autonomous"` guide variant (reference-shaped: estimator-support matrix + per-design-feature reasoning) so agents describe the data then consult a bundled reference rather than calling a deterministic recommender. `PanelProfile.outcome_shape` and `PanelProfile.treatment_dose` extensions expose count-likeness, bounded-support, dose support, and time-invariance facts that gate WooldridgeDiD QMLE / ContinuousDiD prerequisites pre-fit. The autonomous guide §5 walks through three end-to-end PanelProfile -> reasoning -> validation worked examples.
 - Package docstring leads with an "For AI agents" entry block so `help(diff_diff)` surfaces the agent entry points automatically.
 - Silent-operation warnings so agents and humans see the same signals at the same time.
 
 **Next blocks toward the vision.**
 
-- **Post-hoc mismatch detection in BR/DR output** - surfaces structured warnings like "you fit TWFE on staggered data with 37% forbidden-comparison weights" when the profile and the fitted estimator disagree. Safety net, not a pre-emptive rules engine.
-- **Structured `sanity_checks` block in BR/DR** - machine-legible pass / warn / fail signals (pretrends, power, forbidden-comparisons, event-study cleanliness, placebo, sensitivity) so agents can dispatch on a stable schema rather than parsing prose.
+- **Structured `sanity_checks` block in BR/DR** - machine-legible pass / warn / fail signals for pretrends, power, forbidden-comparisons, event-study cleanliness, placebo, and sensitivity, so agents dispatch on a stable schema rather than parsing prose. Highest-leverage net-new agent decision surface; orthogonal to existing `caveats` and to fit-time validators.
+- **Post-hoc mismatch detection in BR/DR output** - originally proposed as Wave 2 but rescoped after a plan review showed most candidate checks duplicate fit-time validators (which raise `ValueError` before any fitted result exists) or the existing `caveats` block (TWFE-on-staggered is already surfaced via `bacon_contamination`). Held for revisiting only if the `sanity_checks` rollout uncovers genuine post-fit mismatch signals not caught by current surfaces.
 - **Context-aware `practitioner_next_steps()`** that substitutes actual column names - turns guidance into executable recommendations.
 - **Unified `assess_*` verb** across estimator native-diagnostic methods for a single discoverable convention.
 - **End-to-end scenario walkthrough templates** - reusable orchestration recipes an agent can adapt from data ingest through business-ready output.

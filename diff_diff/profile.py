@@ -41,6 +41,50 @@ class Alert:
 
 
 @dataclass(frozen=True)
+class OutcomeShape:
+    """Distributional shape of a numeric outcome column.
+
+    Populated on :class:`PanelProfile` when the outcome dtype is integer or
+    float (``np.dtype(...).kind in {"i", "u", "f"}``); ``None`` otherwise.
+    Descriptive only — these fields surface what is observed in the outcome
+    distribution. They never recommend a specific estimator family.
+    """
+
+    n_distinct_values: int
+    pct_zeros: float
+    value_min: float
+    value_max: float
+    skewness: Optional[float]
+    excess_kurtosis: Optional[float]
+    is_integer_valued: bool
+    is_count_like: bool
+    is_bounded_unit: bool
+
+
+@dataclass(frozen=True)
+class TreatmentDoseShape:
+    """Distributional shape of a continuous treatment dose.
+
+    Populated on :class:`PanelProfile` only when ``treatment_type ==
+    "continuous"``; ``None`` otherwise. Descriptive only — these fields
+    surface what is observed in the treatment column.
+
+    ``is_time_invariant`` is ``True`` when, within every unit, the set of
+    distinct non-zero dose values has size at most one (i.e., a unit either
+    is untreated or holds a single dose level across all treated periods).
+    Always-zero (untreated) units are skipped from the check; they do not
+    invalidate time-invariance.
+    """
+
+    n_distinct_doses: int
+    has_zero_dose: bool
+    dose_min: float
+    dose_max: float
+    dose_mean: float
+    is_time_invariant: bool
+
+
+@dataclass(frozen=True)
 class PanelProfile:
     """Structural facts about a DiD panel.
 
@@ -75,6 +119,8 @@ class PanelProfile:
     outcome_has_negatives: bool
     outcome_missing_fraction: float
     outcome_summary: Mapping[str, float]
+    outcome_shape: Optional[OutcomeShape]
+    treatment_dose: Optional[TreatmentDoseShape]
 
     alerts: Tuple[Alert, ...]
 
@@ -103,6 +149,41 @@ class PanelProfile:
             "outcome_has_negatives": self.outcome_has_negatives,
             "outcome_missing_fraction": self.outcome_missing_fraction,
             "outcome_summary": {k: float(v) for k, v in self.outcome_summary.items()},
+            "outcome_shape": (
+                None
+                if self.outcome_shape is None
+                else {
+                    "n_distinct_values": int(self.outcome_shape.n_distinct_values),
+                    "pct_zeros": float(self.outcome_shape.pct_zeros),
+                    "value_min": float(self.outcome_shape.value_min),
+                    "value_max": float(self.outcome_shape.value_max),
+                    "skewness": (
+                        None
+                        if self.outcome_shape.skewness is None
+                        else float(self.outcome_shape.skewness)
+                    ),
+                    "excess_kurtosis": (
+                        None
+                        if self.outcome_shape.excess_kurtosis is None
+                        else float(self.outcome_shape.excess_kurtosis)
+                    ),
+                    "is_integer_valued": bool(self.outcome_shape.is_integer_valued),
+                    "is_count_like": bool(self.outcome_shape.is_count_like),
+                    "is_bounded_unit": bool(self.outcome_shape.is_bounded_unit),
+                }
+            ),
+            "treatment_dose": (
+                None
+                if self.treatment_dose is None
+                else {
+                    "n_distinct_doses": int(self.treatment_dose.n_distinct_doses),
+                    "has_zero_dose": bool(self.treatment_dose.has_zero_dose),
+                    "dose_min": float(self.treatment_dose.dose_min),
+                    "dose_max": float(self.treatment_dose.dose_max),
+                    "dose_mean": float(self.treatment_dose.dose_mean),
+                    "is_time_invariant": bool(self.treatment_dose.is_time_invariant),
+                }
+            ),
             "alerts": [
                 {
                     "code": a.code,
@@ -281,6 +362,10 @@ def profile_panel(
     outcome_summary = _summarize_outcome(valid)
 
     dtype_kind = getattr(outcome_col.dtype, "kind", "O")
+    outcome_shape = _compute_outcome_shape(valid, dtype_kind)
+    treatment_dose = _compute_treatment_dose(
+        df, unit=unit, treatment=treatment, treatment_type=treatment_type
+    )
     alerts = _compute_alerts(
         n_periods=n_periods,
         observation_coverage=observation_coverage,
@@ -318,6 +403,8 @@ def profile_panel(
         outcome_has_negatives=outcome_has_negatives,
         outcome_missing_fraction=outcome_missing_fraction,
         outcome_summary=outcome_summary,
+        outcome_shape=outcome_shape,
+        treatment_dose=treatment_dose,
         alerts=tuple(alerts),
     )
 
@@ -505,6 +592,115 @@ def _summarize_outcome(valid: pd.Series) -> Dict[str, float]:
         "mean": float(valid.mean()),
         "std": float(valid.std(ddof=1)) if len(valid) > 1 else 0.0,
     }
+
+
+def _compute_outcome_shape(valid: pd.Series, outcome_dtype_kind: str) -> Optional[OutcomeShape]:
+    """Compute distributional shape for a numeric outcome.
+
+    Returns ``None`` for non-numeric dtypes (kind not in ``{"i", "u", "f"}``)
+    or empty series. Skewness and excess kurtosis are gated on
+    ``n_distinct_values >= 3`` and non-zero variance; otherwise ``None``.
+    """
+    if outcome_dtype_kind not in {"i", "u", "f"}:
+        return None
+    if len(valid) == 0:
+        return None
+
+    arr = np.asarray(valid, dtype=float)
+    n = int(arr.size)
+    n_distinct = int(np.unique(arr).size)
+    pct_zeros = float(np.sum(arr == 0)) / n
+    value_min = float(arr.min())
+    value_max = float(arr.max())
+
+    is_integer_valued = bool(np.all(np.equal(np.mod(arr, 1.0), 0.0)))
+    is_bounded_unit = bool(np.all((arr >= 0.0) & (arr <= 1.0)))
+
+    skewness: Optional[float] = None
+    excess_kurtosis: Optional[float] = None
+    if n_distinct >= 3:
+        mean = float(np.mean(arr))
+        m2 = float(np.mean((arr - mean) ** 2))
+        if m2 > 0.0:
+            std = m2**0.5
+            m3 = float(np.mean((arr - mean) ** 3))
+            m4 = float(np.mean((arr - mean) ** 4))
+            skewness = float(m3 / (std**3))
+            excess_kurtosis = float(m4 / (m2**2) - 3.0)
+
+    is_count_like = bool(
+        is_integer_valued
+        and pct_zeros > 0.0
+        and skewness is not None
+        and skewness > 0.5
+        and n_distinct > 2
+    )
+
+    return OutcomeShape(
+        n_distinct_values=n_distinct,
+        pct_zeros=pct_zeros,
+        value_min=value_min,
+        value_max=value_max,
+        skewness=skewness,
+        excess_kurtosis=excess_kurtosis,
+        is_integer_valued=is_integer_valued,
+        is_count_like=is_count_like,
+        is_bounded_unit=is_bounded_unit,
+    )
+
+
+def _compute_treatment_dose(
+    df: pd.DataFrame,
+    *,
+    unit: str,
+    treatment: str,
+    treatment_type: str,
+) -> Optional[TreatmentDoseShape]:
+    """Compute distributional shape for a continuous-treatment dose column.
+
+    Returns ``None`` unless ``treatment_type == "continuous"``.
+    ``is_time_invariant`` is computed across non-zero dose values within
+    each unit; always-zero (untreated) units are skipped from the check.
+    """
+    if treatment_type != "continuous":
+        return None
+
+    col = df[treatment].dropna()
+    if col.empty:
+        return None
+
+    n_distinct_doses = int(col.nunique())
+    has_zero_dose = bool((col == 0).any())
+
+    nonzero = col[col != 0]
+    if len(nonzero) > 0:
+        dose_min = float(nonzero.min())
+        dose_max = float(nonzero.max())
+        dose_mean = float(nonzero.mean())
+    else:
+        dose_min = float("nan")
+        dose_max = float("nan")
+        dose_mean = float("nan")
+
+    is_time_invariant = True
+    for _, group in df.groupby(unit, sort=False):
+        unit_doses = group[treatment].dropna().to_numpy()
+        unit_nonzero = unit_doses[unit_doses != 0]
+        if len(unit_nonzero) == 0:
+            continue
+        rounded = np.round(unit_nonzero.astype(float), 8)
+        if int(np.unique(rounded).size) > 1:
+            is_time_invariant = False
+            break
+
+    return TreatmentDoseShape(
+        n_distinct_doses=n_distinct_doses,
+        has_zero_dose=has_zero_dose,
+        dose_min=dose_min,
+        dose_max=dose_max,
+        dose_mean=dose_mean,
+        is_time_invariant=is_time_invariant,
+    )
 
 
 def _compute_alerts(
