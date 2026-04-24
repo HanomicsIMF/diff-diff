@@ -618,14 +618,20 @@ scenarios$mixed_single_switch_by_path <- list(
 )
 
 # Scenario 14: multi_path_reversible + by_path=3 (top-k ranking case).
-# The multi_path_reversible DGP produces 3+ distinct observed paths via
-# random post-switch toggling. by_path=3 exercises the top-k selection
-# when observed paths exceed k. n_periods=10 gives every switch_time a
-# complete length-(L_max+1) window.
+# The `multi_path_reversible` pattern is a DETERMINISTIC multi-path DGP:
+# path assignment is a fixed function of F_g (so every (D_{g,1}, F_g,
+# S_g) cohort contains switchers from a single path), path proportions
+# are fixed at 20/20/15/10/10/5 across the 6 F_g values, and
+# post-window treatment is stable at path[L_max+1]. by_path=3 exercises
+# top-k selection when observed paths exceed k (4 observed paths, top-3
+# selected). n_periods=10 gives every switch_time a complete length-
+# (L_max+1) window. The old `p_switch`-driven random-toggle variant
+# (pre-PR) blew out SE parity with R via cross-path cohort mixing;
+# see the REGISTRY.md `Note (Phase 3 by_path ...)` Deviation bullet.
 cat("  Scenario 14: multi_path_reversible_by_path\n")
 d14 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 10,
                       pattern = "multi_path_reversible", seed = 114,
-                      p_switch = 0.35, L_max = 3)
+                      L_max = 3)
 res14 <- did_multiplegt_dyn(
   df = d14, outcome = "outcome", group = "group", time = "period",
   treatment = "treatment", effects = 3, by_path = 3, ci_level = 95
@@ -634,7 +640,7 @@ scenarios$multi_path_reversible_by_path <- list(
   data = export_data(d14),
   params = list(pattern = "multi_path_reversible", n_groups = N_GOLDEN,
                 n_periods = 10, seed = 114, effects = 3, by_path = 3,
-                ci_level = 95, p_switch = 0.35),
+                ci_level = 95),
   results = extract_dcdh_by_path(res14, n_effects = 3)
 )
 

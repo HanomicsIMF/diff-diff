@@ -545,6 +545,20 @@ class TestDCDHDynRParityByPath:
         for r_path_entry in r_by_path:
             path_key = self._path_key_from_r_label(r_path_entry["path"])
             py_path = results.path_effects[path_key]
+
+            # Assert the public frequency_rank contract matches R. Both
+            # committed scenarios are constructed with unique path
+            # frequencies (scenario 13 via mixed_single_switch pattern,
+            # scenario 14 via deterministic counts 40/25/10/5) so rank
+            # ordering is unambiguous and must agree; a regression in
+            # path ranking or top-k tiebreak handling should fail here
+            # even if the selected path set and per-path effects remain
+            # correct.
+            assert py_path["frequency_rank"] == r_path_entry["frequency_rank"], (
+                f"path={path_key}: frequency_rank mismatch "
+                f"py={py_path['frequency_rank']} vs r={r_path_entry['frequency_rank']}"
+            )
+
             for h_str, r_h in r_path_entry["horizons"].items():
                 h = int(h_str)
                 assert (

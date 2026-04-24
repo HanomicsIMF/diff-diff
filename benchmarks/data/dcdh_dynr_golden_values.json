@@ -660,8 +660,7 @@
         "seed": 114,
         "effects": 3,
         "by_path": 3,
-        "ci_level": 95,
-        "p_switch": 0.35
+        "ci_level": 95
       },
       "results": {
         "by_path": [
