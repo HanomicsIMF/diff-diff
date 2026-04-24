@@ -1505,7 +1505,7 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 
   R-parity rationale: `synthdid_estimate()` (synthdid.R) stores `update.omega = TRUE` in `attr(estimate, "opts")`, and `vcov.R::bootstrap_sample` rebinds those `opts` inside its `do.call` back into `synthdid_estimate`, so the renormalized ω passed via `weights$omega` is used as Frank-Wolfe initialization (the `sum_normalize` helper in R's source explicitly says so). The Python path threads the same warm-start via `compute_sdid_unit_weights(..., init_weights=...)` and `compute_time_weights(..., init_weights=...)`. The FW objective is strictly convex on the simplex (quadratic loss + ζ² ridge on simplex), so warm- and cold-start converge to the same global minimum given enough iterations; warm-start matters in practice because the 100-iter first pass then sparsification is path-dependent on draws where the pre-sparsify budget is tight. Cross-language SE parity at bit tolerance is not claimed — different BLAS / RNG paths — but the procedure matches R's default bootstrap shape at the algorithm level, and Python-only bit-identity on non-survey data is asserted via `TestScaleEquivariance::test_baseline_parity_small_scale[bootstrap]` at `rel=1e-14`.
 
-  Expected wall-clock ~5–30× slower per fit than placebo (panel-size dependent; Frank-Wolfe second-pass can hit its 10K-iter cap on larger panels; warm-start plumbing closes the gap vs cold-start, which would be closer to 10–30× on these DGPs). Per-draw Frank-Wolfe non-convergence UserWarnings are suppressed inside the loop and aggregated into a single summary warning emitted after the loop when the share of valid bootstrap draws with any non-convergence event (counted once per draw — each draw runs Frank-Wolfe once for ω and once for λ, and any of those calls firing a non-convergence warning trips the draw) exceeds 5% of `n_successful`. Composed with any survey design (including pweight-only) this path raises `NotImplementedError` in the current release — see the survey-regression Note below for scope and the deferred-composition sketch.
+  Expected wall-clock ~5–30× slower per fit than placebo (panel-size dependent; Frank-Wolfe second-pass can hit its 10K-iter cap on larger panels; warm-start plumbing closes the gap vs cold-start, which would be closer to 10–30× on these DGPs). Per-draw Frank-Wolfe non-convergence UserWarnings are suppressed inside the loop and aggregated into a single summary warning emitted after the loop when the share of valid bootstrap draws with any non-convergence event (counted once per draw — each draw runs Frank-Wolfe once for ω and once for λ, and any of those calls firing a non-convergence warning trips the draw) exceeds 5% of `n_successful`. Composed with survey designs (pweight-only OR strata/PSU/FPC) this path uses the weighted Frank-Wolfe kernel and the per-draw dispatch described in the "Note (survey + bootstrap composition)" below.
 
 - Alternative: Jackknife variance (matching R's `synthdid::vcov(method="jackknife")`)
   Implements Algorithm 3 from Arkhangelsky et al. (2021):
@@ -1621,7 +1621,7 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
 - [x] Sparsification: v[v <= max(v)/4] = 0; v = v/sum(v)
 - [x] Placebo SE formula: sqrt((r-1)/r) * sd(placebo_estimates)
 - [x] Placebo SE: re-estimates omega and lambda per replication (matching R's update.omega=TRUE, update.lambda=TRUE)
-- [x] Bootstrap: paper-faithful Algorithm 2 step 2 — re-estimates ω̂_b and λ̂_b per draw via two-pass sparsified Frank-Wolfe on the resampled panel using the fit-time normalized-scale zeta. Matches R's default `synthdid::vcov(method="bootstrap")` (which rebinds `attr(estimate, "opts")` so the renormalized ω serves only as Frank-Wolfe initialization). Survey designs raise `NotImplementedError`; Rao-Wu + refit composition is tracked in TODO.md and sketched in the deferred-composition Note above.
+- [x] Bootstrap: paper-faithful Algorithm 2 step 2 — re-estimates ω̂_b and λ̂_b per draw via two-pass sparsified Frank-Wolfe on the resampled panel using the fit-time normalized-scale zeta. Matches R's default `synthdid::vcov(method="bootstrap")` (which rebinds `attr(estimate, "opts")` so the renormalized ω serves only as Frank-Wolfe initialization). Survey designs (pweight-only AND strata/PSU/FPC) are supported via the weighted-FW + hybrid pairs-bootstrap + Rao-Wu rescaling composition described in the "Note (survey + bootstrap composition)" above (PR #352).
 - [x] Jackknife SE: fixed weights, LOO all units, formula `sqrt((n-1)/n * sum((u-ubar)^2))`
 - [x] Jackknife: NaN SE for single treated or single nonzero-weight control
 - [x] Jackknife: analytical p-value (not empirical)
@@ -2949,13 +2949,15 @@ ContinuousDiD, EfficientDiD):
   Rescaled weight: `w*_i = w_i * (n_h / m_h) * r_hi` where `r_hi` = count of PSU *i* drawn.
 - **Note:** FPC enters through the resample size `m_h`, not as a post-hoc scaling factor.
   When `f_h >= 1` (census stratum), observations keep original weights (zero variance).
-- **Note:** SyntheticDiD is intentionally excluded from this list. Paper-faithful
-  refit bootstrap (Arkhangelsky et al. 2021 Algorithm 2 step 2) re-estimates ω̂
-  and λ̂ via Frank-Wolfe on each draw; composing that with Rao-Wu rescaled
-  weights requires a weighted-FW derivation that is not yet implemented (sketch
-  in §SyntheticDiD survey-regression Note; tracked in TODO.md). The previous
-  SyntheticDiD Rao-Wu path composed fixed-ω with rescaled weights, which was
-  not paper-faithful and was removed.
+- **Note:** SyntheticDiD joins this list via a **hybrid** pairs-bootstrap +
+  Rao-Wu rescaling (PR #352). Unlike SunAbraham / TROP, which use standalone
+  Rao-Wu (resample PSUs within strata and rescale weights), SDID first
+  performs unit-level pairs-bootstrap (`boot_idx = rng.choice(n_total)`) and
+  then slices Rao-Wu rescaled weights over the resampled units, passing them
+  into a **weighted Frank-Wolfe** re-estimation of ω̂ and λ̂ per draw. The
+  full objective and argmin-set caveat live in §SyntheticDiD "Note (survey +
+  bootstrap composition)"; the previous fixed-ω-and-rescaled-weights path
+  was removed in PR #351 and replaced with this weighted-FW derivation.
 - **Note:** Bootstrap paths support all three `lonely_psu` modes: `"remove"`, `"certainty"`,
   and `"adjust"`. For `"adjust"`, singleton PSUs from different strata are pooled into a
   combined pseudo-stratum and weights are generated for the pooled group. This is the
