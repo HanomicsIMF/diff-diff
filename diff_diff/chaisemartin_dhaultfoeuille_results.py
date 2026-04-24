@@ -336,6 +336,13 @@ class ChaisemartinDHaultfoeuilleResults:
     design2_effects : dict, optional
         Design-2 switch-in/switch-out descriptive summary. Populated
         when ``design2=True``.
+    path_effects : dict, optional
+        Per-path event-study effects keyed by observed treatment
+        trajectory (tuple of int). Populated when ``by_path`` is a
+        positive int at estimator construction. Each entry holds
+        ``{"n_groups": int, "frequency_rank": int,
+        "horizons": {l: {"effect", "se", "t_stat", "p_value",
+        "conf_int", "n_obs"}}}`` for ``l = 1..L_max``.
     honest_did_results : HonestDiDResults, optional
         HonestDiD sensitivity analysis bounds (Rambachan & Roth 2023).
         Populated when ``honest_did=True`` in ``fit()`` or by calling
@@ -438,6 +445,7 @@ class ChaisemartinDHaultfoeuilleResults:
     trends_linear: Optional[bool] = None
     heterogeneity_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None, repr=False)
     design2_effects: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    path_effects: Optional[Dict[Tuple[int, ...], Dict[str, Any]]] = field(default=None, repr=False)
     honest_did_results: Optional["HonestDiDResults"] = field(default=None, repr=False)
 
     # --- Repr-suppressed metadata ---
@@ -849,6 +857,7 @@ class ChaisemartinDHaultfoeuilleResults:
         self._render_linear_trends_section(lines, width, thin, header_row)
         self._render_heterogeneity_section(lines, width, thin)
         self._render_design2_section(lines, width, thin)
+        self._render_path_effects_section(lines, width, thin, header_row)
         self._render_honest_did_section(lines, width, thin)
 
         # --- TWFE diagnostic ---
@@ -1001,6 +1010,64 @@ class ChaisemartinDHaultfoeuilleResults:
             ]
         )
 
+    def _render_path_effects_section(
+        self, lines: List[str], width: int, thin: str, header_row: str
+    ) -> None:
+        # Distinguish "by_path not requested" (None) from "requested but
+        # empty" ({}). On empty, render a notice so the user sees the
+        # feature was active but produced no rows.
+        if self.path_effects is None:
+            return
+        if not self.path_effects:
+            lines.extend(
+                [
+                    thin,
+                    "Treatment-Path Disaggregation (by_path)".center(width),
+                    thin,
+                    "  No observed paths have a complete [F_g-1, F_g-1+L_max] window.",
+                    "  (See UserWarning emitted at fit(); by_path was a no-op " "on this panel.)",
+                    thin,
+                    "",
+                ]
+            )
+            return
+        lines.extend(
+            [
+                thin,
+                "Treatment-Path Disaggregation (by_path)".center(width),
+                thin,
+            ]
+        )
+        for path in sorted(
+            self.path_effects.keys(),
+            key=lambda p: self.path_effects[p]["frequency_rank"],
+        ):
+            entry = self.path_effects[path]
+            rank = entry["frequency_rank"]
+            n_groups = entry["n_groups"]
+            path_label = f"Path {path}"
+            lines.extend(
+                [
+                    f"  Rank #{rank}: {path_label}  (n_groups={n_groups})",
+                    header_row,
+                    thin,
+                ]
+            )
+            horizons = entry.get("horizons", {})
+            for l_h in sorted(horizons.keys()):
+                h = horizons[l_h]
+                lines.append(
+                    _format_inference_row(
+                        f"  l={l_h}",
+                        h["effect"],
+                        h["se"],
+                        h["t_stat"],
+                        h["p_value"],
+                    )
+                )
+            lines.extend([thin])
+        lines.extend([""])
+
     def _render_honest_did_section(self, lines: List[str], width: int, thin: str) -> None:
         if self.honest_did_results is None:
             return
@@ -1071,6 +1138,11 @@ class ChaisemartinDHaultfoeuilleResults:
               Available when ``trends_linear=True``.
             - ``"design2"``: Design-2 switch-in/switch-out descriptive
               summary. Available when ``design2=True``.
+            - ``"by_path"``: one row per (path, horizon) when
+              ``by_path=k`` was passed to the estimator. Columns include
+              ``path``, ``frequency_rank``, ``n_groups``, ``horizon``,
+              ``effect``, ``se``, ``t_stat``, ``p_value``,
+              ``conf_int_lower``, ``conf_int_upper``, ``n_obs``.
 
         Returns
         -------
@@ -1304,11 +1376,65 @@ class ChaisemartinDHaultfoeuilleResults:
                 )
             return pd.DataFrame([self.design2_effects])
 
+        elif level == "by_path":
+            # Distinguish "not requested" from "requested but empty" so the
+            # caller who passed by_path=k isn't told to "pass by_path=k".
+            # Mirrors the linear_trends pattern above.
+            if self.path_effects is None:
+                raise ValueError(
+                    "Path effects not available. Pass by_path=k (positive int) "
+                    "to ChaisemartinDHaultfoeuille(drop_larger_lower=False, "
+                    "by_path=k) and L_max >= 1 to fit()."
+                )
+            if not self.path_effects:
+                return pd.DataFrame(
+                    columns=[
+                        "path",
+                        "frequency_rank",
+                        "n_groups",
+                        "horizon",
+                        "effect",
+                        "se",
+                        "t_stat",
+                        "p_value",
+                        "conf_int_lower",
+                        "conf_int_upper",
+                        "n_obs",
+                    ]
+                )
+            rows = []
+            for path in sorted(
+                self.path_effects.keys(),
+                key=lambda p: self.path_effects[p]["frequency_rank"],
+            ):
+                entry = self.path_effects[path]
+                rank = entry["frequency_rank"]
+                n_groups = entry["n_groups"]
+                horizons = entry.get("horizons", {})
+                for l_h in sorted(horizons.keys()):
+                    h_entry = horizons[l_h]
+                    rows.append(
+                        {
+                            "path": path,
+                            "frequency_rank": rank,
+                            "n_groups": n_groups,
+                            "horizon": l_h,
+                            "effect": h_entry["effect"],
+                            "se": h_entry["se"],
+                            "t_stat": h_entry["t_stat"],
+                            "p_value": h_entry["p_value"],
+                            "conf_int_lower": h_entry["conf_int"][0],
+                            "conf_int_upper": h_entry["conf_int"][1],
+                            "n_obs": h_entry["n_obs"],
+                        }
+                    )
+            return pd.DataFrame(rows)
+
         else:
             raise ValueError(
                 f"Unknown level: {level!r}. Use 'overall', 'joiners_leavers', "
                 f"'per_period', 'event_study', 'normalized', 'twfe_weights', "
-                f"'heterogeneity', 'linear_trends', or 'design2'."
+                f"'heterogeneity', 'linear_trends', 'design2', or 'by_path'."
             )
 
 

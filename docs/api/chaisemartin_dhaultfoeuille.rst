@@ -14,8 +14,9 @@ estimator ``DID^n_l``, cost-benefit aggregate ``delta``, dynamic placebos
 covariate adjustment (``controls``); group-specific linear trends
 (``trends_linear``); state-set-specific trends (``trends_nonparam``);
 heterogeneity testing; non-binary treatment; HonestDiD sensitivity
-integration on placebos; and survey support via Taylor-series linearization
-(pweight + strata/PSU/FPC).
+integration on placebos; survey support via Taylor-series linearization
+(pweight + strata/PSU/FPC); and per-path event-study disaggregation via
+``by_path=k`` (mirrors R ``did_multiplegt_dyn(..., by_path=k)``).
 
 The estimator:
 

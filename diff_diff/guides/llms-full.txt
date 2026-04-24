@@ -242,6 +242,7 @@ ChaisemartinDHaultfoeuille(
     placebo: bool = True,                        # Auto-compute single-lag placebo
     twfe_diagnostic: bool = True,                # Auto-compute Theorem 1 TWFE decomposition
     drop_larger_lower: bool = True,              # Drop multi-switch groups (matches R DIDmultiplegtDYN)
+    by_path: int | None = None,                  # Top-k per-path event study; requires drop_larger_lower=False, L_max>=1
     rank_deficient_action: str = "warn",         # Used by TWFE diagnostic OLS
 )
 ```
