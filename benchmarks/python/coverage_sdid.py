@@ -301,24 +301,31 @@ def _summarize(
     ses: np.ndarray,
     p_values: np.ndarray,
 ) -> Dict[str, Any]:
-    """Reduce per-seed (att, se, p_value) arrays to summary stats."""
+    """Reduce per-seed (att, se, p_value) arrays to summary stats.
+
+    Unsupported / all-failed cells serialize as ``null`` rather than
+    ``float('nan')`` so the output is strict JSON (PR #355 R11 P3).
+    """
     finite = np.isfinite(atts) & np.isfinite(ses) & np.isfinite(p_values)
     n_successful = int(finite.sum())
     if n_successful == 0:
         return {
             "n_successful_fits": 0,
-            "rejection_rate": {f"{a:.2f}": float("nan") for a in ALPHAS},
-            "mean_se": float("nan"),
-            "true_sd_tau_hat": float("nan"),
-            "se_over_truesd": float("nan"),
+            "rejection_rate": {f"{a:.2f}": None for a in ALPHAS},
+            "mean_se": None,
+            "true_sd_tau_hat": None,
+            "se_over_truesd": None,
         }
     atts_f = atts[finite]
     ses_f = ses[finite]
     ps_f = p_values[finite]
     rejection = {f"{a:.2f}": float(np.mean(ps_f < a)) for a in ALPHAS}
     mean_se = float(ses_f.mean())
-    true_sd = float(atts_f.std(ddof=1)) if n_successful > 1 else float("nan")
-    ratio = float(mean_se / true_sd) if np.isfinite(true_sd) and true_sd > 0 else float("nan")
+    true_sd = float(atts_f.std(ddof=1)) if n_successful > 1 else None
+    if true_sd is not None and np.isfinite(true_sd) and true_sd > 0:
+        ratio: Optional[float] = float(mean_se / true_sd)
+    else:
+        ratio = None
     return {
         "n_successful_fits": n_successful,
         "rejection_rate": rejection,
@@ -473,7 +480,12 @@ def main() -> None:
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
-        json.dump(output, f, indent=2)
+        # ``allow_nan=False`` so any stray float('nan') / inf fails loudly
+        # instead of serializing as bare ``NaN`` / ``Infinity`` tokens
+        # (non-strict JSON that strict parsers reject; PR #355 R11 P3).
+        # ``_summarize`` returns ``None`` for unsupported / all-failed
+        # cells precisely so this gate doesn't trip.
+        json.dump(output, f, indent=2, allow_nan=False)
     print(f"\nWrote {out_path} ({out_path.stat().st_size / 1024:.1f} KB)", flush=True)
 
 

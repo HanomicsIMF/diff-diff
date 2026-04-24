@@ -136,13 +136,13 @@
       "placebo": {
         "n_successful_fits": 0,
         "rejection_rate": {
-          "0.01": NaN,
-          "0.05": NaN,
-          "0.10": NaN
+          "0.01": null,
+          "0.05": null,
+          "0.10": null
         },
-        "mean_se": NaN,
-        "true_sd_tau_hat": NaN,
-        "se_over_truesd": NaN
+        "mean_se": null,
+        "true_sd_tau_hat": null,
+        "se_over_truesd": null
       },
       "bootstrap": {
         "n_successful_fits": 500,
@@ -158,13 +158,13 @@
       "jackknife": {
         "n_successful_fits": 0,
         "rejection_rate": {
-          "0.01": NaN,
-          "0.05": NaN,
-          "0.10": NaN
+          "0.01": null,
+          "0.05": null,
+          "0.10": null
         },
-        "mean_se": NaN,
-        "true_sd_tau_hat": NaN,
-        "se_over_truesd": NaN
+        "mean_se": null,
+        "true_sd_tau_hat": null,
+        "se_over_truesd": null
       },
       "_elapsed_sec": 33.17
     }
