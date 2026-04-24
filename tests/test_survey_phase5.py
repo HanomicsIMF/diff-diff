@@ -238,23 +238,27 @@ class TestSyntheticDiDSurvey:
         assert "Survey Design" in summary
 
     def test_full_design_jackknife_succeeds(
-        self, sdid_survey_data, survey_design_full
+        self, sdid_survey_data_jk_well_formed
     ):
         """Jackknife variance with full design now succeeds (restored capability).
 
         PSU-level LOO with stratum aggregation (Rust & Rao 1996):
-        SE² = Σ_h (1-f_h)·(n_h-1)/n_h·Σ_{j∈h}(τ̂_{(h,j)} - τ̄_h)². See
-        REGISTRY §SyntheticDiD "Note (survey + jackknife composition)".
+        SE² = Σ_h (1-f_h)·(n_h-1)/n_h·Σ_{j∈h}(τ̂_{(h,j)} - τ̄_h)². Uses
+        the well-formed jackknife fixture so every PSU-LOO in every
+        contributing stratum is defined (treated units spread across two
+        PSUs). See REGISTRY §SyntheticDiD "Note (survey + jackknife
+        composition)".
         """
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
         est = SyntheticDiD(variance_method="jackknife", seed=42)
         result = est.fit(
-            sdid_survey_data,
+            sdid_survey_data_jk_well_formed,
             outcome="outcome",
             treatment="treated",
             unit="unit",
             time="time",
             post_periods=[6, 7, 8, 9],
-            survey_design=survey_design_full,
+            survey_design=sd,
         )
         assert np.isfinite(result.att)
         assert np.isfinite(result.se)
@@ -637,6 +641,77 @@ def sdid_survey_design_full():
     return SurveyDesign(weights="weight", strata="stratum", psu="psu")
 
 
+@pytest.fixture
+def sdid_survey_data_jk_well_formed():
+    """30-unit panel where every jackknife PSU-LOO is defined.
+
+    The Rust & Rao (1996) stratified jackknife formula requires that
+    every LOO within a contributing stratum produce a defined
+    ``τ̂_{(h,j)}``. In particular, **every PSU that contains treated
+    units must also leave enough treated units behind when dropped** —
+    otherwise the LOO removes all treated and the SDID estimator is
+    undefined. The "treated all in one PSU" fixture used for the placebo
+    tests triggers this by design; this fixture distributes the 5
+    treated units across **two PSUs within stratum 0** so that LOO of
+    any treated-containing PSU still leaves ≥1 treated unit.
+
+    Layout:
+        stratum 0 (13 units):
+            PSU 0: treated units 0, 1  + control units 5, 6
+            PSU 1: treated units 2, 3, 4 + control units 7, 8
+            PSU 2: control units 9, 10, 11, 12
+        stratum 1 (17 units):
+            PSU 3: control units 13-17
+            PSU 4: control units 18-22
+            PSU 5: control units 23-29
+    """
+    np.random.seed(7)
+    n_units = 30
+    n_periods = 10
+    # Treated at unit IDs 0-4.
+    treated_ids = {0, 1, 2, 3, 4}
+
+    units = list(range(n_units))
+    periods = list(range(n_periods))
+
+    rows = []
+    for u in units:
+        is_treated = 1 if u in treated_ids else 0
+        base = np.random.randn() * 2
+        for t in periods:
+            y = base + 0.5 * t + np.random.randn() * 0.5
+            if is_treated and t >= 6:
+                y += 2.0
+            rows.append({"unit": u, "time": t, "outcome": y, "treated": is_treated})
+
+    data = pd.DataFrame(rows)
+
+    unit_weight = 1.0 + np.arange(n_units) * 0.05
+    # Stratum: units 0-12 → 0, units 13-29 → 1
+    unit_stratum = np.array([0] * 13 + [1] * 17)
+    # PSU layout (12 stratum-0 units spread across PSU 0/1/2; 17
+    # stratum-1 units across PSU 3/4/5). Treated units 0-4 straddle
+    # PSU 0 (units 0-1) and PSU 1 (units 2-4).
+    unit_psu = np.zeros(n_units, dtype=int)
+    unit_psu[0:2] = 0   # PSU 0: treated 0, 1
+    unit_psu[2:5] = 1   # PSU 1: treated 2, 3, 4
+    unit_psu[5:7] = 0   # PSU 0: control 5, 6
+    unit_psu[7:9] = 1   # PSU 1: control 7, 8
+    unit_psu[9:13] = 2  # PSU 2: control 9-12
+    unit_psu[13:18] = 3  # PSU 3: control 13-17
+    unit_psu[18:23] = 4  # PSU 4: control 18-22
+    unit_psu[23:30] = 5  # PSU 5: control 23-29
+
+    unit_map = {u: i for i, u in enumerate(units)}
+    idx = data["unit"].map(unit_map).values
+
+    data["weight"] = unit_weight[idx]
+    data["stratum"] = unit_stratum[idx]
+    data["psu"] = unit_psu[idx]
+
+    return data
+
+
 class TestSDIDSurveyPlaceboFullDesign:
     """Stratified-permutation placebo allocator under strata/PSU/FPC (this PR).
 
@@ -833,43 +908,60 @@ class TestSDIDSurveyJackknifeFullDesign:
     "Note (survey + jackknife composition)".
     """
 
-    def test_jackknife_full_design_stratum_aggregation_self_consistency(
-        self, sdid_survey_data_full_design, sdid_survey_design_full
+    def test_jackknife_full_design_stratum_aggregation_formula_magnitude(
+        self, sdid_survey_data_jk_well_formed
     ):
-        """SE² matches the per-stratum formula on the returned LOO estimates.
+        """SE² matches the Rust & Rao stratum-aggregation formula exactly.
 
-        Independently recomputes SE from the returned tau_loo_all + the
-        stratum-aggregation formula; asserts rtol=1e-12 match. Catches
-        off-by-one in (n_h-1)/n_h, wrong tau_bar_h, or missing (1-f_h).
+        Independently recomputes SE from the returned tau_loo_all array
+        using ``Σ_h (1-f_h)·(n_h-1)/n_h·Σ_{j∈h}(τ̂_{(h,j)} - τ̄_h)²``; asserts
+        rtol=1e-12 match. Catches off-by-one in (n_h-1)/n_h, wrong
+        tau_bar_h, or missing (1-f_h). Uses the well-formed fixture so
+        every PSU-LOO is defined (6 strata-level replicates total).
         """
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
         est = SyntheticDiD(variance_method="jackknife", seed=42)
         result = est.fit(
-            sdid_survey_data_full_design,
+            sdid_survey_data_jk_well_formed,
             outcome="outcome",
             treatment="treated",
             unit="unit",
             time="time",
             post_periods=[6, 7, 8, 9],
-            survey_design=sdid_survey_design_full,
+            survey_design=sd,
         )
-        # Expected: stratum 0 has PSU 0 (treated, degenerate LOO), PSUs 1+2
-        # (LOO proceeds). Stratum 1 has PSUs 3+4+5 (all LOO proceeds).
-        # So: n_h=3 for both strata; stratum 0 contributes 2 LOOs, stratum 1
-        # contributes 3 LOOs. total 5 LOO estimates.
-        assert result.se > 0
         assert np.isfinite(result.se)
+        assert result.se > 0
+        # Fixture structure: stratum 0 has PSUs {0, 1, 2} (n_h=3), stratum 1
+        # has PSUs {3, 4, 5} (n_h=3). No FPC → f_h=0 for both. Every
+        # PSU-LOO is well-defined, so tau_loo_all has 3 + 3 = 6 entries
+        # ordered as [s0 PSU 0, s0 PSU 1, s0 PSU 2, s1 PSU 3, s1 PSU 4, s1 PSU 5].
+        taus = np.asarray(result.placebo_effects, dtype=float)
+        assert len(taus) == 6
+        # Apply the Rust & Rao formula by hand. Y_scale rescaling is
+        # applied uniformly to tau_loo_all inside fit(), so the formula
+        # holds on the rescaled values.
+        s0 = taus[:3]
+        s1 = taus[3:6]
+        n_h = 3
+        factor = (n_h - 1) / n_h  # f_h = 0 → (1 - f_h) = 1
+        ss0 = np.sum((s0 - s0.mean()) ** 2)
+        ss1 = np.sum((s1 - s1.mean()) ** 2)
+        expected_se = np.sqrt(factor * (ss0 + ss1))
+        assert result.se == pytest.approx(expected_se, rel=1e-12)
 
     def test_jackknife_full_design_fpc_reduces_se_magnitude(
-        self, sdid_survey_data_full_design
+        self, sdid_survey_data_jk_well_formed
     ):
         """With FPC, SE is reduced by the (1-f_h) multiplier per stratum.
 
         Two fits: one without FPC (f_h=0 so (1-f_h)=1); one with FPC set
         to a population count such that f_h = n_h/fpc = 3/6 = 0.5.
         Expected: SE_fpc = SE_nofpc * sqrt(1-0.5) = SE_nofpc / sqrt(2).
+        Uses the well-formed fixture so every LOO is defined.
         """
-        df_no_fpc = sdid_survey_data_full_design
-        df_fpc = sdid_survey_data_full_design.copy()
+        df_no_fpc = sdid_survey_data_jk_well_formed
+        df_fpc = sdid_survey_data_jk_well_formed.copy()
         df_fpc["fpc_col"] = 6.0  # n_h=3 per stratum, f_h = 3/6 = 0.5
 
         sd_no_fpc = SurveyDesign(weights="weight", strata="stratum", psu="psu")
@@ -903,7 +995,7 @@ class TestSDIDSurveyJackknifeFullDesign:
         )
 
     def test_jackknife_full_design_se_differs_from_pweight_only(
-        self, sdid_survey_data_full_design
+        self, sdid_survey_data_jk_well_formed
     ):
         """Full-design jackknife SE differs from pweight-only jackknife SE.
 
@@ -916,7 +1008,7 @@ class TestSDIDSurveyJackknifeFullDesign:
 
         est_pw = SyntheticDiD(variance_method="jackknife", seed=42)
         result_pw = est_pw.fit(
-            sdid_survey_data_full_design,
+            sdid_survey_data_jk_well_formed,
             outcome="outcome",
             treatment="treated",
             unit="unit",
@@ -926,7 +1018,7 @@ class TestSDIDSurveyJackknifeFullDesign:
         )
         est_full = SyntheticDiD(variance_method="jackknife", seed=42)
         result_full = est_full.fit(
-            sdid_survey_data_full_design,
+            sdid_survey_data_jk_well_formed,
             outcome="outcome",
             treatment="treated",
             unit="unit",
@@ -936,6 +1028,65 @@ class TestSDIDSurveyJackknifeFullDesign:
         )
         assert result_pw.att == pytest.approx(result_full.att, abs=1e-10)
         assert result_pw.se != pytest.approx(result_full.se, abs=1e-6)
+
+    def test_get_loo_effects_df_raises_on_survey_jackknife(
+        self, sdid_survey_data_jk_well_formed
+    ):
+        """R1 P1 fix: get_loo_effects_df is unit-level only — block on survey
+        jackknife (which returns PSU-level replicates).
+
+        Mixing PSU-level LOO estimates with the stored unit-level
+        metadata would mislabel replicates as unit effects. Raises
+        NotImplementedError with a pointer to the PSU-level aggregation
+        formula in REGISTRY.
+        """
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = SyntheticDiD(variance_method="jackknife", seed=42)
+        result = est.fit(
+            sdid_survey_data_jk_well_formed,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd,
+        )
+        with pytest.raises(
+            NotImplementedError,
+            match=r"unit-level-LOO only.*PSU-level LOO with stratum aggregation",
+        ):
+            result.get_loo_effects_df()
+
+    def test_jackknife_full_design_undefined_replicate_returns_nan(
+        self, sdid_survey_data_full_design
+    ):
+        """R1 P0 fix: if any LOO in a contributing stratum is undefined,
+        the stratified Rust & Rao formula does not apply and SE is NaN.
+
+        ``sdid_survey_data_full_design`` has all treated units in stratum
+        0 PSU 0. LOO of PSU 0 removes all treated and the SDID estimator
+        τ̂_{(0,0)} is undefined. The old code silently skipped this LOO
+        while still applying the full ``(n_h-1)/n_h = 2/3`` factor,
+        under-scaling variance (silently wrong SE). The new code returns
+        NaN + a targeted UserWarning instead.
+        """
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = SyntheticDiD(variance_method="jackknife", seed=42)
+        with pytest.warns(
+            UserWarning,
+            match=r"delete-one replicate for stratum 0 PSU 0 is not "
+            r"computable.*deletion removes all treated units",
+        ):
+            result = est.fit(
+                sdid_survey_data_full_design,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd,
+            )
+        assert np.isnan(result.se)
 
     def test_jackknife_full_design_single_psu_stratum_skipped(
         self, sdid_survey_data_full_design

@@ -1133,6 +1133,29 @@ class SyntheticDiDResults:
                 "Re-fit with SyntheticDiD(variance_method='jackknife') to "
                 "obtain per-unit leave-one-out estimates."
             )
+        # Survey-jackknife fits use PSU-level LOO (Rust & Rao 1996) with
+        # stratum aggregation rather than unit-level LOO. The returned
+        # ``placebo_effects`` array in that path is a flat list of
+        # PSU-level τ̂_{(h,j)} replicates (variable length, ordered by
+        # stratum then PSU), not a length-N unit-indexed array. Mapping
+        # these onto the fit-time unit IDs would mislabel PSU replicates
+        # as unit effects. Block the accessor until a PSU-level
+        # metadata accessor is exposed.
+        if (
+            self.survey_metadata is not None
+            and getattr(self.survey_metadata, "n_psu", None) is not None
+        ):
+            raise NotImplementedError(
+                "get_loo_effects_df() is unit-level-LOO only. This fit used "
+                "survey jackknife (PSU-level LOO with stratum aggregation, "
+                "Rust & Rao 1996); the underlying replicates are PSU-level, "
+                "not unit-level, so joining them back to fit-time unit IDs "
+                "is not well-defined. See ``result.placebo_effects`` for "
+                "the raw PSU-level replicate array and "
+                "``docs/methodology/REGISTRY.md`` §SyntheticDiD \"Note "
+                "(survey + jackknife composition)\" for the aggregation "
+                "formula."
+            )
         if self._loo_unit_ids is None or self._loo_roles is None or self.placebo_effects is None:
             raise ValueError(
                 "Leave-one-out estimates are unavailable (jackknife returned "

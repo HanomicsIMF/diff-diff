@@ -2179,6 +2179,18 @@ class SyntheticDiD(DifferenceInDifferences):
         total_variance = 0.0
         tau_loo_all: List[float] = []
         any_stratum_contributed = False
+        # Undefined-replicate tracking (PR #365 R1 P0 fix). The Rust & Rao
+        # (1996) formula assumes every sampled PSU within a contributing
+        # stratum has a defined delete-one replicate `τ̂_{(h,j)}`. If any
+        # LOO within a contributing stratum (n_h ≥ 2) is undefined — e.g.,
+        # all treated units are in that PSU, or the kept ω_eff mass is
+        # zero, or the SDID estimator raises — the stratified SE formula
+        # does not apply and the overall SE is undefined. Return NaN
+        # rather than silently skipping the missing replicate while still
+        # applying the full (n_h-1)/n_h factor (which would underscale).
+        undefined_replicate_stratum: Optional[Any] = None
+        undefined_replicate_psu: Optional[Any] = None
+        undefined_replicate_reason: str = ""
 
         for h in unique_strata_all:
             # PSUs in stratum h (across both arms)
@@ -2191,7 +2203,10 @@ class SyntheticDiD(DifferenceInDifferences):
             )
             n_h = len(psus_in_h)
             if n_h < 2:
-                continue  # unidentified stratum-level variance; skip
+                # Stratum contributes 0 DoF; silent skip matches R
+                # `survey::svyjkn`'s lonely-PSU handling and is documented
+                # in the Rust & Rao (1996) stratified jackknife Note.
+                continue
 
             # Per-stratum FPC. ``fpc_*`` arrays are stratum-constant by
             # SurveyDesign.resolve (survey.py L343-L347). Read from either
@@ -2206,33 +2221,64 @@ class SyntheticDiD(DifferenceInDifferences):
                 f_h = 0.0
 
             tau_loo_h: List[float] = []
+            stratum_has_undefined_replicate = False
             for j in psus_in_h:
                 # Mask: kept units across both arms
                 control_kept_mask = psu_control_eff != j
                 treated_kept_mask = psu_treated_eff != j
 
-                # If this PSU contains no units in either arm, skip
-                # (shouldn't happen given we enumerated from observed
-                # PSUs, but defensive).
+                # If this PSU contains no units in either arm, it cannot
+                # produce a meaningful LOO (and should not have been
+                # enumerated); treat as undefined for defensive consistency.
                 if control_kept_mask.all() and treated_kept_mask.all():
-                    continue
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "PSU contains no units in either arm"
+                    )
+                    break
 
-                # All treated removed → degenerate LOO
+                # All treated removed → LOO yields an undefined SDID
+                # estimator (no treated mean to compare). The Rust & Rao
+                # formula expects τ̂_{(h,j)} defined for every j; skipping
+                # this PSU while keeping the (n_h-1)/n_h factor would
+                # underscale variance (R1 P0).
                 if not treated_kept_mask.any():
-                    continue
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "deletion removes all treated units (no treated "
+                        "mean for the LOO SDID estimator)"
+                    )
+                    break
 
                 # Control ω composition on kept controls
                 omega_kept = unit_weights[control_kept_mask]
                 w_control_kept = w_control[control_kept_mask]
                 omega_eff_kept = omega_kept * w_control_kept
                 if omega_eff_kept.sum() <= 0:
-                    continue  # degenerate LOO
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "kept omega_eff mass is zero (all remaining "
+                        "controls have zero fit-time or survey weight)"
+                    )
+                    break
                 omega_eff_kept = omega_eff_kept / omega_eff_kept.sum()
 
                 # Treated mean on kept treated units (survey-weighted)
                 w_treated_kept = w_treated[treated_kept_mask]
                 if w_treated_kept.sum() <= 0:
-                    continue
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "kept treated survey mass is zero"
+                    )
+                    break
                 Y_pre_t_mean = np.average(
                     Y_pre_treated[:, treated_kept_mask],
                     axis=1,
@@ -2254,12 +2300,33 @@ class SyntheticDiD(DifferenceInDifferences):
                         time_weights,
                     )
                 except (ValueError, LinAlgError, ZeroDivisionError):
-                    continue
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "SDID estimator raised on the LOO panel"
+                    )
+                    break
 
-                if np.isfinite(tau_j):
-                    tau_loo_h.append(float(tau_j))
+                if not np.isfinite(tau_j):
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "SDID estimator returned non-finite τ̂"
+                    )
+                    break
+                tau_loo_h.append(float(tau_j))
 
-            if len(tau_loo_h) >= 2:
+            if stratum_has_undefined_replicate:
+                # Record the partial LOOs for the returned array (useful
+                # for debugging) but stop accumulating variance — the
+                # stratified Rust & Rao formula requires all n_h
+                # replicates.
+                tau_loo_all.extend(tau_loo_h)
+                break
+
+            if len(tau_loo_h) == n_h:
                 tau_bar_h = np.mean(tau_loo_h)
                 ss_h = float(
                     np.sum((np.asarray(tau_loo_h) - tau_bar_h) ** 2)
@@ -2269,13 +2336,36 @@ class SyntheticDiD(DifferenceInDifferences):
             tau_loo_all.extend(tau_loo_h)
 
         tau_loo_arr = np.asarray(tau_loo_all)
+        if undefined_replicate_stratum is not None:
+            # R1 P0 fix: Rust & Rao's stratified jackknife formula requires
+            # every LOO within a contributing stratum to be defined. When
+            # one is missing, the design is not covered by the formula and
+            # the SE is undefined; returning a finite value on the
+            # remaining replicates (still multiplied by (n_h-1)/n_h) would
+            # systematically under-scale variance.
+            warnings.warn(
+                "Jackknife survey SE is undefined: delete-one replicate "
+                f"for stratum {undefined_replicate_stratum} PSU "
+                f"{undefined_replicate_psu} is not computable "
+                f"({undefined_replicate_reason}). The stratified Rust & "
+                "Rao (1996) jackknife formula requires τ̂_{(h,j)} defined "
+                "for every j in every contributing stratum. Returning "
+                "SE=NaN. Consider variance_method='bootstrap' (supports "
+                "the same full design without a per-LOO feasibility "
+                "constraint) or rebalance the panel so every PSU has at "
+                "least one treated and one non-zero-mass control unit "
+                "after deletion.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return np.nan, tau_loo_arr
         if not any_stratum_contributed or total_variance <= 0.0:
             warnings.warn(
                 "Jackknife survey SE is undefined because every stratum "
                 "was skipped (insufficient PSUs per stratum for variance "
-                "contribution, or all LOOs degenerate). Returning SE=NaN. "
-                "Consider variance_method='bootstrap' (supports the same "
-                "full design) or rebalance the panel.",
+                "contribution). Returning SE=NaN. Consider "
+                "variance_method='bootstrap' (supports the same full "
+                "design) or rebalance the panel.",
                 UserWarning,
                 stacklevel=3,
             )
