@@ -2035,6 +2035,45 @@ class TestJointHomogeneityTest:
                 seed=0,
             )
 
+    def test_two_period_negative_post_dose_raises(self):
+        """R2 P1 regression: direct wrapper call on a 2-period panel
+        with a negative post dose must raise rather than silently
+        collapse to zero via ``groupby.max()`` and produce a finite
+        result. The 2-period path skips the event-study validator
+        (``n_periods < 3``) so the row-level non-negative guard must
+        live in ``_aggregate_for_joint_test`` itself."""
+        G = 20
+        rng = np.random.default_rng(601)
+        doses = rng.uniform(0.1, 1.0, size=G)
+        # Flip one unit's post dose to a negative value.
+        doses[0] = -0.3
+        rows = []
+        for g in range(G):
+            # pre-period
+            rows.append({"unit": g, "period": 0, "y": rng.normal(0, 0.1), "d": 0.0})
+            # post-period (with negative dose injected for unit 0)
+            rows.append(
+                {
+                    "unit": g,
+                    "period": 1,
+                    "y": rng.normal(0, 0.1) + 0.3 * doses[g],
+                    "d": float(doses[g]),
+                }
+            )
+        df = pd.DataFrame(rows)
+        with pytest.raises(ValueError, match="negative dose value"):
+            joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "period",
+                "unit",
+                post_periods=[1],
+                base_period=0,
+                n_bootstrap=199,
+                seed=0,
+            )
+
 
 class TestMultiPeriodWorkflow:
     """Tests for :func:`did_had_pretest_workflow` event-study dispatch."""

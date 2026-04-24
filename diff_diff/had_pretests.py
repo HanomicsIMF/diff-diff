@@ -1737,6 +1737,26 @@ def _aggregate_for_joint_test(
                 f"silently drop rows; drop or impute before calling."
             )
 
+    # Row-level non-negative-dose guard (paper Section 2 HAD support
+    # restriction `D_{g,t} >= 0`). Must run BEFORE the groupby/max()
+    # collapse below, otherwise a negative post dose would silently
+    # become 0 in the per-unit dose vector (since `max(0, -d) = 0` for
+    # positive d), letting the wrappers run on invalid data and
+    # potentially return finite results. This is the direct-wrapper
+    # equivalent of the row-level check inside
+    # `_validate_had_panel_event_study`, centralized so both
+    # `joint_pretrends_test` and `joint_homogeneity_test` inherit it on
+    # the `n_periods < 3` fallback path that skips the validator.
+    negative_dose_mask = subset[dose_col] < 0
+    if bool(negative_dose_mask.any()):
+        n_neg = int(negative_dose_mask.sum())
+        raise ValueError(
+            f"{n_neg} negative dose value(s) found in column "
+            f"{dose_col!r} across periods {needed_periods}. HAD support "
+            f"restriction (paper Section 2) requires D_{{g,t}} >= 0 "
+            f"for every (unit, period)."
+        )
+
     counts = subset.groupby(unit_col).size()
     n_needed = len(needed_periods)
     if (counts != n_needed).any():
