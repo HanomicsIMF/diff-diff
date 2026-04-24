@@ -176,25 +176,37 @@ class TestSyntheticDiDSurvey:
         assert sm.effective_n > 0
         assert sm.design_effect > 0
 
-    def test_full_design_bootstrap_raises(self, sdid_survey_data, survey_design_full):
-        """Full survey design (strata/PSU) with bootstrap raises NotImplementedError.
+    def test_full_design_bootstrap_succeeds(self, sdid_survey_data, survey_design_full):
+        """Full survey design (strata/PSU) with bootstrap succeeds (PR #352).
 
-        The previous fixed-weight bootstrap accepted strata/PSU/FPC via Rao-Wu
-        rescaling, but that path was not paper-faithful and was removed. Rao-Wu
-        composed with paper-faithful refit Frank-Wolfe requires a separate
-        derivation (tracked in TODO.md, sketched in REGISTRY.md §SyntheticDiD).
+        Restored capability: composes Rao-Wu rescaled weights with the
+        weighted-Frank-Wolfe variant per draw (see REGISTRY.md §SyntheticDiD
+        survey + bootstrap composition Note). Asserts:
+        - finite SE > 0
+        - survey_metadata populated with n_strata / n_psu
+        - result.summary() round-trips without error (cross-surface guard)
         """
         est = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=42)
-        with pytest.raises(NotImplementedError, match="does not yet support"):
-            est.fit(
-                sdid_survey_data,
-                outcome="outcome",
-                treatment="treated",
-                unit="unit",
-                time="time",
-                post_periods=[6, 7, 8, 9],
-                survey_design=survey_design_full,
-            )
+        result = est.fit(
+            sdid_survey_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=survey_design_full,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.se > 0
+        assert result.survey_metadata is not None
+        assert result.survey_metadata.n_strata is not None
+        assert result.survey_metadata.n_psu is not None
+        # summary() must render the bootstrap replications line and the
+        # survey design block without exception.
+        summary = result.summary()
+        assert "Survey Design" in summary
+        assert "Bootstrap replications" in summary
 
     def test_full_design_placebo_raises(self, sdid_survey_data, survey_design_full):
         """Placebo variance with full design raises NotImplementedError."""
@@ -231,14 +243,14 @@ class TestSyntheticDiDSurvey:
         columns are physically dropped from the input DataFrame.
 
         Point estimates depend only on the pseudo-population weights, not on
-        the strata/PSU structure — full-design bootstrap previously exploited
-        that structure via Rao-Wu rescaling and is now rejected upstream (see
-        ``test_full_design_bootstrap_raises`` /
-        ``test_full_design_placebo_raises``). A silent pickup of ``stratum``
-        or ``psu`` by the estimator (e.g., by name-matching a convention
-        column) would cause the two fits to diverge, so comparing a
-        DataFrame with those columns present against one with them dropped
-        is the real contract.
+        the strata/PSU structure. PR #352 restored bootstrap support for
+        strata/PSU (which inflates SE via Rao-Wu clustering) but the
+        placebo / jackknife methods still depend only on per-unit pweight
+        for the point estimate. A silent pickup of ``stratum`` or ``psu``
+        by the estimator (e.g., by name-matching a convention column)
+        would cause the two fits to diverge, so comparing a DataFrame with
+        those columns present against one with them dropped is the real
+        contract.
         """
         sd_pweight_only = SurveyDesign(weights="weight")
         est = SyntheticDiD(variance_method="placebo", n_bootstrap=100, seed=42)
@@ -323,28 +335,74 @@ class TestSyntheticDiDSurvey:
         assert "Survey Design" in summary
         assert "pweight" in summary
 
-    def test_bootstrap_with_pweight_only_raises(
+    def test_bootstrap_with_pweight_only_succeeds(
         self, sdid_survey_data, survey_design_weights
     ):
-        """variance_method='bootstrap' with any survey design raises NotImplementedError.
+        """variance_method='bootstrap' with pweight-only survey succeeds (PR #352).
 
-        Paper-faithful refit bootstrap re-estimates ω̂ and λ̂ via Frank-Wolfe on
-        each draw; composing that with Rao-Wu rescaled weights (or even a
-        pweight composition in a weighted FW loss) requires a separate
-        derivation. Pweight-only survey users must use
-        ``variance_method='placebo'`` or ``'jackknife'``.
+        Restored capability: the bootstrap loop dispatches to the
+        weighted-FW variant per draw with constant ``rw = w_control``
+        (no Rao-Wu rescaling — pweight-only). Cross-surface guard: the
+        result still labels itself as bootstrap (variance_method allow-list
+        in results.py / business_report.py).
         """
         est = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=42)
-        with pytest.raises(NotImplementedError, match="does not yet support"):
-            est.fit(
-                sdid_survey_data,
-                outcome="outcome",
-                treatment="treated",
-                unit="unit",
-                time="time",
-                post_periods=[6, 7, 8, 9],
-                survey_design=survey_design_weights,
-            )
+        result = est.fit(
+            sdid_survey_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=survey_design_weights,
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.se > 0
+        assert result.variance_method == "bootstrap"
+
+    def test_bootstrap_full_design_se_differs_from_pweight_only(
+        self, sdid_survey_data
+    ):
+        """Full-design bootstrap SE differs from pweight-only bootstrap SE.
+
+        Resurrects the test_full_design_se_differs_from_weights_only
+        contract that PR #351 deleted (R3 cleanup). With Rao-Wu rescaling
+        (full design), per-draw weights are clustered by PSU within
+        strata, inflating the bootstrap variance vs the pweight-only path
+        which uses constant per-control weights. ATT point estimates
+        match (both compose ω_eff = ω·w_control / Σ post-fit) but SEs
+        diverge — that's the methodology contract.
+        """
+        sd_pweight = SurveyDesign(weights="weight")
+        sd_full = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+
+        est_pw = SyntheticDiD(variance_method="bootstrap", n_bootstrap=100, seed=42)
+        result_pw = est_pw.fit(
+            sdid_survey_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_pweight,
+        )
+        est_full = SyntheticDiD(variance_method="bootstrap", n_bootstrap=100, seed=42)
+        result_full = est_full.fit(
+            sdid_survey_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_full,
+        )
+        # ATT point estimates match (same w_control, same post-fit
+        # composition). Tolerance loose because the bootstrap path
+        # re-estimates ω̂_b under different weighted objectives.
+        assert result_pw.att == pytest.approx(result_full.att, abs=1e-10)
+        # SEs differ — Rao-Wu adds PSU clustering variance.
+        assert result_pw.se != pytest.approx(result_full.se, abs=1e-6)
 
     def test_jackknife_with_pweight_only(self, sdid_survey_data, survey_design_weights):
         """variance_method='jackknife' completes with pweight-only survey weights.

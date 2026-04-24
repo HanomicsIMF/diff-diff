@@ -1058,7 +1058,12 @@ def _extract_unit_survey_weights(data, unit_col, survey_design, unit_order):
     unit_col : str
         Unit identifier column name.
     survey_design : SurveyDesign
-        Survey design (uses ``weights`` column name).
+        Survey design. When ``survey_design.weights`` is a column name,
+        the weights are pulled from ``data``. When ``survey_design.weights
+        is None`` (a valid configuration — ``SurveyDesign.resolve()`` then
+        synthesizes ones), returns a vector of ones of length
+        ``len(unit_order)`` so downstream estimators can treat all units
+        as having unit survey weight 1.
     unit_order : array-like
         Ordered sequence of unit identifiers to align weights to.
 
@@ -1067,6 +1072,14 @@ def _extract_unit_survey_weights(data, unit_col, survey_design, unit_order):
     np.ndarray
         Float64 array of unit-level weights, one per unit in ``unit_order``.
     """
+    if survey_design.weights is None:
+        # SurveyDesign(weights=None, strata=..., psu=...) is a valid
+        # configuration — the design element supplies clustering /
+        # stratification without explicit per-unit weights. Synthesize
+        # uniform unit weights of 1 to match SurveyDesign.resolve()'s
+        # behavior (which emits ones when weights is None). Without this
+        # branch the groupby below would raise a KeyError on ``None``.
+        return np.ones(len(unit_order), dtype=np.float64)
     unit_w = data.groupby(unit_col)[survey_design.weights].first()
     return np.array([unit_w[u] for u in unit_order], dtype=np.float64)
 

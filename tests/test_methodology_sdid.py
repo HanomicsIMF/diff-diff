@@ -595,45 +595,59 @@ class TestBootstrapSE:
             f"{r_placebo.se:.6f} on exchangeable DGP (rel diff {rel_diff:.4f})"
         )
 
-    def test_bootstrap_raises_on_pweight_survey(self):
-        """Survey + bootstrap raises NotImplementedError (pweight-only path).
+    def test_bootstrap_succeeds_on_pweight_survey(self):
+        """Survey + bootstrap succeeds (pweight-only) (PR #352).
 
-        Rao-Wu rescaled weights composed with paper-faithful Frank-Wolfe
-        re-estimation is a separate derivation that is not yet implemented;
-        the guard lives upstream in ``fit()`` before the bootstrap dispatcher.
+        The weighted-FW path treats per-control survey weights as
+        constant per draw (no Rao-Wu rescaling, since no PSU). ATT is
+        finite, SE is positive, variance_method is preserved.
         """
         from diff_diff.survey import SurveyDesign
         df = _make_panel(n_control=20, n_treated=3, seed=42)
         df["wt"] = 1.0
-        with pytest.raises(NotImplementedError, match="bootstrap"):
-            SyntheticDiD(
-                variance_method="bootstrap", n_bootstrap=50, seed=1
-            ).fit(
-                df, outcome="outcome", treatment="treated",
-                unit="unit", time="period",
-                post_periods=[5, 6, 7],
-                survey_design=SurveyDesign(weights="wt"),
-            )
+        result = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt"),
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.se > 0
+        assert result.variance_method == "bootstrap"
 
-    def test_bootstrap_raises_on_full_design_survey(self):
-        """Survey + bootstrap with strata/PSU raises NotImplementedError.
+    def test_bootstrap_succeeds_on_full_design_survey(self):
+        """Survey + bootstrap with strata/PSU succeeds via Rao-Wu (PR #352).
 
-        No SDID variance method currently supports strata/PSU/FPC; the guard
-        on line ~300 of ``fit()`` rejects the combination unconditionally.
+        Composes per-draw Rao-Wu rescaled weights with the weighted-FW
+        helpers (compute_sdid_unit_weights_survey /
+        compute_time_weights_survey). Asserts finite SE and survey_metadata
+        records the strata/PSU layout.
         """
         from diff_diff.survey import SurveyDesign
         df = _make_panel(n_control=20, n_treated=3, seed=42)
         df["wt"] = 1.0
         df["stratum"] = df["unit"] % 2
-        with pytest.raises(NotImplementedError, match="strata"):
-            SyntheticDiD(
-                variance_method="bootstrap", n_bootstrap=50, seed=1
-            ).fit(
-                df, outcome="outcome", treatment="treated",
-                unit="unit", time="period",
-                post_periods=[5, 6, 7],
-                survey_design=SurveyDesign(weights="wt", strata="stratum"),
-            )
+        # Globally unique PSU labels (avoids needing nest=True). Each unit
+        # gets its own PSU id; stratum partitions the PSUs into two groups.
+        df["psu"] = df["unit"]
+        result = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.se > 0
+        assert result.variance_method == "bootstrap"
+        assert result.survey_metadata is not None
+        assert result.survey_metadata.n_strata is not None
+        assert result.survey_metadata.n_psu is not None
 
     def test_bootstrap_summary_shows_replications(self, ci_params):
         """result.summary() shows "Bootstrap replications" line for bootstrap.
@@ -656,6 +670,475 @@ class TestBootstrapSE:
         summary = r.summary()
         assert "Bootstrap replications" in summary
         assert str(n_boot) in summary
+
+    def test_bootstrap_pweight_only_retries_zero_treated_mass_draws(self):
+        """Pweight-only bootstrap: zero-mass treated draws must be retried,
+        not silently fall back to an unweighted treated mean (PR #355 R2 P0).
+
+        Regression: prior to R2, when a bootstrap draw's treated units all
+        had survey weight 0 — reachable when at least one treated unit has
+        pweight 0 AND the resample picks only those units — the code fell
+        through to ``np.mean(Y_boot_pre_t, axis=1)``. That silently
+        dropped survey weighting on that draw while the fit-time ATT uses
+        the survey-weighted treated mean, corrupting the bootstrap
+        distribution used for SE/p-value/CI.
+
+        Fix: extend the degenerate-retry to any survey branch where
+        ``rw_treated_draw.sum() == 0``. This test constructs a panel
+        where one of three treated units has weight 0; bootstrap must
+        still produce a valid finite SE, and the draws that hit the
+        zero-mass condition are retried rather than getting a wrong τ.
+        """
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=25, n_treated=3, seed=42)
+        # Give one treated unit weight 0 and the other two weight 1.
+        # Control units get unit weights (any positive). Treated_idx 25,
+        # 26, 27; set 25 → weight 0, 26 and 27 → weight 1.
+        df["wt"] = 1.0
+        df.loc[df["unit"] == 25, "wt"] = 0.0
+        result = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=100, seed=1
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt"),
+        )
+        assert np.isfinite(result.att), f"att not finite: {result.att}"
+        assert np.isfinite(result.se), f"se not finite: {result.se}"
+        assert result.se > 0, f"se={result.se} must be positive"
+        # Cross-surface: the variance_method label should still be
+        # bootstrap and the bootstrap replications line should render.
+        assert result.variance_method == "bootstrap"
+
+    def test_bootstrap_full_design_without_explicit_weights(self):
+        """SurveyDesign(strata=..., psu=..., weights=None) fits successfully.
+
+        Regression for PR #355 R1 code-quality finding: `SurveyDesign` allows
+        `weights=None` (resolve() synthesizes unit weights of 1), but the
+        SDID helper `_extract_unit_survey_weights` used to index
+        `survey_design.weights` directly and would fail before bootstrap
+        could run. The helper now returns ones for this configuration.
+        """
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        df["stratum"] = df["unit"] % 2
+        df["psu"] = df["unit"]
+        result = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(strata="stratum", psu="psu"),  # weights=None
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.se > 0
+        assert result.variance_method == "bootstrap"
+        assert result.survey_metadata is not None
+        assert result.survey_metadata.n_strata is not None
+        assert result.survey_metadata.n_psu is not None
+
+    def test_bootstrap_full_design_rao_wu_boot_idx_slice(self, monkeypatch):
+        """Full-design bootstrap slices Rao-Wu weights by ``boot_idx``.
+
+        Documented in REGISTRY.md §SyntheticDiD ``Note (survey + bootstrap
+        composition)``: the hybrid path first performs unit-level pairs-
+        bootstrap (``boot_idx = rng.choice(n_total)``) and THEN slices
+        the Rao-Wu rescaled weights over the resampled units. Monkeypatch
+        ``generate_rao_wu_weights`` to return a known vector and capture
+        the ``rw_control`` fed into ``compute_sdid_unit_weights_survey``;
+        assert the captured vector matches the expected slice
+        ``known_rw[:n_control][boot_idx[boot_is_control]]``.
+
+        Regression against a subtle class of bug where either the slice
+        index arithmetic or the Rao-Wu call site could drift (e.g.,
+        someone refactors ``resolved_survey_unit`` indexing to skip the
+        boot_idx slicing, or the rw-then-slice order gets swapped to
+        slice-then-rw). Both would silently produce wrong bootstrap SE.
+        """
+        from diff_diff import utils as dd_utils
+        from diff_diff import synthetic_did as sdid_mod
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=15, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        df["stratum"] = df["unit"] % 2
+        df["psu"] = df["unit"]
+
+        # Known Rao-Wu weight vector. Length = n_total = 18; distinct
+        # values per unit so a slice of the first n_control=15 positions
+        # by boot_idx[boot_is_control] is identifiable.
+        n_total = 18
+        known_rw = np.arange(1, n_total + 1, dtype=np.float64)
+
+        def fake_rao_wu(resolved_survey, rng):
+            return known_rw.copy()
+
+        monkeypatch.setattr(sdid_mod, "generate_rao_wu_weights", fake_rao_wu)
+
+        captured: list = []
+
+        real_helper = dd_utils.compute_sdid_unit_weights_survey
+
+        def capturing_helper(Y_pre_c, Y_pre_t_mean, rw, *args, **kwargs):
+            captured.append(np.array(rw, copy=True))
+            return real_helper(Y_pre_c, Y_pre_t_mean, rw, *args, **kwargs)
+
+        monkeypatch.setattr(
+            sdid_mod, "compute_sdid_unit_weights_survey", capturing_helper
+        )
+
+        bootstrap_seed = 1
+        SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=10, seed=bootstrap_seed,
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
+        )
+
+        # Exact-equality check against a reproduced RNG stream (PR #355 R4
+        # P3). The captured rw vectors must match known_rw[:n_control]
+        # sliced by boot_idx[boot_is_control] value-for-value. Reproducing
+        # the bootstrap's rng externally works because:
+        #  - fake_rao_wu does NOT consume rng (just returns known_rw),
+        #    so the only per-draw rng advance is ``rng.choice(n_total, ...)``
+        #    which yields boot_idx;
+        #  - known_rw is strictly positive, so the zero-mass retry branch
+        #    (synthetic_did.py ``_bootstrap_se``) never fires;
+        #  - a 15/3 split makes the no-control and all-control retries
+        #    vanishingly rare.
+        # An exact-equality regression catches the sibling bugs the old
+        # range check missed: permuted indices, deduplicated boot_idx, or
+        # substituted ``resolved_survey_unit.weights`` lookup in place of
+        # the known_rw slice — any of which would silently change
+        # bootstrap SE.
+        n_control = 15
+        rng_sim = np.random.default_rng(bootstrap_seed)
+        expected_slices = []
+        while len(expected_slices) < len(captured):
+            boot_idx = rng_sim.choice(n_total, size=n_total, replace=True)
+            boot_is_control = boot_idx < n_control
+            n_co_b = int(boot_is_control.sum())
+            if n_co_b == 0 or n_co_b == n_total:
+                continue
+            expected_slices.append(known_rw[:n_control][boot_idx[boot_is_control]])
+
+        assert len(captured) >= 1, "no FW calls captured — survey dispatch broken"
+        for i, (rw_captured, rw_expected) in enumerate(
+            zip(captured, expected_slices)
+        ):
+            np.testing.assert_array_equal(
+                rw_captured,
+                rw_expected,
+                err_msg=(
+                    f"draw {i}: captured rw_control differs from expected "
+                    f"known_rw[:n_control][boot_idx[boot_is_control]]. "
+                    "Regression in hybrid pairs-bootstrap + Rao-Wu "
+                    "slice ordering."
+                ),
+            )
+
+    def test_fit_raises_on_zero_total_treated_survey_mass(self):
+        """Fit-time positive-mass guard: zero treated survey mass raises.
+
+        ``SurveyDesign.resolve()`` accepts non-negative unit weights
+        (``survey.py`` L171-L176), so a user can legitimately assign unit
+        survey weights of 0 to every treated unit — encoding an
+        unidentified target population. Without the front-door guard, the
+        fit-time survey-weighted ATT (``np.average(Y, weights=w_treated)``)
+        would hit ``0/0`` and silently propagate NaN into the bootstrap
+        loop, defeating the per-draw zero-mass retry (PR #355 R2 P0).
+        Regression against PR #355 R7 P1: the guard must fire before the
+        bootstrap is even dispatched.
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, seed=42)
+        # Every treated unit gets weight 0; controls keep positive weight.
+        df["wt"] = np.where(df["treated"] == 1, 0.0, 1.0)
+        with pytest.raises(ValueError, match=r"treated arm has zero total mass"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt"),
+            )
+
+    def test_fit_raises_on_zero_total_control_survey_mass(self):
+        """Fit-time positive-mass guard: zero control survey mass raises.
+
+        Mirror of the treated-arm case (PR #355 R7 P1). Downstream
+        ``omega_eff = unit_weights * w_control / (unit_weights * w_control).sum()``
+        would hit 0/0; the guard front-doors.
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, seed=42)
+        df["wt"] = np.where(df["treated"] == 0, 0.0, 1.0)
+        with pytest.raises(ValueError, match=r"control arm has zero total mass"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt"),
+            )
+
+    def test_fit_raises_on_zero_treated_mass_under_full_design(self):
+        """Fit-time positive-mass guard fires under full strata/PSU/FPC too.
+
+        The guard sources w_control / w_treated from the **resolved
+        unit-level** design (PR #355 R4 P0), so zero total treated mass
+        under a strata/PSU/FPC configuration must fire the same front-door
+        ValueError as the pweight-only case (PR #355 R7 P1).
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, seed=42)
+        df["wt"] = np.where(df["treated"] == 1, 0.0, 1.0)
+        df["stratum"] = df["unit"] % 2
+        df["psu"] = df["unit"]
+        with pytest.raises(ValueError, match=r"treated arm has zero total mass"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
+            )
+
+    def test_fit_raises_on_zero_effective_control_support(self, monkeypatch):
+        """Fit-time guard: FW mass concentrated on zero-weight controls raises.
+
+        Zero survey weights are valid input (``survey.py`` L171-L176
+        rejects only negatives), and ``compute_sdid_unit_weights``
+        sparsifies ``unit_weights`` to exact zeros by design. If FW
+        concentrates on a control whose survey weight is 0, the composed
+        ``omega_eff = unit_weights * w_control`` has zero total mass and
+        the subsequent normalization hits ``0/0``, silently propagating
+        NaN into the ATT / SE / CI. The R7 P1 guard
+        (``w_control.sum() > 0``) is not sufficient here because at least
+        one control has positive weight — the degeneracy is in the
+        composed vector, not the raw survey mass.
+
+        Regression against PR #355 R12 P1: the fit-time guard must raise
+        a targeted ``ValueError`` before the normalization step.
+
+        We monkeypatch ``compute_sdid_unit_weights`` to return a
+        canonical sparse unit-weight vector concentrated on the first
+        control, bypassing FW convergence dynamics. This makes the test
+        about the guard contract (behavior when the degenerate
+        configuration is reached), not about how easy it is to force FW
+        into that configuration on synthetic data.
+        """
+        from diff_diff import synthetic_did as sdid_mod
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=5, n_treated=2, seed=42)
+        # First control gets survey weight 0; others get weight 1.
+        unique_units = np.sort(df["unit"].unique())
+        treated_ids = set(df.loc[df["treated"] == 1, "unit"].unique())
+        control_ids = [u for u in unique_units if u not in treated_ids]
+        zero_weight_unit = control_ids[0]
+        df["wt"] = np.where(df["unit"] == zero_weight_unit, 0.0, 1.0).astype(float)
+
+        # Force unit_weights to concentrate on control_ids[0]. The call
+        # sites in fit() use _create_outcome_matrices with control_units
+        # in sorted order (same order _make_panel produces), so index 0
+        # of the unit-weights vector corresponds to control_ids[0].
+        def sparse_unit_weights(Y_pre_control, *args, **kwargs):
+            n_ctrl = Y_pre_control.shape[1]
+            w = np.zeros(n_ctrl)
+            w[0] = 1.0
+            return w
+
+        monkeypatch.setattr(
+            sdid_mod, "compute_sdid_unit_weights", sparse_unit_weights
+        )
+
+        with pytest.raises(ValueError, match=r"unidentified|zero survey weight"):
+            SyntheticDiD(variance_method="placebo", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt"),
+            )
+
+    def test_fit_raises_on_zero_effective_control_support_full_design(self, monkeypatch):
+        """Fit-time effective-control guard fires under strata/PSU/FPC too.
+
+        Mirror of the pweight-only zero-effective-control case (PR #355
+        R12 P1) under a full survey design. The guard is part of the
+        ``w_control is not None`` branch, which fires for both
+        pweight-only and strata/PSU/FPC fits.
+        """
+        from diff_diff import synthetic_did as sdid_mod
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=5, n_treated=2, seed=42)
+        unique_units = np.sort(df["unit"].unique())
+        treated_ids = set(df.loc[df["treated"] == 1, "unit"].unique())
+        control_ids = [u for u in unique_units if u not in treated_ids]
+        zero_weight_unit = control_ids[0]
+        df["wt"] = np.where(df["unit"] == zero_weight_unit, 0.0, 1.0).astype(float)
+        df["stratum"] = df["unit"] % 2
+        df["psu"] = df["unit"]
+
+        def sparse_unit_weights(Y_pre_control, *args, **kwargs):
+            n_ctrl = Y_pre_control.shape[1]
+            w = np.zeros(n_ctrl)
+            w[0] = 1.0
+            return w
+
+        monkeypatch.setattr(
+            sdid_mod, "compute_sdid_unit_weights", sparse_unit_weights
+        )
+
+        with pytest.raises(ValueError, match=r"unidentified|zero survey weight"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
+            )
+
+    def test_fit_raises_on_implicit_psu_fpc_below_unit_count_unstratified(self):
+        """Fit-time FPC validation fires when psu=None and FPC < n_units.
+
+        When ``SurveyDesign(fpc=...)`` is declared without an explicit
+        ``psu=``, SDID Rao-Wu (via ``bootstrap_utils.generate_rao_wu_weights``
+        L654-L655) treats each unit as its own PSU. The helper rejects
+        ``FPC < n_PSU`` mid-draw (``bootstrap_utils.py`` L684-L688); without
+        a front-door guard, every bootstrap draw raises, ``_bootstrap_se``
+        swallows the ``ValueError`` in its retry loop, and the user sees a
+        generic bootstrap-exhaustion error. Regression against PR #355 R8
+        P1: ``fit()`` must validate FPC vs unit count before dispatching
+        the bootstrap.
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        # 13 units total; FPC says population size is 5 — infeasible for
+        # 13 implicit PSUs.
+        df["fpc_pop"] = 5.0
+        with pytest.raises(ValueError, match=r"FPC.*less than the number of units"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt", fpc="fpc_pop"),
+            )
+
+    def test_fit_raises_on_implicit_psu_fpc_below_stratum_unit_count(self):
+        """Fit-time FPC validation fires per stratum under implicit PSU.
+
+        Mirror of the unstratified case but with strata present. Each
+        stratum's FPC must be >= its unit count (PR #355 R8 P1).
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=12, n_treated=4, seed=42)
+        df["wt"] = 1.0
+        df["stratum"] = df["unit"] % 2  # 2 strata, ~8 units each
+        # FPC says 3 per stratum — infeasible for 8 implicit PSUs/stratum.
+        df["fpc_pop"] = 3.0
+        with pytest.raises(ValueError, match=r"FPC.*less than the number of units in that stratum"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(
+                    weights="wt", strata="stratum", fpc="fpc_pop",
+                ),
+            )
+
+    def test_bootstrap_scale_invariance_under_pweight_rescaling(self):
+        """Survey-bootstrap SE / p / CI are invariant to a global pweight rescaling.
+
+        ``SurveyDesign.resolve()`` normalizes pweights/aweights to mean=1
+        (survey.py L189-L203), which is the library's scale-invariance
+        contract for survey-weighted fits. This test fits the same SDID
+        panel under two SurveyDesigns — weights column ``"wt"`` vs a
+        10x-rescaled copy ``"wt_scaled"`` — and asserts bootstrap SE,
+        p-value, and CI agree to machine-epsilon tolerance.
+
+        Regression against PR #355 R4 P0: the initial PR #352 pweight-only
+        bootstrap branch bypassed the resolved (normalized) unit-level
+        weights and fed raw panel-column weights into the weighted-FW
+        objective. That objective is NOT invariant to a global rescale
+        of rw — the loss term scales as rw^2 (``A-tilde = A * diag(rw)``)
+        while the reg term scales as rw (``zeta^2 * sum rw * omega^2``) —
+        so any user who rescaled their pweight column (e.g. switched
+        units) would see silently different SEs. The fix
+        (synthetic_did.py ``fit()`` around the ``resolved_survey`` block)
+        sources ``w_control`` and ``w_treated`` from
+        ``resolved_survey_unit.weights`` (post-normalization) rather
+        than re-extracting raw weights via ``_extract_unit_survey_weights``.
+        Tolerance is machine-epsilon tight because floating-point multiply-
+        reduce ordering inside ``raw * (n / (c*raw_sum))`` vs
+        ``raw * (n / raw_sum)`` can drift by ~1 ULP; a raw-weight fallback
+        would produce differences on the order of 1 or larger.
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=12, n_treated=3, seed=42)
+        unique_units = np.sort(df["unit"].unique())
+        unit_weights = np.linspace(0.5, 2.5, len(unique_units))
+        wt_map = dict(zip(unique_units, unit_weights))
+        df["wt"] = df["unit"].map(wt_map)
+        df["wt_scaled"] = df["wt"] * 10.0
+
+        kwargs = dict(
+            outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+        )
+        result_base = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1,
+        ).fit(df, survey_design=SurveyDesign(weights="wt"), **kwargs)
+        result_scaled = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1,
+        ).fit(df, survey_design=SurveyDesign(weights="wt_scaled"), **kwargs)
+
+        assert np.isfinite(result_base.se) and result_base.se > 0
+        np.testing.assert_allclose(
+            result_scaled.se, result_base.se, rtol=1e-13, atol=0,
+            err_msg="bootstrap SE is not invariant to pweight global rescaling",
+        )
+        np.testing.assert_allclose(
+            result_scaled.p_value, result_base.p_value, rtol=1e-12, atol=1e-14,
+            err_msg="bootstrap p-value is not invariant to pweight global rescaling",
+        )
+        np.testing.assert_allclose(
+            result_scaled.conf_int, result_base.conf_int, rtol=1e-13, atol=0,
+            err_msg="bootstrap CI is not invariant to pweight global rescaling",
+        )
+
+    def test_bootstrap_single_psu_returns_nan(self):
+        """Unstratified single-PSU survey design returns NaN SE (PR #352).
+
+        Resampling one PSU yields the same subset every draw, so the
+        bootstrap distribution is degenerate and the SE is unidentified.
+        ``_bootstrap_se`` short-circuits to (NaN, []) for this case rather
+        than emitting a misleading SE estimate. Recovered from the pre-PR
+        #351 fixed-weight Rao-Wu branch (commit 91082e5).
+        """
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        df["psu_single"] = 0  # all units in the same PSU; no strata
+        sdid = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=1)
+        result = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt", psu="psu_single"),
+        )
+        assert np.isnan(result.se), \
+            f"single-PSU unstratified bootstrap should return NaN SE, got {result.se}"
 
     def test_bootstrap_fw_nonconvergence_warning_fires_under_rust(self, monkeypatch):
         """Aggregate FW non-convergence warning surfaces on the Rust backend.
@@ -2949,12 +3432,14 @@ class TestHeterogeneousAndRampingScale:
 class TestCoverageMCArtifact:
     """Schema smoke-check on ``benchmarks/data/sdid_coverage.json``.
 
-    The full Monte Carlo study (500 seeds × B=200 × 3 DGPs × 3 methods)
-    runs outside CI; its JSON output underwrites the calibration table in
-    REGISTRY.md §SyntheticDiD. This test verifies the artifact is present
-    and structured correctly. Per ``feedback_golden_file_pytest_skip.md``,
-    skip if missing — CI's isolated-install job copies only ``tests/``,
-    not ``benchmarks/``.
+    The full Monte Carlo study (500 seeds × B=200 × 4 DGPs × 3 methods,
+    PR #352) runs outside CI; its JSON output underwrites the calibration
+    table in REGISTRY.md §SyntheticDiD. The 4th DGP (``stratified_survey``)
+    is bootstrap-only — placebo / jackknife reject strata/PSU/FPC at
+    fit-time. This test verifies the artifact is present and structured
+    correctly. Per ``feedback_golden_file_pytest_skip.md``, skip if
+    missing — CI's isolated-install job copies only ``tests/``, not
+    ``benchmarks/``.
     """
 
     def test_coverage_artifacts_present(self):
@@ -2991,7 +3476,7 @@ class TestCoverageMCArtifact:
             "enum value are both gone."
         )
 
-        for dgp in ("balanced", "unbalanced", "aer63"):
+        for dgp in ("balanced", "unbalanced", "aer63", "stratified_survey"):
             assert dgp in payload["per_dgp"], f"missing DGP block: {dgp}"
             per_method = payload["per_dgp"][dgp]
             for method in ("placebo", "bootstrap", "jackknife"):
@@ -3008,3 +3493,29 @@ class TestCoverageMCArtifact:
                     assert alpha_key in block["rejection_rate"], (
                         f"missing alpha {alpha_key} in {dgp}/{method} rejection_rate"
                     )
+
+        # PR #352: stratified_survey is bootstrap-only — placebo and
+        # jackknife reject strata/PSU/FPC at fit-time, so their blocks
+        # report n_successful_fits=0. Bootstrap must have the full 500
+        # successful fits + finite rejection rate at α=0.05 inside the
+        # calibration gate [0.02, 0.10].
+        survey_block = payload["per_dgp"]["stratified_survey"]
+        assert survey_block["bootstrap"]["n_successful_fits"] >= 100, (
+            "stratified_survey bootstrap must have ≥100 successful fits; "
+            "the survey-bootstrap path is broken if this drops to 0."
+        )
+        rej_05 = survey_block["bootstrap"]["rejection_rate"]["0.05"]
+        assert 0.02 <= rej_05 <= 0.10, (
+            f"stratified_survey bootstrap α=0.05 rejection {rej_05} outside "
+            "calibration gate [0.02, 0.10]; weighted FW + Rao-Wu is "
+            "miscalibrated. See PR #352 §3c rollback protocol."
+        )
+        assert survey_block["placebo"]["n_successful_fits"] == 0, (
+            "stratified_survey placebo should have 0 successful fits "
+            "(strata/PSU/FPC raises NotImplementedError at fit-time)"
+        )
+        assert survey_block["jackknife"]["n_successful_fits"] == 0, (
+            "stratified_survey jackknife should have 0 successful fits "
+            "(strata/PSU/FPC raises NotImplementedError at fit-time)"
+        )
+

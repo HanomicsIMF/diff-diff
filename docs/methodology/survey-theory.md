@@ -724,15 +724,21 @@ Two bootstrap strategies interact with survey designs:
 
 - **Rao-Wu rescaled bootstrap** (SunAbraham, TROP): Draws PSUs
   with replacement within strata and rescales observation weights. Each draw
-  re-runs the full estimator on the resampled data. *SyntheticDiD is
-  intentionally excluded in this release:* the paper-faithful refit
-  bootstrap rejects every survey design because composing Rao-Wu rescaled
-  weights with Frank-Wolfe re-estimation requires a weighted-FW derivation
-  that is not yet implemented. Pweight-only SDID users should use
-  ``variance_method="placebo"`` or ``"jackknife"``; strata/PSU/FPC users
-  have no SDID variance option. See TODO.md and
-  ``docs/methodology/REGISTRY.md`` §SyntheticDiD for the deferred-
-  composition sketch.
+  re-runs the full estimator on the resampled data.
+- **Hybrid pairs-bootstrap + Rao-Wu rescaling** (SyntheticDiD, PR #352):
+  SDID's full-design bootstrap is NOT a standalone Rao-Wu bootstrap. Each
+  draw first performs the unit-level pairs-bootstrap resampling that
+  Arkhangelsky et al. (2021) Algorithm 2 specifies (``boot_idx = rng.choice(n_total)``),
+  and *then* applies the Rao-Wu rescaled per-unit weights sliced over the
+  resampled units (``rw_control = rao_wu_rw[:n_control][boot_idx_control]``).
+  The weighted-Frank-Wolfe kernel then solves
+  ``min ||A·diag(rw)·ω - b||² + ζ²·Σ rw_i ω_i²`` on the resampled panel,
+  and ``ω_eff = rw·ω / Σ(rw·ω)`` is composed for the SDID estimator.
+  See REGISTRY.md §SyntheticDiD ``Note (survey + bootstrap composition)``
+  for the full objective and the argmin-set caveat. SDID's `placebo` and
+  `jackknife` methods still reject strata/PSU/FPC (the placebo permutation
+  allocator and jackknife LOO mass need their own weighted derivations;
+  tracked in TODO.md as a follow-up).
 
 ---
 
