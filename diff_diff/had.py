@@ -420,8 +420,7 @@ class HeterogeneousAdoptionDiDResults:
             lines.append(f"{'Effective sample size:':<30} {sm.effective_n:>20.6g}")
             if self.effective_dose_mean is not None:
                 lines.append(
-                    f"{'Weighted D̄ (denominator):':<30} "
-                    f"{self.effective_dose_mean:>20.6g}"
+                    f"{'Weighted D̄ (denominator):':<30} " f"{self.effective_dose_mean:>20.6g}"
                 )
             if sm.df_survey is not None:
                 lines.append(f"{'Survey df:':<30} {sm.df_survey:>20}")
@@ -639,12 +638,49 @@ class HeterogeneousAdoptionDiDEventStudyResults:
     # Staggered auto-filter metadata
     filter_info: Optional[Dict[str, Any]]
 
+    # Phase 4.5 B weighted / survey-path extras (optional so unweighted
+    # fits stay unchanged; all None on unweighted fits).
+    variance_formula: Optional[str] = None
+    """Per-horizon variance family label (applied uniformly across all
+    horizons in the fit). One of ``"pweight"`` / ``"pweight_2sls"``
+    (weights= shortcut; continuous / mass-point), ``"survey_binder_tsl"``
+    / ``"survey_binder_tsl_2sls"`` (survey= path), or ``None`` on
+    unweighted fits. Mirrors the static-path ``variance_formula`` field."""
+    effective_dose_mean: Optional[float] = None
+    """Weighted denominator used by the β̂-scale rescaling. For continuous
+    designs: weighted ``sum(w · d)/sum(w)`` (continuous_at_zero) or
+    ``sum(w · (d − d_lower))/sum(w)`` (continuous_near_d_lower). For
+    mass-point: weighted Wald-IV dose gap. ``None`` on unweighted fits."""
+    cband_low: Optional[np.ndarray] = None
+    """Simultaneous confidence-band lower endpoints, shape ``(n_horizons,)``.
+    ``None`` on unweighted fits and when ``cband=False`` on the weighted
+    event-study path. Derived from multiplier-bootstrap sup-t critical
+    value: ``cband_low[e] = att[e] − cband_crit_value * se[e]``."""
+    cband_high: Optional[np.ndarray] = None
+    """Simultaneous confidence-band upper endpoints, shape
+    ``(n_horizons,)``. See ``cband_low``."""
+    cband_crit_value: Optional[float] = None
+    """Sup-t multiplier-bootstrap critical value at level ``1 - alpha``.
+    Reduces to ``Φ⁻¹(1 − alpha/2) ≈ 1.96`` at ``H=1`` up to Monte Carlo
+    error. ``None`` on unweighted fits and when ``cband=False``."""
+    cband_method: Optional[str] = None
+    """``"multiplier_bootstrap"`` on the weighted event-study path with
+    ``cband=True``, else ``None``."""
+    cband_n_bootstrap: Optional[int] = None
+    """Number of multiplier-bootstrap replicates used to compute the sup-t
+    critical value. ``None`` on unweighted fits and when ``cband=False``."""
+
     def __repr__(self) -> str:
-        return (
+        base = (
             f"HeterogeneousAdoptionDiDEventStudyResults("
             f"n_horizons={len(self.event_times)}, "
-            f"design={self.design!r}, n_units={self.n_units})"
+            f"design={self.design!r}, n_units={self.n_units}"
         )
+        if self.variance_formula is not None:
+            base += f", variance_formula={self.variance_formula!r}"
+        if self.cband_crit_value is not None:
+            base += f", cband_crit={self.cband_crit_value:.3f}"
+        return base + ")"
 
     def summary(self) -> str:
         """Formatted per-horizon summary table."""
@@ -680,6 +716,20 @@ class HeterogeneousAdoptionDiDEventStudyResults:
                 f"{self.filter_info.get('n_kept', 0)} / "
                 f"{self.filter_info.get('n_dropped', 0):<8}".rjust(51)
             )
+        if self.survey_metadata is not None:
+            sm = self.survey_metadata
+            vf_label = self.variance_formula or "unknown"
+            lines.append(f"{'Variance formula:':<30} {vf_label:>20}")
+            lines.append(f"{'Effective sample size:':<30} {sm.effective_n:>20.6g}")
+            if self.effective_dose_mean is not None:
+                lines.append(
+                    f"{'Weighted D̄ (denominator):':<30} " f"{self.effective_dose_mean:>20.6g}"
+                )
+            if sm.df_survey is not None:
+                lines.append(f"{'Survey df:':<30} {sm.df_survey:>20}")
+        if self.cband_crit_value is not None:
+            lines.append(f"{'Sup-t crit (bootstrap):':<30} " f"{self.cband_crit_value:>20.4f}")
+            lines.append(f"{'Bootstrap replicates:':<30} " f"{self.cband_n_bootstrap or 0:>20}")
         lines.extend(
             [
                 "",
@@ -748,26 +798,43 @@ class HeterogeneousAdoptionDiDEventStudyResults:
             "vcov_type": self.vcov_type,
             "cluster_name": self.cluster_name,
             "filter_info": _json_safe_filter_info(self.filter_info),
+            # Phase 4.5 B weighted/survey-path surfaces (None on
+            # unweighted fits). The full SurveyMetadata dataclass is
+            # carried as an object, matching the static-path ``to_dict``
+            # contract — consumers read attributes uniformly.
+            "survey_metadata": self.survey_metadata,
+            "variance_formula": self.variance_formula,
+            "effective_dose_mean": self.effective_dose_mean,
+            "cband_low": (self.cband_low.tolist() if self.cband_low is not None else None),
+            "cband_high": (self.cband_high.tolist() if self.cband_high is not None else None),
+            "cband_crit_value": self.cband_crit_value,
+            "cband_method": self.cband_method,
+            "cband_n_bootstrap": self.cband_n_bootstrap,
         }
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return a tidy per-horizon DataFrame.
 
         Columns: ``event_time, att, se, t_stat, p_value, conf_int_low,
-        conf_int_high, n_obs``. One row per event-time horizon.
+        conf_int_high, n_obs``. One row per event-time horizon. On the
+        weighted event-study path with ``cband=True``, also includes
+        ``cband_low`` and ``cband_high`` columns.
         """
-        return pd.DataFrame(
-            {
-                "event_time": self.event_times,
-                "att": self.att,
-                "se": self.se,
-                "t_stat": self.t_stat,
-                "p_value": self.p_value,
-                "conf_int_low": self.conf_int_low,
-                "conf_int_high": self.conf_int_high,
-                "n_obs": self.n_obs_per_horizon,
-            }
-        )
+        data: Dict[str, Any] = {
+            "event_time": self.event_times,
+            "att": self.att,
+            "se": self.se,
+            "t_stat": self.t_stat,
+            "p_value": self.p_value,
+            "conf_int_low": self.conf_int_low,
+            "conf_int_high": self.conf_int_high,
+            "n_obs": self.n_obs_per_horizon,
+        }
+        if self.cband_low is not None:
+            data["cband_low"] = self.cband_low
+        if self.cband_high is not None:
+            data["cband_high"] = self.cband_high
+        return pd.DataFrame(data)
 
 
 # =============================================================================
@@ -1521,23 +1588,18 @@ def _aggregate_unit_weights(
     w = np.asarray(weights_arr, dtype=np.float64).ravel()
     if w.shape[0] != n_rows:
         raise ValueError(
-            f"weights length ({w.shape[0]}) does not match number of "
-            f"rows in data ({n_rows})."
+            f"weights length ({w.shape[0]}) does not match number of " f"rows in data ({n_rows})."
         )
     if not np.all(np.isfinite(w)):
         raise ValueError("weights contains non-finite values (NaN or Inf).")
     if np.any(w < 0):
         raise ValueError("weights must be non-negative.")
     if np.sum(w) <= 0:
-        raise ValueError(
-            "weights sum to zero — no observations have positive weight."
-        )
+        raise ValueError("weights sum to zero — no observations have positive weight.")
 
     df = data.reset_index(drop=True).copy()
     df["_w_tmp__"] = w
-    w_per_unit = df.groupby(unit_col)["_w_tmp__"].agg(
-        lambda s: (float(s.min()), float(s.max()))
-    )
+    w_per_unit = df.groupby(unit_col)["_w_tmp__"].agg(lambda s: (float(s.min()), float(s.max())))
     varying = w_per_unit.apply(lambda t: not np.isclose(t[0], t[1], rtol=1e-12, atol=0.0))
     if bool(varying.any()):
         n_bad = int(varying.sum())
@@ -1549,9 +1611,7 @@ def _aggregate_unit_weights(
             f"vary within unit would require an obs-level estimator not "
             f"available on this path."
         )
-    w_unit = (
-        df.groupby(unit_col)["_w_tmp__"].first().sort_index().to_numpy(dtype=np.float64)
-    )
+    w_unit = df.groupby(unit_col)["_w_tmp__"].first().sort_index().to_numpy(dtype=np.float64)
     return w_unit
 
 
@@ -1613,8 +1673,7 @@ def _aggregate_unit_resolved_survey(
             return None
         if arr.shape[0] != n_rows:
             raise ValueError(
-                f"ResolvedSurveyDesign.{name} length does not match "
-                f"data rows ({n_rows})."
+                f"ResolvedSurveyDesign.{name} length does not match " f"data rows ({n_rows})."
             )
         df = data.reset_index(drop=True).copy()
         # Use a stable per-row column so we can take first() per unit and
@@ -1645,12 +1704,8 @@ def _aggregate_unit_resolved_survey(
     fpc_unit = _collapse(resolved.fpc, "fpc")
 
     # Recompute n_strata and n_psu at the unit level.
-    n_strata_unit = (
-        int(np.unique(strata_unit).shape[0]) if strata_unit is not None else 1
-    )
-    n_psu_unit = (
-        int(np.unique(psu_unit).shape[0]) if psu_unit is not None else int(w_unit.shape[0])
-    )
+    n_strata_unit = int(np.unique(strata_unit).shape[0]) if strata_unit is not None else 1
+    n_psu_unit = int(np.unique(psu_unit).shape[0]) if psu_unit is not None else int(w_unit.shape[0])
 
     return ResolvedSurveyDesign(
         weights=w_unit,
@@ -1871,6 +1926,160 @@ def _detect_design(d_arr: np.ndarray) -> str:
 
 
 # =============================================================================
+# Sup-t multiplier bootstrap (Phase 4.5 B event-study simultaneous CI)
+# =============================================================================
+
+
+def _sup_t_multiplier_bootstrap(
+    influence_matrix: np.ndarray,
+    att_per_horizon: np.ndarray,
+    se_per_horizon: np.ndarray,
+    resolved_survey: Any,  # Optional[ResolvedSurveyDesign]
+    *,
+    n_bootstrap: int,
+    alpha: float,
+    seed: Optional[int],
+    bootstrap_weights: str = "rademacher",
+) -> Tuple[float, Optional[np.ndarray], Optional[np.ndarray], int]:
+    """Compute sup-t simultaneous CI via PSU-level multiplier bootstrap.
+
+    Reuses :func:`diff_diff.bootstrap_utils.generate_survey_multiplier_weights_batch`
+    (survey path) / :func:`generate_bootstrap_weights_batch` (weights=
+    shortcut) to draw ``n_bootstrap`` replicates of multiplier weights
+    shaped ``(n_bootstrap, n_units)``; the helpers handle stratum
+    centering, lonely-PSU, and FPC scaling so this function only
+    composes them with the per-unit influence function.
+
+    Construction (mirrors `staggered_bootstrap.py:354-373` perturbation
+    idiom and `:497-533` sup-t quantile idiom; NO ``(1/n)`` prefactor —
+    ``psi`` is already on the θ̂-scale per the Phase 4.5 B IF scale
+    convention):
+
+    1. Draw multiplier weights ``xi`` shape ``(n_bootstrap, n_units)``.
+    2. Perturbations: ``delta[b, e] = sum_g xi[b, g] * psi[g, e]``.
+    3. t-statistics: ``t[b, e] = delta[b, e] / se[e]``.
+    4. Sup-t: ``sup_t[b] = max_e |t[b, e]|``.
+    5. Critical value: ``q = quantile(sup_t[isfinite], 1 - alpha)``.
+
+    Under ``H=1`` the sup reduces to the marginal, so
+    ``q -> Phi^{-1}(1 - alpha/2) ≈ 1.96`` at ``alpha=0.05`` (locked by
+    the ``TestSupTReducesToNormalAtH1`` reduction-invariant test).
+
+    Parameters
+    ----------
+    influence_matrix : np.ndarray, shape (n_units, n_horizons)
+        Per-unit per-horizon influence function on the β̂-scale. NaN
+        columns are treated as degenerate-horizon placeholders and drop
+        out of the sup via the finite mask.
+    att_per_horizon : np.ndarray, shape (n_horizons,)
+        Per-horizon point estimates (used to assemble the simultaneous
+        band: ``att ± q · se``).
+    se_per_horizon : np.ndarray, shape (n_horizons,)
+        Per-horizon analytical SE (Binder-TSL on survey path, HC1
+        sandwich on weights= shortcut).
+    resolved_survey : Optional[ResolvedSurveyDesign]
+        ``None`` → unit-level Rademacher draw via
+        ``generate_bootstrap_weights_batch``. Otherwise →
+        PSU-level draw via ``generate_survey_multiplier_weights_batch``
+        (stratum-centered, FPC-scaled, lonely-PSU-aware).
+    n_bootstrap : int
+        Number of multiplier replicates.
+    alpha : float
+        CI level (``0.05`` for 95% simultaneous band).
+    seed : int or None
+        RNG seed for reproducibility.
+    bootstrap_weights : str
+        Passed through to the helper: ``"rademacher"``, ``"mammen"``, or
+        ``"webb"``. Default ``"rademacher"`` (binary ±1 multipliers).
+
+    Returns
+    -------
+    (cband_crit_value, cband_low, cband_high, n_valid) : tuple
+        ``cband_crit_value`` is the sup-t quantile (float); ``cband_low``
+        / ``cband_high`` are simultaneous-band endpoints shape
+        ``(n_horizons,)``; ``n_valid`` is the count of finite sup-t
+        draws (<= ``n_bootstrap``). Returns ``(nan, None, None,
+        n_valid)`` when fewer than half the draws are finite — warns the
+        caller.
+    """
+    from diff_diff.bootstrap_utils import (
+        generate_bootstrap_weights_batch,
+        generate_survey_multiplier_weights_batch,
+    )
+
+    influence_matrix = np.asarray(influence_matrix, dtype=np.float64)
+    att_per_horizon = np.asarray(att_per_horizon, dtype=np.float64)
+    se_per_horizon = np.asarray(se_per_horizon, dtype=np.float64)
+    n_units, n_horizons = influence_matrix.shape
+    rng = np.random.default_rng(seed)
+
+    use_survey_bootstrap = resolved_survey is not None and (
+        resolved_survey.strata is not None
+        or resolved_survey.psu is not None
+        or resolved_survey.fpc is not None
+    )
+
+    if use_survey_bootstrap:
+        psu_weights, psu_ids = generate_survey_multiplier_weights_batch(
+            n_bootstrap, resolved_survey, bootstrap_weights, rng
+        )
+        if resolved_survey.psu is not None:
+            unit_psu = resolved_survey.psu
+            psu_id_to_col = {int(p): c for c, p in enumerate(psu_ids)}
+            unit_to_psu_col = np.array([psu_id_to_col[int(unit_psu[i])] for i in range(n_units)])
+        else:
+            unit_to_psu_col = np.arange(n_units)
+        all_bootstrap_weights = psu_weights[:, unit_to_psu_col]  # (B, G)
+    else:
+        all_bootstrap_weights = generate_bootstrap_weights_batch(
+            n_bootstrap, n_units, bootstrap_weights, rng
+        )  # (B, G)
+
+    # Perturbations: (B, H) = (B, G) @ (G, H). Matches staggered:373
+    # idiom — no (1/n) prefactor; ``psi`` is already on θ̂-scale.
+    # Silence divide/invalid/overflow warnings from the matmul — NaN /
+    # inf rows from degenerate horizons propagate and are filtered by
+    # the finite-mask below, so these are expected at construction time.
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        perturbations = all_bootstrap_weights @ influence_matrix  # (B, H)
+
+        # t-statistics via per-horizon analytical SE.
+        safe_se = np.where(
+            (se_per_horizon > 0) & np.isfinite(se_per_horizon),
+            se_per_horizon,
+            np.nan,
+        )
+        t_dist = perturbations / safe_se[np.newaxis, :]  # (B, H)
+        # Suppress the all-NaN-slice warning from nanmax on rows with
+        # every horizon degenerate — the finite mask drops those.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            sup_t_dist = np.nanmax(np.abs(t_dist), axis=1)  # (B,)
+
+    finite_mask = np.isfinite(sup_t_dist)
+    n_valid = int(finite_mask.sum())
+
+    if n_valid < max(1, int(0.5 * n_bootstrap)):
+        warnings.warn(
+            f"Too few valid sup-t bootstrap samples ({n_valid}/{n_bootstrap}) "
+            f"— returning NaN simultaneous-band critical value. Possible "
+            f"causes: near-singular per-horizon SEs, or a survey design "
+            f"with all-zero PSU multipliers after stratum-level FPC. "
+            f"Inspect the per-horizon ``se`` array and consider raising "
+            f"`n_bootstrap` or passing `cband=False` to skip the sup-t "
+            f"band.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return float("nan"), None, None, n_valid
+
+    q = float(np.quantile(sup_t_dist[finite_mask], 1.0 - alpha))
+    cband_low = att_per_horizon - q * se_per_horizon
+    cband_high = att_per_horizon + q * se_per_horizon
+    return q, cband_low, cband_high, n_valid
+
+
+# =============================================================================
 # Mass-point 2SLS
 # =============================================================================
 
@@ -1881,7 +2090,10 @@ def _fit_mass_point_2sls(
     d_lower: float,
     cluster: Optional[np.ndarray],
     vcov_type: str,
-) -> Tuple[float, float]:
+    *,
+    weights: Optional[np.ndarray] = None,
+    return_influence: bool = False,
+) -> Tuple[float, float, Optional[np.ndarray]]:
     """Wald-IV point estimate and structural-residual 2SLS sandwich SE.
 
     The just-identified binary instrument ``Z_g = 1{D_{g,2} > d_lower}``
@@ -1890,24 +2102,26 @@ def _fit_mass_point_2sls(
     ``beta_hat = (Ybar_{Z=1} - Ybar_{Z=0}) / (Dbar_{Z=1} - Dbar_{Z=0})``.
 
     The STANDARD ERROR is computed via the 2SLS sandwich
-    ``V = [Z'X]^{-1} * Omega * [Z'X]^{-T}`` where ``Omega`` is built from
-    the STRUCTURAL residuals
-    ``u = dy - alpha_hat - beta_hat * d``
-    (NOT the reduced-form residuals). This is the canonical 2SLS
-    inference path and matches what ``AER::ivreg`` / ``ivreg2`` would
-    produce. The "OLS-on-indicator + scale by dose-gap" shortcut gives
-    reduced-form residuals, which diverge from structural residuals in
-    finite samples and substantively under clustering.
+    ``V = [Z'WX]^{-1} * Omega * [Z'WX]^{-T}`` where ``Omega`` is built
+    from the STRUCTURAL residuals
+    ``u = dy - alpha_hat - beta_hat * d`` (NOT the reduced-form
+    residuals). This is the canonical 2SLS inference path and matches
+    what ``estimatr::iv_robust`` / Stata ``ivregress`` would produce.
 
     Supported ``vcov_type``:
 
-    - ``"classical"``: constant variance ``sigma_hat^2 = sum(u^2) / (n-2)``.
+    - ``"classical"``: constant variance ``sigma_hat^2 = sum(w² u²) /
+      (sum(w) - k)`` (weighted) or ``sum(u^2) / (n-k)`` (unweighted);
+      sandwich form with ``w²`` in the meat when weighted.
     - ``"hc1"``: heteroskedasticity-robust with small-sample DOF scaling
-      ``n / (n - 2)``. With ``cluster`` supplied, switches to CR1
-      (Liang-Zeger) cluster-robust.
+      ``n / (n - k)``; meat = ``Z' diag(w² u²) Z`` (pweight convention,
+      Wooldridge 2010 Eq. 12.37; matches ``estimatr::iv_robust(...,
+      weights=..., se_type="HC1")`` bit-exactly). With ``cluster``
+      supplied, switches to CR1 (Liang-Zeger) with cluster score
+      ``Z'_c (w · u)_c``.
 
     ``"hc2"`` and ``"hc2_bm"`` raise ``NotImplementedError`` (2SLS-specific
-    leverage derivation pending; queued for follow-up).
+    leverage derivation pending).
 
     Parameters
     ----------
@@ -1921,90 +2135,180 @@ def _fit_mass_point_2sls(
         Cluster ids per unit (``None`` for no clustering).
     vcov_type : str
         One of ``"classical"``, ``"hc1"``.
+    weights : np.ndarray or None, shape (n,)
+        Per-unit sampling weights (pweight convention). ``None`` for the
+        unweighted path — that branch is numerically bit-exact with
+        pre-Phase 4.5 B output. Zero-weight units contribute zero to
+        every sum-weighted expression and zero to the returned IF.
+    return_influence : bool
+        When True, returns the per-unit influence function (IF) on the
+        β̂-scale, shape ``(n,)`` with zeros at zero-weight rows. The IF
+        is scaled so that under a trivial ``ResolvedSurveyDesign``
+        (single stratum, each unit its own PSU, no FPC),
+        ``compute_survey_if_variance(IF, trivial)`` ≈ ``V_HC1[1, 1]``
+        at ``atol=1e-10`` (PR #359 convention; see the "IF scale
+        convention" section of the Phase 4.5 B plan for derivation).
 
     Returns
     -------
-    tuple[float, float]
-        ``(beta_hat, se_beta)``. NaN for SE when the dose-gap vanishes
-        (``Dbar_{Z=1} == Dbar_{Z=0}``) or the sandwich is singular.
+    tuple[float, float, np.ndarray or None]
+        ``(beta_hat, se_beta, psi)``. ``psi`` is the per-unit IF when
+        ``return_influence=True``, else ``None``. NaN for SE when the
+        dose-gap vanishes (``Dbar_{Z=1} == Dbar_{Z=0}``) or the
+        sandwich is singular; in those cases ``psi`` is returned as a
+        length-``n`` zero array when ``return_influence=True``.
     """
     d = np.asarray(d, dtype=np.float64)
     dy = np.asarray(dy, dtype=np.float64)
     n = d.shape[0]
 
+    # Weight validation / normalization. The unweighted branch preserves
+    # numerical bit-parity vs pre-Phase 4.5 B by skipping np.average and
+    # using plain sums / means exactly as before. `w_arr`, `w_sum`, and
+    # `pos_mask` are initialized as sentinels so static typing flows
+    # cleanly; only the weighted branch populates them with real values.
+    weighted = weights is not None
+    w_arr: np.ndarray = np.ones(n, dtype=np.float64)
+    w_sum: float = float(n)
+    pos_mask: np.ndarray = np.ones(n, dtype=bool)
+    if weighted:
+        w_arr = np.asarray(weights, dtype=np.float64).ravel()
+        if w_arr.shape[0] != n:
+            raise ValueError(
+                f"weights length ({w_arr.shape[0]}) does not match d / dy length ({n})."
+            )
+        if not np.all(np.isfinite(w_arr)):
+            raise ValueError("weights contains non-finite values (NaN or Inf).")
+        if np.any(w_arr < 0):
+            raise ValueError("weights must be non-negative.")
+        w_sum = float(w_arr.sum())
+        if w_sum <= 0:
+            raise ValueError("weights sum to zero — no observations have positive weight.")
+        pos_mask = w_arr > 0
+
     Z = (d > d_lower).astype(np.float64)
-    n_above = int(Z.sum())
-    n_at_or_below = n - n_above
 
-    # Degeneracy checks: if either Z-subset is empty, Wald-IV is undefined.
+    # Degeneracy checks on the positive-weight subset (zero-weight units
+    # do not drive design resolution; same subpopulation convention as
+    # PR #359). Under unweighted fits the "positive" subset is the full
+    # sample so behavior is unchanged.
+    if weighted:
+        n_above = int(((Z == 1) & pos_mask).sum())
+        n_at_or_below = int(((Z == 0) & pos_mask).sum())
+    else:
+        n_above = int(Z.sum())
+        n_at_or_below = n - n_above
+
+    _null_psi = np.zeros(n, dtype=np.float64) if return_influence else None
+
     if n_above == 0 or n_at_or_below == 0:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), _null_psi
 
-    dose_gap = d[Z == 1].mean() - d[Z == 0].mean()
-    if abs(dose_gap) < 1e-12 * max(1.0, abs(float(d.mean()))):
+    # Point estimate: weighted Wald-IV ratio (reduces to unweighted at w=1).
+    if weighted:
+        Z1_idx = (Z == 1) & pos_mask
+        Z0_idx = (Z == 0) & pos_mask
+        w_Z1 = float(w_arr[Z1_idx].sum())
+        w_Z0 = float(w_arr[Z0_idx].sum())
+        if w_Z1 <= 0.0 or w_Z0 <= 0.0:
+            return float("nan"), float("nan"), _null_psi
+        dose_gap = float(
+            (w_arr[Z1_idx] * d[Z1_idx]).sum() / w_Z1 - (w_arr[Z0_idx] * d[Z0_idx]).sum() / w_Z0
+        )
+        d_bar = float((w_arr * d).sum() / w_sum)
+        dy_gap = float(
+            (w_arr[Z1_idx] * dy[Z1_idx]).sum() / w_Z1 - (w_arr[Z0_idx] * dy[Z0_idx]).sum() / w_Z0
+        )
+        dy_bar = float((w_arr * dy).sum() / w_sum)
+    else:
+        dose_gap = d[Z == 1].mean() - d[Z == 0].mean()
+        d_bar = float(d.mean())
+        dy_gap = dy[Z == 1].mean() - dy[Z == 0].mean()
+        dy_bar = float(dy.mean())
+
+    if abs(dose_gap) < 1e-12 * max(1.0, abs(d_bar)):
         # No dose variation around d_lower -> beta undefined.
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), _null_psi
 
-    dy_gap = dy[Z == 1].mean() - dy[Z == 0].mean()
+    # dy_gap / dy_bar were computed inside the weighted/unweighted blocks above.
     beta_hat = float(dy_gap / dose_gap)
-    alpha_hat = float(dy.mean() - beta_hat * d.mean())
+    alpha_hat = float(dy_bar - beta_hat * d_bar)
 
-    # STRUCTURAL residuals (plan-review CRITICAL #1): u = y - alpha - beta*x.
-    # The Wald-IV/OLS-on-indicator shortcut would use reduced-form residuals
-    # u_rf = dy - (alpha_rf + gamma * Z), which differ in finite samples.
+    # STRUCTURAL residuals: u = y - alpha - beta*x. The Wald-IV /
+    # OLS-on-indicator shortcut would use reduced-form residuals
+    # u_rf = dy - (alpha_rf + gamma * Z), which differ in finite
+    # samples and substantively under clustering.
     u = dy - alpha_hat - beta_hat * d
 
     # Design matrices: X = [1, d] (endogenous), Z_d = [1, Z] (instrument).
     X = np.column_stack([np.ones(n, dtype=np.float64), d])
     Zd = np.column_stack([np.ones(n, dtype=np.float64), Z])
 
-    ZtX = Zd.T @ X  # (2, 2)
+    if weighted:
+        # Weighted bread: Z' diag(w) X. Zero-weight rows contribute 0.
+        ZtWX = Zd.T @ (w_arr[:, None] * X)
+    else:
+        ZtWX = Zd.T @ X
+
     try:
-        ZtX_inv = np.linalg.inv(ZtX)
+        ZtWX_inv = np.linalg.inv(ZtWX)
     except np.linalg.LinAlgError:
-        # Z'X singular (e.g., no variation in Z, already handled above).
-        return beta_hat, float("nan")
+        return beta_hat, float("nan"), _null_psi
 
     vcov_type = vcov_type.lower()
     if vcov_type in _MASS_POINT_VCOV_UNSUPPORTED:
         raise NotImplementedError(
             f"vcov_type={vcov_type!r} is not supported on the "
-            f"HeterogeneousAdoptionDiD mass-point path in Phase 2a. "
-            f"HC2 / HC2-BM require a 2SLS-specific leverage derivation "
-            f"`x_i' (Z'X)^{{-1}}(...)(X'Z)^{{-1}} x_i` that differs from "
-            f"the OLS leverage `x_i' (X'X)^{{-1}} x_i`. Derivation + R "
-            f"parity anchor are queued for the follow-up PR. Use "
+            f"HeterogeneousAdoptionDiD mass-point path. HC2 / HC2-BM "
+            f"require a 2SLS-specific leverage derivation "
+            f"`x_i' (Z'WX)^{{-1}}(...)(X'WZ)^{{-1}} x_i` that differs "
+            f"from the OLS leverage `x_i' (X'WX)^{{-1}} x_i`. Derivation "
+            f"+ R parity anchor are queued for a follow-up PR. Use "
             f"vcov_type='hc1' or 'classical' for now."
         )
 
+    k = 2  # intercept + dose
     if cluster is not None:
         # CR1 (Liang-Zeger) cluster-robust sandwich.
         # Use pd.unique to match R's first-appearance order (stable for
         # cross-runtime reproducibility).
         clusters_unique = pd.unique(cluster)
         Omega = np.zeros((2, 2), dtype=np.float64)
+        wu = (w_arr * u) if weighted else u
         for c in clusters_unique:
             idx = cluster == c
-            # score per cluster: s_c = Zd[idx]' @ u[idx]
-            s = Zd[idx].T @ u[idx]
+            # score per cluster: s_c = Zd[idx]' @ (w · u)[idx]
+            s = Zd[idx].T @ wu[idx]
             Omega += np.outer(s, s)
-        G = len(clusters_unique)
-        k = 2
-        if G < 2:
+        n_clusters = len(clusters_unique)
+        if n_clusters < 2:
             # Cluster-robust SE undefined with a single cluster.
-            return beta_hat, float("nan")
-        Omega *= (G / (G - 1)) * ((n - 1) / (n - k))
+            return beta_hat, float("nan"), _null_psi
+        Omega *= (n_clusters / (n_clusters - 1)) * ((n - 1) / (n - k))
     elif vcov_type == "classical":
-        dof = n - 2
-        if dof <= 0:
-            return beta_hat, float("nan")
-        sigma2 = float((u * u).sum()) / dof
-        Omega = sigma2 * (Zd.T @ Zd)
+        if weighted:
+            dof = w_sum - k
+            if dof <= 0:
+                return beta_hat, float("nan"), _null_psi
+            sigma2 = float((w_arr * w_arr * u * u).sum()) / dof
+            Omega = sigma2 * (Zd.T @ ((w_arr * w_arr)[:, None] * Zd))
+        else:
+            dof = n - k
+            if dof <= 0:
+                return beta_hat, float("nan"), _null_psi
+            sigma2 = float((u * u).sum()) / dof
+            Omega = sigma2 * (Zd.T @ Zd)
     elif vcov_type == "hc1":
-        dof = n - 2
+        dof = n - k
         if dof <= 0:
-            return beta_hat, float("nan")
-        Omega = (n / dof) * (Zd.T @ ((u * u)[:, None] * Zd))
+            return beta_hat, float("nan"), _null_psi
+        if weighted:
+            # Pweight HC1: meat = Z' diag(w² u²) Z (Wooldridge 2010 Eq 12.37,
+            # matches linalg.py:1141 convention and estimatr::iv_robust
+            # HC1 bit-exactly).
+            Omega = (n / dof) * (Zd.T @ ((w_arr * w_arr * u * u)[:, None] * Zd))
+        else:
+            Omega = (n / dof) * (Zd.T @ ((u * u)[:, None] * Zd))
     else:
         raise ValueError(
             f"Unsupported vcov_type={vcov_type!r} on the HAD mass-point "
@@ -2012,12 +2316,32 @@ def _fit_mass_point_2sls(
             f"cluster-robust CR1 via cluster=)."
         )
 
-    V = ZtX_inv @ Omega @ ZtX_inv.T
+    V = ZtWX_inv @ Omega @ ZtWX_inv.T
     var_beta = float(V[1, 1])
     if not np.isfinite(var_beta) or var_beta < 0:
-        return beta_hat, float("nan")
+        return beta_hat, float("nan"), _null_psi
     se_beta = float(np.sqrt(var_beta))
-    return beta_hat, se_beta
+
+    if not return_influence:
+        return beta_hat, se_beta, None
+
+    # Per-unit influence function on β̂-scale, scaled so that
+    # compute_survey_if_variance(psi, trivial_resolved) ≈ V_HC1[1, 1]
+    # at atol=1e-10. Derivation (see Phase 4.5 B plan, "IF scale
+    # convention"): V_HC1[1,1] = (n/(n-k)) · sum_j psi₀_j² with
+    # psi₀_j = [(Z'WX)^{-1} z_j w_j u_j][1]; trivial
+    # compute_survey_if_variance reduces to (n/(n-1)) · sum_j psi_j².
+    # Setting psi_j = psi₀_j · sqrt((n-1)/(n-k)) makes the two agree.
+    # For the unweighted path w=1 is the degenerate case and psi₀_j
+    # equals the standard OLS IF.
+    bread_row = ZtWX_inv[1, :]  # shape (2,)
+    if weighted:
+        psi0 = (Zd @ bread_row) * (w_arr * u)  # shape (n,)
+    else:
+        psi0 = (Zd @ bread_row) * u
+    dof_psi = max(n - k, 1)
+    psi = psi0 * np.sqrt((n - 1) / dof_psi)
+    return beta_hat, se_beta, psi
 
 
 # =============================================================================
@@ -2160,6 +2484,8 @@ class HeterogeneousAdoptionDiD:
         vcov_type: Optional[str] = None,
         robust: bool = False,
         cluster: Optional[str] = None,
+        n_bootstrap: int = 999,
+        seed: Optional[int] = None,
     ) -> None:
         self.design = design
         self.d_lower = d_lower
@@ -2168,6 +2494,16 @@ class HeterogeneousAdoptionDiD:
         self.vcov_type = vcov_type
         self.robust = robust
         self.cluster = cluster
+        # Phase 4.5 B: event-study survey sup-t simultaneous-CI support.
+        # ``n_bootstrap`` = number of multiplier-bootstrap replicates for
+        # the sup-t band on the event-study + weighted path. ``seed`` =
+        # reproducibility seed for the multiplier draws. Both are
+        # consulted only when ``aggregate="event_study"`` AND a
+        # ``survey=`` / ``weights=`` is passed to ``fit()`` with
+        # ``cband=True`` (default). Unweighted event-study skips the
+        # bootstrap entirely — pre-Phase 4.5 B numerical output preserved.
+        self.n_bootstrap = n_bootstrap
+        self.seed = seed
         self._validate_constructor_args()
 
     def _validate_constructor_args(self) -> None:
@@ -2209,6 +2545,17 @@ class HeterogeneousAdoptionDiD:
                     f"of {_MASS_POINT_VCOV_SUPPORTED + _MASS_POINT_VCOV_UNSUPPORTED}, "
                     f"or None."
                 )
+        # Phase 4.5 B: n_bootstrap must be a positive int; seed must be
+        # None or a nonneg int (numpy default_rng contract).
+        if not isinstance(self.n_bootstrap, (int, np.integer)):
+            raise ValueError(f"n_bootstrap must be an int; got {type(self.n_bootstrap).__name__}.")
+        if int(self.n_bootstrap) < 1:
+            raise ValueError(f"n_bootstrap must be >= 1; got {self.n_bootstrap!r}.")
+        if self.seed is not None:
+            if not isinstance(self.seed, (int, np.integer)):
+                raise ValueError(f"seed must be None or an int; got {type(self.seed).__name__}.")
+            if int(self.seed) < 0:
+                raise ValueError(f"seed must be nonneg; got {self.seed!r}.")
 
     def get_params(self, deep: bool = True) -> Dict[str, Any]:
         """Return the raw constructor parameters (sklearn-compatible).
@@ -2235,6 +2582,8 @@ class HeterogeneousAdoptionDiD:
             "vcov_type": self.vcov_type,
             "robust": self.robust,
             "cluster": self.cluster,
+            "n_bootstrap": self.n_bootstrap,
+            "seed": self.seed,
         }
 
     def set_params(self, **params: Any) -> "HeterogeneousAdoptionDiD":
@@ -2282,6 +2631,7 @@ class HeterogeneousAdoptionDiD:
         aggregate: str = "overall",
         survey: Any = None,
         weights: Optional[np.ndarray] = None,
+        cband: bool = True,
     ) -> HeterogeneousAdoptionDiDResults:
         """Fit the HAD estimator.
 
@@ -2372,14 +2722,6 @@ class HeterogeneousAdoptionDiD:
                 "shortcut, use weights=; it is internally equivalent to "
                 "survey=SurveyDesign(weights=w)."
             )
-        # Event-study + survey/weights: Phase 4.5 B deferral.
-        if aggregate == "event_study" and (survey is not None or weights is not None):
-            raise NotImplementedError(
-                "survey= / weights= are not yet supported on "
-                "aggregate='event_study' (deferred to Phase 4.5 B — "
-                "event-study survey composition). The continuous-design "
-                "overall path supports survey= and weights= as of this PR."
-            )
         # Dispatch the event-study path to a dedicated method so the
         # single-period path stays unchanged (Phase 2a contract preserved).
         # Note: event_study returns HeterogeneousAdoptionDiDEventStudyResults
@@ -2396,6 +2738,9 @@ class HeterogeneousAdoptionDiD:
                 time_col=time_col,
                 unit_col=unit_col,
                 first_treat_col=first_treat_col,
+                survey=survey,
+                weights=weights,
+                cband=cband,
             )
 
         # ---- Resolve effective fit-time state (local vars only, per
@@ -2483,15 +2828,9 @@ class HeterogeneousAdoptionDiD:
             # drift from the docstring/test contract in ``survey.py``).
             weights_col_name = survey.weights  # known non-None from guard above
             if weights_col_name not in data.columns:
-                raise ValueError(
-                    f"survey.weights column {weights_col_name!r} not found in data."
-                )
-            raw_weights_row = np.asarray(
-                data[weights_col_name].values, dtype=np.float64
-            )
-            raw_weights_unit = _aggregate_unit_weights(
-                data, raw_weights_row, unit_col
-            )
+                raise ValueError(f"survey.weights column {weights_col_name!r} not found in data.")
+            raw_weights_row = np.asarray(data[weights_col_name].values, dtype=np.float64)
+            raw_weights_unit = _aggregate_unit_weights(data, raw_weights_row, unit_col)
             # Resolve the SurveyDesign against the long-panel data. This
             # validates column names, applies pweight/aweight normalization
             # to mean=1, and extracts numpy arrays for all design columns.
@@ -2502,9 +2841,7 @@ class HeterogeneousAdoptionDiD:
             resolved_survey_unit = _aggregate_unit_resolved_survey(
                 data, resolved_survey_row, unit_col
             )
-            weights_unit = np.asarray(
-                resolved_survey_unit.weights, dtype=np.float64
-            )
+            weights_unit = np.asarray(resolved_survey_unit.weights, dtype=np.float64)
 
         # Zero-weight units (e.g. SurveyDesign.subpopulation() output, or
         # a user-supplied pweight column with excluded observations) must
@@ -2805,28 +3142,43 @@ class HeterogeneousAdoptionDiD:
             vcov_label: Optional[str] = None
             cluster_label: Optional[str] = None
         elif resolved_design == "mass_point":
-            # Phase 4.5 B deferral: weighted 2SLS + survey composition on
-            # the mass-point path is not yet wired. Reject explicitly
-            # rather than silently ignoring survey/weights.
-            if weights_unit is not None:
-                raise NotImplementedError(
-                    "survey= / weights= on design='mass_point' is deferred "
-                    "to Phase 4.5 B (weighted 2SLS + sandwich variance). "
-                    "This PR ships survey support only on the continuous-"
-                    "dose paths (continuous_at_zero, continuous_near_d_lower)."
-                )
             if vcov_type_arg is None:
                 # Backward-compat: robust=True -> hc1, robust=False -> classical.
                 vcov_requested = "hc1" if robust_arg else "classical"
             else:
                 vcov_requested = vcov_type_arg.lower()
-            att, se = _fit_mass_point_2sls(
-                d_arr,
-                dy_arr,
+            # Phase 4.5 B: accept weights_unit (None on unweighted fits).
+            # return_influence=True only on the survey= path because
+            # Binder-TSL composition consumes the IF; the weights=
+            # shortcut and unweighted paths use the analytical sandwich
+            # SE directly. ``psi_mp`` is per-unit IF on β̂-scale or None.
+            # Fit on FULL (unfiltered) arrays so the IF aligns with the
+            # full survey design (subpopulation convention: zero-weight
+            # units contribute 0 to all sums; IF zero-padded back to full
+            # length). Under unweighted fits d_arr_full == d_arr and
+            # weights_unit_full is None, so behavior is unchanged.
+            att, se, psi_mp = _fit_mass_point_2sls(
+                d_arr_full,
+                dy_arr_full,
                 d_lower_val,
                 cluster_arr,
                 vcov_requested,
+                weights=weights_unit_full,
+                return_influence=resolved_survey_unit_full is not None,
             )
+            # Survey path: compose Binder-TSL variance from per-unit IF
+            # (replaces analytical sandwich SE). Mirrors continuous-path
+            # branch at lines 3082-3099. Under trivial resolved (single
+            # stratum, no PSU/FPC, uniform w), this reduces to analytical
+            # HC1 within the IF-scale-convention tolerance (atol=1e-10).
+            if resolved_survey_unit_full is not None and psi_mp is not None:
+                from diff_diff.survey import compute_survey_if_variance
+
+                v_survey = compute_survey_if_variance(psi_mp, resolved_survey_unit_full)
+                if np.isfinite(v_survey) and v_survey > 0.0:
+                    se = float(np.sqrt(v_survey))
+                else:
+                    se = float("nan")
             bc_fit = None
             bw_diag = None
             inference_method = "analytical_2sls"
@@ -2849,9 +3201,7 @@ class HeterogeneousAdoptionDiD:
         df_infer: Optional[int] = None
         if resolved_survey_unit is not None:
             df_infer = resolved_survey_unit.df_survey
-        t_stat, p_value, conf_int = safe_inference(
-            att, se, alpha=float(self.alpha), df=df_infer
-        )
+        t_stat, p_value, conf_int = safe_inference(att, se, alpha=float(self.alpha), df=df_infer)
 
         # Build survey metadata (repo-standard SurveyMetadata from
         # diff_diff.survey.compute_survey_metadata) when weights/survey
@@ -2878,7 +3228,13 @@ class HeterogeneousAdoptionDiD:
                 survey_metadata = compute_survey_metadata(
                     resolved_survey_unit_full, raw_weights_unit_full
                 )
-                variance_formula_label = "survey_binder_tsl"
+                # Design-specific label — continuous uses bias-corrected CCT
+                # IF, mass-point uses 2SLS IF; both route through Binder TSL.
+                variance_formula_label = (
+                    "survey_binder_tsl_2sls"
+                    if resolved_design == "mass_point"
+                    else "survey_binder_tsl"
+                )
             else:
                 # weights=<array> shortcut: construct a minimal resolved
                 # SurveyDesign with the FULL user-supplied weights
@@ -2901,9 +3257,7 @@ class HeterogeneousAdoptionDiD:
                 )
                 # weights_unit_full is already the raw user-supplied
                 # array (no SurveyDesign.resolve() normalization here).
-                survey_metadata = compute_survey_metadata(
-                    minimal_resolved, weights_unit_full
-                )
+                survey_metadata = compute_survey_metadata(minimal_resolved, weights_unit_full)
                 # On the ``weights=`` shortcut, inference stays Normal
                 # (df=None in safe_inference) — no PSU / strata / FPC
                 # composition. Clear the survey-only fields that
@@ -2918,22 +3272,40 @@ class HeterogeneousAdoptionDiD:
                 survey_metadata.n_strata = None
                 survey_metadata.n_psu = None
                 survey_metadata.df_survey = None
-                variance_formula_label = "pweight"
-            # Expose the effective weighted denominator used by the
-            # beta-scale rescaling. Use FULL arrays (same numerical
-            # result — zero-weight units contribute 0 to both numerator
-            # and denominator — but preserves symmetry with the FULL-
-            # array fit path above).
-            if resolved_design == "continuous_at_zero":
-                effective_dose_mean_value = float(
-                    np.average(d_arr_full, weights=weights_unit_full)
+                variance_formula_label = (
+                    "pweight_2sls" if resolved_design == "mass_point" else "pweight"
                 )
+            # Expose the effective weighted denominator used by the
+            # beta-scale rescaling. Continuous paths use a weighted sample
+            # mean of d (or d − d_lower). Mass-point uses the weighted
+            # Wald-IV dose-gap (the denominator of β̂ =
+            # dy_gap_w / dose_gap_w), computed from the FULL arrays
+            # (zero-weight units contribute 0 to both subgroup sums).
+            if resolved_design == "continuous_at_zero":
+                effective_dose_mean_value = float(np.average(d_arr_full, weights=weights_unit_full))
             elif resolved_design == "continuous_near_d_lower":
                 effective_dose_mean_value = float(
                     np.average(d_arr_full - d_lower_val, weights=weights_unit_full)
                 )
-            # else (mass_point): unreachable here because mass_point with
-            # weights raises NotImplementedError upstream.
+            elif resolved_design == "mass_point":
+                # Weighted Wald-IV dose gap: mean(d | Z=1, w) - mean(d | Z=0, w).
+                # Surface this as the "effective denominator" so downstream
+                # reporting displays the β̂-scale denominator consistently
+                # across designs. Guard against empty subgroups (handled
+                # upstream by _fit_mass_point_2sls returning NaN, so we
+                # only reach here on a successful fit with positive mass
+                # on both sides).
+                Z_mp = (d_arr_full > d_lower_val).astype(np.float64)
+                pos_mp = weights_unit_full > 0
+                Z1_mp = (Z_mp == 1) & pos_mp
+                Z0_mp = (Z_mp == 0) & pos_mp
+                w_Z1_mp = float(weights_unit_full[Z1_mp].sum())
+                w_Z0_mp = float(weights_unit_full[Z0_mp].sum())
+                if w_Z1_mp > 0.0 and w_Z0_mp > 0.0:
+                    effective_dose_mean_value = float(
+                        (weights_unit_full[Z1_mp] * d_arr_full[Z1_mp]).sum() / w_Z1_mp
+                        - (weights_unit_full[Z0_mp] * d_arr_full[Z0_mp]).sum() / w_Z0_mp
+                    )
 
         return HeterogeneousAdoptionDiDResults(
             att=float(att),
@@ -2973,6 +3345,7 @@ class HeterogeneousAdoptionDiD:
         d_lower_val: float,
         weights_arr: Optional[np.ndarray] = None,
         resolved_survey_unit: Any = None,  # ResolvedSurveyDesign (G,) or None
+        force_return_influence: bool = False,
     ) -> Tuple[float, float, Optional[BiasCorrectedFit], Optional[BandwidthResult]]:
         """Fit Phase 1c ``bias_corrected_local_linear`` and form the WAS estimate.
 
@@ -3057,7 +3430,7 @@ class HeterogeneousAdoptionDiD:
                 # for survey-composed variance (compute_survey_if_variance).
                 # Unconditional IF computation would add a small O(G) cost
                 # to every fit; gate it on the survey path.
-                return_influence=resolved_survey_unit is not None,
+                return_influence=(resolved_survey_unit is not None or force_return_influence),
                 # No cluster / vce threading in Phase 2a (see UserWarning
                 # in fit()).
             )
@@ -3088,6 +3461,7 @@ class HeterogeneousAdoptionDiD:
                 # design, V(mu_hat) = compute_survey_if_variance(psi,
                 # resolved) with PSU aggregation + strata sum + FPC.
                 from diff_diff.survey import compute_survey_if_variance
+
                 v_survey = compute_survey_if_variance(
                     bc_fit.influence_function, resolved_survey_unit
                 )
@@ -3112,6 +3486,9 @@ class HeterogeneousAdoptionDiD:
         time_col: str,
         unit_col: str,
         first_treat_col: Optional[str],
+        survey: Any = None,
+        weights: Optional[np.ndarray] = None,
+        cband: bool = True,
     ) -> HeterogeneousAdoptionDiDEventStudyResults:
         """Multi-period event-study fit (paper Appendix B.2).
 
@@ -3121,9 +3498,12 @@ class HeterogeneousAdoptionDiD:
         on the period-F dose distribution, and then fits the chosen design
         path independently on each event-time horizon's first differences.
 
-        Per-horizon sandwich independence is the paper-faithful convention
-        (Pierce-Schott Figure 2 pointwise CIs). Joint cross-horizon
-        covariance is deferred to a follow-up PR.
+        On the weighted path (``survey=`` or ``weights=``), per-horizon
+        variance is Binder-TSL via :func:`compute_survey_if_variance` and
+        the simultaneous confidence band (when ``cband=True``) is
+        constructed by a shared-PSU multiplier bootstrap over the stacked
+        per-horizon influence-function matrix (see
+        :func:`_sup_t_multiplier_bootstrap`).
         """
         # ---- Resolve effective fit-time state (local vars only,
         # feedback_fit_does_not_mutate_config). ----
@@ -3132,11 +3512,90 @@ class HeterogeneousAdoptionDiD:
         vcov_type_arg = self.vcov_type
         robust_arg = self.robust
         cluster_arg = self.cluster
+        n_bootstrap_eff = int(self.n_bootstrap)
+        seed_eff = None if self.seed is None else int(self.seed)
+
+        # ---- Survey/weights mutex + contract validation (front-door).
+        # Mirrors the static-path gates at fit(): exactly one knob
+        # (survey= xor weights=); survey= without a weights column is
+        # unsupported; non-pweight SurveyDesigns are rejected with an
+        # NotImplementedError pointing at Phase 4.5 C. ----
+        if survey is not None and weights is not None:
+            raise ValueError(
+                "Pass exactly one of survey= or weights=, not both. "
+                "For SurveyDesign-composed inference (PSU, strata, FPC, "
+                "replicate weights), use survey=. For a simple pweight-"
+                "only shortcut, use weights=; it is internally equivalent "
+                "to survey=SurveyDesign(weights=w)."
+            )
+        if survey is not None:
+            if not hasattr(survey, "weights"):
+                raise TypeError(
+                    f"survey= must be a SurveyDesign-like object with a "
+                    f".weights attribute; got {type(survey).__name__}. "
+                    f"Construct a SurveyDesign via diff_diff.survey."
+                )
+            if getattr(survey, "weights", None) is None:
+                raise NotImplementedError(
+                    "survey= without weights is not yet supported. Pass "
+                    "survey=SurveyDesign(weights='<col>', ...) with a "
+                    "per-row weight column."
+                )
+            weight_type = getattr(survey, "weight_type", "pweight")
+            if weight_type != "pweight":
+                raise NotImplementedError(
+                    f"survey=SurveyDesign(weight_type={weight_type!r}) is "
+                    f"not yet supported on HeterogeneousAdoptionDiD. "
+                    f"HAD's weighted local-linear treats weights as "
+                    f"sampling (probability) weights only. Replicate "
+                    f"designs (BRR/Fay/JK1/JKn/SDR) and frequency / "
+                    f"analytic weights are deferred to Phase 4.5 C."
+                )
 
         # ---- Validate multi-period panel and apply staggered filter ----
         F, t_pre_list, t_post_list, data_filtered, filter_info = _validate_had_panel_event_study(
             data, outcome_col, dose_col, time_col, unit_col, first_treat_col
         )
+
+        # ---- Filter weights / resolve survey on the FILTERED frame.
+        # ``data_filtered`` preserves the original row index (via
+        # ``.loc[keep_mask].copy()`` in the validator), so the filtered
+        # weights array is ``weights[data_filtered.index]``. Survey
+        # resolution runs against ``data_filtered`` directly — the
+        # SurveyDesign reads its columns by name from the DataFrame. ----
+        weights_unit: Optional[np.ndarray] = None
+        raw_weights_unit: Optional[np.ndarray] = None
+        resolved_survey_unit: Any = None  # ResolvedSurveyDesign (G,) or None
+        if weights is not None:
+            w_full = np.asarray(weights, dtype=np.float64).ravel()
+            if w_full.shape[0] != int(data.shape[0]):
+                raise ValueError(
+                    f"weights length ({w_full.shape[0]}) does not match "
+                    f"data rows ({int(data.shape[0])})."
+                )
+            # Filter to rows surviving the staggered last-cohort filter.
+            # data_filtered.index is the original integer positional index
+            # into `data`; use positional slicing via `.iloc` elsewhere,
+            # but here `.index` carries the row labels to match.
+            w_filtered = w_full[data_filtered.index.to_numpy()]
+            weights_unit = _aggregate_unit_weights(data_filtered, w_filtered, unit_col)
+            raw_weights_unit = weights_unit
+        elif survey is not None:
+            from diff_diff.survey import ResolvedSurveyDesign  # noqa: F401
+
+            resolved_survey_row = survey.resolve(data_filtered)
+            # Capture RAW pre-normalization per-row weights for
+            # compute_survey_metadata (matches PR #359 static-path
+            # contract: sum_weights / weight_range surface the user-
+            # supplied scale, not the resolver's mean=1 normalization).
+            weight_col_name = getattr(survey, "weights", None)
+            if isinstance(weight_col_name, str):
+                raw_row_w = np.asarray(data_filtered[weight_col_name], dtype=np.float64)
+                raw_weights_unit = _aggregate_unit_weights(data_filtered, raw_row_w, unit_col)
+            resolved_survey_unit = _aggregate_unit_resolved_survey(
+                data_filtered, resolved_survey_row, unit_col
+            )
+            weights_unit = np.asarray(resolved_survey_unit.weights, dtype=np.float64)
 
         # ---- Aggregate to per-horizon first differences ----
         # Cluster extraction is deferred until after design resolution.
@@ -3158,6 +3617,39 @@ class HeterogeneousAdoptionDiD:
                 f"HAD event-study requires at least 3 units for inference; "
                 f"got n_units={n_units} after aggregation."
             )
+
+        # ---- Zero-weight subpopulation convention (mirrors static path).
+        # Design decisions (auto-detect, d_lower, mass-point threshold)
+        # run on the positive-weight subset; variance composition runs
+        # on the FULL design (zero contributions but preserved frame). ----
+        d_arr_full = d_arr  # unfiltered; pass to per-horizon fits
+        dy_dict_full = dy_dict
+        weights_unit_full = weights_unit
+        resolved_survey_unit_full = resolved_survey_unit
+        raw_weights_unit_full = raw_weights_unit
+        if weights_unit is not None:
+            positive_mask = weights_unit > 0.0
+            if not bool(positive_mask.all()):
+                n_dropped = int((~positive_mask).sum())
+                warnings.warn(
+                    f"HAD event-study: {n_dropped} unit(s) have weight == 0 "
+                    f"and are excluded from design resolution (auto-detect, "
+                    f"d_lower, mass-point threshold). Retained in the survey "
+                    f"design for variance + SurveyMetadata (subpopulation "
+                    f"convention).",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                d_arr = d_arr[positive_mask]
+                dy_dict = {e: v[positive_mask] for e, v in dy_dict.items()}
+                weights_unit = weights_unit[positive_mask]
+                n_units = int(d_arr.shape[0])
+                if n_units < 3:
+                    raise ValueError(
+                        f"HAD event-study requires at least 3 positive-"
+                        f"weight units for inference; got n_units={n_units} "
+                        f"after the zero-weight filter."
+                    )
 
         # ---- Resolve design (once, from D_{g, F} distribution) ----
         if design_arg == "auto":
@@ -3299,15 +3791,36 @@ class HeterogeneousAdoptionDiD:
             cluster_label = None
 
         # ---- Per-horizon loop ----
+        # On the weighted path, every horizon uses the FULL arrays
+        # (zero-weight units padded to 0 contribution) so the stacked IF
+        # matrix aligns with the full survey design. On unweighted fits,
+        # `d_arr_full == d_arr` and `dy_dict_full == dy_dict`, so this
+        # branch is a no-op.
         event_times_sorted = sorted(dy_dict.keys())
         n_horizons = len(event_times_sorted)
+        # Use the full arrays when weighted so the IF matrix aligns with
+        # the survey design; unweighted uses the same d_arr either way.
+        weighted_es = weights_unit_full is not None
+        d_arr_loop = d_arr_full if weighted_es else d_arr
+        dy_dict_loop = dy_dict_full if weighted_es else dy_dict
+        G_full = int(d_arr_full.shape[0])
+
         att_arr = np.full(n_horizons, np.nan, dtype=np.float64)
         se_arr = np.full(n_horizons, np.nan, dtype=np.float64)
         t_arr = np.full(n_horizons, np.nan, dtype=np.float64)
         p_arr = np.full(n_horizons, np.nan, dtype=np.float64)
         ci_lo_arr = np.full(n_horizons, np.nan, dtype=np.float64)
         ci_hi_arr = np.full(n_horizons, np.nan, dtype=np.float64)
-        n_obs_arr = np.full(n_horizons, n_units, dtype=np.int64)
+        n_obs_arr = np.full(n_horizons, G_full if weighted_es else n_units, dtype=np.int64)
+
+        # Per-horizon IF matrix on the weighted path (shape (G, H)); drives
+        # both per-horizon Binder-TSL variance (already composed inside
+        # ``_fit_continuous`` for continuous, or explicitly below for
+        # mass-point) AND the shared-PSU multiplier bootstrap for sup-t.
+        if weighted_es:
+            Psi = np.full((G_full, n_horizons), np.nan, dtype=np.float64)
+        else:
+            Psi = np.zeros((0, 0), dtype=np.float64)  # sentinel, not used
 
         # Collect per-horizon diagnostics on continuous paths. Entries may be
         # None for horizons where ``_fit_continuous`` caught a degenerate
@@ -3319,30 +3832,173 @@ class HeterogeneousAdoptionDiD:
             [] if resolved_design in ("continuous_at_zero", "continuous_near_d_lower") else None
         )
 
+        # df_survey for t-inference on survey= path (mirrors static path).
+        df_infer: Optional[int] = None
+        if resolved_survey_unit_full is not None:
+            df_infer = resolved_survey_unit_full.df_survey
+
+        # On the weighted event-study path, the sup-t multiplier bootstrap
+        # operates on the per-horizon IF matrix, so we must force the IF
+        # computation even on the ``weights=`` shortcut (no survey
+        # structure → _fit_continuous normally skips IF). Pass through
+        # the actual ``resolved_survey_unit_full`` (None on shortcut) so
+        # the per-horizon analytical SE still matches the static-path
+        # convention (bc_fit.se_robust on shortcut; Binder-TSL on
+        # survey=). IF return is gated on `force_return_influence=True`.
+
+        # Track the Binder-TSL den for continuous paths so we can
+        # reconstruct the per-unit IF (psi / den) for the sup-t bootstrap
+        # where both numerator IF and denominator divide are needed.
         for i, e in enumerate(event_times_sorted):
-            dy_e = dy_dict[e]
+            dy_e = dy_dict_loop[e]
             if resolved_design in ("continuous_at_zero", "continuous_near_d_lower"):
                 att_e, se_e, bc_fit_e, bw_diag_e = self._fit_continuous(
-                    d_arr, dy_e, resolved_design, d_lower_val
+                    d_arr_loop,
+                    dy_e,
+                    resolved_design,
+                    d_lower_val,
+                    weights_arr=weights_unit_full,
+                    resolved_survey_unit=resolved_survey_unit_full,
+                    # Force IF return on the weighted event-study path
+                    # (needed for the sup-t bootstrap). Does NOT change
+                    # the per-horizon SE formula — that still follows
+                    # the static-path convention (Binder-TSL under
+                    # survey=, bc_fit.se_robust under weights= shortcut).
+                    force_return_influence=weighted_es,
                 )
                 if bc_fits is not None:
                     bc_fits.append(bc_fit_e)
                 if bw_diags is not None:
                     bw_diags.append(bw_diag_e)
+                # Collect per-unit IF on β̂-scale (psi_bc / den) so the
+                # sup-t bootstrap operates on the same θ̂-scale IF that
+                # the analytical variance sees. Per continuous-path
+                # construction in _fit_continuous, bc_fit.influence_function
+                # is the numerator IF; dividing by |den| yields the β̂ IF.
+                if weighted_es and bc_fit_e is not None and bc_fit_e.influence_function is not None:
+                    if resolved_design == "continuous_at_zero":
+                        den_e = float(np.average(d_arr_full, weights=weights_unit_full))
+                    else:
+                        den_e = float(
+                            np.average(
+                                d_arr_full - d_lower_val,
+                                weights=weights_unit_full,
+                            )
+                        )
+                    if abs(den_e) > 1e-12:
+                        Psi[:, i] = bc_fit_e.influence_function / abs(den_e)
             elif resolved_design == "mass_point":
-                att_e, se_e = _fit_mass_point_2sls(
-                    d_arr, dy_e, d_lower_val, cluster_arr, vcov_requested
+                att_e, se_e, psi_e = _fit_mass_point_2sls(
+                    d_arr_loop,
+                    dy_e,
+                    d_lower_val,
+                    cluster_arr,
+                    vcov_requested,
+                    weights=weights_unit_full,
+                    return_influence=resolved_survey_unit_full is not None or weighted_es,
                 )
+                # Survey path: override analytical sandwich SE with
+                # Binder-TSL via compute_survey_if_variance (matches
+                # continuous-path convention from PR #359).
+                if resolved_survey_unit_full is not None and psi_e is not None:
+                    from diff_diff.survey import compute_survey_if_variance
+
+                    v_survey = compute_survey_if_variance(psi_e, resolved_survey_unit_full)
+                    if np.isfinite(v_survey) and v_survey > 0.0:
+                        se_e = float(np.sqrt(v_survey))
+                    else:
+                        se_e = float("nan")
+                if weighted_es and psi_e is not None:
+                    Psi[:, i] = psi_e
             else:
                 raise ValueError(f"Internal error: unhandled design={resolved_design!r}.")
 
-            t_stat_e, p_value_e, conf_int_e = safe_inference(att_e, se_e, alpha=float(self.alpha))
+            t_stat_e, p_value_e, conf_int_e = safe_inference(
+                att_e, se_e, alpha=float(self.alpha), df=df_infer
+            )
             att_arr[i] = float(att_e)
             se_arr[i] = float(se_e)
             t_arr[i] = float(t_stat_e)
             p_arr[i] = float(p_value_e)
             ci_lo_arr[i] = float(conf_int_e[0])
             ci_hi_arr[i] = float(conf_int_e[1])
+
+        # ---- Sup-t simultaneous confidence band (weighted + cband only) ----
+        cband_low_arr: Optional[np.ndarray] = None
+        cband_high_arr: Optional[np.ndarray] = None
+        cband_crit_value: Optional[float] = None
+        cband_method_label: Optional[str] = None
+        cband_n_bootstrap_eff: Optional[int] = None
+        if weighted_es and cband and n_horizons >= 1:
+            q, cband_low_arr, cband_high_arr, _n_valid = _sup_t_multiplier_bootstrap(
+                influence_matrix=Psi,
+                att_per_horizon=att_arr,
+                se_per_horizon=se_arr,
+                resolved_survey=resolved_survey_unit_full,
+                n_bootstrap=n_bootstrap_eff,
+                alpha=float(self.alpha),
+                seed=seed_eff,
+            )
+            cband_crit_value = q
+            cband_method_label = "multiplier_bootstrap"
+            cband_n_bootstrap_eff = n_bootstrap_eff
+
+        # ---- Build survey metadata + variance_formula + effective_dose_mean
+        # (mirrors static-path branch). ----
+        survey_metadata: Optional[SurveyMetadata] = None
+        variance_formula_label: Optional[str] = None
+        effective_dose_mean_value: Optional[float] = None
+        if weights_unit_full is not None:
+            if resolved_survey_unit_full is not None:
+                assert raw_weights_unit_full is not None
+                survey_metadata = compute_survey_metadata(
+                    resolved_survey_unit_full, raw_weights_unit_full
+                )
+                variance_formula_label = (
+                    "survey_binder_tsl_2sls"
+                    if resolved_design == "mass_point"
+                    else "survey_binder_tsl"
+                )
+            else:
+                from diff_diff.survey import ResolvedSurveyDesign
+
+                minimal_resolved = ResolvedSurveyDesign(
+                    weights=weights_unit_full,
+                    weight_type="pweight",
+                    strata=None,
+                    psu=None,
+                    fpc=None,
+                    n_strata=1,
+                    n_psu=int(weights_unit_full.shape[0]),
+                    lonely_psu="remove",
+                    combined_weights=True,
+                    mse=False,
+                )
+                survey_metadata = compute_survey_metadata(minimal_resolved, weights_unit_full)
+                survey_metadata.n_strata = None
+                survey_metadata.n_psu = None
+                survey_metadata.df_survey = None
+                variance_formula_label = (
+                    "pweight_2sls" if resolved_design == "mass_point" else "pweight"
+                )
+            if resolved_design == "continuous_at_zero":
+                effective_dose_mean_value = float(np.average(d_arr_full, weights=weights_unit_full))
+            elif resolved_design == "continuous_near_d_lower":
+                effective_dose_mean_value = float(
+                    np.average(d_arr_full - d_lower_val, weights=weights_unit_full)
+                )
+            elif resolved_design == "mass_point":
+                Z_mp = (d_arr_full > d_lower_val).astype(np.float64)
+                pos_mp = weights_unit_full > 0
+                Z1_mp = (Z_mp == 1) & pos_mp
+                Z0_mp = (Z_mp == 0) & pos_mp
+                w_Z1_mp = float(weights_unit_full[Z1_mp].sum())
+                w_Z0_mp = float(weights_unit_full[Z0_mp].sum())
+                if w_Z1_mp > 0.0 and w_Z0_mp > 0.0:
+                    effective_dose_mean_value = float(
+                        (weights_unit_full[Z1_mp] * d_arr_full[Z1_mp]).sum() / w_Z1_mp
+                        - (weights_unit_full[Z0_mp] * d_arr_full[Z0_mp]).sum() / w_Z0_mp
+                    )
 
         return HeterogeneousAdoptionDiDEventStudyResults(
             event_times=np.asarray(event_times_sorted, dtype=np.int64),
@@ -3359,12 +4015,19 @@ class HeterogeneousAdoptionDiD:
             d_lower=d_lower_val,
             dose_mean=dose_mean,
             F=F,
-            n_units=n_units,
+            n_units=G_full if weighted_es else n_units,
             inference_method=inference_method,
             vcov_type=vcov_label,
             cluster_name=cluster_label,
-            survey_metadata=None,
+            survey_metadata=survey_metadata,
             bandwidth_diagnostics=bw_diags,
             bias_corrected_fit=bc_fits,
             filter_info=filter_info,
+            variance_formula=variance_formula_label,
+            effective_dose_mean=effective_dose_mean_value,
+            cband_low=cband_low_arr,
+            cband_high=cband_high_arr,
+            cband_crit_value=cband_crit_value,
+            cband_method=cband_method_label,
+            cband_n_bootstrap=cband_n_bootstrap_eff,
         )
