@@ -185,12 +185,14 @@ def profile_panel(
     - ``"continuous"``: numeric treatment with more than two distinct
       values, or a 2-valued numeric whose values are not in
       :math:`\\{0, 1\\}` (matches the ``ContinuousDiD`` convention).
-    - ``"categorical"``: non-numeric dtype (object / category), a
-      boolean-dtype column, or a column that is entirely NaN.
+    - ``"categorical"``: non-numeric dtype (object / category) or a
+      column that is entirely NaN.
 
-    Boolean-dtype columns are intentionally classified as
-    ``"categorical"``; cast to ``int`` if you want binary-treatment
-    profiling.
+    Bool-dtype columns (``True`` / ``False``) are classified the same
+    way as numeric ``{0, 1}``: the library's binary estimators validate
+    on value support via :func:`diff_diff.utils.validate_binary`, so
+    ``True`` / ``False`` behave like ``1`` / ``0`` for absorbing /
+    non-absorbing classification.
 
     ``has_never_treated`` is computed across both binary and
     continuous numeric treatment types: some unit has ``treatment ==
@@ -255,9 +257,7 @@ def profile_panel(
         last_tp,
     ) = _classify_treatment(df, unit=unit, time=time, treatment=treatment)
 
-    if pd.api.types.is_numeric_dtype(df[treatment]) and not pd.api.types.is_bool_dtype(
-        df[treatment]
-    ):
+    if pd.api.types.is_numeric_dtype(df[treatment]) or pd.api.types.is_bool_dtype(df[treatment]):
         per_unit_distinct = df.groupby(unit)[treatment].nunique(dropna=True)
         treatment_varies_within_unit = bool((per_unit_distinct > 1).any())
     else:
@@ -352,7 +352,13 @@ def _classify_treatment(
     is_numeric = pd.api.types.is_numeric_dtype(col)
     is_bool = pd.api.types.is_bool_dtype(col)
 
-    if (not is_numeric) or is_bool:
+    # Bool-dtype treatment columns are treated as binary 0/1 inputs.
+    # The library's binary estimators validate value support via
+    # `validate_binary`, which accepts bool because True/False coerce
+    # to 1/0 numerically. Classifying bool columns as "categorical"
+    # here would route a valid binary design away from the supported
+    # estimator set.
+    if (not is_numeric) and (not is_bool):
         return ("categorical", False, {}, False, False, None, None)
 
     distinct = col.dropna().unique()
@@ -400,7 +406,10 @@ def _classify_treatment(
     for _, group in sorted_df.groupby(unit, sort=False):
         vals = group[treatment].to_numpy()
         mask = ~pd.isna(vals)
-        observed = vals[mask]
+        # Cast to int so np.diff on a bool-dtype column performs
+        # arithmetic (1 - 0 = 1, 0 - 1 = -1) rather than XOR (which
+        # would mask a True -> False transition).
+        observed = vals[mask].astype(np.int64, copy=False)
         if len(observed) >= 2 and bool(np.any(np.diff(observed) < 0)):
             is_absorbing = False
             break

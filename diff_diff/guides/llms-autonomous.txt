@@ -90,11 +90,16 @@ view. Every field below appears as a top-level key in that dict.
       two-valued numeric column whose values are not in {0, 1} (e.g.,
       a dose, a discrete-integer partial-adoption score). Use
       `ContinuousDiD` or `HeterogeneousAdoptionDiD`.
-    - `"categorical"`: non-numeric dtype (object / category), a bool
-      dtype column, or a column that is entirely NaN. Often indicates
-      a treatment arm. Encode each arm as a binary indicator and fit
-      separately, or use a multi-treatment workflow outside the
-      current estimator suite.
+    - `"categorical"`: non-numeric dtype (object / category), or a
+      column that is entirely NaN. Often indicates a treatment arm.
+      Encode each arm as a binary indicator and fit separately, or
+      use a multi-treatment workflow outside the current estimator
+      suite.
+
+  Bool-dtype treatment columns (`True` / `False`) are classified the
+  same way as numeric `{0, 1}`: the library's binary estimators
+  validate on value support rather than dtype, so `True` and `False`
+  behave like `1` and `0` for absorbing / non-absorbing classification.
 - **`is_staggered: bool`** - true iff treatment is `binary_absorbing` and
   at least two distinct first-treatment periods are observed. Drives the
   choice between classic DiD/TWFE and staggered-robust estimators.

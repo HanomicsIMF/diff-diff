@@ -155,6 +155,44 @@ def test_continuous_positive_dose_does_not_fire_has_always_treated():
     assert "has_always_treated_units" not in _alert_codes(profile)
 
 
+def test_bool_dtype_treatment_is_binary_absorbing():
+    """Bool-dtype treatment columns (True/False) must classify the same
+    way as numeric {0, 1}. The library's binary estimators validate on
+    value support via `validate_binary`, which accepts bool because
+    True/False coerce to 1/0 numerically. Classifying bool as
+    "categorical" would silently route valid binary DiD panels away
+    from the supported estimator set."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    rows = []
+    for u in range(1, 21):
+        for t in range(4):
+            treated = u in first_treat and t >= first_treat[u]
+            rows.append({"u": u, "t": t, "tr": bool(treated), "y": float(u) + 0.1 * t})
+    df = pd.DataFrame(rows)
+    assert df["tr"].dtype == bool
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "binary_absorbing"
+    assert profile.has_never_treated is True
+    assert profile.has_always_treated is False
+    assert profile.treatment_varies_within_unit is True
+    assert profile.cohort_sizes == {2: 10}
+
+
+def test_bool_dtype_non_absorbing():
+    """Reversible 0 -> 1 -> 0 treatment expressed as a bool column must
+    classify as binary_non_absorbing, same as numeric."""
+    rows = []
+    for u in range(1, 11):
+        seq = [False, True, True, False, False] if u > 5 else [False] * 5
+        for t, tr in enumerate(seq):
+            rows.append({"u": u, "t": t, "tr": tr, "y": float(u) + 0.1 * t})
+    df = pd.DataFrame(rows)
+    assert df["tr"].dtype == bool
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "binary_non_absorbing"
+    assert profile.has_never_treated is True
+
+
 def test_categorical_treatment_object_dtype():
     rows = []
     for u in range(1, 11):
