@@ -360,11 +360,20 @@ class HeterogeneousAdoptionDiDResults:
     weighted one."""
 
     def __repr__(self) -> str:
-        return (
+        base = (
             f"HeterogeneousAdoptionDiDResults("
             f"att={self.att:.4f}, se={self.se:.4f}, "
-            f"design={self.design!r}, n_obs={self.n_obs})"
+            f"design={self.design!r}, n_obs={self.n_obs}"
         )
+        # Surface weighted-path identity when the fit was weighted, so the
+        # one-line repr makes it unambiguous which inference family was
+        # used (pweight-shortcut vs full Binder-TSL survey) and the
+        # effective denominator flows into ad-hoc log output.
+        if self.variance_formula is not None:
+            base += f", variance_formula={self.variance_formula!r}"
+        if self.effective_dose_mean is not None:
+            base += f", effective_dose_mean={self.effective_dose_mean:.4g}"
+        return base + ")"
 
     def summary(self) -> str:
         """Formatted summary table."""
@@ -2412,9 +2421,13 @@ class HeterogeneousAdoptionDiD:
         #   and produce a unit-level analogue for per-unit IF composition.
         # - neither → unweighted path.
         weights_unit: Optional[np.ndarray] = None
+        raw_weights_unit: Optional[np.ndarray] = None
         resolved_survey_unit: Any = None  # ResolvedSurveyDesign (G,) when survey=
         if weights is not None:
             weights_unit = _aggregate_unit_weights(data, weights, unit_col)
+            # On the ``weights=`` shortcut, the passed array IS the raw
+            # pre-normalization weights — no SurveyDesign.resolve() scaling.
+            raw_weights_unit = weights_unit
         elif survey is not None:
             if not hasattr(survey, "weights"):
                 raise TypeError(
@@ -2447,6 +2460,24 @@ class HeterogeneousAdoptionDiD:
                     f"(fweight) and analytic weights (aweight) would "
                     f"imply different estimands and are not yet derived."
                 )
+            # Capture the RAW pre-normalization weight column before
+            # ``resolve()`` rescales pweights/aweights to mean=1. Needed
+            # below so ``compute_survey_metadata`` receives raw weights
+            # (per its contract — ``sum_weights`` / ``weight_range`` are
+            # raw-scale quantities; passing normalized weights would make
+            # the metadata disagree with the ``weights=`` shortcut and
+            # drift from the docstring/test contract in ``survey.py``).
+            weights_col_name = survey.weights  # known non-None from guard above
+            if weights_col_name not in data.columns:
+                raise ValueError(
+                    f"survey.weights column {weights_col_name!r} not found in data."
+                )
+            raw_weights_row = np.asarray(
+                data[weights_col_name].values, dtype=np.float64
+            )
+            raw_weights_unit = _aggregate_unit_weights(
+                data, raw_weights_row, unit_col
+            )
             # Resolve the SurveyDesign against the long-panel data. This
             # validates column names, applies pweight/aweight normalization
             # to mean=1, and extracts numpy arrays for all design columns.
@@ -2774,14 +2805,15 @@ class HeterogeneousAdoptionDiD:
             if resolved_survey_unit is not None:
                 # survey= path: build metadata from the ResolvedSurveyDesign
                 # already aggregated to unit-level by
-                # _aggregate_unit_resolved_survey. The resolved weights are
-                # post-normalization (mean=1 for pweight), which is the
-                # correct raw_weights input for compute_survey_metadata
-                # per diff_diff.survey conventions (effective_n and DEFF
-                # are scale-invariant on the weight axis).
+                # _aggregate_unit_resolved_survey. Pass the RAW
+                # pre-normalization per-unit weights (captured above before
+                # survey.resolve() rescaled pweights/aweights to mean=1)
+                # so ``sum_weights`` and ``weight_range`` reflect the
+                # user-supplied scale — matching both the ``weights=``
+                # shortcut and ``compute_survey_metadata``'s contract.
+                assert raw_weights_unit is not None  # set in survey= branch
                 survey_metadata = compute_survey_metadata(
-                    resolved_survey_unit,
-                    np.asarray(resolved_survey_unit.weights, dtype=np.float64),
+                    resolved_survey_unit, raw_weights_unit
                 )
                 variance_formula_label = "survey_binder_tsl"
             else:
@@ -2805,6 +2837,8 @@ class HeterogeneousAdoptionDiD:
                     combined_weights=True,
                     mse=False,
                 )
+                # weights_unit is already the raw user-supplied array
+                # (no SurveyDesign.resolve() normalization on this path).
                 survey_metadata = compute_survey_metadata(
                     minimal_resolved, weights_unit
                 )

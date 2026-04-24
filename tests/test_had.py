@@ -3803,6 +3803,69 @@ class TestHADSurvey:
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert r.effective_dose_mean is None
 
+    def test_survey_metadata_raw_weights_match_shortcut(self):
+        """Round 4 P2: on the ``survey=SurveyDesign(weights="col")``
+        path, ``SurveyMetadata.sum_weights`` and ``weight_range`` must
+        reflect the RAW pre-normalization weights (per the
+        ``compute_survey_metadata`` contract), so they agree with the
+        ``weights=<array>`` shortcut on the same data. Previously the
+        survey path passed resolved (post-normalization, mean=1) weights
+        into the helper, producing ``sum_weights ≈ G`` and normalized
+        ``weight_range`` that drifted from the shortcut."""
+        from diff_diff.survey import SurveyDesign
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        panel_with_w = panel.assign(w=row_w)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_w = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit", weights=row_w
+            )
+            r_sd = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w"),
+            )
+        sm_w = r_w.survey_metadata
+        sm_sd = r_sd.survey_metadata
+        assert sm_w is not None and sm_sd is not None
+        # sum_weights at unit-level: G unit-constant weights aggregated
+        # per-unit via .first() give identical arrays on both paths.
+        np.testing.assert_allclose(
+            sm_sd.sum_weights, sm_w.sum_weights, atol=1e-12, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            sm_sd.weight_range[0], sm_w.weight_range[0], atol=1e-12, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            sm_sd.weight_range[1], sm_w.weight_range[1], atol=1e-12, rtol=1e-12
+        )
+        # design_effect and effective_n are scale-invariant so they also
+        # agree (secondary lock).
+        np.testing.assert_allclose(
+            sm_sd.design_effect, sm_w.design_effect, atol=1e-12, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            sm_sd.effective_n, sm_w.effective_n, atol=1e-12, rtol=1e-12
+        )
+
+    def test_repr_surfaces_weighted_fields_when_present(self):
+        """Round 4 P3: ``__repr__`` must name ``variance_formula`` and
+        ``effective_dose_mean`` when the fit was weighted so ad-hoc log
+        output / interactive notebooks show which inference path and
+        denominator were used."""
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r_w = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        rep = repr(r_w)
+        assert "variance_formula='pweight'" in rep
+        assert "effective_dose_mean=" in rep
+        # Unweighted fit: ``__repr__`` keeps the original compact form.
+        r_unw = est.fit(panel, "outcome", "dose", "period", "unit")
+        rep_unw = repr(r_unw)
+        assert "variance_formula" not in rep_unw
+        assert "effective_dose_mean" not in rep_unw
+
     def test_weights_shortcut_clears_survey_only_fields(self):
         """Round 3 P2a: on the ``weights=`` shortcut, inference stays
         Normal (df=None in safe_inference). Survey-only fields of
