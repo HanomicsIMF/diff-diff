@@ -2420,28 +2420,37 @@ class TestTROPRustEdgeCaseParity:
             f"Rust={res_rust.se:.16f}, Python={res_py.se:.16f}",
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Local-method TROP has additional Rust-vs-Python backend "
-        "divergences beyond RNG (weight-matrix normalization in "
-        "`compute_weight_matrix` is Rust-only; Python "
-        "`_compute_observation_weights` reads `self._precomputed['Y']` "
-        "instead of the bootstrap-sample `Y`). RNG parity infrastructure "
-        "is in place (both backends now consume the same Python-canonical "
-        "stratified indices), but post-resampling computations diverge so "
-        "SE is not yet bit-identical. Tracked as a separate finding in "
-        "TODO.md. This xfail baselines the gap so we notice when both "
-        "downstream divergences are closed.",
+    @pytest.mark.parametrize(
+        "seed,lambda_nn",
+        [
+            (0, np.inf),
+            (42, np.inf),
+            (12345, np.inf),
+            (42, 0.1),
+        ],
     )
-    @pytest.mark.parametrize("seed", [0, 42, 12345])
-    def test_bootstrap_seed_reproducibility_local(self, seed):
-        """Bootstrap SE parity under a fixed seed (local method).
+    def test_bootstrap_seed_reproducibility_local(self, seed, lambda_nn):
+        """Backend-invariant bootstrap SE parity for the local method.
 
-        Currently xfail(strict=True) — see decorator. The local-method
-        path has additional backend divergences beyond RNG that this PR
-        does not address. Companion to the global-method parity test
-        above; once the downstream divergences close, this test will
-        XPASS and should be promoted to a regression guard.
+        Post-methodology-alignment regression guard covering both the
+        ``lambda_nn=inf`` regime (no-lowrank path, closed by the Python
+        ``_precomputed`` cache-fallthrough removal) and the finite
+        ``lambda_nn`` regime (with-lowrank FISTA path, closed by the Rust
+        weight-matrix normalization removal). With the RNG fix from
+        PR #354 plus both methodology fixes landed here, local-method
+        Rust and Python bootstraps consume bit-identical stratified
+        indices AND bit-identical raw-exponential weights. Main-fit ATT
+        is bit-identical (see ``test_local_method_main_fit_parity``),
+        but per-replicate bootstrap fits route through Rust's
+        ``estimate_model`` vs numpy's ``lstsq``, which use different
+        matrix factorization paths and accumulate different BLAS
+        roundoff. Empirically the residual gap is ~1e-7 relative;
+        asserted at ``atol=1e-5`` which is ~100x the observed gap and
+        comfortable across CI runner variance.
+
+        Follow-up to tighten to ``atol=1e-14``: unify Rust
+        ``estimate_model`` to use ``solve_wls_svd`` (the same SVD path
+        used by global-method since PR #348). Tracked in ``TODO.md``.
         """
         import sys
         from unittest.mock import patch
@@ -2453,7 +2462,7 @@ class TestTROPRustEdgeCaseParity:
             method="local",
             lambda_time_grid=[1.0],
             lambda_unit_grid=[1.0],
-            lambda_nn_grid=[np.inf],
+            lambda_nn_grid=[lambda_nn],
             n_bootstrap=10,
             seed=seed,
         )
@@ -2468,9 +2477,142 @@ class TestTROPRustEdgeCaseParity:
             res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
 
         np.testing.assert_allclose(
-            res_rust.se, res_py.se, atol=1e-14, rtol=1e-14,
-            err_msg=f"Local-method bootstrap SE divergence under seed={seed}: "
+            res_rust.se, res_py.se, atol=1e-5, rtol=1e-5,
+            err_msg=f"Local-method bootstrap SE divergence under "
+            f"seed={seed}, lambda_nn={lambda_nn}: "
             f"Rust={res_rust.se:.16f}, Python={res_py.se:.16f}",
+        )
+
+    @pytest.mark.parametrize(
+        "lambda_nn,tol",
+        [
+            (np.inf, 1e-14),
+            (0.1, 1e-10),
+        ],
+    )
+    def test_local_method_main_fit_parity(self, lambda_nn, tol):
+        """Backend-invariant ATT parity for the local-method main fit.
+
+        Companion to the bootstrap seed-parity test above. Exercises both
+        regimes: ``lambda_nn=inf`` (no-lowrank, bit-identical minimum-norm
+        WLS argmin under aligned raw-exponential weights) and a finite
+        ``lambda_nn`` (with-lowrank, FISTA inner loop; tolerance relaxed
+        to ``1e-10`` because FISTA iteration ordering and BLAS reduction
+        ordering introduce sub-1e-10 noise across Rust faer and numpy BLAS
+        paths).
+
+        Regression guard for the normalization fix and cache-fallthrough
+        fix landed in this PR. Before the fix, Rust ATT diverged from
+        Python ATT by O(10%) at finite ``lambda_nn`` and O(0) at
+        ``lambda_nn=inf``; after the fix both regimes match to tolerance.
+
+        Uses multi-candidate lambda grids so LOOCV selection exercises
+        Rust's `compute_weight_matrix` (the surface the normalization fix
+        changed). Patches both the LOOCV dispatch in ``diff_diff.trop``
+        and the bootstrap dispatch in ``diff_diff.trop_local`` on the
+        Python side so the comparison is Rust-LOOCV-and-fit vs
+        Python-LOOCV-and-fit end-to-end.
+        """
+        import sys
+        from unittest.mock import patch
+
+        from diff_diff import TROP
+
+        df = self._make_correlated_panel(n_units=6, n_periods=6, n_treated=2)
+        # Multi-candidate grids so LOOCV selection isn't trivial; the Rust
+        # weight-normalization fix changes per-lambda LOOCV scores and thus
+        # potentially the selected lambda.
+        trop_params = dict(
+            method="local",
+            lambda_time_grid=[0.1, 1.0, 10.0],
+            lambda_unit_grid=[0.1, 1.0, 10.0],
+            lambda_nn_grid=[lambda_nn],
+            n_bootstrap=2,  # minimum allowed; we assert ATT, not SE
+            seed=42,
+        )
+
+        trop_rust = TROP(**trop_params)
+        res_rust = trop_rust.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        trop_module = sys.modules["diff_diff.trop"]
+        trop_local_module = sys.modules["diff_diff.trop_local"]
+        with patch.object(trop_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_module, "_rust_loocv_grid_search", None), \
+             patch.object(trop_local_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_local_module, "_rust_bootstrap_trop_variance", None):
+            trop_py = TROP(**trop_params)
+            res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        np.testing.assert_allclose(
+            res_rust.att, res_py.att, atol=tol, rtol=tol,
+            err_msg=f"Local-method ATT divergence at lambda_nn={lambda_nn}: "
+            f"Rust={res_rust.att:.16f}, Python={res_py.att:.16f}",
+        )
+
+    @pytest.mark.parametrize("lambda_nn,tol", [(np.inf, 1e-14), (0.1, 1e-10)])
+    def test_local_method_same_cohort_donor_parity(self, lambda_nn, tol):
+        """Backend-invariant ATT when multiple units share the same treatment cohort.
+
+        Isolates the ``D[t, j] == 1`` target-period case the prior ``_compute_
+        observation_weights`` gate silently dropped: three treated units all
+        starting at ``t=3``. Under the paper's Eq. 2/3, ``ω_j`` is
+        distance-based for all ``j ≠ i`` (same-cohort donors included); their
+        pre-treatment rows contribute via ``θ_s · ω_j`` and post-treatment
+        cells are zeroed by the control mask ``(1 - W_{js})``. Python now
+        matches this convention (gate removed). This regression asserts that
+        the main-fit ATT is bit-identical across backends on a fixture where
+        the gate would previously have excluded donors' pre-treatment
+        information.
+        """
+        import sys
+        from unittest.mock import patch
+
+        import pandas as pd
+
+        from diff_diff import TROP
+
+        # 3 treated units + 3 controls, all treated units share cohort at t=3.
+        # Pre-treatment trajectories are distinct so same-cohort donors carry
+        # non-trivial information; without the fix Python and Rust would have
+        # different effective donor pools at each treated-observation target.
+        rng = np.random.default_rng(7)
+        rows = []
+        for i in range(6):
+            is_treated = i < 3
+            base = rng.normal(0, 1, 8)
+            for t in range(8):
+                y = 3.0 + i * 0.2 + 0.5 * t + base[t]
+                treated = 1 if (is_treated and t >= 5) else 0
+                if treated:
+                    y += 1.5
+                rows.append({"unit": i, "time": t, "outcome": y, "treated": treated})
+        df = pd.DataFrame(rows)
+
+        trop_params = dict(
+            method="local",
+            lambda_time_grid=[0.1, 1.0, 10.0],
+            lambda_unit_grid=[0.1, 1.0, 10.0],
+            lambda_nn_grid=[lambda_nn],
+            n_bootstrap=2,
+            seed=42,
+        )
+
+        trop_rust = TROP(**trop_params)
+        res_rust = trop_rust.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        trop_module = sys.modules["diff_diff.trop"]
+        trop_local_module = sys.modules["diff_diff.trop_local"]
+        with patch.object(trop_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_module, "_rust_loocv_grid_search", None), \
+             patch.object(trop_local_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_local_module, "_rust_bootstrap_trop_variance", None):
+            trop_py = TROP(**trop_params)
+            res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
+
+        np.testing.assert_allclose(
+            res_rust.att, res_py.att, atol=tol, rtol=tol,
+            err_msg=f"Same-cohort donor ATT divergence at lambda_nn={lambda_nn}: "
+            f"Rust={res_rust.att:.16f}, Python={res_py.att:.16f}",
         )
 
 

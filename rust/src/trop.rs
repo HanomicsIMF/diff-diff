@@ -548,9 +548,11 @@ fn compute_unit_distance_for_obs(
 /// Unit weights: ω_j = exp(-λ_unit × dist(j, i))
 ///
 /// Paper alignment notes:
-/// - ALL units get weights (not just those untreated at target period)
+/// - ALL units with `j != target_unit` get distance-based weights
+///   (same-cohort donors contribute via their pre-treatment rows)
 /// - The (1 - D_js) masking in the loss naturally excludes treated cells
-/// - Weights are normalized to sum to 1 (probability weights)
+///   via the control mask applied inside `estimate_model`
+/// - Weights are unnormalized raw exponentials per REGISTRY Eq. 2/3
 /// - Distance excludes target period t per Equation 3
 #[allow(clippy::too_many_arguments)]
 fn compute_weight_matrix(
@@ -565,19 +567,15 @@ fn compute_weight_matrix(
     time_dist: &ArrayView2<i64>,
 ) -> Array2<f64> {
     // Time weights for this target period: θ_s = exp(-λ_time × |t - s|)
-    let mut time_weights: Array1<f64> = Array1::from_shape_fn(n_periods, |s| {
+    // Unnormalized per REGISTRY Eq. 2/3.
+    let time_weights: Array1<f64> = Array1::from_shape_fn(n_periods, |s| {
         let dist = time_dist[[target_period, s]] as f64;
         (-lambda_time * dist).exp()
     });
 
-    // Normalize time weights to sum to 1
-    let time_sum: f64 = time_weights.sum();
-    if time_sum > 0.0 {
-        time_weights /= time_sum;
-    }
-
     // Unit weights: ω_j = exp(-λ_unit × dist(j, i))
-    // Paper alignment: compute for ALL units, let control masking handle exclusion
+    // Paper alignment: compute for ALL units, let control masking handle exclusion.
+    // Unnormalized per REGISTRY Eq. 2/3.
     let mut unit_weights = Array1::<f64>::zeros(n_units);
 
     if lambda_unit == 0.0 {
@@ -600,14 +598,7 @@ fn compute_weight_matrix(
     // Target unit gets weight 1 (will be masked out in estimation anyway)
     unit_weights[target_unit] = 1.0;
 
-    // Normalize unit weights to sum to 1
-    let unit_sum: f64 = unit_weights.sum();
-    if unit_sum > 0.0 {
-        unit_weights /= unit_sum;
-    }
-
-    // Outer product: W[t, i] = time_weights[t] * unit_weights[i]
-    // Result is normalized since both components sum to 1
+    // Outer product: W[t, i] = θ_s × ω_j (raw exponentials, unnormalized)
     let mut weight_matrix = Array2::<f64>::zeros((n_periods, n_units));
     for t in 0..n_periods {
         for i in 0..n_units {

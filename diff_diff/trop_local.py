@@ -385,13 +385,18 @@ class TROPLocalMixin:
         - Time weights theta_s^{i,t} = exp(-lambda_time * |t - s|)
         - Unit weights omega_j^{i,t} = exp(-lambda_unit * dist_unit_{-t}(j, i))
 
-        IMPORTANT (Issue A fix): The paper's objective sums over ALL observations
-        where (1 - W_js) is non-zero, which includes pre-treatment observations of
-        eventually-treated units since W_js = 0 for those. This method computes
-        weights for ALL units where D[t, j] = 0 at the target period, not just
-        never-treated units.
+        Weights are assigned for every unit ``j != i`` (distance-based, per
+        Eq. 2/3). Treated-cell exclusion is handled by the `(1 - W_{js})`
+        factor applied inside ``_estimate_model`` via the control mask, not
+        by gating ``ω_j`` on ``D[t, j]``. Same-cohort donors therefore
+        contribute via their pre-treatment rows, and future-cohort donors
+        contribute via rows where both units are still untreated.
 
-        Uses pre-computed structures when available for efficiency.
+        Always computes from the function-argument ``Y, D``; does not read
+        ``self._precomputed``. Under bootstrap the caller passes resampled
+        ``Y, D``, and a prior version of this method silently fell through to
+        the original-panel cache via a ``_precomputed`` branch, producing
+        stale unit distances.
 
         Parameters
         ----------
@@ -420,61 +425,24 @@ class TROPLocalMixin:
         np.ndarray
             Weight matrix (n_periods x n_units) for observation (i, t).
         """
-        # Use pre-computed structures when available
-        if self._precomputed is not None:
-            # Time weights from pre-computed time distance matrix
-            # time_dist_matrix[t, s] = |t - s|
-            time_weights = np.exp(-lambda_time * self._precomputed["time_dist_matrix"][t, :])
-
-            # Unit weights - computed for ALL units where D[t, j] = 0
-            # (Issue A fix: includes pre-treatment obs of eventually-treated units)
-            unit_weights = np.zeros(n_units)
-            D_stored = self._precomputed["D"]
-            Y_stored = self._precomputed["Y"]
-
-            # Valid control units at time t: D[t, j] == 0
-            valid_control_at_t = D_stored[t, :] == 0
-
-            if lambda_unit == 0:
-                # Uniform weights when lambda_unit = 0
-                # All units not treated at time t get weight 1
-                unit_weights[valid_control_at_t] = 1.0
-            else:
-                # Use observation-specific distances with target period excluded
-                # (Issue B fix: compute exact per-observation distance)
-                for j in range(n_units):
-                    if valid_control_at_t[j] and j != i:
-                        # Compute distance excluding target period t
-                        dist = self._compute_unit_distance_for_obs(Y_stored, D_stored, j, i, t)
-                        if np.isinf(dist):
-                            unit_weights[j] = 0.0
-                        else:
-                            unit_weights[j] = np.exp(-lambda_unit * dist)
-
-            # Treated unit i gets weight 1
-            unit_weights[i] = 1.0
-
-            # Weight matrix: outer product (n_periods x n_units)
-            return np.outer(time_weights, unit_weights)
-
-        # Fallback: compute from scratch (used in bootstrap)
         # Time distance: |t - s| following paper's Equation 3 (page 7)
         dist_time = np.abs(np.arange(n_periods) - t)
         time_weights = np.exp(-lambda_time * dist_time)
 
-        # Unit weights - computed for ALL units where D[t, j] = 0
-        # (Issue A fix: includes pre-treatment obs of eventually-treated units)
+        # Unit weights ω_j = exp(-λ_unit × dist(j, i)) for all j ≠ i per Eq. 2/3.
+        # No target-period gate: same-cohort donors enter with distance-based
+        # weight (their pre-treatment rows contribute via theta_s * omega_j;
+        # their post-treatment cells are zeroed by the control mask (1-D_{js})
+        # applied inside ``_estimate_model``). Matches Rust's compute_weight_matrix.
         unit_weights = np.zeros(n_units)
 
-        # Valid control units at time t: D[t, j] == 0
-        valid_control_at_t = D[t, :] == 0
-
         if lambda_unit == 0:
-            # Uniform weights when lambda_unit = 0
-            unit_weights[valid_control_at_t] = 1.0
+            # Uniform weights when lambda_unit = 0 — all units get 1.
+            # Control masking in _estimate_model handles treated-cell exclusion.
+            unit_weights[:] = 1.0
         else:
             for j in range(n_units):
-                if valid_control_at_t[j] and j != i:
+                if j != i:
                     # Compute distance excluding target period t (Issue B fix)
                     dist = self._compute_unit_distance_for_obs(Y, D, j, i, t)
                     if np.isinf(dist):
@@ -482,8 +450,8 @@ class TROPLocalMixin:
                     else:
                         unit_weights[j] = np.exp(-lambda_unit * dist)
 
-        # Treated unit i gets weight 1 (or could be omitted since we fit on controls)
-        # We include treated unit's own observation for model fitting
+        # Target unit gets weight 1 (will be masked out in estimation via
+        # the control mask, matching the paper's (1-W_{js}) factor).
         unit_weights[i] = 1.0
 
         # Weight matrix: outer product (n_periods x n_units)
@@ -970,13 +938,11 @@ class TROPLocalMixin:
         n_control_units = len(control_units)
 
         # Pre-generate stratified bootstrap indices via numpy (Python-canonical RNG).
-        # This aligns the RNG layer between backends. For the global method the RNG
-        # was the only divergence, so global SE is now bit-identical under the same
-        # seed. For the local method two downstream divergences remain (Rust weight-
-        # matrix normalization + Python `_compute_observation_weights` reading the
-        # stale `_precomputed` cache) — tracked in TODO.md; until those land, local
-        # bootstrap SE still differs across backends. Silent-failures finding #23
-        # (bootstrap half) closed for global; local follow-up queued.
+        # Aligns the RNG layer between backends. Combined with the Rust weight-
+        # matrix de-normalization and the Python `_compute_observation_weights`
+        # cache-fallthrough removal (also shipped with this parity work), local-
+        # method Rust and Python produce matching bootstrap SE up to solver-path
+        # roundoff (~1e-7); asserted at atol=1e-5 in the parity regression guard.
         rng = np.random.default_rng(self.seed)
         control_idx, treated_idx = stratified_bootstrap_indices(
             rng, n_control_units, n_treated_units, self.n_bootstrap
