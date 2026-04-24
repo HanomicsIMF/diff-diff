@@ -3340,19 +3340,31 @@ class HeterogeneousAdoptionDiD:
                     f"robust + survey inference is deferred to a "
                     f"follow-up PR."
                 )
-            # Review R3 P1: the weighted mass-point path returns an
-            # HC1-scaled influence function (the IF scale convention
+            # Resolve the EFFECTIVE vcov family first (vcov_type_arg,
+            # with default-mapping from robust= when unset). Reject the
+            # classical-on-IF-consumption combination against the
+            # resolved value, NOT the raw kwarg, so the default
+            # `vcov_type=None, robust=False` case (which maps to
+            # classical) hits the guard too (review R5 P1 — previous
+            # fix only fired on explicit vcov_type='classical').
+            if vcov_type_arg is None:
+                # Backward-compat: robust=True -> hc1, robust=False -> classical.
+                vcov_requested = "hc1" if robust_arg else "classical"
+            else:
+                vcov_requested = vcov_type_arg.lower()
+            # Review R3 P1 / R5 P1: the weighted mass-point path returns
+            # an HC1-scaled influence function (IF scale convention
             # locks compute_survey_if_variance(psi, trivial) ≈ V_HC1[1,1]
             # via the sqrt((n-1)/(n-k)) factor in _fit_mass_point_2sls).
             # On the survey= path the analytical SE is ALWAYS overwritten
-            # with that HC1-scale Binder-TSL composition, so
-            # vcov_type="classical" + survey= would silently report an
-            # HC1-target SE under a classical label. Reject until a
+            # with that HC1-scale Binder-TSL composition, so effective
+            # classical + survey= would silently report an HC1-target
+            # SE under a classical label. Reject until a
             # classical-aligned IF is derived.
-            _vcov_requested_lc = vcov_type_arg.lower() if vcov_type_arg is not None else None
-            if _vcov_requested_lc == "classical" and resolved_survey_unit_full is not None:
+            if vcov_requested == "classical" and resolved_survey_unit_full is not None:
                 raise NotImplementedError(
-                    "vcov_type='classical' + survey= on "
+                    "vcov_type='classical' (resolved — either explicit or "
+                    "from the default robust=False mapping) + survey= on "
                     "design='mass_point' is not yet supported: the "
                     "survey path composes Binder-TSL variance via the "
                     "HC1-scale influence function, which targets V_HC1 "
@@ -3362,11 +3374,6 @@ class HeterogeneousAdoptionDiD:
                     "robust=True) on the weighted path; a classical-"
                     "aligned IF derivation is queued for a follow-up PR."
                 )
-            if vcov_type_arg is None:
-                # Backward-compat: robust=True -> hc1, robust=False -> classical.
-                vcov_requested = "hc1" if robust_arg else "classical"
-            else:
-                vcov_requested = vcov_type_arg.lower()
             # Phase 4.5 B: accept weights_unit (None on unweighted fits).
             # return_influence=True only on the survey= path because
             # Binder-TSL composition consumes the IF; the weights=
@@ -4048,36 +4055,41 @@ class HeterogeneousAdoptionDiD:
 
         # ---- Resolve vcov label for mass-point ----
         if resolved_design == "mass_point":
-            # Review R3 P1 (event-study arm): reject vcov_type="classical"
-            # when the weighted path will compute the IF (always on
-            # survey= path; on weights= shortcut when cband=True the
-            # bootstrap divides HC1-scale perturbations by per-horizon
-            # analytical SE, so classical SE would give wrong t-stats).
-            # Matches the static-path rejection — weighted mass-point
-            # paths use the HC1-scale IF convention uniformly.
-            _vcov_requested_lc = vcov_type_arg.lower() if vcov_type_arg is not None else None
-            _uses_if_matrix = resolved_survey_unit_full is not None or (
-                weights_unit_full is not None and cband
-            )
-            if _vcov_requested_lc == "classical" and _uses_if_matrix:
-                raise NotImplementedError(
-                    "vcov_type='classical' + weights/survey= on "
-                    "design='mass_point' event-study is not yet "
-                    "supported: the per-horizon IF matrix is HC1-scale "
-                    "(targets V_HC1 via compute_survey_if_variance) and "
-                    "mixing it with a classical analytical SE — either "
-                    "through the survey Binder-TSL override or the "
-                    "sup-t bootstrap normalization — would produce an "
-                    "inconsistent variance family. Use "
-                    "vcov_type='hc1' (or leave vcov_type unset with "
-                    "robust=True) on the weighted event-study path, or "
-                    "pass cband=False to skip the bootstrap on the "
-                    "weights= shortcut."
-                )
+            # Resolve the EFFECTIVE vcov family first (review R5 P1 —
+            # previous fix only fired on explicit vcov_type='classical'
+            # and missed the default vcov_type=None, robust=False →
+            # 'classical' mapping).
             if vcov_type_arg is None:
                 vcov_requested = "hc1" if robust_arg else "classical"
             else:
                 vcov_requested = vcov_type_arg.lower()
+            # Review R3/R5 P1 (event-study arm): reject effective
+            # classical when the weighted path will compute the IF
+            # (always on survey= path; on weights= shortcut when
+            # cband=True the bootstrap divides HC1-scale perturbations
+            # by per-horizon analytical SE, so classical SE would
+            # give wrong t-stats). Matches the static-path rejection —
+            # weighted mass-point paths use the HC1-scale IF
+            # convention uniformly.
+            _uses_if_matrix = resolved_survey_unit_full is not None or (
+                weights_unit_full is not None and cband
+            )
+            if vcov_requested == "classical" and _uses_if_matrix:
+                raise NotImplementedError(
+                    "vcov_type='classical' (resolved — either explicit "
+                    "or from the default robust=False mapping) + "
+                    "weights/survey= on design='mass_point' event-study "
+                    "is not yet supported: the per-horizon IF matrix is "
+                    "HC1-scale (targets V_HC1 via "
+                    "compute_survey_if_variance) and mixing it with a "
+                    "classical analytical SE — either through the "
+                    "survey Binder-TSL override or the sup-t bootstrap "
+                    "normalization — would produce an inconsistent "
+                    "variance family. Use vcov_type='hc1' (or leave "
+                    "vcov_type unset with robust=True) on the weighted "
+                    "event-study path, or pass cband=False to skip the "
+                    "bootstrap on the weights= shortcut."
+                )
             inference_method = "analytical_2sls"
             vcov_label: Optional[str] = "cr1" if cluster_arg is not None else vcov_requested
             cluster_label: Optional[str] = cluster_arg if cluster_arg is not None else None

@@ -5288,3 +5288,93 @@ class TestEventStudySurveyCband:
             f"(170), not full-design size (200); got {r.n_units}"
         )
         assert np.all(r.n_obs_per_horizon == 170)
+
+    def test_mass_point_default_vcov_survey_rejected_static(self):
+        """Review R5 P1: the effective-classical rejection must fire
+        even when the user does NOT pass vcov_type explicitly — the
+        default mapping (vcov_type=None, robust=False) resolves to
+        'classical', and that default must NOT silently slip through
+        on the survey= mass-point path."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(60)
+        G = 200
+        d = np.concatenate([np.full(40, 0.3), rng.uniform(0.3, 1.0, G - 40)])
+        rng.shuffle(d)
+        dy = 2.0 * d + 0.3 * rng.standard_normal(G)
+        panel = pd.DataFrame(
+            {
+                "unit": np.repeat(np.arange(G), 2),
+                "period": np.tile([1, 2], G),
+                "dose": np.column_stack([np.zeros(G), d]).ravel(),
+                "outcome": np.column_stack([np.zeros(G), dy]).ravel(),
+                "w": np.ones(2 * G),
+            }
+        )
+        sd = SurveyDesign(weights="w")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            # Default vcov_type=None, robust=False → resolves to classical.
+            est = HeterogeneousAdoptionDiD(design="mass_point")
+            with pytest.raises(NotImplementedError, match="classical"):
+                est.fit(panel, "outcome", "dose", "period", "unit", survey=sd)
+
+    def test_mass_point_default_vcov_event_study_cband_rejected(self):
+        """Review R5 P1 (event-study arm): default vcov_type=None +
+        weights= + cband=True must hit the effective-classical
+        rejection. Previous guard only checked explicit
+        vcov_type='classical'."""
+        rng = np.random.default_rng(61)
+        G, T = 150, 4
+        d_mp = np.concatenate([np.full(30, 0.3), rng.uniform(0.3, 1.0, G - 30)])
+        rng.shuffle(d_mp)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_mp[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y))
+        panel = pd.DataFrame(rows, columns=["unit", "period", "dose", "outcome"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            # Default vcov_type=None, robust=False.
+            est = HeterogeneousAdoptionDiD(design="mass_point", seed=0, n_bootstrap=100)
+            with pytest.raises(NotImplementedError, match="classical"):
+                est.fit(
+                    panel,
+                    "outcome",
+                    "dose",
+                    "period",
+                    "unit",
+                    aggregate="event_study",
+                    weights=np.ones(panel.shape[0]),
+                    cband=True,
+                )
+
+    def test_mass_point_default_vcov_robust_true_survey_allowed(self):
+        """Complement: robust=True on the default path resolves to
+        hc1, so the survey= mass-point fit is allowed with no explicit
+        vcov_type."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(62)
+        G = 200
+        d = np.concatenate([np.full(40, 0.3), rng.uniform(0.3, 1.0, G - 40)])
+        rng.shuffle(d)
+        dy = 2.0 * d + 0.3 * rng.standard_normal(G)
+        panel = pd.DataFrame(
+            {
+                "unit": np.repeat(np.arange(G), 2),
+                "period": np.tile([1, 2], G),
+                "dose": np.column_stack([np.zeros(G), d]).ravel(),
+                "outcome": np.column_stack([np.zeros(G), dy]).ravel(),
+                "w": np.ones(2 * G),
+            }
+        )
+        sd = SurveyDesign(weights="w")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="mass_point", robust=True)
+            r = est.fit(panel, "outcome", "dose", "period", "unit", survey=sd)
+        assert r.vcov_type == "hc1"
+        assert r.variance_formula == "survey_binder_tsl_2sls"
