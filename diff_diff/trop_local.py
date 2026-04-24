@@ -391,7 +391,11 @@ class TROPLocalMixin:
         weights for ALL units where D[t, j] = 0 at the target period, not just
         never-treated units.
 
-        Uses pre-computed structures when available for efficiency.
+        Always computes from the function-argument ``Y, D``; does not read
+        ``self._precomputed``. Under bootstrap the caller passes resampled
+        ``Y, D``, and a prior version of this method silently fell through to
+        the original-panel cache via a ``_precomputed`` branch, producing
+        stale unit distances.
 
         Parameters
         ----------
@@ -420,44 +424,6 @@ class TROPLocalMixin:
         np.ndarray
             Weight matrix (n_periods x n_units) for observation (i, t).
         """
-        # Use pre-computed structures when available
-        if self._precomputed is not None:
-            # Time weights from pre-computed time distance matrix
-            # time_dist_matrix[t, s] = |t - s|
-            time_weights = np.exp(-lambda_time * self._precomputed["time_dist_matrix"][t, :])
-
-            # Unit weights - computed for ALL units where D[t, j] = 0
-            # (Issue A fix: includes pre-treatment obs of eventually-treated units)
-            unit_weights = np.zeros(n_units)
-            D_stored = self._precomputed["D"]
-            Y_stored = self._precomputed["Y"]
-
-            # Valid control units at time t: D[t, j] == 0
-            valid_control_at_t = D_stored[t, :] == 0
-
-            if lambda_unit == 0:
-                # Uniform weights when lambda_unit = 0
-                # All units not treated at time t get weight 1
-                unit_weights[valid_control_at_t] = 1.0
-            else:
-                # Use observation-specific distances with target period excluded
-                # (Issue B fix: compute exact per-observation distance)
-                for j in range(n_units):
-                    if valid_control_at_t[j] and j != i:
-                        # Compute distance excluding target period t
-                        dist = self._compute_unit_distance_for_obs(Y_stored, D_stored, j, i, t)
-                        if np.isinf(dist):
-                            unit_weights[j] = 0.0
-                        else:
-                            unit_weights[j] = np.exp(-lambda_unit * dist)
-
-            # Treated unit i gets weight 1
-            unit_weights[i] = 1.0
-
-            # Weight matrix: outer product (n_periods x n_units)
-            return np.outer(time_weights, unit_weights)
-
-        # Fallback: compute from scratch (used in bootstrap)
         # Time distance: |t - s| following paper's Equation 3 (page 7)
         dist_time = np.abs(np.arange(n_periods) - t)
         time_weights = np.exp(-lambda_time * dist_time)
