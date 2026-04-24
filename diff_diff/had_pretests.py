@@ -1976,12 +1976,36 @@ def stute_joint_pretest(
     if not np.all(np.isfinite(X)):
         raise ValueError("design_matrix contains non-finite values (NaN/inf).")
 
-    horizon_labels = list(residuals_by_horizon.keys())
-    K = len(horizon_labels)
+    raw_horizon_labels = list(residuals_by_horizon.keys())
+    K = len(raw_horizon_labels)
+
+    # Stringified-label collision guard: distinct raw keys whose str()
+    # representations collide (e.g. {1: ..., "1": ..., 1.0: ...}) would
+    # overwrite each other in residuals_arrays / fitted_arrays, letting
+    # the surviving horizon be double-counted in S_joint = sum of S_k
+    # and leaving `n_horizons` inconsistent with the number of distinct
+    # diagnostic statistics. Reject explicitly rather than silently
+    # collapsing the test.
+    str_labels = [str(k) for k in raw_horizon_labels]
+    if len(set(str_labels)) != len(str_labels):
+        from collections import Counter
+
+        dup_strs = [s for s, c in Counter(str_labels).items() if c > 1]
+        collisions = {s: [k for k in raw_horizon_labels if str(k) == s] for s in dup_strs}
+        raise ValueError(
+            f"Horizon label collision after str() stringification: "
+            f"{collisions!r}. The joint Stute helpers index residuals "
+            f"and fitted values by str(label); distinct raw keys whose "
+            f"stringified form collides would silently overwrite each "
+            f"other and double-count the surviving horizon in S_joint. "
+            f"Use string-distinct horizon labels (e.g. 1997 and 1998 "
+            f'as int, or "1997" and "1998" as str; not both).'
+        )
+
     any_nan = False
     residuals_arrays: Dict[str, np.ndarray] = {}
     fitted_arrays: Dict[str, np.ndarray] = {}
-    for k in horizon_labels:
+    for k in raw_horizon_labels:
         eps_k = np.asarray(residuals_by_horizon[k], dtype=np.float64)
         fit_k = np.asarray(fitted_by_horizon[k], dtype=np.float64)
         if eps_k.shape != (G,) or fit_k.shape != (G,):
@@ -1997,8 +2021,9 @@ def stute_joint_pretest(
 
     # Re-key to str labels consistently (wrappers already pass str; direct
     # callers may pass int/object). String identity per the documented
-    # horizon_labels contract.
-    horizon_labels = [str(k) for k in horizon_labels]
+    # horizon_labels contract. The collision guard above ensures this
+    # stringification is injective on the provided keys.
+    horizon_labels = str_labels
 
     if any_nan:
         return StuteJointResult(
@@ -2242,7 +2267,7 @@ def joint_pretrends_test(
     n_periods = int(data[time_col].nunique())
     data_filtered: pd.DataFrame = data
     if n_periods >= 3:
-        F_val, t_pre_list, _t_post_list, data_filtered, filter_info = (
+        F_val, t_pre_list, _t_post_list, data_filtered, _filter_info = (
             _validate_had_panel_event_study(
                 data,
                 outcome_col=outcome_col,
@@ -2252,16 +2277,10 @@ def joint_pretrends_test(
                 first_treat_col=first_treat_col,
             )
         )
-        if filter_info is not None:
-            warnings.warn(
-                f"joint_pretrends_test: staggered panel auto-filtered to "
-                f"last cohort (F_last={filter_info['F_last']!r}, "
-                f"n_kept={filter_info['n_kept']}, "
-                f"n_dropped={filter_info['n_dropped']}). "
-                f"Paper Appendix B.2 prescription.",
-                UserWarning,
-                stacklevel=2,
-            )
+        # `_validate_had_panel_event_study` already emits its own
+        # `UserWarning` on the staggered-filter path; the wrapper
+        # consumes `_filter_info` silently to avoid duplicated console
+        # noise (R4 code-quality fix).
         # Subset invariants: the caller's base_period and pre_periods
         # must be pre-treatment periods under the validator's partition.
         if base_period not in t_pre_list:
@@ -2429,7 +2448,7 @@ def joint_homogeneity_test(
     n_periods = int(data[time_col].nunique())
     data_filtered: pd.DataFrame = data
     if n_periods >= 3:
-        F_val, t_pre_list, t_post_list, data_filtered, filter_info = (
+        F_val, t_pre_list, t_post_list, data_filtered, _filter_info = (
             _validate_had_panel_event_study(
                 data,
                 outcome_col=outcome_col,
@@ -2439,16 +2458,10 @@ def joint_homogeneity_test(
                 first_treat_col=first_treat_col,
             )
         )
-        if filter_info is not None:
-            warnings.warn(
-                f"joint_homogeneity_test: staggered panel auto-filtered "
-                f"to last cohort (F_last={filter_info['F_last']!r}, "
-                f"n_kept={filter_info['n_kept']}, "
-                f"n_dropped={filter_info['n_dropped']}). "
-                f"Paper Appendix B.2 prescription.",
-                UserWarning,
-                stacklevel=2,
-            )
+        # `_validate_had_panel_event_study` already emits its own
+        # `UserWarning` on the staggered-filter path; the wrapper
+        # consumes `_filter_info` silently to avoid duplicated console
+        # noise (R4 code-quality fix).
         if base_period not in t_pre_list:
             raise ValueError(
                 f"base_period={base_period!r} is not in the validated "
@@ -2615,7 +2628,7 @@ def did_had_pretest_workflow(
         )
 
     if aggregate == "event_study":
-        F, t_pre_list, t_post_list, data_filtered, filter_info = _validate_multi_period_panel(
+        F, t_pre_list, t_post_list, data_filtered, _filter_info = _validate_multi_period_panel(
             data,
             outcome_col=outcome_col,
             dose_col=dose_col,
@@ -2623,18 +2636,10 @@ def did_had_pretest_workflow(
             unit_col=unit_col,
             first_treat_col=first_treat_col,
         )
-        if filter_info is not None:
-            warnings.warn(
-                f"HAD event-study pre-test: staggered panel auto-"
-                f"filtered to last cohort "
-                f"(F_last={filter_info['F_last']!r}, "
-                f"n_kept={filter_info['n_kept']}, "
-                f"n_dropped={filter_info['n_dropped']}, "
-                f"dropped_cohorts={filter_info['dropped_cohorts']}). "
-                f"Paper Appendix B.2 prescription.",
-                UserWarning,
-                stacklevel=2,
-            )
+        # `_validate_multi_period_panel` delegates to
+        # `_validate_had_panel_event_study`, which already emits its own
+        # `UserWarning` on the staggered-filter path; we do NOT warn a
+        # second time here (R4 code-quality fix - single emission point).
 
         # Base period for both joint tests is the last pre-period
         # (paper convention: anchor at F-1 under natural time order).

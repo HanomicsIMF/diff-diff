@@ -1575,6 +1575,64 @@ class TestStuteJointPretest:
         assert set(result.per_horizon_stats.keys()) == set(resid.keys())
         assert all(np.isnan(v) for v in result.per_horizon_stats.values())
 
+    def test_stringified_key_collision_raises(self):
+        """R4 P1 regression: two raw keys whose str() representations
+        collide (e.g. int 1 and str '1', or int 1 and float 1.0) must
+        raise explicitly rather than silently overwrite one horizon in
+        the internal residuals_arrays map and double-count the survivor
+        in the sum-of-CvMs S_joint."""
+        G = 20
+        rng = np.random.default_rng(701)
+        d = rng.uniform(0.0, 1.0, G)
+        # int / str collision: str(1) == "1"
+        resid_int_str_collision = {
+            1: rng.normal(0.0, 1.0, G),
+            "1": rng.normal(0.0, 1.0, G),
+        }
+        fit_int_str_collision = {1: np.zeros(G), "1": np.zeros(G)}
+        with pytest.raises(ValueError, match="collision after str"):
+            stute_joint_pretest(
+                residuals_by_horizon=resid_int_str_collision,
+                fitted_by_horizon=fit_int_str_collision,
+                doses=d,
+                design_matrix=np.ones((G, 1)),
+                n_bootstrap=199,
+                seed=0,
+            )
+
+        # int / float collision: str(1) == "1" but str(1.0) == "1.0"
+        # so these actually don't collide. Test a real collision case:
+        # two different string representations of the same label.
+        # Python: str(True) == "True"; bool(1) == True but that's the
+        # same key. Use: str(None) == "None" collides if passed twice,
+        # but keys must be unique per dict. Safer: two equal-after-str
+        # object keys that were distinct before str conversion.
+        class _WeirdLabel:
+            def __init__(self, s):
+                self._s = s
+
+            def __str__(self):
+                return self._s
+
+            def __hash__(self):
+                return hash((id(self), self._s))
+
+        a = _WeirdLabel("horizon-1")
+        b = _WeirdLabel("horizon-1")  # same str, different object
+        assert a is not b
+        assert str(a) == str(b)
+        resid_obj_collision = {a: rng.normal(0.0, 1.0, G), b: rng.normal(0.0, 1.0, G)}
+        fit_obj_collision = {a: np.zeros(G), b: np.zeros(G)}
+        with pytest.raises(ValueError, match="collision after str"):
+            stute_joint_pretest(
+                residuals_by_horizon=resid_obj_collision,
+                fitted_by_horizon=fit_obj_collision,
+                doses=d,
+                design_matrix=np.ones((G, 1)),
+                n_bootstrap=199,
+                seed=0,
+            )
+
 
 class TestJointPretrendsTest:
     """Tests for :func:`joint_pretrends_test` data-in wrapper."""
