@@ -409,6 +409,11 @@ class HeterogeneousAdoptionDiDResults:
             vf_label = self.variance_formula or "unknown"
             lines.append(f"{'Variance formula:':<30} {vf_label:>20}")
             lines.append(f"{'Effective sample size:':<30} {sm.effective_n:>20.6g}")
+            if self.effective_dose_mean is not None:
+                lines.append(
+                    f"{'Weighted D̄ (denominator):':<30} "
+                    f"{self.effective_dose_mean:>20.6g}"
+                )
             if sm.df_survey is not None:
                 lines.append(f"{'Survey df:':<30} {sm.df_survey:>20}")
         param_label = self.target_parameter
@@ -468,6 +473,8 @@ class HeterogeneousAdoptionDiDResults:
             "vcov_type": self.vcov_type,
             "cluster_name": self.cluster_name,
             "survey_metadata": self.survey_metadata,
+            "variance_formula": self.variance_formula,
+            "effective_dose_mean": self.effective_dose_mean,
         }
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -2801,6 +2808,20 @@ class HeterogeneousAdoptionDiD:
                 survey_metadata = compute_survey_metadata(
                     minimal_resolved, weights_unit
                 )
+                # On the ``weights=`` shortcut, inference stays Normal
+                # (df=None in safe_inference) — no PSU / strata / FPC
+                # composition. Clear the survey-only fields that
+                # ``compute_survey_metadata`` derives from the synthetic
+                # minimal design (``n_psu = G``, ``n_strata = 1``,
+                # ``df_survey = G − 1``) so ``summary()`` / BusinessReport
+                # do not misdescribe the fit as a finite-df survey
+                # result. ``weight_type``, ``effective_n``,
+                # ``design_effect``, ``sum_weights``, and
+                # ``weight_range`` stay populated — they describe the
+                # weighted sample regardless of inference family.
+                survey_metadata.n_strata = None
+                survey_metadata.n_psu = None
+                survey_metadata.df_survey = None
                 variance_formula_label = "pweight"
             # Expose the effective weighted denominator used by the
             # beta-scale rescaling (bc_fit carries it via its internal

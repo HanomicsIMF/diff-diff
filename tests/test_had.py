@@ -3803,6 +3803,77 @@ class TestHADSurvey:
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert r.effective_dose_mean is None
 
+    def test_weights_shortcut_clears_survey_only_fields(self):
+        """Round 3 P2a: on the ``weights=`` shortcut, inference stays
+        Normal (df=None in safe_inference). Survey-only fields of
+        ``SurveyMetadata`` (``df_survey``, ``n_psu``, ``n_strata``)
+        must be ``None`` there — otherwise ``summary()`` /
+        BusinessReport render a finite-df survey result that does not
+        match the actual (Normal) inference family."""
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        sm = r.survey_metadata
+        assert sm is not None
+        # Descriptive weighted-sample fields stay populated.
+        assert sm.weight_type == "pweight"
+        assert sm.effective_n > 0
+        assert sm.sum_weights > 0
+        # Survey-only fields cleared (Normal inference; no PSU/strata).
+        assert sm.n_strata is None
+        assert sm.n_psu is None
+        assert sm.df_survey is None
+
+    def test_survey_path_populates_df_survey(self):
+        """Counter-test to the above: under ``survey=SurveyDesign(...)``
+        with real PSU/strata, ``df_survey`` IS populated and threaded
+        into t-inference."""
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+        sm = r.survey_metadata
+        assert sm is not None
+        assert sm.n_strata is not None and sm.n_strata > 1
+        assert sm.n_psu is not None and sm.n_psu > 1
+        assert sm.df_survey is not None and sm.df_survey > 0
+
+    def test_to_dict_includes_variance_formula_and_effective_dose_mean(self):
+        """Round 3 P2b: ``to_dict()`` must surface ``variance_formula``
+        and ``effective_dose_mean`` so downstream machine consumers can
+        recover the weighted denominator + SE family without inspecting
+        the result object directly."""
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        d = r.to_dict()
+        assert "variance_formula" in d
+        assert d["variance_formula"] == "pweight"
+        assert "effective_dose_mean" in d
+        assert d["effective_dose_mean"] is not None
+        assert np.isfinite(d["effective_dose_mean"])
+
+    def test_to_dict_variance_formula_none_when_unweighted(self):
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        d = r.to_dict()
+        assert d["variance_formula"] is None
+        assert d["effective_dose_mean"] is None
+
+    def test_summary_renders_effective_dose_mean_under_weights(self):
+        """``summary()`` must display the weighted denominator explicitly
+        when the fit used weights (Round 3 P2b)."""
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        s = r.summary()
+        assert "Weighted D" in s  # "Weighted D̄ (denominator):" header
+
     def test_effective_dose_mean_equals_dose_mean_under_uniform_weights(self):
         """Uniform weights → effective_dose_mean ≡ dose_mean at 1e-14."""
         panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
