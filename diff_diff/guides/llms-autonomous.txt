@@ -158,6 +158,7 @@ it is descriptive context.
 
 | Alert code | Severity | Fires when |
 |---|---|---|
+| `missing_id_rows_dropped` | warn | rows with NaN `unit` or `time` were dropped before computing structural facts |
 | `duplicate_unit_time_rows` | warn | panel contains more than one row per (unit, time) |
 | `min_cohort_size_below_10` | warn | smallest cohort has fewer than 10 units |
 | `only_one_cohort` | info | all treated units adopt simultaneously |
@@ -208,9 +209,13 @@ supported / out of scope; `warn` supported but with documented caveats;
   is one option; "not-yet-treated" is the other. Pick via the
   `control_group` argument. If `has_never_treated == False`, use
   `control_group="not_yet_treated"`.
-- `EfficientDiD` + never-treated: `assumption="PT-All"` requires it;
-  `assumption="PT-Post"` does not. The `EfficientDiD.hausman_pretest`
-  classmethod picks between them using a formal test.
+- `EfficientDiD` + never-treated: three paths handle an absent
+  never-treated cohort. `assumption="PT-All"` requires never-treated;
+  switch to `assumption="PT-Post"` to drop that requirement, or pass
+  `control_group="last_cohort"` to reclassify the latest treatment
+  cohort as a pseudo-never-treated control (and trim post-treatment
+  periods at/after its adoption). The `EfficientDiD.hausman_pretest`
+  classmethod picks between `PT-All` and `PT-Post` using a formal test.
 - `SyntheticDiD` + staggered: not supported. `fit()` raises
   `ValueError` on within-unit treatment variation; SDiD requires block
   treatment (all treated units adopt at the same time). For staggered
@@ -304,8 +309,12 @@ When `has_never_treated == False`:
   still fit, with the donor pool shrinking over time - check the
   pre-treatment coverage of the factor-model fit in the results
   diagnostics.
-- `EfficientDiD` with `assumption="PT-All"` requires it - use
-  `assumption="PT-Post"` instead.
+- `EfficientDiD` with `assumption="PT-All"` requires it - switch to
+  `assumption="PT-Post"` to drop that requirement, or pass
+  `control_group="last_cohort"` to use the latest treatment cohort as a
+  pseudo-never-treated control (post-treatment periods at/after that
+  cohort's adoption are trimmed). Distinct from CallawaySantAnna's
+  `not_yet_treated` option.
 - `CallawaySantAnna` - use `control_group="not_yet_treated"` to use
   not-yet-treated units as the control pool.
 - `ChaisemartinDHaultfoeuille` - constructs switchers vs. non-switchers
@@ -372,10 +381,18 @@ methods in the library are preferred.
 When adoption varies in strength across units (partial-adoption settings,
 intensity of exposure differs):
 
-- `HeterogeneousAdoptionDiD` - Phase 3 tools include Stute / Yatchew-
-  Härdle / QUG pre-tests for the first-stage model. The estimator's
-  workflow returns an aggregated ATT plus a per-cohort Pierce-Schott-
-  style validation.
+- `HeterogeneousAdoptionDiD` - targets a Weighted Average Slope (WAS)
+  on single-period Heterogeneous Adoption Designs where no genuinely
+  untreated group exists (paper Equation 2 / Theorem 1). The
+  `target_parameter` attribute on the results object is literally
+  `"WAS"` for Design 1' and `"WAS_d_lower"` for Design 1 with lower-dose
+  comparison under Assumption 6. `fit(aggregate="overall")` (Phase 2a)
+  returns a single scalar WAS; `fit(aggregate="event_study")` (Phase
+  2b) returns per-event-time WAS estimates. Phase 3 pre-tests
+  (`qug_test`, `stute_test`, `stute_joint_pretest`, `yatchew_hr_test`)
+  and the `did_had_pretest_workflow()` bundle validate Assumptions 3
+  and 7. Not ATT-shaped; do not relabel the headline as ATT in report
+  text.
 
 ### §4.10 Repeated cross-sections (no panel structure)
 

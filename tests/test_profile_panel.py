@@ -412,3 +412,35 @@ def test_guide_api_strings_resolve_against_public_api():
 
     assert 'control_group="not_yet_treated"' in text
     assert "notyettreated" not in text
+
+    # HAD targets WAS / WAS_d_lower, not ATT; event-study is per-event-
+    # time, not per-cohort. Guard against the guide drifting back to
+    # ATT-shaped / per-cohort phrasing.
+    assert "Weighted Average Slope (WAS)" in text
+    assert "WAS_d_lower" in text
+    assert "per-cohort Pierce-Schott" not in text
+
+    # EfficientDiD has three paths when no never-treated exists:
+    # PT-Post, PT-All, or control_group="last_cohort". The guide must
+    # mention last_cohort in the no-never-treated section so agents do
+    # not rule out the supported path.
+    assert 'control_group="last_cohort"' in text
+
+
+def test_missing_unit_or_time_ids_are_dropped_consistently():
+    """NaN values in unit or time must not push observation_coverage above
+    1.0. `nunique()` drops NaN while `drop_duplicates()` keeps NaN as a
+    distinct key, which previously produced coverage > 1 silently. The
+    fix drops NaN-id rows up front, emits the missing_id_rows_dropped
+    alert, and computes all structural facts on the non-missing subset."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(n_units=20, periods=range(0, 4), first_treat=first_treat)
+    df_with_missing = df.copy()
+    df_with_missing.loc[[0, 1, 2], "u"] = np.nan
+    df_with_missing.loc[[5, 6], "t"] = np.nan
+    profile = profile_panel(df_with_missing, unit="u", time="t", treatment="tr", outcome="y")
+    assert 0.0 <= profile.observation_coverage <= 1.0
+    codes = _alert_codes(profile)
+    assert "missing_id_rows_dropped" in codes
+    drop_alert = next(a for a in profile.alerts if a.code == "missing_id_rows_dropped")
+    assert drop_alert.observed == 5

@@ -198,11 +198,12 @@ def profile_panel(
     when some unit has strictly-positive treatment in every observed
     non-NaN row. Both are always ``False`` for ``"categorical"``.
 
-    Duplicate ``(unit, time)`` rows are surfaced via the
-    ``duplicate_unit_time_rows`` alert; ``is_balanced`` and
-    ``observation_coverage`` are computed from the unique ``(unit,
-    time)`` support, so ``observation_coverage`` is always in
-    ``[0, 1]``.
+    Rows with ``NaN`` in ``unit`` or ``time`` are dropped up front and
+    surfaced via the ``missing_id_rows_dropped`` alert; all subsequent
+    structural facts are computed on the non-missing subset, so
+    ``observation_coverage`` is always in ``[0, 1]``. Duplicate
+    ``(unit, time)`` rows are surfaced separately via the
+    ``duplicate_unit_time_rows`` alert.
 
     The profile does not recommend an estimator. Consult
     ``diff_diff.get_llm_guide("autonomous")`` for the estimator-support
@@ -210,9 +211,13 @@ def profile_panel(
     """
     _validate_columns(df, unit=unit, time=time, treatment=treatment, outcome=outcome)
 
+    n_rows_with_missing_id = int(df[unit].isna().sum() + df[time].isna().sum())
+    if n_rows_with_missing_id > 0:
+        df = df.dropna(subset=[unit, time])
+    n_obs = int(len(df))
+
     n_units = int(df[unit].nunique())
     n_periods = int(df[time].nunique())
-    n_obs = int(len(df))
     n_unique_keys = int(df[[unit, time]].drop_duplicates().shape[0])
     denom = n_units * n_periods
     observation_coverage = float(n_unique_keys / denom) if denom > 0 else 0.0
@@ -258,6 +263,7 @@ def profile_panel(
         outcome_is_binary=outcome_is_binary,
         outcome_dtype_kind=dtype_kind,
         n_duplicate_rows=n_duplicate_rows,
+        n_rows_with_missing_id=n_rows_with_missing_id,
     )
 
     return PanelProfile(
@@ -453,8 +459,23 @@ def _compute_alerts(
     outcome_is_binary: bool,
     outcome_dtype_kind: str,
     n_duplicate_rows: int,
+    n_rows_with_missing_id: int,
 ) -> List[Alert]:
     alerts: List[Alert] = []
+
+    if n_rows_with_missing_id > 0:
+        alerts.append(
+            Alert(
+                code="missing_id_rows_dropped",
+                severity="warn",
+                message=(
+                    f"Dropped {n_rows_with_missing_id} row(s) with missing "
+                    "unit or time identifier; structural facts are computed "
+                    "from the non-missing subset."
+                ),
+                observed=int(n_rows_with_missing_id),
+            )
+        )
 
     if n_duplicate_rows > 0:
         alerts.append(
