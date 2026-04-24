@@ -211,10 +211,17 @@ def _stratified_survey_dgp(seed: int) -> Tuple[pd.DataFrame, List[int]]:
     # generate_survey_did_data emits per-observation 'treated' (post-only
     # for treated units); SDID requires a unit-level ever-treated indicator
     # (constant across time). Derive from 'first_treat' (cohort, 0 for
-    # never-treated). Block-treatment cohort is 7 → post = 7..11.
+    # never-treated). Periods are 1-indexed (prep_dgp.py L1211-L1212), so
+    # cohort 7 with n_periods=12 → post = [7, 8, 9, 10, 11, 12] (6 post
+    # periods). Derive from df["period"].max() so any change to n_periods
+    # propagates (PR #355 R13 P1 — the hard-coded range(7, 12) dropped
+    # period 12 into the pre window, contaminating calibration).
     df = df.copy()
     df["treated"] = (df["first_treat"] > 0).astype(int)
-    return df, list(range(7, 12))
+    cohort_onset = 7
+    period_max = int(df["period"].max())
+    post_periods = list(range(cohort_onset, period_max + 1))
+    return df, post_periods
 
 
 def _stratified_survey_design(df: pd.DataFrame) -> Tuple[Any, Tuple[str, ...]]:
