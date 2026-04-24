@@ -365,6 +365,12 @@ class HeterogeneousAdoptionDiDResults:
             bc = self.bias_corrected_fit
             lines.append(f"{'Bandwidth h used:':<30} {bc.h:>20.6g}")
             lines.append(f"{'Obs in window (n_used):':<30} {bc.n_used:>20}")
+        if self.survey_metadata is not None:
+            sm = self.survey_metadata
+            lines.append(f"{'Survey method:':<30} {sm.get('method', 'unknown'):>20}")
+            if "effective_sample_size" in sm:
+                ess = sm["effective_sample_size"]
+                lines.append(f"{'Effective sample size:':<30} {ess:>20.6g}")
         param_label = self.target_parameter
         lines.extend(
             [
@@ -395,7 +401,12 @@ class HeterogeneousAdoptionDiDResults:
         print(self.summary())
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return results as a dict of scalars."""
+        """Return results as a dict of scalars + ``survey_metadata`` (dict
+        or ``None``). When ``survey=`` / ``weights=`` is supplied to
+        ``fit()``, ``survey_metadata`` carries the weighted-sample
+        diagnostic (method, weight sum, effective sample size) so
+        downstream consumers can inspect how the fit was weighted without
+        digging into the estimator object."""
         return {
             "att": self.att,
             "se": self.se,
@@ -416,6 +427,7 @@ class HeterogeneousAdoptionDiDResults:
             "inference_method": self.inference_method,
             "vcov_type": self.vcov_type,
             "cluster_name": self.cluster_name,
+            "survey_metadata": self.survey_metadata,
         }
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -1399,6 +1411,80 @@ def _aggregate_first_difference(
     return d_arr, dy_arr, cluster_arr, unit_ids
 
 
+def _aggregate_unit_weights(
+    data: pd.DataFrame,
+    weights_arr: np.ndarray,
+    unit_col: str,
+) -> np.ndarray:
+    """Aggregate per-row weights to per-unit, enforcing constant-within-unit.
+
+    HAD's continuous path operates at the per-unit level (G rows, one per
+    unit) so survey weights — which typically arrive per-row in a long
+    panel — must collapse to a single value per unit. The paper's weighted
+    extension assumes sampling weights assigned at the sampling-unit level
+    (standard BRFSS/CPS/NHANES convention), so any within-unit weight
+    variance is interpreted as user error and rejected front-door rather
+    than silently mean-rolled (per ``feedback_no_silent_failures``).
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Long panel; the same frame passed to ``_aggregate_first_difference``.
+    weights_arr : np.ndarray, shape (n_rows,)
+        Row-aligned weights.
+    unit_col : str
+        Unit identifier column.
+
+    Returns
+    -------
+    w_unit : np.ndarray, shape (G,)
+        Per-unit weights sorted by unit id to align with the d/dy arrays
+        returned by ``_aggregate_first_difference``.
+
+    Raises
+    ------
+    ValueError
+        Shape mismatch, non-finite weights, negative weights, zero-sum
+        weights, or weights that vary within a unit.
+    """
+    n_rows = int(data.shape[0])
+    w = np.asarray(weights_arr, dtype=np.float64).ravel()
+    if w.shape[0] != n_rows:
+        raise ValueError(
+            f"weights length ({w.shape[0]}) does not match number of "
+            f"rows in data ({n_rows})."
+        )
+    if not np.all(np.isfinite(w)):
+        raise ValueError("weights contains non-finite values (NaN or Inf).")
+    if np.any(w < 0):
+        raise ValueError("weights must be non-negative.")
+    if np.sum(w) <= 0:
+        raise ValueError(
+            "weights sum to zero — no observations have positive weight."
+        )
+
+    df = data.reset_index(drop=True).copy()
+    df["_w_tmp__"] = w
+    w_per_unit = df.groupby(unit_col)["_w_tmp__"].agg(
+        lambda s: (float(s.min()), float(s.max()))
+    )
+    varying = w_per_unit.apply(lambda t: not np.isclose(t[0], t[1], rtol=1e-12, atol=0.0))
+    if bool(varying.any()):
+        n_bad = int(varying.sum())
+        raise ValueError(
+            f"weights vary within {n_bad} unit(s). HAD's continuous path "
+            f"requires unit-level sampling weights (constant within each "
+            f"unit). Either pre-aggregate your weights to the unit level "
+            f"or pass a unit-constant weight column. Per-obs weights that "
+            f"vary within unit would require an obs-level estimator not "
+            f"available on this path."
+        )
+    w_unit = (
+        df.groupby(unit_col)["_w_tmp__"].first().sort_index().to_numpy(dtype=np.float64)
+    )
+    return w_unit
+
+
 def _aggregate_multi_period_first_differences(
     data: pd.DataFrame,
     outcome_col: str,
@@ -2067,21 +2153,26 @@ class HeterogeneousAdoptionDiD:
         -------
         HeterogeneousAdoptionDiDResults
         """
-        # ---- aggregate / survey / weights scaffolding rejections ----
+        # ---- aggregate / survey / weights validation ----
         if aggregate not in _VALID_AGGREGATES:
             raise ValueError(
                 f"Invalid aggregate={aggregate!r}. Must be one of " f"{_VALID_AGGREGATES}."
             )
-        if survey is not None:
-            raise NotImplementedError(
-                "survey=<SurveyDesign> support on HeterogeneousAdoptionDiD "
-                "is queued for a follow-up PR. Pass survey=None for now."
+        if survey is not None and weights is not None:
+            raise ValueError(
+                "Pass survey=<SurveyDesign> OR weights=<array>, not both. "
+                "For SurveyDesign-composed inference (PSU, strata, FPC, "
+                "replicate weights), use survey=. For a simple pweight-only "
+                "shortcut, use weights=; it is internally equivalent to "
+                "survey=SurveyDesign(weights=w)."
             )
-        if weights is not None:
+        # Event-study + survey/weights: Phase 4.5 B deferral.
+        if aggregate == "event_study" and (survey is not None or weights is not None):
             raise NotImplementedError(
-                "weights=<array> support on HeterogeneousAdoptionDiD is "
-                "queued for a follow-up PR (paired with survey "
-                "integration). Pass weights=None for now."
+                "survey= / weights= are not yet supported on "
+                "aggregate='event_study' (deferred to Phase 4.5 B — "
+                "event-study survey composition). The continuous-design "
+                "overall path supports survey= and weights= as of this PR."
             )
         # Dispatch the event-study path to a dedicated method so the
         # single-period path stays unchanged (Phase 2a contract preserved).
@@ -2130,6 +2221,40 @@ class HeterogeneousAdoptionDiD:
             t_post,
             None,
         )
+
+        # Resolve survey/weights into a per-unit weight array.
+        # - `survey=SurveyDesign(weights=w)` → extract w, aggregate per-unit.
+        # - `weights=w` → shorthand for SurveyDesign(weights=w).
+        # - neither → unweighted.
+        # The per-unit array is aligned with d_arr/dy_arr (sorted unit ids).
+        # Non-trivial SurveyDesign fields (PSU/strata/FPC/replicate) are
+        # routed through ``compute_survey_if_variance`` at the variance
+        # step in _fit_continuous; this PR ships the ``weights=`` path;
+        # the full PSU-composed variance extension is Phase 4.5 commit 3.
+        weights_unit: Optional[np.ndarray] = None
+        if weights is not None:
+            weights_unit = _aggregate_unit_weights(data, weights, unit_col)
+        elif survey is not None:
+            # Minimal survey support: extract per-row weights from SurveyDesign,
+            # aggregate to unit level, and apply via the weighted lprobust.
+            # Full PSU/strata/FPC composition is queued for the next commit.
+            if not hasattr(survey, "weights"):
+                raise TypeError(
+                    f"survey= must be a SurveyDesign-like object with a "
+                    f".weights attribute; got {type(survey).__name__}. "
+                    f"Construct a SurveyDesign via diff_diff.survey."
+                )
+            sd_weights = getattr(survey, "weights", None)
+            if sd_weights is None:
+                raise NotImplementedError(
+                    "survey= without weights is not yet supported. Pass "
+                    "survey=SurveyDesign(weights=...) with per-row weights; "
+                    "full SurveyDesign integration (PSU, strata, FPC, "
+                    "replicate weights) ships in the subsequent commit."
+                )
+            weights_unit = _aggregate_unit_weights(
+                data, np.asarray(sd_weights, dtype=np.float64), unit_col
+            )
 
         n_obs = int(d_arr.shape[0])
         if n_obs < 3:
@@ -2376,11 +2501,22 @@ class HeterogeneousAdoptionDiD:
                 dy_arr,
                 resolved_design,
                 d_lower_val,
+                weights_arr=weights_unit,
             )
             inference_method = "analytical_nonparametric"
             vcov_label: Optional[str] = None
             cluster_label: Optional[str] = None
         elif resolved_design == "mass_point":
+            # Phase 4.5 B deferral: weighted 2SLS + survey composition on
+            # the mass-point path is not yet wired. Reject explicitly
+            # rather than silently ignoring survey/weights.
+            if weights_unit is not None:
+                raise NotImplementedError(
+                    "survey= / weights= on design='mass_point' is deferred "
+                    "to Phase 4.5 B (weighted 2SLS + sandwich variance). "
+                    "This PR ships survey support only on the continuous-"
+                    "dose paths (continuous_at_zero, continuous_near_d_lower)."
+                )
             if vcov_type_arg is None:
                 # Backward-compat: robust=True -> hc1, robust=False -> classical.
                 vcov_requested = "hc1" if robust_arg else "classical"
@@ -2409,6 +2545,22 @@ class HeterogeneousAdoptionDiD:
         # ---- Route all inference fields through safe_inference ----
         t_stat, p_value, conf_int = safe_inference(att, se, alpha=float(self.alpha))
 
+        # Build survey metadata when weights/survey were supplied. Phase
+        # 4.5 commit 2 ships weight composition only; PSU/strata/FPC +
+        # Binder TSL composition lands in the subsequent commit.
+        survey_metadata: Optional[Dict[str, Any]] = None
+        if weights_unit is not None:
+            w_sum = float(weights_unit.sum())
+            w_sq_sum = float(np.dot(weights_unit, weights_unit))
+            ess = (w_sum * w_sum / w_sq_sum) if w_sq_sum > 0 else float("nan")
+            survey_metadata = {
+                "method": "pweight" if survey is None else "survey_pweight",
+                "source": "weights_arr" if survey is None else "SurveyDesign.weights",
+                "n_units_weighted": int(weights_unit.shape[0]),
+                "weight_sum": w_sum,
+                "effective_sample_size": float(ess),
+            }
+
         return HeterogeneousAdoptionDiDResults(
             att=float(att),
             se=float(se),
@@ -2428,7 +2580,7 @@ class HeterogeneousAdoptionDiD:
             inference_method=inference_method,
             vcov_type=vcov_label,
             cluster_name=cluster_label,
-            survey_metadata=None,  # Phase 2a: survey integration deferred.
+            survey_metadata=survey_metadata,
             bandwidth_diagnostics=bw_diag,
             bias_corrected_fit=bc_fit,
         )
@@ -2443,6 +2595,7 @@ class HeterogeneousAdoptionDiD:
         dy_arr: np.ndarray,
         resolved_design: str,
         d_lower_val: float,
+        weights_arr: Optional[np.ndarray] = None,
     ) -> Tuple[float, float, Optional[BiasCorrectedFit], Optional[BandwidthResult]]:
         """Fit Phase 1c ``bias_corrected_local_linear`` and form the WAS estimate.
 
@@ -2484,14 +2637,23 @@ class HeterogeneousAdoptionDiD:
         relative to the boundary-limit CI because the numerator
         transformation is ``ΔȲ - tau_bc``.
         """
+        # Weighted population moments (Phase 4.5). Under uniform weights,
+        # `np.average(.., weights=np.ones(G)) == a.mean()` bit-exactly, so
+        # the unweighted path is bit-identical when `weights_arr is None`.
         if resolved_design == "continuous_at_zero":
             d_reg = d_arr
             boundary = 0.0
-            den = float(d_arr.mean())
+            if weights_arr is None:
+                den = float(d_arr.mean())
+            else:
+                den = float(np.average(d_arr, weights=weights_arr))
         elif resolved_design == "continuous_near_d_lower":
             d_reg = d_arr - d_lower_val
             boundary = 0.0
-            den = float((d_arr - d_lower_val).mean())
+            if weights_arr is None:
+                den = float(d_reg.mean())
+            else:
+                den = float(np.average(d_reg, weights=weights_arr))
         else:
             raise ValueError(
                 f"_fit_continuous called with non-continuous " f"design={resolved_design!r}"
@@ -2513,8 +2675,9 @@ class HeterogeneousAdoptionDiD:
                 boundary=boundary,
                 kernel=self.kernel,
                 alpha=float(self.alpha),
-                # No cluster / vce / weights threading in Phase 2a (see
-                # UserWarning in fit()).
+                weights=weights_arr,
+                # No cluster / vce threading in Phase 2a (see UserWarning
+                # in fit()).
             )
         except (ZeroDivisionError, FloatingPointError, np.linalg.LinAlgError):
             return float("nan"), float("nan"), None, None
@@ -2528,7 +2691,10 @@ class HeterogeneousAdoptionDiD:
             att = float("nan")
             se = float("nan")
         else:
-            dy_mean = float(dy_arr.mean())
+            if weights_arr is None:
+                dy_mean = float(dy_arr.mean())
+            else:
+                dy_mean = float(np.average(dy_arr, weights=weights_arr))
             tau_bc = float(bc_fit.estimate_bias_corrected)
             att = (dy_mean - tau_bc) / den
             se = float(bc_fit.se_robust) / abs(den)
