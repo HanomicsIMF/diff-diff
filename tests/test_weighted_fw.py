@@ -134,6 +134,30 @@ class TestSCWeightFWWeighted:
         assert weights.shape == (small_panel["n_control"],)
         assert isinstance(converged, bool)
 
+    def test_reg_weights_length_mismatch_raises(self, small_panel):
+        """reg_weights length mismatch raises ValueError on both backends.
+
+        Regression against PR #355 R5 P2: the Rust internal previously
+        silently fell back to the unweighted kernel when ``reg_weights.len()
+        != Y.shape[1] - 1``, while the NumPy path raised. The dispatcher
+        now validates shape upstream so both backends share the same
+        failure surface, and each Rust pyfunction also guards the entry
+        point against direct Rust-from-Python calls. Exercising the
+        wrong-shape call must raise ``ValueError`` with a message naming
+        the expected dimension.
+        """
+        Y = np.column_stack([
+            small_panel["Y_pre_control"],
+            small_panel["Y_pre_treated_mean"].reshape(-1, 1),
+        ])
+        expected_t0 = Y.shape[1] - 1
+        bad_rw = np.ones(expected_t0 + 3)
+        with pytest.raises(ValueError, match=r"reg_weights"):
+            _sc_weight_fw(
+                Y, zeta=0.3, max_iter=100, min_decrease=1e-6,
+                reg_weights=bad_rw,
+            )
+
 
 # =============================================================================
 # Survey helpers: compute_sdid_unit_weights_survey, compute_time_weights_survey

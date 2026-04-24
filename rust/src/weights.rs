@@ -692,9 +692,12 @@ fn sc_weight_fw_weighted_internal(
     }
 
     if rw.len() != t0 {
-        // Defensive: dimension mismatch — fall back to unweighted to avoid a panic.
-        // The Python wrapper validates shapes before calling, so this branch is
-        // not expected to fire in production.
+        // Defensive: dimension mismatch — fall back to unweighted to avoid a
+        // panic from Rust-side callers. Python dispatch paths (both
+        // ``sc_weight_fw_weighted`` / ``sc_weight_fw_weighted_with_convergence``
+        // pyfunctions and ``diff_diff.utils._sc_weight_fw``) validate shapes
+        // and raise ``ValueError`` before reaching this branch (PR #355 R5 P2),
+        // so this fallback is unreachable from the Python API.
         return sc_weight_fw_internal(y, zeta, intercept, init_weights, min_decrease, max_iter);
     }
 
@@ -891,6 +894,20 @@ pub fn sc_weight_fw_weighted<'py>(
     let y_arr = y.as_array();
     let init = init_weights.map(|w| w.as_array().to_owned());
     let rw = reg_weights.map(|w| w.as_array().to_owned());
+    // Validate reg_weights shape at the Python entry point so the Rust and
+    // NumPy backends share a single failure mode. The internal's defensive
+    // fallback to the unweighted kernel is kept for Rust-side callers but
+    // becomes unreachable from Python after this guard (PR #355 R5 P2).
+    if let Some(ref w) = rw {
+        let t0 = y_arr.ncols().saturating_sub(1);
+        if w.len() != t0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "reg_weights length {} does not match expected {} (Y.shape[1] - 1)",
+                w.len(),
+                t0
+            )));
+        }
+    }
     let (result, _converged) = sc_weight_fw_weighted_internal(
         &y_arr,
         zeta,
@@ -924,6 +941,17 @@ pub fn sc_weight_fw_weighted_with_convergence<'py>(
     let y_arr = y.as_array();
     let init = init_weights.map(|w| w.as_array().to_owned());
     let rw = reg_weights.map(|w| w.as_array().to_owned());
+    // See ``sc_weight_fw_weighted`` for why we validate here (PR #355 R5 P2).
+    if let Some(ref w) = rw {
+        let t0 = y_arr.ncols().saturating_sub(1);
+        if w.len() != t0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "reg_weights length {} does not match expected {} (Y.shape[1] - 1)",
+                w.len(),
+                t0
+            )));
+        }
+    }
     let (result, converged) = sc_weight_fw_weighted_internal(
         &y_arr,
         zeta,

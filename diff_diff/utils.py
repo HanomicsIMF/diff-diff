@@ -1377,6 +1377,21 @@ def _sc_weight_fw(
         else None
     )
 
+    if rw_c is not None:
+        # Validate reg_weights shape at the dispatcher so Rust and NumPy
+        # backends share a single failure surface. The Rust
+        # ``sc_weight_fw_weighted_internal`` silently falls back to the
+        # unweighted kernel on a length mismatch, while the NumPy
+        # implementation raises — dispatching without a shared upstream
+        # check would let callers get the wrong objective on the Rust
+        # path with no error (PR #355 R5 P2).
+        expected_t0 = Y_c.shape[1] - 1
+        if rw_c.shape != (expected_t0,):
+            raise ValueError(
+                f"reg_weights shape {rw_c.shape} does not match expected "
+                f"({expected_t0},) — must equal Y.shape[1] - 1"
+            )
+
     if HAS_RUST_BACKEND:
         if reg_weights is not None:
             if return_convergence:

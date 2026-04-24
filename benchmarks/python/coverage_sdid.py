@@ -2,13 +2,21 @@
 """Coverage Monte Carlo study for SDID variance methods.
 
 Generates null-panel Monte Carlo samples (no treatment effect) across
-three representative DGPs, fits SyntheticDiD under each of the three
+four representative DGPs (``balanced``, ``unbalanced``, ``aer63``,
+``stratified_survey``), fits SyntheticDiD under each of the three
 variance methods (placebo, bootstrap, jackknife), and records rejection
 rates at α ∈ {0.01, 0.05, 0.10} plus the ratio of mean estimated SE to
 the empirical sampling SD of τ̂.
 
+The ``stratified_survey`` DGP is bootstrap-only — placebo and jackknife
+still reject full strata/PSU/FPC survey designs (tracked in ``TODO.md``),
+so the harness skips those method × DGP cells via the per-DGP
+``survey_design_factory`` in the ``DGPSpec`` registry (PR #352 R5 P3).
+
 The output JSON underwrites the calibration table in
-``docs/methodology/REGISTRY.md`` §SyntheticDiD.
+``docs/methodology/REGISTRY.md`` §SyntheticDiD, including the
+stratified-survey bootstrap calibration gate [0.02, 0.10] that validates
+the hybrid pairs-bootstrap + Rao-Wu weighted-FW composition.
 
 Usage:
     # Full run (~15–40 min on M-series Mac with Rust backend; AER §6.3 refit
