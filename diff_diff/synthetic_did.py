@@ -246,15 +246,19 @@ class SyntheticDiD(DifferenceInDifferences):
             List of covariate column names. Covariates are residualized
             out before computing the SDID estimator.
         survey_design : SurveyDesign, optional
-            Survey design specification. Only pweight weight_type is supported.
-            ``variance_method='placebo'`` and ``variance_method='jackknife'``
-            accept pweight-only surveys (composed via ``w_control`` /
-            ``w_treated``). ``variance_method='bootstrap'`` rejects all
-            survey designs (including pweight-only) and strata/PSU/FPC are
-            not supported by any variance method on this release —
-            composing Rao-Wu rescaled weights with paper-faithful
-            Frank-Wolfe re-estimation requires a separate derivation
-            (tracked in TODO.md, sketched in REGISTRY.md §SyntheticDiD).
+            Survey design specification. Only pweight weight_type is
+            supported. Support matrix (PR #352):
+
+                method     pweight-only     strata/PSU/FPC
+                bootstrap  ✓ weighted FW    ✓ weighted FW + Rao-Wu
+                placebo    ✓                ✗ NotImplementedError
+                jackknife  ✓                ✗ NotImplementedError
+
+            The bootstrap path composes Rao-Wu rescaled weights per draw
+            with the weighted-Frank-Wolfe kernel; see REGISTRY.md
+            §SyntheticDiD ``Note (survey + bootstrap composition)``.
+            ``placebo`` and ``jackknife`` still reject strata/PSU/FPC
+            (separate methodology gap tracked in TODO.md).
 
         Returns
         -------
@@ -268,9 +272,10 @@ class SyntheticDiD(DifferenceInDifferences):
             If required parameters are missing, data validation fails,
             or a non-pweight survey design is provided.
         NotImplementedError
-            If ``survey_design`` is provided with strata/PSU/FPC, or if
-            ``variance_method='bootstrap'`` is provided with any survey
-            design (including pweight-only).
+            If ``survey_design`` with strata/PSU/FPC is provided with
+            ``variance_method='placebo'`` or ``'jackknife'``. Bootstrap
+            + any survey design (pweight-only or full design) is
+            supported via PR #352's weighted-FW + Rao-Wu composition.
         """
         # Validate inputs
         if outcome is None or treatment is None or unit is None or time is None:
@@ -1249,14 +1254,13 @@ class SyntheticDiD(DifferenceInDifferences):
         # Ensure we have enough controls for the split
         n_pseudo_control = n_control - n_treated
         if n_pseudo_control < 1:
-            # Bootstrap rejects every survey design in this release, so
-            # steer survey users to jackknife (pweight-only only) or
-            # adding controls. Non-survey users can still fall back to
-            # bootstrap or jackknife.
+            # Fallback guidance. Placebo and jackknife reject strata/PSU/FPC,
+            # but bootstrap (PR #352) supports both pweight-only and
+            # full-design surveys, so it's always a valid fallback.
             fallback = (
-                "variance_method='jackknife' or adding more control units "
-                "(strata/PSU/FPC are not yet supported by any SDID variance "
-                "method)"
+                "variance_method='bootstrap' (supports pweight-only and "
+                "strata/PSU/FPC survey designs), variance_method='jackknife' "
+                "(pweight-only only), or adding more control units"
                 if w_control is not None
                 else "variance_method='bootstrap', variance_method='jackknife', "
                 "or adding more control units"
@@ -1353,13 +1357,14 @@ class SyntheticDiD(DifferenceInDifferences):
         n_successful = len(placebo_estimates)
 
         if n_successful < 2:
-            # Same survey-awareness branch as the pre-replication guard
-            # above — bootstrap rejects every survey design in this
-            # release, so suggest jackknife for pweight-only fits.
+            # Same fallback guidance as the pre-replication guard above.
+            # Bootstrap (PR #352) supports pweight-only + strata/PSU/FPC
+            # survey designs, so it's always a valid fallback for survey
+            # users even when placebo fails.
             fallback = (
-                "variance_method='jackknife' or increasing the number of "
-                "control units (strata/PSU/FPC are not yet supported by any "
-                "SDID variance method)"
+                "variance_method='bootstrap' (supports pweight-only and "
+                "strata/PSU/FPC survey designs), variance_method='jackknife' "
+                "(pweight-only only), or increasing the number of control units"
                 if w_control is not None
                 else "variance_method='bootstrap' or variance_method='jackknife' "
                 "or increasing the number of control units"

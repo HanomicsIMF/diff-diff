@@ -241,6 +241,71 @@ class TestComputeTimeWeightsSurvey:
                 Y_pre_c, Y_post_c, wrong_rw, zeta_lambda=0.05,
             )
 
+    def test_non_uniform_rw_beats_unweighted_centering_variant(self, small_panel):
+        """Non-uniform rw: the weighted-centering solution achieves strictly
+        lower weighted SSR than the (buggy) unweighted-centering variant.
+
+        Verifies the PR #355 R1 fix — weighted centering + intercept=False
+        — actually solves the stated weighted loss
+        ``Σ_u rw_u·(A_u·λ - b_u)²``. Reproduces the unweighted-centering
+        pre-R1 path by hand (row-scale Y by sqrt(rw), then pass
+        intercept=True to the kernel so it centers on unweighted column
+        means) and asserts the correct path's weighted SSR is strictly
+        better. If R1's fix regresses (someone reverts back to
+        intercept=True after row-scaling), this test fails because the
+        two solutions become identical.
+        """
+        Y_pre_c = small_panel["Y_pre_control"]
+        Y_post_c = small_panel["Y_post_control"]
+        n_co = small_panel["n_control"]
+        rng = np.random.default_rng(23)
+        rw = np.where(rng.uniform(size=n_co) < 0.25, 5.0, 0.5)
+
+        # Correct path: what compute_time_weights_survey actually does.
+        lam_correct = compute_time_weights_survey(
+            Y_pre_c, Y_post_c, rw,
+            zeta_lambda=0.05,
+            min_decrease=1e-8,
+            max_iter=10000,
+        )
+
+        # Buggy variant: pre-R1 — row-scale by sqrt(rw) but let the kernel
+        # do UNWEIGHTED centering (intercept=True on the row-scaled matrix).
+        post_means = np.mean(Y_post_c, axis=0)
+        Y_time_raw = np.column_stack([Y_pre_c.T, post_means])
+        sqrt_rw = np.sqrt(np.maximum(rw, 0.0))
+        Y_weighted_unweighted_center = Y_time_raw * sqrt_rw[:, None]
+        lam_buggy = _sc_weight_fw(
+            Y_weighted_unweighted_center, zeta=0.05, intercept=True,
+            min_decrease=1e-8, max_iter=10000,
+        )
+        # Sparsify + refit second pass to match the two-pass shape.
+        from diff_diff.utils import _sparsify
+        lam_buggy = _sparsify(lam_buggy)
+        lam_buggy = _sc_weight_fw(
+            Y_weighted_unweighted_center, zeta=0.05, intercept=True,
+            init_weights=lam_buggy, min_decrease=1e-8, max_iter=10000,
+        )
+
+        # Compute the canonical (weighted-centered) objective on both.
+        wc_mean_pre = (Y_pre_c.T * rw[:, None]).sum(axis=0) / rw.sum()
+        wc_mean_post = (post_means * rw).sum() / rw.sum()
+        A_wc = Y_pre_c.T - wc_mean_pre
+        b_wc = post_means - wc_mean_post
+
+        def weighted_ssr(lam_val: np.ndarray) -> float:
+            resid = A_wc @ lam_val - b_wc
+            return float(np.sum(rw * resid ** 2))
+
+        ssr_correct = weighted_ssr(lam_correct)
+        ssr_buggy = weighted_ssr(lam_buggy)
+        assert ssr_correct <= ssr_buggy + 1e-6, (
+            f"weighted-centering λ (SSR={ssr_correct:.4f}) must achieve at "
+            f"least as low weighted SSR as the unweighted-centering variant "
+            f"(SSR={ssr_buggy:.4f}). PR #355 R1 regression: weighted SSR is "
+            "not being minimized by the survey λ helper."
+        )
+
     def test_zero_rw_subset_handled(self, small_panel):
         """rw with some zeros (Rao-Wu draws units to zero weight) still yields
         a valid simplex λ — the FW just down-weights those rows in the loss.

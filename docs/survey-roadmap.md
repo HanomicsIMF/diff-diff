@@ -223,8 +223,7 @@ the limitation and suggested alternative.
 
 | Estimator | Limitation | Alternative |
 |-----------|-----------|-------------|
-| SyntheticDiD | Strata/PSU/FPC (any variance method) | No SDID variance option in this release. Pweight-only works with `variance_method='placebo'` or `'jackknife'`. Strata/PSU/FPC + SDID requires composing Rao-Wu rescaled weights with paper-faithful Frank-Wolfe re-estimation; sketch in REGISTRY.md §SyntheticDiD. |
-| SyntheticDiD | `variance_method='bootstrap'` + any survey design (including pweight-only) | Use `variance_method='placebo'` or `'jackknife'` for pweight-only surveys. Refit bootstrap composed with survey weights requires the same weighted-FW derivation noted above. |
+| SyntheticDiD | `variance_method='placebo'` or `'jackknife'` + strata/PSU/FPC | Use `variance_method='bootstrap'` for full-design surveys (PR #352 weighted-FW + Rao-Wu composition). Placebo's control-index permutation and jackknife's LOO allocator need their own weighted derivations on top of the weighted-FW kernel; tracked in TODO.md as a follow-up. |
 | SyntheticDiD | Replicate weights | Pre-existing limitation: no replicate-weight survey support on SDID. |
 | TROP | Replicate weights | Use strata/PSU/FPC design with Rao-Wu rescaled bootstrap |
 | BaconDecomposition | Replicate weights | Diagnostic only, no inference |

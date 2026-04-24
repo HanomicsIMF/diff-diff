@@ -671,6 +671,35 @@ class TestBootstrapSE:
         assert "Bootstrap replications" in summary
         assert str(n_boot) in summary
 
+    def test_bootstrap_full_design_without_explicit_weights(self):
+        """SurveyDesign(strata=..., psu=..., weights=None) fits successfully.
+
+        Regression for PR #355 R1 code-quality finding: `SurveyDesign` allows
+        `weights=None` (resolve() synthesizes unit weights of 1), but the
+        SDID helper `_extract_unit_survey_weights` used to index
+        `survey_design.weights` directly and would fail before bootstrap
+        could run. The helper now returns ones for this configuration.
+        """
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        df["stratum"] = df["unit"] % 2
+        df["psu"] = df["unit"]
+        result = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(strata="stratum", psu="psu"),  # weights=None
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.se > 0
+        assert result.variance_method == "bootstrap"
+        assert result.survey_metadata is not None
+        assert result.survey_metadata.n_strata is not None
+        assert result.survey_metadata.n_psu is not None
+
     def test_bootstrap_single_psu_returns_nan(self):
         """Unstratified single-PSU survey design returns NaN SE (PR #352).
 

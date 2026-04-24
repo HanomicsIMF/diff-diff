@@ -1979,14 +1979,18 @@ def compute_time_weights_survey(
     Solves the WLS-style time-weight objective (PR #352 §2.2)::
 
         min_{λ on simplex}
-            Σ_u rw_control[u]·(Σ_t λ[t]·Y_pre_control[t,u] - Y_post_mean[u])²
+            Σ_u rw_control[u]·(Σ_t λ[t]·Y_u,pre-centered[t] - Y_u,post_mean-centered)²
             + ζ²·||λ||²
 
     Regularization stays uniform on λ (rw is per-control, λ is per-period —
-    no alignment for per-λ reg weighting). Loss term gets per-row weighting,
-    implemented as a √rw row-scale of the (transposed) Y_time matrix before
-    passing to the unweighted Rust kernel — equivalent to running the
-    standard FW on ``diag(√rw)·Y``.
+    no alignment for per-λ reg weighting). The loss term uses WLS-style
+    row weights; when ``intercept=True``, the column-centering step is
+    *also* survey-weighted (weighted mean across controls, weights
+    ``rw_control``) so the centered loss minimizes
+    ``Σ_u rw_u·(A_u·λ - b_u)²`` on the rw-centered matrix — equivalent
+    to the stated weighted objective. The Rust kernel then sees the
+    weighted-centered + sqrt(rw)-row-scaled matrix with
+    ``intercept=False`` (no additional unweighted centering).
 
     The returned λ is on the standard simplex.
 
@@ -2030,8 +2034,25 @@ def compute_time_weights_survey(
     post_means = np.mean(Y_post_control, axis=0)
     Y_time = np.column_stack([Y_pre_control.T, post_means])  # (N_co, T_pre+1)
 
-    # Row-scale by sqrt(rw): each control unit's contribution to the loss
-    # is weighted by rw_control[u]. Reg on λ stays uniform (no reg_weights).
+    # Column-center the (N_co, T_pre+1) matrix using the SURVEY-WEIGHTED
+    # mean across control units when ``intercept=True``. Plain
+    # ``intercept=True`` inside the FW kernel would use an unweighted
+    # column mean which does not correspond to the stated weighted-loss
+    # objective once ``rw_control`` varies. Perform the weighted
+    # centering here and pass ``intercept=False`` below so the kernel
+    # does not re-center on the row-scaled matrix.
+    rw_sum = float(np.sum(rw_control))
+    if intercept and rw_sum > 0:
+        col_weighted_means = (
+            (Y_time * rw_control[:, np.newaxis]).sum(axis=0) / rw_sum
+        )
+        Y_time = Y_time - col_weighted_means[np.newaxis, :]
+
+    # Row-scale by sqrt(rw): after weighted centering (if any), each
+    # control unit's contribution to the loss is weighted by
+    # ``rw_control[u]`` via the sqrt(rw) row scaling, which reproduces
+    # ``||diag(sqrt(rw))·(A·λ - b)||²`` = ``Σ_u rw_u·(A_u·λ - b_u)²``.
+    # Reg on λ stays uniform (no reg_weights).
     sqrt_rw = np.sqrt(np.maximum(rw_control, 0.0))
     Y_weighted = Y_time * sqrt_rw[:, np.newaxis]
 
@@ -2039,7 +2060,7 @@ def compute_time_weights_survey(
         lam, conv1 = _sc_weight_fw(
             Y_weighted,
             zeta=zeta_lambda,
-            intercept=intercept,
+            intercept=False,  # weighted centering already applied above
             init_weights=init_weights,
             min_decrease=min_decrease,
             max_iter=max_iter_pre_sparsify,
@@ -2049,7 +2070,7 @@ def compute_time_weights_survey(
         lam = _sc_weight_fw(
             Y_weighted,
             zeta=zeta_lambda,
-            intercept=intercept,
+            intercept=False,  # weighted centering already applied above
             init_weights=init_weights,
             min_decrease=min_decrease,
             max_iter=max_iter_pre_sparsify,
@@ -2061,7 +2082,7 @@ def compute_time_weights_survey(
         lam, conv2 = _sc_weight_fw(
             Y_weighted,
             zeta=zeta_lambda,
-            intercept=intercept,
+            intercept=False,  # weighted centering already applied above
             init_weights=lam,
             min_decrease=min_decrease,
             max_iter=max_iter,
@@ -2072,7 +2093,7 @@ def compute_time_weights_survey(
     return _sc_weight_fw(
         Y_weighted,
         zeta=zeta_lambda,
-        intercept=intercept,
+        intercept=False,  # weighted centering already applied above
         init_weights=lam,
         min_decrease=min_decrease,
         max_iter=max_iter,
