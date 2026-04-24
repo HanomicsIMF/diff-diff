@@ -3725,12 +3725,30 @@ class HeterogeneousAdoptionDiD:
         on the period-F dose distribution, and then fits the chosen design
         path independently on each event-time horizon's first differences.
 
-        On the weighted path (``survey=`` or ``weights=``), per-horizon
-        variance is Binder-TSL via :func:`compute_survey_if_variance` and
-        the simultaneous confidence band (when ``cband=True``) is
-        constructed by a shared-PSU multiplier bootstrap over the stacked
-        per-horizon influence-function matrix (see
-        :func:`_sup_t_multiplier_bootstrap`).
+        Per-horizon variance regimes (matches the static-path contract):
+
+        - **``survey=``**: Binder (1983) Taylor-series linearization
+          via :func:`compute_survey_if_variance` on the per-unit
+          β̂-scale influence function (continuous + mass-point both
+          route through the same helper). Inference is
+          t-distribution with ``df_survey``.
+        - **``weights=`` shortcut**: analytical SE — CCT-2014
+          weighted-robust for continuous paths (``bc_fit.se_robust /
+          |den|``) and weighted 2SLS pweight sandwich for mass-point
+          (``_fit_mass_point_2sls`` HC1 / classical / CR1). Inference
+          is Normal (``df=None``).
+
+        The simultaneous confidence band on the weighted path (when
+        ``cband=True``) is constructed by a shared-PSU multiplier
+        bootstrap over the stacked per-horizon β̂-scale IF matrix via
+        :func:`_sup_t_multiplier_bootstrap`. On the ``weights=``
+        shortcut, sup-t calibration is routed through a synthetic
+        trivial ``ResolvedSurveyDesign`` so the centered +
+        sqrt(n/(n-1))-corrected survey-aware branch fires uniformly —
+        matches the analytical HC1 variance family at the
+        compute_survey_if_variance(IF, trivial) ≈ V_HC1 invariant.
+        Unweighted event-study skips the bootstrap (pre-Phase 4.5 B
+        numerical output preserved).
         """
         # ---- Resolve effective fit-time state (local vars only,
         # feedback_fit_does_not_mutate_config). ----
