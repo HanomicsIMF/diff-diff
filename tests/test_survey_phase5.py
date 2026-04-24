@@ -894,6 +894,64 @@ class TestSDIDSurveyPlaceboFullDesign:
         assert result_pw.att == pytest.approx(result_full.att, abs=1e-10)
         assert result_pw.se != pytest.approx(result_full.se, abs=1e-6)
 
+    def test_placebo_fpc_alone_no_op_warns_and_matches_pweight_only(
+        self, sdid_survey_data_full_design
+    ):
+        """R8 P1 fix: ``fpc=`` alone does not flip placebo dispatch.
+
+        Permutation tests condition on the observed sample (Pesarin 2001
+        §1.5), so FPC's sampling-fraction adjustment doesn't enter
+        Algorithm 4 or its stratified-permutation survey extension. The
+        previous dispatcher routed any ``fpc is not None`` design through
+        ``_placebo_variance_se_survey`` (weighted-FW per draw), silently
+        changing numerics relative to the no-FPC fit even though FPC
+        played no role in the math.
+
+        The fix gates placebo's survey-path dispatch on
+        ``strata is not None OR psu is not None`` only, and emits a
+        ``UserWarning`` whenever FPC is set on a placebo fit. This test
+        asserts both: (a) the warning fires and (b) ``SE`` matches the
+        pweight-only-no-FPC fit at ``rel=1e-12`` (FPC truly is a no-op).
+        """
+        df = sdid_survey_data_full_design.copy()
+        df["fpc_col"] = 1000.0  # any positive value — no-op on placebo
+
+        sd_fpc_only = SurveyDesign(weights="weight", fpc="fpc_col")
+        sd_pweight_only = SurveyDesign(weights="weight")
+
+        est_fpc = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        with pytest.warns(
+            UserWarning,
+            match=r"SurveyDesign\(fpc=\.\.\.\) is a no-op on variance_method='placebo'",
+        ):
+            r_fpc = est_fpc.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd_fpc_only,
+            )
+
+        est_pw = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        r_pw = est_pw.fit(
+            df,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_pweight_only,
+        )
+
+        # FPC is documented as no-op for placebo: the SE under FPC must
+        # exactly match the SE without FPC (same dispatch path, no
+        # numerical drift from the routing flip the dispatcher used to
+        # introduce on `fpc is not None`).
+        assert r_fpc.se == pytest.approx(r_pw.se, rel=1e-12)
+        assert r_fpc.att == pytest.approx(r_pw.att, abs=1e-12)
+
     def test_placebo_full_design_psu_only_routes_through_survey_path(
         self, sdid_survey_data_jk_well_formed
     ):

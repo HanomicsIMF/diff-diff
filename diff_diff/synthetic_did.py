@@ -789,15 +789,49 @@ class SyntheticDiD(DifferenceInDifferences):
             _fpc_control = None
             _fpc_treated = None
 
-        # Placebo routes to the survey allocator whenever strata or PSU
-        # or FPC is declared. For PSU/FPC-without-strata designs, the
-        # whole panel is synthesized as a single stratum (stratified
-        # permutation degenerates to global within-stratum permutation,
-        # still dispatched through the weighted-FW path for methodology
-        # consistency with the documented full-design contract).
+        # Placebo routes to the survey allocator whenever **strata or
+        # PSU** is declared (FPC alone does NOT flip dispatch). For
+        # PSU-without-strata designs, the whole panel is synthesized
+        # as a single stratum (stratified permutation degenerates to
+        # global within-stratum permutation, still dispatched through
+        # the weighted-FW path).
+        #
+        # FPC handling on placebo (R8 P1 fix): permutation tests are
+        # conditional on the observed sample (Pesarin 2001 §1.5), so
+        # the sampling fraction does not enter Algorithm 4 or its
+        # stratified-permutation extension. Including FPC in the
+        # dispatch trigger would silently switch numerics (weighted-FW
+        # vs unweighted-FW + post-hoc composition) on a survey design
+        # element that has no place in the placebo math. Drop FPC from
+        # the dispatch condition; emit a ``UserWarning`` below if FPC
+        # is set with placebo to surface the no-op contract.
         _placebo_use_survey_path = (
-            _full_design_survey and self.variance_method == "placebo"
+            self.variance_method == "placebo"
+            and resolved_survey_unit is not None
+            and (
+                resolved_survey_unit.strata is not None
+                or resolved_survey_unit.psu is not None
+            )
         )
+        if (
+            self.variance_method == "placebo"
+            and resolved_survey_unit is not None
+            and resolved_survey_unit.fpc is not None
+        ):
+            warnings.warn(
+                "SurveyDesign(fpc=...) is a no-op on "
+                "variance_method='placebo': permutation tests are "
+                "conditional on the observed sample (Pesarin 2001 §1.5), "
+                "so the sampling fraction does not enter Algorithm 4 or "
+                "its stratified-permutation survey extension. The FPC "
+                "column is preserved in the design metadata for other "
+                "purposes but the placebo SE is computed as if FPC were "
+                "absent. Use variance_method='bootstrap' or 'jackknife' "
+                "if you need FPC to participate in the variance "
+                "computation.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Jackknife routes to the survey allocator whenever PSU or FPC or
         # strata is declared. PSU-without-strata is treated as a single

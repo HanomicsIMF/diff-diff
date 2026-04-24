@@ -749,20 +749,27 @@ Two bootstrap strategies interact with survey designs:
   for the full objective and the argmin-set caveat.
 
 - **Stratified permutation placebo** (SyntheticDiD): SDID's full-design
-  placebo variance allocator. For each placebo draw, pseudo-treated
-  indices are sampled uniformly without replacement from controls
-  *within each stratum containing actual treated units* (classical
-  stratified permutation test — Pesarin 2001). Pseudo-treated means
-  are survey-weighted; weighted-FW re-estimates ω and λ per draw with
-  ``rw_control`` threaded into both loss and regularization. Post-
-  optimization composition ``ω_eff = rw · ω / Σ(rw · ω)`` with zero-
-  mass retry. SE follows Arkhangelsky Algorithm 4:
+  placebo variance allocator (triggered when ``strata`` and/or ``psu``
+  is declared on the ``SurveyDesign``). For each placebo draw,
+  pseudo-treated indices are sampled uniformly without replacement
+  from controls *within each stratum containing actual treated units*
+  (classical stratified permutation test — Pesarin 2001).
+  Pseudo-treated means are survey-weighted; weighted-FW re-estimates
+  ω and λ per draw with ``rw_control`` threaded into both loss and
+  regularization. Post-optimization composition
+  ``ω_eff = rw · ω / Σ(rw · ω)`` with zero-mass retry. SE follows
+  Arkhangelsky Algorithm 4:
   ``sqrt((r-1)/r) · std(placebo_estimates, ddof=1)``. Fit-time
-  feasibility guards raise ``ValueError`` when a treated-containing
-  stratum has 0 controls or fewer controls than treated units (the
-  permutation allocator requires ``n_controls_h ≥ n_treated_h`` by
-  construction). See REGISTRY.md §SyntheticDiD ``Note (survey +
-  placebo composition)``.
+  feasibility guards raise ``ValueError`` on three failure cases:
+  Case B (treated stratum has 0 controls), Case C (fewer controls
+  than treated in a treated stratum), and Case D (every treated
+  stratum is exact-count ``n_c == n_t`` → permutation support = 1).
+  ``SurveyDesign(fpc=...)`` is a documented no-op for placebo —
+  permutation tests are conditional on the observed sample (Pesarin
+  2001 §1.5), so the sampling fraction does not enter Algorithm 4 or
+  its survey extension. An ``fpc=`` column emits a ``UserWarning`` and
+  is not part of the placebo dispatch trigger. See REGISTRY.md
+  §SyntheticDiD ``Note (survey + placebo composition)``.
 
 - **PSU-level leave-one-out with stratum aggregation** (SyntheticDiD):
   SDID's full-design jackknife variance allocator, matching the
