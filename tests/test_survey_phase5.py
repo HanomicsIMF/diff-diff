@@ -1161,6 +1161,117 @@ class TestSDIDSurveyJackknifeFullDesign:
         assert set(df.columns) == {"unit", "role", "att_loo", "delta_from_full"}
         assert set(df["role"].unique()) <= {"control", "treated"}
 
+    def test_jackknife_full_design_full_census_fpc_returns_zero_se(
+        self, sdid_survey_data_jk_well_formed
+    ):
+        """R5 P1 fix: full-census FPC → SE=0, not NaN.
+
+        Rust & Rao's stratified jackknife formula has an explicit
+        ``(1 - f_h)`` factor. When ``fpc[h] == n_h`` for every
+        contributing stratum, ``f_h = 1``, ``(1 - f_h) = 0``, and every
+        stratum contribution is zero → ``total_variance = 0`` by
+        legitimate design, not by "every stratum skipped". The correct
+        jackknife SE in that case is **zero** (full census: no sampling
+        variance), not NaN. Reserve NaN for the truly-undefined cases
+        (all strata skipped, undefined PSU-LOO replicate).
+        """
+        df = sdid_survey_data_jk_well_formed.copy()
+        # Each stratum has n_h=3 PSUs. Setting fpc=3 gives f_h=1 and
+        # (1 - f_h) = 0 — the formula collapses the stratum contribution
+        # to zero for legitimate design reasons.
+        df["fpc_full_census"] = 3.0
+
+        sd = SurveyDesign(
+            weights="weight",
+            strata="stratum",
+            psu="psu",
+            fpc="fpc_full_census",
+        )
+        est = SyntheticDiD(variance_method="jackknife", seed=42)
+        result = est.fit(
+            df,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd,
+        )
+        # SE must be exactly zero (legitimate full-census no-sampling
+        # variance), not NaN (undefined) and not a tiny positive number.
+        assert np.isfinite(result.se)
+        assert result.se == 0.0
+
+    def test_jackknife_full_design_lonely_psu_adjust_raises(
+        self, sdid_survey_data_jk_well_formed
+    ):
+        """R5 P1 fix: ``SurveyDesign(lonely_psu='adjust')`` on the jackknife
+        survey path raises NotImplementedError rather than silently being
+        treated as ``"remove"``.
+
+        ``"remove"`` and ``"certainty"`` both contribute 0 variance for
+        singleton strata on the jackknife path, matching canonical R
+        ``survey::svyjkn`` behavior. ``"adjust"`` requires an overall-
+        mean fallback per stratum that is not yet implemented; rejecting
+        upfront prevents silent variance miscomputation.
+        """
+        sd = SurveyDesign(
+            weights="weight",
+            strata="stratum",
+            psu="psu",
+            lonely_psu="adjust",
+        )
+        est = SyntheticDiD(variance_method="jackknife", seed=42)
+        with pytest.raises(
+            NotImplementedError,
+            match=r"lonely_psu='adjust'.*not supported on the SDID jackknife",
+        ):
+            est.fit(
+                sdid_survey_data_jk_well_formed,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd,
+            )
+
+    def test_jackknife_full_design_lonely_psu_certainty_equivalent_to_remove(
+        self, sdid_survey_data_jk_well_formed
+    ):
+        """``lonely_psu='certainty'`` is accepted and produces the same SE
+        as ``lonely_psu='remove'`` (both contribute 0 for singleton
+        strata on the jackknife path).
+        """
+        sd_remove = SurveyDesign(
+            weights="weight", strata="stratum", psu="psu", lonely_psu="remove"
+        )
+        sd_certainty = SurveyDesign(
+            weights="weight", strata="stratum", psu="psu", lonely_psu="certainty"
+        )
+
+        est1 = SyntheticDiD(variance_method="jackknife", seed=42)
+        result_remove = est1.fit(
+            sdid_survey_data_jk_well_formed,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_remove,
+        )
+        est2 = SyntheticDiD(variance_method="jackknife", seed=42)
+        result_certainty = est2.fit(
+            sdid_survey_data_jk_well_formed,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_certainty,
+        )
+        assert result_remove.se == pytest.approx(result_certainty.se, rel=1e-14)
+
     def test_jackknife_full_design_undefined_replicate_returns_nan(
         self, sdid_survey_data_full_design
     ):

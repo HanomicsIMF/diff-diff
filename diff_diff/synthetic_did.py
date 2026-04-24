@@ -935,6 +935,31 @@ class SyntheticDiD(DifferenceInDifferences):
             if _jackknife_use_survey_path:
                 # PSU-level LOO + stratum aggregation (Rust & Rao 1996).
                 assert w_control is not None and w_treated is not None
+                # R5 P1 fix: validate ``lonely_psu`` mode. The survey
+                # jackknife currently skips singleton strata (n_h < 2)
+                # unconditionally — equivalent to R ``survey::svyjkn``'s
+                # ``"remove"`` and ``"certainty"`` modes (both zero-
+                # contribution for singleton strata). ``"adjust"`` (use
+                # overall mean for singleton strata) is not implemented
+                # for SDID jackknife; reject upfront rather than silently
+                # treating it as ``"remove"``.
+                _lonely_psu_mode = getattr(
+                    resolved_survey_unit, "lonely_psu", "remove"
+                )
+                if _lonely_psu_mode not in ("remove", "certainty"):
+                    raise NotImplementedError(
+                        f"SurveyDesign(lonely_psu={_lonely_psu_mode!r}) is "
+                        "not supported on the SDID jackknife survey path. "
+                        "'remove' and 'certainty' are equivalent here "
+                        "(both contribute 0 variance for singleton strata, "
+                        "which is the canonical Rust & Rao 1996 behavior). "
+                        "'adjust' requires an overall-mean fallback per "
+                        "stratum that is not yet implemented for SDID "
+                        "jackknife; use variance_method='bootstrap' (which "
+                        "supports all three ``lonely_psu`` modes via the "
+                        "weighted-FW + Rao-Wu path) or switch the design "
+                        "to lonely_psu='remove'."
+                    )
                 # Unstratified designs use the synthesized single stratum
                 # (``_strata_*_eff``) so the loop reduces to classical
                 # JK1 (single-stratum PSU-LOO).
@@ -2431,7 +2456,7 @@ class SyntheticDiD(DifferenceInDifferences):
                 stacklevel=3,
             )
             return np.nan, tau_loo_arr
-        if not any_stratum_contributed or total_variance <= 0.0:
+        if not any_stratum_contributed:
             warnings.warn(
                 "Jackknife survey SE is undefined because every stratum "
                 "was skipped (insufficient PSUs per stratum for variance "
@@ -2443,7 +2468,15 @@ class SyntheticDiD(DifferenceInDifferences):
             )
             return np.nan, tau_loo_arr
 
-        return float(np.sqrt(total_variance)), tau_loo_arr
+        # R5 P1 fix: legitimate zero variance (e.g., full-census FPC with
+        # f_h = 1 for every contributing stratum → (1 - f_h) = 0 factor
+        # zeros the contribution even when within-stratum dispersion is
+        # non-zero; or exact-zero within-stratum dispersion when all
+        # LOOs produce identical τ̂). Rust & Rao gives V_J = 0, not
+        # undefined. Reserve NaN for the "all strata skipped" /
+        # undefined-replicate cases above; compute SE = 0 otherwise.
+        variance_nonneg = max(total_variance, 0.0)
+        return float(np.sqrt(variance_nonneg)), tau_loo_arr
 
     def get_params(self) -> Dict[str, Any]:
         """Get estimator parameters."""
