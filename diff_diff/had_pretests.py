@@ -608,24 +608,36 @@ class HADPretestReport:
     aggregate: str = "overall"
 
     def __repr__(self) -> str:
+        # Preserve Phase 3 repr bit-exactly on the overall path. The
+        # aggregate kwarg is only surfaced on the event-study path so
+        # downstream consumers comparing repr strings on two-period
+        # reports see identical output.
+        if self.aggregate == "event_study":
+            return (
+                f"HADPretestReport(aggregate={self.aggregate!r}, "
+                f"all_pass={self.all_pass}, "
+                f"verdict={self.verdict!r}, n_obs={self.n_obs})"
+            )
         return (
-            f"HADPretestReport(aggregate={self.aggregate!r}, "
-            f"all_pass={self.all_pass}, "
+            f"HADPretestReport(all_pass={self.all_pass}, "
             f"verdict={self.verdict!r}, n_obs={self.n_obs})"
         )
 
     def summary(self) -> str:
         """Formatted summary of all tests and the verdict."""
         width = 72
-        header = [
-            "=" * width,
-            "HAD pre-test workflow".center(width),
-            f"aggregate: {self.aggregate}".center(width),
-            "=" * width,
-            self.qug.summary(),
-            "",
-        ]
+        # Preserve Phase 3 summary bit-exactly on the overall path. The
+        # `aggregate: ...` header line is only rendered on the event-
+        # study path; two-period reports produce the Phase 3 layout.
         if self.aggregate == "event_study":
+            header = [
+                "=" * width,
+                "HAD pre-test workflow".center(width),
+                f"aggregate: {self.aggregate}".center(width),
+                "=" * width,
+                self.qug.summary(),
+                "",
+            ]
             if self.pretrends_joint is not None:
                 body = [self.pretrends_joint.summary(), ""]
             else:
@@ -636,7 +648,14 @@ class HADPretestReport:
             if self.homogeneity_joint is not None:
                 body += [self.homogeneity_joint.summary(), ""]
         else:
-            # aggregate == "overall"
+            # aggregate == "overall" - Phase 3 layout preserved.
+            header = [
+                "=" * width,
+                "HAD pre-test workflow".center(width),
+                "=" * width,
+                self.qug.summary(),
+                "",
+            ]
             body = []
             if self.stute is not None:
                 body += [self.stute.summary(), ""]
@@ -657,29 +676,39 @@ class HADPretestReport:
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-safe nested dict of the full report.
 
-        The ``aggregate`` key identifies which component fields are
-        present; ``None``-valued components are emitted as JSON null.
+        On ``aggregate="overall"``, the output schema is bit-exact with
+        Phase 3 (``{qug, stute, yatchew, all_pass, verdict, alpha,
+        n_obs}``) - no new keys, no aggregate field. On
+        ``aggregate="event_study"``, the output carries ``aggregate``,
+        ``pretrends_joint``, ``homogeneity_joint`` and omits the
+        ``None``-valued ``stute`` / ``yatchew`` keys entirely.
         """
-        base: Dict[str, Any] = {
-            "aggregate": str(self.aggregate),
+        if self.aggregate == "event_study":
+            return {
+                "aggregate": str(self.aggregate),
+                "qug": self.qug.to_dict(),
+                "pretrends_joint": (
+                    None if self.pretrends_joint is None else self.pretrends_joint.to_dict()
+                ),
+                "homogeneity_joint": (
+                    None if self.homogeneity_joint is None else self.homogeneity_joint.to_dict()
+                ),
+                "all_pass": bool(self.all_pass),
+                "verdict": str(self.verdict),
+                "alpha": float(self.alpha),
+                "n_obs": int(self.n_obs),
+            }
+        # aggregate == "overall" - Phase 3 schema preserved bit-exactly,
+        # including key order and the absence of the aggregate field.
+        return {
             "qug": self.qug.to_dict(),
+            "stute": None if self.stute is None else self.stute.to_dict(),
+            "yatchew": None if self.yatchew is None else self.yatchew.to_dict(),
             "all_pass": bool(self.all_pass),
             "verdict": str(self.verdict),
             "alpha": float(self.alpha),
             "n_obs": int(self.n_obs),
         }
-        if self.aggregate == "event_study":
-            base["pretrends_joint"] = (
-                None if self.pretrends_joint is None else self.pretrends_joint.to_dict()
-            )
-            base["homogeneity_joint"] = (
-                None if self.homogeneity_joint is None else self.homogeneity_joint.to_dict()
-            )
-        else:
-            # aggregate == "overall" - Phase 3 schema preserved bit-exactly
-            base["stute"] = None if self.stute is None else self.stute.to_dict()
-            base["yatchew"] = None if self.yatchew is None else self.yatchew.to_dict()
-        return base
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return a tidy 3-row DataFrame (one row per implemented test).
@@ -1943,6 +1972,42 @@ def stute_joint_pretest(
             exact_linear_short_circuited=False,
         )
 
+    # Zero-variation-in-D degeneracy guard: mirrors stute_test's intent
+    # (had_pretests.py:~1233). The CvM cusum is defined against the
+    # dose regressor; constant d has no cross-sectional variation for
+    # the test to detect nonlinearity. Under the mean-independence null
+    # this yields a mechanically-zero statistic (bogus fail-to-reject);
+    # under the linearity null a singular [1, d] design matrix crashes
+    # the refit. Emit warning + NaN result instead.
+    #
+    # Uses ``ptp`` (peak-to-peak = max - min) rather than ``np.var`` for
+    # the degeneracy check: ``np.var`` of a truly constant array returns
+    # a small non-zero value (~1e-32) due to E[X^2] - E[X]^2 rounding
+    # noise, so a ``<= 0`` comparison misses the degeneracy. ``ptp`` is
+    # bit-exact for identical inputs.
+    if float(np.ptp(doses_arr)) <= 0.0:
+        warnings.warn(
+            "stute_joint_pretest: constant doses (zero cross-sectional "
+            "variation); the joint Stute CvM requires dose variation. "
+            "Returning NaN result.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return StuteJointResult(
+            cvm_stat_joint=float("nan"),
+            p_value=float("nan"),
+            reject=False,
+            alpha=float(alpha),
+            horizon_labels=horizon_labels,
+            per_horizon_stats={k: float("nan") for k in horizon_labels},
+            n_bootstrap=int(n_bootstrap),
+            n_obs=int(G),
+            n_horizons=int(K),
+            seed=None if seed is None else int(seed),
+            null_form=str(null_form),
+            exact_linear_short_circuited=False,
+        )
+
     idx = np.argsort(doses_arr, kind="stable")
     d_sorted = doses_arr[idx]
 
@@ -2113,8 +2178,59 @@ def joint_pretrends_test(
             f"Violators: {out_of_order!r} (base_period={base_period!r})."
         )
 
+    # Event-study validation contract (paper Appendix B.2):
+    # When the panel has >= 3 distinct periods, always route through
+    # `_validate_had_panel_event_study`. This enforces (a) balanced
+    # panel, (b) ordered time dtype, (c) D = 0 across every pre-period,
+    # (d) last-cohort auto-filter under staggered timing with
+    # UserWarning, (e) constant post-treatment dose within unit. When
+    # first_treat_col is None and the panel is staggered, the validator
+    # RAISES - matching the workflow dispatch contract. For 2-period
+    # panels the validator does not apply; skip and fall through to the
+    # simpler balance/invariant guards in `_aggregate_for_joint_test`.
+    n_periods = int(data[time_col].nunique())
+    data_filtered: pd.DataFrame = data
+    if n_periods >= 3:
+        F_val, t_pre_list, _t_post_list, data_filtered, filter_info = (
+            _validate_had_panel_event_study(
+                data,
+                outcome_col=outcome_col,
+                dose_col=dose_col,
+                time_col=time_col,
+                unit_col=unit_col,
+                first_treat_col=first_treat_col,
+            )
+        )
+        if filter_info is not None:
+            warnings.warn(
+                f"joint_pretrends_test: staggered panel auto-filtered to "
+                f"last cohort (F_last={filter_info['F_last']!r}, "
+                f"n_kept={filter_info['n_kept']}, "
+                f"n_dropped={filter_info['n_dropped']}). "
+                f"Paper Appendix B.2 prescription.",
+                UserWarning,
+                stacklevel=2,
+            )
+        # Subset invariants: the caller's base_period and pre_periods
+        # must be pre-treatment periods under the validator's partition.
+        if base_period not in t_pre_list:
+            raise ValueError(
+                f"base_period={base_period!r} is not in the validated "
+                f"pre-period set {list(t_pre_list)!r} (periods before "
+                f"first-treatment period F={F_val!r}). For the HAD "
+                f"pre-trends workflow, base_period must be a pre-period "
+                f"anchor (typically the last pre-period, F-1)."
+            )
+        not_pre = [t for t in pre_periods if t not in t_pre_list]
+        if not_pre:
+            raise ValueError(
+                f"pre_periods must all be validated pre-treatment "
+                f"periods. Not-pre entries: {not_pre!r}. Validator's "
+                f"pre-period set: {list(t_pre_list)!r}."
+            )
+
     d_arr, dy_by_horizon, _ = _aggregate_for_joint_test(
-        data,
+        data_filtered,
         outcome_col=outcome_col,
         dose_col=dose_col,
         time_col=time_col,
@@ -2128,7 +2244,7 @@ def joint_pretrends_test(
     # for base_period - it is itself a pre-period relative to the
     # treatment onset). We check this on the passed-in panel subset.
     needed_all_zero = list(pre_periods) + [base_period]
-    subset_zero_check = data[data[time_col].isin(needed_all_zero)]
+    subset_zero_check = data_filtered[data_filtered[time_col].isin(needed_all_zero)]
     if (subset_zero_check[dose_col] != 0).any():
         n_nonzero = int((subset_zero_check[dose_col] != 0).sum())
         raise ValueError(
@@ -2242,8 +2358,54 @@ def joint_homogeneity_test(
             f"Violators: {out_of_order!r} (base_period={base_period!r})."
         )
 
+    # Event-study validation contract (paper Appendix B.2) - twin of
+    # `joint_pretrends_test`. Same gating by `n_periods >= 3`; same
+    # subset-invariant checks; emits the staggered-filter UserWarning.
+    # The validator also enforces constant post-treatment dose within
+    # unit, which is critical for the homogeneity path because a
+    # time-varying post-dose would make the per-horizon refit on
+    # `[1, D_g]` misspecify the regressor.
+    n_periods = int(data[time_col].nunique())
+    data_filtered: pd.DataFrame = data
+    if n_periods >= 3:
+        F_val, t_pre_list, t_post_list, data_filtered, filter_info = (
+            _validate_had_panel_event_study(
+                data,
+                outcome_col=outcome_col,
+                dose_col=dose_col,
+                time_col=time_col,
+                unit_col=unit_col,
+                first_treat_col=first_treat_col,
+            )
+        )
+        if filter_info is not None:
+            warnings.warn(
+                f"joint_homogeneity_test: staggered panel auto-filtered "
+                f"to last cohort (F_last={filter_info['F_last']!r}, "
+                f"n_kept={filter_info['n_kept']}, "
+                f"n_dropped={filter_info['n_dropped']}). "
+                f"Paper Appendix B.2 prescription.",
+                UserWarning,
+                stacklevel=2,
+            )
+        if base_period not in t_pre_list:
+            raise ValueError(
+                f"base_period={base_period!r} is not in the validated "
+                f"pre-period set {list(t_pre_list)!r} (periods before "
+                f"first-treatment period F={F_val!r}). For the HAD "
+                f"homogeneity workflow, base_period must be a pre-period "
+                f"anchor (typically the last pre-period, F-1)."
+            )
+        not_post = [t for t in post_periods if t not in t_post_list]
+        if not_post:
+            raise ValueError(
+                f"post_periods must all be validated post-treatment "
+                f"periods. Not-post entries: {not_post!r}. Validator's "
+                f"post-period set: {list(t_post_list)!r}."
+            )
+
     d_arr, dy_by_horizon, _ = _aggregate_for_joint_test(
-        data,
+        data_filtered,
         outcome_col=outcome_col,
         dose_col=dose_col,
         time_col=time_col,
@@ -2258,7 +2420,7 @@ def joint_homogeneity_test(
     # unit (existence) and is NOT identically zero across all units
     # (reciprocal twin of the pretrends guard - an all-zero post-period
     # contradicts the HAD treatment-onset contract).
-    base_doses = data.loc[data[time_col] == base_period, dose_col]
+    base_doses = data_filtered.loc[data_filtered[time_col] == base_period, dose_col]
     if (base_doses != 0).any():
         n_nonzero = int((base_doses != 0).sum())
         raise ValueError(
@@ -2267,7 +2429,7 @@ def joint_homogeneity_test(
             f"non-zero dose observation(s) in base_period."
         )
     for t in post_periods:
-        post_doses = data.loc[data[time_col] == t, dose_col]
+        post_doses = data_filtered.loc[data_filtered[time_col] == t, dose_col]
         if not (post_doses > 0).any():
             raise ValueError(
                 f"post_period={t!r} has D = 0 for every unit. HAD "

@@ -1550,6 +1550,31 @@ class TestStuteJointPretest:
         assert result.horizon_labels == ["1997", "1998"]
         assert set(result.per_horizon_stats.keys()) == {"1997", "1998"}
 
+    def test_constant_d_returns_nan_with_warning(self):
+        """R1: constant doses - no cross-sectional variation to detect
+        nonlinearity. Must warn and return NaN inference rather than
+        a mechanically-zero CvM (mean-indep null) or singular refit
+        (linearity null). Mirrors stute_test's single-horizon guard."""
+        G = 30
+        resid, fit, _ = _multi_period_residuals(G, K=2, seed=123)
+        d_constant = np.full(G, 0.5, dtype=np.float64)
+        with pytest.warns(UserWarning, match="constant doses"):
+            result = stute_joint_pretest(
+                residuals_by_horizon=resid,
+                fitted_by_horizon=fit,
+                doses=d_constant,
+                design_matrix=np.ones((G, 1)),
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert np.isnan(result.cvm_stat_joint)
+        assert np.isnan(result.p_value)
+        assert result.reject is False
+        assert result.exact_linear_short_circuited is False
+        # Per-horizon stats preserved with NaN values (diagnostic surface)
+        assert set(result.per_horizon_stats.keys()) == set(resid.keys())
+        assert all(np.isnan(v) for v in result.per_horizon_stats.values())
+
 
 class TestJointPretrendsTest:
     """Tests for :func:`joint_pretrends_test` data-in wrapper."""
@@ -1688,13 +1713,16 @@ class TestJointPretrendsTest:
             )
 
     def test_non_zero_dose_in_pre_period_raises(self):
-        """HAD contract: pre-periods have D=0 for every unit."""
+        """HAD contract: pre-periods have D=0 for every unit. The
+        event-study validator catches this via its staggered-cohort
+        detection (a pre-period unit with D>0 looks like an earlier
+        treatment cohort)."""
         df = _make_multi_period_panel(
             G=30, periods=[1997, 1998, 1999, 2000], first_treat_period=2000, seed=1
         )
         # Contaminate pre-period 1998 with a non-zero dose for one unit
         df.loc[(df["unit"] == 0) & (df["period"] == 1998), "d"] = 0.5
-        with pytest.raises(ValueError, match="D = 0"):
+        with pytest.raises(ValueError, match="Staggered|dose invariant|D = 0"):
             joint_pretrends_test(
                 df,
                 "y",
@@ -1708,12 +1736,14 @@ class TestJointPretrendsTest:
             )
 
     def test_non_zero_dose_in_base_period_raises(self):
-        """Reciprocal: base_period (last pre-period) must also satisfy D=0."""
+        """Reciprocal: base_period (last pre-period) must also satisfy
+        D=0. Caught by the event-study validator before our local
+        guard runs."""
         df = _make_multi_period_panel(
             G=30, periods=[1997, 1998, 1999, 2000], first_treat_period=2000, seed=1
         )
         df.loc[(df["unit"] == 0) & (df["period"] == 1999), "d"] = 0.3
-        with pytest.raises(ValueError, match="D = 0"):
+        with pytest.raises(ValueError, match="Staggered|dose invariant|D = 0"):
             joint_pretrends_test(
                 df,
                 "y",
@@ -1725,6 +1755,107 @@ class TestJointPretrendsTest:
                 n_bootstrap=199,
                 seed=0,
             )
+
+    def test_staggered_panel_without_first_treat_col_raises(self):
+        """R1: direct wrapper call on a staggered panel without
+        first_treat_col must raise via the event-study validator
+        contract (same behavior as did_had_pretest_workflow's
+        event-study dispatch)."""
+        parts = []
+        for cohort_ft, cohort_range in [(1999, (0, 15)), (2000, (15, 30))]:
+            for g in range(*cohort_range):
+                dose = 0.05 + 0.01 * (g - cohort_range[0])
+                for t in [1997, 1998, 1999, 2000, 2001]:
+                    is_post = t >= cohort_ft
+                    parts.append(
+                        {
+                            "unit": g,
+                            "period": t,
+                            "y": 0.1 * g + (0.3 * dose if is_post else 0.0),
+                            "d": dose if is_post else 0.0,
+                        }
+                    )
+        df = pd.DataFrame(parts)
+        with pytest.raises(ValueError, match="Staggered"):
+            joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "period",
+                "unit",
+                pre_periods=[1997, 1998],
+                base_period=1999,
+                n_bootstrap=199,
+                seed=0,
+            )
+
+    def test_staggered_panel_with_first_treat_col_warns_and_filters(self):
+        """R1: direct wrapper call on a staggered panel WITH
+        first_treat_col auto-filters to last cohort + never-treated
+        and emits UserWarning."""
+        parts = []
+        for cohort_ft, cohort_range in [(1999, (0, 10)), (2000, (10, 40))]:
+            for g in range(*cohort_range):
+                dose = 0.05 + 0.01 * (g - cohort_range[0])
+                for t in [1997, 1998, 1999, 2000, 2001]:
+                    is_post = t >= cohort_ft
+                    parts.append(
+                        {
+                            "unit": g,
+                            "period": t,
+                            "y": 0.1 * g + (0.3 * dose if is_post else 0.0),
+                            "d": dose if is_post else 0.0,
+                            "first_treat": cohort_ft,
+                        }
+                    )
+        df = pd.DataFrame(parts)
+        with pytest.warns(UserWarning, match="staggered|Staggered"):
+            result = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "period",
+                "unit",
+                pre_periods=[1997, 1998],
+                base_period=1999,
+                first_treat_col="first_treat",
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert isinstance(result, StuteJointResult)
+        # Last cohort (F=2000) + never-treated kept (none in this fixture
+        # - all units are treated); n_obs reflects the filter.
+        assert result.n_obs == 30  # 10 filtered + 30 kept... actually just 30 kept
+
+    def test_constant_d_wrapper_path_returns_nan_with_warning(self):
+        """R1: direct wrapper call on a panel where ALL units have the
+        same dose - propagates the joint core's constant-d guard and
+        returns NaN inference rather than a spurious fail-to-reject."""
+
+        def const_dose(rng_, G):  # noqa: ARG001
+            return np.full(G, 0.4, dtype=np.float64)
+
+        df = _make_multi_period_panel(
+            G=30,
+            periods=[1997, 1998, 1999, 2000, 2001],
+            first_treat_period=2000,
+            dose_fn=const_dose,
+            seed=33,
+        )
+        with pytest.warns(UserWarning, match="constant doses"):
+            result = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "period",
+                "unit",
+                pre_periods=[1997, 1998],
+                base_period=1999,
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert np.isnan(result.p_value)
+        assert result.reject is False
 
 
 class TestJointHomogeneityTest:
@@ -1882,13 +2013,16 @@ class TestJointHomogeneityTest:
             )
 
     def test_all_zero_dose_post_period_raises(self):
-        """Post-period with D=0 for every unit contradicts HAD contract."""
+        """Post-period with D=0 for every unit contradicts HAD contract.
+        Caught either by the event-study validator's contiguous-dose
+        invariant (post-zero breaks the monotone transition from pre
+        D=0 to post D>0) or by our local reciprocal guard."""
         df = _make_multi_period_panel(
             G=30, periods=[1997, 1998, 1999, 2000], first_treat_period=1999, seed=1
         )
         # Zero out all doses at post-period 2000 (keep 1999 post intact for base contract)
         df.loc[df["period"] == 2000, "d"] = 0.0
-        with pytest.raises(ValueError, match="D = 0 for every unit"):
+        with pytest.raises(ValueError, match="dose invariant|D = 0 for every unit"):
             joint_homogeneity_test(
                 df,
                 "y",
@@ -2231,7 +2365,10 @@ class TestHADPretestReportSerialization:
         panel = _make_two_period_panel(50, d, dy, seed=42)
         report = did_had_pretest_workflow(panel, "y", "d", "time", "unit", n_bootstrap=199, seed=42)
         out = report.to_dict()
-        assert out["aggregate"] == "overall"
+        # Phase 3 schema is bit-exact: no `aggregate` key on the overall
+        # path (only emitted on event_study) - Phase 3 downstream
+        # consumers must not see a new key.
+        assert "aggregate" not in out
         assert "qug" in out and "stute" in out and "yatchew" in out
         # Event-study keys absent on overall
         assert "pretrends_joint" not in out and "homogeneity_joint" not in out
