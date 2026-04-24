@@ -479,6 +479,32 @@ def test_guide_api_strings_resolve_against_public_api():
     assert "`plot_sensitivity(sensitivity_results" in text
     assert "`plot_honest_event_study(honest_results" in text
 
+    # §6 BR/DR schema alignment. The emitted top-level keys are
+    # singular / underscored ("assumption", "pre_trends", "sample"),
+    # not the plural / run-together variants. DiagnosticReport emits
+    # sections at the top level (not nested under a "checks" dict)
+    # and uses "estimator" (the string class name) / "headline_metric"
+    # / "estimator_native_diagnostics". Guard each real key and
+    # forbid the obsolete ones.
+    for real_key in (
+        "`assumption: dict`",
+        "`pre_trends: dict`",
+        "`sample: dict`",
+        "`headline_metric: dict`",
+        "`estimator_native_diagnostics: dict`",
+        "`overall_interpretation: str`",
+    ):
+        assert real_key in text, f"BR/DR §6 missing real key: {real_key}"
+    for obsolete_key in (
+        "`assumptions: dict`",
+        "`pretrends: dict`",
+        "`main_result: dict`",
+        "`sample_summary: dict`",
+        "`estimator_type: str`",
+        "`checks: dict`",
+    ):
+        assert obsolete_key not in text, f"BR/DR §6 still lists obsolete key: {obsolete_key}"
+
 
 def test_min_pre_post_use_per_unit_observed_support():
     """On an unbalanced panel where one treated unit is missing its

@@ -123,12 +123,15 @@ view. Every field below appears as a top-level key in that dict.
   period observed (for `binary_absorbing`); `None` otherwise.
 - **`last_treatment_period: Optional[Any]`** - latest first-treatment
   period observed; `None` otherwise.
-- **`min_pre_periods: Optional[int]`** - across cohorts, the smallest
-  number of pre-treatment periods. Low values (< 3) fire the
-  `short_pre_panel` alert and limit power for parallel-trends tests.
-- **`min_post_periods: Optional[int]`** - across cohorts, the smallest
-  number of post-treatment periods. Low values limit event-study
-  dynamics.
+- **`min_pre_periods: Optional[int]`** - across treated units, the
+  smallest number of observed pre-treatment periods (each treated
+  unit's observed `(unit, time)` support is counted independently, so
+  this reflects the least-supported treated unit on unbalanced panels).
+  Low values (< 3) fire the `short_pre_panel` alert and limit power
+  for parallel-trends tests.
+- **`min_post_periods: Optional[int]`** - across treated units, the
+  smallest number of observed post-treatment periods; same per-unit
+  support semantics as above. Low values limit event-study dynamics.
 
 ### Outcome
 
@@ -512,37 +515,71 @@ from it.
 
 ### BusinessReport `to_dict()` schema (v2.0)
 
-Top-level keys:
+Top-level keys emitted by `BusinessReport.to_dict()`
+(source: `diff_diff/business_report.py`):
 
-- `schema_version: str` - e.g. `"2.0"`.
+- `schema_version: str` - `BUSINESS_REPORT_SCHEMA_VERSION`, e.g. `"2.0"`.
+- `estimator: dict` - `class_name` (the fitted result class) and a
+  human-friendly `display_name`.
+- `context: dict` - the `BusinessContext` bundle: `outcome_label`,
+  `outcome_unit`, `outcome_direction`, `business_question`,
+  `treatment_label`, `alpha`.
+- `headline: dict` - the main point estimate plus framing fields.
 - `target_parameter: dict` - what the headline scalar represents.
-  Fields: `name` (e.g. `"ATT"`, `"DID_M"`, `"dose-response"`),
-  `definition` (human-readable explanation), `aggregation` (machine
-  tag: `"att_overall"`, `"did_m"`, `"did_or_twfe"`, ...),
-  `headline_attribute` (the raw result attribute the headline renders
-  from), `reference` (REGISTRY.md citation string).
-- `headline: dict` - the main point estimate plus framing.
-- `assumptions: dict` - named assumptions relied on (parallel trends,
-  no anticipation, SUTVA, ...).
-- `pretrends: dict` - pre-trends test result with verdict string
-  (e.g. `"clean"`, `"inconclusive"`, `"violated"`), p-value, power
-  assessment if available.
-- `main_result: dict` - point estimate, SE, CI, significance.
-- `robustness: dict` - sensitivity and placebo summaries if available.
-- `sample_summary: dict` - sample size and coverage details.
+  Fields: `name` (e.g. `"ATT"`, `"DID_M"`, `"dose-response"`,
+  `"WAS"`), `definition`, `aggregation` (machine tag), and
+  `headline_attribute` (raw result attribute).
+- `assumption: dict` - named assumptions relied on (parallel trends,
+  no anticipation, SUTVA, ...). Note: singular `"assumption"`, not
+  `"assumptions"`.
+- `pre_trends: dict` - pre-trends test result with verdict string
+  (e.g. `"clean"`, `"inconclusive"`, `"violated"`), p-value, and
+  power assessment if available. Note: underscore-split
+  `"pre_trends"`.
+- `sensitivity: dict` - HonestDiD sensitivity summary when available.
+- `sample: dict` - sample size and coverage details. Note: bare
+  `"sample"`, not `"sample_summary"`.
+- `heterogeneity: dict` - heterogeneity summary if applicable.
+- `robustness: dict` - placebo / robustness summaries if available.
+- `diagnostics: dict` - when the auto-constructed `DiagnosticReport`
+  is present, this is its full `to_dict()` schema nested under the
+  BR.
+- `next_steps: list[dict]` - Baker et al. next-step guidance from
+  `practitioner_next_steps`.
 - `caveats: list[str]` - free-text caveats generated from failed
   checks.
+- `references: list[dict]` - citations relevant to the estimator.
 
 ### DiagnosticReport `to_dict()` schema (v2.0)
 
-- `schema_version: str`.
-- `estimator_type: str` - the result class name.
-- `checks: dict` - per-check status. Candidate keys:
-  `parallel_trends`, `pretrends_power`, `sensitivity`, `bacon`,
-  `design_effect`, `heterogeneity`, `epv`, `estimator_native`,
-  `placebo`. Each value is a dict describing what was run and its
-  outcome. Not all checks apply to all estimators; see the
-  applicability matrix in `diff_diff.diagnostic_report`.
+Top-level keys (source: `diff_diff/diagnostic_report.py`):
+
+- `schema_version: str` - `DIAGNOSTIC_REPORT_SCHEMA_VERSION`.
+- `estimator: str` - the fitted result class name.
+- `headline_metric: dict` - the main scalar the report headlines.
+- `target_parameter: dict` - same shape as the BR field above.
+- `parallel_trends: dict` - PT test result.
+- `pretrends_power: dict` - power-aware pre-trends assessment when
+  applicable.
+- `sensitivity: dict` - HonestDiD sensitivity summary.
+- `placebo: dict` - placebo-test results.
+- `bacon: dict` - Goodman-Bacon decomposition when applicable.
+- `design_effect: dict` - survey / clustering design-effect summary.
+- `heterogeneity: dict` - group-time heterogeneity summary.
+- `epv: dict` - events-per-variable / sample-adequacy.
+- `estimator_native_diagnostics: dict` - estimator-specific
+  diagnostics (e.g. SDiD weight concentration, TROP factor-model
+  fit).
+- `skipped: dict` - checks skipped on this estimator type, with the
+  reason.
+- `warnings: list[str]` - top-level aggregated warnings.
+- `overall_interpretation: str` - rendered prose summary of the
+  sections.
+- `next_steps: list[dict]` - same shape as the BR field.
+
+Each section value is a dict with at minimum `status`
+(`"pass"` / `"warn"` / `"inconclusive"` / `"error"` / `"skipped"`),
+a `reason`, and section-specific payload fields.
 
 ### Forthcoming schema additions (not yet shipped)
 

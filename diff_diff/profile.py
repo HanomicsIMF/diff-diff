@@ -556,7 +556,7 @@ def _compute_alerts(
                 code="short_pre_panel",
                 severity="warn",
                 message=(
-                    f"Minimum pre-treatment periods across cohorts is "
+                    f"Minimum pre-treatment periods across treated units is "
                     f"{min_pre_periods}; parallel-trends and event-study "
                     "diagnostics have limited power."
                 ),
@@ -569,7 +569,7 @@ def _compute_alerts(
                 code="short_post_panel",
                 severity="info",
                 message=(
-                    f"Minimum post-treatment periods across cohorts is "
+                    f"Minimum post-treatment periods across treated units is "
                     f"{min_post_periods}; dynamic-effect estimation is "
                     "limited."
                 ),
