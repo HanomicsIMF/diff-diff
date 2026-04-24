@@ -790,35 +790,119 @@ class TestBootstrapSE:
             sdid_mod, "compute_sdid_unit_weights_survey", capturing_helper
         )
 
-        SyntheticDiD(variance_method="bootstrap", n_bootstrap=10, seed=1).fit(
+        bootstrap_seed = 1
+        SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=10, seed=bootstrap_seed,
+        ).fit(
             df, outcome="outcome", treatment="treated",
             unit="unit", time="period",
             post_periods=[5, 6, 7],
             survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
         )
 
-        # For each captured rw vector: its values must all come from the
-        # first n_control=15 positions of known_rw (never from the
-        # treated slice [15:18]). Values may repeat across the vector
-        # (bootstrap picks with replacement) but every element must be
-        # ≤ n_control (positions 1..15, since we built known_rw as
-        # arange(1, 19)). Catches either a slice-order bug (would mix in
-        # treated-slice values 16..18) or a rw-drift bug (would produce
-        # values outside [1, 15]).
-        assert len(captured) >= 1, "no FW calls captured — survey dispatch broken"
+        # Exact-equality check against a reproduced RNG stream (PR #355 R4
+        # P3). The captured rw vectors must match known_rw[:n_control]
+        # sliced by boot_idx[boot_is_control] value-for-value. Reproducing
+        # the bootstrap's rng externally works because:
+        #  - fake_rao_wu does NOT consume rng (just returns known_rw),
+        #    so the only per-draw rng advance is ``rng.choice(n_total, ...)``
+        #    which yields boot_idx;
+        #  - known_rw is strictly positive, so the zero-mass retry branch
+        #    (synthetic_did.py ``_bootstrap_se``) never fires;
+        #  - a 15/3 split makes the no-control and all-control retries
+        #    vanishingly rare.
+        # An exact-equality regression catches the sibling bugs the old
+        # range check missed: permuted indices, deduplicated boot_idx, or
+        # substituted ``resolved_survey_unit.weights`` lookup in place of
+        # the known_rw slice — any of which would silently change
+        # bootstrap SE.
         n_control = 15
-        control_slice_max = float(known_rw[:n_control].max())  # = 15.0
-        for i, rw_captured in enumerate(captured):
-            assert rw_captured.shape[0] > 0, f"draw {i}: empty rw"
-            assert rw_captured.max() <= control_slice_max, (
-                f"draw {i}: captured rw max = {rw_captured.max()} exceeds "
-                f"control-slice max ({control_slice_max}); slice order "
-                "regressed — Rao-Wu weights mixed with treated slice."
+        rng_sim = np.random.default_rng(bootstrap_seed)
+        expected_slices = []
+        while len(expected_slices) < len(captured):
+            boot_idx = rng_sim.choice(n_total, size=n_total, replace=True)
+            boot_is_control = boot_idx < n_control
+            n_co_b = int(boot_is_control.sum())
+            if n_co_b == 0 or n_co_b == n_total:
+                continue
+            expected_slices.append(known_rw[:n_control][boot_idx[boot_is_control]])
+
+        assert len(captured) >= 1, "no FW calls captured — survey dispatch broken"
+        for i, (rw_captured, rw_expected) in enumerate(
+            zip(captured, expected_slices)
+        ):
+            np.testing.assert_array_equal(
+                rw_captured,
+                rw_expected,
+                err_msg=(
+                    f"draw {i}: captured rw_control differs from expected "
+                    f"known_rw[:n_control][boot_idx[boot_is_control]]. "
+                    "Regression in hybrid pairs-bootstrap + Rao-Wu "
+                    "slice ordering."
+                ),
             )
-            assert rw_captured.min() >= 1.0, (
-                f"draw {i}: captured rw min = {rw_captured.min()} below "
-                "known_rw[0]=1; weights drifted outside the Rao-Wu output."
-            )
+
+    def test_bootstrap_scale_invariance_under_pweight_rescaling(self):
+        """Survey-bootstrap SE / p / CI are invariant to a global pweight rescaling.
+
+        ``SurveyDesign.resolve()`` normalizes pweights/aweights to mean=1
+        (survey.py L189-L203), which is the library's scale-invariance
+        contract for survey-weighted fits. This test fits the same SDID
+        panel under two SurveyDesigns — weights column ``"wt"`` vs a
+        10x-rescaled copy ``"wt_scaled"`` — and asserts bootstrap SE,
+        p-value, and CI agree to machine-epsilon tolerance.
+
+        Regression against PR #355 R4 P0: the initial PR #352 pweight-only
+        bootstrap branch bypassed the resolved (normalized) unit-level
+        weights and fed raw panel-column weights into the weighted-FW
+        objective. That objective is NOT invariant to a global rescale
+        of rw — the loss term scales as rw^2 (``A-tilde = A * diag(rw)``)
+        while the reg term scales as rw (``zeta^2 * sum rw * omega^2``) —
+        so any user who rescaled their pweight column (e.g. switched
+        units) would see silently different SEs. The fix
+        (synthetic_did.py ``fit()`` around the ``resolved_survey`` block)
+        sources ``w_control`` and ``w_treated`` from
+        ``resolved_survey_unit.weights`` (post-normalization) rather
+        than re-extracting raw weights via ``_extract_unit_survey_weights``.
+        Tolerance is machine-epsilon tight because floating-point multiply-
+        reduce ordering inside ``raw * (n / (c*raw_sum))`` vs
+        ``raw * (n / raw_sum)`` can drift by ~1 ULP; a raw-weight fallback
+        would produce differences on the order of 1 or larger.
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=12, n_treated=3, seed=42)
+        unique_units = np.sort(df["unit"].unique())
+        unit_weights = np.linspace(0.5, 2.5, len(unique_units))
+        wt_map = dict(zip(unique_units, unit_weights))
+        df["wt"] = df["unit"].map(wt_map)
+        df["wt_scaled"] = df["wt"] * 10.0
+
+        kwargs = dict(
+            outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+        )
+        result_base = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1,
+        ).fit(df, survey_design=SurveyDesign(weights="wt"), **kwargs)
+        result_scaled = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1,
+        ).fit(df, survey_design=SurveyDesign(weights="wt_scaled"), **kwargs)
+
+        assert np.isfinite(result_base.se) and result_base.se > 0
+        np.testing.assert_allclose(
+            result_scaled.se, result_base.se, rtol=1e-13, atol=0,
+            err_msg="bootstrap SE is not invariant to pweight global rescaling",
+        )
+        np.testing.assert_allclose(
+            result_scaled.p_value, result_base.p_value, rtol=1e-12, atol=1e-14,
+            err_msg="bootstrap p-value is not invariant to pweight global rescaling",
+        )
+        np.testing.assert_allclose(
+            result_scaled.conf_int, result_base.conf_int, rtol=1e-13, atol=0,
+            err_msg="bootstrap CI is not invariant to pweight global rescaling",
+        )
 
     def test_bootstrap_single_psu_returns_nan(self):
         """Unstratified single-PSU survey design returns NaN SE (PR #352).

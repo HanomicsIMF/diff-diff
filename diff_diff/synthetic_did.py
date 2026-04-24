@@ -292,7 +292,6 @@ class SyntheticDiD(DifferenceInDifferences):
 
         # Resolve survey design
         from diff_diff.survey import (
-            _extract_unit_survey_weights,
             _resolve_survey_for_fit,
             _validate_unit_constant_survey,
         )
@@ -426,21 +425,36 @@ class SyntheticDiD(DifferenceInDifferences):
         # consumes per draw.
         if resolved_survey is not None:
             _validate_unit_constant_survey(data, unit, survey_design)
-            w_treated = _extract_unit_survey_weights(data, unit, survey_design, treated_units)
-            w_control = _extract_unit_survey_weights(data, unit, survey_design, control_units)
             # Collapse to unit level for the bootstrap survey path. The
             # row order is [control_units..., treated_units...] so
             # boot_rw[:n_control] / boot_rw[n_control:] line up with the
             # bootstrap loop's column ordering. See
             # `collapse_survey_to_unit_level` in diff_diff/survey.py.
-            from diff_diff.survey import collapse_survey_to_unit_level
-            all_units_for_bootstrap = list(control_units) + list(treated_units)
             # Use `data` (not `working_data`) for the groupby — survey
             # design columns are unit-constant (validated above) and
             # covariate residualization doesn't shuffle row order, so the
             # collapse is invariant to which view we group on.
+            from diff_diff.survey import collapse_survey_to_unit_level
+            all_units_for_bootstrap = list(control_units) + list(treated_units)
             resolved_survey_unit = collapse_survey_to_unit_level(
                 resolved_survey, data, unit, all_units_for_bootstrap,
+            )
+            # Source w_control / w_treated from resolved_survey_unit.weights
+            # rather than re-extracting raw panel columns. resolved_survey.weights
+            # is normalized to mean=1 by SurveyDesign.resolve() (survey.py L189-
+            # L203), so the weighted-FW bootstrap objective — which is NOT
+            # invariant to a global rescaling of rw — produces identical SE /
+            # p-value / CI under SurveyDesign(weights="w") vs "c*w" (PR #355
+            # R4 P0). Placebo / jackknife paths also consume w_control /
+            # w_treated but are scale-invariant (np.average divides by sum;
+            # ω_eff normalization likewise), so switching to resolved weights
+            # doesn't change their numerics.
+            n_control_for_split = len(control_units)
+            w_control = resolved_survey_unit.weights[:n_control_for_split].astype(
+                np.float64
+            )
+            w_treated = resolved_survey_unit.weights[n_control_for_split:].astype(
+                np.float64
             )
         else:
             w_treated = None
