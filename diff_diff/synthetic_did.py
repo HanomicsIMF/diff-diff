@@ -270,7 +270,21 @@ class SyntheticDiD(DifferenceInDifferences):
         ------
         ValueError
             If required parameters are missing, data validation fails,
-            or a non-pweight survey design is provided.
+            or a non-pweight survey design is provided. Under survey
+            designs, also raises when:
+
+            - The total survey mass on either arm is zero
+              (``w_control.sum() == 0`` or ``w_treated.sum() == 0``).
+              Every unit on that arm would have weight 0, encoding an
+              unidentified target population (PR #355 R7 P1).
+            - ``survey_design`` declares ``fpc`` with no explicit
+              ``psu=``. SDID Rao-Wu then treats each unit as its own
+              PSU, so ``fpc`` must be ``>=`` the number of units
+              (unstratified) or ``>=`` the per-stratum unit count
+              (stratified). Front-door checked after
+              ``collapse_survey_to_unit_level`` so the user sees a
+              targeted error instead of a bootstrap-exhaustion
+              failure (PR #355 R8 P1).
         NotImplementedError
             If ``survey_design`` with strata/PSU/FPC is provided with
             ``variance_method='placebo'`` or ``'jackknife'``. Bootstrap
