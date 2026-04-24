@@ -924,7 +924,7 @@ fn max_abs_diff_2d(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 /// # Returns
 /// (bootstrap_estimates, standard_error)
 #[pyfunction]
-#[pyo3(signature = (y, d, control_mask, time_dist_matrix, lambda_time, lambda_unit, lambda_nn, n_bootstrap, max_iter, tol, seed, survey_weights=None))]
+#[pyo3(signature = (y, d, control_mask, time_dist_matrix, lambda_time, lambda_unit, lambda_nn, n_bootstrap, max_iter, tol, control_indices, treated_indices, survey_weights=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn bootstrap_trop_variance<'py>(
     py: Python<'py>,
@@ -938,13 +938,16 @@ pub fn bootstrap_trop_variance<'py>(
     n_bootstrap: usize,
     max_iter: usize,
     tol: f64,
-    seed: u64,
+    control_indices: PyReadonlyArray2<'py, i64>,
+    treated_indices: PyReadonlyArray2<'py, i64>,
     survey_weights: Option<PyReadonlyArray1<'py, f64>>,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, f64)> {
     let y_arr = y.as_array().to_owned();
     let d_arr = d.as_array().to_owned();
     let control_mask_arr = control_mask.as_array().to_owned();
     let time_dist_arr = time_dist_matrix.as_array().to_owned();
+    let ctrl_idx_arr = control_indices.as_array().to_owned();
+    let trt_idx_arr = treated_indices.as_array().to_owned();
     let sw_arr: Option<Array1<f64>> = survey_weights.map(|sw| sw.as_array().to_owned());
 
     let n_units = y_arr.ncols();
@@ -965,27 +968,40 @@ pub fn bootstrap_trop_variance<'py>(
     let n_treated_units = original_treated_units.len();
     let n_control_units = original_control_units.len();
 
+    // Validate index-array shapes match the stratified pool sizes
+    if ctrl_idx_arr.shape() != [n_bootstrap, n_control_units] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "control_indices shape {:?} does not match (n_bootstrap={}, n_control_units={})",
+            ctrl_idx_arr.shape(),
+            n_bootstrap,
+            n_control_units,
+        )));
+    }
+    if trt_idx_arr.shape() != [n_bootstrap, n_treated_units] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "treated_indices shape {:?} does not match (n_bootstrap={}, n_treated_units={})",
+            trt_idx_arr.shape(),
+            n_bootstrap,
+            n_treated_units,
+        )));
+    }
+
     // Run bootstrap iterations in parallel
+    // RNG-canonical contract: control_indices and treated_indices are pre-generated
+    // by numpy.random.default_rng(seed) on the Python side via
+    // diff_diff.bootstrap_utils.stratified_bootstrap_indices, so SE is identical
+    // across backends under the same seed (silent-failures finding #23).
     let bootstrap_estimates: Vec<f64> = (0..n_bootstrap)
         .into_par_iter()
         .filter_map(|b| {
-            use rand::prelude::*;
-            use rand_xoshiro::Xoshiro256PlusPlus;
-
-            let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed.wrapping_add(b as u64));
-
-            // Issue D fix: Stratified sampling - sample control and treated units separately
+            // Stratified sampling: consume pre-generated indices for replicate b
             let mut sampled_units: Vec<usize> = Vec::with_capacity(n_units);
-
-            // Sample control units with replacement
-            for _ in 0..n_control_units {
-                let idx = rng.gen_range(0..n_control_units);
+            for j in 0..n_control_units {
+                let idx = ctrl_idx_arr[[b, j]] as usize;
                 sampled_units.push(original_control_units[idx]);
             }
-
-            // Sample treated units with replacement
-            for _ in 0..n_treated_units {
-                let idx = rng.gen_range(0..n_treated_units);
+            for j in 0..n_treated_units {
+                let idx = trt_idx_arr[[b, j]] as usize;
                 sampled_units.push(original_treated_units[idx]);
             }
 
@@ -1733,7 +1749,7 @@ pub fn loocv_grid_search_global<'py>(
 /// # Returns
 /// (bootstrap_estimates, standard_error)
 #[pyfunction]
-#[pyo3(signature = (y, d, lambda_time, lambda_unit, lambda_nn, n_bootstrap, max_iter, tol, seed, survey_weights=None))]
+#[pyo3(signature = (y, d, lambda_time, lambda_unit, lambda_nn, n_bootstrap, max_iter, tol, control_indices, treated_indices, survey_weights=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn bootstrap_trop_variance_global<'py>(
     py: Python<'py>,
@@ -1745,11 +1761,14 @@ pub fn bootstrap_trop_variance_global<'py>(
     n_bootstrap: usize,
     max_iter: usize,
     tol: f64,
-    seed: u64,
+    control_indices: PyReadonlyArray2<'py, i64>,
+    treated_indices: PyReadonlyArray2<'py, i64>,
     survey_weights: Option<PyReadonlyArray1<'py, f64>>,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, f64)> {
     let y_arr = y.as_array().to_owned();
     let d_arr = d.as_array().to_owned();
+    let ctrl_idx_arr = control_indices.as_array().to_owned();
+    let trt_idx_arr = treated_indices.as_array().to_owned();
     let sw_arr: Option<Array1<f64>> = survey_weights.map(|sw| sw.as_array().to_owned());
 
     let n_units = y_arr.ncols();
@@ -1769,6 +1788,24 @@ pub fn bootstrap_trop_variance_global<'py>(
     let n_treated_units = original_treated_units.len();
     let n_control_units = original_control_units.len();
 
+    // Validate index-array shapes match the stratified pool sizes
+    if ctrl_idx_arr.shape() != [n_bootstrap, n_control_units] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "control_indices shape {:?} does not match (n_bootstrap={}, n_control_units={})",
+            ctrl_idx_arr.shape(),
+            n_bootstrap,
+            n_control_units,
+        )));
+    }
+    if trt_idx_arr.shape() != [n_bootstrap, n_treated_units] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "treated_indices shape {:?} does not match (n_bootstrap={}, n_treated_units={})",
+            trt_idx_arr.shape(),
+            n_bootstrap,
+            n_treated_units,
+        )));
+    }
+
     // Determine treated periods from D matrix
     let mut first_treat_period = n_periods;
     for t in 0..n_periods {
@@ -1785,31 +1822,22 @@ pub fn bootstrap_trop_variance_global<'py>(
     let ln_eff = if lambda_nn.is_infinite() { 1e10 } else { lambda_nn };
 
     // Run bootstrap iterations in parallel
+    // RNG-canonical contract: control_indices and treated_indices are pre-generated
+    // by numpy.random.default_rng(seed) on the Python side via
+    // diff_diff.bootstrap_utils.stratified_bootstrap_indices, so SE is identical
+    // across backends under the same seed (silent-failures finding #23).
     let bootstrap_estimates: Vec<f64> = (0..n_bootstrap)
         .into_par_iter()
         .filter_map(|b| {
-            use rand::prelude::*;
-            use rand_xoshiro::Xoshiro256PlusPlus;
-
-            let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed.wrapping_add(b as u64));
-
-            // Stratified sampling - sample control and treated units separately
+            // Stratified sampling: consume pre-generated indices for replicate b
             let mut sampled_units: Vec<usize> = Vec::with_capacity(n_units);
-
-            // Sample control units with replacement
-            for _ in 0..n_control_units {
-                if n_control_units > 0 {
-                    let idx = rng.gen_range(0..n_control_units);
-                    sampled_units.push(original_control_units[idx]);
-                }
+            for j in 0..n_control_units {
+                let idx = ctrl_idx_arr[[b, j]] as usize;
+                sampled_units.push(original_control_units[idx]);
             }
-
-            // Sample treated units with replacement
-            for _ in 0..n_treated_units {
-                if n_treated_units > 0 {
-                    let idx = rng.gen_range(0..n_treated_units);
-                    sampled_units.push(original_treated_units[idx]);
-                }
+            for j in 0..n_treated_units {
+                let idx = trt_idx_arr[[b, j]] as usize;
+                sampled_units.push(original_treated_units[idx]);
             }
 
             // Create bootstrap matrices by selecting columns

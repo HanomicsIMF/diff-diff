@@ -8,6 +8,7 @@ import pytest
 from diff_diff.bootstrap_utils import (
     compute_effect_bootstrap_stats,
     compute_effect_bootstrap_stats_batch,
+    stratified_bootstrap_indices,
     warn_bootstrap_failure_rate,
 )
 
@@ -193,3 +194,76 @@ class TestWarnBootstrapFailureRate:
         """0/N replicates succeeded — caller handles NaN return, but the warning fires."""
         with pytest.warns(UserWarning, match=r"0/50 bootstrap iterations"):
             warn_bootstrap_failure_rate(n_success=0, n_attempted=50, context="test case")
+
+
+class TestStratifiedBootstrapIndices:
+    """Shared stratified-bootstrap index helper used by TROP Rust + Python paths.
+
+    Pinning these invariants matters because both TROP backends now consume
+    the helper's output directly; any drift in shape, dtype, or draw order
+    would silently break backend parity (silent-failures audit finding #23).
+    """
+
+    def test_shapes_and_dtype(self):
+        rng = np.random.default_rng(0)
+        ctrl, trt = stratified_bootstrap_indices(rng, n_control=5, n_treated=3, n_bootstrap=7)
+        assert ctrl.shape == (7, 5)
+        assert trt.shape == (7, 3)
+        assert ctrl.dtype == np.int64
+        assert trt.dtype == np.int64
+
+    def test_value_range(self):
+        rng = np.random.default_rng(123)
+        ctrl, trt = stratified_bootstrap_indices(rng, n_control=4, n_treated=6, n_bootstrap=50)
+        assert ctrl.min() >= 0 and ctrl.max() < 4
+        assert trt.min() >= 0 and trt.max() < 6
+
+    def test_determinism(self):
+        ctrl_a, trt_a = stratified_bootstrap_indices(np.random.default_rng(42), 3, 2, 5)
+        ctrl_b, trt_b = stratified_bootstrap_indices(np.random.default_rng(42), 3, 2, 5)
+        np.testing.assert_array_equal(ctrl_a, ctrl_b)
+        np.testing.assert_array_equal(trt_a, trt_b)
+
+    def test_prefix_invariance(self):
+        """n_bootstrap=N prefix must match first N rows of n_bootstrap=M>N.
+
+        Pins the sequential-per-replicate consumption law: one rng advances
+        through all replicates in order, so extending the loop only appends.
+        """
+        ctrl_short, trt_short = stratified_bootstrap_indices(np.random.default_rng(7), 4, 3, 10)
+        ctrl_long, trt_long = stratified_bootstrap_indices(np.random.default_rng(7), 4, 3, 100)
+        np.testing.assert_array_equal(ctrl_short, ctrl_long[:10])
+        np.testing.assert_array_equal(trt_short, trt_long[:10])
+
+    def test_value_pin_default_rng_42(self):
+        """Hard-coded byte-level pin. Catches silent draw-order drift.
+
+        Any refactor that reorders the draws (e.g. treated-then-control,
+        vectorized single call, or a new rng primitive) will break this.
+        """
+        rng = np.random.default_rng(42)
+        ctrl, trt = stratified_bootstrap_indices(rng, n_control=3, n_treated=2, n_bootstrap=5)
+        expected_ctrl = np.array(
+            [[0, 2, 1], [2, 0, 2], [1, 2, 2], [2, 1, 0], [1, 1, 0]],
+            dtype=np.int64,
+        )
+        expected_trt = np.array(
+            [[0, 0], [0, 0], [1, 1], [1, 0], [1, 1]],
+            dtype=np.int64,
+        )
+        np.testing.assert_array_equal(ctrl, expected_ctrl)
+        np.testing.assert_array_equal(trt, expected_trt)
+
+    def test_empty_control_pool(self):
+        rng = np.random.default_rng(1)
+        ctrl, trt = stratified_bootstrap_indices(rng, n_control=0, n_treated=3, n_bootstrap=4)
+        assert ctrl.shape == (4, 0)
+        assert trt.shape == (4, 3)
+        assert trt.min() >= 0 and trt.max() < 3
+
+    def test_empty_treated_pool(self):
+        rng = np.random.default_rng(1)
+        ctrl, trt = stratified_bootstrap_indices(rng, n_control=3, n_treated=0, n_bootstrap=4)
+        assert ctrl.shape == (4, 3)
+        assert trt.shape == (4, 0)
+        assert ctrl.min() >= 0 and ctrl.max() < 3

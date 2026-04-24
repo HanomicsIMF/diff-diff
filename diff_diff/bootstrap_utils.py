@@ -24,7 +24,48 @@ __all__ = [
     "compute_effect_bootstrap_stats",
     "compute_effect_bootstrap_stats_batch",
     "warn_bootstrap_failure_rate",
+    "stratified_bootstrap_indices",
 ]
+
+
+def stratified_bootstrap_indices(
+    rng: np.random.Generator,
+    n_control: int,
+    n_treated: int,
+    n_bootstrap: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generate stratified bootstrap sample indices.
+
+    Draws controls first, then treated, per replicate. A single ``rng``
+    advances through all replicates so Python and Rust consumers share an
+    identical bytestream under the same seed.
+
+    Parameters
+    ----------
+    rng : np.random.Generator
+        Seeded numpy generator. Consumed positionally; caller owns seeding.
+    n_control : int
+        Size of the control pool. Indices drawn in ``[0, n_control)``.
+    n_treated : int
+        Size of the treated pool. Indices drawn in ``[0, n_treated)``.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+
+    Returns
+    -------
+    (control_indices, treated_indices) : tuple of np.ndarray
+        Shapes ``(n_bootstrap, n_control)`` and ``(n_bootstrap, n_treated)``,
+        dtype ``int64``. Each row is one replicate's sample-with-replacement
+        indices. Callers map these back to unit identities via their own pool.
+    """
+    control_idx = np.empty((n_bootstrap, n_control), dtype=np.int64)
+    treated_idx = np.empty((n_bootstrap, n_treated), dtype=np.int64)
+    for b in range(n_bootstrap):
+        if n_control > 0:
+            control_idx[b] = rng.choice(n_control, size=n_control, replace=True)
+        if n_treated > 0:
+            treated_idx[b] = rng.choice(n_treated, size=n_treated, replace=True)
+    return control_idx, treated_idx
 
 
 def warn_bootstrap_failure_rate(

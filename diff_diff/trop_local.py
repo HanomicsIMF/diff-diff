@@ -24,7 +24,10 @@ from diff_diff._backend import (
     _rust_bootstrap_trop_variance,
     _rust_unit_distance_matrix,
 )
-from diff_diff.bootstrap_utils import warn_bootstrap_failure_rate
+from diff_diff.bootstrap_utils import (
+    stratified_bootstrap_indices,
+    warn_bootstrap_failure_rate,
+)
 from diff_diff.trop_results import _PrecomputedStructures
 from diff_diff.utils import warn_if_not_converged
 
@@ -957,6 +960,23 @@ class TROPLocalMixin:
                 survey_design,
             )
 
+        # Stratified bootstrap pools (shared by Rust and Python paths).
+        # Paper's Algorithm 3 (page 27) specifies sampling N_0 control rows
+        # and N_1 treated rows separately to preserve treatment ratio.
+        unit_ever_treated = data.groupby(unit)[treatment].max()
+        treated_units = np.array(unit_ever_treated[unit_ever_treated == 1].index)
+        control_units = np.array(unit_ever_treated[unit_ever_treated == 0].index)
+        n_treated_units = len(treated_units)
+        n_control_units = len(control_units)
+
+        # Pre-generate stratified bootstrap indices via numpy (Python-canonical RNG).
+        # Both backends consume these indices so SE is identical under the same seed
+        # (silent-failures finding #23, bootstrap half).
+        rng = np.random.default_rng(self.seed)
+        control_idx, treated_idx = stratified_bootstrap_indices(
+            rng, n_control_units, n_treated_units, self.n_bootstrap
+        )
+
         # Try Rust backend for parallel bootstrap (5-15x speedup)
         # Only used for pweight-only designs (no strata/PSU/FPC)
         if (
@@ -981,7 +1001,8 @@ class TROPLocalMixin:
                     self.n_bootstrap,
                     self.max_iter,
                     self.tol,
-                    self.seed if self.seed is not None else 0,
+                    control_idx,
+                    treated_idx,
                     unit_weight_arr,
                 )
 
@@ -1003,36 +1024,21 @@ class TROPLocalMixin:
                     stacklevel=2,
                 )
 
-        # Python implementation (fallback)
-        rng = np.random.default_rng(self.seed)
-
-        # Issue D fix: Stratified bootstrap sampling
-        # Paper's Algorithm 3 (page 27) specifies sampling N_0 control rows
-        # and N_1 treated rows separately to preserve treatment ratio
-        unit_ever_treated = data.groupby(unit)[treatment].max()
-        treated_units = np.array(unit_ever_treated[unit_ever_treated == 1].index)
-        control_units = np.array(unit_ever_treated[unit_ever_treated == 0].index)
-
-        n_treated_units = len(treated_units)
-        n_control_units = len(control_units)
-
+        # Python fallback: consume the same indices the Rust branch would have used.
         bootstrap_estimates_list = []
         nonconverg_tracker: List[int] = []
 
-        for _ in range(self.n_bootstrap):
-            # Stratified sampling: sample control and treated units separately
-            # This preserves the treatment ratio in each bootstrap sample
-            if n_control_units > 0:
-                sampled_control = rng.choice(control_units, size=n_control_units, replace=True)
-            else:
-                sampled_control = np.array([], dtype=control_units.dtype)
-
-            if n_treated_units > 0:
-                sampled_treated = rng.choice(treated_units, size=n_treated_units, replace=True)
-            else:
-                sampled_treated = np.array([], dtype=treated_units.dtype)
-
-            # Combine stratified samples
+        for b in range(self.n_bootstrap):
+            sampled_control = (
+                control_units[control_idx[b]]
+                if n_control_units > 0
+                else np.array([], dtype=control_units.dtype)
+            )
+            sampled_treated = (
+                treated_units[treated_idx[b]]
+                if n_treated_units > 0
+                else np.array([], dtype=treated_units.dtype)
+            )
             sampled_units = np.concatenate([sampled_control, sampled_treated])
 
             # Create bootstrap sample with unique unit IDs
