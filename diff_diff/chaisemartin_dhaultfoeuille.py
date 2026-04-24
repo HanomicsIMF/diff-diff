@@ -2670,6 +2670,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # See REGISTRY.md ChaisemartinDHaultfoeuille `Note
             # (bootstrap inference surface)` and the regression test
             # ``test_bootstrap_p_value_and_ci_propagated_to_top_level``.
+            # Bootstrap contract: once the caller opts into n_bootstrap > 0,
+            # bootstrap SE / percentile CI / percentile p-value replace the
+            # analytical values. When the bootstrap SE comes back non-finite
+            # (e.g., n_bootstrap too small, degenerate bootstrap distribution,
+            # zero-IF target), the full inference tuple goes to NaN rather
+            # than silently falling back to analytical — mixing bootstrap-
+            # contract and analytical-contract semantics within one result
+            # object would be a public-surface inconsistency. Same treatment
+            # applies to the event_study_effects propagation below and the
+            # path_effects propagation further down.
             if np.isfinite(br.overall_se):
                 overall_se = br.overall_se
                 overall_p = br.overall_p_value if br.overall_p_value is not None else np.nan
@@ -2680,26 +2690,43 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     alpha=self.alpha,
                     df=_inference_df(_df_survey, resolved_survey),
                 )[0]
-            if joiners_available and br.joiners_se is not None and np.isfinite(br.joiners_se):
-                joiners_se = br.joiners_se
-                joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
-                joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
-                joiners_t = safe_inference(
-                    joiners_att,
-                    joiners_se,
-                    alpha=self.alpha,
-                    df=_inference_df(_df_survey, resolved_survey),
-                )[0]
-            if leavers_available and br.leavers_se is not None and np.isfinite(br.leavers_se):
-                leavers_se = br.leavers_se
-                leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
-                leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
-                leavers_t = safe_inference(
-                    leavers_att,
-                    leavers_se,
-                    alpha=self.alpha,
-                    df=_inference_df(_df_survey, resolved_survey),
-                )[0]
+            else:
+                overall_se = np.nan
+                overall_p = np.nan
+                overall_ci = (np.nan, np.nan)
+                overall_t = np.nan
+            if joiners_available:
+                if br.joiners_se is not None and np.isfinite(br.joiners_se):
+                    joiners_se = br.joiners_se
+                    joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
+                    joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
+                    joiners_t = safe_inference(
+                        joiners_att,
+                        joiners_se,
+                        alpha=self.alpha,
+                        df=_inference_df(_df_survey, resolved_survey),
+                    )[0]
+                else:
+                    joiners_se = np.nan
+                    joiners_p = np.nan
+                    joiners_ci = (np.nan, np.nan)
+                    joiners_t = np.nan
+            if leavers_available:
+                if br.leavers_se is not None and np.isfinite(br.leavers_se):
+                    leavers_se = br.leavers_se
+                    leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
+                    leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
+                    leavers_t = safe_inference(
+                        leavers_att,
+                        leavers_se,
+                        alpha=self.alpha,
+                        df=_inference_df(_df_survey, resolved_survey),
+                    )[0]
+                else:
+                    leavers_se = np.nan
+                    leavers_p = np.nan
+                    leavers_ci = (np.nan, np.nan)
+                    leavers_t = np.nan
 
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
@@ -2733,7 +2760,11 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 }
             }
 
-        # Phase 2: propagate bootstrap results to event_study_effects
+        # Phase 2: propagate bootstrap results to event_study_effects.
+        # Same bootstrap-contract rule as the overall/joiners/leavers block
+        # above and the path_effects block below: non-finite bootstrap SE
+        # writes NaN to the full inference tuple rather than falling back
+        # to analytical.
         if bootstrap_results is not None and bootstrap_results.event_study_ses:
             for l_h in bootstrap_results.event_study_ses:
                 if l_h in event_study_effects:
@@ -2748,8 +2779,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         if bootstrap_results.event_study_p_values
                         else None
                     )
+                    eff = event_study_effects[l_h]["effect"]
                     if bs_se is not None and np.isfinite(bs_se):
-                        eff = event_study_effects[l_h]["effect"]
                         event_study_effects[l_h]["se"] = bs_se
                         event_study_effects[l_h]["p_value"] = bs_p if bs_p is not None else np.nan
                         event_study_effects[l_h]["conf_int"] = (
@@ -2758,6 +2789,11 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         event_study_effects[l_h]["t_stat"] = safe_inference(
                             eff, bs_se, alpha=self.alpha, df=None
                         )[0]
+                    else:
+                        event_study_effects[l_h]["se"] = np.nan
+                        event_study_effects[l_h]["p_value"] = np.nan
+                        event_study_effects[l_h]["conf_int"] = (np.nan, np.nan)
+                        event_study_effects[l_h]["t_stat"] = np.nan
 
             # Add sup-t bands to event_study_effects entries
             if bootstrap_results.cband_crit_value is not None:

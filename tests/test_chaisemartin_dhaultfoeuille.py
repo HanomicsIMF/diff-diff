@@ -4593,6 +4593,92 @@ class TestByPathBootstrap:
             f"Messages: {[str(w.message) for w in overflow_warnings]}"
         )
 
+    def test_nan_contract_extends_to_overall_and_event_study_horizons(self):
+        """
+        The bootstrap-contract NaN-on-invalid rule applies to every
+        dCDH public inference surface, not just ``path_effects``. Pin
+        that ``n_bootstrap=1`` (which cannot produce a finite bootstrap
+        SE from a one-element distribution) propagates NaN to
+        ``overall_*``, ``joiners_*`` / ``leavers_*`` (when available),
+        AND each ``event_study_effects[l]`` entry. Prevents regression
+        to the pre-fix pattern where invalid bootstrap silently left
+        analytical values in place on these surfaces while
+        ``path_effects`` was NaN-consistent — a cross-surface
+        inconsistency inside a single result object.
+        """
+        data = _by_path_three_path_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                n_bootstrap=1,
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+
+        assert np.isnan(res.overall_se), (
+            f"n_bootstrap=1: overall_se must be NaN (bootstrap "
+            f"contract), got {res.overall_se}"
+        )
+        assert np.isnan(res.overall_t_stat)
+        assert np.isnan(res.overall_p_value)
+        lo, hi = res.overall_conf_int
+        assert np.isnan(lo) and np.isnan(hi)
+        # Point estimate stays finite across bootstrap invalidity
+        assert np.isfinite(res.overall_att)
+
+        if res.joiners_se is not None:
+            assert np.isnan(res.joiners_se)
+            assert np.isnan(res.joiners_p_value)
+            jlo, jhi = res.joiners_conf_int
+            assert np.isnan(jlo) and np.isnan(jhi)
+        if res.leavers_se is not None:
+            assert np.isnan(res.leavers_se)
+            assert np.isnan(res.leavers_p_value)
+            llo, lhi = res.leavers_conf_int
+            assert np.isnan(llo) and np.isnan(lhi)
+
+        assert res.event_study_effects is not None
+        for l_h, entry in res.event_study_effects.items():
+            assert np.isnan(entry["se"]), (
+                f"n_bootstrap=1: event_study_effects[{l_h}].se must be "
+                f"NaN, got {entry['se']}"
+            )
+            assert np.isnan(entry["t_stat"])
+            assert np.isnan(entry["p_value"])
+            elo, ehi = entry["conf_int"]
+            assert np.isnan(elo) and np.isnan(ehi)
+            assert np.isfinite(entry["effect"])
+
+        # summary() must NOT claim "multiplier-bootstrap percentile
+        # inference" when the displayed overall SE is NaN, and it must
+        # NOT claim "used for event-study horizon inference" when every
+        # event_study_effects entry has NaN SE. It should fall through
+        # to the "bootstrap was requested but produced non-finite SE"
+        # note.
+        summary_text = res.summary()
+        assert "multiplier-bootstrap percentile inference" not in summary_text, (
+            "summary() incorrectly labels NaN-inference as "
+            "'multiplier-bootstrap percentile inference'"
+        )
+        assert (
+            "produced non-finite SE" in summary_text
+            or "inference fields are NaN-consistent" in summary_text
+        ), (
+            f"summary() footer must acknowledge the invalid-bootstrap "
+            f"state when all inference fields are NaN. Got:\n{summary_text[-400:]}"
+        )
+
     def test_degenerate_bootstrap_distribution_yields_nan_tuple(self):
         """
         When the bootstrap SE comes back non-finite for a ``(path,

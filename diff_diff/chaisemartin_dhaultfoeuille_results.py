@@ -700,21 +700,49 @@ class ChaisemartinDHaultfoeuilleResults:
         is_delta = (
             self.L_max is not None and self.L_max >= 2 and self.cost_benefit_delta is not None
         )
+        # Footer labeling is keyed off what the displayed fields actually
+        # are — with the bootstrap-contract NaN-on-invalid fix on the fit()
+        # side, ``self.overall_se`` is NaN when the bootstrap produced
+        # non-finite output, so the "multiplier-bootstrap percentile
+        # inference" claim correctly fires only when the displayed overall
+        # SE / p-value / CI were actually populated from finite bootstrap
+        # output. The event-study fallback branch also checks that at
+        # least one horizon has a finite SE before claiming bootstrap was
+        # "used for event-study horizon inference" — otherwise every
+        # bootstrap inference field is NaN and we fall through to the
+        # "bootstrap attempted but invalid" note.
+        event_study_has_finite_bootstrap_se = (
+            self.event_study_effects is not None
+            and any(
+                np.isfinite(entry.get("se", np.nan))
+                for entry in self.event_study_effects.values()
+            )
+        )
         if self.bootstrap_results is not None and np.isfinite(self.overall_se) and not is_delta:
             lines.append("Note: p-value and CI are multiplier-bootstrap percentile inference")
             lines.append(
                 f"      ({self.bootstrap_results.n_bootstrap} iterations, "
                 f"{self.bootstrap_results.weight_type} weights)."
             )
-        elif self.bootstrap_results is not None and is_delta:
+        elif (
+            self.bootstrap_results is not None
+            and is_delta
+            and event_study_has_finite_bootstrap_se
+        ):
             lines.append(
                 f"Note: delta SE is delta-method (normal-theory) from per-horizon "
                 f"bootstrap SEs ({self.bootstrap_results.n_bootstrap} iterations)."
             )
-        elif self.bootstrap_results is not None:
+        elif self.bootstrap_results is not None and event_study_has_finite_bootstrap_se:
             lines.append(
                 f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
                 f"used for event-study horizon inference."
+            )
+        elif self.bootstrap_results is not None:
+            lines.append(
+                f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
+                f"was requested but produced non-finite SE on every target; all "
+                f"inference fields are NaN-consistent per the bootstrap contract."
             )
         else:
             lines.append(
