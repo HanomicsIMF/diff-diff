@@ -1075,6 +1075,37 @@ def test_treatment_dose_continuous_time_varying_within_unit():
     assert dose.is_time_invariant is False
 
 
+def test_treatment_dose_distinguishes_doses_at_high_precision():
+    """`is_time_invariant` uses EXACT distinct-count on observed non-zero
+    doses; a unit with two non-equal doses must be flagged as
+    time-varying even when the values differ only at sub-1e-8 precision.
+    Guards against an earlier implementation that rounded to 8 decimals
+    before comparing, silently treating tiny-but-real dose variation as
+    time-invariant. Required by the documented contract "per-unit
+    non-zero doses have at most one distinct value."""
+    rows = []
+    for u in range(1, 21):
+        for t in range(4):
+            if u <= 5:
+                dose = 0.0
+            elif u == 10:
+                # Unit 10 has two distinct nonzero doses separated by
+                # 1e-9 - smaller than the previous 1e-8 rounding window.
+                dose = 2.5 if t < 2 else 2.5 + 1e-9
+            else:
+                dose = 2.5
+            rows.append({"u": u, "t": t, "tr": dose, "y": 0.0})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    dose = profile.treatment_dose
+    assert dose is not None
+    assert dose.is_time_invariant is False, (
+        "Expected is_time_invariant=False for a unit with non-equal "
+        "non-zero doses, even at sub-1e-8 precision; the field's "
+        "documented contract is exact distinct-count on observed values."
+    )
+
+
 def test_treatment_dose_continuous_no_zero_dose():
     """If every unit has a strictly positive dose throughout, has_zero_dose
     must be False — flagging the absence of zero-dose controls required by

@@ -613,7 +613,11 @@ def _compute_outcome_shape(valid: pd.Series, outcome_dtype_kind: str) -> Optiona
     value_min = float(arr.min())
     value_max = float(arr.max())
 
-    is_integer_valued = bool(np.all(np.equal(np.mod(arr, 1.0), 0.0)))
+    # Tolerance-aware integer detection: a CSV-roundtripped count column
+    # may carry float64 representation noise (e.g., 1.0 stored as
+    # 1.0000000000000002), and that should still classify as
+    # integer-valued for the purpose of the count-like heuristic.
+    is_integer_valued = bool(np.all(np.isclose(arr, np.round(arr), rtol=0.0, atol=1e-12)))
     is_bounded_unit = bool(np.all((arr >= 0.0) & (arr <= 1.0)))
 
     skewness: Optional[float] = None
@@ -672,15 +676,15 @@ def _compute_treatment_dose(
     n_distinct_doses = int(col.nunique())
     has_zero_dose = bool((col == 0).any())
 
+    # `treatment_type == "continuous"` is reached only when the
+    # treatment column has more than two distinct values OR a 2-valued
+    # numeric outside `{0, 1}` (see `_classify_treatment`). An all-zero
+    # numeric column is classified as `binary_absorbing` and never
+    # reaches this branch, so `nonzero` is guaranteed non-empty.
     nonzero = col[col != 0]
-    if len(nonzero) > 0:
-        dose_min = float(nonzero.min())
-        dose_max = float(nonzero.max())
-        dose_mean = float(nonzero.mean())
-    else:
-        dose_min = float("nan")
-        dose_max = float("nan")
-        dose_mean = float("nan")
+    dose_min = float(nonzero.min())
+    dose_max = float(nonzero.max())
+    dose_mean = float(nonzero.mean())
 
     is_time_invariant = True
     for _, group in df.groupby(unit, sort=False):
@@ -688,8 +692,12 @@ def _compute_treatment_dose(
         unit_nonzero = unit_doses[unit_doses != 0]
         if len(unit_nonzero) == 0:
             continue
-        rounded = np.round(unit_nonzero.astype(float), 8)
-        if int(np.unique(rounded).size) > 1:
+        # Exact distinct-count on observed non-zero values, matching the
+        # documented contract "per-unit non-zero doses have at most one
+        # distinct value." No tolerance is applied: continuous-DiD
+        # eligibility is gated downstream by `ContinuousDiD.fit()`,
+        # which itself uses exact equality on the dose column.
+        if int(np.unique(unit_nonzero).size) > 1:
             is_time_invariant = False
             break
 
