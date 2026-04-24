@@ -1004,6 +1004,16 @@ class LprobustResult:
     se_rb: float
     V_Y_cl: np.ndarray
     V_Y_bc: np.ndarray
+    influence_function: Optional[np.ndarray] = None
+    """Per-observation influence function of the CLASSICAL intercept
+    ``mu_hat`` (deriv=0 case), aligned with the ORIGINAL x ordering. Shape
+    ``(N,)``. Set only when ``return_influence=True``; ``None`` otherwise.
+    Observations outside the active kernel window have IF=0.
+
+    Surface used by estimator-level Binder (1983) TSL composition for
+    survey-design variance (Phase 4.5 HAD continuous path). The variance
+    check ``sum(IF^2) == V_Y_cl[0, 0]`` (up to BLAS ordering) holds when
+    weights are uniform and cluster=None."""
 
 
 def lprobust(
@@ -1021,6 +1031,7 @@ def lprobust(
     nnmatch: int = 3,
     bwcheck: Optional[int] = 21,
     weights: Optional[np.ndarray] = None,
+    return_influence: bool = False,
 ) -> LprobustResult:
     """Local-polynomial point estimate with CCT (2014) bias correction.
 
@@ -1175,6 +1186,9 @@ def lprobust(
     # --- vce="nn" setup: sort ascending, precompute dups ---
     dups: Optional[np.ndarray] = None
     dupsid: Optional[np.ndarray] = None
+    # Track the sort permutation so that when ``return_influence=True``
+    # we can unsort the IF back to the caller-supplied ordering below.
+    order_x: Optional[np.ndarray] = None
     if vce == "nn":
         order_x = np.argsort(x, kind="mergesort")  # stable, matches R order()
         x = x[order_x]
@@ -1338,6 +1352,35 @@ def lprobust(
     se_cl = float(np.sqrt((deriv_fact**2) * V_Y_cl[deriv, deriv]))
     se_rb = float(np.sqrt((deriv_fact**2) * V_Y_bc[deriv, deriv]))
 
+    # --- Per-observation influence function for the classical point
+    # estimate at ``deriv`` (Phase 4.5 survey composition).
+    # Weighted OLS IF decomposition:
+    #   beta_hat - beta  =  invG_p @ sum_g [(R_p[g] * W_h[g]) * res[g]]
+    # so psi_g = invG_p[deriv, :] @ (R_p[g] * W_h[g]) * res[g] scaled by
+    # deriv_fact. Observations outside the active kernel window have
+    # W_h[g]=0 and contribute IF=0. Length-N, aligned with the ORIGINAL
+    # x ordering (inverse-permuted when vce="nn" sorts). ---
+    influence_function: Optional[np.ndarray] = None
+    if return_influence:
+        # For active-window observations only.
+        row_deriv = invG_p[deriv, :]  # (p+1,)
+        # (R_p * W_h)[g, :] has shape (p+1,); einsum for clarity.
+        coeff_active = (R_p_W_h @ row_deriv).ravel()  # (eN,)
+        # res_h is shape (eN, 1); squeeze + multiply.
+        res_flat = np.asarray(res_h).ravel()
+        if_active = deriv_fact * coeff_active * res_flat  # (eN,)
+        # Map back to full N; zeros for obs outside window.
+        if_full_sorted = np.zeros(N, dtype=np.float64)
+        if_full_sorted[ind] = if_active
+        if vce == "nn" and order_x is not None:
+            # x was sorted ascending by order_x; invert the permutation
+            # so IF aligns with the ORIGINAL caller-supplied x ordering.
+            inv_order = np.empty(N, dtype=np.int64)
+            inv_order[order_x] = np.arange(N)
+            influence_function = if_full_sorted[inv_order]
+        else:
+            influence_function = if_full_sorted
+
     return LprobustResult(
         eval_point=float(eval_point),
         h=float(h),
@@ -1349,4 +1392,5 @@ def lprobust(
         se_rb=se_rb,
         V_Y_cl=V_Y_cl,
         V_Y_bc=V_Y_bc,
+        influence_function=influence_function,
     )

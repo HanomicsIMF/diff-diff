@@ -3300,19 +3300,28 @@ class TestHADSurvey:
 
     # ---------- survey=SurveyDesign(weights=...) shorthand equivalence ----------
 
-    def test_survey_weights_only_equivalent_to_weights_shortcut(self):
-        """SurveyDesign(weights=w) with no PSU/strata is bit-identical to
-        passing weights=w directly (the two entry points merge into the
-        same per-unit weight array)."""
+    def test_survey_and_weights_produce_same_point_estimate(self):
+        """SurveyDesign(weights='col') and weights=<array> route through
+        the same weighted lprobust fit, so the ATT is identical. The SE
+        diverges because survey= triggers Binder-TSL variance
+        (PSU-aggregated, FPC/strata-aware) while weights= uses the
+        weighted-robust SE from lprobust. This is the intended divergence
+        (one knob for design-based inference, one for pweight-only)."""
         from diff_diff.survey import SurveyDesign
 
         panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        panel_with_w = panel.assign(w=row_w)
         est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
-        r_w = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
-        sd = SurveyDesign(weights=row_w)
-        r_sd = est.fit(panel, "outcome", "dose", "period", "unit", survey=sd)
-        np.testing.assert_allclose(r_w.att, r_sd.att, atol=1e-14, rtol=1e-14)
-        np.testing.assert_allclose(r_w.se, r_sd.se, atol=1e-14, rtol=1e-14)
+        r_w = est.fit(panel_with_w, "outcome", "dose", "period", "unit", weights=row_w)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            sd = SurveyDesign(weights="w")
+            r_sd = est.fit(panel_with_w, "outcome", "dose", "period", "unit", survey=sd)
+        # ATTs match (same weighted lprobust estimate).
+        np.testing.assert_allclose(r_w.att, r_sd.att, atol=1e-12, rtol=1e-12)
+        # SEs differ (different inference paths).
+        assert r_w.survey_metadata["method"] == "pweight"
+        assert r_sd.survey_metadata["method"] == "survey_binder_tsl"
 
     # ---------- Validator contract ----------
 
@@ -3361,11 +3370,12 @@ class TestHADSurvey:
         from diff_diff.survey import SurveyDesign
 
         panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
-        sd = SurveyDesign(weights=row_w)
+        panel_with_w = panel.assign(w=row_w)
+        sd = SurveyDesign(weights="w")
         est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
         with pytest.raises(ValueError, match="OR weights"):
             est.fit(
-                panel, "outcome", "dose", "period", "unit",
+                panel_with_w, "outcome", "dose", "period", "unit",
                 survey=sd, weights=row_w,
             )
 
@@ -3450,3 +3460,126 @@ class TestHADSurvey:
         s = r.summary()
         assert "Survey method" in s
         assert "Effective sample size" in s
+
+    # ---------- SurveyDesign full composition (PSU / strata / FPC) ----------
+
+    def _panel_with_survey_cols(self, G=200, seed=42):
+        """Build a panel with w / strata / psu columns, all unit-constant."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(seed)
+        d = rng.uniform(0, 1, G)
+        dy = 2.0 * d + 0.3 * d**2 + rng.normal(0, 0.2, G)
+        panel = _make_panel(d, dy)
+        w_unit = rng.uniform(0.5, 1.5, G)
+        strata_unit = rng.integers(0, 4, G)
+        psu_unit = strata_unit * 100 + rng.integers(0, 20, G)
+        # Broadcast to long panel.
+        row_w = np.zeros(panel.shape[0])
+        row_strata = np.zeros(panel.shape[0], dtype=np.int64)
+        row_psu = np.zeros(panel.shape[0], dtype=np.int64)
+        for g in range(G):
+            mask = panel["unit"].to_numpy() == g
+            row_w[mask] = w_unit[g]
+            row_strata[mask] = strata_unit[g]
+            row_psu[mask] = psu_unit[g]
+        panel2 = panel.assign(w=row_w, strata=row_strata, psu=row_psu)
+        return panel2, SurveyDesign
+
+    def test_survey_with_strata_produces_different_se(self):
+        """Adding strata to a SurveyDesign changes the SE (finer variance
+        composition) but preserves the ATT (same weighted estimator)."""
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_basic = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w"),
+            )
+            r_strat = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata"),
+            )
+        np.testing.assert_allclose(r_basic.att, r_strat.att, atol=1e-14, rtol=1e-14)
+        assert r_basic.se != r_strat.se
+        assert r_strat.survey_metadata["n_strata"] == 4
+        assert r_basic.survey_metadata["n_strata"] == 1
+
+    def test_survey_with_psu_clustering(self):
+        """Adding PSU clustering changes the SE (within-PSU correlation
+        aggregated). ATT unchanged."""
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_strat = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata"),
+            )
+            r_psu = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+        np.testing.assert_allclose(r_strat.att, r_psu.att, atol=1e-14, rtol=1e-14)
+        assert r_psu.se != r_strat.se
+        assert r_psu.survey_metadata["n_psu"] > 1
+        # PSU count is strictly less than unit count (clustering is actual).
+        assert r_psu.survey_metadata["n_psu"] < 200
+
+    def test_survey_metadata_records_binder_tsl_method(self):
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+        sm = r.survey_metadata
+        assert sm["method"] == "survey_binder_tsl"
+        assert sm["source"] == "SurveyDesign"
+        assert "Binder 1983 TSL" in sm["variance_formula"]
+
+    def test_survey_design_column_varies_within_unit_raises(self):
+        """Strata that varies within a unit → ValueError (HAD requires
+        unit-constant design columns)."""
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        # Corrupt one unit's pre-period strata.
+        unit0_mask = panel["unit"].to_numpy() == 0
+        unit0_pre_idx = np.where(unit0_mask & (panel["period"].to_numpy() == 1))[0][0]
+        panel_bad = panel.copy()
+        panel_bad.iloc[unit0_pre_idx, panel_bad.columns.get_loc("strata")] = 99
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with pytest.raises(ValueError, match="strata varies within"):
+                est.fit(
+                    panel_bad, "outcome", "dose", "period", "unit",
+                    survey=SurveyDesign(weights="w", strata="strata"),
+                )
+
+    def test_replicate_weights_not_yet_supported(self):
+        """Replicate-weight designs raise NotImplementedError on HAD (Phase 4.5 C)."""
+        from diff_diff.survey import SurveyDesign
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        # Fabricate a replicate-weights design (BRR with 2 replicates).
+        rep_w_col_1 = row_w * (1 + 0.1 * np.random.default_rng(1).normal(size=len(row_w)))
+        rep_w_col_2 = row_w * (1 + 0.1 * np.random.default_rng(2).normal(size=len(row_w)))
+        # Replicate weights must be non-negative; clip for safety.
+        panel2 = panel.assign(
+            w=row_w,
+            rep1=np.clip(rep_w_col_1, 0.01, None),
+            rep2=np.clip(rep_w_col_2, 0.01, None),
+        )
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        sd = SurveyDesign(
+            weights="w",
+            replicate_weights=["rep1", "rep2"],
+            replicate_method="BRR",
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with pytest.raises(NotImplementedError, match="Replicate-weight"):
+                est.fit(panel2, "outcome", "dose", "period", "unit", survey=sd)

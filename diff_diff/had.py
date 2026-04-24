@@ -1485,6 +1485,124 @@ def _aggregate_unit_weights(
     return w_unit
 
 
+def _aggregate_unit_resolved_survey(
+    data: pd.DataFrame,
+    resolved: Any,  # ResolvedSurveyDesign
+    unit_col: str,
+) -> Any:  # ResolvedSurveyDesign at unit level
+    """Collapse a row-level ResolvedSurveyDesign to a unit-level analogue.
+
+    HAD's continuous path operates at G per-unit rows, so the survey
+    design (weights / strata / PSU / FPC) must collapse the same way.
+    Each design column is required to be constant-within-unit (same
+    invariant as ``_aggregate_unit_weights``); a within-unit inconsistency
+    raises ``ValueError`` per ``feedback_no_silent_failures``.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Long panel.
+    resolved : ResolvedSurveyDesign
+        Resolved design with ``(n_rows,)`` arrays.
+    unit_col : str
+
+    Returns
+    -------
+    ResolvedSurveyDesign
+        New resolved design with ``(G,)`` arrays aligned to sorted unit ids.
+
+    Raises
+    ------
+    ValueError
+        Strata / PSU / FPC vary within unit, or replicate-weight designs
+        are passed (replicate-weight HAD is Phase 4.5 C scope, not this
+        commit).
+    NotImplementedError
+        ``resolved.replicate_weights is not None`` — replicate-weight HAD
+        is deferred.
+    """
+    from diff_diff.survey import ResolvedSurveyDesign
+
+    if resolved.replicate_weights is not None:
+        raise NotImplementedError(
+            "Replicate-weight SurveyDesign on HAD is deferred to Phase 4.5 C. "
+            "Pass a SurveyDesign with weights/strata/psu/fpc (Taylor-series "
+            "linearization path) for this PR."
+        )
+
+    n_rows = int(data.shape[0])
+    if resolved.weights.shape[0] != n_rows:
+        raise ValueError(
+            f"ResolvedSurveyDesign.weights length ({resolved.weights.shape[0]}) "
+            f"does not match data rows ({n_rows}). The SurveyDesign must "
+            f"have been resolved against the same DataFrame passed to fit()."
+        )
+
+    def _collapse(arr: Optional[np.ndarray], name: str) -> Optional[np.ndarray]:
+        if arr is None:
+            return None
+        if arr.shape[0] != n_rows:
+            raise ValueError(
+                f"ResolvedSurveyDesign.{name} length does not match "
+                f"data rows ({n_rows})."
+            )
+        df = data.reset_index(drop=True).copy()
+        # Use a stable per-row column so we can take first() per unit and
+        # verify constancy. For numeric designs, use np.isclose; for
+        # object/string (rare), require equality.
+        df["_tmp__"] = arr
+        unit_min = df.groupby(unit_col)["_tmp__"].min()
+        unit_max = df.groupby(unit_col)["_tmp__"].max()
+        # nunique=1 is the robust check across dtypes.
+        nunique = df.groupby(unit_col)["_tmp__"].nunique(dropna=False)
+        if (nunique > 1).any():
+            n_bad = int((nunique > 1).sum())
+            raise ValueError(
+                f"ResolvedSurveyDesign.{name} varies within {n_bad} unit(s). "
+                f"Survey design columns must be constant within each unit "
+                f"(sampling-unit-level assignment convention). If your "
+                f"panel uses unit-varying design columns, aggregate them "
+                f"to unit-level before calling fit()."
+            )
+        # The unit-level min and max coincide by the nunique check; take min.
+        _ = unit_max  # referenced for symmetry of intent; min suffices
+        return unit_min.sort_index().to_numpy(dtype=arr.dtype)
+
+    w_unit = _collapse(resolved.weights, "weights")
+    assert w_unit is not None  # resolved.weights is non-Optional
+    strata_unit = _collapse(resolved.strata, "strata")
+    psu_unit = _collapse(resolved.psu, "psu")
+    fpc_unit = _collapse(resolved.fpc, "fpc")
+
+    # Recompute n_strata and n_psu at the unit level.
+    n_strata_unit = (
+        int(np.unique(strata_unit).shape[0]) if strata_unit is not None else 1
+    )
+    n_psu_unit = (
+        int(np.unique(psu_unit).shape[0]) if psu_unit is not None else int(w_unit.shape[0])
+    )
+
+    return ResolvedSurveyDesign(
+        weights=w_unit,
+        weight_type=resolved.weight_type,
+        strata=strata_unit,
+        psu=psu_unit,
+        fpc=fpc_unit,
+        n_strata=n_strata_unit,
+        n_psu=n_psu_unit,
+        lonely_psu=resolved.lonely_psu,
+        replicate_weights=None,
+        replicate_method=None,
+        fay_rho=0.0,
+        n_replicates=0,
+        replicate_strata=None,
+        combined_weights=resolved.combined_weights,
+        replicate_scale=None,
+        replicate_rscales=None,
+        mse=resolved.mse,
+    )
+
+
 def _aggregate_multi_period_first_differences(
     data: pd.DataFrame,
     outcome_col: str,
@@ -2222,38 +2340,41 @@ class HeterogeneousAdoptionDiD:
             None,
         )
 
-        # Resolve survey/weights into a per-unit weight array.
-        # - `survey=SurveyDesign(weights=w)` → extract w, aggregate per-unit.
-        # - `weights=w` → shorthand for SurveyDesign(weights=w).
-        # - neither → unweighted.
-        # The per-unit array is aligned with d_arr/dy_arr (sorted unit ids).
-        # Non-trivial SurveyDesign fields (PSU/strata/FPC/replicate) are
-        # routed through ``compute_survey_if_variance`` at the variance
-        # step in _fit_continuous; this PR ships the ``weights=`` path;
-        # the full PSU-composed variance extension is Phase 4.5 commit 3.
+        # Resolve survey/weights into per-unit weights + optional
+        # ResolvedSurveyDesign (for PSU/strata/FPC composition).
+        # - `weights=<array>` → per-row array, no PSU/strata composition.
+        # - `survey=SurveyDesign(weights="col", ...)` → resolve the design
+        #   and produce a unit-level analogue for per-unit IF composition.
+        # - neither → unweighted path.
         weights_unit: Optional[np.ndarray] = None
+        resolved_survey_unit: Any = None  # ResolvedSurveyDesign (G,) when survey=
         if weights is not None:
             weights_unit = _aggregate_unit_weights(data, weights, unit_col)
         elif survey is not None:
-            # Minimal survey support: extract per-row weights from SurveyDesign,
-            # aggregate to unit level, and apply via the weighted lprobust.
-            # Full PSU/strata/FPC composition is queued for the next commit.
             if not hasattr(survey, "weights"):
                 raise TypeError(
                     f"survey= must be a SurveyDesign-like object with a "
                     f".weights attribute; got {type(survey).__name__}. "
                     f"Construct a SurveyDesign via diff_diff.survey."
                 )
-            sd_weights = getattr(survey, "weights", None)
-            if sd_weights is None:
+            if getattr(survey, "weights", None) is None:
                 raise NotImplementedError(
                     "survey= without weights is not yet supported. Pass "
-                    "survey=SurveyDesign(weights=...) with per-row weights; "
-                    "full SurveyDesign integration (PSU, strata, FPC, "
-                    "replicate weights) ships in the subsequent commit."
+                    "survey=SurveyDesign(weights='<col>', ...) with a "
+                    "per-row weight column."
                 )
-            weights_unit = _aggregate_unit_weights(
-                data, np.asarray(sd_weights, dtype=np.float64), unit_col
+            # Resolve the SurveyDesign against the long-panel data. This
+            # validates column names, applies pweight/aweight normalization
+            # to mean=1, and extracts numpy arrays for all design columns.
+            resolved_survey_row = survey.resolve(data)
+            # Collapse design columns to unit-level (constant-within-unit
+            # invariant) so the IF-based variance composition operates at
+            # the G-unit scale that matches the local-linear fit.
+            resolved_survey_unit = _aggregate_unit_resolved_survey(
+                data, resolved_survey_row, unit_col
+            )
+            weights_unit = np.asarray(
+                resolved_survey_unit.weights, dtype=np.float64
             )
 
         n_obs = int(d_arr.shape[0])
@@ -2502,6 +2623,7 @@ class HeterogeneousAdoptionDiD:
                 resolved_design,
                 d_lower_val,
                 weights_arr=weights_unit,
+                resolved_survey_unit=resolved_survey_unit,
             )
             inference_method = "analytical_nonparametric"
             vcov_label: Optional[str] = None
@@ -2545,20 +2667,35 @@ class HeterogeneousAdoptionDiD:
         # ---- Route all inference fields through safe_inference ----
         t_stat, p_value, conf_int = safe_inference(att, se, alpha=float(self.alpha))
 
-        # Build survey metadata when weights/survey were supplied. Phase
-        # 4.5 commit 2 ships weight composition only; PSU/strata/FPC +
-        # Binder TSL composition lands in the subsequent commit.
+        # Build survey metadata when weights/survey were supplied. When a
+        # ResolvedSurveyDesign is available (full survey= path), surface
+        # the PSU/strata/FPC composition used for the Binder-TSL variance.
         survey_metadata: Optional[Dict[str, Any]] = None
         if weights_unit is not None:
             w_sum = float(weights_unit.sum())
             w_sq_sum = float(np.dot(weights_unit, weights_unit))
             ess = (w_sum * w_sum / w_sq_sum) if w_sq_sum > 0 else float("nan")
+            if resolved_survey_unit is not None:
+                method = "survey_binder_tsl"
+                variance_formula = "Binder 1983 TSL (PSU-aggregated, FPC/strata)"
+                source = "SurveyDesign"
+                n_strata = int(resolved_survey_unit.n_strata)
+                n_psu = int(resolved_survey_unit.n_psu)
+            else:
+                method = "pweight"
+                variance_formula = "weighted-robust (CCT 2014)"
+                source = "weights_arr"
+                n_strata = None
+                n_psu = None
             survey_metadata = {
-                "method": "pweight" if survey is None else "survey_pweight",
-                "source": "weights_arr" if survey is None else "SurveyDesign.weights",
+                "method": method,
+                "source": source,
+                "variance_formula": variance_formula,
                 "n_units_weighted": int(weights_unit.shape[0]),
                 "weight_sum": w_sum,
                 "effective_sample_size": float(ess),
+                "n_strata": n_strata,
+                "n_psu": n_psu,
             }
 
         return HeterogeneousAdoptionDiDResults(
@@ -2596,6 +2733,7 @@ class HeterogeneousAdoptionDiD:
         resolved_design: str,
         d_lower_val: float,
         weights_arr: Optional[np.ndarray] = None,
+        resolved_survey_unit: Any = None,  # ResolvedSurveyDesign (G,) or None
     ) -> Tuple[float, float, Optional[BiasCorrectedFit], Optional[BandwidthResult]]:
         """Fit Phase 1c ``bias_corrected_local_linear`` and form the WAS estimate.
 
@@ -2676,6 +2814,11 @@ class HeterogeneousAdoptionDiD:
                 kernel=self.kernel,
                 alpha=float(self.alpha),
                 weights=weights_arr,
+                # Request per-unit influence function ONLY when we need it
+                # for survey-composed variance (compute_survey_if_variance).
+                # Unconditional IF computation would add a small O(G) cost
+                # to every fit; gate it on the survey path.
+                return_influence=resolved_survey_unit is not None,
                 # No cluster / vce threading in Phase 2a (see UserWarning
                 # in fit()).
             )
@@ -2697,7 +2840,24 @@ class HeterogeneousAdoptionDiD:
                 dy_mean = float(np.average(dy_arr, weights=weights_arr))
             tau_bc = float(bc_fit.estimate_bias_corrected)
             att = (dy_mean - tau_bc) / den
-            se = float(bc_fit.se_robust) / abs(den)
+            if resolved_survey_unit is not None and bc_fit.influence_function is not None:
+                # Survey-composed variance via Binder (1983) Taylor
+                # linearization. Paper Equation 8 treats D_bar as fixed
+                # (it's a sqrt(G)-rate quantity, faster than the
+                # G^{2/5}-rate nonparametric estimator), so the leading-
+                # order variance is V(mu_hat) / D_bar^2. Under survey
+                # design, V(mu_hat) = compute_survey_if_variance(psi,
+                # resolved) with PSU aggregation + strata sum + FPC.
+                from diff_diff.survey import compute_survey_if_variance
+                v_survey = compute_survey_if_variance(
+                    bc_fit.influence_function, resolved_survey_unit
+                )
+                if np.isfinite(v_survey) and v_survey > 0.0:
+                    se = float(np.sqrt(v_survey)) / abs(den)
+                else:
+                    se = float("nan")
+            else:
+                se = float(bc_fit.se_robust) / abs(den)
 
         return att, se, bc_fit, bc_fit.bandwidth_diagnostics
 

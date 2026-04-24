@@ -933,6 +933,12 @@ class BiasCorrectedFit:
     n_total: int
     kernel: str
     boundary: float
+    influence_function: Optional[np.ndarray] = None
+    """Per-observation influence function of the CLASSICAL mu-scale
+    point estimate ``tau.cl`` (Phase 4.5 survey composition). Aligned
+    with the original caller-supplied ``d``/``y`` ordering; observations
+    outside the active kernel window have IF=0. Populated only when
+    ``return_influence=True``; ``None`` otherwise."""
 
 
 def bias_corrected_local_linear(
@@ -947,6 +953,7 @@ def bias_corrected_local_linear(
     cluster: Optional[np.ndarray] = None,
     nnmatch: int = 3,
     weights: Optional[np.ndarray] = None,
+    return_influence: bool = False,
 ) -> BiasCorrectedFit:
     """Bias-corrected local-linear fit with robust CI at a boundary.
 
@@ -1216,6 +1223,7 @@ def bias_corrected_local_linear(
         nnmatch=nnmatch,
         bwcheck=21,
         weights=weights,
+        return_influence=return_influence,
     )
 
     # --- Bias-corrected CI via safe_inference (NaN-safe gate) ---
@@ -1250,4 +1258,5 @@ def bias_corrected_local_linear(
         n_total=n_total,
         kernel=kernel,
         boundary=float(boundary),
+        influence_function=result.influence_function,
     )
