@@ -1027,6 +1027,54 @@ class TestTROPRustBackend:
         np.testing.assert_array_almost_equal(est1, est2)
         assert abs(se1 - se2) < 1e-10
 
+    def test_bootstrap_rejects_negative_index(self):
+        """Rust local bootstrap must raise PyValueError on a negative index."""
+        from diff_diff._rust_backend import bootstrap_trop_variance
+
+        np.random.seed(42)
+        n_periods, n_units = 8, 6
+        Y = np.random.randn(n_periods, n_units)
+        D = np.zeros((n_periods, n_units))
+        D[6:, 0] = 1.0
+        control_mask = (D == 0).astype(np.uint8)
+        time_dist = np.abs(
+            np.arange(n_periods)[:, np.newaxis] - np.arange(n_periods)[np.newaxis, :]
+        ).astype(np.int64)
+
+        ctrl_idx, trt_idx = self._stratified_indices(
+            n_control=5, n_treated=1, n_bootstrap=5, seed=0
+        )
+        ctrl_idx[2, 3] = -1  # negative
+        with pytest.raises(ValueError, match="control_indices.*out-of-range"):
+            bootstrap_trop_variance(
+                Y, D, control_mask, time_dist,
+                1.0, 1.0, 0.1, 5, 100, 1e-6, ctrl_idx, trt_idx,
+            )
+
+    def test_bootstrap_rejects_out_of_range_index(self):
+        """Rust local bootstrap must raise PyValueError on an index >= pool size."""
+        from diff_diff._rust_backend import bootstrap_trop_variance
+
+        np.random.seed(42)
+        n_periods, n_units = 8, 6
+        Y = np.random.randn(n_periods, n_units)
+        D = np.zeros((n_periods, n_units))
+        D[6:, 0] = 1.0
+        control_mask = (D == 0).astype(np.uint8)
+        time_dist = np.abs(
+            np.arange(n_periods)[:, np.newaxis] - np.arange(n_periods)[np.newaxis, :]
+        ).astype(np.int64)
+
+        ctrl_idx, trt_idx = self._stratified_indices(
+            n_control=5, n_treated=1, n_bootstrap=5, seed=0
+        )
+        trt_idx[1, 0] = 99  # >> n_treated=1
+        with pytest.raises(ValueError, match="treated_indices.*out-of-range"):
+            bootstrap_trop_variance(
+                Y, D, control_mask, time_dist,
+                1.0, 1.0, 0.1, 5, 100, 1e-6, ctrl_idx, trt_idx,
+            )
+
 
 @pytest.mark.skipif(not HAS_RUST_BACKEND, reason="Rust backend not available")
 class TestTROPRustVsNumpy:
@@ -1251,6 +1299,46 @@ class TestTROPGlobalRustBackend:
 
         np.testing.assert_array_almost_equal(est1, est2)
         np.testing.assert_almost_equal(se1, se2)
+
+    def test_bootstrap_global_rejects_negative_index(self):
+        """Rust global bootstrap must raise PyValueError on a negative index."""
+        from diff_diff._rust_backend import bootstrap_trop_variance_global
+
+        np.random.seed(42)
+        n_periods, n_units = 8, 15
+        n_treated = 4
+        Y = np.random.randn(n_periods, n_units)
+        D = np.zeros((n_periods, n_units))
+        D[-2:, :n_treated] = 1.0
+
+        ctrl_idx, trt_idx = self._global_stratified_indices(
+            n_control=n_units - n_treated, n_treated=n_treated, n_bootstrap=10, seed=0
+        )
+        ctrl_idx[3, 2] = -5  # negative
+        with pytest.raises(ValueError, match="control_indices.*out-of-range"):
+            bootstrap_trop_variance_global(
+                Y, D, 0.5, 0.5, 0.1, 10, 50, 1e-6, ctrl_idx, trt_idx,
+            )
+
+    def test_bootstrap_global_rejects_out_of_range_index(self):
+        """Rust global bootstrap must raise PyValueError on an index >= pool size."""
+        from diff_diff._rust_backend import bootstrap_trop_variance_global
+
+        np.random.seed(42)
+        n_periods, n_units = 8, 15
+        n_treated = 4
+        Y = np.random.randn(n_periods, n_units)
+        D = np.zeros((n_periods, n_units))
+        D[-2:, :n_treated] = 1.0
+
+        ctrl_idx, trt_idx = self._global_stratified_indices(
+            n_control=n_units - n_treated, n_treated=n_treated, n_bootstrap=10, seed=0
+        )
+        trt_idx[5, 1] = 99  # >> n_treated=4
+        with pytest.raises(ValueError, match="treated_indices.*out-of-range"):
+            bootstrap_trop_variance_global(
+                Y, D, 0.5, 0.5, 0.1, 10, 50, 1e-6, ctrl_idx, trt_idx,
+            )
 
 
 @pytest.mark.slow

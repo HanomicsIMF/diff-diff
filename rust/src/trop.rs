@@ -897,7 +897,7 @@ fn max_abs_diff_2d(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
-/// Compute bootstrap variance estimation for TROP in parallel.
+/// Compute bootstrap variance estimation for TROP in parallel (local method).
 ///
 /// Performs unit-level block bootstrap, parallelizing across bootstrap iterations.
 ///
@@ -905,9 +905,6 @@ fn max_abs_diff_2d(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 /// * `y` - Outcome matrix (n_periods x n_units)
 /// * `d` - Treatment indicator matrix (n_periods x n_units)
 /// * `control_mask` - Boolean mask for control observations
-/// * `control_unit_idx` - Array of control unit indices
-/// * `treated_obs` - List of (t, i) treated observations
-/// * `unit_dist_matrix` - Pre-computed unit distance matrix
 /// * `time_dist_matrix` - Pre-computed time distance matrix
 /// * `lambda_time` - Selected time decay parameter
 /// * `lambda_unit` - Selected unit distance parameter
@@ -915,11 +912,23 @@ fn max_abs_diff_2d(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 /// * `n_bootstrap` - Number of bootstrap iterations
 /// * `max_iter` - Maximum iterations for model estimation
 /// * `tol` - Convergence tolerance
-/// * `seed` - Random seed
+/// * `control_indices` - Pre-generated stratified bootstrap indices for the
+///   control pool, shape `(n_bootstrap, n_control_units)`, dtype `i64`.
+///   Values must be in `[0, n_control_units)`.
+/// * `treated_indices` - Pre-generated stratified bootstrap indices for the
+///   treated pool, shape `(n_bootstrap, n_treated_units)`, dtype `i64`.
+///   Values must be in `[0, n_treated_units)`.
 /// * `survey_weights` - Optional unit-level survey weights (length n_units).
 ///   When provided, ATT is computed as a weighted mean of per-observation
 ///   treatment effects using unit weights. Model fitting, LOOCV, and distance
 ///   computation are unchanged.
+///
+/// The index arrays carry the RNG contract: they are produced on the Python
+/// side by `diff_diff.bootstrap_utils.stratified_bootstrap_indices` with a
+/// numpy `default_rng(seed)`, so Rust and Python consumers see identical
+/// sampling under the same seed. Invalid index values (negative or out of
+/// range) raise a `PyValueError` rather than silently producing malformed
+/// bootstrap samples.
 ///
 /// # Returns
 /// (bootstrap_estimates, standard_error)
@@ -984,6 +993,32 @@ pub fn bootstrap_trop_variance<'py>(
             n_bootstrap,
             n_treated_units,
         )));
+    }
+
+    // Validate index values are in range. Fail fast with a clean PyValueError
+    // rather than panicking inside the parallel loop on a negative cast or an
+    // out-of-pool Vec index.
+    if n_control_units > 0 {
+        let n_ctrl = n_control_units as i64;
+        for v in ctrl_idx_arr.iter() {
+            if *v < 0 || *v >= n_ctrl {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "control_indices contains out-of-range value {} (valid: [0, {}))",
+                    v, n_control_units,
+                )));
+            }
+        }
+    }
+    if n_treated_units > 0 {
+        let n_trt = n_treated_units as i64;
+        for v in trt_idx_arr.iter() {
+            if *v < 0 || *v >= n_trt {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "treated_indices contains out-of-range value {} (valid: [0, {}))",
+                    v, n_treated_units,
+                )));
+            }
+        }
     }
 
     // Run bootstrap iterations in parallel
@@ -1740,11 +1775,23 @@ pub fn loocv_grid_search_global<'py>(
 /// * `n_bootstrap` - Number of bootstrap iterations
 /// * `max_iter` - Maximum iterations for model estimation
 /// * `tol` - Convergence tolerance
-/// * `seed` - Random seed
+/// * `control_indices` - Pre-generated stratified bootstrap indices for the
+///   control pool, shape `(n_bootstrap, n_control_units)`, dtype `i64`.
+///   Values must be in `[0, n_control_units)`.
+/// * `treated_indices` - Pre-generated stratified bootstrap indices for the
+///   treated pool, shape `(n_bootstrap, n_treated_units)`, dtype `i64`.
+///   Values must be in `[0, n_treated_units)`.
 /// * `survey_weights` - Optional unit-level survey weights (length n_units).
 ///   When provided, ATT is computed as a weighted mean of per-observation
 ///   treatment effects using unit weights. Model fitting, LOOCV, and distance
 ///   computation are unchanged.
+///
+/// The index arrays carry the RNG contract: they are produced on the Python
+/// side by `diff_diff.bootstrap_utils.stratified_bootstrap_indices` with a
+/// numpy `default_rng(seed)`, so Rust and Python consumers see identical
+/// sampling under the same seed. Invalid index values (negative or out of
+/// range) raise a `PyValueError` rather than silently producing malformed
+/// bootstrap samples.
 ///
 /// # Returns
 /// (bootstrap_estimates, standard_error)
@@ -1804,6 +1851,32 @@ pub fn bootstrap_trop_variance_global<'py>(
             n_bootstrap,
             n_treated_units,
         )));
+    }
+
+    // Validate index values are in range. Fail fast with a clean PyValueError
+    // rather than panicking inside the parallel loop on a negative cast or an
+    // out-of-pool Vec index.
+    if n_control_units > 0 {
+        let n_ctrl = n_control_units as i64;
+        for v in ctrl_idx_arr.iter() {
+            if *v < 0 || *v >= n_ctrl {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "control_indices contains out-of-range value {} (valid: [0, {}))",
+                    v, n_control_units,
+                )));
+            }
+        }
+    }
+    if n_treated_units > 0 {
+        let n_trt = n_treated_units as i64;
+        for v in trt_idx_arr.iter() {
+            if *v < 0 || *v >= n_trt {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "treated_indices contains out-of-range value {} (valid: [0, {}))",
+                    v, n_treated_units,
+                )));
+            }
+        }
     }
 
     // Determine treated periods from D matrix

@@ -970,8 +970,13 @@ class TROPLocalMixin:
         n_control_units = len(control_units)
 
         # Pre-generate stratified bootstrap indices via numpy (Python-canonical RNG).
-        # Both backends consume these indices so SE is identical under the same seed
-        # (silent-failures finding #23, bootstrap half).
+        # This aligns the RNG layer between backends. For the global method the RNG
+        # was the only divergence, so global SE is now bit-identical under the same
+        # seed. For the local method two downstream divergences remain (Rust weight-
+        # matrix normalization + Python `_compute_observation_weights` reading the
+        # stale `_precomputed` cache) — tracked in TODO.md; until those land, local
+        # bootstrap SE still differs across backends. Silent-failures finding #23
+        # (bootstrap half) closed for global; local follow-up queued.
         rng = np.random.default_rng(self.seed)
         control_idx, treated_idx = stratified_bootstrap_indices(
             rng, n_control_units, n_treated_units, self.n_bootstrap
