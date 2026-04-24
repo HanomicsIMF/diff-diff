@@ -446,6 +446,59 @@ def test_guide_api_strings_resolve_against_public_api():
     assert "validate Assumptions 3 and 7" not in text
     assert "not testable" in text
 
+    # EfficientDiD requires never-treated under BOTH assumption="PT-All"
+    # and assumption="PT-Post" — PT-Post is not a "drop the requirement"
+    # escape hatch. Only control_group="last_cohort" admits all-treated
+    # panels. Guard against guide drift back to the incorrect wording.
+    assert "PT-Post is the weaker" in text or "both" in text.lower()
+    # The old claim "switch to `assumption=\"PT-Post\"` to drop" must
+    # not reappear in any form.
+    assert 'switch to `assumption="PT-Post"` to drop' not in text
+
+    # Matrix covariate cells: SyntheticDiD accepts fit(covariates=...)
+    # and residualizes the outcome; ContinuousDiD.fit has no covariate
+    # surface. Guard the matrix rows against drift.
+    sdid_row = next(line for line in text.splitlines() if "`SyntheticDiD`" in line and "|" in line)
+    sdid_cells = [c.strip() for c in sdid_row.strip("|").split("|")]
+    assert sdid_cells[6] in ("✓", "partial"), (
+        "SyntheticDiD covariate-adjustment cell must be ✓ or partial "
+        f"(residualization path exists); got {sdid_cells[6]!r}"
+    )
+    cdid_row = next(line for line in text.splitlines() if "`ContinuousDiD`" in line and "|" in line)
+    cdid_cells = [c.strip() for c in cdid_row.strip("|").split("|")]
+    assert cdid_cells[6] == "✗", (
+        "ContinuousDiD covariate-adjustment cell must be ✗ "
+        f"(no covariate surface on fit()); got {cdid_cells[6]!r}"
+    )
+
+    # §5 API signatures: compute_pretrends_power takes a fitted results
+    # object (not df), plot_sensitivity takes SensitivityResults,
+    # plot_honest_event_study takes HonestDiDResults. Guard against
+    # drift back to the df-first / results-only signatures.
+    assert "`compute_pretrends_power(results" in text
+    assert "`plot_sensitivity(sensitivity_results" in text
+    assert "`plot_honest_event_study(honest_results" in text
+
+
+def test_min_pre_post_use_per_unit_observed_support():
+    """On an unbalanced panel where one treated unit is missing its
+    earliest pre-period, min_pre_periods must reflect that unit's actual
+    observed support. Previously _compute_pre_post used the global period
+    set, which could hide short-panel cases and suppress the short_pre_panel
+    alert."""
+    rows = []
+    for u in range(1, 21):
+        first_treat = 3
+        for t in range(0, 6):
+            if u == 1 and t <= 1:
+                continue
+            tr = 1 if t >= first_treat else 0
+            rows.append({"u": u, "t": t, "tr": tr, "y": float(u) + 0.1 * t})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.min_pre_periods == 1
+    assert "short_pre_panel" in _alert_codes(profile)
+
 
 def test_missing_unit_or_time_ids_are_dropped_consistently():
     """NaN values in unit or time must not push observation_coverage above

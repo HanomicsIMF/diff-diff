@@ -107,9 +107,11 @@ view. Every field below appears as a top-level key in that dict.
 - **`has_never_treated: bool`** - at least one unit has `treatment == 0`
   in every observed non-NaN row (applies to both binary and continuous
   treatment columns; for continuous this flags zero-dose control units).
-  Required by `SyntheticDiD` and `EfficientDiD` with `assumption="PT-All"`;
-  preferred-but-optional by `CallawaySantAnna` and
-  `ChaisemartinDHaultfoeuille`. Always `False` for `"categorical"`.
+  Required by `SyntheticDiD`, `SunAbraham`, and `EfficientDiD` under
+  both `assumption="PT-All"` and `assumption="PT-Post"` unless
+  `control_group="last_cohort"` is passed; preferred-but-optional by
+  `CallawaySantAnna` and `ChaisemartinDHaultfoeuille`. Always `False`
+  for `"categorical"`.
 - **`has_always_treated: bool`** - at least one unit has
   strictly-positive treatment in every observed non-NaN row. Such units
   provide no pre-treatment identification and are dropped by most
@@ -192,11 +194,11 @@ supported / out of scope; `warn` supported but with documented caveats;
 | `StackedDiD` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `WooldridgeDiD` (ETWFE) | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `EfficientDiD` | ✓ | ✓ | ✗ | ✗ | partial | ✓ | ✗ | ✗ | ✓ |
-| `SyntheticDiD` | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | partial |
+| `SyntheticDiD` | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ | ✗ | partial |
 | `TROP` | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | partial |
 | `TripleDifference` | ✓ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `StaggeredTripleDifference` | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `ContinuousDiD` | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `ContinuousDiD` | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
 | `HeterogeneousAdoptionDiD` | ✗ | partial | partial | ✗ | ✗ | ✗ | ✗ | ✓ | warn |
 
 **Footnotes.**
@@ -209,13 +211,16 @@ supported / out of scope; `warn` supported but with documented caveats;
   is one option; "not-yet-treated" is the other. Pick via the
   `control_group` argument. If `has_never_treated == False`, use
   `control_group="not_yet_treated"`.
-- `EfficientDiD` + never-treated: three paths handle an absent
-  never-treated cohort. `assumption="PT-All"` requires never-treated;
-  switch to `assumption="PT-Post"` to drop that requirement, or pass
+- `EfficientDiD` + never-treated: both `assumption="PT-All"` and
+  `assumption="PT-Post"` require actual never-treated units - PT-Post
+  is the weaker parallel-trends assumption but still uses never-treated
+  as the comparison group (REGISTRY.md `EfficientDiD` "Parallel Trends
+  -- two variants"). To admit an all-eventually-treated panel, pass
   `control_group="last_cohort"` to reclassify the latest treatment
-  cohort as a pseudo-never-treated control (and trim post-treatment
-  periods at/after its adoption). The `EfficientDiD.hausman_pretest`
-  classmethod picks between `PT-All` and `PT-Post` using a formal test.
+  cohort as a pseudo-never-treated control and trim post-treatment
+  periods at/after its adoption. The `EfficientDiD.hausman_pretest`
+  classmethod picks between `PT-All` and `PT-Post` on panels that do
+  have never-treated units.
 - `SyntheticDiD` + staggered: not supported. `fit()` raises
   `ValueError` on within-unit treatment variation; SDiD requires block
   treatment (all treated units adopt at the same time). For staggered
@@ -310,12 +315,13 @@ When `has_never_treated == False`:
   still fit, with the donor pool shrinking over time - check the
   pre-treatment coverage of the factor-model fit in the results
   diagnostics.
-- `EfficientDiD` with `assumption="PT-All"` requires it - switch to
-  `assumption="PT-Post"` to drop that requirement, or pass
-  `control_group="last_cohort"` to use the latest treatment cohort as a
-  pseudo-never-treated control (post-treatment periods at/after that
-  cohort's adoption are trimmed). Distinct from CallawaySantAnna's
-  `not_yet_treated` option.
+- `EfficientDiD` requires never-treated comparisons under both
+  `assumption="PT-All"` and `assumption="PT-Post"`. To admit an
+  all-treated panel, pass `control_group="last_cohort"` to use the
+  latest treatment cohort as a pseudo-never-treated control
+  (post-treatment periods at/after that cohort's adoption are
+  trimmed). Distinct from CallawaySantAnna's `not_yet_treated`
+  option.
 - `CallawaySantAnna` - use `control_group="not_yet_treated"` to use
   not-yet-treated units as the control pool.
 - `ChaisemartinDHaultfoeuille` - constructs switchers vs. non-switchers
@@ -427,16 +433,19 @@ section is the API-reference index.
   version; adds a "believable-magnitude" check against a power curve.
 - `equivalence_test_trends(df, ...)` - Bilinski-Hatfield-style
   equivalence test (alternative framing of the PT test).
-- `compute_pretrends_power(df, ...)` - standalone power analysis for the
-  PT test, useful when `min_pre_periods` is small.
+- `compute_pretrends_power(results, ...)` - standalone power analysis
+  for the PT test; takes a fitted `MultiPeriodDiDResults` (or
+  compatible event-study results object), not raw DataFrame. Useful
+  when `min_pre_periods` is small.
 
 ### Sensitivity / robustness
 
 - `compute_honest_did(results, ...)` - Rambachan-Roth (2023) honest DiD.
   Quantifies the sensitivity of ATT to parallel-trends violations.
   Outputs sensitivity bounds under smoothness restrictions.
-- `compute_pretrends_power(...)` - complementary tool for power-aware
-  pre-trends interpretation.
+- `compute_pretrends_power(results, ...)` - complementary tool for
+  power-aware pre-trends interpretation (same fitted-results-first
+  signature as above).
 
 ### Placebo tests
 
@@ -478,8 +487,12 @@ Some estimators expose diagnostics as methods on the result object:
 - `plot_group_effects(results, ...)`
 - `plot_group_time_heatmap(results, ...)`
 - `plot_staircase(results, ...)`
-- `plot_honest_event_study(results, ...)`
-- `plot_sensitivity(results, ...)`
+- `plot_honest_event_study(honest_results, ...)` - takes a
+  `HonestDiDResults` returned by `compute_honest_did`, not a fit
+  result directly.
+- `plot_sensitivity(sensitivity_results, ...)` - takes a
+  `SensitivityResults` object (the result of honest-DiD sensitivity
+  analysis), not a fit result directly.
 - `plot_synth_weights(results, ...)`
 - `plot_dose_response(results, ...)`
 - `plot_power_curve(...)`

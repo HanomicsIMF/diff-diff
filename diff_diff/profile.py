@@ -414,21 +414,33 @@ def _compute_pre_post(
     treatment: str,
     treatment_type: str,
 ) -> Tuple[Optional[int], Optional[int]]:
+    """Return (min_pre, min_post) across treated units using each unit's
+    observed (unit, time) support. On unbalanced panels this correctly
+    reflects the actual pre/post exposure of the least-supported treated
+    unit, rather than the global panel period set which could overstate
+    exposure and suppress short-panel alerts.
+    """
     if treatment_type != "binary_absorbing":
         return None, None
 
-    all_periods = sorted(df[time].unique().tolist())
+    support = df[[unit, time]].drop_duplicates()
     sorted_df = df.sort_values([unit, time])
     first_treat_per_unit = (
         sorted_df[sorted_df[treatment] == 1].groupby(unit, sort=False)[time].min()
     )
-    cohort_values = first_treat_per_unit.unique().tolist()
-    if not cohort_values:
+    if first_treat_per_unit.empty:
         return None, None
 
-    min_pre = min(sum(1 for p in all_periods if p < c) for c in cohort_values)
-    min_post = min(sum(1 for p in all_periods if p >= c) for c in cohort_values)
-    return int(min_pre), int(min_post)
+    pre_counts: List[int] = []
+    post_counts: List[int] = []
+    treated_units = first_treat_per_unit.index.tolist()
+    for u in treated_units:
+        c_u = first_treat_per_unit.loc[u]
+        unit_periods = support.loc[support[unit] == u, time]
+        pre_counts.append(int((unit_periods < c_u).sum()))
+        post_counts.append(int((unit_periods >= c_u).sum()))
+
+    return int(min(pre_counts)), int(min(post_counts))
 
 
 def _classify_outcome(valid: pd.Series) -> Tuple[bool, bool, bool]:
