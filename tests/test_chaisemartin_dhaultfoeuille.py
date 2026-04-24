@@ -4593,6 +4593,86 @@ class TestByPathBootstrap:
             f"Messages: {[str(w.message) for w in overflow_warnings]}"
         )
 
+    def test_nan_contract_extends_to_placebo_event_study_horizons(self):
+        """
+        Dynamic placebo horizons go through their own bootstrap
+        propagation block at
+        ``chaisemartin_dhaultfoeuille.py::placebo_event_study_dict``
+        and surface in ``results.placebo_event_study`` and
+        ``results.to_dataframe(level="event_study")`` (negative-horizon
+        rows). Pin the same NaN-on-invalid contract as the positive
+        horizons: ``n_bootstrap=1`` on a panel with valid placebo
+        eligibility must yield NaN SE / t / p / CI on every placebo
+        entry, not the analytical values populated in the build step
+        before bootstrap propagation.
+        """
+        # Longer panel (T=5) so placebo horizons have enough cells.
+        rng = np.random.default_rng(42)
+        rows = []
+        for g in (1, 2, 3, 4, 5, 6):
+            for t in range(5):
+                d = 1 if t >= 2 else 0
+                y = d * 2.0 + rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in (7, 8):
+            for t in range(5):
+                y = rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        data = pd.DataFrame(rows)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            est = ChaisemartinDHaultfoeuille(
+                n_bootstrap=1,  # forces non-finite bootstrap SE
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=True,  # enable placebo surface
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=2,
+            )
+
+        # If the panel + L_max produced placebo horizons, each must be
+        # NaN-consistent. If no placebos were produced, skip — the test
+        # relies on having at least one placebo row to exercise the
+        # propagation path.
+        if res.placebo_event_study is None or not res.placebo_event_study:
+            pytest.skip(
+                "placebo_event_study empty on this panel; cannot exercise "
+                "the placebo bootstrap propagation path"
+            )
+        for lag_key, entry in res.placebo_event_study.items():
+            assert np.isnan(entry["se"]), (
+                f"placebo_event_study[{lag_key}].se must be NaN under "
+                f"n_bootstrap=1; got {entry['se']}"
+            )
+            assert np.isnan(entry["t_stat"])
+            assert np.isnan(entry["p_value"])
+            lo, hi = entry["conf_int"]
+            assert np.isnan(lo) and np.isnan(hi)
+            # Effect may be NaN legitimately when N_pl_l == 0 for this
+            # lag (panel/horizon eligibility, not a bootstrap artifact).
+            # We only assert the inference-field NaN contract here.
+
+        # `to_dataframe(level="event_study")` surfaces these rows too.
+        # Negative-horizon rows must also show NaN in the inference
+        # columns.
+        df_es = res.to_dataframe(level="event_study")
+        negative_rows = df_es[df_es["horizon"] < 0]
+        if len(negative_rows) > 0:
+            for col in ("se", "t_stat", "p_value",
+                        "conf_int_lower", "conf_int_upper"):
+                assert negative_rows[col].isna().all(), (
+                    f"to_dataframe(level='event_study') negative-horizon "
+                    f"column {col!r} must be NaN under n_bootstrap=1; "
+                    f"got {negative_rows[col].tolist()}"
+                )
+
     def test_summary_footer_mixed_validity_surfaces_live_targets(self):
         """
         Mixed-validity case: overall_se / event_study_ses degenerate to

@@ -3034,8 +3034,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         if bootstrap_results.placebo_horizon_p_values
                         else None
                     )
+                    # Same bootstrap-contract rule as overall / joiners /
+                    # leavers / event_study_effects / path_effects above:
+                    # once the caller opts into n_bootstrap > 0, the
+                    # bootstrap output replaces analytical inference on
+                    # this surface regardless of outcome. Non-finite
+                    # bootstrap SE writes NaN to the full inference tuple
+                    # rather than silently leaving analytical values in
+                    # place — that would mix bootstrap-contract and
+                    # analytical-contract semantics in the same rendered
+                    # output (dynamic placebo rows appear in
+                    # `results.to_dataframe(level="event_study")` alongside
+                    # positive-horizon entries).
+                    eff = placebo_event_study_dict[neg_key]["effect"]
                     if bs_se is not None and np.isfinite(bs_se):
-                        eff = placebo_event_study_dict[neg_key]["effect"]
                         placebo_event_study_dict[neg_key]["se"] = bs_se
                         placebo_event_study_dict[neg_key]["p_value"] = (
                             bs_p if bs_p is not None else np.nan
@@ -3049,6 +3061,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             alpha=self.alpha,
                             df=_inference_df(_df_survey, resolved_survey),
                         )[0]
+                    else:
+                        placebo_event_study_dict[neg_key]["se"] = np.nan
+                        placebo_event_study_dict[neg_key]["p_value"] = np.nan
+                        placebo_event_study_dict[neg_key]["conf_int"] = (
+                            np.nan, np.nan,
+                        )
+                        placebo_event_study_dict[neg_key]["t_stat"] = np.nan
 
         # Phase 2: build normalized_effects with SE
         normalized_effects_out: Optional[Dict[int, Dict[str, Any]]] = None
