@@ -1,0 +1,594 @@
+# diff-diff: Autonomous-agent reference guide
+
+This guide is reference material for AI agents using diff-diff without
+human-in-the-loop supervision. It catalogs the library's estimators, names
+the design features each supports, explains how to read the
+`profile_panel()` output, and points at post-fit validation utilities and
+report schemas.
+
+It is a reference, not a decision tree. Multiple estimators usually fit a
+given panel; choosing between them involves trade-offs the cited literature
+discusses and that this guide does not pretend to resolve.
+
+**Pair this guide with:**
+- `get_llm_guide("practitioner")` - the Baker et al. (2025) 8-step validation
+  workflow in workflow-prose form.
+- `get_llm_guide("full")` - comprehensive API documentation for every public
+  function and class.
+- `profile_panel(df, unit=..., time=..., treatment=..., outcome=...)` - the
+  pre-fit describe utility whose output fields this guide's sections §2 and
+  §4 reason about.
+
+
+## Table of contents
+
+- §1. What this guide is (and is not)
+- §2. PanelProfile field reference
+- §3. Estimator-support matrix
+- §4. Estimator-choice reasoning by design feature
+- §5. Post-fit validation utilities
+- §6. How to read BusinessReport / DiagnosticReport output
+- §7. Glossary + citations
+- §8. Intentional omissions
+
+
+## §1. What this guide is (and is not)
+
+**What it is.** A reference you consult after running `profile_panel()` and
+before calling any estimator's `fit()`. The matrix in §3 and the per-design-
+feature discussions in §4 tell you which estimators are well-suited to the
+panel shape reported by the profile; the post-fit index in §5 tells you
+which diagnostics apply once you have a fitted result.
+
+**What it is not.** A deterministic recommender. No function in diff-diff
+returns "pick estimator X." This guide does not either. When several
+estimators fit a design, it enumerates them and names the trade-offs. The
+agent is responsible for weighing those trade-offs (often with the cited
+references in §7) and justifying the choice in the final write-up.
+
+**Why this shape.** A rules-engine recommender would lock in a policy that
+ages poorly as new estimators land and as the applied-econometrics
+literature evolves. Static reference material + descriptive profiling is
+less brittle: when a new estimator is added it gets a row in §3 and a
+paragraph in §4, without rewriting a dispatcher.
+
+
+## §2. PanelProfile field reference
+
+`profile_panel(df, unit=..., time=..., treatment=..., outcome=...)` returns
+a frozen `PanelProfile` dataclass. Call `.to_dict()` for a JSON-serializable
+view. Every field below appears as a top-level key in that dict.
+
+### Panel structure
+
+- **`n_units: int`** - count of distinct values in the `unit` column.
+- **`n_periods: int`** - count of distinct values in the `time` column.
+- **`n_obs: int`** - total rows in the panel.
+- **`is_balanced: bool`** - true iff `n_obs == n_units * n_periods`, i.e.
+  every unit is observed in every period.
+- **`observation_coverage: float`** - `n_obs / (n_units * n_periods)` in
+  `[0, 1]`. A value below `0.70` also triggers the
+  `panel_highly_unbalanced` alert.
+
+### Treatment variation
+
+- **`treatment_type: str`** - classification of the treatment column.
+  Exactly one of:
+    - `"binary_absorbing"`: numeric with values in {0, 1}; each unit's
+      treatment sequence (ordered by `time`) is weakly monotone
+      non-decreasing. The canonical DiD setting.
+    - `"binary_non_absorbing"`: values in {0, 1} but at least one unit
+      switches from 1 back to 0. Only `ChaisemartinDHaultfoeuille` handles
+      this natively; the other absorbing-only estimators would misapply.
+    - `"continuous"`: numeric with more than two distinct values (e.g., a
+      dose, a discrete-integer partial-adoption score). Use
+      `ContinuousDiD` or `HeterogeneousAdoptionDiD`.
+    - `"categorical"`: non-numeric dtype (object / category) or bool dtype.
+      Often indicates a treatment arm. Encode each arm as a binary
+      indicator and fit separately, or use a multi-treatment workflow
+      outside the current estimator suite.
+- **`is_staggered: bool`** - true iff treatment is `binary_absorbing` and
+  at least two distinct first-treatment periods are observed. Drives the
+  choice between classic DiD/TWFE and staggered-robust estimators.
+- **`n_cohorts: int`** - for `binary_absorbing`, the number of distinct
+  first-treatment periods (cohorts). Zero for other `treatment_type`
+  values.
+- **`cohort_sizes: Mapping[Any, int]`** - map from first-treatment period
+  to cohort size (number of units adopting at that time). Empty for
+  non-absorbing / continuous / categorical treatments.
+- **`has_never_treated: bool`** - at least one unit has `treatment == 0`
+  in every observed period. Required by `SyntheticDiD` and
+  `EfficientDiD` with `assumption="PT-All"`; preferred-but-optional by
+  `CallawaySantAnna` and `ChaisemartinDHaultfoeuille`.
+- **`has_always_treated: bool`** - at least one unit has
+  `treatment == 1` in every observed period. Always-treated units
+  provide no pre-treatment identification and are dropped by most
+  estimators.
+
+### Timing
+
+- **`first_treatment_period: Optional[Any]`** - earliest first-treatment
+  period observed (for `binary_absorbing`); `None` otherwise.
+- **`last_treatment_period: Optional[Any]`** - latest first-treatment
+  period observed; `None` otherwise.
+- **`min_pre_periods: Optional[int]`** - across cohorts, the smallest
+  number of pre-treatment periods. Low values (< 3) fire the
+  `short_pre_panel` alert and limit power for parallel-trends tests.
+- **`min_post_periods: Optional[int]`** - across cohorts, the smallest
+  number of post-treatment periods. Low values limit event-study
+  dynamics.
+
+### Outcome
+
+- **`outcome_dtype: str`** - the pandas dtype name (e.g. `"float64"`,
+  `"int64"`, `"bool"`).
+- **`outcome_is_binary: bool`** - outcome has exactly two distinct
+  non-NaN values, both in {0, 1}. For binary outcomes the linear
+  parallel-trends assumption is restrictive; consider the logit/log-odds
+  alternative in the Roth/Sant'Anna (2023) survey.
+- **`outcome_has_zeros: bool`** - any non-NaN outcome equals zero.
+  Relevant for log-transform diagnostics.
+- **`outcome_has_negatives: bool`** - any non-NaN outcome is negative.
+  Relevant for log-transform diagnostics.
+- **`outcome_missing_fraction: float`** - share of rows where the
+  outcome column is NaN, in `[0, 1]`.
+- **`outcome_summary: Mapping[str, float]`** - `{min, max, mean, std}`
+  computed with NaN-skipping; empty for non-numeric outcomes.
+
+### Alerts
+
+`alerts: tuple[Alert, ...]` is a list of factual observations. Each
+`Alert` has `code`, `severity` (`"info"` or `"warn"`), `message`, and
+`observed` (the numerical or boolean value that tripped the alert).
+
+The v1 alert catalogue is listed below. Alerts never name a specific
+estimator. Severity `"warn"` means the observation is likely relevant to
+estimator choice or to the interpretation of diagnostics; `"info"` means
+it is descriptive context.
+
+| Alert code | Severity | Fires when |
+|---|---|---|
+| `min_cohort_size_below_10` | warn | smallest cohort has fewer than 10 units |
+| `only_one_cohort` | info | all treated units adopt simultaneously |
+| `short_pre_panel` | warn | `min_pre_periods < 3` |
+| `short_post_panel` | info | `min_post_periods < 3` |
+| `no_never_treated` | info | every unit is eventually treated |
+| `has_always_treated_units` | info | some units are treated in every observed period |
+| `all_units_treated_simultaneously` | info | single cohort and no never-treated group |
+| `panel_highly_unbalanced` | warn | `observation_coverage < 0.70` |
+| `only_two_periods` | info | `n_periods == 2` |
+| `outcome_looks_binary_but_dtype_float` | info | outcome takes {0, 1} values but is stored as float |
+
+
+## §3. Estimator-support matrix
+
+Rows are estimator classes exported from `diff_diff`. Columns are design
+features derivable from `PanelProfile`. Cells: `✓` supported; `✗` not
+supported / out of scope; `warn` supported but with documented caveats;
+`partial` supported subject to restrictions discussed in §4.
+
+| Estimator | binary absorbing | staggered | continuous | triple-diff | never-treated required | covariate adjustment | few-treated (synthetic) | heterogeneous adoption | clustered SE |
+|---|---|---|---|---|---|---|---|---|---|
+| `DifferenceInDifferences` | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `MultiPeriodDiD` | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `TwoWayFixedEffects` | ✓ | warn | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `CallawaySantAnna` | ✓ | ✓ | ✗ | ✗ | partial | ✓ | ✗ | ✗ | ✓ |
+| `SunAbraham` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `ChaisemartinDHaultfoeuille` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `ImputationDiD` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `TwoStageDiD` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `StackedDiD` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `WooldridgeDiD` (ETWFE) | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `EfficientDiD` | ✓ | ✓ | ✗ | ✗ | partial | ✓ | ✗ | ✗ | ✓ |
+| `SyntheticDiD` | ✓ | partial | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | partial |
+| `TROP` | ✓ | partial | ✗ | ✗ | ✓ | partial | ✓ | ✗ | partial |
+| `TripleDifference` | ✓ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `StaggeredTripleDifference` | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `ContinuousDiD` | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `HeterogeneousAdoptionDiD` | ✗ | partial | partial | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+
+**Footnotes.**
+- `TwoWayFixedEffects` + staggered: fits but mixes positive and negative
+  cohort-weights that violate the ATT interpretation; consult
+  `BaconDecomposition` to quantify. Prefer any staggered-robust
+  estimator (CS, SA, dCDH, Imputation, TwoStage, ETWFE) for a staggered
+  design.
+- `CallawaySantAnna` + never-treated: the "never-treated" control group
+  is one option; "not-yet-treated" is the other. Pick via the
+  `control_group` argument. If `has_never_treated == False`, use
+  `control_group="notyettreated"`.
+- `EfficientDiD` + never-treated: `assumption="PT-All"` requires it;
+  `assumption="PT-Post"` does not. The `Hausman.hausman_pretest`
+  classmethod picks between them using a formal test.
+- `SyntheticDiD` + staggered: native support is limited; the
+  single-event estimator is the canonical case. Multi-event extensions
+  use a cohort-level fit loop - check the estimator's docstring.
+- `TROP` covariate adjustment: supported through the global-method
+  path, not the local-method path.
+- `HeterogeneousAdoptionDiD` continuous: supports partial-adoption
+  intensity as a covariate-like continuous variable; not a pure
+  dose-response estimator - use `ContinuousDiD` for that.
+
+
+## §4. Estimator-choice reasoning by design feature
+
+Each subsection names a design feature and lists estimators applicable to
+it with the most important trade-offs. Multiple paths are always
+explicit; no subsection says "pick estimator X."
+
+### §4.1 Classic 2×2 DiD (binary absorbing, two periods, no staggering)
+
+When `treatment_type == "binary_absorbing"`, `n_periods == 2`, and
+`is_staggered == False`, the classic Card-and-Krueger 2×2 design applies.
+Most estimators in the library produce the same point estimate in this
+case; the choice between them is mostly about output shape:
+
+- `DifferenceInDifferences` for a minimal results object.
+- `TwoWayFixedEffects` if you want the equivalent two-way-FE regression
+  output (coefficient table, VCV, etc.). Identical to DiD in the 2×2
+  case.
+- `TripleDifference` if a second comparison dimension is available
+  (DDD) - see §4.6.
+
+### §4.2 Multi-period single-cohort (event-study without staggering)
+
+When `is_staggered == False` and `n_periods > 2`, event-study dynamics
+can be estimated but cohort-mixing bias is moot:
+
+- `MultiPeriodDiD` - per-period effect, standard event-study plot.
+- `TwoWayFixedEffects` with event-time dummies - similar output, no
+  forbidden comparisons because there is only one cohort.
+
+### §4.3 Staggered adoption (multi-cohort binary absorbing)
+
+When `is_staggered == True`, classic TWFE mixes positive- and
+negative-weighted cohort comparisons (Goodman-Bacon 2021,
+de Chaisemartin & d'Haultfoeuille 2020). Use one of the staggered-robust
+estimators:
+
+- `CallawaySantAnna` - group-time ATTs aggregated to ES / overall / cohort
+  dimensions. Flexible control-group choice (never-treated vs.
+  not-yet-treated). Covariate adjustment via doubly-robust (DR), IPW,
+  or regression-adjustment (RA).
+- `SunAbraham` - interaction-weighted estimator; closely tied to
+  two-way-FE output, computationally cheap, produces event-time
+  coefficients.
+- `ChaisemartinDHaultfoeuille` - DID_M / DID_l estimators robust to
+  non-absorbing treatment (see §4.5) and to spillover designs.
+- `ImputationDiD` (Borusyak, Jaravel, Spiess) - imputation-based,
+  efficient under homoskedasticity, produces an imputation-based
+  residual at the observation level.
+- `TwoStageDiD` (Gardner) - two-stage residualize-then-regress.
+- `StackedDiD` - stacked event-study regressions, one subpanel per
+  cohort. Conservative interpretation.
+- `WooldridgeDiD` (ETWFE) - extended-TWFE with cohort-by-time-by-
+  covariates interactions; heterogeneous covariate-by-cohort effects.
+- `EfficientDiD` (Arkhangelsky-Imbens) - asymptotically efficient under
+  either `PT-All` or `PT-Post`; use `Hausman.hausman_pretest` to pick.
+
+Diagnostic: `bacon_decompose(df, ...)` shows the weight allocation of a
+TWFE fit to 2×2 comparison types. Forbidden-comparison weight > 10% is a
+strong signal that the TWFE estimate is biased.
+
+### §4.4 No never-treated group
+
+When `has_never_treated == False`:
+
+- `SyntheticDiD` requires a never-treated donor pool - not applicable.
+- `TROP` needs never-treated units for the factor-model fit - not
+  applicable in the standard setup.
+- `EfficientDiD` with `assumption="PT-All"` requires it - use
+  `assumption="PT-Post"` instead.
+- `CallawaySantAnna` - use `control_group="notyettreated"` to use
+  not-yet-treated units as the control pool.
+- `ChaisemartinDHaultfoeuille` - constructs switchers vs. non-switchers
+  directly; no never-treated requirement.
+- TWFE / `MultiPeriodDiD` / `ImputationDiD` / `TwoStageDiD` /
+  `StackedDiD` / `WooldridgeDiD` - use the last-treated or untreated-
+  until-late units as implicit controls; estimators do not error, but
+  consider whether the implicit control structure is what you want.
+
+### §4.5 Non-absorbing binary treatment (treatment switches back to 0)
+
+When `treatment_type == "binary_non_absorbing"`:
+
+- `ChaisemartinDHaultfoeuille` is the only estimator in the library
+  that treats this natively. Switcher / non-switcher comparisons are
+  its primitive object.
+- Other estimators assume absorbing treatment and will produce
+  estimates whose interpretation is unclear. Do not use them without
+  a well-argued reason.
+
+### §4.6 Triple-difference design (DDD)
+
+When a second cross-cutting comparison axis exists (e.g., policy hits
+some states and some demographic subgroups within states):
+
+- `TripleDifference` - classic two-period DDD.
+- `StaggeredTripleDifference` - staggered DDD, robust to cohort-mixing.
+
+Triple-difference is not automatically detected by `profile_panel`;
+it requires the caller to identify the third comparison axis. If a
+`group` covariate in the panel drives differential exposure, DDD is
+worth considering.
+
+### §4.7 Continuous / dose-response treatment
+
+When `treatment_type == "continuous"`:
+
+- `ContinuousDiD` - dose-response treatment, estimates average
+  causal response (ACR). Supports B-spline bandwidth selection.
+- `HeterogeneousAdoptionDiD` - partial-adoption intensity, with a
+  scalar first-stage adoption summary. Useful when adoption is
+  graded rather than binary.
+
+### §4.8 Few treated units (one or a handful)
+
+When few treated units exist (not a separate `PanelProfile` field yet,
+but derivable from `cohort_sizes` + `has_never_treated`):
+
+- `SyntheticDiD` - synthetic-control-meets-DiD. Requires never-treated
+  donors and sufficient pre-treatment periods (Arkhangelsky et al. 2021).
+- `TROP` - factor-model-based generalized synthetic control. Similar
+  donor-pool requirements; supports more complex factor structures.
+
+Classical DiD estimators will still produce estimates, but inference is
+unreliable with very small treated groups; cluster-robust SE relies on
+the number of clusters, not the number of treated units. Bootstrap
+methods in the library are preferred.
+
+### §4.9 Heterogeneous adoption intensity
+
+When adoption varies in strength across units (partial-adoption settings,
+intensity of exposure differs):
+
+- `HeterogeneousAdoptionDiD` - Phase 3 tools include Stute / Yatchew-
+  Härdle / QUG pre-tests for the first-stage model. The estimator's
+  workflow returns an aggregated ATT plus a per-cohort Pierce-Schott-
+  style validation.
+
+### §4.10 Repeated cross-sections (no panel structure)
+
+`profile_panel` assumes long-format panel data. When the same units are
+not observed across time (true repeated cross-sections), most estimators
+remain applicable but:
+
+- Clustered SE must cluster on the unit proxy (state, region) rather
+  than individual.
+- The `CallawaySantAnna` estimator has an explicit repeated-cross-
+  section mode; see its `panel` kwarg.
+
+
+## §5. Post-fit validation utilities
+
+After any `fit()`, the Baker et al. (2025) 8-step workflow recommends a
+diagnostic sequence. The library exposes utilities covering each step.
+Consult `get_llm_guide("practitioner")` for the workflow-prose form; this
+section is the API-reference index.
+
+### Parallel-trends and pre-trends
+
+- `check_parallel_trends(df, ...)` - exported from `diff_diff`.
+  Regression-based visual-plus-numeric test on pre-treatment periods.
+  Returns a structured result with p-value and per-period coefficients.
+- `check_parallel_trends_robust(df, ...)` - Roth (2022) power-adjusted
+  version; adds a "believable-magnitude" check against a power curve.
+- `equivalence_test_trends(df, ...)` - Bilinski-Hatfield-style
+  equivalence test (alternative framing of the PT test).
+- `compute_pretrends_power(df, ...)` - standalone power analysis for the
+  PT test, useful when `min_pre_periods` is small.
+
+### Sensitivity / robustness
+
+- `compute_honest_did(results, ...)` - Rambachan-Roth (2023) honest DiD.
+  Quantifies the sensitivity of ATT to parallel-trends violations.
+  Outputs sensitivity bounds under smoothness restrictions.
+- `compute_pretrends_power(...)` - complementary tool for power-aware
+  pre-trends interpretation.
+
+### Placebo tests
+
+- `run_placebo_test(df, ...)` - generic placebo runner.
+- `run_all_placebo_tests(df, ...)` - batch runner over predefined
+  placebos.
+- `placebo_timing_test(df, ...)` - false placebo-treatment time.
+- `placebo_group_test(df, ...)` - placebo treatment-group assignment.
+- `permutation_test(df, ...)` - Fisher-style exact permutation.
+- `leave_one_out_test(df, ...)` - refit dropping one unit at a time.
+
+### Estimator-native diagnostics
+
+Some estimators expose diagnostics as methods on the result object:
+
+- `SyntheticDiDResults.in_time_placebo()` - placebo treatment applied
+  in a pre-treatment period.
+- `SyntheticDiDResults.sensitivity_to_zeta_omega()` - regularization-
+  hyperparameter sensitivity.
+- `SyntheticDiDResults.get_weight_concentration()` - donor-weight
+  concentration summary.
+- `CallawaySantAnna.diagnose_propensity(df, ...)` - propensity-score
+  overlap check when using DR / IPW controls.
+- `Hausman.hausman_pretest(df, ...)` - chooses between `PT-All` and
+  `PT-Post` for `EfficientDiD`.
+- `did_had_pretest_workflow(df, ...)` - bundled QUG / Stute / Yatchew-
+  Härdle pre-test battery for `HeterogeneousAdoptionDiD`.
+
+### Decomposition and weight auditing
+
+- `bacon_decompose(df, ...)` - Goodman-Bacon (2021) TWFE weight
+  decomposition. Returns a `BaconDecompositionResults` with the weight
+  on forbidden (later-vs-earlier) comparisons. Run before interpreting
+  any TWFE staggered fit.
+
+### Event-study plotting
+
+- `plot_event_study(results, ...)`
+- `plot_group_effects(results, ...)`
+- `plot_group_time_heatmap(results, ...)`
+- `plot_staircase(results, ...)`
+- `plot_honest_event_study(results, ...)`
+- `plot_sensitivity(results, ...)`
+- `plot_synth_weights(results, ...)`
+- `plot_dose_response(results, ...)`
+- `plot_power_curve(...)`
+
+Event-study plots are also a diagnostic - pre-treatment coefficients
+close to zero support parallel trends.
+
+
+## §6. How to read BusinessReport / DiagnosticReport output
+
+`BusinessReport(results)` and `DiagnosticReport(results)` are experimental
+in the 3.2 line. Their schema is versioned (`BUSINESS_REPORT_SCHEMA_VERSION`
+and `DIAGNOSTIC_REPORT_SCHEMA_VERSION`, both `"2.0"` at time of writing)
+and expected to evolve. Treat `.to_dict()` output as the agent-legible
+contract; the prose renderers (`summary()`, `full_report()`) are derived
+from it.
+
+### BusinessReport `to_dict()` schema (v2.0)
+
+Top-level keys:
+
+- `schema_version: str` - e.g. `"2.0"`.
+- `target_parameter: dict` - what the headline scalar represents.
+  Fields: `name` (e.g. `"ATT"`, `"DID_M"`, `"dose-response"`),
+  `definition` (human-readable explanation), `aggregation` (machine
+  tag: `"att_overall"`, `"did_m"`, `"did_or_twfe"`, ...),
+  `headline_attribute` (the raw result attribute the headline renders
+  from), `reference` (REGISTRY.md citation string).
+- `headline: dict` - the main point estimate plus framing.
+- `assumptions: dict` - named assumptions relied on (parallel trends,
+  no anticipation, SUTVA, ...).
+- `pretrends: dict` - pre-trends test result with verdict string
+  (e.g. `"clean"`, `"inconclusive"`, `"violated"`), p-value, power
+  assessment if available.
+- `main_result: dict` - point estimate, SE, CI, significance.
+- `robustness: dict` - sensitivity and placebo summaries if available.
+- `sample_summary: dict` - sample size and coverage details.
+- `caveats: list[str]` - free-text caveats generated from failed
+  checks.
+
+### DiagnosticReport `to_dict()` schema (v2.0)
+
+- `schema_version: str`.
+- `estimator_type: str` - the result class name.
+- `checks: dict` - per-check status. Candidate keys:
+  `parallel_trends`, `pretrends_power`, `sensitivity`, `bacon`,
+  `design_effect`, `heterogeneity`, `epv`, `estimator_native`,
+  `placebo`. Each value is a dict describing what was run and its
+  outcome. Not all checks apply to all estimators; see the
+  applicability matrix in `diff_diff.diagnostic_report`.
+
+### Forthcoming schema additions (not yet shipped)
+
+- `sanity_checks: dict` - machine-legible pass / warn / fail summary
+  (forthcoming Wave).
+- `mismatch_warnings: list[dict]` - post-hoc estimator-mismatch
+  detection (forthcoming Wave).
+
+
+## §7. Glossary + citations
+
+**ATT**: Average Treatment Effect on the Treated. The target parameter
+of most DiD estimators.
+
+**Parallel trends**: counterfactual trends in treated and control
+outcomes would have moved together absent treatment. Untestable directly;
+pre-treatment dynamics are a necessary (not sufficient) indicator.
+
+**No anticipation**: units do not respond to treatment before it occurs.
+If plausible, test via pre-treatment event-study coefficients.
+
+**SUTVA**: Stable Unit Treatment Value Assumption. Rules out spillovers
+and interference between units.
+
+**Forbidden comparison**: in TWFE, a comparison where already-treated
+units serve as controls for later-treated units. Weights are negative
+and the resulting estimate can flip sign vs. the true ATT.
+
+**Cohort / treatment timing**: first-treatment period for an
+absorbing-treatment unit. Units sharing a cohort share an adoption date.
+
+**Staggered adoption**: two or more cohorts present in the panel.
+
+**Doubly-robust (DR) / IPW / RA**: three covariate-adjustment strategies
+in `CallawaySantAnna`. DR is consistent if either the propensity model
+or the outcome model is correctly specified.
+
+### Primary references
+
+- **Baker, Andrew, Brantly Callaway, Scott Cunningham, Andrew
+  Goodman-Bacon, and Pedro H. C. Sant'Anna (2025).** "Difference-in-
+  Differences Designs: A Practitioner's Guide." arXiv:2503.13323.
+  The 8-step workflow and best-practice framing. Ships as
+  `get_llm_guide("practitioner")`.
+- **Roth, Jonathan, Pedro H. C. Sant'Anna, Alyssa Bilinski, and John
+  Poe (2023).** "What's Trending in Difference-in-Differences? A
+  Synthesis of the Recent Econometrics Literature." Journal of
+  Econometrics 235(2): 2218-2244. Canonical-assumption framing;
+  classification of estimator relaxations.
+- **Goodman-Bacon, Andrew (2021).** "Difference-in-Differences with
+  Variation in Treatment Timing." Journal of Econometrics
+  225(2): 254-277. TWFE weight decomposition;
+  `bacon_decompose` implements this.
+- **Callaway, Brantly, and Pedro H. C. Sant'Anna (2021).**
+  "Difference-in-Differences with Multiple Time Periods." Journal of
+  Econometrics 225(2): 200-230. Group-time ATT.
+- **Sun, Liyang, and Sarah Abraham (2021).** "Estimating Dynamic
+  Treatment Effects in Event Studies with Heterogeneous Treatment
+  Effects." Journal of Econometrics 225(2): 175-199. IW estimator.
+- **de Chaisemartin, Clément, and Xavier d'Haultfoeuille (2020).**
+  "Two-Way Fixed Effects Estimators with Heterogeneous Treatment
+  Effects." American Economic Review 110(9): 2964-2996. DID_M
+  estimator.
+- **Borusyak, Kirill, Xavier Jaravel, and Jann Spiess (2024).**
+  "Revisiting Event-Study Designs: Robust and Efficient Estimation."
+  Review of Economic Studies 91(6): 3253-3285. Imputation estimator.
+- **Gardner, John (2022).** "Two-Stage Differences in Differences."
+  arXiv:2207.05943. Two-stage estimator.
+- **Wooldridge, Jeffrey M. (2021).** "Two-Way Fixed Effects, the Two-
+  Way Mundlak Regression, and Difference-in-Differences Estimators."
+  ETWFE formulation.
+- **Arkhangelsky, Dmitry, Susan Athey, David Hirshberg, Guido Imbens,
+  and Stefan Wager (2021).** "Synthetic Difference-in-Differences."
+  American Economic Review 111(12): 4088-4118. SDiD estimator.
+- **Rambachan, Ashesh, and Jonathan Roth (2023).** "A More Credible
+  Approach to Parallel Trends." Review of Economic Studies
+  90(5): 2555-2591. HonestDiD sensitivity.
+- **Bilinski, Alyssa, and Laura A. Hatfield (2019).** "Nothing to See
+  Here? Non-Inferiority Approaches to Parallel Trends and Other
+  Model Assumptions." arXiv:1805.03273. Equivalence test.
+- **Sant'Anna, Pedro H. C., and Jun Zhao (2020).** "Doubly Robust
+  Difference-in-Differences Estimators." Journal of Econometrics
+  219(1): 101-122. DR adjustment.
+
+### Online resources
+
+- **psantanna.com/did-resources** - practitioner checklist + reading
+  list maintained by Pedro Sant'Anna.
+- **bcallaway11.github.io/did** - `did` R package tutorials
+  (Callaway-Sant'Anna).
+
+
+## §8. Intentional omissions
+
+This guide does **not**:
+
+- Recommend a specific estimator for a specific dataset. When multiple
+  estimators fit, §4 lists them and names the trade-offs; the choice is
+  the agent's.
+- Enumerate every possible design edge case. The literature cited in §7
+  covers them; this guide is a navigation aid, not a substitute.
+- Promise forward-compatibility of the BR / DR schema or the alert
+  catalogue. Treat these as experimental until the 12-item foundation-
+  gap list closes.
+- Replace `bacon_decompose()`, `compute_honest_did()`, or any of the
+  estimator-native diagnostics. Post-fit validation is mandatory, not
+  optional, and belongs in the final write-up.
+- Cover methods outside diff-diff's estimator suite (e.g., instrumental
+  variables, regression discontinuity, synthetic control for a single
+  treated unit). When those apply, point the user at dedicated
+  libraries.
+
+**If in doubt, consult the primary references in §7 and use
+`get_llm_guide("practitioner")` for the Baker et al. workflow.**
