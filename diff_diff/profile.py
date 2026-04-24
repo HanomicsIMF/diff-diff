@@ -192,13 +192,21 @@ def profile_panel(
     ``"categorical"``; cast to ``int`` if you want binary-treatment
     profiling.
 
-    ``has_never_treated`` and ``has_always_treated`` are computed
-    generically across numeric treatment types (both binary and
-    continuous). ``has_never_treated`` fires when some unit has
-    ``treatment == 0`` in every observed non-NaN row; for continuous
-    panels this flags zero-dose controls. ``has_always_treated`` fires
-    when some unit has strictly-positive treatment in every observed
-    non-NaN row. Both are always ``False`` for ``"categorical"``.
+    ``has_never_treated`` is computed across both binary and
+    continuous numeric treatment types: some unit has ``treatment ==
+    0`` in every observed non-NaN row. For binary this flags the
+    clean-control group; for continuous this flags zero-dose controls
+    (required by ``ContinuousDiD``). Always ``False`` for
+    ``"categorical"``.
+
+    ``has_always_treated`` has binary-only semantics: some unit has
+    ``treatment == 1`` in every observed non-NaN row (no pre-treatment
+    information in the DiD sense). For ``"continuous"`` and
+    ``"categorical"`` treatment this field is always ``False``
+    regardless of dose positivity — pre-treatment periods on
+    continuous DiD are determined by the separate ``first_treat``
+    column passed to ``ContinuousDiD.fit``, not by whether the dose
+    is strictly positive.
 
     Rows with ``NaN`` in ``unit`` or ``time`` are dropped up front and
     surfaced via the ``missing_id_rows_dropped`` alert; all subsequent

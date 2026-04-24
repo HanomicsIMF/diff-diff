@@ -260,6 +260,16 @@ supported / out of scope; `warn` supported but with documented caveats;
   intensity as a continuous first-stage variable; not a pure
   dose-response estimator - use `ContinuousDiD` for that.
 
+**Balanced-panel eligibility.** The following estimators hard-reject
+unbalanced panels (each raises `ValueError` at `fit()` when a unit is
+missing any period): `ContinuousDiD`, `EfficientDiD`, `SyntheticDiD`,
+`HeterogeneousAdoptionDiD`. Gate these on
+`PanelProfile.is_balanced == True`; if `False`, pre-process with
+`diff_diff.prep.balance_panel()` or pick a balance-tolerant
+estimator from the remaining rows (CS/SA/dCDH/Imputation/TwoStage/
+Stacked/ETWFE all accept unbalanced input, with some caveats in their
+own docs).
+
 
 ## §4. Estimator-choice reasoning by design feature
 
@@ -317,7 +327,8 @@ estimators:
   covariates interactions; heterogeneous covariate-by-cohort effects.
 - `EfficientDiD` (Chen, Sant'Anna, Xie 2025) - asymptotically efficient
   under either `PT-All` or `PT-Post`; use `EfficientDiD.hausman_pretest`
-  to pick.
+  to pick. Requires a balanced panel (`PanelProfile.is_balanced ==
+  True`); `fit()` raises `ValueError` on unbalanced input.
 
 Diagnostic: `bacon_decompose(df, ...)` shows the weight allocation of a
 TWFE fit to 2×2 comparison types. Forbidden-comparison weight > 10% is a
@@ -382,12 +393,13 @@ worth considering.
 When `treatment_type == "continuous"`:
 
 - `ContinuousDiD` (Callaway, Goodman-Bacon, Sant'Anna 2024) -
-  continuous / dose-response treatment. **Two eligibility
+  continuous / dose-response treatment. **Three eligibility
   prerequisites**: (a) zero-dose control units must exist
   (`P(D=0) > 0`) because Remark 3.1 (lowest-dose-as-control) is not
-  yet implemented, and (b) dose must be time-invariant per unit (rule
-  out panels where `PanelProfile.treatment_varies_within_unit ==
-  True`). `fit()` raises `ValueError` in either case. Note that
+  yet implemented, (b) dose must be time-invariant per unit (rule out
+  panels where `PanelProfile.treatment_varies_within_unit == True`),
+  and (c) the panel must be balanced (`PanelProfile.is_balanced ==
+  True`). `fit()` raises `ValueError` in any of the three cases. Note that
   staggered adoption IS supported natively (adoption timing is
   expressed via the `first_treat` column, not via within-unit dose
   variation). The estimator exposes several dose-indexed targets that
@@ -411,6 +423,8 @@ but derivable from `cohort_sizes` + `has_never_treated`):
 - `SyntheticDiD` - synthetic-control-meets-DiD. Requires never-treated
   donors and sufficient pre-treatment periods (Arkhangelsky et al. 2021).
   Block treatment only: all treated units must adopt at the same time.
+  Requires a balanced panel (`PanelProfile.is_balanced == True`);
+  `fit()` raises `ValueError` and points at `balance_panel()`.
 - `TROP` - factor-model-based generalized synthetic control. Uses every
   unit untreated at period `t` as the donor pool (via the absorbing-state
   D matrix); supports staggered adoption and more complex factor
@@ -426,7 +440,9 @@ methods in the library are preferred.
 When adoption varies in strength across units (partial-adoption settings,
 intensity of exposure differs):
 
-- `HeterogeneousAdoptionDiD` - targets a Weighted Average Slope (WAS)
+- `HeterogeneousAdoptionDiD` - requires a balanced panel
+  (`PanelProfile.is_balanced == True`; `fit()` raises `ValueError`
+  when any unit is missing a period). Targets a Weighted Average Slope (WAS)
   on single-period Heterogeneous Adoption Designs where no genuinely
   untreated group exists (paper Equation 2 / Theorem 1). The
   `target_parameter` attribute on the results object is literally

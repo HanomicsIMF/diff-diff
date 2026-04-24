@@ -624,6 +624,38 @@ def test_guide_api_strings_resolve_against_public_api():
     assert '`"pass"` / `"warn"` / `"inconclusive"`' not in text
     assert "verdict" in text.lower()
 
+    # Balanced-panel eligibility: ContinuousDiD, EfficientDiD,
+    # SyntheticDiD, and HeterogeneousAdoptionDiD all hard-reject
+    # unbalanced panels at fit() time. The guide must surface this
+    # so agents gate these estimators on PanelProfile.is_balanced
+    # before selecting them.
+    assert "is_balanced" in text, (
+        "Guide must mention PanelProfile.is_balanced as an eligibility "
+        "check for balance-sensitive estimators"
+    )
+    for estimator in (
+        "ContinuousDiD",
+        "EfficientDiD",
+        "SyntheticDiD",
+        "HeterogeneousAdoptionDiD",
+    ):
+        idx = 0
+        found = False
+        while idx < len(text):
+            loc = text.find(estimator, idx)
+            if loc < 0:
+                break
+            window = text[max(0, loc - 400) : loc + 400]
+            if "balanced" in window.lower() or "is_balanced" in window:
+                found = True
+                break
+            idx = loc + 1
+        assert found, (
+            f"Guide must mention a balanced-panel constraint near the "
+            f"{estimator!r} bullet / row (hard-rejects unbalanced panels "
+            "at fit time)"
+        )
+
 
 def test_min_pre_post_use_per_unit_observed_support():
     """On an unbalanced panel where one treated unit is missing its
