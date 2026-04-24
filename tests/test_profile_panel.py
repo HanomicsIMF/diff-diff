@@ -676,6 +676,7 @@ def test_guide_api_strings_resolve_against_public_api():
         "EfficientDiD",
         "SyntheticDiD",
         "HeterogeneousAdoptionDiD",
+        "StaggeredTripleDifference",
     ):
         idx = 0
         found = False
@@ -763,11 +764,31 @@ def test_guide_api_strings_resolve_against_public_api():
     rcs_section_start = text.find("§4.10 Repeated cross-sections")
     assert rcs_section_start >= 0
     rcs_section = text[rcs_section_start : rcs_section_start + 2500]
-    for panel_only in ("EfficientDiD", "HeterogeneousAdoptionDiD"):
+    for panel_only in (
+        "EfficientDiD",
+        "HeterogeneousAdoptionDiD",
+        "StaggeredTripleDifference",
+    ):
         assert panel_only in rcs_section, (
             f"§4.10 must explicitly name {panel_only!r} as panel-only "
             "so RCS data is not routed to it"
         )
+
+    # The explicit RCS-capable bullet list must NOT put
+    # StaggeredTripleDifference next to the RCS-support language.
+    # The estimator has no panel=False mode and fit() rejects
+    # unbalanced input; only TripleDifference (non-staggered) is
+    # cross-sectional-DDD-capable.
+    explicit_support_block = text.find("Explicit RCS support", rcs_section_start)
+    rejected_block = text.find("Explicitly rejected for RCS", rcs_section_start)
+    assert 0 <= explicit_support_block < rejected_block, (
+        "§4.10 must separate an Explicit RCS support list from the " "Explicitly rejected list"
+    )
+    explicit_segment = text[explicit_support_block:rejected_block]
+    assert "StaggeredTripleDifference" not in explicit_segment, (
+        "StaggeredTripleDifference must NOT appear in the Explicit RCS "
+        "support list — it is panel-only and balance-enforced."
+    )
 
 
 def test_min_pre_post_use_per_unit_observed_support():

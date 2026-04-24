@@ -277,7 +277,8 @@ supported / out of scope; `warn` supported but with documented caveats;
 **Balanced-panel eligibility.** The following estimators require
 exactly one observation per `(unit, time)` cell with every unit
 observed in every period: `ContinuousDiD`, `EfficientDiD`,
-`SyntheticDiD`, `HeterogeneousAdoptionDiD`. Gate these on BOTH
+`SyntheticDiD`, `HeterogeneousAdoptionDiD`,
+`StaggeredTripleDifference`. Gate these on BOTH
 `PanelProfile.is_balanced == True` AND the absence of the
 `duplicate_unit_time_rows` alert (`is_balanced` is computed from the
 unique-key support and stays `True` when duplicates exist; the
@@ -510,10 +511,11 @@ Explicit RCS support in this library:
 
 - `CallawaySantAnna(panel=False)` - repeated-cross-section mode per
   REGISTRY.md §CallawaySantAnna; use this variant on RCS data.
-- `TripleDifference` / `StaggeredTripleDifference` - DDD cross-sectional
-  use cases are documented in `docs/choosing_estimator.rst`; the DDD
-  estimators do not require within-unit tracking when the third
-  comparison axis carries the identification.
+- `TripleDifference` - DDD cross-sectional use cases are documented
+  in `docs/choosing_estimator.rst`; the two-period DDD estimator does
+  not require within-unit tracking when the third comparison axis
+  carries the identification. The staggered DDD variant is panel-only
+  and listed separately below.
 
 Explicitly rejected for RCS (panel-only):
 
@@ -524,6 +526,10 @@ Explicitly rejected for RCS (panel-only):
 - `SyntheticDiD` - requires balanced panel with per-unit donor matching.
 - `ContinuousDiD` - requires balanced panel with per-unit constant
   dose.
+- `StaggeredTripleDifference` - panel-only; `fit()` has no
+  `panel=False` mode and rejects duplicate / unbalanced
+  `(unit, time)` structure. For cross-sectional DDD data use
+  `TripleDifference` instead.
 
 Treat other estimators in this guide as panel-only unless their own
 docs explicitly say otherwise. When routing, also:
