@@ -426,6 +426,26 @@ def test_guide_api_strings_resolve_against_public_api():
     # not rule out the supported path.
     assert 'control_group="last_cohort"' in text
 
+    # SunAbraham requires a never-treated cohort; the fit path raises a
+    # ValueError when none exists. Guard the matrix / prose contract so
+    # the guide cannot drift back to claiming SunAbraham is optional.
+    sun_abraham_row = next(
+        line for line in text.splitlines() if "`SunAbraham`" in line and "|" in line
+    )
+    cells = [cell.strip() for cell in sun_abraham_row.strip("|").split("|")]
+    # Column order: estimator, binary_absorbing, staggered, continuous,
+    # triple-diff, never-treated-required, covariate, few-treated,
+    # heterogeneous-adoption, clustered-SE.
+    assert cells[5] == "✓", (
+        "SunAbraham matrix row must mark never-treated-required=✓ " f"(row: {sun_abraham_row!r})"
+    )
+
+    # HAD Assumption 3 is not testable per REGISTRY.md; the guide must
+    # not claim otherwise.
+    assert "Assumption 3" in text  # mentioned as untestable, not as validated
+    assert "validate Assumptions 3 and 7" not in text
+    assert "not testable" in text
+
 
 def test_missing_unit_or_time_ids_are_dropped_consistently():
     """NaN values in unit or time must not push observation_coverage above
@@ -444,3 +464,41 @@ def test_missing_unit_or_time_ids_are_dropped_consistently():
     assert "missing_id_rows_dropped" in codes
     drop_alert = next(a for a in profile.alerts if a.code == "missing_id_rows_dropped")
     assert drop_alert.observed == 5
+
+
+def test_row_with_both_ids_missing_counted_once():
+    """A row with BOTH unit and time NaN must count as one dropped row,
+    not two. Previously `isna().sum()` summed the two columns and
+    double-counted rows missing both identifiers."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(n_units=20, periods=range(0, 4), first_treat=first_treat)
+    df_both_missing = df.copy()
+    df_both_missing.loc[0, "u"] = np.nan
+    df_both_missing.loc[0, "t"] = np.nan
+    profile = profile_panel(df_both_missing, unit="u", time="t", treatment="tr", outcome="y")
+    drop_alert = next(a for a in profile.alerts if a.code == "missing_id_rows_dropped")
+    assert drop_alert.observed == 1
+
+
+def test_empty_dataframe_raises_value_error():
+    """Direct empty input must raise, not silently return a 'balanced'
+    profile with zero units/periods."""
+    df = pd.DataFrame({"u": [], "t": [], "tr": [], "y": []})
+    with pytest.raises(ValueError, match="empty"):
+        profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+
+
+def test_empty_after_id_drop_raises_value_error():
+    """If every row has a missing unit or time identifier, the panel is
+    empty after the drop; raise rather than returning is_balanced=True
+    on zero rows."""
+    df = pd.DataFrame(
+        {
+            "u": [np.nan, np.nan],
+            "t": [0, 1],
+            "tr": [0, 1],
+            "y": [0.1, 0.2],
+        }
+    )
+    with pytest.raises(ValueError, match="no rows remain"):
+        profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")

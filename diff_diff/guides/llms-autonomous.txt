@@ -185,7 +185,7 @@ supported / out of scope; `warn` supported but with documented caveats;
 | `MultiPeriodDiD` | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `TwoWayFixedEffects` | ✓ | warn | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `CallawaySantAnna` | ✓ | ✓ | ✗ | ✗ | partial | ✓ | ✗ | ✗ | ✓ |
-| `SunAbraham` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `SunAbraham` | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ |
 | `ChaisemartinDHaultfoeuille` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `ImputationDiD` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `TwoStageDiD` | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
@@ -280,7 +280,8 @@ estimators:
   or regression-adjustment (RA).
 - `SunAbraham` - interaction-weighted estimator; closely tied to
   two-way-FE output, computationally cheap, produces event-time
-  coefficients.
+  coefficients. Requires a never-treated cohort (`fit` raises a
+  `ValueError` when none exists).
 - `ChaisemartinDHaultfoeuille` - DID_M / DID_l estimators robust to
   non-absorbing treatment (see §4.5) and to spillover designs.
 - `ImputationDiD` (Borusyak, Jaravel, Spiess) - imputation-based,
@@ -388,11 +389,15 @@ intensity of exposure differs):
   `"WAS"` for Design 1' and `"WAS_d_lower"` for Design 1 with lower-dose
   comparison under Assumption 6. `fit(aggregate="overall")` (Phase 2a)
   returns a single scalar WAS; `fit(aggregate="event_study")` (Phase
-  2b) returns per-event-time WAS estimates. Phase 3 pre-tests
-  (`qug_test`, `stute_test`, `stute_joint_pretest`, `yatchew_hr_test`)
-  and the `did_had_pretest_workflow()` bundle validate Assumptions 3
-  and 7. Not ATT-shaped; do not relabel the headline as ATT in report
-  text.
+  2b) returns per-event-time WAS estimates. `did_had_pretest_workflow()`
+  runs the paper's three-step TWFE-suitability battery: (1) QUG null
+  via `qug_test`, (2) Assumption 7 pre-trends via `stute_test` /
+  `stute_joint_pretest` (event-study path only; the two-period overall
+  path flags this step as deferred), and (3) linearity of
+  `E[ΔY | D_2]` via `stute_test` / `yatchew_hr_test`. Assumption 3
+  (uniform continuity / no extensive-margin jump) is not testable; the
+  pre-test battery does not and cannot validate it. Not ATT-shaped; do
+  not relabel the headline as ATT in report text.
 
 ### §4.10 Repeated cross-sections (no panel structure)
 

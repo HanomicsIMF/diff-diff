@@ -211,10 +211,21 @@ def profile_panel(
     """
     _validate_columns(df, unit=unit, time=time, treatment=treatment, outcome=outcome)
 
-    n_rows_with_missing_id = int(df[unit].isna().sum() + df[time].isna().sum())
+    input_row_count = int(len(df))
+    if input_row_count == 0:
+        raise ValueError("profile_panel: DataFrame is empty; at least one row is required.")
+
+    missing_id_mask = cast(pd.Series, df[[unit, time]].isna().any(axis=1))
+    n_rows_with_missing_id = int(missing_id_mask.sum())
     if n_rows_with_missing_id > 0:
-        df = df.dropna(subset=[unit, time])
+        df = df.loc[~missing_id_mask]
     n_obs = int(len(df))
+    if n_obs == 0:
+        raise ValueError(
+            f"profile_panel: no rows remain after dropping "
+            f"{n_rows_with_missing_id} row(s) with missing unit or time "
+            "identifier; at least one valid row is required."
+        )
 
     n_units = int(df[unit].nunique())
     n_periods = int(df[time].nunique())
