@@ -595,45 +595,59 @@ class TestBootstrapSE:
             f"{r_placebo.se:.6f} on exchangeable DGP (rel diff {rel_diff:.4f})"
         )
 
-    def test_bootstrap_raises_on_pweight_survey(self):
-        """Survey + bootstrap raises NotImplementedError (pweight-only path).
+    def test_bootstrap_succeeds_on_pweight_survey(self):
+        """Survey + bootstrap succeeds (pweight-only) (PR #352).
 
-        Rao-Wu rescaled weights composed with paper-faithful Frank-Wolfe
-        re-estimation is a separate derivation that is not yet implemented;
-        the guard lives upstream in ``fit()`` before the bootstrap dispatcher.
+        The weighted-FW path treats per-control survey weights as
+        constant per draw (no Rao-Wu rescaling, since no PSU). ATT is
+        finite, SE is positive, variance_method is preserved.
         """
         from diff_diff.survey import SurveyDesign
         df = _make_panel(n_control=20, n_treated=3, seed=42)
         df["wt"] = 1.0
-        with pytest.raises(NotImplementedError, match="bootstrap"):
-            SyntheticDiD(
-                variance_method="bootstrap", n_bootstrap=50, seed=1
-            ).fit(
-                df, outcome="outcome", treatment="treated",
-                unit="unit", time="period",
-                post_periods=[5, 6, 7],
-                survey_design=SurveyDesign(weights="wt"),
-            )
+        result = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt"),
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.se > 0
+        assert result.variance_method == "bootstrap"
 
-    def test_bootstrap_raises_on_full_design_survey(self):
-        """Survey + bootstrap with strata/PSU raises NotImplementedError.
+    def test_bootstrap_succeeds_on_full_design_survey(self):
+        """Survey + bootstrap with strata/PSU succeeds via Rao-Wu (PR #352).
 
-        No SDID variance method currently supports strata/PSU/FPC; the guard
-        on line ~300 of ``fit()`` rejects the combination unconditionally.
+        Composes per-draw Rao-Wu rescaled weights with the weighted-FW
+        helpers (compute_sdid_unit_weights_survey /
+        compute_time_weights_survey). Asserts finite SE and survey_metadata
+        records the strata/PSU layout.
         """
         from diff_diff.survey import SurveyDesign
         df = _make_panel(n_control=20, n_treated=3, seed=42)
         df["wt"] = 1.0
         df["stratum"] = df["unit"] % 2
-        with pytest.raises(NotImplementedError, match="strata"):
-            SyntheticDiD(
-                variance_method="bootstrap", n_bootstrap=50, seed=1
-            ).fit(
-                df, outcome="outcome", treatment="treated",
-                unit="unit", time="period",
-                post_periods=[5, 6, 7],
-                survey_design=SurveyDesign(weights="wt", strata="stratum"),
-            )
+        # Globally unique PSU labels (avoids needing nest=True). Each unit
+        # gets its own PSU id; stratum partitions the PSUs into two groups.
+        df["psu"] = df["unit"]
+        result = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=50, seed=1
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
+        )
+        assert np.isfinite(result.att)
+        assert np.isfinite(result.se)
+        assert result.se > 0
+        assert result.variance_method == "bootstrap"
+        assert result.survey_metadata is not None
+        assert result.survey_metadata.n_strata is not None
+        assert result.survey_metadata.n_psu is not None
 
     def test_bootstrap_summary_shows_replications(self, ci_params):
         """result.summary() shows "Bootstrap replications" line for bootstrap.
@@ -656,6 +670,29 @@ class TestBootstrapSE:
         summary = r.summary()
         assert "Bootstrap replications" in summary
         assert str(n_boot) in summary
+
+    def test_bootstrap_single_psu_returns_nan(self):
+        """Unstratified single-PSU survey design returns NaN SE (PR #352).
+
+        Resampling one PSU yields the same subset every draw, so the
+        bootstrap distribution is degenerate and the SE is unidentified.
+        ``_bootstrap_se`` short-circuits to (NaN, []) for this case rather
+        than emitting a misleading SE estimate. Recovered from the pre-PR
+        #351 fixed-weight Rao-Wu branch (commit 91082e5).
+        """
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=20, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        df["psu_single"] = 0  # all units in the same PSU; no strata
+        sdid = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=1)
+        result = sdid.fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt", psu="psu_single"),
+        )
+        assert np.isnan(result.se), \
+            f"single-PSU unstratified bootstrap should return NaN SE, got {result.se}"
 
     def test_bootstrap_fw_nonconvergence_warning_fires_under_rust(self, monkeypatch):
         """Aggregate FW non-convergence warning surfaces on the Rust backend.
