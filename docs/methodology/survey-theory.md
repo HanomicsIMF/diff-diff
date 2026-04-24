@@ -700,7 +700,7 @@ Each estimator uses one of three variance strategies under survey designs:
 | EfficientDiD | TSL on EIFs | all weight types |
 | ContinuousDiD | TSL sandwich | all weight types |
 | StackedDiD | TSL sandwich | pweight only |
-| SyntheticDiD | Bootstrap only | Not IF-amenable (Section 4.2a) |
+| SyntheticDiD | Bootstrap / permutation / PSU-LOO | Not IF-amenable (Section 4.2a); all three variance methods support full strata/PSU/FPC designs |
 | TROP | Bootstrap only | Not IF-amenable (Section 4.2a) |
 | BaconDecomposition | Diagnostic only | Weighted descriptives, no inference |
 

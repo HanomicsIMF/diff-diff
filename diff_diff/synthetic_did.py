@@ -834,6 +834,7 @@ class SyntheticDiD(DifferenceInDifferences):
             unique_treated_strata, treated_counts = np.unique(
                 _strata_treated_eff, return_counts=True
             )
+            has_nondegenerate_stratum = False
             for h, n_t_h in zip(unique_treated_strata, treated_counts):
                 n_c_h = int(np.sum(_strata_control_eff == h))
                 if n_c_h == 0:
@@ -859,6 +860,39 @@ class SyntheticDiD(DifferenceInDifferences):
                         "same full survey design via weighted-FW + Rao-Wu "
                         "without a permutation-feasibility constraint)."
                     )
+                if n_c_h > int(n_t_h):
+                    has_nondegenerate_stratum = True
+            # Case D: every treated stratum is exact-count
+            # (``n_c_h == n_t_h``). The stratified permutation support
+            # collapses to a single allocation — every placebo draw
+            # reproduces the same pseudo-treated set, giving a degenerate
+            # null (SE ≈ 0 up to FP noise, no meaningful sampling
+            # distribution). Reject at fit-time rather than silently
+            # reporting a near-zero SE; the overall permutation support is
+            # ``∏_h C(n_c_h, n_t_h)``, so at least one treated stratum must
+            # satisfy ``n_c_h > n_t_h`` for the test to have ≥2 distinct
+            # allocations.
+            if not has_nondegenerate_stratum:
+                detail = ", ".join(
+                    f"stratum {h}: n_c={int(np.sum(_strata_control_eff == h))}, "
+                    f"n_t={int(n_t_h)}"
+                    for h, n_t_h in zip(unique_treated_strata, treated_counts)
+                )
+                raise ValueError(
+                    "Stratified-permutation placebo support is degenerate: "
+                    "every treated-containing stratum has exactly "
+                    "n_controls == n_treated, so the within-stratum "
+                    "permutation yields a single allocation across all "
+                    f"draws ({detail}). The resulting placebo distribution "
+                    "collapses to one point and SE is not a meaningful "
+                    "null estimate. At least one treated stratum must "
+                    "have n_controls > n_treated for the permutation to "
+                    "have ≥2 distinct allocations. Either rebalance the "
+                    "panel, or use variance_method='bootstrap' (which "
+                    "supports the same full survey design via weighted-FW "
+                    "+ Rao-Wu without a permutation-feasibility "
+                    "constraint)."
+                )
 
         # Compute standard errors on normalized Y, rescale to original units.
         # Variance procedures resample / permute indices (independent of Y

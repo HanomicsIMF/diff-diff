@@ -3497,9 +3497,12 @@ class TestCoverageMCArtifact:
                         f"missing alpha {alpha_key} in {dgp}/{method} rejection_rate"
                     )
 
-        # PR #352: stratified_survey is bootstrap-only — placebo and
-        # jackknife reject strata/PSU/FPC at fit-time, so their blocks
-        # report n_successful_fits=0. Bootstrap must have the full 500
+        # Post-PR #365: stratified_survey runs bootstrap (validation
+        # gate) + jackknife (anti-conservative but reported for
+        # transparency); placebo is skipped on this DGP because its
+        # cohort packs all treated into stratum 1 which has 0 never-
+        # treated units (Case B at fit-time), so its block reports
+        # n_successful_fits=0. Bootstrap must have the full 500
         # successful fits + finite rejection rate at α=0.05 inside the
         # calibration gate [0.02, 0.10].
         survey_block = payload["per_dgp"]["stratified_survey"]

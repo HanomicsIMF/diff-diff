@@ -208,27 +208,36 @@ class TestSyntheticDiDSurvey:
         assert "Survey Design" in summary
         assert "Bootstrap replications" in summary
 
-    def test_full_design_placebo_succeeds(self, sdid_survey_data, survey_design_full):
+    def test_full_design_placebo_succeeds(self, sdid_survey_data_full_design):
         """Placebo variance with full design now succeeds (restored capability).
 
         Stratified-permutation allocator draws pseudo-treated indices
         within each stratum containing treated units; weighted-FW
-        re-estimates ω and λ per draw on the pseudo-panel. See REGISTRY
-        §SyntheticDiD "Note (survey + placebo composition)".
+        re-estimates ω and λ per draw on the pseudo-panel. Uses the
+        non-degenerate full-design fixture (stratum 0 has 5 treated +
+        10 controls, so the within-stratum permutation has ``C(10, 5) =
+        252`` distinct allocations — SE reflects a genuine null
+        distribution, not FP noise from a single-allocation collapse).
+        See REGISTRY §SyntheticDiD "Note (survey + placebo composition)".
         """
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
         est = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
         result = est.fit(
-            sdid_survey_data,
+            sdid_survey_data_full_design,
             outcome="outcome",
             treatment="treated",
             unit="unit",
             time="time",
             post_periods=[6, 7, 8, 9],
-            survey_design=survey_design_full,
+            survey_design=sd,
         )
         assert np.isfinite(result.att)
         assert np.isfinite(result.se)
-        assert result.se > 0
+        # SE must be materially positive, not sub-ULP FP noise from a
+        # degenerate single-allocation permutation (R4 P1 regression —
+        # the prior fixture had n_c == n_t in stratum 0, yielding
+        # SE ≈ 1e-16; the Case D guard below rejects that shape).
+        assert result.se > 1e-6
         assert result.variance_method == "placebo"
         assert result.survey_metadata is not None
         assert result.survey_metadata.n_strata is not None
@@ -789,6 +798,36 @@ class TestSDIDSurveyPlaceboFullDesign:
                 time="time",
                 post_periods=[6, 7, 8, 9],
                 survey_design=sd,
+            )
+
+    def test_placebo_full_design_raises_on_exact_count_stratum(
+        self, sdid_survey_data, survey_design_full
+    ):
+        """R4 P1 fix: Case D — every treated stratum has n_c == n_t.
+
+        The ``sdid_survey_data`` fixture has 5 treated units + 5 controls
+        in stratum 0 and 10 controls in stratum 1 (with no treated
+        units). For placebo stratified permutation, the pseudo-treated
+        set within stratum 0 is chosen from 5 controls, sized 5 — only
+        one allocation is possible. Every placebo draw reproduces the
+        same pseudo-treated set, the placebo null collapses to a
+        single point, and SE = FP noise (~1e-16). The new Case D guard
+        rejects this design at fit-time rather than silently reporting
+        a near-zero SE that would pass a naïve ``result.se > 0`` check.
+        """
+        est = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        with pytest.raises(
+            ValueError,
+            match=r"permutation yields a single allocation across all draws",
+        ):
+            est.fit(
+                sdid_survey_data,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=survey_design_full,
             )
 
     def test_placebo_full_design_raises_on_undersupplied_stratum(
