@@ -41,11 +41,13 @@ Composite workflow:
   QUG at ``F`` + joint pre-trends Stute across earlier pre-periods +
   joint homogeneity-linearity Stute across post-periods. Closes the
   paper step-2 gap and does NOT emit the step-2-deferred caveat in the
-  verdict when at least one earlier pre-period is available. Step 4
-  (alternative linearity via Yatchew) is subsumed by joint Stute on
-  this path; the paper does not derive a joint Yatchew variant, so
+  verdict when at least one earlier pre-period is available. The
+  step-3 alternative (Yatchew-HR linearity) is subsumed by joint Stute
+  on this path; the paper does not derive a joint Yatchew variant, so
   users who need Yatchew robustness under multi-period data can call
   :func:`yatchew_hr_test` on each ``(base, post)`` pair manually.
+  (Step 4 in the paper's workflow is the decision itself - "use TWFE
+  if none of the tests rejects" - not a separate test.)
 
 Eq. 18 linear-trend detrending (paper Section 5.2 Pierce-Schott
 application, published p=0.51) is the one remaining deferred item;
@@ -1845,9 +1847,10 @@ def _compose_verdict_event_study(
       follow-up" caveat - this PR closes that gap.
     - Step 3 (Assumption 8 linearity/homogeneity): runs via
       ``homogeneity_joint`` (joint Stute only; no joint Yatchew variant
-      exists in the paper).
-    - Step 4 (alternative linearity via Yatchew): not run on the
-      event-study path; adjudicated by joint Stute above.
+      exists in the paper). The step-3 alternative Yatchew-HR test is
+      subsumed by joint Stute on this path. (Paper step 4 is the
+      decision itself - "use TWFE if none of the tests rejects" - not
+      a separate diagnostic, so it has no code path here.)
 
     Priority:
     1. Any conclusive test rejecting → primary verdict bundles each
@@ -2202,7 +2205,19 @@ def stute_joint_pretest(
     # Precompute OLS projection matrix once: same X per bootstrap draw,
     # so (X'X)^-1 X' is constant across iterations. Keeps refit O(Gp)
     # per draw without changing semantics from the literal paper form.
-    XtX_inv_Xt = np.linalg.solve(X.T @ X, X.T)
+    # Catch rank-deficient designs explicitly rather than surfacing a
+    # raw ``np.linalg.LinAlgError`` to direct callers of the public
+    # residuals-in core; matches the front-door validation style of
+    # the other guards in this function.
+    try:
+        XtX_inv_Xt = np.linalg.solve(X.T @ X, X.T)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError(
+            f"design_matrix is rank-deficient (singular X^T X); cannot "
+            f"compute the OLS projection (X^T X)^-1 X^T for the "
+            f"bootstrap refit. Check for duplicate or linearly-"
+            f"dependent columns. shape={X.shape}."
+        ) from exc
 
     rng = np.random.default_rng(seed)
     bootstrap_S = np.empty(n_bootstrap, dtype=np.float64)
@@ -2462,9 +2477,9 @@ def joint_homogeneity_test(
     data : pd.DataFrame
     outcome_col, dose_col, time_col, unit_col : str
     post_periods : list
-        Non-empty list of post-period labels (all ``>= base_period`` by
-        time order; each with ``D > 0`` for some unit, i.e. at least one
-        treated unit per horizon).
+        Non-empty list of post-period labels (all strictly ``>
+        base_period`` by chronological order; each with ``D > 0`` for
+        some unit, i.e. at least one treated unit per horizon).
     base_period : period label
         The reference period (last pre-period in the event-study
         convention). Must not be in ``post_periods``.

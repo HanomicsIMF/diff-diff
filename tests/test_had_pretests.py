@@ -1586,6 +1586,27 @@ class TestStuteJointPretest:
         assert set(result.per_horizon_stats.keys()) == set(resid.keys())
         assert all(np.isnan(v) for v in result.per_horizon_stats.values())
 
+    def test_singular_design_matrix_raises_valueerror(self):
+        """R7 P2: rank-deficient custom design_matrix (e.g. duplicate
+        columns) must raise an explicit ValueError from the front-door,
+        not a raw np.linalg.LinAlgError from the internal solve()."""
+        G = 30
+        rng = np.random.default_rng(801)
+        d = rng.uniform(0.0, 1.0, G)
+        resid = {"h0": rng.normal(0.0, 1.0, G), "h1": rng.normal(0.0, 1.0, G)}
+        fit = {"h0": np.zeros(G), "h1": np.zeros(G)}
+        # design_matrix with two identical columns (rank deficient).
+        singular_X = np.column_stack([d, d])
+        with pytest.raises(ValueError, match="rank-deficient"):
+            stute_joint_pretest(
+                residuals_by_horizon=resid,
+                fitted_by_horizon=fit,
+                doses=d,
+                design_matrix=singular_X,
+                n_bootstrap=199,
+                seed=0,
+            )
+
     def test_stringified_key_collision_raises(self):
         """R4 P1 regression: two raw keys whose str() representations
         collide (e.g. int 1 and str '1', or int 1 and float 1.0) must
