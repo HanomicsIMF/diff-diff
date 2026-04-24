@@ -456,6 +456,34 @@ class SyntheticDiD(DifferenceInDifferences):
             w_treated = resolved_survey_unit.weights[n_control_for_split:].astype(
                 np.float64
             )
+            # Front-door positive-mass guard (PR #355 R7 P1). Survey weights
+            # are non-negative post-resolve() (survey.py L171-L176 rejects
+            # negatives), but all-zero mass on either arm is reachable — the
+            # user can assign unit survey weights of 0 to every treated or
+            # every control unit, which encodes an unidentified target
+            # population. The fit-time ATT formulas downstream
+            # (``np.average(..., weights=w_treated)`` around L551-L582 and
+            # ``omega_eff = unit_weights * w_control`` in the bootstrap /
+            # placebo / jackknife dispatchers) would otherwise hit 0/0
+            # normalization or propagate NaNs silently. The bootstrap loop
+            # already has per-draw zero-mass retries for degenerate resamples
+            # (PR #355 R2 P0); this guard is the fit-time analogue.
+            if w_control.sum() <= 0:
+                raise ValueError(
+                    "Survey-weighted control arm has zero total mass "
+                    f"(sum of w_control = {w_control.sum():.3g}). "
+                    "Every control unit has survey weight 0, so the target "
+                    "population is unidentified. Drop units with zero weight, "
+                    "or omit survey_design if unweighted estimation is intended."
+                )
+            if w_treated.sum() <= 0:
+                raise ValueError(
+                    "Survey-weighted treated arm has zero total mass "
+                    f"(sum of w_treated = {w_treated.sum():.3g}). "
+                    "Every treated unit has survey weight 0, so the target "
+                    "population is unidentified. Drop units with zero weight, "
+                    "or omit survey_design if unweighted estimation is intended."
+                )
         else:
             w_treated = None
             w_control = None

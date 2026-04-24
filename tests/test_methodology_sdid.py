@@ -842,6 +842,73 @@ class TestBootstrapSE:
                 ),
             )
 
+    def test_fit_raises_on_zero_total_treated_survey_mass(self):
+        """Fit-time positive-mass guard: zero treated survey mass raises.
+
+        ``SurveyDesign.resolve()`` accepts non-negative unit weights
+        (``survey.py`` L171-L176), so a user can legitimately assign unit
+        survey weights of 0 to every treated unit — encoding an
+        unidentified target population. Without the front-door guard, the
+        fit-time survey-weighted ATT (``np.average(Y, weights=w_treated)``)
+        would hit ``0/0`` and silently propagate NaN into the bootstrap
+        loop, defeating the per-draw zero-mass retry (PR #355 R2 P0).
+        Regression against PR #355 R7 P1: the guard must fire before the
+        bootstrap is even dispatched.
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, seed=42)
+        # Every treated unit gets weight 0; controls keep positive weight.
+        df["wt"] = np.where(df["treated"] == 1, 0.0, 1.0)
+        with pytest.raises(ValueError, match=r"treated arm has zero total mass"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt"),
+            )
+
+    def test_fit_raises_on_zero_total_control_survey_mass(self):
+        """Fit-time positive-mass guard: zero control survey mass raises.
+
+        Mirror of the treated-arm case (PR #355 R7 P1). Downstream
+        ``omega_eff = unit_weights * w_control / (unit_weights * w_control).sum()``
+        would hit 0/0; the guard front-doors.
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, seed=42)
+        df["wt"] = np.where(df["treated"] == 0, 0.0, 1.0)
+        with pytest.raises(ValueError, match=r"control arm has zero total mass"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt"),
+            )
+
+    def test_fit_raises_on_zero_treated_mass_under_full_design(self):
+        """Fit-time positive-mass guard fires under full strata/PSU/FPC too.
+
+        The guard sources w_control / w_treated from the **resolved
+        unit-level** design (PR #355 R4 P0), so zero total treated mass
+        under a strata/PSU/FPC configuration must fire the same front-door
+        ValueError as the pweight-only case (PR #355 R7 P1).
+        """
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=10, n_treated=3, seed=42)
+        df["wt"] = np.where(df["treated"] == 1, 0.0, 1.0)
+        df["stratum"] = df["unit"] % 2
+        df["psu"] = df["unit"]
+        with pytest.raises(ValueError, match=r"treated arm has zero total mass"):
+            SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=1).fit(
+                df, outcome="outcome", treatment="treated",
+                unit="unit", time="period",
+                post_periods=[5, 6, 7],
+                survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
+            )
+
     def test_bootstrap_scale_invariance_under_pweight_rescaling(self):
         """Survey-bootstrap SE / p / CI are invariant to a global pweight rescaling.
 

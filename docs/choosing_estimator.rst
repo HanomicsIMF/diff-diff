@@ -783,7 +783,7 @@ estimation. The depth of support varies by estimator:
      - Full (analytical)
      - Multiplier at PSU
    * - ``SyntheticDiD``
-     - pweight only (placebo / jackknife); full (bootstrap)
+     - pweight only
      - Via bootstrap
      - --
      - Hybrid pairs-bootstrap + Rao-Wu rescaled (bootstrap only)
