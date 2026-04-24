@@ -2317,6 +2317,22 @@ class SyntheticDiD(DifferenceInDifferences):
             else:
                 f_h = 0.0
 
+            # R6 P1 fix: full-census short-circuit. When f_h >= 1 the
+            # Rust & Rao factor ``(1 - f_h) <= 0`` zeros this stratum's
+            # contribution to total variance regardless of within-
+            # stratum dispersion. Skip the delete-one feasibility loop
+            # entirely — otherwise an undefined LOO inside a full-
+            # census stratum (e.g., all treated in the dropped PSU)
+            # would mistakenly short-circuit the whole design to
+            # ``SE=NaN``, even though the stratum contributes zero by
+            # legitimate design. Mark as contributing (so the overall
+            # result returns ``SE=0`` or a finite non-zero from other
+            # strata, not ``NaN`` from the "no stratum contributed"
+            # branch).
+            if f_h >= 1.0:
+                any_stratum_contributed = True
+                continue
+
             tau_loo_h: List[float] = []
             stratum_has_undefined_replicate = False
             for j in psus_in_h:

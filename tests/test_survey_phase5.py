@@ -1202,6 +1202,46 @@ class TestSDIDSurveyJackknifeFullDesign:
         assert np.isfinite(result.se)
         assert result.se == 0.0
 
+    def test_jackknife_full_design_full_census_short_circuits_undefined_loo(
+        self, sdid_survey_data_full_design
+    ):
+        """R6 P1 fix: full-census stratum short-circuits before undefined-LOO.
+
+        ``sdid_survey_data_full_design`` packs all 5 treated units into
+        stratum 0 PSU 0 → LOO PSU 0 removes all treated → undefined
+        replicate → would normally return ``SE=NaN``. But if every
+        stratum has ``fpc = n_h`` (full census, ``f_h = 1`` →
+        ``(1 - f_h) = 0``), every stratum's variance contribution is
+        zero regardless of LOO feasibility. The correct jackknife SE
+        in that case is exactly zero (full census: no sampling
+        variance), not NaN from an undefined replicate that doesn't
+        actually enter the formula.
+        """
+        df = sdid_survey_data_full_design.copy()
+        # Each stratum has n_h=3 PSUs → fpc=3 gives f_h=1 per stratum.
+        df["fpc_full_census"] = 3.0
+
+        sd = SurveyDesign(
+            weights="weight",
+            strata="stratum",
+            psu="psu",
+            fpc="fpc_full_census",
+        )
+        est = SyntheticDiD(variance_method="jackknife", seed=42)
+        # Fit must succeed without the undefined-LOO warning, and SE
+        # must be exactly zero (not NaN and not a non-zero number).
+        result = est.fit(
+            df,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd,
+        )
+        assert np.isfinite(result.se)
+        assert result.se == 0.0
+
     def test_jackknife_full_design_lonely_psu_adjust_raises(
         self, sdid_survey_data_jk_well_formed
     ):

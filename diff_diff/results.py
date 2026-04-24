@@ -1109,9 +1109,25 @@ class SyntheticDiDResults:
         """
         Per-unit leave-one-out ATT from the jackknife variance pass.
 
-        Requires ``variance_method='jackknife'``; raises ValueError otherwise.
+        Requires ``variance_method='jackknife'`` (``ValueError`` otherwise)
+        and unit-level LOO granularity (``NotImplementedError`` for the
+        full-design survey jackknife path, which uses PSU-level LOO).
 
-        The underlying values come from the jackknife loops in
+        Available on:
+        * non-survey jackknife fits (classical Arkhangelsky Algorithm 3).
+        * pweight-only survey jackknife fits (Algorithm 3 with post-hoc
+          ω_eff composition; PSU labels in ``survey_metadata`` come from
+          implicit-PSU metadata but the LOO remains unit-level).
+
+        Blocked on:
+        * full-design survey jackknife fits (strata / PSU / FPC set in
+          ``SurveyDesign``) — the underlying replicates are PSU-level
+          ``τ̂_{(h,j)}`` (Rust & Rao 1996), not unit-level. See
+          ``result.placebo_effects`` for the raw PSU-level replicate
+          array and REGISTRY §SyntheticDiD "Note (survey + jackknife
+          composition)" for the aggregation formula.
+
+        The underlying unit-level values come from the jackknife loops in
         ``SyntheticDiD._jackknife_se``: control LOO estimates fill the
         first ``n_control`` positions (in the order of the control units
         seen by fit), then treated LOO estimates fill the next

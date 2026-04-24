@@ -1032,7 +1032,7 @@ Returned by `SyntheticDiD.fit()`.
 
 **Validation diagnostics** (call after `fit()`):
 - `get_weight_concentration(top_k=5)` - effective N and top-k weight share; flags fragile synthetic controls dominated by a few donor units
-- `get_loo_effects_df()` - per-unit leave-one-out influence from the jackknife pass (DataFrame includes both control and treated rows). Requires `variance_method="jackknife"`; raises `ValueError` if LOO is unavailable (see the method docstring for the full set of conditions, e.g. single treated unit or only one control with nonzero effective weight)
+- `get_loo_effects_df()` - per-unit leave-one-out influence from the jackknife pass (DataFrame includes both control and treated rows). Requires `variance_method="jackknife"` with unit-level LOO granularity: available on non-survey and pweight-only jackknife fits; raises `NotImplementedError` on full-design survey jackknife (PSU-level LOO, see `result.placebo_effects` for raw PSU-level replicates) and `ValueError` when LOO is unavailable (single treated unit, only one control with nonzero effective weight, etc.)
 - `in_time_placebo()` - re-estimate on shifted fake treatment dates in the pre-period; near-zero placebo ATTs indicate a credible design
 - `sensitivity_to_zeta_omega()` - re-estimate across a grid of unit-weight regularization values; checks ATT robustness to the auto-selected zeta_omega
 

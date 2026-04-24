@@ -773,11 +773,21 @@ Two bootstrap strategies interact with survey designs:
   Fixed weights per LOO: ω subsetted over kept controls, composed with
   kept ``w_control``, renormalized; λ held at the fit-time value. Strata
   with ``n_h < 2`` are silently skipped (stratum-level variance
-  unidentified); if every stratum is skipped, returns ``SE=NaN`` with
-  a ``UserWarning``. Unstratified single-PSU designs short-circuit to
-  ``SE=NaN``. **Known limitation**: with ``n_h = 2`` per stratum, the
-  stratified PSU-level jackknife has only 1 effective DoF per stratum
-  and tends to be anti-conservative (see REGISTRY §SyntheticDiD
+  unidentified; matches R ``survey::svyjkn`` under
+  ``lonely_psu="remove"`` / ``"certainty"``). Full-census strata
+  (``f_h ≥ 1``) short-circuit to zero contribution before any LOO
+  feasibility check. ``SE = 0`` is returned for legitimate zero
+  variance (every stratum full-census, or exact-zero within-stratum
+  dispersion); ``SE = NaN`` with a ``UserWarning`` is reserved for
+  undefined cases (all strata skipped, or any delete-one replicate in
+  a non-full-census contributing stratum is undefined). Unstratified
+  single-PSU designs short-circuit to ``SE = NaN``.
+  ``SurveyDesign(lonely_psu="adjust")`` is **not yet supported** on
+  this path and raises ``NotImplementedError``; use
+  ``variance_method="bootstrap"`` or ``lonely_psu="remove"`` /
+  ``"certainty"``. **Known limitation**: with ``n_h = 2`` per stratum,
+  the stratified PSU-level jackknife has only 1 effective DoF per
+  stratum and tends to be anti-conservative (see REGISTRY §SyntheticDiD
   calibration table for the ``stratified_survey × jackknife`` row).
   Users with few PSUs per stratum should prefer
   ``variance_method="bootstrap"``, which validates at near-nominal

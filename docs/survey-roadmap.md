@@ -44,7 +44,7 @@ Weighted `solve_logit()` in `linalg.py` — survey weights enter IRLS as
 
 | Estimator | Survey Support | Notes |
 |-----------|----------------|-------|
-| SyntheticDiD | pweight (placebo / jackknife / bootstrap); strata/PSU/FPC (all three methods — bootstrap via PR #355 weighted FW + Rao-Wu; placebo via stratified permutation + weighted FW; jackknife via PSU-level LOO with stratum aggregation) | Treated means survey-weighted; omega composed with control weights post-optimization. Bootstrap survey path uses weighted-FW + Rao-Wu rescaling per draw. Placebo full-design permutes pseudo-treated within strata containing actual treated units. Jackknife full-design leaves out one PSU at a time and aggregates per Rust & Rao (1996) |
+| SyntheticDiD | pweight (placebo / jackknife / bootstrap); strata/PSU/FPC (all three methods — bootstrap via PR #355 weighted FW + Rao-Wu; placebo via stratified permutation + weighted FW; jackknife via PSU-level LOO with stratum aggregation). `lonely_psu="adjust"` not supported on the jackknife path (use `"remove"` / `"certainty"` or switch to `bootstrap`). | Treated means survey-weighted; omega composed with control weights post-optimization. Bootstrap survey path uses weighted-FW + Rao-Wu rescaling per draw. Placebo full-design permutes pseudo-treated within strata containing actual treated units (requires at least one stratum with `n_c > n_t`; exact-count designs raise Case D `ValueError`). Jackknife full-design leaves out one PSU at a time and aggregates per Rust & Rao (1996); full-census strata (`f_h ≥ 1`) short-circuit to zero contribution. |
 | TROP | pweight | Population-weighted ATT aggregation; model fitting unchanged |
 
 ### Phase 6: Advanced Features (v2.7.6)
