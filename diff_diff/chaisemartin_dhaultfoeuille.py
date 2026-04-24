@@ -409,9 +409,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         depends on ``L_max``). Binary treatment only — non-binary
         treatment + ``by_path`` is deferred. Also incompatible with
         ``controls``, ``trends_linear``, ``trends_nonparam``,
-        ``heterogeneity``, ``design2``, ``honest_did``,
-        ``survey_design``, and ``n_bootstrap > 0`` for the initial
-        release (each combination raises ``NotImplementedError``).
+        ``heterogeneity``, ``design2``, ``honest_did``, and
+        ``survey_design`` (each combination raises
+        ``NotImplementedError`` in the current release).
+
+        Compatible with ``n_bootstrap > 0`` — the top-k paths are
+        enumerated once on the observed data (paths held fixed across
+        bootstrap draws, matching R ``did_multiplegt_dyn(..., by_path,
+        bootstrap=B)``) and bootstrap SE / percentile CI / percentile
+        p-value are written to ``path_effects[path]["horizons"][l]``
+        in place of the analytical fields. See REGISTRY.md for the
+        full bootstrap contract.
 
         SE convention: per-path IF parallels the joiners / leavers
         construction — the switcher-side contribution is zeroed for
@@ -2793,8 +2801,21 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         if bootstrap_results.path_p_values
                         else None
                     )
+                    # Bootstrap replaces analytical inference for
+                    # this (path, horizon) regardless of outcome. If
+                    # the bootstrap SE is non-finite (e.g., n_bootstrap
+                    # too small, degenerate bootstrap distribution, or
+                    # zero-IF path inherited from the analytical
+                    # degenerate-cohort branch), the full inference
+                    # tuple goes to NaN — we must NOT fall back to
+                    # analytical inference here, since the caller
+                    # explicitly chose the bootstrap path by setting
+                    # n_bootstrap > 0. Falling back would silently mix
+                    # bootstrap-contract semantics with analytical-
+                    # contract semantics within the same result
+                    # object.
+                    eff_p = path_effects[path_key]["horizons"][l_h]["effect"]
                     if bs_se is not None and np.isfinite(bs_se):
-                        eff_p = path_effects[path_key]["horizons"][l_h]["effect"]
                         path_effects[path_key]["horizons"][l_h]["se"] = bs_se
                         path_effects[path_key]["horizons"][l_h]["p_value"] = (
                             bs_p if bs_p is not None else np.nan
@@ -2805,6 +2826,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         path_effects[path_key]["horizons"][l_h]["t_stat"] = (
                             safe_inference(eff_p, bs_se, alpha=self.alpha, df=None)[0]
                         )
+                    else:
+                        path_effects[path_key]["horizons"][l_h]["se"] = np.nan
+                        path_effects[path_key]["horizons"][l_h]["p_value"] = np.nan
+                        path_effects[path_key]["horizons"][l_h]["conf_int"] = (
+                            np.nan, np.nan,
+                        )
+                        path_effects[path_key]["horizons"][l_h]["t_stat"] = np.nan
 
         # When L_max >= 1 and the per-group path is active, sync
         # overall_* from event_study_effects[1] AFTER bootstrap propagation

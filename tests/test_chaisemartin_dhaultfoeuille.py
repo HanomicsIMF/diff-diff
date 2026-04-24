@@ -4487,3 +4487,141 @@ class TestByPathBootstrap:
             "bootstrap distribution was symmetric by chance — bump "
             "n_bootstrap or change the seed and re-run."
         )
+
+    def test_inference_fields_equal_bootstrap_results_directly(self):
+        """
+        Pin direct equality between ``path_effects[path]["horizons"][l]``
+        and ``bootstrap_results.path_{ses, cis, p_values}[path][l]``.
+        If the ``fit()`` propagation drifts (e.g., a regression that
+        recomputes normal-theory stats from the SE), these exact-match
+        assertions fail even if the asymmetric-CI check in
+        ``test_inference_fields_match_bootstrap_results`` happens to
+        pass.
+        """
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42,
+        )
+        assert res.path_effects is not None
+        br = res.bootstrap_results
+        assert br is not None
+        assert br.path_ses is not None
+        assert br.path_cis is not None
+        assert br.path_p_values is not None
+
+        checked = 0
+        for path, entry in res.path_effects.items():
+            for l_h, h in entry["horizons"].items():
+                se_br = br.path_ses.get(path, {}).get(l_h)
+                p_br = br.path_p_values.get(path, {}).get(l_h)
+                ci_br = br.path_cis.get(path, {}).get(l_h)
+                if se_br is None:
+                    continue
+                if np.isfinite(se_br):
+                    np.testing.assert_array_equal(
+                        h["se"], se_br,
+                        err_msg=(
+                            f"path={path} l={l_h}: path_effects se "
+                            f"{h['se']} != bootstrap_results.path_ses {se_br}"
+                        ),
+                    )
+                    np.testing.assert_array_equal(
+                        h["p_value"], p_br if p_br is not None else np.nan,
+                        err_msg=(
+                            f"path={path} l={l_h}: path_effects p_value "
+                            f"{h['p_value']} != "
+                            f"bootstrap_results.path_p_values {p_br}"
+                        ),
+                    )
+                    lo_e, hi_e = h["conf_int"]
+                    assert ci_br is not None
+                    lo_br, hi_br = ci_br
+                    np.testing.assert_array_equal(
+                        [lo_e, hi_e], [lo_br, hi_br],
+                        err_msg=(
+                            f"path={path} l={l_h}: path_effects conf_int "
+                            f"{(lo_e, hi_e)} != "
+                            f"bootstrap_results.path_cis {(lo_br, hi_br)}"
+                        ),
+                    )
+                    checked += 1
+        assert checked > 0, (
+            "Expected at least one (path, horizon) with direct equality "
+            "between path_effects inference fields and bootstrap_results"
+        )
+
+    def test_degenerate_bootstrap_distribution_yields_nan_tuple(self):
+        """
+        When the bootstrap SE comes back non-finite for a ``(path,
+        horizon)`` (e.g., ``n_bootstrap=1`` produces a one-element
+        distribution whose std is zero / ill-defined), the overwrite
+        block must replace the full inference tuple with NaN rather
+        than falling back to the analytical values. This pins the
+        bootstrap-contract semantics — once the user opts into
+        ``n_bootstrap > 0``, all per-path inference is bootstrap-
+        derived or NaN-consistent, never silently analytical.
+        """
+        data = _by_path_three_path_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                n_bootstrap=1,
+                bootstrap_weights="rademacher",
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+        assert res.path_effects is not None
+        br = res.bootstrap_results
+        assert br is not None and br.path_ses is not None
+
+        any_nan = False
+        for path, entry in res.path_effects.items():
+            for l_h, h in entry["horizons"].items():
+                bs_se = br.path_ses.get(path, {}).get(l_h)
+                # A one-draw bootstrap cannot produce a finite SE (std
+                # of a singleton is 0 → coerced to NaN by
+                # bootstrap_utils.compute_effect_bootstrap_stats).
+                if bs_se is None or not np.isfinite(bs_se):
+                    any_nan = True
+                    assert np.isnan(h["se"]), (
+                        f"path={path} l={l_h}: bootstrap returned non-"
+                        f"finite SE but path_effects.se={h['se']} "
+                        f"(expected NaN — must not fall back to "
+                        f"analytical under the bootstrap contract)"
+                    )
+                    assert np.isnan(h["t_stat"]), (
+                        f"path={path} l={l_h}: t_stat={h['t_stat']} "
+                        f"(expected NaN when bootstrap SE is non-finite)"
+                    )
+                    assert np.isnan(h["p_value"]), (
+                        f"path={path} l={l_h}: p_value={h['p_value']} "
+                        f"(expected NaN when bootstrap SE is non-finite)"
+                    )
+                    lo, hi = h["conf_int"]
+                    assert np.isnan(lo) and np.isnan(hi), (
+                        f"path={path} l={l_h}: conf_int=({lo}, {hi}) "
+                        f"(expected (nan, nan) when bootstrap SE is "
+                        f"non-finite)"
+                    )
+                    # Point estimate stays finite (bootstrap does not
+                    # touch effect values)
+                    assert np.isfinite(h["effect"]), (
+                        f"path={path} l={l_h}: effect={h['effect']} "
+                        f"(bootstrap must not overwrite the point "
+                        f"estimate)"
+                    )
+        assert any_nan, (
+            "Expected at least one (path, horizon) to land in the "
+            "non-finite-SE bootstrap branch with n_bootstrap=1"
+        )
