@@ -247,18 +247,29 @@ class SyntheticDiD(DifferenceInDifferences):
             out before computing the SDID estimator.
         survey_design : SurveyDesign, optional
             Survey design specification. Only pweight weight_type is
-            supported. Support matrix (PR #352):
+            supported. Replicate-weight designs are rejected. All three
+            variance methods support both pweight-only and full
+            strata/PSU/FPC designs:
 
                 method     pweight-only     strata/PSU/FPC
-                bootstrap  ✓ weighted FW    ✓ weighted FW + Rao-Wu
-                placebo    ✓                ✗ NotImplementedError
-                jackknife  ✓                ✗ NotImplementedError
+                bootstrap  ✓ weighted FW    ✓ weighted FW + Rao-Wu (PR #355)
+                placebo    ✓                ✓ stratified permutation + weighted FW
+                jackknife  ✓                ✓ PSU-level LOO + stratum aggregation
 
-            The bootstrap path composes Rao-Wu rescaled weights per draw
-            with the weighted-Frank-Wolfe kernel; see REGISTRY.md
-            §SyntheticDiD ``Note (survey + bootstrap composition)``.
-            ``placebo`` and ``jackknife`` still reject strata/PSU/FPC
-            (separate methodology gap tracked in TODO.md).
+            - **Bootstrap** composes Rao-Wu rescaled weights per draw with
+              the weighted-Frank-Wolfe kernel; see REGISTRY.md §SyntheticDiD
+              ``Note (survey + bootstrap composition)``.
+            - **Placebo** under full design uses within-stratum permutation
+              (pseudo-treated sampled from controls in each treated-containing
+              stratum) with weighted-FW refit per draw; fit-time feasibility
+              guards raise ``ValueError`` when a treated stratum has fewer
+              controls than treated units (see ``Note (survey + placebo
+              composition)``).
+            - **Jackknife** under full design uses PSU-level LOO with
+              stratum aggregation (Rust & Rao 1996); anti-conservative with
+              few PSUs per stratum — prefer ``bootstrap`` when tight SE
+              calibration matters in that regime (see ``Note (survey +
+              jackknife composition)``).
 
         Returns
         -------
@@ -1519,13 +1530,12 @@ class SyntheticDiD(DifferenceInDifferences):
         # Ensure we have enough controls for the split
         n_pseudo_control = n_control - n_treated
         if n_pseudo_control < 1:
-            # Fallback guidance. Placebo and jackknife reject strata/PSU/FPC,
-            # but bootstrap (PR #352) supports both pweight-only and
-            # full-design surveys, so it's always a valid fallback.
+            # Fallback guidance. All three variance methods support
+            # pweight-only and full-design surveys (PR #355 and this PR).
             fallback = (
-                "variance_method='bootstrap' (supports pweight-only and "
-                "strata/PSU/FPC survey designs), variance_method='jackknife' "
-                "(pweight-only only), or adding more control units"
+                "variance_method='bootstrap' or 'jackknife' (both support "
+                "pweight-only and strata/PSU/FPC survey designs), or adding "
+                "more control units"
                 if w_control is not None
                 else "variance_method='bootstrap', variance_method='jackknife', "
                 "or adding more control units"

@@ -725,7 +725,7 @@ Two bootstrap strategies interact with survey designs:
 - **Rao-Wu rescaled bootstrap** (SunAbraham, TROP): Draws PSUs
   with replacement within strata and rescales observation weights. Each draw
   re-runs the full estimator on the resampled data.
-- **Hybrid pairs-bootstrap + Rao-Wu rescaling** (SyntheticDiD, PR #352):
+- **Hybrid pairs-bootstrap + Rao-Wu rescaling** (SyntheticDiD, PR #355):
   SDID's full-design bootstrap is NOT a standalone Rao-Wu bootstrap. Each
   draw first performs the unit-level pairs-bootstrap resampling that
   Arkhangelsky et al. (2021) Algorithm 2 specifies (``boot_idx = rng.choice(n_total)``),
@@ -735,10 +735,42 @@ Two bootstrap strategies interact with survey designs:
   ``min ||A·diag(rw)·ω - b||² + ζ²·Σ rw_i ω_i²`` on the resampled panel,
   and ``ω_eff = rw·ω / Σ(rw·ω)`` is composed for the SDID estimator.
   See REGISTRY.md §SyntheticDiD ``Note (survey + bootstrap composition)``
-  for the full objective and the argmin-set caveat. SDID's `placebo` and
-  `jackknife` methods still reject strata/PSU/FPC (the placebo permutation
-  allocator and jackknife LOO mass need their own weighted derivations;
-  tracked in TODO.md as a follow-up).
+  for the full objective and the argmin-set caveat.
+
+- **Stratified permutation placebo** (SyntheticDiD): SDID's full-design
+  placebo variance allocator. For each placebo draw, pseudo-treated
+  indices are sampled uniformly without replacement from controls
+  *within each stratum containing actual treated units* (classical
+  stratified permutation test — Pesarin 2001). Pseudo-treated means
+  are survey-weighted; weighted-FW re-estimates ω and λ per draw with
+  ``rw_control`` threaded into both loss and regularization. Post-
+  optimization composition ``ω_eff = rw · ω / Σ(rw · ω)`` with zero-
+  mass retry. SE follows Arkhangelsky Algorithm 4:
+  ``sqrt((r-1)/r) · std(placebo_estimates, ddof=1)``. Fit-time
+  feasibility guards raise ``ValueError`` when a treated-containing
+  stratum has 0 controls or fewer controls than treated units (the
+  permutation allocator requires ``n_controls_h ≥ n_treated_h`` by
+  construction). See REGISTRY.md §SyntheticDiD ``Note (survey +
+  placebo composition)``.
+
+- **PSU-level leave-one-out with stratum aggregation** (SyntheticDiD):
+  SDID's full-design jackknife variance allocator, matching the
+  canonical Rust & Rao (1996) stratified jackknife form:
+  ``SE² = Σ_h (1 - f_h) · (n_h - 1)/n_h · Σ_{j∈h} (τ̂_{(h,j)} - τ̄_h)²``
+  where ``f_h = n_h_sampled / fpc[h]`` is the per-stratum sampling
+  fraction (population-count FPC form, matching ``SurveyDesign.resolve``).
+  Fixed weights per LOO: ω subsetted over kept controls, composed with
+  kept ``w_control``, renormalized; λ held at the fit-time value. Strata
+  with ``n_h < 2`` are silently skipped (stratum-level variance
+  unidentified); if every stratum is skipped, returns ``SE=NaN`` with
+  a ``UserWarning``. Unstratified single-PSU designs short-circuit to
+  ``SE=NaN``. **Known limitation**: with ``n_h = 2`` per stratum, the
+  stratified PSU-level jackknife has only 1 effective DoF per stratum
+  and tends to be anti-conservative (see REGISTRY §SyntheticDiD
+  calibration table for the ``stratified_survey × jackknife`` row).
+  Users with few PSUs per stratum should prefer
+  ``variance_method="bootstrap"``, which validates at near-nominal
+  calibration on the same DGP.
 
 ---
 

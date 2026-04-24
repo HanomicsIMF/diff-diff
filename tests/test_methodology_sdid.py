@@ -3432,14 +3432,17 @@ class TestHeterogeneousAndRampingScale:
 class TestCoverageMCArtifact:
     """Schema smoke-check on ``benchmarks/data/sdid_coverage.json``.
 
-    The full Monte Carlo study (500 seeds × B=200 × 4 DGPs × 3 methods,
-    PR #352) runs outside CI; its JSON output underwrites the calibration
-    table in REGISTRY.md §SyntheticDiD. The 4th DGP (``stratified_survey``)
-    is bootstrap-only — placebo / jackknife reject strata/PSU/FPC at
-    fit-time. This test verifies the artifact is present and structured
-    correctly. Per ``feedback_golden_file_pytest_skip.md``, skip if
-    missing — CI's isolated-install job copies only ``tests/``, not
-    ``benchmarks/``.
+    The full Monte Carlo study (500 seeds × B=200 × 4 DGPs × 3 methods)
+    runs outside CI; its JSON output underwrites the calibration table in
+    REGISTRY.md §SyntheticDiD. The 4th DGP (``stratified_survey``)
+    exercises the bootstrap survey-composition path (PR #355) and the
+    jackknife PSU-level LOO path (this PR); placebo is structurally
+    infeasible on this DGP because its cohort packs into a single stratum
+    with 0 never-treated units, so the harness skips placebo for the
+    `stratified_survey` block. This test verifies the artifact is present
+    and structured correctly. Per ``feedback_golden_file_pytest_skip.md``,
+    skip if missing — CI's isolated-install job copies only ``tests/``,
+    not ``benchmarks/``.
     """
 
     def test_coverage_artifacts_present(self):
@@ -3508,14 +3511,24 @@ class TestCoverageMCArtifact:
         assert 0.02 <= rej_05 <= 0.10, (
             f"stratified_survey bootstrap α=0.05 rejection {rej_05} outside "
             "calibration gate [0.02, 0.10]; weighted FW + Rao-Wu is "
-            "miscalibrated. See PR #352 §3c rollback protocol."
+            "miscalibrated. See PR #355 §3c rollback protocol."
         )
+        # Placebo is structurally infeasible on this DGP (all treated
+        # in stratum 1 with 0 never-treated units → Case C raise at fit-time).
         assert survey_block["placebo"]["n_successful_fits"] == 0, (
             "stratified_survey placebo should have 0 successful fits "
-            "(strata/PSU/FPC raises NotImplementedError at fit-time)"
+            "(stratified-permutation allocator raises Case C at fit-time "
+            "because the DGP has 0 controls in the treated stratum)."
         )
-        assert survey_block["jackknife"]["n_successful_fits"] == 0, (
-            "stratified_survey jackknife should have 0 successful fits "
-            "(strata/PSU/FPC raises NotImplementedError at fit-time)"
+        # Jackknife should now succeed (full-design support added). Its SE
+        # is known anti-conservative with only 2 PSUs per stratum — that's
+        # a methodology limitation documented in REGISTRY, not a regression.
+        # Here we just check that the fit returned a finite SE (survey path
+        # dispatched correctly); calibration-gate bands are intentionally
+        # not asserted for jackknife on this DGP.
+        assert survey_block["jackknife"]["n_successful_fits"] >= 100, (
+            "stratified_survey jackknife must have ≥100 successful fits; "
+            "the PSU-level LOO + stratum aggregation path is broken if "
+            "this drops to 0."
         )
 
