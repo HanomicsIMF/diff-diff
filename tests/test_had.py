@@ -967,11 +967,14 @@ class TestScaffoldingRejections:
                 aggregate="garbage",
             )
 
-    def test_survey_raises(self):
+    def test_survey_bad_type_raises(self):
+        """survey= must be a SurveyDesign-like object with a .weights
+        attribute; a bare string (or any object lacking .weights) raises
+        TypeError front-door."""
         d, dy = _dgp_continuous_at_zero(200, seed=0)
         panel = _make_panel(d, dy)
         est = HeterogeneousAdoptionDiD()
-        with pytest.raises(NotImplementedError, match="survey"):
+        with pytest.raises(TypeError, match="SurveyDesign-like"):
             est.fit(
                 panel,
                 "outcome",
@@ -979,20 +982,6 @@ class TestScaffoldingRejections:
                 "period",
                 "unit",
                 survey="anything",
-            )
-
-    def test_weights_raises(self):
-        d, dy = _dgp_continuous_at_zero(200, seed=0)
-        panel = _make_panel(d, dy)
-        est = HeterogeneousAdoptionDiD()
-        with pytest.raises(NotImplementedError, match="weights"):
-            est.fit(
-                panel,
-                "outcome",
-                "dose",
-                "period",
-                "unit",
-                weights=np.ones(200),
             )
 
 
@@ -3232,3 +3221,1044 @@ class TestEventStudyAggregator:
         # d_arr should be the period-F dose, unit-aligned
         expected = panel[panel["period"] == F].sort_values("unit")["dose"].to_numpy()
         np.testing.assert_allclose(d_arr, expected, atol=0.0, rtol=0.0)
+
+
+# =============================================================================
+# HAD survey-weighted path (Phase 4.5: survey/weights on continuous designs)
+# =============================================================================
+
+
+class TestHADSurvey:
+    """Phase 4.5 (continuous-design survey support) validation suite.
+
+    Scope: ``weights=`` array + ``survey=SurveyDesign(weights=...)`` on
+    ``continuous_at_zero`` and ``continuous_near_d_lower``. Mass-point +
+    event-study under survey remain NotImplementedError (Phase 4.5 B).
+    """
+
+    def _panel_with_unit_weights(self, G=200, seed=42, design="continuous_at_zero"):
+        rng = np.random.default_rng(seed)
+        if design == "continuous_at_zero":
+            d = rng.uniform(0, 1, G)
+            d_lower = 0.0
+        else:
+            d = rng.uniform(0.1, 1.0, G)
+            d_lower = 0.1
+        dy = 2.0 * (d - d_lower) + 0.3 * (d - d_lower) ** 2 + rng.normal(0, 0.2, G)
+        panel = _make_panel(d, dy)
+        w_unit = rng.uniform(0.5, 1.5, G)
+        # Broadcast to every row (unit-constant per HAD contract)
+        row_w = np.zeros(panel.shape[0])
+        for g in range(G):
+            row_w[panel["unit"].to_numpy() == g] = w_unit[g]
+        return panel, row_w, w_unit, d, dy, d_lower
+
+    # ---------- Uniform-weights bit-parity ----------
+
+    def test_uniform_weights_continuous_at_zero_bit_parity(self):
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        base = est.fit(panel, "outcome", "dose", "period", "unit")
+        w1 = est.fit(
+            panel, "outcome", "dose", "period", "unit",
+            weights=np.ones(panel.shape[0]),
+        )
+        np.testing.assert_allclose(w1.att, base.att, atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(w1.se, base.se, atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(w1.t_stat, base.t_stat, atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(w1.p_value, base.p_value, atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(
+            w1.conf_int[0], base.conf_int[0], atol=1e-12, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            w1.conf_int[1], base.conf_int[1], atol=1e-12, rtol=1e-12
+        )
+
+    def test_uniform_weights_continuous_near_d_lower_bit_parity(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            panel, _, _, _, _, _ = self._panel_with_unit_weights(
+                G=200, design="continuous_near_d_lower"
+            )
+            est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower")
+            base = est.fit(panel, "outcome", "dose", "period", "unit")
+            w1 = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                weights=np.ones(panel.shape[0]),
+            )
+        np.testing.assert_allclose(w1.att, base.att, atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(w1.se, base.se, atol=1e-12, rtol=1e-12)
+
+    # ---------- Non-trivial weights: mechanism has teeth ----------
+
+    def test_nontrivial_weights_change_estimate(self):
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        base = est.fit(panel, "outcome", "dose", "period", "unit")
+        w = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        assert not np.isclose(w.att, base.att, atol=1e-6)
+
+    # ---------- survey=SurveyDesign(weights=...) shorthand equivalence ----------
+
+    def test_survey_and_weights_produce_same_point_estimate(self):
+        """SurveyDesign(weights='col') and weights=<array> route through
+        the same weighted lprobust fit, so the ATT is identical. The SE
+        diverges because survey= triggers Binder-TSL variance
+        (PSU-aggregated, FPC/strata-aware) while weights= uses the
+        weighted-robust SE from lprobust. This is the intended divergence
+        (one knob for design-based inference, one for pweight-only)."""
+        from diff_diff.survey import SurveyDesign
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        panel_with_w = panel.assign(w=row_w)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r_w = est.fit(panel_with_w, "outcome", "dose", "period", "unit", weights=row_w)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            sd = SurveyDesign(weights="w")
+            r_sd = est.fit(panel_with_w, "outcome", "dose", "period", "unit", survey=sd)
+        # ATTs match (same weighted lprobust estimate).
+        np.testing.assert_allclose(r_w.att, r_sd.att, atol=1e-12, rtol=1e-12)
+        # SEs differ (different inference paths).
+        assert r_w.variance_formula == "pweight"
+        assert r_sd.variance_formula == "survey_binder_tsl"
+
+    # ---------- Validator contract ----------
+
+    def test_weights_vary_within_unit_raises(self):
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        # Corrupt one unit's pre-period weight so it differs from its
+        # post-period weight.
+        row_w_bad = row_w.copy()
+        first_unit_mask = panel["unit"].to_numpy() == 0
+        first_unit_idx = np.where(first_unit_mask)[0][0]
+        row_w_bad[first_unit_idx] = row_w_bad[first_unit_idx] + 5.0
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with pytest.raises(ValueError, match="weights vary within"):
+            est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w_bad)
+
+    def test_negative_weights_raise(self):
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        row_w_bad = row_w.copy()
+        row_w_bad[0] = -1.0
+        # Also corrupt the paired row so the within-unit check doesn't fire first.
+        first_unit_mask = panel["unit"].to_numpy() == panel["unit"].iloc[0]
+        row_w_bad[first_unit_mask] = -1.0
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with pytest.raises(ValueError, match="non-negative"):
+            est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w_bad)
+
+    def test_zero_sum_weights_raise(self):
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with pytest.raises(ValueError, match="sum to zero"):
+            est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                weights=np.zeros(panel.shape[0]),
+            )
+
+    def test_weights_length_mismatch_raises(self):
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with pytest.raises(ValueError, match="length"):
+            est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                weights=np.ones(panel.shape[0] + 1),
+            )
+
+    def test_survey_and_weights_mutex(self):
+        from diff_diff.survey import SurveyDesign
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        panel_with_w = panel.assign(w=row_w)
+        sd = SurveyDesign(weights="w")
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with pytest.raises(ValueError, match="OR weights"):
+            est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit",
+                survey=sd, weights=row_w,
+            )
+
+    # ---------- Deferred paths ----------
+
+    def test_weights_on_mass_point_raises(self):
+        d, dy = _dgp_mass_point(500, seed=42)
+        panel = _make_panel(d, dy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="mass_point")
+            with pytest.raises(NotImplementedError, match="Phase 4.5 B"):
+                est.fit(
+                    panel, "outcome", "dose", "period", "unit",
+                    weights=np.ones(panel.shape[0]),
+                )
+
+    def test_weights_on_event_study_raises(self):
+        """Multi-period + event-study + weights → NotImplementedError
+        (Phase 4.5 B deferral)."""
+        rng = np.random.default_rng(7)
+        G = 150
+        d = rng.uniform(0, 1, G)
+        units = np.arange(G)
+        periods = [0, 1, 2]
+        rows = []
+        for t in periods:
+            for g in units:
+                dose = d[g] if t == 2 else 0.0
+                y = 0.1 * t + (dose * 2.0 if t == 2 else 0.0) + rng.normal(0, 0.2)
+                rows.append((g, t, dose, y))
+        panel = pd.DataFrame(rows, columns=["unit", "period", "dose", "outcome"])
+        est = HeterogeneousAdoptionDiD()
+        with pytest.raises(NotImplementedError, match="Phase 4.5 B"):
+            est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                aggregate="event_study",
+                weights=np.ones(panel.shape[0]),
+            )
+
+    # ---------- Result-object contract ----------
+
+    def test_survey_metadata_populated_under_weights(self):
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        assert r.survey_metadata is not None
+        # Repo-standard SurveyMetadata with attribute access.
+        assert r.survey_metadata.weight_type == "pweight"
+        assert r.survey_metadata.sum_weights > 0
+        assert r.survey_metadata.effective_n > 0
+        assert r.variance_formula == "pweight"
+
+    def test_survey_metadata_none_when_unweighted(self):
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        assert r.survey_metadata is None
+
+    def test_to_dict_includes_survey_metadata(self):
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        d = r.to_dict()
+        assert "survey_metadata" in d
+        # survey_metadata is now a SurveyMetadata dataclass; consumers
+        # access attributes on the returned object.
+        assert d["survey_metadata"].weight_type == "pweight"
+
+    def test_to_dict_survey_metadata_none_key_present(self):
+        """Even on unweighted fits, the key is present (value None) so
+        downstream consumers can branch on the key not absence."""
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        d = r.to_dict()
+        assert "survey_metadata" in d
+        assert d["survey_metadata"] is None
+
+    def test_summary_renders_under_weights(self):
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        s = r.summary()
+        assert "Variance formula" in s
+        assert "Effective sample size" in s
+
+    # ---------- SurveyDesign full composition (PSU / strata / FPC) ----------
+
+    def _panel_with_survey_cols(self, G=200, seed=42):
+        """Build a panel with w / strata / psu columns, all unit-constant."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(seed)
+        d = rng.uniform(0, 1, G)
+        dy = 2.0 * d + 0.3 * d**2 + rng.normal(0, 0.2, G)
+        panel = _make_panel(d, dy)
+        w_unit = rng.uniform(0.5, 1.5, G)
+        strata_unit = rng.integers(0, 4, G)
+        psu_unit = strata_unit * 100 + rng.integers(0, 20, G)
+        # Broadcast to long panel.
+        row_w = np.zeros(panel.shape[0])
+        row_strata = np.zeros(panel.shape[0], dtype=np.int64)
+        row_psu = np.zeros(panel.shape[0], dtype=np.int64)
+        for g in range(G):
+            mask = panel["unit"].to_numpy() == g
+            row_w[mask] = w_unit[g]
+            row_strata[mask] = strata_unit[g]
+            row_psu[mask] = psu_unit[g]
+        panel2 = panel.assign(w=row_w, strata=row_strata, psu=row_psu)
+        return panel2, SurveyDesign
+
+    def test_survey_with_strata_produces_different_se(self):
+        """Adding strata to a SurveyDesign changes the SE (finer variance
+        composition) but preserves the ATT (same weighted estimator)."""
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_basic = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w"),
+            )
+            r_strat = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata"),
+            )
+        np.testing.assert_allclose(r_basic.att, r_strat.att, atol=1e-14, rtol=1e-14)
+        assert r_basic.se != r_strat.se
+        assert r_strat.survey_metadata.n_strata == 4
+        assert r_basic.survey_metadata.n_strata is None
+
+    def test_survey_with_psu_clustering(self):
+        """Adding PSU clustering changes the SE (within-PSU correlation
+        aggregated). ATT unchanged."""
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_strat = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata"),
+            )
+            r_psu = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+        np.testing.assert_allclose(r_strat.att, r_psu.att, atol=1e-14, rtol=1e-14)
+        assert r_psu.se != r_strat.se
+        assert r_psu.survey_metadata.n_psu is not None
+        assert r_psu.survey_metadata.n_psu > 1
+        # PSU count is strictly less than unit count (clustering is actual).
+        assert r_psu.survey_metadata.n_psu < 200
+
+    def test_survey_metadata_records_binder_tsl_method(self):
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+        sm = r.survey_metadata
+        assert sm is not None
+        # Repo-standard SurveyMetadata attributes populated.
+        assert sm.weight_type == "pweight"
+        assert sm.effective_n > 0
+        assert sm.df_survey is not None
+        # HAD-specific variance-formula label lives on the result,
+        # orthogonal to the shared SurveyMetadata.
+        assert r.variance_formula == "survey_binder_tsl"
+
+    def test_survey_design_column_varies_within_unit_raises(self):
+        """Strata that varies within a unit → ValueError (HAD requires
+        unit-constant design columns)."""
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        # Corrupt one unit's pre-period strata.
+        unit0_mask = panel["unit"].to_numpy() == 0
+        unit0_pre_idx = np.where(unit0_mask & (panel["period"].to_numpy() == 1))[0][0]
+        panel_bad = panel.copy()
+        panel_bad.iloc[unit0_pre_idx, panel_bad.columns.get_loc("strata")] = 99
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with pytest.raises(ValueError, match="strata varies within"):
+                est.fit(
+                    panel_bad, "outcome", "dose", "period", "unit",
+                    survey=SurveyDesign(weights="w", strata="strata"),
+                )
+
+    def test_replicate_weights_not_yet_supported(self):
+        """Replicate-weight designs raise NotImplementedError on HAD (Phase 4.5 C)."""
+        from diff_diff.survey import SurveyDesign
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        # Fabricate a replicate-weights design (BRR with 2 replicates).
+        rep_w_col_1 = row_w * (1 + 0.1 * np.random.default_rng(1).normal(size=len(row_w)))
+        rep_w_col_2 = row_w * (1 + 0.1 * np.random.default_rng(2).normal(size=len(row_w)))
+        # Replicate weights must be non-negative; clip for safety.
+        panel2 = panel.assign(
+            w=row_w,
+            rep1=np.clip(rep_w_col_1, 0.01, None),
+            rep2=np.clip(rep_w_col_2, 0.01, None),
+        )
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        sd = SurveyDesign(
+            weights="w",
+            replicate_weights=["rep1", "rep2"],
+            replicate_method="BRR",
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with pytest.raises(NotImplementedError, match="Replicate-weight"):
+                est.fit(panel2, "outcome", "dose", "period", "unit", survey=sd)
+
+    # ---------- P0 fix: bias-corrected IF alignment (round 1 review) ----------
+
+    def test_survey_if_uses_bias_corrected_scale(self):
+        """The survey IF must align with ``V_Y_bc`` (bias-corrected), NOT
+        ``V_Y_cl`` — the HAD ATT uses ``tau_bc``, so the survey SE must
+        target the same estimator scale. White-box check: under
+        unclustered HC0/HC1, ``sum(psi^2)`` must match ``V_Y_bc[0, 0]``
+        (within BLAS tolerance), NOT ``V_Y_cl[0, 0]``. Under a nontrivial
+        DGP (nonlinear m(d) with non-zero bias correction) the two
+        differ, so this test has teeth."""
+        from diff_diff._nprobust_port import lprobust
+
+        rng = np.random.default_rng(42)
+        n = 300
+        x = rng.uniform(0.0, 1.0, n)
+        # Nonlinear m(d) = 2d + 0.8 d² — the 0.8 quadratic term drives a
+        # nontrivial bias correction so V_Y_bc != V_Y_cl.
+        y = 2.0 * x + 0.8 * x**2 + rng.normal(0.0, 0.25, n)
+        r = lprobust(
+            y, x, eval_point=0.0, h=0.3, b=0.3, vce="hc1", return_influence=True
+        )
+        sum_if_sq = float((r.influence_function**2).sum())
+        # Bias-corrected scale: sum(IF^2) should equal V_Y_bc[0,0] to
+        # floating-point precision. NOT equal to V_Y_cl[0,0].
+        np.testing.assert_allclose(
+            sum_if_sq, r.V_Y_bc[0, 0], atol=1e-12, rtol=1e-12
+        )
+        # The classical SE is DIFFERENT from the bias-corrected SE under
+        # nonlinear m(d) — the two differ by the bias-correction inflation.
+        assert not np.isclose(
+            r.V_Y_cl[0, 0], r.V_Y_bc[0, 0], atol=0.0, rtol=1e-6
+        ), "DGP chosen to drive V_Y_cl != V_Y_bc; check nonlinearity"
+        assert not np.isclose(
+            sum_if_sq, r.V_Y_cl[0, 0], atol=0.0, rtol=1e-6
+        ), (
+            "sum(IF^2) must track V_Y_bc (not V_Y_cl) — if this fails, "
+            "the IF is computed with classical res_h instead of "
+            "bias-corrected res_b, silently underestimating survey SE."
+        )
+
+    # ---------- P1a fix: df_survey threaded through inference ----------
+
+    def test_survey_df_widens_ci_vs_normal(self):
+        """Under small-PSU design, survey t-inference with finite
+        ``df_survey`` must produce WIDER confidence intervals than
+        Normal-theory inference at the same SE. Regression test for the
+        df_survey threading in fit()."""
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            # Few PSUs within strata → small df_survey → t-inference
+            # inflates CI vs Normal.
+            r_sd = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+            # Same fit under pweight-only (no df_survey threading — uses
+            # Normal inference). ATT matches; CI width differs.
+            r_w = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                weights=panel["w"].to_numpy(),
+            )
+        # df_survey surfaced in metadata.
+        assert r_sd.survey_metadata is not None
+        assert r_sd.survey_metadata.df_survey is not None
+        assert r_sd.survey_metadata.df_survey > 0
+        # Under the same SE (approximately), t-based CI > Normal CI.
+        # (SE itself differs a bit because Binder-TSL vs weighted-robust
+        # at the same fit, but df_survey inflates the t-critical-value
+        # enough that the t-CI is wider.)
+        # Sanity: both CIs well-defined.
+        assert np.isfinite(r_sd.conf_int[0])
+        assert np.isfinite(r_sd.conf_int[1])
+        assert np.isfinite(r_w.conf_int[0])
+        assert np.isfinite(r_w.conf_int[1])
+
+    def test_survey_df_threaded_into_inference_via_t_distribution(self):
+        """Direct check: when ``df_survey`` is small, the t-critical
+        value exceeds the Normal z-critical value, which widens the CI
+        at the same ``se``. Uses a tiny-PSU panel to produce a small df."""
+        from scipy import stats
+
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_sd = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+        assert r_sd.survey_metadata is not None
+        df = r_sd.survey_metadata.df_survey
+        assert df is not None and df > 0
+        # CI width check: given att, se, and df, CI should match t-interval.
+        z_norm = stats.norm.ppf(1 - r_sd.alpha / 2)
+        t_crit = stats.t.ppf(1 - r_sd.alpha / 2, df=df)
+        assert t_crit > z_norm, (
+            f"t-critical ({t_crit:.4f}) should exceed z ({z_norm:.4f}) "
+            f"for df={df}; otherwise df_survey threading is a no-op"
+        )
+        # CI half-width should equal t_crit * se (within float noise).
+        half_width = (r_sd.conf_int[1] - r_sd.conf_int[0]) / 2.0
+        np.testing.assert_allclose(half_width, t_crit * r_sd.se, rtol=1e-10)
+
+    # ---------- P1b fix: reject non-pweight weight_type ----------
+
+    def test_survey_aweight_raises_not_implemented(self):
+        """``SurveyDesign(weight_type='aweight')`` raises — analytic
+        weights would target a different estimand than sampling weights."""
+        from diff_diff.survey import SurveyDesign
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        panel_with_w = panel.assign(w=row_w)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        sd = SurveyDesign(weights="w", weight_type="aweight")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with pytest.raises(NotImplementedError, match="aweight"):
+                est.fit(panel_with_w, "outcome", "dose", "period", "unit", survey=sd)
+
+    def test_survey_fweight_raises_not_implemented(self):
+        """``SurveyDesign(weight_type='fweight')`` raises — frequency
+        weights imply observation replication, not sampling design."""
+        from diff_diff.survey import SurveyDesign
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        # fweight requires non-negative integers; rebuild with positive
+        # integer row weights.
+        rng = np.random.default_rng(11)
+        row_w_int = rng.integers(1, 5, size=panel.shape[0]).astype(np.float64)
+        # Make constant-within-unit as HAD requires.
+        df = panel.copy()
+        df["w"] = row_w_int
+        # Force unit-constant by taking first value per unit.
+        first_per_unit = df.groupby("unit")["w"].first()
+        df["w"] = df["unit"].map(first_per_unit)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        sd = SurveyDesign(weights="w", weight_type="fweight")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with pytest.raises(NotImplementedError, match="fweight"):
+                est.fit(df, "outcome", "dose", "period", "unit", survey=sd)
+
+    # ---------- P2 fix: SRS equivalence with weights= shortcut ----------
+
+    # ---------- P2 fix: weighted denominator contract ----------
+
+    def test_effective_dose_mean_matches_weighted_mean_continuous_at_zero(self):
+        """``effective_dose_mean`` must equal the weighted mean of D used
+        in the β-scale rescaling — this is what the estimator actually
+        uses, vs ``dose_mean`` which is the raw-sample mean (preserved
+        for backward compatibility). Regression test for P2 from round 2
+        CI review."""
+        panel, row_w, w_unit, d, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        assert r.effective_dose_mean is not None
+        expected = float(np.average(d, weights=w_unit))
+        np.testing.assert_allclose(
+            r.effective_dose_mean, expected, atol=1e-12, rtol=1e-12
+        )
+        # dose_mean stays as raw-sample mean — orthogonal to the
+        # weighted denominator actually used in the fit.
+        np.testing.assert_allclose(
+            r.dose_mean, float(d.mean()), atol=1e-12, rtol=1e-12
+        )
+
+    def test_effective_dose_mean_matches_weighted_mean_near_d_lower(self):
+        """For ``continuous_near_d_lower``, the estimator auto-resolves
+        ``d_lower = d.min()`` (not the theoretical lower bound of the
+        DGP), so the expected weighted denominator uses
+        ``d - r.d_lower``, not the DGP's ``d_lower``."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            panel, row_w, w_unit, d, _, _ = self._panel_with_unit_weights(
+                G=200, design="continuous_near_d_lower"
+            )
+            est = HeterogeneousAdoptionDiD(design="continuous_near_d_lower")
+            r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        assert r.effective_dose_mean is not None
+        # Use the estimator's auto-resolved d_lower (== d.min()), not the
+        # DGP's theoretical lower bound.
+        expected = float(np.average(d - r.d_lower, weights=w_unit))
+        np.testing.assert_allclose(
+            r.effective_dose_mean, expected, atol=1e-12, rtol=1e-12
+        )
+
+    def test_effective_dose_mean_none_when_unweighted(self):
+        """On unweighted fits, ``effective_dose_mean`` is ``None`` —
+        ``dose_mean`` is the sole denominator there (raw == weighted
+        when w=1, so the duplicate field would be noise)."""
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        assert r.effective_dose_mean is None
+
+    # ---------- Round 5 P0: zero-weight units don't drive design ----------
+
+    def test_zero_weight_unit_at_d_min_does_not_flip_design(self):
+        """Round 5 P0: a zero-weight unit sitting at ``d.min() = 0``
+        must not flip the auto-detect design from
+        ``continuous_near_d_lower`` (correct on the positive-weight
+        subpop) to ``continuous_at_zero`` (wrong, boundary=0 chosen from
+        an excluded unit). Previously design detection ran on the full
+        unit set, so a subpopulation-style zero-weight unit at d=0
+        silently mistargeted."""
+        rng = np.random.default_rng(42)
+        G_pop = 200
+        # Full population: one zero-weight unit at d=0; rest positive
+        # weights with d in [0.1, 1.0] (so positive-weight support min = 0.1).
+        d = np.concatenate([[0.0], rng.uniform(0.1, 1.0, G_pop - 1)])
+        dy = 2.0 * (d - 0.1) + rng.normal(0, 0.2, G_pop)
+        w_unit = np.concatenate([[0.0], rng.uniform(0.5, 1.5, G_pop - 1)])
+        panel = _make_panel(d, dy)
+        row_w = np.zeros(panel.shape[0])
+        for g in range(G_pop):
+            row_w[panel["unit"].to_numpy() == g] = w_unit[g]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            # Full panel with zero-weight unit at d=0: auto-detect.
+            est = HeterogeneousAdoptionDiD(design="auto")
+            r_full = est.fit(
+                panel, "outcome", "dose", "period", "unit", weights=row_w
+            )
+            # Physically drop the zero-weight unit and refit.
+            panel_dropped = panel[panel["unit"] != 0].reset_index(drop=True)
+            w_dropped = row_w[panel["unit"].to_numpy() != 0]
+            r_dropped = est.fit(
+                panel_dropped,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                weights=w_dropped,
+            )
+        # Both paths resolve to the SAME design (the positive-weight
+        # support, not the contaminated d=0 boundary).
+        assert r_full.design == r_dropped.design
+        # Both paths produce the same ATT (lprobust already ignored the
+        # zero-weight unit's kernel contribution; filtering earlier
+        # doesn't change the fit numerically).
+        np.testing.assert_allclose(r_full.att, r_dropped.att, atol=1e-10, rtol=1e-10)
+        np.testing.assert_allclose(r_full.se, r_dropped.se, atol=1e-10, rtol=1e-10)
+        # d_lower set by the positive-weight subpopulation (d.min() of
+        # the kept units), NOT the contaminated full d.min()=0.
+        assert r_full.d_lower > 0.0
+        np.testing.assert_allclose(
+            r_full.d_lower, r_dropped.d_lower, atol=1e-12, rtol=1e-12
+        )
+
+    def test_zero_weight_filter_warns_user(self):
+        """Dropping zero-weight units from design resolution should
+        emit a UserWarning so the behavior is visible."""
+        rng = np.random.default_rng(5)
+        G = 150
+        d = rng.uniform(0.0, 1.0, G)
+        dy = 2.0 * d + rng.normal(0, 0.25, G)
+        w_unit = rng.uniform(0.5, 1.5, G)
+        # Zero out 5 units.
+        w_unit[:5] = 0.0
+        panel = _make_panel(d, dy)
+        row_w = np.zeros(panel.shape[0])
+        for g in range(G):
+            row_w[panel["unit"].to_numpy() == g] = w_unit[g]
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with pytest.warns(UserWarning, match="weight == 0"):
+            est.fit(
+                panel, "outcome", "dose", "period", "unit", weights=row_w
+            )
+
+    def test_zero_weight_survey_metadata_preserves_full_design(self):
+        """Round 6 P1a: on the ``survey=`` path, zero-weight units
+        (subpopulation convention) stay in the ResolvedSurveyDesign for
+        variance + SurveyMetadata. ``n_psu`` / ``n_strata`` /
+        ``df_survey`` / ``sum_weights`` reflect the FULL sampling frame,
+        not the in-domain subset — that is the standard
+        domain-estimation convention in diff_diff.survey."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(10)
+        G = 160
+        d = rng.uniform(0.0, 1.0, G)
+        dy = 2.0 * d + rng.normal(0, 0.25, G)
+        # Strata + PSU structure on the FULL sample.
+        strata = rng.integers(0, 4, G)
+        psu = strata * 100 + rng.integers(0, 20, G)
+        # Zero out weights on 1/4 of units (subpopulation exclusion).
+        w_unit = rng.uniform(0.5, 1.5, G)
+        zero_idx = rng.choice(G, size=G // 4, replace=False)
+        w_unit[zero_idx] = 0.0
+        panel = _make_panel(d, dy)
+        row_w = np.zeros(panel.shape[0])
+        row_strata = np.zeros(panel.shape[0], dtype=np.int64)
+        row_psu = np.zeros(panel.shape[0], dtype=np.int64)
+        for g in range(G):
+            mask = panel["unit"].to_numpy() == g
+            row_w[mask] = w_unit[g]
+            row_strata[mask] = strata[g]
+            row_psu[mask] = psu[g]
+        panel_sd = panel.assign(w=row_w, strata=row_strata, psu=row_psu)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_full = est.fit(
+                panel_sd, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+            # Reference fit: physically drop the zero-weight units and
+            # refit on the positive-weight subsample. SurveyMetadata
+            # values SHOULD DIFFER because dropping loses sampling frame
+            # structure.
+            keep_rows = panel_sd["unit"].isin(
+                [g for g in range(G) if w_unit[g] > 0]
+            )
+            panel_sub = panel_sd.loc[keep_rows].reset_index(drop=True)
+            r_sub = est.fit(
+                panel_sub, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+        # Point estimate IDENTICAL — zero-weight units contribute 0 to
+        # fit either way.
+        np.testing.assert_allclose(r_full.att, r_sub.att, atol=1e-10, rtol=1e-10)
+        # Full-design SurveyMetadata counts the FULL sampling frame.
+        assert r_full.survey_metadata is not None
+        assert r_sub.survey_metadata is not None
+        # Full fit's sum_weights includes zero-weight units (sum is the
+        # same as the filtered sum, since w=0 contributes 0). But n_psu
+        # / n_strata preserve the FULL design whereas the filtered fit
+        # sees only in-domain PSUs/strata.
+        assert r_full.survey_metadata.n_psu >= r_sub.survey_metadata.n_psu
+
+    def test_bias_corrected_local_linear_zero_weight_matches_filtered(self):
+        """Round 6 P1b: ``bias_corrected_local_linear(weights=...)``
+        with zero-weight units at the boundary must produce the same
+        fit numbers as physically dropping those units (both in
+        explicit-h/b and auto-bandwidth modes). Previously the wrapper
+        ran ``_validate_had_inputs`` on the full sample, so zero-weight
+        units at ``d.min()=0`` could spuriously trip the Design 1'
+        support heuristic or the mass-point threshold."""
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        rng = np.random.default_rng(21)
+        G = 250
+        # Construct a sample where the positive-weight support has
+        # d.min ~ 0.1 (continuous_near_d_lower shape), but add a
+        # zero-weight unit at d=0 (would otherwise flip the wrapper to
+        # Design 1').
+        d_pos = rng.uniform(0.1, 1.0, G - 1)
+        d_full = np.concatenate([[0.0], d_pos])
+        y_full = np.concatenate([[0.0], 2.0 * (d_pos - 0.1) + rng.normal(0, 0.2, G - 1)])
+        w_full = np.concatenate([[0.0], np.ones(G - 1)])
+        # Reference: physically drop the zero-weight unit.
+        d_ref = d_full[w_full > 0]
+        y_ref = y_full[w_full > 0]
+        # Explicit-h/b mode:
+        r_weighted = bias_corrected_local_linear(
+            d=d_full, y=y_full, boundary=float(d_pos.min()),
+            h=0.3, b=0.3, weights=w_full, return_influence=True,
+        )
+        r_dropped = bias_corrected_local_linear(
+            d=d_ref, y=y_ref, boundary=float(d_pos.min()),
+            h=0.3, b=0.3, return_influence=True,
+        )
+        np.testing.assert_allclose(
+            r_weighted.estimate_bias_corrected,
+            r_dropped.estimate_bias_corrected,
+            atol=1e-12, rtol=1e-12,
+        )
+        np.testing.assert_allclose(
+            r_weighted.se_robust, r_dropped.se_robust, atol=1e-12, rtol=1e-12
+        )
+        # IF zero-padded back to FULL length (original ordering).
+        assert r_weighted.influence_function is not None
+        assert r_weighted.influence_function.shape[0] == G
+        # Zero-weight unit at index 0 has IF=0.
+        np.testing.assert_allclose(
+            r_weighted.influence_function[0], 0.0, atol=1e-14, rtol=1e-14
+        )
+        # Positive-weight positions match the dropped-sample IF.
+        np.testing.assert_allclose(
+            r_weighted.influence_function[1:],
+            r_dropped.influence_function,
+            atol=1e-12, rtol=1e-12,
+        )
+
+    def test_bias_corrected_local_linear_zero_weight_auto_bandwidth(self):
+        """Round 6 P1b: auto-bandwidth selection also runs on the
+        positive-weight subset — otherwise the unweighted MSE-DPI
+        selector sees the zero-weight unit at the boundary as a valid
+        observation and picks a wrong bandwidth."""
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        rng = np.random.default_rng(22)
+        G = 300
+        d_pos = rng.uniform(0.0, 1.0, G - 1)
+        d_full = np.concatenate([d_pos, [1.0]])  # zero-weight unit at d=1.0
+        y_full = np.concatenate(
+            [2.0 * d_pos + rng.normal(0, 0.25, G - 1), [0.0]]
+        )
+        w_full = np.concatenate([np.ones(G - 1), [0.0]])
+        d_ref = d_full[w_full > 0]
+        y_ref = y_full[w_full > 0]
+        r_weighted = bias_corrected_local_linear(
+            d=d_full, y=y_full, boundary=0.0, weights=w_full
+        )
+        r_dropped = bias_corrected_local_linear(
+            d=d_ref, y=y_ref, boundary=0.0
+        )
+        # Auto-selected h identical between the two paths.
+        np.testing.assert_allclose(
+            r_weighted.h, r_dropped.h, atol=1e-12, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            r_weighted.estimate_bias_corrected,
+            r_dropped.estimate_bias_corrected,
+            atol=1e-12, rtol=1e-12,
+        )
+
+    def test_zero_weight_counts_reflect_positive_subset(self):
+        """``n_obs`` / ``n_treated`` / ``n_control`` on the result must
+        reflect the positive-weight sub-population, not the full panel."""
+        rng = np.random.default_rng(7)
+        G = 120
+        d = rng.uniform(0.0, 1.0, G)
+        dy = 2.0 * d + rng.normal(0, 0.25, G)
+        w_unit = np.ones(G)
+        w_unit[:20] = 0.0  # 20 zero-weight units
+        panel = _make_panel(d, dy)
+        row_w = np.zeros(panel.shape[0])
+        for g in range(G):
+            row_w[panel["unit"].to_numpy() == g] = w_unit[g]
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        # 100 positive-weight units, not 120.
+        assert r.n_obs == 100
+
+    def test_survey_metadata_raw_weights_match_shortcut(self):
+        """Round 4 P2: on the ``survey=SurveyDesign(weights="col")``
+        path, ``SurveyMetadata.sum_weights`` and ``weight_range`` must
+        reflect the RAW pre-normalization weights (per the
+        ``compute_survey_metadata`` contract), so they agree with the
+        ``weights=<array>`` shortcut on the same data. Previously the
+        survey path passed resolved (post-normalization, mean=1) weights
+        into the helper, producing ``sum_weights ≈ G`` and normalized
+        ``weight_range`` that drifted from the shortcut."""
+        from diff_diff.survey import SurveyDesign
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        panel_with_w = panel.assign(w=row_w)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_w = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit", weights=row_w
+            )
+            r_sd = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w"),
+            )
+        sm_w = r_w.survey_metadata
+        sm_sd = r_sd.survey_metadata
+        assert sm_w is not None and sm_sd is not None
+        # sum_weights at unit-level: G unit-constant weights aggregated
+        # per-unit via .first() give identical arrays on both paths.
+        np.testing.assert_allclose(
+            sm_sd.sum_weights, sm_w.sum_weights, atol=1e-12, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            sm_sd.weight_range[0], sm_w.weight_range[0], atol=1e-12, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            sm_sd.weight_range[1], sm_w.weight_range[1], atol=1e-12, rtol=1e-12
+        )
+        # design_effect and effective_n are scale-invariant so they also
+        # agree (secondary lock).
+        np.testing.assert_allclose(
+            sm_sd.design_effect, sm_w.design_effect, atol=1e-12, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            sm_sd.effective_n, sm_w.effective_n, atol=1e-12, rtol=1e-12
+        )
+
+    def test_repr_surfaces_weighted_fields_when_present(self):
+        """Round 4 P3: ``__repr__`` must name ``variance_formula`` and
+        ``effective_dose_mean`` when the fit was weighted so ad-hoc log
+        output / interactive notebooks show which inference path and
+        denominator were used."""
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r_w = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        rep = repr(r_w)
+        assert "variance_formula='pweight'" in rep
+        assert "effective_dose_mean=" in rep
+        # Unweighted fit: ``__repr__`` keeps the original compact form.
+        r_unw = est.fit(panel, "outcome", "dose", "period", "unit")
+        rep_unw = repr(r_unw)
+        assert "variance_formula" not in rep_unw
+        assert "effective_dose_mean" not in rep_unw
+
+    def test_weights_shortcut_clears_survey_only_fields(self):
+        """Round 3 P2a: on the ``weights=`` shortcut, inference stays
+        Normal (df=None in safe_inference). Survey-only fields of
+        ``SurveyMetadata`` (``df_survey``, ``n_psu``, ``n_strata``)
+        must be ``None`` there — otherwise ``summary()`` /
+        BusinessReport render a finite-df survey result that does not
+        match the actual (Normal) inference family."""
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        sm = r.survey_metadata
+        assert sm is not None
+        # Descriptive weighted-sample fields stay populated.
+        assert sm.weight_type == "pweight"
+        assert sm.effective_n > 0
+        assert sm.sum_weights > 0
+        # Survey-only fields cleared (Normal inference; no PSU/strata).
+        assert sm.n_strata is None
+        assert sm.n_psu is None
+        assert sm.df_survey is None
+
+    def test_survey_path_populates_df_survey(self):
+        """Counter-test to the above: under ``survey=SurveyDesign(...)``
+        with real PSU/strata, ``df_survey`` IS populated and threaded
+        into t-inference."""
+        panel, SurveyDesign = self._panel_with_survey_cols(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = est.fit(
+                panel, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+        sm = r.survey_metadata
+        assert sm is not None
+        assert sm.n_strata is not None and sm.n_strata > 1
+        assert sm.n_psu is not None and sm.n_psu > 1
+        assert sm.df_survey is not None and sm.df_survey > 0
+
+    def test_to_dict_includes_variance_formula_and_effective_dose_mean(self):
+        """Round 3 P2b: ``to_dict()`` must surface ``variance_formula``
+        and ``effective_dose_mean`` so downstream machine consumers can
+        recover the weighted denominator + SE family without inspecting
+        the result object directly."""
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        d = r.to_dict()
+        assert "variance_formula" in d
+        assert d["variance_formula"] == "pweight"
+        assert "effective_dose_mean" in d
+        assert d["effective_dose_mean"] is not None
+        assert np.isfinite(d["effective_dose_mean"])
+
+    def test_to_dict_variance_formula_none_when_unweighted(self):
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit")
+        d = r.to_dict()
+        assert d["variance_formula"] is None
+        assert d["effective_dose_mean"] is None
+
+    def test_summary_renders_effective_dose_mean_under_weights(self):
+        """``summary()`` must display the weighted denominator explicitly
+        when the fit used weights (Round 3 P2b)."""
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        s = r.summary()
+        assert "Weighted D" in s  # "Weighted D̄ (denominator):" header
+
+    def test_effective_dose_mean_equals_dose_mean_under_uniform_weights(self):
+        """Uniform weights → effective_dose_mean ≡ dose_mean at 1e-14."""
+        panel, _, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        r = est.fit(
+            panel, "outcome", "dose", "period", "unit",
+            weights=np.ones(panel.shape[0]),
+        )
+        assert r.effective_dose_mean is not None
+        np.testing.assert_allclose(
+            r.effective_dose_mean, r.dose_mean, atol=1e-14, rtol=1e-14
+        )
+
+    # ---------- P1 fix: SurveyMetadata contract for downstream consumers ----------
+
+    def test_survey_metadata_is_surveymetadata_instance(self):
+        """HAD survey results expose ``survey_metadata`` as the repo-
+        standard :class:`diff_diff.survey.SurveyMetadata` dataclass, so
+        shared reporting consumers (BusinessReport, DiagnosticReport)
+        can read ``df_survey`` / ``effective_n`` / ``n_strata`` /
+        ``n_psu`` via attribute access uniformly across estimators.
+        Regression lock for P1 from round 2 CI review."""
+        from diff_diff.survey import SurveyDesign, SurveyMetadata
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        panel_with_w = panel.assign(w=row_w)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            # Both entry paths produce SurveyMetadata (not dict).
+            r_w = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit", weights=row_w
+            )
+            r_sd = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w"),
+            )
+        assert isinstance(r_w.survey_metadata, SurveyMetadata)
+        assert isinstance(r_sd.survey_metadata, SurveyMetadata)
+        # Attribute access for the fields downstream consumers read.
+        for r in (r_w, r_sd):
+            _ = r.survey_metadata.weight_type
+            _ = r.survey_metadata.effective_n
+            _ = r.survey_metadata.design_effect
+            _ = r.survey_metadata.sum_weights
+            _ = r.survey_metadata.n_strata
+            _ = r.survey_metadata.n_psu
+            _ = r.survey_metadata.df_survey
+            _ = r.survey_metadata.weight_range
+
+    def test_survey_no_psu_no_strata_se_matches_weights_hc1(self):
+        """Under ``SurveyDesign(weights='col')`` with no strata / PSU /
+        FPC, the Binder-TSL variance should be (n/(n-1))-consistent with
+        the lprobust HC1-style weighted-robust SE from the ``weights=``
+        shortcut. Regression lock that the survey path targets the right
+        estimator scale (bias-corrected, matching ``tau_bc``)."""
+        from diff_diff.survey import SurveyDesign
+
+        panel, row_w, _, _, _, _ = self._panel_with_unit_weights(G=200)
+        panel_with_w = panel.assign(w=row_w)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_w = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit",
+                weights=row_w,
+            )
+            r_sd = est.fit(
+                panel_with_w, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w"),
+            )
+        # ATT matches (same weighted lprobust fit).
+        np.testing.assert_allclose(r_w.att, r_sd.att, atol=1e-12, rtol=1e-12)
+        # SEs should be in the same ballpark (sqrt((n/(n-1))) ratio —
+        # roughly 1.0025 at G=200). Reject >5% discrepancy which would
+        # indicate the survey path targets the wrong estimator scale.
+        ratio = r_sd.se / r_w.se
+        assert 0.9 < ratio < 1.15, (
+            f"Survey SE / weights SE = {ratio:.4f} at G=200 is outside "
+            f"the n/(n-1) tolerance band [0.9, 1.15]. If the survey IF "
+            f"still uses the classical scale (V_Y_cl), the SE will be "
+            f"materially smaller than the bias-corrected SE here."
+        )

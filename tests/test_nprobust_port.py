@@ -637,12 +637,153 @@ class TestLprobustSingleEval:
                        kernel="epa", vce="nn", bwcheck=None)
         # Post-sort d; ind.h = (|d|/h <= 1) & (d <= h) => d in [0, h].
         sorted_d = np.sort(d)
-        expected_n_h = int(np.sum((np.abs(sorted_d) / h <= 1) & (sorted_d != h)))
-        # Relaxed: must be close to expected, exact match because epa is
-        # > 0 strictly inside |u| <= 1 minus the point (avoided by continuity).
-        # Just assert n_used > sum of b-window (which is smaller).
+        # Relaxed: assert n_used > sum of b-window (which is smaller).
         expected_n_b = int(np.sum((np.abs(sorted_d) / b <= 1)))
         assert res.n_used > expected_n_b, (
             f"h > b should select the wider h-window: n_used={res.n_used} "
             f"should exceed b-window count ({expected_n_b})"
         )
+
+
+# =============================================================================
+# Weighted lprobust (Phase 4.5 survey support)
+# =============================================================================
+
+
+class TestWeightedLprobust:
+    """Validation harness for weighted ``lprobust`` (Phase 4.5 A).
+
+    No public weighted-CCF reference exists; the uniform-weights bit-parity
+    against the unweighted path is the primary regression lock. Informative-
+    weight behavior is validated via MC oracle tests in ``test_had_mc.py``
+    and ``np::npreg`` partial parity in ``test_np_npreg_weighted_parity.py``.
+    """
+
+    def _panel(self, seed=42, n=200):
+        rng = np.random.default_rng(seed)
+        x = rng.uniform(-1.0, 1.0, n)
+        y = 2.0 * x + 0.3 * x**2 + rng.normal(0.0, 0.25, n)
+        return x, y
+
+    def test_uniform_weights_bit_parity(self):
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel()
+        base = lprobust(y, x, eval_point=0.0, h=0.4, b=0.4)
+        w1 = lprobust(y, x, eval_point=0.0, h=0.4, b=0.4, weights=np.ones(x.size))
+        np.testing.assert_allclose(w1.tau_cl, base.tau_cl, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(w1.tau_bc, base.tau_bc, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(w1.se_cl, base.se_cl, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(w1.se_rb, base.se_rb, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(w1.V_Y_cl, base.V_Y_cl, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(w1.V_Y_bc, base.V_Y_bc, atol=1e-14, rtol=1e-14)
+        assert w1.n_used == base.n_used
+
+    def test_uniform_weights_bit_parity_hc1(self):
+        """vce='hc1' threads weights through the hat-matrix hii term
+        (line 1276). Confirm bit-parity under w=ones for 'hc1' as well."""
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel()
+        base = lprobust(y, x, eval_point=0.0, h=0.4, b=0.4, vce="hc1")
+        w1 = lprobust(
+            y, x, eval_point=0.0, h=0.4, b=0.4, vce="hc1",
+            weights=np.ones(x.size),
+        )
+        np.testing.assert_allclose(w1.tau_bc, base.tau_bc, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(w1.se_rb, base.se_rb, atol=1e-14, rtol=1e-14)
+
+    def test_nontrivial_weights_change_estimate(self):
+        """Sanity check: under informative weights, the weighted estimate
+        differs from unweighted (weight mechanism has teeth)."""
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel()
+        base = lprobust(y, x, eval_point=0.0, h=0.4, b=0.4)
+        w = np.exp(-np.abs(x) * 2.0)  # upweight near boundary
+        r_w = lprobust(y, x, eval_point=0.0, h=0.4, b=0.4, weights=w)
+        assert not np.isclose(r_w.tau_bc, base.tau_bc, atol=1e-6)
+
+    def test_negative_weights_reject(self):
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel()
+        w = np.ones(x.size)
+        w[0] = -0.5
+        with pytest.raises(ValueError, match="non-negative"):
+            lprobust(y, x, eval_point=0.0, h=0.4, b=0.4, weights=w)
+
+    def test_nan_weights_reject(self):
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel()
+        w = np.ones(x.size)
+        w[0] = np.nan
+        with pytest.raises(ValueError, match="non-finite"):
+            lprobust(y, x, eval_point=0.0, h=0.4, b=0.4, weights=w)
+
+    def test_inf_weights_reject(self):
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel()
+        w = np.ones(x.size)
+        w[0] = np.inf
+        with pytest.raises(ValueError, match="non-finite"):
+            lprobust(y, x, eval_point=0.0, h=0.4, b=0.4, weights=w)
+
+    def test_zero_sum_weights_reject(self):
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel()
+        with pytest.raises(ValueError, match="sum to zero"):
+            lprobust(y, x, eval_point=0.0, h=0.4, b=0.4,
+                     weights=np.zeros(x.size))
+
+    def test_weights_length_mismatch(self):
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel()
+        with pytest.raises(ValueError, match="weights length"):
+            lprobust(y, x, eval_point=0.0, h=0.4, b=0.4,
+                     weights=np.ones(x.size - 1))
+
+    def test_zero_weight_observations_drop_from_window(self):
+        """Observations with weights[i]=0 filter out via combined ``w>0``
+        selector, matching filtering the data first and re-fitting."""
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel(n=100)
+        in_window = np.abs(x) < 0.3
+        drop_idx = np.where(in_window)[0][:5]
+        w = np.ones(x.size)
+        w[drop_idx] = 0.0
+        r_w = lprobust(y, x, eval_point=0.0, h=0.4, b=0.4, weights=w)
+        mask = w > 0
+        r_ref = lprobust(y[mask], x[mask], eval_point=0.0, h=0.4, b=0.4)
+        np.testing.assert_allclose(r_w.tau_bc, r_ref.tau_bc, atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(r_w.se_rb, r_ref.se_rb, atol=1e-12, rtol=1e-12)
+
+    def test_weights_with_cluster(self):
+        """Weights + cluster are orthogonal threading paths (weights enter
+        via W_h/W_b; cluster enters via variance crossproduct aggregation)."""
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel(n=200)
+        rng = np.random.default_rng(7)
+        cluster = rng.integers(0, 20, x.size)
+        w = rng.uniform(0.5, 1.5, x.size)
+        r = lprobust(y, x, eval_point=0.0, h=0.4, b=0.4,
+                     cluster=cluster, weights=w)
+        assert np.isfinite(r.tau_bc) and np.isfinite(r.se_rb) and r.se_rb > 0
+
+    def test_uniform_weights_bit_parity_with_cluster(self):
+        from diff_diff._nprobust_port import lprobust
+
+        x, y = self._panel(n=200)
+        rng = np.random.default_rng(7)
+        cluster = rng.integers(0, 20, x.size)
+        base = lprobust(y, x, eval_point=0.0, h=0.4, b=0.4, cluster=cluster)
+        w1 = lprobust(y, x, eval_point=0.0, h=0.4, b=0.4,
+                      cluster=cluster, weights=np.ones(x.size))
+        np.testing.assert_allclose(w1.tau_bc, base.tau_bc, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(w1.se_rb, base.se_rb, atol=1e-14, rtol=1e-14)

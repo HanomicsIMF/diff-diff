@@ -76,6 +76,7 @@ from diff_diff.local_linear import (
     BiasCorrectedFit,
     bias_corrected_local_linear,
 )
+from diff_diff.survey import SurveyMetadata, compute_survey_metadata
 from diff_diff.utils import safe_inference
 
 __all__ = [
@@ -225,11 +226,18 @@ class HeterogeneousAdoptionDiDResults:
           coefficient directly -
           ``(Ybar_{Z=1} - Ybar_{Z=0}) / (Dbar_{Z=1} - Dbar_{Z=0})``.
     se : float
-        Standard error on the beta-scale. For continuous designs, the
-        CCT-2014 robust SE from Phase 1c divided by ``|den|`` (the
-        absolute denominator used in ``att``); the higher-order
-        variance from ``mean(ΔY)`` is dominated by the nonparametric
-        boundary estimate in large samples and is not included. For
+        Standard error on the beta-scale. For continuous designs:
+        - Unweighted or ``weights=<array>``: CCT-2014 weighted-robust SE
+          from Phase 1c divided by ``|den|`` (``den`` = raw or weighted
+          denominator depending on fit path).
+        - ``survey=SurveyDesign(...)``: Binder (1983) Taylor-series
+          linearization of the per-unit IF (bias-corrected scale,
+          aligned with ``tau_bc``) routed through
+          :func:`compute_survey_if_variance` for PSU-aggregated,
+          FPC/strata-adjusted variance, divided by ``|den|``.
+        In both cases the higher-order variance from ``mean(ΔY)`` is
+        dominated by the nonparametric boundary estimate in large
+        samples and is not included in the leading-order formula. For
         mass-point, the 2SLS structural-residual sandwich SE.
     t_stat, p_value, conf_int : inference fields
         Routed through ``safe_inference``; NaN when SE is non-finite.
@@ -277,9 +285,18 @@ class HeterogeneousAdoptionDiDResults:
     cluster_name : str or None
         Column name of the cluster variable on the mass-point path when
         cluster-robust SE is requested. ``None`` otherwise.
-    survey_metadata : object or None
-        Always ``None`` in Phase 2a. Field shape kept for future-compat
-        with a planned survey integration PR.
+    survey_metadata : SurveyMetadata or None
+        Repo-standard survey metadata dataclass from
+        :class:`diff_diff.survey.SurveyMetadata`. ``None`` when ``fit()``
+        was called without ``survey=`` or ``weights=``; populated on the
+        continuous-dose weighted paths via
+        :func:`diff_diff.survey.compute_survey_metadata`. Exposes
+        ``weight_type``, ``effective_n``, ``design_effect``,
+        ``sum_weights``, ``n_strata``, ``n_psu``, ``weight_range``, and
+        ``df_survey`` for downstream reporting consumers (BusinessReport,
+        DiagnosticReport) that read these fields via attribute access.
+        HAD-specific inference-method info (pweight vs Binder-TSL) is
+        carried on ``inference_method`` and ``variance_formula``.
     bandwidth_diagnostics : BandwidthResult or None
         Full Phase 1b MSE-DPI selector output on the continuous paths
         (when bandwidths were auto-selected). ``None`` on the mass-point
@@ -314,18 +331,49 @@ class HeterogeneousAdoptionDiDResults:
     inference_method: str
     vcov_type: Optional[str]
     cluster_name: Optional[str]
-    survey_metadata: Optional[Any]
+    survey_metadata: Optional[SurveyMetadata]
 
     # Nonparametric-only diagnostics
     bandwidth_diagnostics: Optional[BandwidthResult]
     bias_corrected_fit: Optional[BiasCorrectedFit]
 
+    # Phase 4.5 weighted-path extras (optional so unweighted fits stay unchanged)
+    variance_formula: Optional[str] = None
+    """HAD-specific label for the SE formula on the weighted continuous
+    path: ``"pweight"`` (weighted-robust CCT 2014) under ``weights=``,
+    ``"survey_binder_tsl"`` (Binder 1983 TSL with PSU/strata/FPC) under
+    ``survey=SurveyDesign(...)``, ``None`` on unweighted or mass-point
+    fits. Orthogonal to ``survey_metadata`` which is the repo-standard
+    :class:`diff_diff.survey.SurveyMetadata` shared with downstream
+    report/diagnostic consumers (no HAD-specific leakage)."""
+    effective_dose_mean: Optional[float] = None
+    """Weighted denominator used by the beta-scale rescaling on the
+    continuous path: ``sum(w_g · D_g) / sum(w_g)`` for
+    ``continuous_at_zero`` or ``sum(w_g · (D_g - d_lower)) / sum(w_g)``
+    for ``continuous_near_d_lower``. Reduces bit-exactly to
+    ``dose_mean`` / ``mean(D - d_lower)`` when weights are uniform or
+    absent. ``None`` when ``fit()`` was called without
+    ``survey=`` / ``weights=`` (use ``dose_mean`` there). Exists because
+    ``dose_mean`` is the raw sample mean of the dose column; under
+    weighted fits the estimator's actual denominator is the weighted
+    mean, and users reconstructing the β-scale value by hand need the
+    weighted one."""
+
     def __repr__(self) -> str:
-        return (
+        base = (
             f"HeterogeneousAdoptionDiDResults("
             f"att={self.att:.4f}, se={self.se:.4f}, "
-            f"design={self.design!r}, n_obs={self.n_obs})"
+            f"design={self.design!r}, n_obs={self.n_obs}"
         )
+        # Surface weighted-path identity when the fit was weighted, so the
+        # one-line repr makes it unambiguous which inference family was
+        # used (pweight-shortcut vs full Binder-TSL survey) and the
+        # effective denominator flows into ad-hoc log output.
+        if self.variance_formula is not None:
+            base += f", variance_formula={self.variance_formula!r}"
+        if self.effective_dose_mean is not None:
+            base += f", effective_dose_mean={self.effective_dose_mean:.4g}"
+        return base + ")"
 
     def summary(self) -> str:
         """Formatted summary table."""
@@ -365,6 +413,18 @@ class HeterogeneousAdoptionDiDResults:
             bc = self.bias_corrected_fit
             lines.append(f"{'Bandwidth h used:':<30} {bc.h:>20.6g}")
             lines.append(f"{'Obs in window (n_used):':<30} {bc.n_used:>20}")
+        if self.survey_metadata is not None:
+            sm = self.survey_metadata
+            vf_label = self.variance_formula or "unknown"
+            lines.append(f"{'Variance formula:':<30} {vf_label:>20}")
+            lines.append(f"{'Effective sample size:':<30} {sm.effective_n:>20.6g}")
+            if self.effective_dose_mean is not None:
+                lines.append(
+                    f"{'Weighted D̄ (denominator):':<30} "
+                    f"{self.effective_dose_mean:>20.6g}"
+                )
+            if sm.df_survey is not None:
+                lines.append(f"{'Survey df:':<30} {sm.df_survey:>20}")
         param_label = self.target_parameter
         lines.extend(
             [
@@ -395,7 +455,26 @@ class HeterogeneousAdoptionDiDResults:
         print(self.summary())
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return results as a dict of scalars."""
+        """Return results as a dict of scalars + weighted-path surfaces.
+
+        Always-present keys mirror the dataclass fields: ``att``, ``se``,
+        ``t_stat``, ``p_value``, ``conf_int_lower`` / ``conf_int_upper``,
+        ``alpha``, ``design``, ``target_parameter``, ``d_lower``,
+        ``dose_mean``, ``n_obs`` / ``n_treated`` / ``n_control`` /
+        ``n_mass_point`` / ``n_above_d_lower``, ``inference_method``,
+        ``vcov_type``, ``cluster_name``.
+
+        Weighted-path keys (``None`` on unweighted fits):
+
+        - ``survey_metadata``: repo-standard
+          :class:`diff_diff.survey.SurveyMetadata` dataclass (object, not
+          dict) carrying ``weight_type`` / ``effective_n`` /
+          ``design_effect`` / ``sum_weights`` / ``weight_range`` +
+          ``n_strata`` / ``n_psu`` / ``df_survey`` (latter three
+          ``None`` on the ``weights=`` shortcut).
+        - ``variance_formula``: ``"pweight"`` or ``"survey_binder_tsl"``.
+        - ``effective_dose_mean``: weighted denominator used by the
+          beta-scale rescaling."""
         return {
             "att": self.att,
             "se": self.se,
@@ -416,6 +495,9 @@ class HeterogeneousAdoptionDiDResults:
             "inference_method": self.inference_method,
             "vcov_type": self.vcov_type,
             "cluster_name": self.cluster_name,
+            "survey_metadata": self.survey_metadata,
+            "variance_formula": self.variance_formula,
+            "effective_dose_mean": self.effective_dose_mean,
         }
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -545,7 +627,7 @@ class HeterogeneousAdoptionDiDEventStudyResults:
     inference_method: str
     vcov_type: Optional[str]
     cluster_name: Optional[str]
-    survey_metadata: Optional[Any]
+    survey_metadata: Optional[SurveyMetadata]
 
     # Per-horizon diagnostics (lists, None on mass-point).
     # List entries may be None for horizons where the continuous-path fit
@@ -1399,6 +1481,198 @@ def _aggregate_first_difference(
     return d_arr, dy_arr, cluster_arr, unit_ids
 
 
+def _aggregate_unit_weights(
+    data: pd.DataFrame,
+    weights_arr: np.ndarray,
+    unit_col: str,
+) -> np.ndarray:
+    """Aggregate per-row weights to per-unit, enforcing constant-within-unit.
+
+    HAD's continuous path operates at the per-unit level (G rows, one per
+    unit) so survey weights — which typically arrive per-row in a long
+    panel — must collapse to a single value per unit. The paper's weighted
+    extension assumes sampling weights assigned at the sampling-unit level
+    (standard BRFSS/CPS/NHANES convention), so any within-unit weight
+    variance is interpreted as user error and rejected front-door rather
+    than silently mean-rolled (per ``feedback_no_silent_failures``).
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Long panel; the same frame passed to ``_aggregate_first_difference``.
+    weights_arr : np.ndarray, shape (n_rows,)
+        Row-aligned weights.
+    unit_col : str
+        Unit identifier column.
+
+    Returns
+    -------
+    w_unit : np.ndarray, shape (G,)
+        Per-unit weights sorted by unit id to align with the d/dy arrays
+        returned by ``_aggregate_first_difference``.
+
+    Raises
+    ------
+    ValueError
+        Shape mismatch, non-finite weights, negative weights, zero-sum
+        weights, or weights that vary within a unit.
+    """
+    n_rows = int(data.shape[0])
+    w = np.asarray(weights_arr, dtype=np.float64).ravel()
+    if w.shape[0] != n_rows:
+        raise ValueError(
+            f"weights length ({w.shape[0]}) does not match number of "
+            f"rows in data ({n_rows})."
+        )
+    if not np.all(np.isfinite(w)):
+        raise ValueError("weights contains non-finite values (NaN or Inf).")
+    if np.any(w < 0):
+        raise ValueError("weights must be non-negative.")
+    if np.sum(w) <= 0:
+        raise ValueError(
+            "weights sum to zero — no observations have positive weight."
+        )
+
+    df = data.reset_index(drop=True).copy()
+    df["_w_tmp__"] = w
+    w_per_unit = df.groupby(unit_col)["_w_tmp__"].agg(
+        lambda s: (float(s.min()), float(s.max()))
+    )
+    varying = w_per_unit.apply(lambda t: not np.isclose(t[0], t[1], rtol=1e-12, atol=0.0))
+    if bool(varying.any()):
+        n_bad = int(varying.sum())
+        raise ValueError(
+            f"weights vary within {n_bad} unit(s). HAD's continuous path "
+            f"requires unit-level sampling weights (constant within each "
+            f"unit). Either pre-aggregate your weights to the unit level "
+            f"or pass a unit-constant weight column. Per-obs weights that "
+            f"vary within unit would require an obs-level estimator not "
+            f"available on this path."
+        )
+    w_unit = (
+        df.groupby(unit_col)["_w_tmp__"].first().sort_index().to_numpy(dtype=np.float64)
+    )
+    return w_unit
+
+
+def _aggregate_unit_resolved_survey(
+    data: pd.DataFrame,
+    resolved: Any,  # ResolvedSurveyDesign
+    unit_col: str,
+) -> Any:  # ResolvedSurveyDesign at unit level
+    """Collapse a row-level ResolvedSurveyDesign to a unit-level analogue.
+
+    HAD's continuous path operates at G per-unit rows, so the survey
+    design (weights / strata / PSU / FPC) must collapse the same way.
+    Each design column is required to be constant-within-unit (same
+    invariant as ``_aggregate_unit_weights``); a within-unit inconsistency
+    raises ``ValueError`` per ``feedback_no_silent_failures``.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Long panel.
+    resolved : ResolvedSurveyDesign
+        Resolved design with ``(n_rows,)`` arrays.
+    unit_col : str
+
+    Returns
+    -------
+    ResolvedSurveyDesign
+        New resolved design with ``(G,)`` arrays aligned to sorted unit ids.
+
+    Raises
+    ------
+    ValueError
+        Strata / PSU / FPC vary within unit, or replicate-weight designs
+        are passed (replicate-weight HAD is Phase 4.5 C scope, not this
+        commit).
+    NotImplementedError
+        ``resolved.replicate_weights is not None`` — replicate-weight HAD
+        is deferred.
+    """
+    from diff_diff.survey import ResolvedSurveyDesign
+
+    if resolved.replicate_weights is not None:
+        raise NotImplementedError(
+            "Replicate-weight SurveyDesign on HAD is deferred to Phase 4.5 C. "
+            "Pass a SurveyDesign with weights/strata/psu/fpc (Taylor-series "
+            "linearization path) for this PR."
+        )
+
+    n_rows = int(data.shape[0])
+    if resolved.weights.shape[0] != n_rows:
+        raise ValueError(
+            f"ResolvedSurveyDesign.weights length ({resolved.weights.shape[0]}) "
+            f"does not match data rows ({n_rows}). The SurveyDesign must "
+            f"have been resolved against the same DataFrame passed to fit()."
+        )
+
+    def _collapse(arr: Optional[np.ndarray], name: str) -> Optional[np.ndarray]:
+        if arr is None:
+            return None
+        if arr.shape[0] != n_rows:
+            raise ValueError(
+                f"ResolvedSurveyDesign.{name} length does not match "
+                f"data rows ({n_rows})."
+            )
+        df = data.reset_index(drop=True).copy()
+        # Use a stable per-row column so we can take first() per unit and
+        # verify constancy. For numeric designs, use np.isclose; for
+        # object/string (rare), require equality.
+        df["_tmp__"] = arr
+        unit_min = df.groupby(unit_col)["_tmp__"].min()
+        unit_max = df.groupby(unit_col)["_tmp__"].max()
+        # nunique=1 is the robust check across dtypes.
+        nunique = df.groupby(unit_col)["_tmp__"].nunique(dropna=False)
+        if (nunique > 1).any():
+            n_bad = int((nunique > 1).sum())
+            raise ValueError(
+                f"ResolvedSurveyDesign.{name} varies within {n_bad} unit(s). "
+                f"Survey design columns must be constant within each unit "
+                f"(sampling-unit-level assignment convention). If your "
+                f"panel uses unit-varying design columns, aggregate them "
+                f"to unit-level before calling fit()."
+            )
+        # The unit-level min and max coincide by the nunique check; take min.
+        _ = unit_max  # referenced for symmetry of intent; min suffices
+        return unit_min.sort_index().to_numpy(dtype=arr.dtype)
+
+    w_unit = _collapse(resolved.weights, "weights")
+    assert w_unit is not None  # resolved.weights is non-Optional
+    strata_unit = _collapse(resolved.strata, "strata")
+    psu_unit = _collapse(resolved.psu, "psu")
+    fpc_unit = _collapse(resolved.fpc, "fpc")
+
+    # Recompute n_strata and n_psu at the unit level.
+    n_strata_unit = (
+        int(np.unique(strata_unit).shape[0]) if strata_unit is not None else 1
+    )
+    n_psu_unit = (
+        int(np.unique(psu_unit).shape[0]) if psu_unit is not None else int(w_unit.shape[0])
+    )
+
+    return ResolvedSurveyDesign(
+        weights=w_unit,
+        weight_type=resolved.weight_type,
+        strata=strata_unit,
+        psu=psu_unit,
+        fpc=fpc_unit,
+        n_strata=n_strata_unit,
+        n_psu=n_psu_unit,
+        lonely_psu=resolved.lonely_psu,
+        replicate_weights=None,
+        replicate_method=None,
+        fay_rho=0.0,
+        n_replicates=0,
+        replicate_strata=None,
+        combined_weights=resolved.combined_weights,
+        replicate_scale=None,
+        replicate_rscales=None,
+        mse=resolved.mse,
+    )
+
+
 def _aggregate_multi_period_first_differences(
     data: pd.DataFrame,
     outcome_col: str,
@@ -2058,30 +2332,53 @@ class HeterogeneousAdoptionDiD:
             to a follow-up PR. Staggered-timing panels are auto-filtered
             to the last-treatment cohort with a ``UserWarning``.
         survey : SurveyDesign or None
-            Reserved for a follow-up survey-integration PR. Must be
-            ``None`` in Phase 2a.
+            Survey design (sampling weights + optional strata / PSU / FPC)
+            for design-based inference on the two continuous-dose paths
+            (``continuous_at_zero``, ``continuous_near_d_lower``). Passes
+            through :func:`compute_survey_if_variance` (Binder 1983 TSL)
+            for the SE; weights propagate pointwise into the lprobust
+            kernel composition. Only ``weight_type="pweight"`` is
+            supported in Phase 4.5 A — ``aweight`` / ``fweight`` raise
+            ``NotImplementedError``. Survey design columns (strata / PSU /
+            FPC) must be constant within unit (sampling-unit-level
+            assignment); within-unit variance raises ``ValueError``.
+            Replicate-weight designs raise ``NotImplementedError``
+            (Phase 4.5 C). ``design="mass_point"`` and
+            ``aggregate="event_study"`` raise ``NotImplementedError`` on
+            survey/weights (Phase 4.5 B).
         weights : np.ndarray or None
-            Reserved for a follow-up PR. Must be ``None`` in Phase 2a.
+            Per-row sampling weights as a lightweight shortcut equivalent
+            to ``survey=SurveyDesign(weights=<col>)``. Produces the same
+            ATT; the SE uses lprobust's weighted-robust CCT-2014 formula
+            rather than Binder-TSL (no PSU/strata composition). Mutually
+            exclusive with ``survey=`` — passing both raises
+            ``ValueError``. Must be constant within each unit (same
+            invariant as ``survey=``).
 
         Returns
         -------
         HeterogeneousAdoptionDiDResults
         """
-        # ---- aggregate / survey / weights scaffolding rejections ----
+        # ---- aggregate / survey / weights validation ----
         if aggregate not in _VALID_AGGREGATES:
             raise ValueError(
                 f"Invalid aggregate={aggregate!r}. Must be one of " f"{_VALID_AGGREGATES}."
             )
-        if survey is not None:
-            raise NotImplementedError(
-                "survey=<SurveyDesign> support on HeterogeneousAdoptionDiD "
-                "is queued for a follow-up PR. Pass survey=None for now."
+        if survey is not None and weights is not None:
+            raise ValueError(
+                "Pass survey=<SurveyDesign> OR weights=<array>, not both. "
+                "For SurveyDesign-composed inference (PSU, strata, FPC, "
+                "replicate weights), use survey=. For a simple pweight-only "
+                "shortcut, use weights=; it is internally equivalent to "
+                "survey=SurveyDesign(weights=w)."
             )
-        if weights is not None:
+        # Event-study + survey/weights: Phase 4.5 B deferral.
+        if aggregate == "event_study" and (survey is not None or weights is not None):
             raise NotImplementedError(
-                "weights=<array> support on HeterogeneousAdoptionDiD is "
-                "queued for a follow-up PR (paired with survey "
-                "integration). Pass weights=None for now."
+                "survey= / weights= are not yet supported on "
+                "aggregate='event_study' (deferred to Phase 4.5 B — "
+                "event-study survey composition). The continuous-design "
+                "overall path supports survey= and weights= as of this PR."
             )
         # Dispatch the event-study path to a dedicated method so the
         # single-period path stays unchanged (Phase 2a contract preserved).
@@ -2130,6 +2427,125 @@ class HeterogeneousAdoptionDiD:
             t_post,
             None,
         )
+
+        # Resolve survey/weights into per-unit weights + optional
+        # ResolvedSurveyDesign (for PSU/strata/FPC composition).
+        # - `weights=<array>` → per-row array, no PSU/strata composition.
+        # - `survey=SurveyDesign(weights="col", ...)` → resolve the design
+        #   and produce a unit-level analogue for per-unit IF composition.
+        # - neither → unweighted path.
+        weights_unit: Optional[np.ndarray] = None
+        raw_weights_unit: Optional[np.ndarray] = None
+        resolved_survey_unit: Any = None  # ResolvedSurveyDesign (G,) when survey=
+        if weights is not None:
+            weights_unit = _aggregate_unit_weights(data, weights, unit_col)
+            # On the ``weights=`` shortcut, the passed array IS the raw
+            # pre-normalization weights — no SurveyDesign.resolve() scaling.
+            raw_weights_unit = weights_unit
+        elif survey is not None:
+            if not hasattr(survey, "weights"):
+                raise TypeError(
+                    f"survey= must be a SurveyDesign-like object with a "
+                    f".weights attribute; got {type(survey).__name__}. "
+                    f"Construct a SurveyDesign via diff_diff.survey."
+                )
+            if getattr(survey, "weights", None) is None:
+                raise NotImplementedError(
+                    "survey= without weights is not yet supported. Pass "
+                    "survey=SurveyDesign(weights='<col>', ...) with a "
+                    "per-row weight column."
+                )
+            # HAD's weighted local-linear treats ``weights`` as sampling
+            # (probability) weights: the kernel-composition formula
+            # ``W_combined = k((D-d̲)/h) · w`` is the inverse-probability
+            # weighting convention. Frequency weights (``fweight``)
+            # would imply replicating observations, and analytic weights
+            # (``aweight``, inverse-variance) would imply a different
+            # inferential target. Reject those up front rather than
+            # silently reinterpreting.
+            weight_type = getattr(survey, "weight_type", "pweight")
+            if weight_type != "pweight":
+                raise NotImplementedError(
+                    f"survey=SurveyDesign(weight_type={weight_type!r}) is "
+                    f"not supported on HeterogeneousAdoptionDiD's "
+                    f"continuous path. Only ``weight_type='pweight'`` "
+                    f"(sampling / inverse-probability weights) is "
+                    f"implemented in Phase 4.5 A. Frequency weights "
+                    f"(fweight) and analytic weights (aweight) would "
+                    f"imply different estimands and are not yet derived."
+                )
+            # Capture the RAW pre-normalization weight column before
+            # ``resolve()`` rescales pweights/aweights to mean=1. Needed
+            # below so ``compute_survey_metadata`` receives raw weights
+            # (per its contract — ``sum_weights`` / ``weight_range`` are
+            # raw-scale quantities; passing normalized weights would make
+            # the metadata disagree with the ``weights=`` shortcut and
+            # drift from the docstring/test contract in ``survey.py``).
+            weights_col_name = survey.weights  # known non-None from guard above
+            if weights_col_name not in data.columns:
+                raise ValueError(
+                    f"survey.weights column {weights_col_name!r} not found in data."
+                )
+            raw_weights_row = np.asarray(
+                data[weights_col_name].values, dtype=np.float64
+            )
+            raw_weights_unit = _aggregate_unit_weights(
+                data, raw_weights_row, unit_col
+            )
+            # Resolve the SurveyDesign against the long-panel data. This
+            # validates column names, applies pweight/aweight normalization
+            # to mean=1, and extracts numpy arrays for all design columns.
+            resolved_survey_row = survey.resolve(data)
+            # Collapse design columns to unit-level (constant-within-unit
+            # invariant) so the IF-based variance composition operates at
+            # the G-unit scale that matches the local-linear fit.
+            resolved_survey_unit = _aggregate_unit_resolved_survey(
+                data, resolved_survey_row, unit_col
+            )
+            weights_unit = np.asarray(
+                resolved_survey_unit.weights, dtype=np.float64
+            )
+
+        # Zero-weight units (e.g. SurveyDesign.subpopulation() output, or
+        # a user-supplied pweight column with excluded observations) must
+        # not drive design resolution — ``_detect_design`` / ``d_lower``
+        # / mass-point threshold / cohort counts run on the POSITIVE-
+        # weight subset. But the survey VARIANCE and ``SurveyMetadata``
+        # preserve the FULL ResolvedSurveyDesign (zero-weight PSUs /
+        # strata kept in the design with zero in-domain mass) — that is
+        # the standard subpopulation / domain-estimation convention in
+        # ``diff_diff.survey``: keep the sampling frame, zero the
+        # contributions. The weighted kernel in ``lprobust`` drops
+        # zero-weight observations via its ``w > 0`` selector, and
+        # ``bias_corrected_local_linear`` zero-pads the returned IF back
+        # to the full unit ordering so the survey composition at the
+        # HAD level sees IF=0 for zero-weight units on the FULL design.
+        # (CI review PR #359 round 5 P0 + round 6 P1 cascade.)
+        d_arr_full = d_arr  # unfiltered (G units); passed to _fit_continuous
+        dy_arr_full = dy_arr
+        weights_unit_full = weights_unit  # may contain zeros; used for FIT
+        resolved_survey_unit_full = resolved_survey_unit  # full design for VARIANCE
+        raw_weights_unit_full = raw_weights_unit  # full for SurveyMetadata
+        if weights_unit is not None:
+            positive_mask = weights_unit > 0.0
+            if not bool(positive_mask.all()):
+                n_dropped = int((~positive_mask).sum())
+                warnings.warn(
+                    f"HAD continuous path: {n_dropped} unit(s) have "
+                    f"weight == 0 and are excluded from design resolution "
+                    f"(auto-detect design, d_lower, mass-point threshold, "
+                    f"cohort counts). They are RETAINED in the survey "
+                    f"design for variance + SurveyMetadata (subpopulation "
+                    f"convention: zero-weight contributions but full "
+                    f"sampling frame), and their IF is 0 on the full "
+                    f"design.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                # Filter arrays used for DESIGN-RESOLUTION ONLY.
+                d_arr = d_arr[positive_mask]
+                dy_arr = dy_arr[positive_mask]
+                weights_unit = weights_unit[positive_mask]
 
         n_obs = int(d_arr.shape[0])
         if n_obs < 3:
@@ -2371,16 +2787,34 @@ class HeterogeneousAdoptionDiD:
                     UserWarning,
                     stacklevel=2,
                 )
+            # Fit on FULL (unfiltered) arrays so the IF aligns with the
+            # full survey design. bias_corrected_local_linear drops
+            # zero-weight rows internally for its validation + selector +
+            # fit, then zero-pads the IF back to full length. Survey
+            # composition below runs on the full design, preserving
+            # domain-estimation semantics.
             att, se, bc_fit, bw_diag = self._fit_continuous(
-                d_arr,
-                dy_arr,
+                d_arr_full,
+                dy_arr_full,
                 resolved_design,
                 d_lower_val,
+                weights_arr=weights_unit_full,
+                resolved_survey_unit=resolved_survey_unit_full,
             )
             inference_method = "analytical_nonparametric"
             vcov_label: Optional[str] = None
             cluster_label: Optional[str] = None
         elif resolved_design == "mass_point":
+            # Phase 4.5 B deferral: weighted 2SLS + survey composition on
+            # the mass-point path is not yet wired. Reject explicitly
+            # rather than silently ignoring survey/weights.
+            if weights_unit is not None:
+                raise NotImplementedError(
+                    "survey= / weights= on design='mass_point' is deferred "
+                    "to Phase 4.5 B (weighted 2SLS + sandwich variance). "
+                    "This PR ships survey support only on the continuous-"
+                    "dose paths (continuous_at_zero, continuous_near_d_lower)."
+                )
             if vcov_type_arg is None:
                 # Backward-compat: robust=True -> hc1, robust=False -> classical.
                 vcov_requested = "hc1" if robust_arg else "classical"
@@ -2407,7 +2841,99 @@ class HeterogeneousAdoptionDiD:
             raise ValueError(f"Internal error: unhandled design={resolved_design!r}.")
 
         # ---- Route all inference fields through safe_inference ----
-        t_stat, p_value, conf_int = safe_inference(att, se, alpha=float(self.alpha))
+        # Survey path: use t-distribution with ``df_survey = n_psu -
+        # n_strata`` (or replicate-QR rank − 1) so small-PSU designs
+        # don't get Normal-theory inference that overstates precision.
+        # Non-survey path (``weights=`` shortcut or unweighted): use
+        # the existing Normal-theory default.
+        df_infer: Optional[int] = None
+        if resolved_survey_unit is not None:
+            df_infer = resolved_survey_unit.df_survey
+        t_stat, p_value, conf_int = safe_inference(
+            att, se, alpha=float(self.alpha), df=df_infer
+        )
+
+        # Build survey metadata (repo-standard SurveyMetadata from
+        # diff_diff.survey.compute_survey_metadata) when weights/survey
+        # were supplied, so downstream report/diagnostic consumers can
+        # read attributes uniformly. HAD-specific extras (variance-
+        # formula label, effective-denominator value) live on dedicated
+        # result fields rather than being folded into the survey dict.
+        survey_metadata: Optional[SurveyMetadata] = None
+        variance_formula_label: Optional[str] = None
+        effective_dose_mean_value: Optional[float] = None
+        if weights_unit_full is not None:
+            if resolved_survey_unit_full is not None:
+                # survey= path: build metadata from the FULL
+                # ResolvedSurveyDesign (pre-zero-weight-filter), so
+                # ``n_strata`` / ``n_psu`` / ``df_survey`` / weight sums
+                # reflect the sampling frame, not the in-domain subset.
+                # Pass the RAW pre-normalization per-unit weights
+                # (captured before survey.resolve() rescaled pweights/
+                # aweights to mean=1) so ``sum_weights`` / ``weight_range``
+                # reflect the user-supplied scale — matching both the
+                # ``weights=`` shortcut and ``compute_survey_metadata``'s
+                # contract.
+                assert raw_weights_unit_full is not None  # set in survey= branch
+                survey_metadata = compute_survey_metadata(
+                    resolved_survey_unit_full, raw_weights_unit_full
+                )
+                variance_formula_label = "survey_binder_tsl"
+            else:
+                # weights=<array> shortcut: construct a minimal resolved
+                # SurveyDesign with the FULL user-supplied weights
+                # (including zero-weight units) so SurveyMetadata
+                # summarizes the full sample. No strata / PSU / FPC
+                # structure — the shortcut is pweight-only by contract.
+                from diff_diff.survey import ResolvedSurveyDesign
+
+                minimal_resolved = ResolvedSurveyDesign(
+                    weights=weights_unit_full,
+                    weight_type="pweight",
+                    strata=None,
+                    psu=None,
+                    fpc=None,
+                    n_strata=1,
+                    n_psu=int(weights_unit_full.shape[0]),
+                    lonely_psu="remove",
+                    combined_weights=True,
+                    mse=False,
+                )
+                # weights_unit_full is already the raw user-supplied
+                # array (no SurveyDesign.resolve() normalization here).
+                survey_metadata = compute_survey_metadata(
+                    minimal_resolved, weights_unit_full
+                )
+                # On the ``weights=`` shortcut, inference stays Normal
+                # (df=None in safe_inference) — no PSU / strata / FPC
+                # composition. Clear the survey-only fields that
+                # ``compute_survey_metadata`` derives from the synthetic
+                # minimal design (``n_psu = G``, ``n_strata = 1``,
+                # ``df_survey = G − 1``) so ``summary()`` / BusinessReport
+                # do not misdescribe the fit as a finite-df survey
+                # result. ``weight_type``, ``effective_n``,
+                # ``design_effect``, ``sum_weights``, and
+                # ``weight_range`` stay populated — they describe the
+                # weighted sample regardless of inference family.
+                survey_metadata.n_strata = None
+                survey_metadata.n_psu = None
+                survey_metadata.df_survey = None
+                variance_formula_label = "pweight"
+            # Expose the effective weighted denominator used by the
+            # beta-scale rescaling. Use FULL arrays (same numerical
+            # result — zero-weight units contribute 0 to both numerator
+            # and denominator — but preserves symmetry with the FULL-
+            # array fit path above).
+            if resolved_design == "continuous_at_zero":
+                effective_dose_mean_value = float(
+                    np.average(d_arr_full, weights=weights_unit_full)
+                )
+            elif resolved_design == "continuous_near_d_lower":
+                effective_dose_mean_value = float(
+                    np.average(d_arr_full - d_lower_val, weights=weights_unit_full)
+                )
+            # else (mass_point): unreachable here because mass_point with
+            # weights raises NotImplementedError upstream.
 
         return HeterogeneousAdoptionDiDResults(
             att=float(att),
@@ -2428,9 +2954,11 @@ class HeterogeneousAdoptionDiD:
             inference_method=inference_method,
             vcov_type=vcov_label,
             cluster_name=cluster_label,
-            survey_metadata=None,  # Phase 2a: survey integration deferred.
+            survey_metadata=survey_metadata,
             bandwidth_diagnostics=bw_diag,
             bias_corrected_fit=bc_fit,
+            variance_formula=variance_formula_label,
+            effective_dose_mean=effective_dose_mean_value,
         )
 
     # ------------------------------------------------------------------
@@ -2443,6 +2971,8 @@ class HeterogeneousAdoptionDiD:
         dy_arr: np.ndarray,
         resolved_design: str,
         d_lower_val: float,
+        weights_arr: Optional[np.ndarray] = None,
+        resolved_survey_unit: Any = None,  # ResolvedSurveyDesign (G,) or None
     ) -> Tuple[float, float, Optional[BiasCorrectedFit], Optional[BandwidthResult]]:
         """Fit Phase 1c ``bias_corrected_local_linear`` and form the WAS estimate.
 
@@ -2484,14 +3014,23 @@ class HeterogeneousAdoptionDiD:
         relative to the boundary-limit CI because the numerator
         transformation is ``ΔȲ - tau_bc``.
         """
+        # Weighted population moments (Phase 4.5). Under uniform weights,
+        # `np.average(.., weights=np.ones(G)) == a.mean()` bit-exactly, so
+        # the unweighted path is bit-identical when `weights_arr is None`.
         if resolved_design == "continuous_at_zero":
             d_reg = d_arr
             boundary = 0.0
-            den = float(d_arr.mean())
+            if weights_arr is None:
+                den = float(d_arr.mean())
+            else:
+                den = float(np.average(d_arr, weights=weights_arr))
         elif resolved_design == "continuous_near_d_lower":
             d_reg = d_arr - d_lower_val
             boundary = 0.0
-            den = float((d_arr - d_lower_val).mean())
+            if weights_arr is None:
+                den = float(d_reg.mean())
+            else:
+                den = float(np.average(d_reg, weights=weights_arr))
         else:
             raise ValueError(
                 f"_fit_continuous called with non-continuous " f"design={resolved_design!r}"
@@ -2513,8 +3052,14 @@ class HeterogeneousAdoptionDiD:
                 boundary=boundary,
                 kernel=self.kernel,
                 alpha=float(self.alpha),
-                # No cluster / vce / weights threading in Phase 2a (see
-                # UserWarning in fit()).
+                weights=weights_arr,
+                # Request per-unit influence function ONLY when we need it
+                # for survey-composed variance (compute_survey_if_variance).
+                # Unconditional IF computation would add a small O(G) cost
+                # to every fit; gate it on the survey path.
+                return_influence=resolved_survey_unit is not None,
+                # No cluster / vce threading in Phase 2a (see UserWarning
+                # in fit()).
             )
         except (ZeroDivisionError, FloatingPointError, np.linalg.LinAlgError):
             return float("nan"), float("nan"), None, None
@@ -2528,10 +3073,30 @@ class HeterogeneousAdoptionDiD:
             att = float("nan")
             se = float("nan")
         else:
-            dy_mean = float(dy_arr.mean())
+            if weights_arr is None:
+                dy_mean = float(dy_arr.mean())
+            else:
+                dy_mean = float(np.average(dy_arr, weights=weights_arr))
             tau_bc = float(bc_fit.estimate_bias_corrected)
             att = (dy_mean - tau_bc) / den
-            se = float(bc_fit.se_robust) / abs(den)
+            if resolved_survey_unit is not None and bc_fit.influence_function is not None:
+                # Survey-composed variance via Binder (1983) Taylor
+                # linearization. Paper Equation 8 treats D_bar as fixed
+                # (it's a sqrt(G)-rate quantity, faster than the
+                # G^{2/5}-rate nonparametric estimator), so the leading-
+                # order variance is V(mu_hat) / D_bar^2. Under survey
+                # design, V(mu_hat) = compute_survey_if_variance(psi,
+                # resolved) with PSU aggregation + strata sum + FPC.
+                from diff_diff.survey import compute_survey_if_variance
+                v_survey = compute_survey_if_variance(
+                    bc_fit.influence_function, resolved_survey_unit
+                )
+                if np.isfinite(v_survey) and v_survey > 0.0:
+                    se = float(np.sqrt(v_survey)) / abs(den)
+                else:
+                    se = float("nan")
+            else:
+                se = float(bc_fit.se_robust) / abs(den)
 
         return att, se, bc_fit, bc_fit.bandwidth_diagnostics
 
