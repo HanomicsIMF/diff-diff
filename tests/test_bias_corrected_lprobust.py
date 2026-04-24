@@ -317,12 +317,6 @@ class TestInputContract:
         with pytest.raises(NotImplementedError, match="mass-point"):
             bias_corrected_local_linear(d, y, boundary=0.1)
 
-    def test_weights_raises_not_implemented(self):
-        d = np.linspace(0.05, 1.0, 100)
-        y = d.copy()
-        with pytest.raises(NotImplementedError, match="weights="):
-            bias_corrected_local_linear(d, y, h=0.3, weights=np.ones(100))
-
     def test_cluster_nan_raises(self):
         """Float NaN in cluster IDs is rejected."""
         d = np.linspace(0.0, 1.0, 100)
@@ -564,3 +558,121 @@ class TestValidatorIdempotence:
         d2, y2 = _validate_had_inputs(d1, y1, boundary)
         np.testing.assert_array_equal(d1, d2)
         np.testing.assert_array_equal(y1, y2)
+
+
+class TestWeightedBiasCorrectedLocalLinear:
+    """Phase 4.5 survey-support validation for the public wrapper.
+
+    Phase 1c's unweighted R-parity path stays unchanged (regression lock
+    via the existing TestParity class). This class adds:
+      1. Uniform-weights bit-parity: weights=np.ones(G) ≡ no weights
+      2. Weight-validator contract mirroring the port's front-door guards
+      3. Informative-weight mechanism-has-teeth sanity
+    """
+
+    def _panel(self, seed=42, G=300, boundary=0.0):
+        rng = np.random.default_rng(seed)
+        d = rng.uniform(boundary, boundary + 1.0, G)
+        y = (
+            2.0 * (d - boundary)
+            + 0.3 * (d - boundary) ** 2
+            + rng.normal(0, 0.2, G)
+        )
+        return d, y
+
+    def test_uniform_weights_bit_parity_full_struct(self):
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        d, y = self._panel()
+        base = bias_corrected_local_linear(d, y, boundary=0.0, h=0.3, b=0.3)
+        w1 = bias_corrected_local_linear(
+            d, y, boundary=0.0, h=0.3, b=0.3, weights=np.ones(d.size)
+        )
+        np.testing.assert_allclose(
+            w1.estimate_classical, base.estimate_classical, atol=1e-14, rtol=1e-14
+        )
+        np.testing.assert_allclose(
+            w1.estimate_bias_corrected, base.estimate_bias_corrected,
+            atol=1e-14, rtol=1e-14,
+        )
+        np.testing.assert_allclose(
+            w1.se_classical, base.se_classical, atol=1e-14, rtol=1e-14
+        )
+        np.testing.assert_allclose(
+            w1.se_robust, base.se_robust, atol=1e-14, rtol=1e-14
+        )
+        np.testing.assert_allclose(w1.ci_low, base.ci_low, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(w1.ci_high, base.ci_high, atol=1e-14, rtol=1e-14)
+        assert w1.n_used == base.n_used
+        assert w1.h == base.h
+        assert w1.b == base.b
+
+    def test_uniform_weights_bit_parity_auto_bandwidth(self):
+        """Auto-bandwidth path: the DPI selector is unweighted in this PR
+        (documented gap), so weights=ones must produce the same h,b,estimate."""
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        d, y = self._panel()
+        base = bias_corrected_local_linear(d, y, boundary=0.0)
+        w1 = bias_corrected_local_linear(
+            d, y, boundary=0.0, weights=np.ones(d.size)
+        )
+        np.testing.assert_allclose(w1.h, base.h, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(w1.b, base.b, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(
+            w1.estimate_bias_corrected, base.estimate_bias_corrected,
+            atol=1e-14, rtol=1e-14,
+        )
+
+    def test_nontrivial_weights_change_estimate(self):
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        d, y = self._panel()
+        base = bias_corrected_local_linear(d, y, boundary=0.0, h=0.3, b=0.3)
+        w = np.exp(-d * 3.0)  # informative: concentrate near boundary
+        r_w = bias_corrected_local_linear(
+            d, y, boundary=0.0, h=0.3, b=0.3, weights=w
+        )
+        assert not np.isclose(
+            r_w.estimate_bias_corrected, base.estimate_bias_corrected, atol=1e-6
+        )
+
+    def test_negative_weights_reject(self):
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        d, y = self._panel()
+        w = np.ones(d.size)
+        w[0] = -0.5
+        with pytest.raises(ValueError, match="non-negative"):
+            bias_corrected_local_linear(
+                d, y, boundary=0.0, h=0.3, b=0.3, weights=w
+            )
+
+    def test_nan_weights_reject(self):
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        d, y = self._panel()
+        w = np.ones(d.size)
+        w[0] = np.nan
+        with pytest.raises(ValueError, match="non-finite"):
+            bias_corrected_local_linear(
+                d, y, boundary=0.0, h=0.3, b=0.3, weights=w
+            )
+
+    def test_zero_sum_weights_reject(self):
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        d, y = self._panel()
+        with pytest.raises(ValueError, match="sum to zero"):
+            bias_corrected_local_linear(
+                d, y, boundary=0.0, h=0.3, b=0.3, weights=np.zeros(d.size)
+            )
+
+    def test_weights_length_mismatch_reject(self):
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        d, y = self._panel()
+        with pytest.raises(ValueError, match="weights length"):
+            bias_corrected_local_linear(
+                d, y, boundary=0.0, h=0.3, b=0.3, weights=np.ones(d.size - 1)
+            )

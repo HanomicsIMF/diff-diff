@@ -1004,7 +1004,15 @@ def bias_corrected_local_linear(
     nnmatch : int, default=3
         Number of nearest neighbors for ``vce="nn"`` residuals.
     weights : np.ndarray or None, default=None
-        Not supported in Phase 1c (raises ``NotImplementedError``).
+        Per-unit non-negative weights (e.g., survey sampling weights).
+        Forwarded to the final ``lprobust`` fit; propagates through
+        kernel composition, design matrices, Q.q bias correction, and
+        variance matrices. When ``weights=np.ones(G)`` the output is
+        bit-identical to the unweighted path. **Known methodology gap**:
+        the auto-bandwidth MSE-optimal DPI (Phase 1b) remains unweighted
+        in Phase 4.5; pass ``h``/``b`` explicitly for a weight-aware
+        bandwidth. See REGISTRY "Weighted extension (Phase 4.5)" for the
+        analytic derivation + parity-ceiling note.
 
     Returns
     -------
@@ -1015,13 +1023,13 @@ def bias_corrected_local_linear(
     ValueError
         Shape mismatch, non-finite inputs, off-support boundary, negative
         doses, ``alpha`` outside ``(0, 1)``, unknown ``kernel``,
-        NaN / None cluster IDs, ``b`` supplied without ``h``, or a
-        rank-deficient window.
+        NaN / None cluster IDs, ``b`` supplied without ``h``, negative or
+        non-finite ``weights``, or a rank-deficient window.
     NotImplementedError
-        ``weights=`` passed; ``vce != "nn"`` (hc0/hc1/hc2/hc3 deferred
-        to Phase 2+ pending dedicated R parity goldens); a Design 1
-        mass-point sample (redirects to Phase 2's 2SLS sample-average
-        path per the paper's Section 3.2.4).
+        ``vce != "nn"`` (hc0/hc1/hc2/hc3 deferred to Phase 2+ pending
+        dedicated R parity goldens); a Design 1 mass-point sample
+        (redirects to Phase 2's 2SLS sample-average path per the paper's
+        Section 3.2.4).
 
     Notes
     -----
@@ -1040,12 +1048,13 @@ def bias_corrected_local_linear(
     ordering can drift to ``atol=1e-10``.
     """
     if weights is not None:
-        raise NotImplementedError(
-            "weights= is not supported in Phase 1c of the bias-corrected "
-            "local-linear estimator. nprobust::lprobust has no weight "
-            "argument, so there is no parity anchor. Weighted-data "
-            "support is queued for Phase 2+ (survey-design adaptation)."
-        )
+        weights = np.asarray(weights, dtype=np.float64).ravel()
+        # NOTE: bandwidth selection (auto mode) remains unweighted; the
+        # plug-in MSE-optimal DPI is not yet weight-aware. Weights only
+        # enter the final lprobust fit + its variance propagation. Users
+        # who want a weight-aware bandwidth should pass ``h``/``b`` that
+        # reflect the weighted DGP. See REGISTRY "Weighted extension"
+        # subsection for the documented methodology gap.
 
     if kernel not in _KERNEL_NAME_TO_NPROBUST:
         raise ValueError(
@@ -1095,8 +1104,7 @@ def bias_corrected_local_linear(
         cluster_arr = np.asarray(cluster).ravel()
         if cluster_arr.shape[0] != n_total:
             raise ValueError(
-                f"cluster length ({cluster_arr.shape[0]}) does not match "
-                f"d/y ({n_total})."
+                f"cluster length ({cluster_arr.shape[0]}) does not match " f"d/y ({n_total})."
             )
         if _cluster_has_missing(cluster_arr):
             raise ValueError(
@@ -1207,6 +1215,7 @@ def bias_corrected_local_linear(
         cluster=cluster_arr,
         nnmatch=nnmatch,
         bwcheck=21,
+        weights=weights,
     )
 
     # --- Bias-corrected CI via safe_inference (NaN-safe gate) ---
@@ -1223,9 +1232,7 @@ def bias_corrected_local_linear(
     # critical values agree to machine precision.
     from diff_diff.utils import safe_inference
 
-    _, _, (ci_low, ci_high) = safe_inference(
-        result.tau_bc, result.se_rb, alpha=float(alpha)
-    )
+    _, _, (ci_low, ci_high) = safe_inference(result.tau_bc, result.se_rb, alpha=float(alpha))
 
     return BiasCorrectedFit(
         estimate_classical=result.tau_cl,

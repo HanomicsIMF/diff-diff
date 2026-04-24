@@ -550,8 +550,7 @@ def lprobust_bw(
             # pattern); matmul on some platforms (Accelerate / OpenBLAS)
             # sets divide/overflow flags on SIMD intermediates even when
             # input and output are finite.
-            with np.errstate(divide="ignore", over="ignore",
-                             invalid="ignore", under="ignore"):
+            with np.errstate(divide="ignore", over="ignore", invalid="ignore", under="ignore"):
                 predicts_B = R_B1 @ beta_B1
                 if vce in ("hc2", "hc3"):
                     hii_B = np.empty(n_B1, dtype=np.float64)
@@ -684,10 +683,7 @@ def lpbwselect_mse_dpi(
     x = np.asarray(x, dtype=np.float64).ravel()
     y = np.asarray(y, dtype=np.float64).ravel()
     if x.shape != y.shape:
-        raise ValueError(
-            f"x and y must have the same 1-D shape; got "
-            f"{x.shape} and {y.shape}"
-        )
+        raise ValueError(f"x and y must have the same 1-D shape; got " f"{x.shape} and {y.shape}")
     if x.size == 0:
         raise ValueError(
             "x and y must be non-empty; lpbwselect_mse_dpi cannot "
@@ -703,8 +699,7 @@ def lpbwselect_mse_dpi(
         cluster = np.asarray(cluster).ravel()
         if cluster.shape != x.shape:
             raise ValueError(
-                f"cluster must have the same shape as x; got "
-                f"{cluster.shape} and {x.shape}"
+                f"cluster must have the same shape as x; got " f"{cluster.shape} and {x.shape}"
             )
         # Missing cluster IDs must be rejected, not silently dropped.
         # nprobust::lpbwselect complete-case-filters (x, y, cluster)
@@ -726,9 +721,7 @@ def lpbwselect_mse_dpi(
     N = x.shape[0]
     if bwcheck is not None:
         if bwcheck < 1:
-            raise ValueError(
-                f"bwcheck must be a positive integer (>= 1); got {bwcheck}"
-            )
+            raise ValueError(f"bwcheck must be a positive integer (>= 1); got {bwcheck}")
         if bwcheck > N:
             raise ValueError(
                 f"bwcheck={bwcheck} exceeds sample size N={N}. Either "
@@ -1027,6 +1020,7 @@ def lprobust(
     cluster: Optional[np.ndarray] = None,
     nnmatch: int = 3,
     bwcheck: Optional[int] = 21,
+    weights: Optional[np.ndarray] = None,
 ) -> LprobustResult:
     """Local-polynomial point estimate with CCT (2014) bias correction.
 
@@ -1091,6 +1085,22 @@ def lprobust(
     bwcheck : int or None, default=21
         Floor ``h`` and ``b`` at the distance to the ``bwcheck``-th nearest
         neighbor of ``eval_point``. Matches nprobust's default.
+    weights : np.ndarray or None, default=None
+        Per-observation non-negative weights (e.g., survey sampling
+        weights). When provided, they multiply the kernel weights
+        pointwise (``W_h = w_h * weights``; ``W_b = w_b * weights``) and
+        propagate through all downstream computations — design matrices,
+        ``Q.q`` bias-correction, variance matrices, ``hii`` for
+        ``vce in {hc2, hc3}``. When ``weights=None`` the function is
+        bit-identical to the unweighted path (regression-tested at
+        ``atol=1e-14, rtol=1e-14``). Observations with ``weights[i] == 0``
+        drop out of the active kernel window via the ``w > 0`` selector.
+
+        **Parity gap**: no public weighted-CCF reference exists
+        (nprobust has no weight argument). The uniform-weights bit-parity
+        test is the only bit-parity anchor; validation under informative
+        weights relies on MC oracle consistency + ``np::npreg`` partial
+        parity on the raw local linear (no CCT bias correction).
 
     Returns
     -------
@@ -1138,9 +1148,7 @@ def lprobust(
     if cluster is not None:
         cluster = np.asarray(cluster).ravel()
         if cluster.shape[0] != N:
-            raise ValueError(
-                f"cluster length ({cluster.shape[0]}) does not match x/y ({N})."
-            )
+            raise ValueError(f"cluster length ({cluster.shape[0]}) does not match x/y ({N}).")
         # Dtype-agnostic missingness check. Float NaN/Inf, object None,
         # and object np.nan all get rejected here (shared with
         # `lpbwselect_mse_dpi` via `_cluster_has_missing`) so the
@@ -1153,6 +1161,17 @@ def lprobust(
                 "observations explicitly."
             )
 
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float64).ravel()
+        if weights.shape[0] != N:
+            raise ValueError(f"weights length ({weights.shape[0]}) does not match x/y ({N}).")
+        if not np.all(np.isfinite(weights)):
+            raise ValueError("weights contains non-finite values (NaN or Inf).")
+        if np.any(weights < 0):
+            raise ValueError("weights must be non-negative.")
+        if np.sum(weights) <= 0:
+            raise ValueError("weights sum to zero — no observations have positive weight.")
+
     # --- vce="nn" setup: sort ascending, precompute dups ---
     dups: Optional[np.ndarray] = None
     dupsid: Optional[np.ndarray] = None
@@ -1162,6 +1181,8 @@ def lprobust(
         y = y[order_x]
         if cluster is not None:
             cluster = cluster[order_x]
+        if weights is not None:
+            weights = weights[order_x]
         dups, dupsid = _precompute_nn_duplicates(x)
 
     # --- bwcheck floor (lprobust.R:169-175) ---
@@ -1175,6 +1196,14 @@ def lprobust(
     # --- kernel weights and active-window selection (lprobust.R:177-182) ---
     w_h = kernel_W((x - eval_point) / h, kernel) / h
     w_b = kernel_W((x - eval_point) / b, kernel) / b
+    # Compose user weights into kernel weights (Phase 4.5 survey support).
+    # Design matrices, Q.q, and variance propagation all source from
+    # W_h/W_b, so multiplying here threads weights through the entire
+    # downstream pipeline. Observations with weights[i]==0 get w_h[i]=0
+    # and drop out of the active window via the `w>0` selector.
+    if weights is not None:
+        w_h = w_h * weights
+        w_b = w_b * weights
     ind_h = w_h > 0
     ind_b = w_b > 0
 
@@ -1275,21 +1304,39 @@ def lprobust(
             RpG = R_p @ invG_p  # (eN, p+1)
             hii = (np.sum(RpG * R_p, axis=1) * W_h).reshape(-1, 1)
 
-    res_h = lprobust_res(eX, eY, predicts_p if predicts_p is not None else np.zeros((eN, 1)),
-                         hii, vce, nnmatch, edups, edupsid, p + 1)
+    res_h = lprobust_res(
+        eX,
+        eY,
+        predicts_p if predicts_p is not None else np.zeros((eN, 1)),
+        hii,
+        vce,
+        nnmatch,
+        edups,
+        edupsid,
+        p + 1,
+    )
     if vce == "nn":
         res_b = res_h
     else:
-        res_b = lprobust_res(eX, eY, predicts_q if predicts_q is not None else np.zeros((eN, 1)),
-                             hii, vce, nnmatch, edups, edupsid, q + 1)
+        res_b = lprobust_res(
+            eX,
+            eY,
+            predicts_q if predicts_q is not None else np.zeros((eN, 1)),
+            hii,
+            vce,
+            nnmatch,
+            edups,
+            edupsid,
+            q + 1,
+        )
 
     # --- Variance matrices (lprobust.R:243-244) ---
     V_Y_cl = invG_p @ lprobust_vce(R_p_W_h, res_h, eC) @ invG_p
     V_Y_bc = invG_p @ lprobust_vce(Q_q, res_b, eC) @ invG_p
 
     # --- Standard errors (lprobust.R:245-246) ---
-    se_cl = float(np.sqrt((deriv_fact ** 2) * V_Y_cl[deriv, deriv]))
-    se_rb = float(np.sqrt((deriv_fact ** 2) * V_Y_bc[deriv, deriv]))
+    se_cl = float(np.sqrt((deriv_fact**2) * V_Y_cl[deriv, deriv]))
+    se_rb = float(np.sqrt((deriv_fact**2) * V_Y_bc[deriv, deriv]))
 
     return LprobustResult(
         eval_point=float(eval_point),
