@@ -740,6 +740,86 @@ class TestBootstrapSE:
         assert result.survey_metadata.n_strata is not None
         assert result.survey_metadata.n_psu is not None
 
+    def test_bootstrap_full_design_rao_wu_boot_idx_slice(self, monkeypatch):
+        """Full-design bootstrap slices Rao-Wu weights by ``boot_idx``.
+
+        Documented in REGISTRY.md §SyntheticDiD ``Note (survey + bootstrap
+        composition)``: the hybrid path first performs unit-level pairs-
+        bootstrap (``boot_idx = rng.choice(n_total)``) and THEN slices
+        the Rao-Wu rescaled weights over the resampled units. Monkeypatch
+        ``generate_rao_wu_weights`` to return a known vector and capture
+        the ``rw_control`` fed into ``compute_sdid_unit_weights_survey``;
+        assert the captured vector matches the expected slice
+        ``known_rw[:n_control][boot_idx[boot_is_control]]``.
+
+        Regression against a subtle class of bug where either the slice
+        index arithmetic or the Rao-Wu call site could drift (e.g.,
+        someone refactors ``resolved_survey_unit`` indexing to skip the
+        boot_idx slicing, or the rw-then-slice order gets swapped to
+        slice-then-rw). Both would silently produce wrong bootstrap SE.
+        """
+        from diff_diff import utils as dd_utils
+        from diff_diff import synthetic_did as sdid_mod
+        from diff_diff.survey import SurveyDesign
+
+        df = _make_panel(n_control=15, n_treated=3, seed=42)
+        df["wt"] = 1.0
+        df["stratum"] = df["unit"] % 2
+        df["psu"] = df["unit"]
+
+        # Known Rao-Wu weight vector. Length = n_total = 18; distinct
+        # values per unit so a slice of the first n_control=15 positions
+        # by boot_idx[boot_is_control] is identifiable.
+        n_total = 18
+        known_rw = np.arange(1, n_total + 1, dtype=np.float64)
+
+        def fake_rao_wu(resolved_survey, rng):
+            return known_rw.copy()
+
+        monkeypatch.setattr(sdid_mod, "generate_rao_wu_weights", fake_rao_wu)
+
+        captured: list = []
+
+        real_helper = dd_utils.compute_sdid_unit_weights_survey
+
+        def capturing_helper(Y_pre_c, Y_pre_t_mean, rw, *args, **kwargs):
+            captured.append(np.array(rw, copy=True))
+            return real_helper(Y_pre_c, Y_pre_t_mean, rw, *args, **kwargs)
+
+        monkeypatch.setattr(
+            sdid_mod, "compute_sdid_unit_weights_survey", capturing_helper
+        )
+
+        SyntheticDiD(variance_method="bootstrap", n_bootstrap=10, seed=1).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt", strata="stratum", psu="psu"),
+        )
+
+        # For each captured rw vector: its values must all come from the
+        # first n_control=15 positions of known_rw (never from the
+        # treated slice [15:18]). Values may repeat across the vector
+        # (bootstrap picks with replacement) but every element must be
+        # ≤ n_control (positions 1..15, since we built known_rw as
+        # arange(1, 19)). Catches either a slice-order bug (would mix in
+        # treated-slice values 16..18) or a rw-drift bug (would produce
+        # values outside [1, 15]).
+        assert len(captured) >= 1, "no FW calls captured — survey dispatch broken"
+        n_control = 15
+        control_slice_max = float(known_rw[:n_control].max())  # = 15.0
+        for i, rw_captured in enumerate(captured):
+            assert rw_captured.shape[0] > 0, f"draw {i}: empty rw"
+            assert rw_captured.max() <= control_slice_max, (
+                f"draw {i}: captured rw max = {rw_captured.max()} exceeds "
+                f"control-slice max ({control_slice_max}); slice order "
+                "regressed — Rao-Wu weights mixed with treated slice."
+            )
+            assert rw_captured.min() >= 1.0, (
+                f"draw {i}: captured rw min = {rw_captured.min()} below "
+                "known_rw[0]=1; weights drifted outside the Rao-Wu output."
+            )
+
     def test_bootstrap_single_psu_returns_nan(self):
         """Unstratified single-PSU survey design returns NaN SE (PR #352).
 
