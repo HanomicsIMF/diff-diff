@@ -9,9 +9,11 @@ rates at α ∈ {0.01, 0.05, 0.10} plus the ratio of mean estimated SE to
 the empirical sampling SD of τ̂.
 
 The ``stratified_survey`` DGP runs bootstrap and jackknife; placebo is
-skipped because its cohort packs into a single stratum with 0 never-
-treated units, so the stratified-permutation allocator is structurally
-infeasible on this DGP (raises Case C at fit-time). Jackknife is reported
+skipped because its cohort packs all treated units into stratum 1,
+which has 0 never-treated units, so the stratified-permutation
+allocator is structurally infeasible on this DGP (raises Case B —
+treated-containing stratum with zero controls — at fit-time).
+Jackknife is reported
 with a documented anti-conservatism caveat — with only 2 PSUs per
 stratum, the stratified PSU-level jackknife formula has 1 effective DoF
 per stratum, a known limitation (see REGISTRY §SyntheticDiD "Note

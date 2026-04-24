@@ -855,6 +855,39 @@ class TestSDIDSurveyPlaceboFullDesign:
         assert result_pw.att == pytest.approx(result_full.att, abs=1e-10)
         assert result_pw.se != pytest.approx(result_full.se, abs=1e-6)
 
+    def test_placebo_full_design_psu_only_routes_through_survey_path(
+        self, sdid_survey_data_jk_well_formed
+    ):
+        """R2 P1 regression: PSU/FPC-without-strata placebo routes through
+        ``_placebo_variance_se_survey`` (with a synthesized single
+        stratum), matching the documented full-design contract.
+
+        The original implementation only routed through the survey path
+        when ``strata`` was declared; PSU/FPC-only designs fell through
+        to the non-survey placebo allocator even though REGISTRY
+        declares full-design support. Now all three designs (strata,
+        psu, fpc) dispatch to the weighted-FW survey path.
+        """
+        sd_psu_only = SurveyDesign(weights="weight", psu="psu")
+
+        est = SyntheticDiD(variance_method="placebo", n_bootstrap=30, seed=42)
+        # Monkeypatch to verify dispatch (sentinel returns distinct from
+        # both paths).
+        est._placebo_variance_se_survey = lambda *a, **kw: (42.0, np.array([1.0]))  # type: ignore[assignment]
+        est._placebo_variance_se = lambda *a, **kw: (99.0, np.array([1.0]))  # type: ignore[assignment]
+        result = est.fit(
+            sdid_survey_data_jk_well_formed,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_psu_only,
+        )
+        # Survey path should have fired — SE reflects 42.0 sentinel,
+        # rescaled by Y_scale.
+        assert result.se > 40.0 and result.se < 90.0
+
     def test_placebo_dispatches_to_survey_method_under_full_design(
         self, sdid_survey_data_full_design, sdid_survey_design_full
     ):
@@ -1032,13 +1065,13 @@ class TestSDIDSurveyJackknifeFullDesign:
     def test_get_loo_effects_df_raises_on_survey_jackknife(
         self, sdid_survey_data_jk_well_formed
     ):
-        """R1 P1 fix: get_loo_effects_df is unit-level only — block on survey
-        jackknife (which returns PSU-level replicates).
+        """R1 P1 fix: get_loo_effects_df blocks only on full-design survey
+        jackknife (PSU-level replicates), not on pweight-only jackknife.
 
-        Mixing PSU-level LOO estimates with the stored unit-level
-        metadata would mislabel replicates as unit effects. Raises
-        NotImplementedError with a pointer to the PSU-level aggregation
-        formula in REGISTRY.
+        Keys off the explicit ``_loo_granularity`` flag (R2 P1 — the old
+        ``survey_metadata.n_psu`` heuristic false-positives on pweight-
+        only fits, which also populate ``n_psu`` via implicit-PSU
+        metadata but still run unit-level LOO).
         """
         sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
         est = SyntheticDiD(variance_method="jackknife", seed=42)
@@ -1051,11 +1084,43 @@ class TestSDIDSurveyJackknifeFullDesign:
             post_periods=[6, 7, 8, 9],
             survey_design=sd,
         )
+        assert getattr(result, "_loo_granularity", None) == "psu"
         with pytest.raises(
             NotImplementedError,
             match=r"unit-level-LOO only.*PSU-level LOO with stratum aggregation",
         ):
             result.get_loo_effects_df()
+
+    def test_get_loo_effects_df_works_on_pweight_only_jackknife(
+        self, sdid_survey_data, survey_design_weights
+    ):
+        """R2 P1 regression: pweight-only jackknife still exposes unit-level
+        LOO diagnostics through ``get_loo_effects_df``.
+
+        Pweight-only fits populate ``survey_metadata.n_psu`` (via the
+        implicit-PSU metadata path) but run the non-survey unit-level
+        jackknife (classical Algorithm 3). The accessor must stay
+        available on this path — blocking it would regress a documented
+        diagnostic surface.
+        """
+        est = SyntheticDiD(variance_method="jackknife", seed=42)
+        result = est.fit(
+            sdid_survey_data,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=survey_design_weights,
+        )
+        assert getattr(result, "_loo_granularity", None) == "unit"
+        # Accessor returns a unit-indexed DataFrame with the expected
+        # schema; positional join is well-defined on the pweight-only
+        # path because ``placebo_effects`` has length n_control + n_treated.
+        df = result.get_loo_effects_df()
+        assert len(df) == result.n_control + result.n_treated
+        assert set(df.columns) == {"unit", "role", "att_loo", "delta_from_full"}
+        assert set(df["role"].unique()) <= {"control", "treated"}
 
     def test_jackknife_full_design_undefined_replicate_returns_nan(
         self, sdid_survey_data_full_design

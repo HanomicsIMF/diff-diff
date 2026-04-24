@@ -882,6 +882,12 @@ class SyntheticDiDResults:
         # Plain attributes rather than dataclass fields so asdict()-style
         # recursion cannot serialize internal panel state.
         self._loo_unit_ids: Optional[List[Any]] = None
+        # Granularity of the `placebo_effects` LOO array: "unit" (non-
+        # survey + pweight-only jackknife), "psu" (full-design survey
+        # jackknife), or None (non-jackknife variance methods). Governs
+        # which accessors are well-defined. Set by `fit()` at result
+        # construction time.
+        self._loo_granularity: Optional[str] = None
         self._loo_roles: Optional[List[str]] = None
         self._fit_snapshot: Optional[_SyntheticDiDFitSnapshot] = None
 
@@ -1139,22 +1145,23 @@ class SyntheticDiDResults:
         # PSU-level τ̂_{(h,j)} replicates (variable length, ordered by
         # stratum then PSU), not a length-N unit-indexed array. Mapping
         # these onto the fit-time unit IDs would mislabel PSU replicates
-        # as unit effects. Block the accessor until a PSU-level
-        # metadata accessor is exposed.
-        if (
-            self.survey_metadata is not None
-            and getattr(self.survey_metadata, "n_psu", None) is not None
-        ):
+        # as unit effects. Block the accessor when the explicit
+        # granularity flag set by ``fit()`` is "psu". We key off the
+        # granularity flag rather than ``survey_metadata.n_psu`` because
+        # pweight-only survey jackknife fits also populate ``n_psu`` via
+        # implicit-PSU metadata (``survey.py`` L749-L753) but still run
+        # unit-level LOO, so the ``n_psu`` heuristic would false-positive.
+        if getattr(self, "_loo_granularity", None) == "psu":
             raise NotImplementedError(
                 "get_loo_effects_df() is unit-level-LOO only. This fit used "
-                "survey jackknife (PSU-level LOO with stratum aggregation, "
-                "Rust & Rao 1996); the underlying replicates are PSU-level, "
-                "not unit-level, so joining them back to fit-time unit IDs "
-                "is not well-defined. See ``result.placebo_effects`` for "
-                "the raw PSU-level replicate array and "
-                "``docs/methodology/REGISTRY.md`` §SyntheticDiD \"Note "
-                "(survey + jackknife composition)\" for the aggregation "
-                "formula."
+                "the full-design survey jackknife (PSU-level LOO with "
+                "stratum aggregation, Rust & Rao 1996); the underlying "
+                "replicates are PSU-level, not unit-level, so joining them "
+                "back to fit-time unit IDs is not well-defined. See "
+                "``result.placebo_effects`` for the raw PSU-level replicate "
+                "array and ``docs/methodology/REGISTRY.md`` §SyntheticDiD "
+                "\"Note (survey + jackknife composition)\" for the "
+                "aggregation formula."
             )
         if self._loo_unit_ids is None or self._loo_roles is None or self.placebo_effects is None:
             raise ValueError(

@@ -787,15 +787,14 @@ class SyntheticDiD(DifferenceInDifferences):
             _fpc_control = None
             _fpc_treated = None
 
-        # Placebo routes to the survey allocator only when strata is
-        # declared — the stratified-permutation allocator is defined per
-        # stratum. PSU-without-strata designs fall through to the
-        # non-survey placebo path (global unit-level permutation), which
-        # already handles survey weights via post-hoc ω composition.
+        # Placebo routes to the survey allocator whenever strata or PSU
+        # or FPC is declared. For PSU/FPC-without-strata designs, the
+        # whole panel is synthesized as a single stratum (stratified
+        # permutation degenerates to global within-stratum permutation,
+        # still dispatched through the weighted-FW path for methodology
+        # consistency with the documented full-design contract).
         _placebo_use_survey_path = (
-            _full_design_survey
-            and self.variance_method == "placebo"
-            and _strata_control is not None
+            _full_design_survey and self.variance_method == "placebo"
         )
 
         # Jackknife routes to the survey allocator whenever PSU or FPC or
@@ -806,6 +805,23 @@ class SyntheticDiD(DifferenceInDifferences):
             _full_design_survey and self.variance_method == "jackknife"
         )
 
+        # Synthesize a single stratum for PSU/FPC-without-strata designs
+        # so the placebo / jackknife survey paths can treat them as the
+        # JK1 / global-permutation degenerate case of the stratified
+        # allocator. The `_strata_*_eff` arrays are passed to the survey
+        # methods; the original `_strata_*` arrays stay None so other
+        # code paths (REGISTRY, metadata) see the true design.
+        if _full_design_survey and _strata_control is None:
+            _strata_control_eff: np.ndarray = np.zeros(
+                len(control_units), dtype=np.int64
+            )
+            _strata_treated_eff: np.ndarray = np.zeros(
+                len(treated_units), dtype=np.int64
+            )
+        else:
+            _strata_control_eff = _strata_control  # type: ignore[assignment]
+            _strata_treated_eff = _strata_treated  # type: ignore[assignment]
+
         # Fit-time feasibility guard for stratified-permutation placebo
         # (per `feedback_front_door_over_retry_swallow.md`). Case B / Case C
         # are hard failures — partial-permutation fallback would silently
@@ -813,12 +829,11 @@ class SyntheticDiD(DifferenceInDifferences):
         # test. Must run *before* the retry loop below swallows ValueErrors
         # via `except (ValueError, LinAlgError, ZeroDivisionError): continue`.
         if _placebo_use_survey_path:
-            assert _strata_control is not None and _strata_treated is not None
             unique_treated_strata, treated_counts = np.unique(
-                _strata_treated, return_counts=True
+                _strata_treated_eff, return_counts=True
             )
             for h, n_t_h in zip(unique_treated_strata, treated_counts):
-                n_c_h = int(np.sum(_strata_control == h))
+                n_c_h = int(np.sum(_strata_control_eff == h))
                 if n_c_h == 0:
                     raise ValueError(
                         "Stratified-permutation placebo requires at least "
@@ -884,14 +899,9 @@ class SyntheticDiD(DifferenceInDifferences):
             if _jackknife_use_survey_path:
                 # PSU-level LOO + stratum aggregation (Rust & Rao 1996).
                 assert w_control is not None and w_treated is not None
-                # Unstratified designs synthesize a single stratum so the
-                # loop reduces to classical JK1 (single-stratum PSU-LOO).
-                if _strata_control is None:
-                    sc = np.zeros(len(control_units), dtype=np.int64)
-                    st = np.zeros(len(treated_units), dtype=np.int64)
-                else:
-                    sc = _strata_control
-                    st = _strata_treated  # type: ignore[assignment]
+                # Unstratified designs use the synthesized single stratum
+                # (``_strata_*_eff``) so the loop reduces to classical
+                # JK1 (single-stratum PSU-LOO).
                 se_n, jackknife_estimates_n = self._jackknife_se_survey(
                     Y_pre_control_n,
                     Y_post_control_n,
@@ -901,8 +911,8 @@ class SyntheticDiD(DifferenceInDifferences):
                     time_weights,
                     w_control=w_control,
                     w_treated=w_treated,
-                    strata_control=sc,
-                    strata_treated=st,
+                    strata_control=_strata_control_eff,
+                    strata_treated=_strata_treated_eff,
                     psu_control=_psu_control,
                     psu_treated=_psu_treated,
                     fpc_control=_fpc_control,
@@ -929,15 +939,18 @@ class SyntheticDiD(DifferenceInDifferences):
             # normalized zetas and operate on normalized Y.
             if _placebo_use_survey_path:
                 # Stratified permutation + weighted-FW (Pesarin 2001).
-                assert _strata_control is not None and _strata_treated is not None
+                # PSU/FPC-without-strata designs use a synthesized single
+                # stratum (``_strata_*_eff``), which makes the stratified
+                # permutation degenerate to a global within-stratum
+                # permutation dispatched through the weighted-FW path.
                 assert w_control is not None
                 se_n, placebo_effects_n = self._placebo_variance_se_survey(
                     Y_pre_control_n,
                     Y_post_control_n,
                     Y_pre_treated_mean_n,
                     Y_post_treated_mean_n,
-                    strata_control=_strata_control,
-                    treated_strata=_strata_treated,
+                    strata_control=_strata_control_eff,
+                    treated_strata=_strata_treated_eff,
                     zeta_omega=zeta_omega_n,
                     zeta_lambda=zeta_lambda_n,
                     min_decrease=min_decrease,
@@ -1056,6 +1069,19 @@ class SyntheticDiD(DifferenceInDifferences):
         )
         self.results_._loo_unit_ids = loo_unit_ids
         self.results_._loo_roles = loo_roles
+        # Explicit LOO granularity flag for ``get_loo_effects_df``. The
+        # non-survey and pweight-only jackknife paths run unit-level LOO
+        # (one estimate per unit, matching ``control_unit_ids +
+        # treated_unit_ids``); the full-design survey jackknife runs
+        # PSU-level LOO and returns a flat PSU-indexed replicate array.
+        # Unit-level positional join onto ``_loo_unit_ids`` is well-
+        # defined only for the unit-level path.
+        if inference_method == "jackknife":
+            self.results_._loo_granularity = (
+                "psu" if _jackknife_use_survey_path else "unit"
+            )
+        else:
+            self.results_._loo_granularity = None
         self.results_._fit_snapshot = fit_snapshot
 
         self._unit_weights = unit_weights
@@ -1633,13 +1659,14 @@ class SyntheticDiD(DifferenceInDifferences):
 
         if n_successful < 2:
             # Same fallback guidance as the pre-replication guard above.
-            # Bootstrap (PR #352) supports pweight-only + strata/PSU/FPC
-            # survey designs, so it's always a valid fallback for survey
-            # users even when placebo fails.
+            # Bootstrap and jackknife both support pweight-only + full
+            # strata/PSU/FPC survey designs, so either is a valid
+            # fallback for survey users (though jackknife is anti-
+            # conservative with few PSUs per stratum — see REGISTRY).
             fallback = (
-                "variance_method='bootstrap' (supports pweight-only and "
-                "strata/PSU/FPC survey designs), variance_method='jackknife' "
-                "(pweight-only only), or increasing the number of control units"
+                "variance_method='bootstrap' or 'jackknife' (both support "
+                "pweight-only and strata/PSU/FPC survey designs), or "
+                "increasing the number of control units"
                 if w_control is not None
                 else "variance_method='bootstrap' or variance_method='jackknife' "
                 "or increasing the number of control units"
@@ -2084,12 +2111,21 @@ class SyntheticDiD(DifferenceInDifferences):
           rationale. Control units inside the dropped PSU are removed;
           remaining ω is composed with remaining survey weights and
           renormalized.
-        * **Strata with n_h < 2 are silently skipped.** They contribute 0
-          to the total variance. If every stratum is skipped,
-          ``SE=NaN`` with a ``UserWarning``.
-        * **Degenerate LOOs are skipped per iteration** (all treated in
-          one PSU → LOO removes all treated; all control mass at zero
-          survey weight → omega_eff collapses).
+        * **Strata with n_h < 2 are silently skipped** (lonely-PSU case,
+          matches R ``survey::svyjkn``). They contribute 0 to the total
+          variance. If every stratum is skipped, ``SE=NaN`` with a
+          ``UserWarning``.
+        * **Undefined LOOs within a contributing stratum → SE=NaN.** The
+          Rust & Rao formula requires every PSU-LOO in a contributing
+          stratum (``n_h ≥ 2``) to produce a defined ``τ̂_{(h,j)}``. If
+          any single LOO is undefined — (a) deletion removes all treated
+          units, (b) kept ``ω_eff`` mass is zero, (c) kept treated
+          survey mass is zero, (d) the SDID estimator raises or returns
+          non-finite τ̂ — the overall SE is undefined and the method
+          returns ``NaN`` with a targeted ``UserWarning`` naming the
+          stratum / PSU / reason. Silently skipping the missing LOO
+          while still applying the full ``(n_h-1)/n_h`` factor would
+          systematically under-scale variance (silently wrong SE).
 
         PSU-None fallback: if ``psu_control is None``, each unit is treated
         as its own PSU within its stratum (matches PR #355 R8 P1
