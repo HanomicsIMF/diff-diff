@@ -74,19 +74,24 @@ view. Every field below appears as a top-level key in that dict.
 
 - **`treatment_type: str`** - classification of the treatment column.
   Exactly one of:
-    - `"binary_absorbing"`: numeric with values in {0, 1}; each unit's
-      treatment sequence (ordered by `time`) is weakly monotone
-      non-decreasing. The canonical DiD setting.
-    - `"binary_non_absorbing"`: values in {0, 1} but at least one unit
-      switches from 1 back to 0. Only `ChaisemartinDHaultfoeuille` handles
-      this natively; the other absorbing-only estimators would misapply.
-    - `"continuous"`: numeric with more than two distinct values (e.g., a
-      dose, a discrete-integer partial-adoption score). Use
+    - `"binary_absorbing"`: observed non-NaN values are a subset of
+      {0, 1} (one or two distinct values, covering all-zero and all-one
+      panels as valid degenerate cases) and each unit's treatment
+      sequence (ordered by `time`) is weakly monotone non-decreasing.
+      The canonical DiD setting.
+    - `"binary_non_absorbing"`: values a subset of {0, 1} with at least
+      two distinct values observed, where at least one unit switches
+      from 1 back to 0. Only `ChaisemartinDHaultfoeuille` handles this
+      natively; the other absorbing-only estimators would misapply.
+    - `"continuous"`: numeric with more than two distinct values, or a
+      two-valued numeric column whose values are not in {0, 1} (e.g.,
+      a dose, a discrete-integer partial-adoption score). Use
       `ContinuousDiD` or `HeterogeneousAdoptionDiD`.
-    - `"categorical"`: non-numeric dtype (object / category) or bool dtype.
-      Often indicates a treatment arm. Encode each arm as a binary
-      indicator and fit separately, or use a multi-treatment workflow
-      outside the current estimator suite.
+    - `"categorical"`: non-numeric dtype (object / category), a bool
+      dtype column, or a column that is entirely NaN. Often indicates
+      a treatment arm. Encode each arm as a binary indicator and fit
+      separately, or use a multi-treatment workflow outside the
+      current estimator suite.
 - **`is_staggered: bool`** - true iff treatment is `binary_absorbing` and
   at least two distinct first-treatment periods are observed. Drives the
   choice between classic DiD/TWFE and staggered-robust estimators.

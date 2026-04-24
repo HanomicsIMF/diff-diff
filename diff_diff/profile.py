@@ -172,15 +172,23 @@ def profile_panel(
     -----
     Classification rules for ``treatment_type``:
 
-    - ``"binary_absorbing"``: numeric treatment taking values in :math:`\\{0, 1\\}`
-      where each unit's treatment sequence (ordered by ``time``) is weakly
-      monotone non-decreasing.
-    - ``"binary_non_absorbing"``: values in :math:`\\{0, 1\\}` but at least
-      one unit switches from 1 back to 0.
+    - ``"binary_absorbing"``: numeric treatment whose observed non-NaN
+      values are a subset of :math:`\\{0, 1\\}` (one or two distinct
+      values) AND each unit's treatment sequence (ordered by ``time``)
+      is weakly monotone non-decreasing. All-zero and all-one panels
+      are valid degenerate cases.
+    - ``"binary_non_absorbing"``: values a subset of :math:`\\{0, 1\\}`
+      with at least two distinct values observed, where at least one
+      unit switches from 1 back to 0.
     - ``"continuous"``: numeric treatment with more than two distinct
-      values (matches the ``ContinuousDiD`` convention).
-    - ``"categorical"``: non-numeric dtype (object / category) or a
-      boolean-dtype column.
+      values, or a 2-valued numeric whose values are not in
+      :math:`\\{0, 1\\}` (matches the ``ContinuousDiD`` convention).
+    - ``"categorical"``: non-numeric dtype (object / category), a
+      boolean-dtype column, or a column that is entirely NaN.
+
+    Boolean-dtype columns are intentionally classified as
+    ``"categorical"``; cast to ``int`` if you want binary-treatment
+    profiling.
 
     The profile does not recommend an estimator. Consult
     ``diff_diff.get_llm_guide("autonomous")`` for the estimator-support
@@ -297,7 +305,9 @@ def _classify_treatment(
     distinct = col.dropna().unique()
     n_distinct = len(distinct)
     values_set = set(distinct.tolist())
-    is_binary_valued = n_distinct == 2 and values_set <= {0, 1, 0.0, 1.0}
+    if n_distinct == 0:
+        return ("categorical", False, {}, False, False, None, None)
+    is_binary_valued = values_set <= {0, 1, 0.0, 1.0}
 
     if not is_binary_valued:
         return ("continuous", False, {}, False, False, None, None)

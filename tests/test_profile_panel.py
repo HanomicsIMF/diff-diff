@@ -252,3 +252,67 @@ def test_alert_dataclass_is_frozen():
     a = Alert(code="x", severity="info", message="m", observed=None)
     with pytest.raises(dataclasses.FrozenInstanceError):
         a.code = "y"  # type: ignore[misc]
+
+
+def test_all_zero_treatment_is_binary_absorbing():
+    """Degenerate binary: no unit is ever treated. Must classify as binary,
+    not continuous, so the documented taxonomy matches the implementation."""
+    df = _make_panel(n_units=20, periods=range(0, 4), first_treat=None)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "binary_absorbing"
+    assert profile.has_never_treated is True
+    assert profile.has_always_treated is False
+    assert profile.cohort_sizes == {}
+    assert profile.n_cohorts == 0
+
+
+def test_all_one_treatment_is_binary_absorbing_always_treated():
+    """Degenerate binary: every unit treated in every period. Must classify as
+    binary_absorbing with has_always_treated=True."""
+    rows = []
+    for u in range(1, 21):
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": 1, "y": float(u) + 0.1 * t})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "binary_absorbing"
+    assert profile.has_never_treated is False
+    assert profile.has_always_treated is True
+    codes = _alert_codes(profile)
+    assert "has_always_treated_units" in codes
+
+
+def test_binary_with_nans_only_zeros_observed_is_binary():
+    """Binary panel with some NaNs and only 0 observed among non-NaN values —
+    still classify as binary, not continuous."""
+    rows = []
+    for u in range(1, 11):
+        for t in range(4):
+            tr = 0 if (u + t) % 2 == 0 else np.nan
+            rows.append({"u": u, "t": t, "tr": tr, "y": float(u) + 0.1 * t})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "binary_absorbing"
+
+
+def test_all_nan_treatment_is_categorical():
+    """Treatment column entirely NaN — classify as categorical (no info)."""
+    rows = []
+    for u in range(1, 11):
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": np.nan, "y": float(u) + 0.1 * t})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "categorical"
+
+
+def test_top_level_import_surface():
+    """profile_panel, PanelProfile, and Alert must be importable from the
+    top-level namespace so `help(diff_diff)` points at real symbols."""
+    import diff_diff
+
+    assert callable(diff_diff.profile_panel)
+    assert diff_diff.PanelProfile.__name__ == "PanelProfile"
+    assert diff_diff.Alert.__name__ == "Alert"
+    for name in ("profile_panel", "PanelProfile", "Alert"):
+        assert name in diff_diff.__all__, f"{name} missing from __all__"
