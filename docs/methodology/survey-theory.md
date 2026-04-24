@@ -358,14 +358,25 @@ an IF representation.
 Two estimators in diff-diff --- **SyntheticDiD** and **TROP** --- involve
 non-smooth optimization steps (synthetic control weight selection, optimal
 transport maps) that do not fit cleanly into the smooth-functional framework.
-Their survey support is limited to bootstrap-only variance estimation: the
-bootstrap resamples PSUs within strata (Rao-Wu rescaled), bypassing the need
-for an IF. For SyntheticDiD, each draw re-runs the full estimator on resampled
-data. For TROP, per-observation treatment effects (tau_it) are deterministic
-given the data and do not depend on survey weights, so the Rao-Wu path
-precomputes tau values once and only varies the ATT aggregation weights across
-draws (see REGISTRY.md for the documented optimization). The TSL/IF-based
-argument in this document does not extend to these estimators.
+Their survey variance estimators bypass the TSL/IF framework entirely and use
+resampling / permutation-style allocators tailored to each method's role:
+
+- **TROP** uses Rao-Wu rescaled bootstrap at the PSU level. Per-observation
+  treatment effects (tau_it) are deterministic given the data and do not
+  depend on survey weights, so the Rao-Wu path precomputes tau values once
+  and only varies the ATT aggregation weights across draws (see REGISTRY.md
+  for the documented optimization).
+- **SyntheticDiD** supports all three variance methods under full
+  strata/PSU/FPC designs. ``bootstrap`` uses hybrid pairs-bootstrap + Rao-Wu
+  rescaling composed with a weighted Frank-Wolfe kernel (each draw re-runs
+  the full estimator on the resampled panel). ``placebo`` uses stratified
+  permutation + weighted Frank-Wolfe (pseudo-treated sampled within each
+  treated-containing stratum). ``jackknife`` uses PSU-level leave-one-out
+  with Rust-Rao stratum aggregation (fixed ω, λ — no refit per LOO). See
+  the bullets under "4.2b. SyntheticDiD survey resampling allocators" below
+  and REGISTRY.md §SyntheticDiD for the full derivations. Replicate-weight
+  designs remain rejected (no replicate-weight variance path). The TSL/IF-
+  based argument in this document does not extend to these estimators.
 
 ### 4.3. Under survey weighting, the same IF form applies
 

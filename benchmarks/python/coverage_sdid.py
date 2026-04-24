@@ -248,10 +248,10 @@ def _stratified_survey_design(df: pd.DataFrame) -> Tuple[Any, Tuple[str, ...]]:
       calibration with few PSUs should prefer ``bootstrap``.
     * **placebo** — NOT supported on this DGP: the treated cohort packs
       into stratum 1 (which has 0 never-treated units by construction),
-      so the stratified-permutation allocator raises Case C (fewer
-      controls than treated in a treated-containing stratum) at
-      fit-time. This is a property of the DGP, not of the placebo
-      allocator; the placebo survey method is exercised by
+      so the stratified-permutation allocator raises Case B (zero
+      controls in a treated-containing stratum) at fit-time. This is a
+      property of the DGP, not of the placebo allocator; the placebo
+      survey method is exercised by
       ``tests/test_survey_phase5.py::TestSDIDSurveyPlaceboFullDesign``.
     """
     from diff_diff import SurveyDesign

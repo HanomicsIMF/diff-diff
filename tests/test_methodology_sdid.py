@@ -3513,12 +3513,15 @@ class TestCoverageMCArtifact:
             "calibration gate [0.02, 0.10]; weighted FW + Rao-Wu is "
             "miscalibrated. See PR #355 §3c rollback protocol."
         )
-        # Placebo is structurally infeasible on this DGP (all treated
-        # in stratum 1 with 0 never-treated units → Case C raise at fit-time).
+        # Placebo is structurally infeasible on this DGP: the DGP packs
+        # all treated units into stratum 1, which has 0 never-treated
+        # units, so the stratified-permutation allocator raises Case B
+        # (zero controls in a treated-containing stratum) at fit-time.
         assert survey_block["placebo"]["n_successful_fits"] == 0, (
             "stratified_survey placebo should have 0 successful fits "
-            "(stratified-permutation allocator raises Case C at fit-time "
-            "because the DGP has 0 controls in the treated stratum)."
+            "(stratified-permutation allocator raises Case B at fit-time "
+            "because stratum 1 has 0 never-treated units — all treated "
+            "cohort packs into stratum 1 by DGP construction)."
         )
         # Jackknife should now succeed (full-design support added). Its SE
         # is known anti-conservative with only 2 PSUs per stratum — that's

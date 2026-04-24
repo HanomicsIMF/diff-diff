@@ -304,10 +304,12 @@ class SyntheticDiD(DifferenceInDifferences):
               targeted error instead of a bootstrap-exhaustion
               failure (PR #355 R8 P1).
         NotImplementedError
-            If ``survey_design`` with strata/PSU/FPC is provided with
-            ``variance_method='placebo'`` or ``'jackknife'``. Bootstrap
-            + any survey design (pweight-only or full design) is
-            supported via PR #352's weighted-FW + Rao-Wu composition.
+            If ``survey_design`` carries replicate weights (BRR/Fay/JK1/
+            JKn/SDR) — SyntheticDiD has no replicate-weight variance
+            path. All three variance methods (placebo, bootstrap,
+            jackknife) accept pweight-only and full strata/PSU/FPC
+            analytical designs; only replicate-weight designs are
+            rejected.
         """
         # Validate inputs
         if outcome is None or treatment is None or unit is None or time is None:
@@ -333,18 +335,18 @@ class SyntheticDiD(DifferenceInDifferences):
         )
         # Reject replicate-weight designs — SyntheticDiD has no replicate-
         # weight variance path. Analytical (pweight / strata / PSU / FPC)
-        # designs are supported per the PR #352 matrix (bootstrap covers
-        # full design via weighted-FW + Rao-Wu; placebo / jackknife
-        # accept pweight-only, reject strata/PSU/FPC).
+        # designs are supported across all three variance methods:
+        # bootstrap via weighted-FW + Rao-Wu (PR #355); placebo via
+        # stratified permutation + weighted FW; jackknife via PSU-level
+        # LOO with stratum aggregation (Rust & Rao 1996).
         if resolved_survey is not None and resolved_survey.uses_replicate_variance:
             raise NotImplementedError(
                 "SyntheticDiD does not support replicate-weight survey "
-                "designs. Analytical survey designs are supported: "
-                "variance_method='bootstrap' accepts both pweight-only "
-                "and strata/PSU/FPC designs (PR #352), while "
-                "variance_method='placebo' and 'jackknife' accept "
-                "pweight-only. See docs/methodology/REGISTRY.md "
-                "§SyntheticDiD for the full survey support matrix."
+                "designs. Analytical designs are supported across all "
+                "three variance methods (placebo, bootstrap, jackknife), "
+                "for both pweight-only and full strata/PSU/FPC. See "
+                "docs/methodology/REGISTRY.md §SyntheticDiD for the "
+                "full survey support matrix."
             )
         # Validate pweight only
         if resolved_survey is not None and resolved_survey.weight_type != "pweight":
