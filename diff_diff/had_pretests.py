@@ -1961,13 +1961,25 @@ def stute_joint_pretest(
     Returns
     -------
     StuteJointResult
+        On the common path, a populated result with bootstrap-based
+        ``p_value`` and ``cvm_stat_joint``. On the small-sample branch
+        (``G < _MIN_G_STUTE``), constant-dose branch
+        (``np.ptp(doses) <= 0``), or any-NaN branch in the input
+        residuals / fitted arrays, returns an all-NaN result (with
+        ``reject=False`` and the full ``per_horizon_stats`` dict keyed
+        by the validated horizon labels) and emits a ``UserWarning``
+        for the first two branches. Mirrors the single-horizon
+        :func:`stute_test` contract so event-study workflows on small
+        or staggered-filtered panels surface an inconclusive report
+        rather than crashing.
 
     Raises
     ------
     ValueError
-        On empty input, key-mismatch, shape-mismatch, ``doses``
-        containing negative values, ``G < _MIN_G_STUTE``, or
-        ``n_bootstrap < _MIN_N_BOOTSTRAP``.
+        On empty input, key-mismatch, stringified-label collisions
+        between distinct raw keys, shape-mismatch, ``doses`` containing
+        negative values, ``n_bootstrap < _MIN_N_BOOTSTRAP``, or invalid
+        ``alpha``. ``G < _MIN_G_STUTE`` does NOT raise; see Returns.
     """
     if not isinstance(residuals_by_horizon, dict) or not isinstance(fitted_by_horizon, dict):
         raise ValueError(
