@@ -4846,3 +4846,147 @@ class TestEventStudySurveyCband:
             )
         np.testing.assert_allclose(r_range.att, r_shifted.att, atol=1e-12, rtol=1e-12)
         np.testing.assert_allclose(r_range.se, r_shifted.se, atol=1e-12, rtol=1e-12)
+
+    def test_mass_point_survey_plus_cluster_rejected_static(self):
+        """Review R2 P1: mass-point + (weights= or survey=) + cluster=
+        must raise NotImplementedError on the static path. Previously
+        the weighted path silently overrode the CR1 SE with Binder-TSL
+        while the result still reported vcov_type='cr1'."""
+        rng = np.random.default_rng(0)
+        G = 200
+        d = np.concatenate([np.full(40, 0.3), rng.uniform(0.3, 1.0, G - 40)])
+        rng.shuffle(d)
+        dy = 2.0 * d + 0.3 * rng.standard_normal(G)
+        panel = pd.DataFrame(
+            {
+                "unit": np.repeat(np.arange(G), 2),
+                "period": np.tile([1, 2], G),
+                "dose": np.column_stack([np.zeros(G), d]).ravel(),
+                "outcome": np.column_stack([np.zeros(G), dy]).ravel(),
+                "state": np.repeat(np.arange(G) // 20, 2),
+            }
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="hc1", cluster="state")
+            with pytest.raises(NotImplementedError, match="cluster"):
+                est.fit(
+                    panel,
+                    "outcome",
+                    "dose",
+                    "period",
+                    "unit",
+                    weights=np.ones(panel.shape[0]),
+                )
+
+    def test_mass_point_survey_plus_cluster_rejected_event_study(self):
+        """Review R2 P1 (event-study arm): same rejection must fire on
+        the multi-period dispatch."""
+        rng = np.random.default_rng(1)
+        G, T = 150, 4
+        d_mp = np.concatenate([np.full(30, 0.3), rng.uniform(0.3, 1.0, G - 30)])
+        rng.shuffle(d_mp)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_mp[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y, g // 25))
+        panel = pd.DataFrame(rows, columns=["unit", "period", "dose", "outcome", "state"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="hc1", cluster="state")
+            with pytest.raises(NotImplementedError, match="cluster"):
+                est.fit(
+                    panel,
+                    "outcome",
+                    "dose",
+                    "period",
+                    "unit",
+                    aggregate="event_study",
+                    weights=np.ones(panel.shape[0]),
+                )
+
+    def test_lonely_psu_adjust_with_singletons_rejected_on_cband(self):
+        """Review R2 P1: sup-t bootstrap rejects lonely_psu='adjust'
+        when there are singleton strata, because the bootstrap helper
+        pools singletons with nonzero multipliers but the analytical
+        target centers them at the global mean — mismatch."""
+        from diff_diff.had import _sup_t_multiplier_bootstrap
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        rng = np.random.default_rng(0)
+        G = 80
+        # 3 strata, two with multiple PSUs, one singleton.
+        strata = np.array([1] * 30 + [2] * 30 + [3] * 20)
+        # PSUs: 10 in stratum 1, 10 in stratum 2, 1 in stratum 3 (singleton).
+        psu = np.concatenate(
+            [np.arange(10).repeat(3), (10 + np.arange(10)).repeat(3), np.full(20, 20)]
+        )
+        adjust_resolved = ResolvedSurveyDesign(
+            weights=np.ones(G),
+            weight_type="pweight",
+            strata=strata,
+            psu=psu,
+            fpc=None,
+            n_strata=3,
+            n_psu=21,
+            lonely_psu="adjust",
+            combined_weights=True,
+            mse=False,
+        )
+        psi = rng.standard_normal((G, 2))
+        with pytest.raises(NotImplementedError, match="lonely_psu='adjust'"):
+            _sup_t_multiplier_bootstrap(
+                psi,
+                np.zeros(2),
+                np.array([1.0, 1.0]),
+                adjust_resolved,
+                n_bootstrap=200,
+                alpha=0.05,
+                seed=0,
+            )
+
+    def test_stratified_h1_sup_t_matches_analytical(self):
+        """Review R2 P1 coverage: stratum-centered H=1 bootstrap variance
+        matches the analytical Binder-TSL target (q ≈ 1.96 at H=1)."""
+        from diff_diff.had import _sup_t_multiplier_bootstrap
+        from diff_diff.survey import ResolvedSurveyDesign, compute_survey_if_variance
+
+        rng = np.random.default_rng(7)
+        G = 400
+        strata = np.repeat(np.arange(4), G // 4)
+        psu = np.arange(G)
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(G),
+            weight_type="pweight",
+            strata=strata,
+            psu=psu,
+            fpc=None,
+            n_strata=4,
+            n_psu=G,
+            lonely_psu="remove",
+            combined_weights=True,
+            mse=False,
+        )
+        psi = rng.standard_normal((G, 1))
+        V_analytical = compute_survey_if_variance(psi[:, 0], resolved)
+        se_analytical = np.sqrt(V_analytical)
+        q, _, _, _ = _sup_t_multiplier_bootstrap(
+            psi,
+            np.zeros(1),
+            np.array([se_analytical]),
+            resolved,
+            n_bootstrap=5000,
+            alpha=0.05,
+            seed=42,
+        )
+        # At H=1 the sup collapses to the marginal; with stratum-
+        # centered + small-sample-corrected perturbations the bootstrap
+        # distribution is ~ N(0, 1), so q → Phi^-1(0.975) = 1.96.
+        # B=5000 MC noise on the tail quantile is ~0.03-0.05.
+        assert abs(q - 1.96) < 0.15, (
+            f"Stratified H=1 sup-t should match Normal quantile 1.96 up to "
+            f"MC noise; got q={q:.4f}. Likely a stratum-centering bug in "
+            f"_sup_t_multiplier_bootstrap."
+        )

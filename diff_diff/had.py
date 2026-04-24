@@ -2062,6 +2062,45 @@ def _sup_t_multiplier_bootstrap(
     )
 
     if use_survey_bootstrap:
+        # Review R2 P1: lonely_psu="adjust" pools singleton strata into a
+        # pseudo-stratum with NONZERO multipliers in the bootstrap helper,
+        # but the analytical compute_survey_if_variance target for
+        # singletons is centered at the global mean of PSU scores. Since
+        # this PR's stratum-demean loop only matches the within-stratum
+        # Binder-TSL target (and skips singletons assuming zero
+        # contribution), pooled singleton multipliers would diverge from
+        # the analytical variance without an additional pseudo-stratum
+        # centering step. Reject with a clear pointer until the matching
+        # transform is derived; "remove" / "certainty" (singleton
+        # multipliers forced to zero) are fine.
+        _lonely = getattr(resolved_survey, "lonely_psu", "remove")
+        if _lonely == "adjust":
+            strata_arr = resolved_survey.strata
+            psu_arr = resolved_survey.psu
+            _has_singleton = False
+            if strata_arr is not None:
+                for h in np.unique(strata_arr):
+                    mask_h = np.asarray(strata_arr) == h
+                    if psu_arr is not None:
+                        n_psu_h = int(np.unique(np.asarray(psu_arr)[mask_h]).shape[0])
+                    else:
+                        n_psu_h = int(mask_h.sum())
+                    if n_psu_h < 2:
+                        _has_singleton = True
+                        break
+            if _has_singleton:
+                raise NotImplementedError(
+                    "HeterogeneousAdoptionDiD event-study sup-t bootstrap "
+                    "does not yet support SurveyDesign(lonely_psu='adjust') "
+                    "with singleton strata: the bootstrap helper pools "
+                    "singletons with nonzero multipliers while the "
+                    "analytical Binder-TSL target centers singleton PSU "
+                    "scores at the global mean, and the matching "
+                    "pseudo-stratum centering transform has not been "
+                    "implemented. Use lonely_psu='remove' (drops singleton "
+                    "contributions; matches the 'remove' analytical target) "
+                    "or pass cband=False to skip the simultaneous band."
+                )
         psu_weights, psu_ids = generate_survey_multiplier_weights_batch(
             n_bootstrap, resolved_survey, bootstrap_weights, rng
         )
@@ -3260,6 +3299,25 @@ class HeterogeneousAdoptionDiD:
             vcov_label: Optional[str] = None
             cluster_label: Optional[str] = None
         elif resolved_design == "mass_point":
+            # Review R2 P1: mass-point + weights + cluster is a silent
+            # inference mismatch because the weighted path overrides the
+            # CR1 SE with Binder-TSL while result metadata still reports
+            # CR1. Reject the combination front-door until a combined
+            # cluster + survey variance is derived. Unweighted CR1
+            # continues to work unchanged; weighted pweight sandwich
+            # without cluster continues to work unchanged.
+            if cluster_arg is not None and weights_unit_full is not None:
+                raise NotImplementedError(
+                    f"cluster={cluster_arg!r} + survey=/weights= on "
+                    f"design='mass_point' is not yet supported: the "
+                    f"weighted path composes Binder-TSL variance and "
+                    f"would silently override the CR1 cluster-robust "
+                    f"sandwich. Pass either cluster= alone (unweighted "
+                    f"CR1) or survey=/weights= alone (weighted 2SLS "
+                    f"pweight sandwich → Binder-TSL under survey=); "
+                    f"combined cluster-robust survey inference is "
+                    f"deferred to a follow-up PR."
+                )
             if vcov_type_arg is None:
                 # Backward-compat: robust=True -> hc1, robust=False -> classical.
                 vcov_requested = "hc1" if robust_arg else "classical"
@@ -3858,6 +3916,22 @@ class HeterogeneousAdoptionDiD:
         # ---- Extract cluster IDs on mass-point path only ----
         cluster_arr: Optional[np.ndarray] = None
         if resolved_design == "mass_point" and cluster_arg is not None:
+            # Review R2 P1: reject cluster= + weights/survey on
+            # mass-point (mirrors the static-path rejection) —
+            # the weighted path would compose Binder-TSL variance
+            # and silently override CR1 while result metadata still
+            # claims cluster-robust inference.
+            if weights_unit_full is not None:
+                raise NotImplementedError(
+                    f"cluster={cluster_arg!r} + survey=/weights= on "
+                    f"design='mass_point' (event-study) is not yet "
+                    f"supported: the weighted path composes Binder-TSL "
+                    f"variance and would silently override the CR1 "
+                    f"cluster-robust sandwich. Pass either cluster= "
+                    f"alone (unweighted CR1) or survey=/weights= alone; "
+                    f"combined cluster-robust survey inference is "
+                    f"deferred to a follow-up PR."
+                )
             _, _, cluster_arr, _, _ = _aggregate_multi_period_first_differences(
                 data_filtered,
                 outcome_col,
