@@ -4127,11 +4127,18 @@ class HeterogeneousAdoptionDiD:
         # carries the full-design effective_n / n_psu / etc.).
         n_obs_arr = np.full(n_horizons, n_units, dtype=np.int64)
 
-        # Per-horizon IF matrix on the weighted path (shape (G, H)); drives
-        # both per-horizon Binder-TSL variance (already composed inside
-        # ``_fit_continuous`` for continuous, or explicitly below for
-        # mass-point) AND the shared-PSU multiplier bootstrap for sup-t.
-        if weighted_es:
+        # Two IF-consumption flags (review R6 P2): the PER-HORIZON IF is
+        # needed when the survey= path composes Binder-TSL variance (via
+        # compute_survey_if_variance inside _fit_continuous or the
+        # mass-point override below); the STACKED (G, H) IF matrix is
+        # needed only when the sup-t multiplier bootstrap runs
+        # (``cband=True`` on the weighted path). Splitting them avoids
+        # allocating / filling Psi on the common opt-out path
+        # ``cband=False`` + weights= shortcut, where no IF consumer
+        # exists.
+        needs_per_horizon_if = resolved_survey_unit_full is not None or (weighted_es and cband)
+        needs_stacked_if_matrix = weighted_es and cband
+        if needs_stacked_if_matrix:
             Psi = np.full((G_full, n_horizons), np.nan, dtype=np.float64)
         else:
             Psi = np.zeros((0, 0), dtype=np.float64)  # sentinel, not used
@@ -4173,23 +4180,28 @@ class HeterogeneousAdoptionDiD:
                     d_lower_val,
                     weights_arr=weights_unit_full,
                     resolved_survey_unit=resolved_survey_unit_full,
-                    # Force IF return on the weighted event-study path
-                    # (needed for the sup-t bootstrap). Does NOT change
-                    # the per-horizon SE formula — that still follows
-                    # the static-path convention (Binder-TSL under
-                    # survey=, bc_fit.se_robust under weights= shortcut).
-                    force_return_influence=weighted_es,
+                    # Force IF return only when the sup-t bootstrap
+                    # needs the stacked matrix AND the survey= gate
+                    # won't already produce it. Under survey= path,
+                    # _fit_continuous returns the IF automatically
+                    # (resolved_survey_unit_full != None); under the
+                    # weights= shortcut + cband=True, force it here;
+                    # otherwise skip the O(G) IF work (review R6 P2).
+                    force_return_influence=(
+                        needs_stacked_if_matrix and resolved_survey_unit_full is None
+                    ),
                 )
                 if bc_fits is not None:
                     bc_fits.append(bc_fit_e)
                 if bw_diags is not None:
                     bw_diags.append(bw_diag_e)
-                # Collect per-unit IF on β̂-scale (psi_bc / den) so the
-                # sup-t bootstrap operates on the same θ̂-scale IF that
-                # the analytical variance sees. Per continuous-path
-                # construction in _fit_continuous, bc_fit.influence_function
-                # is the numerator IF; dividing by |den| yields the β̂ IF.
-                if weighted_es and bc_fit_e is not None and bc_fit_e.influence_function is not None:
+                # Collect per-unit IF on β̂-scale (psi_bc / den) into
+                # Psi ONLY when the sup-t bootstrap will consume it.
+                if (
+                    needs_stacked_if_matrix
+                    and bc_fit_e is not None
+                    and bc_fit_e.influence_function is not None
+                ):
                     if resolved_design == "continuous_at_zero":
                         den_e = float(np.average(d_arr_full, weights=weights_unit_full))
                     else:
@@ -4209,7 +4221,12 @@ class HeterogeneousAdoptionDiD:
                     cluster_arr,
                     vcov_requested,
                     weights=weights_unit_full,
-                    return_influence=resolved_survey_unit_full is not None or weighted_es,
+                    # Return IF only when a consumer exists: survey=
+                    # path needs it for per-horizon Binder-TSL override;
+                    # weights= shortcut + cband=True needs it for the
+                    # bootstrap. weights= shortcut + cband=False skips
+                    # IF computation entirely (review R6 P2).
+                    return_influence=needs_per_horizon_if,
                 )
                 # Survey path: override analytical sandwich SE with
                 # Binder-TSL via compute_survey_if_variance (matches
@@ -4222,7 +4239,7 @@ class HeterogeneousAdoptionDiD:
                         se_e = float(np.sqrt(v_survey))
                     else:
                         se_e = float("nan")
-                if weighted_es and psi_e is not None:
+                if needs_stacked_if_matrix and psi_e is not None:
                     Psi[:, i] = psi_e
             else:
                 raise ValueError(f"Internal error: unhandled design={resolved_design!r}.")

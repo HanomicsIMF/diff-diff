@@ -5351,6 +5351,108 @@ class TestEventStudySurveyCband:
                     cband=True,
                 )
 
+    def test_survey_event_study_continuous_end_to_end(self):
+        """Review R6 P3: estimator-level
+        ``fit(aggregate='event_study', survey=SurveyDesign(...))``
+        integration lock for the continuous path. Verifies
+        variance_formula, survey_metadata.df_survey (t-inference path),
+        cband_* population, and stratified PSU dispatch through
+        _aggregate_unit_resolved_survey."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(70)
+        G, T, n_strata = 200, 4, 4
+        d_post = rng.uniform(0.0, 1.0, G)
+        strata_per_unit = np.repeat(np.arange(n_strata), G // n_strata)
+        rng.shuffle(strata_per_unit)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_post[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y, strata_per_unit[g]))
+        panel = pd.DataFrame(
+            rows,
+            columns=["unit", "period", "dose", "outcome", "stratum"],
+        )
+        w_unit = 1.0 + 0.3 * np.abs(rng.standard_normal(G))
+        panel["w"] = panel["unit"].map(lambda g: w_unit[g])
+        sd = SurveyDesign(weights="w", strata="stratum")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="continuous_at_zero", seed=0, n_bootstrap=200)
+            r = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                aggregate="event_study",
+                survey=sd,
+            )
+        assert r.variance_formula == "survey_binder_tsl"
+        assert r.survey_metadata is not None
+        assert r.survey_metadata.n_strata == n_strata
+        assert r.survey_metadata.n_psu == G
+        assert r.survey_metadata.df_survey == G - n_strata
+        assert r.cband_crit_value is not None and np.isfinite(r.cband_crit_value)
+        assert r.cband_method == "multiplier_bootstrap"
+        assert r.cband_n_bootstrap == 200
+        assert r.cband_low is not None and r.cband_high is not None
+        assert np.all(np.isfinite(r.se))
+
+    def test_survey_event_study_mass_point_end_to_end(self):
+        """Review R6 P3: estimator-level
+        ``fit(design='mass_point', aggregate='event_study',
+        survey=...)`` integration lock. Verifies
+        variance_formula='survey_binder_tsl_2sls' and that the
+        weighted 2SLS IF flows correctly through per-horizon
+        Binder-TSL + sup-t bootstrap."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(71)
+        G, T = 200, 4
+        d_mp = np.concatenate([np.full(40, 0.3), rng.uniform(0.3, 1.0, G - 40)])
+        rng.shuffle(d_mp)
+        strata_per_unit = np.repeat(np.arange(4), G // 4)
+        rng.shuffle(strata_per_unit)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_mp[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y, strata_per_unit[g]))
+        panel = pd.DataFrame(
+            rows,
+            columns=["unit", "period", "dose", "outcome", "stratum"],
+        )
+        w_unit = 1.0 + 0.3 * np.abs(rng.standard_normal(G))
+        panel["w"] = panel["unit"].map(lambda g: w_unit[g])
+        sd = SurveyDesign(weights="w", strata="stratum")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(
+                design="mass_point",
+                vcov_type="hc1",
+                seed=0,
+                n_bootstrap=200,
+            )
+            r = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                aggregate="event_study",
+                survey=sd,
+            )
+        assert r.variance_formula == "survey_binder_tsl_2sls"
+        assert r.survey_metadata is not None
+        assert r.survey_metadata.n_strata == 4
+        assert r.cband_crit_value is not None and np.isfinite(r.cband_crit_value)
+        assert r.cband_method == "multiplier_bootstrap"
+        assert np.all(np.isfinite(r.se))
+
     def test_mass_point_default_vcov_robust_true_survey_allowed(self):
         """Complement: robust=True on the default path resolves to
         hc1, so the survey= mass-point fit is allowed with no explicit
