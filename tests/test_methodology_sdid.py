@@ -671,6 +671,46 @@ class TestBootstrapSE:
         assert "Bootstrap replications" in summary
         assert str(n_boot) in summary
 
+    def test_bootstrap_pweight_only_retries_zero_treated_mass_draws(self):
+        """Pweight-only bootstrap: zero-mass treated draws must be retried,
+        not silently fall back to an unweighted treated mean (PR #355 R2 P0).
+
+        Regression: prior to R2, when a bootstrap draw's treated units all
+        had survey weight 0 — reachable when at least one treated unit has
+        pweight 0 AND the resample picks only those units — the code fell
+        through to ``np.mean(Y_boot_pre_t, axis=1)``. That silently
+        dropped survey weighting on that draw while the fit-time ATT uses
+        the survey-weighted treated mean, corrupting the bootstrap
+        distribution used for SE/p-value/CI.
+
+        Fix: extend the degenerate-retry to any survey branch where
+        ``rw_treated_draw.sum() == 0``. This test constructs a panel
+        where one of three treated units has weight 0; bootstrap must
+        still produce a valid finite SE, and the draws that hit the
+        zero-mass condition are retried rather than getting a wrong τ.
+        """
+        from diff_diff.survey import SurveyDesign
+        df = _make_panel(n_control=25, n_treated=3, seed=42)
+        # Give one treated unit weight 0 and the other two weight 1.
+        # Control units get unit weights (any positive). Treated_idx 25,
+        # 26, 27; set 25 → weight 0, 26 and 27 → weight 1.
+        df["wt"] = 1.0
+        df.loc[df["unit"] == 25, "wt"] = 0.0
+        result = SyntheticDiD(
+            variance_method="bootstrap", n_bootstrap=100, seed=1
+        ).fit(
+            df, outcome="outcome", treatment="treated",
+            unit="unit", time="period",
+            post_periods=[5, 6, 7],
+            survey_design=SurveyDesign(weights="wt"),
+        )
+        assert np.isfinite(result.att), f"att not finite: {result.att}"
+        assert np.isfinite(result.se), f"se not finite: {result.se}"
+        assert result.se > 0, f"se={result.se} must be positive"
+        # Cross-surface: the variance_method label should still be
+        # bootstrap and the bootstrap replications line should render.
+        assert result.variance_method == "bootstrap"
+
     def test_bootstrap_full_design_without_explicit_weights(self):
         """SurveyDesign(strata=..., psu=..., weights=None) fits successfully.
 

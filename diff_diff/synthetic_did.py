@@ -301,17 +301,19 @@ class SyntheticDiD(DifferenceInDifferences):
             _resolve_survey_for_fit(survey_design, data, "analytical")
         )
         # Reject replicate-weight designs — SyntheticDiD has no replicate-
-        # weight variance path. Full survey designs with strata/PSU/FPC are
-        # also not supported on any variance method in this release (see the
-        # guards below). Pweight-only works with variance_method='placebo'
-        # or 'jackknife'.
+        # weight variance path. Analytical (pweight / strata / PSU / FPC)
+        # designs are supported per the PR #352 matrix (bootstrap covers
+        # full design via weighted-FW + Rao-Wu; placebo / jackknife
+        # accept pweight-only, reject strata/PSU/FPC).
         if resolved_survey is not None and resolved_survey.uses_replicate_variance:
             raise NotImplementedError(
-                "SyntheticDiD does not support replicate-weight survey designs. "
-                "Only pweight-only survey weights are accepted, and only with "
-                "variance_method='placebo' or 'jackknife'. See "
-                "docs/methodology/REGISTRY.md §SyntheticDiD for the survey "
-                "support matrix."
+                "SyntheticDiD does not support replicate-weight survey "
+                "designs. Analytical survey designs are supported: "
+                "variance_method='bootstrap' accepts both pweight-only "
+                "and strata/PSU/FPC designs (PR #352), while "
+                "variance_method='placebo' and 'jackknife' accept "
+                "pweight-only. See docs/methodology/REGISTRY.md "
+                "§SyntheticDiD for the full survey support matrix."
             )
         # Validate pweight only
         if resolved_survey is not None and resolved_survey.weight_type != "pweight":
@@ -1008,11 +1010,17 @@ class SyntheticDiD(DifferenceInDifferences):
                     rw_control_draw = None
                     rw_treated_draw = None
 
-                # Degenerate-retry under Rao-Wu: if the draw zeros out the
-                # control or treated mass, retry. Pweight-only never
-                # produces zero-mass draws unless input weights are all
-                # zero (caller error).
-                if _use_rao_wu and (
+                # Degenerate-retry under ANY survey path: if a draw zeros
+                # out the control or treated mass, retry. For Rao-Wu this
+                # is expected behavior (PSUs not drawn get weight 0). For
+                # pweight-only, zero-mass treated is reachable when at
+                # least one unit has zero survey weight AND the
+                # bootstrap resample happens to pick only zero-weight
+                # treated units — silently falling back to an unweighted
+                # mean would corrupt the bootstrap distribution because
+                # fit-time ATT uses the survey-weighted mean (PR #355
+                # R2 P0).
+                if (_use_rao_wu or _pweight_only) and rw_treated_draw is not None and (
                     rw_control_draw.sum() == 0 or rw_treated_draw.sum() == 0
                 ):
                     continue
