@@ -729,6 +729,22 @@ def test_guide_api_strings_resolve_against_public_api():
         "intolerant estimators"
     )
 
+    # ChaisemartinDHaultfoeuille handles non-absorbing / reversible
+    # treatment; SUTVA is still assumed (no native interference or
+    # spillover support per REGISTRY.md). Guard against the guide
+    # drifting back to advertising dCDH as "robust to spillover
+    # designs" or similar.
+    for phrase in (
+        "robust to spillover",
+        "interference-robust",
+        "supports spillover",
+        "and to spillover",
+    ):
+        assert phrase not in text, (
+            f"Guide must not advertise unsupported dCDH capability "
+            f"{phrase!r}: SUTVA is assumed across the estimator suite."
+        )
+
 
 def test_min_pre_post_use_per_unit_observed_support():
     """On an unbalanced panel where one treated unit is missing its

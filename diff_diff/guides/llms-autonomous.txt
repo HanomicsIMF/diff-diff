@@ -339,7 +339,9 @@ estimators:
   coefficients. Requires a never-treated cohort (`fit` raises a
   `ValueError` when none exists).
 - `ChaisemartinDHaultfoeuille` - DID_M / DID_l estimators robust to
-  non-absorbing treatment (see §4.5) and to spillover designs.
+  non-absorbing / reversible treatment (see §4.5). Interference /
+  between-unit spillovers are not supported natively - SUTVA is
+  assumed like every other DiD estimator in the suite.
 - `ImputationDiD` (Borusyak, Jaravel, Spiess) - imputation-based,
   efficient under homoskedasticity, produces an imputation-based
   residual at the observation level.
