@@ -1640,6 +1640,30 @@ def _validate_multi_period_panel(
     )
 
 
+def _build_period_rank(data: pd.DataFrame, time_col: str) -> Dict[Any, int]:
+    """Build a ``{period_label: chronological_rank}`` map.
+
+    For ordered categorical time columns, uses the declared category
+    order so that e.g. ``["q1", "q2", "q10"]`` ranks chronologically
+    even though it sorts lexically in the opposite order. For numeric
+    or datetime time columns, uses natural Python `sorted` order on
+    the unique period labels. Object dtypes would fall back to
+    lexicographic order - callers relying on chronology with object-
+    dtype labels should convert to an ordered categorical first
+    (this mirrors the contract in ``_validate_had_panel_event_study``).
+
+    The rank map lets the joint-pretest wrappers compare period labels
+    chronologically via ``rank[t1] < rank[t2]`` instead of raw Python
+    ``t1 < t2``, which would silently misorder ordered-categorical
+    panels (paper Appendix B.2 support contract).
+    """
+    time_dtype = data[time_col].dtype
+    if isinstance(time_dtype, pd.CategoricalDtype) and time_dtype.ordered:
+        return {c: i for i, c in enumerate(time_dtype.categories)}
+    periods = sorted(data[time_col].unique())
+    return {p: i for i, p in enumerate(periods)}
+
+
 def _aggregate_for_joint_test(
     data: pd.DataFrame,
     outcome_col: str,
@@ -2157,25 +2181,32 @@ def joint_pretrends_test(
             f"base_period={base_period!r} must not appear in " f"pre_periods {list(pre_periods)!r}."
         )
 
-    # Ordering check: all pre_periods strictly < base_period (natural
-    # order on the column dtype). We rely on the time column being
-    # comparable (numeric, datetime, or ordered categorical); other
-    # dtypes would silently misorder. The multi-period validator (when
-    # called via the workflow) enforces an ordered dtype; direct callers
-    # get a TypeError here on incomparable types.
-    try:
-        out_of_order = [t for t in pre_periods if not (t < base_period)]
-    except TypeError as exc:
-        raise TypeError(
-            "pre_periods and base_period must be comparable "
-            "(numeric, datetime, or ordered categorical values). "
-            f"Got pre_periods={list(pre_periods)!r}, "
-            f"base_period={base_period!r}."
-        ) from exc
+    # Ordering check: all pre_periods strictly < base_period in
+    # chronological order. Uses `_build_period_rank` to handle ordered-
+    # categorical time columns correctly (raw Python `<` would fail on
+    # categories whose lexical order disagrees with chronology, e.g.
+    # ["q1", "q2", "q10"]). Numeric / datetime dtypes get natural order.
+    period_rank = _build_period_rank(data, time_col)
+    if base_period not in period_rank:
+        raise ValueError(
+            f"base_period={base_period!r} not found in time_col "
+            f"{time_col!r}. Available: "
+            f"{sorted(period_rank.keys(), key=lambda t: period_rank[t])!r}."
+        )
+    missing_pre_in_data = [t for t in pre_periods if t not in period_rank]
+    if missing_pre_in_data:
+        raise ValueError(
+            f"pre_periods entries {missing_pre_in_data!r} not found in "
+            f"time_col {time_col!r}. Available: "
+            f"{sorted(period_rank.keys(), key=lambda t: period_rank[t])!r}."
+        )
+    base_rank = period_rank[base_period]
+    out_of_order = [t for t in pre_periods if period_rank[t] >= base_rank]
     if out_of_order:
         raise ValueError(
-            f"All pre_periods must be strictly < base_period. "
-            f"Violators: {out_of_order!r} (base_period={base_period!r})."
+            f"All pre_periods must be strictly < base_period in "
+            f"chronological order. Violators: {out_of_order!r} "
+            f"(base_period={base_period!r})."
         )
 
     # Event-study validation contract (paper Appendix B.2):
@@ -2341,21 +2372,31 @@ def joint_homogeneity_test(
             f"post_periods {list(post_periods)!r}."
         )
 
-    # Ordering: all post_periods >= base_period (and in fact strictly
-    # greater under the HAD contract where base is the last pre-period).
-    try:
-        out_of_order = [t for t in post_periods if not (t > base_period)]
-    except TypeError as exc:
-        raise TypeError(
-            "post_periods and base_period must be comparable "
-            "(numeric, datetime, or ordered categorical values). "
-            f"Got post_periods={list(post_periods)!r}, "
-            f"base_period={base_period!r}."
-        ) from exc
+    # Ordering: all post_periods strictly > base_period in
+    # chronological order. Uses `_build_period_rank` for ordered-
+    # categorical correctness (raw Python `>` would misorder e.g.
+    # "q10" > "q2").
+    period_rank = _build_period_rank(data, time_col)
+    if base_period not in period_rank:
+        raise ValueError(
+            f"base_period={base_period!r} not found in time_col "
+            f"{time_col!r}. Available: "
+            f"{sorted(period_rank.keys(), key=lambda t: period_rank[t])!r}."
+        )
+    missing_post_in_data = [t for t in post_periods if t not in period_rank]
+    if missing_post_in_data:
+        raise ValueError(
+            f"post_periods entries {missing_post_in_data!r} not found in "
+            f"time_col {time_col!r}. Available: "
+            f"{sorted(period_rank.keys(), key=lambda t: period_rank[t])!r}."
+        )
+    base_rank = period_rank[base_period]
+    out_of_order = [t for t in post_periods if period_rank[t] <= base_rank]
     if out_of_order:
         raise ValueError(
-            f"All post_periods must be strictly > base_period. "
-            f"Violators: {out_of_order!r} (base_period={base_period!r})."
+            f"All post_periods must be strictly > base_period in "
+            f"chronological order. Violators: {out_of_order!r} "
+            f"(base_period={base_period!r})."
         )
 
     # Event-study validation contract (paper Appendix B.2) - twin of
@@ -2595,7 +2636,15 @@ def did_had_pretest_workflow(
         # strictly before base_period). If only the base pre-period is
         # available (len(t_pre_list) == 1), there are no earlier
         # placebos; set pretrends_joint=None and flag in verdict.
-        earlier_pre = [t for t in t_pre_list if t < base_period]
+        # ``t_pre_list`` is returned chronologically sorted by
+        # ``_validate_had_panel_event_study`` (using the column's
+        # ordered-categorical category order or the natural numeric /
+        # datetime order), so taking everything but the last element
+        # gives the earlier pre-periods regardless of dtype. Raw
+        # ``t < base_period`` would misorder ordered-categorical labels
+        # whose lexical and chronological order disagree (e.g. "q10" <
+        # "q2" lexically but > chronologically).
+        earlier_pre = list(t_pre_list[:-1])
         if len(earlier_pre) >= 1:
             pretrends_joint = joint_pretrends_test(
                 data_filtered,

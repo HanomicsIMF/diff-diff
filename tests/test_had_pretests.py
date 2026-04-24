@@ -2357,6 +2357,130 @@ class TestMultiPeriodWorkflow:
         assert "TWFE admissible under Section 4" in verdict
 
 
+class TestOrderedCategoricalChronology:
+    """R2 P1 regressions: ordered-categorical time columns whose lexical
+    and chronological order disagree (e.g. ``"q10"`` < ``"q2"``
+    lexically but > chronologically). Raw ``t < base_period`` comparisons
+    misorder these panels; the wrappers and workflow must use validated-
+    rank comparisons to apply the test to the intended horizons."""
+
+    @staticmethod
+    def _categorical_panel(
+        G: int = 60,
+        categories=("q1", "q2", "q10", "post"),
+        first_treat="post",
+        seed: int = 501,
+    ) -> pd.DataFrame:
+        """Panel with ordered-categorical time whose lexical order
+        (``"q1" < "q10" < "q2" < "post"``) differs from chronological
+        order (``"q1" < "q2" < "q10" < "post"``)."""
+        cat_type = pd.CategoricalDtype(categories=list(categories), ordered=True)
+        rng = np.random.default_rng(seed)
+        doses = rng.uniform(0.05, 1.0, size=G)
+        rows = []
+        for g in range(G):
+            for t in categories:
+                is_post = t == first_treat
+                d = float(doses[g]) if is_post else 0.0
+                y = 0.1 * g + (0.4 * d if is_post else 0.0) + rng.normal(0.0, 0.1)
+                rows.append({"unit": g, "period": t, "y": y, "d": d})
+        df = pd.DataFrame(rows)
+        df["period"] = df["period"].astype(cat_type)
+        return df
+
+    def test_joint_pretrends_test_uses_chronological_rank(self):
+        """Direct wrapper call with categories ["q1", "q2", "q10"] where
+        the lexical order puts "q10" BEFORE "q2" but chronologically
+        "q10" comes AFTER "q2". All three pre-periods must be accepted
+        without a false out-of-order error."""
+        df = self._categorical_panel()
+        result = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "period",
+            "unit",
+            pre_periods=["q1", "q2"],
+            base_period="q10",
+            n_bootstrap=199,
+            seed=3,
+        )
+        assert result.n_horizons == 2
+        assert set(result.horizon_labels) == {"q1", "q2"}
+        # The detrended-outcome residuals are mean-centered; under null
+        # (no pre-trend correlated with D), p should be > 0.05 on this
+        # weakly-noisy DGP.
+        assert np.isfinite(result.p_value)
+
+    def test_joint_pretrends_raises_on_lexically_ordered_but_chrono_invalid(self):
+        """With base_period="q2" and pre_periods=["q10"], chronologically
+        q10 > q2 so this is out-of-order - the rank-based check must
+        raise. Raw `<` on the lexical side would INCORRECTLY accept
+        it since "q10" < "q2" lexically."""
+        df = self._categorical_panel()
+        with pytest.raises(ValueError, match="chronological order"):
+            joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "period",
+                "unit",
+                pre_periods=["q10"],
+                base_period="q2",
+                n_bootstrap=199,
+                seed=0,
+            )
+
+    def test_joint_homogeneity_test_uses_chronological_rank(self):
+        """Homogeneity wrapper twin of the pretrends test. Post-period
+        "post" comes after all pre-periods chronologically; base="q10"
+        is the last pre-period. Lexically "post" > "q10" too (coincides
+        here), but the rank-based check must not rely on that."""
+        df = self._categorical_panel()
+        result = joint_homogeneity_test(
+            df,
+            "y",
+            "d",
+            "period",
+            "unit",
+            post_periods=["post"],
+            base_period="q10",
+            n_bootstrap=199,
+            seed=7,
+        )
+        assert result.n_horizons == 1
+        assert result.horizon_labels == ["post"]
+        assert np.isfinite(result.p_value)
+
+    def test_workflow_event_study_ordered_categorical(self):
+        """did_had_pretest_workflow(aggregate="event_study") must pick
+        up BOTH earlier pre-periods ("q1", "q2") from an ordered-
+        categorical panel where lexical order would silently drop one
+        of them. Regression against the `earlier_pre` raw-< fix."""
+        df = self._categorical_panel()
+        report = did_had_pretest_workflow(
+            df,
+            "y",
+            "d",
+            "period",
+            "unit",
+            aggregate="event_study",
+            n_bootstrap=199,
+            seed=13,
+        )
+        assert report.aggregate == "event_study"
+        assert report.pretrends_joint is not None
+        # t_pre_list = ["q1", "q2", "q10"] chronologically; base = "q10"
+        # (last pre-period); earlier_pre should be ["q1", "q2"] - both
+        # placebo horizons must appear in pretrends_joint.
+        assert set(report.pretrends_joint.horizon_labels) == {"q1", "q2"}
+        assert report.homogeneity_joint is not None
+        assert report.homogeneity_joint.horizon_labels == ["post"]
+        # Verdict does not emit the step-2-skipped flag (both earlier
+        # placebos were found).
+        assert "joint pre-trends skipped" not in report.verdict
+
+
 class TestHADPretestReportSerialization:
     """Tests for HADPretestReport serialization branching by aggregate."""
 
