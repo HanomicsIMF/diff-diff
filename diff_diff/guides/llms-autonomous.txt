@@ -118,6 +118,14 @@ view. Every field below appears as a top-level key in that dict.
   strictly-positive treatment in every observed non-NaN row. Such units
   provide no pre-treatment identification and are dropped by most
   estimators. Always `False` for `"categorical"`.
+- **`treatment_varies_within_unit: bool`** - at least one unit has more
+  than one distinct non-NaN treatment value across its observed rows.
+  For binary panels this is normally `True` (pre vs. post the adoption
+  period), and for continuous panels this flags time-varying dose.
+  `ContinuousDiD.fit()` requires this to be `False` (dose must be
+  time-invariant per unit, per Callaway et al. 2024); a `True` value on
+  a continuous panel rules the estimator out. Always `False` for
+  `"categorical"`.
 
 ### Timing
 
@@ -203,7 +211,7 @@ supported / out of scope; `warn` supported but with documented caveats;
 | `TROP` | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | partial |
 | `TripleDifference` | ✓ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `StaggeredTripleDifference` | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `ContinuousDiD` | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `ContinuousDiD` | ✗ | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
 | `HeterogeneousAdoptionDiD` | ✗ | partial | partial | ✗ | ✗ | ✗ | ✗ | ✓ | warn |
 
 **Footnotes.**
@@ -369,18 +377,23 @@ worth considering.
 When `treatment_type == "continuous"`:
 
 - `ContinuousDiD` (Callaway, Goodman-Bacon, Sant'Anna 2024) -
-  continuous / dose-response treatment. **Requires zero-dose control
-  units (`P(D=0) > 0`)**: `fit()` raises `ValueError` when no `D=0`
-  rows are present, because Remark 3.1 (lowest-dose-as-control) is
-  not yet implemented. The estimator exposes several dose-indexed
-  targets that require different assumptions: `ATT(d|d)` (effect of
-  dose `d` on units that received `d`) and `ATT^{loc}` (binarized
-  overall ATT) are identified under Parallel Trends; `ATT(d)` (full
-  dose-response curve), `ACRT(d)` (marginal effect, i.e. the average
-  causal response), and `ACRT^{glob}` require the stronger Strong
-  Parallel Trends assumption. The BR headline scalar is the overall
-  ATT; ACR and dose-response tables are available in the result
-  object. Supports B-spline basis construction.
+  continuous / dose-response treatment. **Two eligibility
+  prerequisites**: (a) zero-dose control units must exist
+  (`P(D=0) > 0`) because Remark 3.1 (lowest-dose-as-control) is not
+  yet implemented, and (b) dose must be time-invariant per unit (rule
+  out panels where `PanelProfile.treatment_varies_within_unit ==
+  True`). `fit()` raises `ValueError` in either case. Note that
+  staggered adoption IS supported natively (adoption timing is
+  expressed via the `first_treat` column, not via within-unit dose
+  variation). The estimator exposes several dose-indexed targets that
+  require different assumptions: `ATT(d|d)` (effect of dose `d` on
+  units that received `d`) and `ATT^{loc}` (binarized overall ATT)
+  are identified under Parallel Trends; `ATT(d)` (full dose-response
+  curve), `ACRT(d)` (marginal effect, i.e. the average causal
+  response), and `ACRT^{glob}` require the stronger Strong Parallel
+  Trends assumption. The BR headline scalar is the overall ATT; ACR
+  and dose-response tables are available in the result object.
+  Supports B-spline basis construction.
 - `HeterogeneousAdoptionDiD` - partial-adoption intensity, with a
   scalar first-stage adoption summary. Useful when adoption is
   graded rather than binary.

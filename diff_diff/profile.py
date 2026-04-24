@@ -62,6 +62,7 @@ class PanelProfile:
     cohort_sizes: Mapping[Any, int]
     has_never_treated: bool
     has_always_treated: bool
+    treatment_varies_within_unit: bool
 
     first_treatment_period: Optional[Any]
     last_treatment_period: Optional[Any]
@@ -91,6 +92,7 @@ class PanelProfile:
             "cohort_sizes": {_jsonable_key(k): int(v) for k, v in self.cohort_sizes.items()},
             "has_never_treated": self.has_never_treated,
             "has_always_treated": self.has_always_treated,
+            "treatment_varies_within_unit": self.treatment_varies_within_unit,
             "first_treatment_period": _jsonable(self.first_treatment_period),
             "last_treatment_period": _jsonable(self.last_treatment_period),
             "min_pre_periods": self.min_pre_periods,
@@ -245,6 +247,14 @@ def profile_panel(
         last_tp,
     ) = _classify_treatment(df, unit=unit, time=time, treatment=treatment)
 
+    if pd.api.types.is_numeric_dtype(df[treatment]) and not pd.api.types.is_bool_dtype(
+        df[treatment]
+    ):
+        per_unit_distinct = df.groupby(unit)[treatment].nunique(dropna=True)
+        treatment_varies_within_unit = bool((per_unit_distinct > 1).any())
+    else:
+        treatment_varies_within_unit = False
+
     min_pre, min_post = _compute_pre_post(
         df,
         unit=unit,
@@ -289,6 +299,7 @@ def profile_panel(
         cohort_sizes=cohort_sizes,
         has_never_treated=has_never_treated,
         has_always_treated=has_always_treated,
+        treatment_varies_within_unit=treatment_varies_within_unit,
         first_treatment_period=first_tp,
         last_treatment_period=last_tp,
         min_pre_periods=min_pre,

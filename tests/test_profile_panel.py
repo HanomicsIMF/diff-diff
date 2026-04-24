@@ -99,6 +99,34 @@ def test_continuous_treatment():
     assert profile.treatment_type == "continuous"
     assert profile.cohort_sizes == {}
     assert profile.is_staggered is False
+    # Each unit has a constant dose across all periods → time-invariant.
+    assert profile.treatment_varies_within_unit is False
+
+
+def test_continuous_treatment_with_time_varying_dose():
+    """Time-varying dose must be flagged so agents routed to
+    ContinuousDiD do not hit the fit-time "dose must be time-invariant"
+    ValueError. treatment_varies_within_unit == True signals the
+    incompatibility."""
+    rng = np.random.default_rng(0)
+    rows = []
+    for u in range(1, 21):
+        for t in range(4):
+            dose = float(rng.uniform(0, 5))
+            rows.append({"u": u, "t": t, "tr": dose, "y": rng.normal()})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "continuous"
+    assert profile.treatment_varies_within_unit is True
+
+
+def test_binary_absorbing_varies_within_unit():
+    """Binary-absorbing panels have within-unit treatment variation by
+    construction (0 pre, 1 post). The field is True."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(n_units=20, periods=range(0, 4), first_treat=first_treat)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_varies_within_unit is True
 
 
 def test_categorical_treatment_object_dtype():
@@ -214,6 +242,7 @@ def test_to_dict_is_json_serializable():
         "cohort_sizes",
         "has_never_treated",
         "has_always_treated",
+        "treatment_varies_within_unit",
         "first_treatment_period",
         "last_treatment_period",
         "min_pre_periods",
@@ -534,6 +563,21 @@ def test_guide_api_strings_resolve_against_public_api():
         f"(P(D=0) > 0 required per Remark 3.1); got {cdid_cells[5]!r}"
     )
     assert "P(D=0) > 0" in text or "P(D=0) &gt; 0" in text
+
+    # ContinuousDiD DOES support staggered adoption natively (via the
+    # `first_treat` column). Matrix column 2 (staggered) must be ✓.
+    assert cdid_cells[2] == "✓", (
+        "ContinuousDiD matrix row must mark staggered=✓ "
+        "(adoption timing via first_treat is supported); "
+        f"got {cdid_cells[2]!r}"
+    )
+
+    # ContinuousDiD also requires dose to be time-invariant per unit;
+    # this is the second eligibility prerequisite the guide must spell
+    # out. Guide text must mention the invariant explicitly AND the
+    # `treatment_varies_within_unit` field used to detect it.
+    assert "time-invariant" in text
+    assert "treatment_varies_within_unit" in text
 
     # DR §6 section statuses: execution-state vocabulary must include
     # the actual emitted values ("ran", "not_applicable", "not_run",
