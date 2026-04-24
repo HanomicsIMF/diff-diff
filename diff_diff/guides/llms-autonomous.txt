@@ -107,9 +107,11 @@ view. Every field below appears as a top-level key in that dict.
 - **`has_never_treated: bool`** - at least one unit has `treatment == 0`
   in every observed non-NaN row (applies to both binary and continuous
   treatment columns; for continuous this flags zero-dose control units).
-  Required by `SyntheticDiD`, `SunAbraham`, and `EfficientDiD` under
-  both `assumption="PT-All"` and `assumption="PT-Post"` unless
-  `control_group="last_cohort"` is passed; preferred-but-optional by
+  Required by `SyntheticDiD`, `SunAbraham`, `EfficientDiD` under both
+  `assumption="PT-All"` and `assumption="PT-Post"` (unless
+  `control_group="last_cohort"` is passed), and `ContinuousDiD`
+  (which requires `P(D=0) > 0` - Remark 3.1 lowest-dose-as-control
+  is not yet implemented). Preferred-but-optional by
   `CallawaySantAnna` and `ChaisemartinDHaultfoeuille`. Always `False`
   for `"categorical"`.
 - **`has_always_treated: bool`** - at least one unit has
@@ -201,7 +203,7 @@ supported / out of scope; `warn` supported but with documented caveats;
 | `TROP` | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | partial |
 | `TripleDifference` | ✓ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `StaggeredTripleDifference` | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `ContinuousDiD` | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `ContinuousDiD` | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
 | `HeterogeneousAdoptionDiD` | ✗ | partial | partial | ✗ | ✗ | ✗ | ✗ | ✓ | warn |
 
 **Footnotes.**
@@ -326,6 +328,9 @@ When `has_never_treated == False`:
   (post-treatment periods at/after that cohort's adoption are
   trimmed). Distinct from CallawaySantAnna's `not_yet_treated`
   option.
+- `ContinuousDiD` requires zero-dose control units (`P(D=0) > 0`).
+  Remark 3.1 of the paper (lowest-dose-as-control) is not yet
+  implemented; `fit()` raises `ValueError` when no `D=0` units exist.
 - `CallawaySantAnna` - use `control_group="not_yet_treated"` to use
   not-yet-treated units as the control pool.
 - `ChaisemartinDHaultfoeuille` - constructs switchers vs. non-switchers
@@ -364,16 +369,18 @@ worth considering.
 When `treatment_type == "continuous"`:
 
 - `ContinuousDiD` (Callaway, Goodman-Bacon, Sant'Anna 2024) -
-  continuous / dose-response treatment. The estimator exposes
-  several dose-indexed targets that require different assumptions:
-  `ATT(d|d)` (effect of dose `d` on units that received `d`) and
-  `ATT^{loc}` (binarized overall ATT) are identified under Parallel
-  Trends; `ATT(d)` (full dose-response curve), `ACRT(d)` (marginal
-  effect, i.e. the average causal response), and `ACRT^{glob}`
-  require the stronger Strong Parallel Trends assumption. The BR
-  headline scalar is the overall ATT; ACR and dose-response tables
-  are available in the result object. Supports B-spline basis
-  construction.
+  continuous / dose-response treatment. **Requires zero-dose control
+  units (`P(D=0) > 0`)**: `fit()` raises `ValueError` when no `D=0`
+  rows are present, because Remark 3.1 (lowest-dose-as-control) is
+  not yet implemented. The estimator exposes several dose-indexed
+  targets that require different assumptions: `ATT(d|d)` (effect of
+  dose `d` on units that received `d`) and `ATT^{loc}` (binarized
+  overall ATT) are identified under Parallel Trends; `ATT(d)` (full
+  dose-response curve), `ACRT(d)` (marginal effect, i.e. the average
+  causal response), and `ACRT^{glob}` require the stronger Strong
+  Parallel Trends assumption. The BR headline scalar is the overall
+  ATT; ACR and dose-response tables are available in the result
+  object. Supports B-spline basis construction.
 - `HeterogeneousAdoptionDiD` - partial-adoption intensity, with a
   scalar first-stage adoption summary. Useful when adoption is
   graded rather than binary.
@@ -591,16 +598,30 @@ Top-level keys (source: `diff_diff/diagnostic_report.py`):
   sections.
 - `next_steps: list[dict]` - same shape as the BR field.
 
-Each section value is a dict with at minimum `status`
-(`"pass"` / `"warn"` / `"inconclusive"` / `"error"` / `"skipped"`),
-a `reason`, and section-specific payload fields.
+Each section value is a dict. Parse it in two layers:
 
-### Forthcoming schema additions (not yet shipped)
+1. `status: str` — execution state, not qualitative interpretation.
+   The values actually emitted by `DiagnosticReport.to_dict()` are:
+   `"ran"` (section executed), `"not_applicable"` (check does not
+   apply to this estimator or design), `"not_run"` (implementation
+   pending), `"no_scalar_by_design"` (for estimators that return a
+   table instead of a scalar headline, e.g. dCDH with
+   `trends_linear=True, L_max>=2`), and `"skipped"` (auto-diagnostics
+   disabled or the section was short-circuited at top level).
+2. `verdict: str` (only present when `status == "ran"`) — qualitative
+   interpretation of the executed check. Candidate values include
+   `"clean"`, `"inconclusive"`, `"violated"`, and section-specific
+   labels.
 
-- `sanity_checks: dict` - machine-legible pass / warn / fail summary
-  (forthcoming Wave).
-- `mismatch_warnings: list[dict]` - post-hoc estimator-mismatch
-  detection (forthcoming Wave).
+`reason: str` is an optional free-text explanation that usually
+accompanies non-`"ran"` statuses; it may also appear on `"ran"`
+sections as supplementary context. The rest of each section dict is
+section-specific payload (e.g. p-values, coefficients, cohort tables).
+
+Forthcoming schema additions (not yet shipped): a top-level
+`sanity_checks` block (machine-legible pass/warn/fail summary) and a
+`mismatch_warnings` list (post-hoc estimator-mismatch detection) are
+queued for a later wave. Treat their current absence as expected.
 
 
 ## §7. Glossary + citations

@@ -527,6 +527,31 @@ def test_guide_api_strings_resolve_against_public_api():
     assert "ACRT" in text
     assert "Strong Parallel Trends" in text
 
+    # ContinuousDiD requires zero-dose (P(D=0) > 0) because Remark 3.1
+    # lowest-dose-as-control is unimplemented; matrix col 5 must be ✓.
+    assert cdid_cells[5] == "✓", (
+        "ContinuousDiD matrix row must mark never-treated-required=✓ "
+        f"(P(D=0) > 0 required per Remark 3.1); got {cdid_cells[5]!r}"
+    )
+    assert "P(D=0) > 0" in text or "P(D=0) &gt; 0" in text
+
+    # DR §6 section statuses: execution-state vocabulary must include
+    # the actual emitted values ("ran", "not_applicable", "not_run",
+    # "no_scalar_by_design", "skipped"), and `verdict` must be
+    # documented separately from `status`. Guard against drift back
+    # to the pass/warn/inconclusive-as-status framing.
+    for real_status in (
+        '"ran"',
+        '"not_applicable"',
+        '"not_run"',
+        '"no_scalar_by_design"',
+    ):
+        assert real_status in text, f"DR §6 section-status vocabulary must document {real_status}"
+    # `status` must not be described as "pass/warn/inconclusive" —
+    # those belong under `verdict`.
+    assert '`"pass"` / `"warn"` / `"inconclusive"`' not in text
+    assert "verdict" in text.lower()
+
 
 def test_min_pre_post_use_per_unit_observed_support():
     """On an unbalanced panel where one treated unit is missing its
