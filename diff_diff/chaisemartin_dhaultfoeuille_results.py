@@ -130,6 +130,22 @@ class DCDHBootstrapResults:
     placebo_horizon_p_values: Optional[Dict[int, float]] = field(default=None, repr=False)
     cband_crit_value: Optional[float] = None
 
+    # --- Phase 3: per-path bootstrap (by_path) ---
+    # Keyed by path tuple -> horizon -> scalar/pair. Populated only when
+    # by_path + n_bootstrap > 0 is active; `None` otherwise. Percentile
+    # CI + percentile p-value per library Round-10 convention; caller
+    # (fit()) propagates these to path_effects[path]["horizons"][l]
+    # directly and computes a SE-derived t-stat via `safe_inference`.
+    path_ses: Optional[Dict[Tuple[int, ...], Dict[int, float]]] = field(
+        default=None, repr=False
+    )
+    path_cis: Optional[Dict[Tuple[int, ...], Dict[int, Tuple[float, float]]]] = field(
+        default=None, repr=False
+    )
+    path_p_values: Optional[Dict[Tuple[int, ...], Dict[int, float]]] = field(
+        default=None, repr=False
+    )
+
 
 @dataclass
 class ChaisemartinDHaultfoeuilleResults:

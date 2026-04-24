@@ -8,7 +8,9 @@ plumbing, and the results dataclass round-trip. Methodology validation
 against R) lives in ``test_methodology_chaisemartin_dhaultfoeuille.py``.
 """
 
+import json
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -3781,21 +3783,6 @@ class TestByPathGates:
                     treatment="treatment",
                 )
 
-    def test_forbids_n_bootstrap(self):
-        data = _by_path_three_path_data()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3, n_bootstrap=5)
-            with pytest.raises(NotImplementedError, match="n_bootstrap"):
-                est.fit(
-                    data,
-                    outcome="outcome",
-                    group="group",
-                    time="period",
-                    treatment="treatment",
-                    L_max=2,
-                )
-
     @pytest.mark.parametrize(
         "fit_kwargs, msg",
         [
@@ -4197,3 +4184,306 @@ class TestByPathEdgeCases:
                     # Point estimate is finite (only SE/inference NaN)
                     assert np.isfinite(h["effect"])
         assert any_nan, "Expected at least one NaN-SE (path, horizon) entry"
+
+
+@pytest.mark.slow
+class TestByPathBootstrap:
+    """
+    ``by_path`` combined with ``n_bootstrap > 0``.
+
+    Each top-k path has its pre-computed cohort-centered IF passed to the
+    existing multiplier-bootstrap mixin, which runs `n_bootstrap` draws
+    per (path, horizon) target and returns bootstrap SE / percentile CI /
+    percentile p-value. ``path_effects[path]["horizons"][l]`` is
+    overwritten post-bootstrap with those fields; ``t_stat`` is re-derived
+    from the bootstrap SE via ``safe_inference`` per the project anti-
+    pattern rule. Point estimates are unchanged from the analytical path.
+
+    Marked ``@pytest.mark.slow`` because each test runs a real bootstrap
+    with at least 100 draws. See the plan file for the SE convention
+    decision (fix paths across draws, library-consistent percentile CI).
+    """
+
+    def _fit_with_bootstrap(
+        self,
+        data,
+        by_path: int,
+        L_max: int = 3,
+        n_bootstrap: int = 100,
+        bootstrap_weights: str = "rademacher",
+        seed: int = 42,
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=by_path,
+                n_bootstrap=n_bootstrap,
+                bootstrap_weights=bootstrap_weights,
+                seed=seed,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=L_max,
+            )
+        return est, results
+
+    def test_point_estimates_preserved(self):
+        """Bootstrap fit must leave path_effects[p]['horizons'][l]['effect']
+        bit-identical to the analytical fit."""
+        data = _by_path_three_path_data()
+        _est_a, res_a = _fit_by_path(data, by_path=3, L_max=3)
+        _est_b, res_b = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=100, seed=42
+        )
+        assert res_a.path_effects is not None and res_b.path_effects is not None
+        assert set(res_a.path_effects.keys()) == set(res_b.path_effects.keys())
+        for path, entry_a in res_a.path_effects.items():
+            entry_b = res_b.path_effects[path]
+            for l_h, h_a in entry_a["horizons"].items():
+                h_b = entry_b["horizons"][l_h]
+                if np.isnan(h_a["effect"]):
+                    assert np.isnan(h_b["effect"])
+                else:
+                    np.testing.assert_allclose(
+                        h_b["effect"], h_a["effect"], atol=1e-14, rtol=1e-14,
+                        err_msg=f"path={path} l={l_h}: bootstrap changed effect",
+                    )
+
+    def test_bootstrap_se_finite_and_positive(self):
+        """On the hand-built 3-path panel, every non-degenerate (path, horizon)
+        produces a positive finite bootstrap SE."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42
+        )
+        assert res.path_effects is not None
+        any_finite = False
+        for path, entry in res.path_effects.items():
+            for l_h, h in entry["horizons"].items():
+                if h["n_obs"] >= 2:  # skip degenerate singletons
+                    assert np.isfinite(h["se"]) or np.isnan(h["se"]), (
+                        f"path={path} l={l_h}: bootstrap SE is non-finite "
+                        f"and not NaN: {h['se']}"
+                    )
+                    if np.isfinite(h["se"]):
+                        assert h["se"] > 0, (
+                            f"path={path} l={l_h}: bootstrap SE is not "
+                            f"positive: {h['se']}"
+                        )
+                        any_finite = True
+        assert any_finite, "No (path, horizon) produced a finite bootstrap SE"
+
+    def test_bootstrap_se_close_to_analytical_on_well_conditioned(self):
+        """
+        On the cohort-clean fixture scenario (path assignment deterministic
+        on F_g so every cohort is single-path), analytical and bootstrap
+        SEs compute the same within-path marginal variance, so they must
+        agree within Monte Carlo noise on (path, horizon) cells with
+        ``n_obs >= 10``. Runs on the committed R-parity fixture so no
+        extra panel construction is required.
+        """
+        golden_path = (
+            Path(__file__).parents[1]
+            / "benchmarks"
+            / "data"
+            / "dcdh_dynr_golden_values.json"
+        )
+        if not golden_path.exists():
+            pytest.skip(
+                f"dCDH golden values file not found at {golden_path}; "
+                "run: Rscript benchmarks/R/generate_dcdh_dynr_test_values.R"
+            )
+        with open(golden_path) as f:
+            sc = json.load(f)["scenarios"].get("multi_path_reversible_by_path")
+        if sc is None:
+            pytest.skip("scenario 'multi_path_reversible_by_path' absent")
+
+        data = pd.DataFrame(sc["data"])
+
+        # Analytical pass (n_bootstrap=0)
+        _est_a, res_a = _fit_by_path(data, by_path=3, L_max=3)
+        # Bootstrap pass with 500 draws for tighter Monte Carlo variance
+        _est_b, res_b = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=500, seed=2026
+        )
+        assert res_a.path_effects is not None
+        assert res_b.path_effects is not None
+
+        for path in res_a.path_effects:
+            for l_h, h_a in res_a.path_effects[path]["horizons"].items():
+                h_b = res_b.path_effects[path]["horizons"][l_h]
+                if h_a["n_obs"] < 10:
+                    continue
+                se_a = h_a["se"]
+                se_b = h_b["se"]
+                if not (np.isfinite(se_a) and np.isfinite(se_b)):
+                    continue
+                # 30% rtol envelope covers Monte Carlo variance at n=500
+                # on cohort-clean single-path cohorts.
+                rtol = abs(se_b - se_a) / se_a
+                assert rtol < 0.30, (
+                    f"path={path} l={l_h}: bootstrap SE diverges from "
+                    f"analytical beyond Monte Carlo envelope — "
+                    f"analytical={se_a:.4f} bootstrap={se_b:.4f} "
+                    f"rtol={rtol:.3f}"
+                )
+
+    def test_degenerate_cohort_still_nan(self):
+        """All-singleton cohort panel: bootstrap SE on path subsets must
+        remain NaN (inherited from the zero-IF coercion in
+        ``bootstrap_utils.compute_effect_bootstrap_stats``)."""
+        panel = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
+                "period": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2],
+                "treatment": [0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1],
+                "outcome": [
+                    10.0, 13.0, 14.0,
+                    10.0, 11.0, 9.0,
+                    10.0, 11.0, 12.0,
+                    10.0, 11.0, 12.0,
+                ],
+            }
+        )
+        _est, res = self._fit_with_bootstrap(
+            panel, by_path=2, L_max=1, n_bootstrap=100, seed=42
+        )
+        assert res.path_effects is not None
+        any_nan = False
+        for entry in res.path_effects.values():
+            for h in entry["horizons"].values():
+                if np.isnan(h["se"]):
+                    any_nan = True
+                    assert np.isnan(h["t_stat"])
+                    assert np.isnan(h["p_value"])
+                    lo, hi = h["conf_int"]
+                    assert np.isnan(lo) and np.isnan(hi)
+                    assert np.isfinite(h["effect"])
+        assert any_nan, (
+            "Expected at least one NaN-SE (path, horizon) entry under "
+            "singleton-cohort panel"
+        )
+
+    @pytest.mark.parametrize("weights", ["rademacher", "mammen", "webb"])
+    def test_bootstrap_weights_variants(self, weights):
+        """All three multiplier flavors produce finite bootstrap SE on the
+        3-path hand-built panel."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=100,
+            bootstrap_weights=weights, seed=42,
+        )
+        assert res.path_effects is not None
+        any_finite = False
+        for entry in res.path_effects.values():
+            for h in entry["horizons"].values():
+                if np.isfinite(h["se"]) and h["se"] > 0:
+                    any_finite = True
+        assert any_finite, (
+            f"bootstrap_weights={weights!r} produced no finite per-path SE"
+        )
+
+    def test_bootstrap_seed_reproducibility(self):
+        """Two fits with the same seed must produce bit-identical
+        per-(path, horizon) bootstrap SE."""
+        data = _by_path_three_path_data()
+        _est1, res1 = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=100, seed=2026,
+        )
+        _est2, res2 = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=100, seed=2026,
+        )
+        assert res1.path_effects is not None and res2.path_effects is not None
+        for path, entry1 in res1.path_effects.items():
+            entry2 = res2.path_effects[path]
+            for l_h, h1 in entry1["horizons"].items():
+                h2 = entry2["horizons"][l_h]
+                if np.isnan(h1["se"]):
+                    assert np.isnan(h2["se"])
+                else:
+                    np.testing.assert_array_equal(
+                        h1["se"], h2["se"],
+                        err_msg=f"path={path} l={l_h}: seed reproducibility broke",
+                    )
+
+    def test_inference_fields_match_bootstrap_results(self):
+        """
+        The post-bootstrap overwrite must take ``p_value`` and ``conf_int``
+        from the percentile bootstrap (``br.path_p_values`` and
+        ``br.path_cis``), not from a normal-theory recomputation. This
+        pins the Round-10 library convention and prevents regression to a
+        hybrid inference surface.
+        """
+        data = _by_path_three_path_data()
+        _est_a, res_a = _fit_by_path(data, by_path=3, L_max=3)
+        _est_b, res_b = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42,
+        )
+        assert res_a.path_effects is not None
+        assert res_b.path_effects is not None
+
+        found_changed_ci = False
+        for path, entry_a in res_a.path_effects.items():
+            for l_h, h_a in entry_a["horizons"].items():
+                h_b = res_b.path_effects[path]["horizons"][l_h]
+                se_a, se_b = h_a["se"], h_b["se"]
+                ci_a, ci_b = h_a["conf_int"], h_b["conf_int"]
+                if (
+                    np.isfinite(se_a)
+                    and np.isfinite(se_b)
+                    and np.isfinite(ci_a[0])
+                    and np.isfinite(ci_b[0])
+                ):
+                    # The bootstrap CI in general differs from the
+                    # analytical normal-theory CI (percentile vs
+                    # normal). We require the CI to NOT match the
+                    # analytical normal-theory CI computed from the
+                    # bootstrap SE — that would signal a regression to
+                    # `safe_inference(effect, bootstrap_se, ...)`.
+                    # Percentile CI is asymmetric around the point
+                    # estimate in general; normal-theory CI is always
+                    # symmetric (lo = eff - k*se, hi = eff + k*se). If
+                    # |hi - eff| differs from |eff - lo| by more than
+                    # 1e-9 the CI is asymmetric -> definitely
+                    # percentile, not normal-theory. Symmetric
+                    # percentile CIs still pass this test (small n or
+                    # symmetric bootstrap sample); we only require
+                    # *at least one* asymmetric cell across all (path,
+                    # horizon) entries to confirm the percentile path.
+                    eff = h_b["effect"]
+                    lo_b, hi_b = ci_b
+                    if abs((hi_b - eff) - (eff - lo_b)) > 1e-9:
+                        found_changed_ci = True
+                        break
+            if found_changed_ci:
+                break
+
+        # t-stat is SE-derived on bootstrap path too (anti-pattern rule).
+        # Assert the t-stat equals effect / se to within float precision.
+        for path, entry_b in res_b.path_effects.items():
+            for l_h, h_b in entry_b["horizons"].items():
+                if np.isfinite(h_b["se"]) and h_b["se"] > 0:
+                    expected_t = h_b["effect"] / h_b["se"]
+                    np.testing.assert_allclose(
+                        h_b["t_stat"], expected_t, atol=1e-10, rtol=1e-10,
+                        err_msg=(
+                            f"path={path} l={l_h}: t_stat should be "
+                            f"SE-derived per anti-pattern rule"
+                        ),
+                    )
+
+        assert found_changed_ci, (
+            "Expected at least one percentile CI that is asymmetric "
+            "around the point estimate (non-symmetric bounds) to prove "
+            "the bootstrap path uses percentile CI rather than a "
+            "normal-theory recomputation. If this fails, the bootstrap "
+            "bootstrap distribution was symmetric by chance — bump "
+            "n_bootstrap or change the seed and re-run."
+        )

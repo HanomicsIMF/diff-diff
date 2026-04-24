@@ -949,14 +949,6 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "[F_g - 1, F_g - 1 + L_max] and therefore depends on "
                     "the event-study horizon. Set L_max when calling fit()."
                 )
-            if self.n_bootstrap > 0:
-                raise NotImplementedError(
-                    "by_path combined with n_bootstrap > 0 is deferred to a "
-                    "future release: the methodology choice of whether to "
-                    "hold the path set fixed or re-enumerate paths within "
-                    "each bootstrap draw has not been resolved. Use the "
-                    "analytical plug-in SE (n_bootstrap=0) for now."
-                )
             if controls is not None:
                 raise NotImplementedError(
                     "by_path combined with controls (DID^X residualization) "
@@ -2602,6 +2594,35 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     }
                     eligible_group_ids_bootstrap = np.asarray(_eligible_group_ids)
 
+            # Collect per-(path, horizon) bootstrap inputs when by_path is
+            # active. Uses the sibling helper to walk the same enumeration
+            # / per-path IF / cohort-recentering pipeline that
+            # `_compute_path_effects` uses (kept separate per the review
+            # architectural preference — see `_collect_path_bootstrap_inputs`).
+            path_bootstrap_inputs = None
+            if (
+                self.by_path is not None
+                and L_max is not None
+                and L_max >= 1
+                and multi_horizon_dids is not None
+                and path_effects is not None
+                and len(path_effects) > 0
+            ):
+                path_bootstrap_inputs = _collect_path_bootstrap_inputs(
+                    D_mat=D_mat,
+                    Y_mat=Y_mat,
+                    N_mat=N_mat,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    switch_direction=switch_direction_arr,
+                    T_g=T_g_arr,
+                    L_max=L_max,
+                    by_path=self.by_path,
+                    eligible_mask_var=eligible_mask_var,
+                    multi_horizon_dids=multi_horizon_dids,
+                    path_effects=path_effects,
+                )
+
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
                 u_centered_overall=U_centered_overall,
@@ -2612,6 +2633,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 placebo_inputs=placebo_inputs,
                 multi_horizon_inputs=mh_boot_inputs,
                 placebo_horizon_inputs=pl_boot_inputs,
+                path_bootstrap_inputs=path_bootstrap_inputs,
                 group_id_to_psu_code=group_id_to_psu_code_bootstrap,
                 eligible_group_ids=eligible_group_ids_bootstrap,
                 u_per_period_overall=U_centered_pp_overall,
@@ -2739,6 +2761,49 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         event_study_effects[l_h]["cband_conf_int"] = (
                             eff - crit * se,
                             eff + crit * se,
+                        )
+
+        # Phase 3: propagate bootstrap results to path_effects (by_path).
+        # Mirrors the event_study propagation above: replace the analytical
+        # SE / p-value / CI with the bootstrap percentile statistics
+        # (Round-10 library convention — `br.path_p_values` and
+        # `br.path_cis` are already percentile-based via
+        # `compute_effect_bootstrap_stats`), and re-derive the t-stat
+        # from the bootstrap SE via `safe_inference` per the anti-pattern
+        # rule. Point estimates (`effect`, `n_obs`, `n_groups`,
+        # `frequency_rank`) are unchanged from the analytical path.
+        if (
+            bootstrap_results is not None
+            and bootstrap_results.path_ses
+            and path_effects is not None
+        ):
+            for path_key, horizon_ses in bootstrap_results.path_ses.items():
+                if path_key not in path_effects:
+                    continue
+                for l_h, bs_se in horizon_ses.items():
+                    if l_h not in path_effects[path_key]["horizons"]:
+                        continue
+                    bs_ci = (
+                        bootstrap_results.path_cis.get(path_key, {}).get(l_h)
+                        if bootstrap_results.path_cis
+                        else None
+                    )
+                    bs_p = (
+                        bootstrap_results.path_p_values.get(path_key, {}).get(l_h)
+                        if bootstrap_results.path_p_values
+                        else None
+                    )
+                    if bs_se is not None and np.isfinite(bs_se):
+                        eff_p = path_effects[path_key]["horizons"][l_h]["effect"]
+                        path_effects[path_key]["horizons"][l_h]["se"] = bs_se
+                        path_effects[path_key]["horizons"][l_h]["p_value"] = (
+                            bs_p if bs_p is not None else np.nan
+                        )
+                        path_effects[path_key]["horizons"][l_h]["conf_int"] = (
+                            bs_ci if bs_ci is not None else (np.nan, np.nan)
+                        )
+                        path_effects[path_key]["horizons"][l_h]["t_stat"] = (
+                            safe_inference(eff_p, bs_se, alpha=self.alpha, df=None)[0]
                         )
 
         # When L_max >= 1 and the per-group path is active, sync
@@ -5137,6 +5202,121 @@ def _compute_path_effects(
         }
 
     return path_effects
+
+
+def _collect_path_bootstrap_inputs(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+    by_path: int,
+    eligible_mask_var: np.ndarray,
+    multi_horizon_dids: Dict[int, Dict[str, Any]],
+    path_effects: Dict[Tuple[int, ...], Dict[str, Any]],
+) -> Dict[Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]]:
+    """
+    Collect per-(path, horizon) inputs for the bootstrap mixin.
+
+    Walks the same path enumeration / per-path IF / cohort-recentering
+    pipeline that ``_compute_path_effects`` uses, but returns the
+    intermediate ``(U_centered_path, n_l_path, effect_path)`` triples
+    needed by ``_compute_dcdh_bootstrap``. Lives as a sibling of
+    ``_compute_path_effects`` (not extending it) to keep the
+    already-large analytical helper focused and avoid a polymorphic
+    return shape. The bootstrap-only recomputation is O(n_paths *
+    n_groups * L_max), which is small compared to the bootstrap draw
+    loop itself.
+
+    The point estimate per ``(path, horizon)`` is read from
+    ``path_effects`` to stay bit-identical with the analytical pass;
+    the bootstrap distribution gets centered on this value by
+    ``_bootstrap_one_target`` downstream.
+
+    Returns a nested dict ``{path: {horizon: (U_centered, n, effect, None)}}``;
+    the 4th slot is always ``None`` because per-path survey-cell IFs
+    are a future wave item (the ``by_path + survey_design`` combination
+    is gated out before this helper runs).
+    """
+    selected_paths, path_to_group_mask, _ = _enumerate_treatment_paths(
+        D_mat=D_mat,
+        first_switch_idx=first_switch_idx,
+        N_mat=N_mat,
+        L_max=L_max,
+        by_path=by_path,
+    )
+
+    n_groups = D_mat.shape[0]
+    cohort_keys = [
+        (
+            float(baselines[g]),
+            int(first_switch_idx[g]),
+            int(switch_direction[g]),
+        )
+        for g in range(n_groups)
+    ]
+    unique_c: Dict[Tuple[float, int, int], int] = {}
+    cid = np.zeros(n_groups, dtype=int)
+    for g in range(n_groups):
+        if not eligible_mask_var[g]:
+            cid[g] = -1
+            continue
+        key = cohort_keys[g]
+        if key not in unique_c:
+            unique_c[key] = len(unique_c)
+        cid[g] = unique_c[key]
+    cohort_id_eligible = cid[eligible_mask_var]
+
+    path_bootstrap_inputs: Dict[
+        Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]
+    ] = {}
+
+    for path in selected_paths:
+        switcher_mask = path_to_group_mask[path]
+
+        per_path_if = _compute_per_group_if_multi_horizon(
+            D_mat=D_mat,
+            Y_mat=Y_mat,
+            N_mat=N_mat,
+            baselines=baselines,
+            first_switch_idx=first_switch_idx,
+            switch_direction=switch_direction,
+            T_g=T_g,
+            L_max=L_max,
+            set_ids=None,
+            compute_per_period=False,
+            switcher_subset_mask=switcher_mask,
+        )
+
+        horizon_inputs: Dict[int, Tuple[np.ndarray, int, float, None]] = {}
+        path_analytical = path_effects.get(path)
+        if path_analytical is None:
+            continue
+
+        for l_h in range(1, L_max + 1):
+            U_l_path, _ = per_path_if[l_h]
+            did_g_l = multi_horizon_dids[l_h].get("did_g_l")
+            if did_g_l is None:
+                continue
+            n_l_path = int(np.sum(switcher_mask & ~np.isnan(did_g_l)))
+            if n_l_path == 0:
+                continue
+
+            U_l_path_elig = U_l_path[eligible_mask_var]
+            U_centered_path = _cohort_recenter(U_l_path_elig, cohort_id_eligible)
+
+            effect_path = float(
+                path_analytical["horizons"][l_h]["effect"]
+            )
+            horizon_inputs[l_h] = (U_centered_path, n_l_path, effect_path, None)
+
+        if horizon_inputs:
+            path_bootstrap_inputs[path] = horizon_inputs
+
+    return path_bootstrap_inputs
 
 
 def _compute_per_group_if_placebo_horizon(

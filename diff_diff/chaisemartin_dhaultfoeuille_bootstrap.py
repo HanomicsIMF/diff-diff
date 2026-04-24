@@ -110,6 +110,19 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         placebo_horizon_inputs: Optional[
             Dict[int, Tuple[np.ndarray, int, float, Optional[np.ndarray]]]
         ] = None,
+        # --- Phase 3: per-path (by_path) bootstrap inputs ---
+        # Nested dict keyed by path tuple -> horizon -> 4-tuple of
+        # (u_centered_path, n_l_path, effect_path, u_per_period_optional).
+        # The 4th slot is always None in the current release (survey +
+        # by_path + bootstrap combination is gated out in fit(); cell-
+        # level wild PSU bootstrap for per-path targets is a future
+        # wave item).
+        path_bootstrap_inputs: Optional[
+            Dict[
+                Tuple[int, ...],
+                Dict[int, Tuple[np.ndarray, int, float, Optional[np.ndarray]]],
+            ]
+        ] = None,
         # --- Survey: PSU-level bootstrap under survey designs ---
         group_id_to_psu_code: Optional[Dict[Any, int]] = None,
         eligible_group_ids: Optional[np.ndarray] = None,
@@ -631,6 +644,63 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
             results.placebo_horizon_ses = pl_ses
             results.placebo_horizon_cis = pl_cis
             results.placebo_horizon_p_values = pl_pvals
+
+        # --- Phase 3: Per-path (by_path) bootstrap ---
+        # Treated as independent single-target draws per (path, horizon).
+        # No shared-weight / sup-t joint distribution across paths (or
+        # across horizons within a path) in this release — that's
+        # Wave 2 item 4 follow-up work. Each target follows the same
+        # `_bootstrap_one_target` dispatch as the single-horizon paths
+        # above; the survey cell-level dispatch path is not reachable
+        # here because the `by_path + survey_design` combination is
+        # gated out in fit() before bootstrap is invoked.
+        if path_bootstrap_inputs is not None:
+            path_ses: Dict[Tuple[int, ...], Dict[int, float]] = {}
+            path_cis: Dict[Tuple[int, ...], Dict[int, Tuple[float, float]]] = {}
+            path_pvals: Dict[Tuple[int, ...], Dict[int, float]] = {}
+
+            for path_key, horizon_inputs in path_bootstrap_inputs.items():
+                path_ses[path_key] = {}
+                path_cis[path_key] = {}
+                path_pvals[path_key] = {}
+                for l_h, (u_h, n_h, eff_h, _u_pp_h) in sorted(horizon_inputs.items()):
+                    if u_h.size > 0 and n_h > 0:
+                        map_boot_ph = _map_for_target(
+                            u_h.size, group_id_to_psu_code, eligible_group_ids,
+                        )
+                        # np.errstate wrap: an identically-zero
+                        # centered IF (degenerate path + horizon) would
+                        # otherwise emit a RuntimeWarning: invalid
+                        # value on the divide step in
+                        # bootstrap_utils. The analytical pass has
+                        # already emitted a UserWarning for the same
+                        # (path, horizon); suppressing the
+                        # RuntimeWarning here avoids stacked-warning
+                        # noise without masking genuine numerical
+                        # issues (`_bootstrap_one_target` still
+                        # returns NaN SE for the zero-IF branch via
+                        # the existing `se <= 0` guard in
+                        # bootstrap_utils).
+                        with np.errstate(invalid="ignore", divide="ignore"):
+                            se_h, ci_h, p_h, _ = _bootstrap_one_target(
+                                u_centered=u_h,
+                                divisor=n_h,
+                                original=eff_h,
+                                n_bootstrap=self.n_bootstrap,
+                                weight_type=self.bootstrap_weights,
+                                alpha=self.alpha,
+                                rng=rng,
+                                context=f"dCDH by_path path={path_key} l={l_h} bootstrap",
+                                return_distribution=False,
+                                group_to_psu_map=map_boot_ph,
+                            )
+                        path_ses[path_key][l_h] = se_h
+                        path_cis[path_key][l_h] = ci_h
+                        path_pvals[path_key][l_h] = p_h
+
+            results.path_ses = path_ses
+            results.path_cis = path_cis
+            results.path_p_values = path_pvals
 
         return results
 
