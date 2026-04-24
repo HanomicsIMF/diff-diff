@@ -938,13 +938,11 @@ class TROPLocalMixin:
         n_control_units = len(control_units)
 
         # Pre-generate stratified bootstrap indices via numpy (Python-canonical RNG).
-        # This aligns the RNG layer between backends. For the global method the RNG
-        # was the only divergence, so global SE is now bit-identical under the same
-        # seed. For the local method two downstream divergences remain (Rust weight-
-        # matrix normalization + Python `_compute_observation_weights` reading the
-        # stale `_precomputed` cache) — tracked in TODO.md; until those land, local
-        # bootstrap SE still differs across backends. Silent-failures finding #23
-        # (bootstrap half) closed for global; local follow-up queued.
+        # Aligns the RNG layer between backends. Combined with the Rust weight-
+        # matrix de-normalization and the Python `_compute_observation_weights`
+        # cache-fallthrough removal (also shipped with this parity work), local-
+        # method Rust and Python produce matching bootstrap SE up to solver-path
+        # roundoff (~1e-7); asserted at atol=1e-5 in the parity regression guard.
         rng = np.random.default_rng(self.seed)
         control_idx, treated_idx = stratified_bootstrap_indices(
             rng, n_control_units, n_treated_units, self.n_bootstrap

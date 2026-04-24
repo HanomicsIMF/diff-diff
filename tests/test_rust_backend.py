@@ -2505,6 +2505,13 @@ class TestTROPRustEdgeCaseParity:
         fix landed in this PR. Before the fix, Rust ATT diverged from
         Python ATT by O(10%) at finite ``lambda_nn`` and O(0) at
         ``lambda_nn=inf``; after the fix both regimes match to tolerance.
+
+        Uses multi-candidate lambda grids so LOOCV selection exercises
+        Rust's `compute_weight_matrix` (the surface the normalization fix
+        changed). Patches both the LOOCV dispatch in ``diff_diff.trop``
+        and the bootstrap dispatch in ``diff_diff.trop_local`` on the
+        Python side so the comparison is Rust-LOOCV-and-fit vs
+        Python-LOOCV-and-fit end-to-end.
         """
         import sys
         from unittest.mock import patch
@@ -2512,10 +2519,13 @@ class TestTROPRustEdgeCaseParity:
         from diff_diff import TROP
 
         df = self._make_correlated_panel(n_units=6, n_periods=6, n_treated=2)
+        # Multi-candidate grids so LOOCV selection isn't trivial; the Rust
+        # weight-normalization fix changes per-lambda LOOCV scores and thus
+        # potentially the selected lambda.
         trop_params = dict(
             method="local",
-            lambda_time_grid=[1.0],
-            lambda_unit_grid=[1.0],
+            lambda_time_grid=[0.1, 1.0, 10.0],
+            lambda_unit_grid=[0.1, 1.0, 10.0],
             lambda_nn_grid=[lambda_nn],
             n_bootstrap=2,  # minimum allowed; we assert ATT, not SE
             seed=42,
@@ -2524,8 +2534,11 @@ class TestTROPRustEdgeCaseParity:
         trop_rust = TROP(**trop_params)
         res_rust = trop_rust.fit(df.copy(), "outcome", "treated", "unit", "time")
 
+        trop_module = sys.modules["diff_diff.trop"]
         trop_local_module = sys.modules["diff_diff.trop_local"]
-        with patch.object(trop_local_module, "HAS_RUST_BACKEND", False), \
+        with patch.object(trop_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_module, "_rust_loocv_grid_search", None), \
+             patch.object(trop_local_module, "HAS_RUST_BACKEND", False), \
              patch.object(trop_local_module, "_rust_bootstrap_trop_variance", None):
             trop_py = TROP(**trop_params)
             res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
@@ -2577,8 +2590,8 @@ class TestTROPRustEdgeCaseParity:
 
         trop_params = dict(
             method="local",
-            lambda_time_grid=[1.0],
-            lambda_unit_grid=[1.0],
+            lambda_time_grid=[0.1, 1.0, 10.0],
+            lambda_unit_grid=[0.1, 1.0, 10.0],
             lambda_nn_grid=[lambda_nn],
             n_bootstrap=2,
             seed=42,
@@ -2587,8 +2600,11 @@ class TestTROPRustEdgeCaseParity:
         trop_rust = TROP(**trop_params)
         res_rust = trop_rust.fit(df.copy(), "outcome", "treated", "unit", "time")
 
+        trop_module = sys.modules["diff_diff.trop"]
         trop_local_module = sys.modules["diff_diff.trop_local"]
-        with patch.object(trop_local_module, "HAS_RUST_BACKEND", False), \
+        with patch.object(trop_module, "HAS_RUST_BACKEND", False), \
+             patch.object(trop_module, "_rust_loocv_grid_search", None), \
+             patch.object(trop_local_module, "HAS_RUST_BACKEND", False), \
              patch.object(trop_local_module, "_rust_bootstrap_trop_variance", None):
             trop_py = TROP(**trop_params)
             res_py = trop_py.fit(df.copy(), "outcome", "treated", "unit", "time")
