@@ -505,6 +505,28 @@ def test_guide_api_strings_resolve_against_public_api():
     ):
         assert obsolete_key not in text, f"BR/DR §6 still lists obsolete key: {obsolete_key}"
 
+    # BR `diagnostics` is a wrapper (status + schema/reason + possibly
+    # overall_interpretation), not the DR payload directly. Guard the
+    # wrapper wording so the guide does not drift back to telling
+    # agents to parse BR["diagnostics"] as the DR schema.
+    assert 'diagnostics["schema"]' in text
+    # target_parameter includes a `reference` field per
+    # describe_target_parameter(); guard its documentation.
+    assert "`reference` (REGISTRY.md citation string)" in text
+
+    # Methodology source attribution: EfficientDiD is Chen, Sant'Anna,
+    # Xie (2025), not Arkhangelsky-Imbens. ContinuousDiD is Callaway,
+    # Goodman-Bacon, Sant'Anna (2024). Guard both attributions in the
+    # §4 prose and the §7 citation list.
+    assert "Chen, Sant'Anna, Xie 2025" in text
+    assert "(Arkhangelsky-Imbens)" not in text
+    assert "Callaway, Goodman-Bacon, Sant'Anna 2024" in text
+    # ContinuousDiD prose must distinguish the PT vs SPT identified
+    # targets rather than collapsing everything into "ACR".
+    assert "ATT(d|d)" in text
+    assert "ACRT" in text
+    assert "Strong Parallel Trends" in text
+
 
 def test_min_pre_post_use_per_unit_observed_support():
     """On an unbalanced panel where one treated unit is missing its

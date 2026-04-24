@@ -300,8 +300,9 @@ estimators:
   cohort. Conservative interpretation.
 - `WooldridgeDiD` (ETWFE) - extended-TWFE with cohort-by-time-by-
   covariates interactions; heterogeneous covariate-by-cohort effects.
-- `EfficientDiD` (Arkhangelsky-Imbens) - asymptotically efficient under
-  either `PT-All` or `PT-Post`; use `EfficientDiD.hausman_pretest` to pick.
+- `EfficientDiD` (Chen, Sant'Anna, Xie 2025) - asymptotically efficient
+  under either `PT-All` or `PT-Post`; use `EfficientDiD.hausman_pretest`
+  to pick.
 
 Diagnostic: `bacon_decompose(df, ...)` shows the weight allocation of a
 TWFE fit to 2×2 comparison types. Forbidden-comparison weight > 10% is a
@@ -362,8 +363,17 @@ worth considering.
 
 When `treatment_type == "continuous"`:
 
-- `ContinuousDiD` - dose-response treatment, estimates average
-  causal response (ACR). Supports B-spline bandwidth selection.
+- `ContinuousDiD` (Callaway, Goodman-Bacon, Sant'Anna 2024) -
+  continuous / dose-response treatment. The estimator exposes
+  several dose-indexed targets that require different assumptions:
+  `ATT(d|d)` (effect of dose `d` on units that received `d`) and
+  `ATT^{loc}` (binarized overall ATT) are identified under Parallel
+  Trends; `ATT(d)` (full dose-response curve), `ACRT(d)` (marginal
+  effect, i.e. the average causal response), and `ACRT^{glob}`
+  require the stronger Strong Parallel Trends assumption. The BR
+  headline scalar is the overall ATT; ACR and dose-response tables
+  are available in the result object. Supports B-spline basis
+  construction.
 - `HeterogeneousAdoptionDiD` - partial-adoption intensity, with a
   scalar first-stage adoption summary. Useful when adoption is
   graded rather than binary.
@@ -527,8 +537,9 @@ Top-level keys emitted by `BusinessReport.to_dict()`
 - `headline: dict` - the main point estimate plus framing fields.
 - `target_parameter: dict` - what the headline scalar represents.
   Fields: `name` (e.g. `"ATT"`, `"DID_M"`, `"dose-response"`,
-  `"WAS"`), `definition`, `aggregation` (machine tag), and
-  `headline_attribute` (raw result attribute).
+  `"WAS"`), `definition` (plain-English description), `aggregation`
+  (machine tag), `headline_attribute` (raw result attribute), and
+  `reference` (REGISTRY.md citation string).
 - `assumption: dict` - named assumptions relied on (parallel trends,
   no anticipation, SUTVA, ...). Note: singular `"assumption"`, not
   `"assumptions"`.
@@ -541,9 +552,12 @@ Top-level keys emitted by `BusinessReport.to_dict()`
   `"sample"`, not `"sample_summary"`.
 - `heterogeneity: dict` - heterogeneity summary if applicable.
 - `robustness: dict` - placebo / robustness summaries if available.
-- `diagnostics: dict` - when the auto-constructed `DiagnosticReport`
-  is present, this is its full `to_dict()` schema nested under the
-  BR.
+- `diagnostics: dict` - a wrapper around the auto-constructed
+  `DiagnosticReport`. Always has a `status` field: `"skipped"` with a
+  `reason` when `auto_diagnostics=False`, otherwise `"ran"` with the
+  full DR `to_dict()` payload under `diagnostics["schema"]` and a
+  mirrored `overall_interpretation` string. Parse `schema` (not
+  `diagnostics` directly) to access the DR sections documented below.
 - `next_steps: list[dict]` - Baker et al. next-step guidance from
   `practitioner_next_steps`.
 - `caveats: list[str]` - free-text caveats generated from failed
@@ -663,6 +677,15 @@ or the outcome model is correctly specified.
 - **Sant'Anna, Pedro H. C., and Jun Zhao (2020).** "Doubly Robust
   Difference-in-Differences Estimators." Journal of Econometrics
   219(1): 101-122. DR adjustment.
+- **Chen, Xiaohong, Pedro H. C. Sant'Anna, and Haitian Xie (2025).**
+  "Efficient Difference-in-Differences and Event Study Estimators."
+  Primary source for the `EfficientDiD` estimator (PT-All / PT-Post
+  framing and efficient combination weights).
+- **Callaway, Brantly, Andrew Goodman-Bacon, and Pedro H. C.
+  Sant'Anna (2024).** "Difference-in-Differences with a Continuous
+  Treatment." Primary source for `ContinuousDiD`; introduces the
+  Parallel Trends vs Strong Parallel Trends distinction underlying
+  `ATT(d|d)`, `ATT(d)`, `ACRT(d)`, and `ACRT^{glob}`.
 
 ### Online resources
 
