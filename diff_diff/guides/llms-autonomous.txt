@@ -114,10 +114,15 @@ view. Every field below appears as a top-level key in that dict.
   is not yet implemented). Preferred-but-optional by
   `CallawaySantAnna` and `ChaisemartinDHaultfoeuille`. Always `False`
   for `"categorical"`.
-- **`has_always_treated: bool`** - at least one unit has
-  strictly-positive treatment in every observed non-NaN row. Such units
-  provide no pre-treatment identification and are dropped by most
-  estimators. Always `False` for `"categorical"`.
+- **`has_always_treated: bool`** - at least one binary-treatment
+  unit has `treatment == 1` in every observed non-NaN row (no
+  pre-treatment information for that unit in the DiD sense).
+  Binary-only semantics: for `"continuous"` panels this field is
+  always `False` because pre-treatment periods are determined by the
+  `first_treat` column supplied to `ContinuousDiD.fit()`, not by
+  whether the dose is positive - a unit with a constant positive dose
+  can still have well-defined pre-treatment periods. Always `False`
+  for `"categorical"` too.
 - **`treatment_varies_within_unit: bool`** - at least one unit has more
   than one distinct non-NaN treatment value across its observed rows.
   For binary panels this is normally `True` (pre vs. post the adoption

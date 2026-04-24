@@ -353,16 +353,25 @@ def _classify_treatment(
     if n_distinct == 0:
         return ("categorical", False, {}, False, False, None, None)
 
-    # Generic never-/always-treated semantics (applies to both binary
-    # and continuous numeric treatment): "never-treated" means the unit
-    # has treatment == 0 in every observed non-NaN row; "always-treated"
-    # means treatment > 0 in every observed non-NaN row.
+    # has_never_treated has a single well-defined meaning across binary
+    # and continuous numeric treatment: some unit has treatment == 0 in
+    # every observed non-NaN row. For binary this is the clean-control
+    # group; for continuous this is the zero-dose control required by
+    # ContinuousDiD (P(D=0) > 0).
     unit_max = df.groupby(unit)[treatment].max().to_numpy()
     unit_min = df.groupby(unit)[treatment].min().to_numpy()
     has_never_treated = bool(np.any(unit_max == 0))
-    has_always_treated = bool(np.any(unit_min > 0))
 
     is_binary_valued = values_set <= {0, 1, 0.0, 1.0}
+    # has_always_treated has binary-only semantics: "unit is treated in
+    # every observed period" = unit_min == 1 on a binary panel (no
+    # pre-treatment information). For continuous panels, positive dose
+    # throughout does not mean "always treated in the DiD sense"
+    # (pre-treatment periods are determined by `first_treat`, not by
+    # whether the dose is positive), so this field is False for
+    # continuous / categorical types.
+    has_always_treated = is_binary_valued and bool(np.any(unit_min == 1))
+
     if not is_binary_valued:
         return (
             "continuous",

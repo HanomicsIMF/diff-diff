@@ -129,6 +129,32 @@ def test_binary_absorbing_varies_within_unit():
     assert profile.treatment_varies_within_unit is True
 
 
+def test_continuous_positive_dose_does_not_fire_has_always_treated():
+    """Valid ContinuousDiD panels have units with a constant positive
+    dose across all periods AND well-defined pre-treatment periods
+    (via a separate `first_treat` column). `has_always_treated` has
+    binary-only semantics, so it must be False on continuous panels
+    regardless of dose positivity. Previously the field conflated
+    "positive dose throughout" with "always treated in the DiD sense",
+    which fired the misleading `has_always_treated_units` alert on
+    valid continuous-DiD panels."""
+    rng = np.random.default_rng(0)
+    rows = []
+    for u in range(1, 21):
+        dose = 0.0 if u <= 5 else 2.5
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": rng.normal()})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "continuous"
+    assert profile.has_never_treated is True
+    assert profile.has_always_treated is False, (
+        "has_always_treated must be False on continuous panels regardless "
+        "of dose positivity (binary-only semantics)"
+    )
+    assert "has_always_treated_units" not in _alert_codes(profile)
+
+
 def test_categorical_treatment_object_dtype():
     rows = []
     for u in range(1, 11):
@@ -386,7 +412,9 @@ def test_reversal_through_nan_is_binary_non_absorbing():
 def test_continuous_zero_dose_controls_flag_has_never_treated():
     """Continuous treatment with some zero-dose units must flag
     has_never_treated=True. Previously continuous panels hardcoded
-    has_never_treated=False regardless of control availability."""
+    has_never_treated=False regardless of control availability.
+    has_always_treated has binary-only semantics and must remain
+    False on continuous panels regardless of dose positivity."""
     rows = []
     rng = np.random.default_rng(0)
     for u in range(1, 21):
@@ -397,7 +425,7 @@ def test_continuous_zero_dose_controls_flag_has_never_treated():
     profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
     assert profile.treatment_type == "continuous"
     assert profile.has_never_treated is True
-    assert profile.has_always_treated is True
+    assert profile.has_always_treated is False
 
 
 def test_guide_api_strings_resolve_against_public_api():
