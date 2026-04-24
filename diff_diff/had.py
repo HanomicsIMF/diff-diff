@@ -537,12 +537,18 @@ class HeterogeneousAdoptionDiDEventStudyResults:
         :class:`HeterogeneousAdoptionDiDResults.att` for the per-design
         formula, applied to ``ΔY_t = Y_{g,t} - Y_{g,F-1}``).
     se : np.ndarray, shape (n_horizons,)
-        Per-horizon standard error on the beta-scale. Each horizon uses
-        the INDEPENDENT per-period sandwich from the chosen design path
-        (continuous: CCT-2014 robust divided by ``|den|``; mass-point:
-        structural-residual 2SLS sandwich). Pointwise CIs only — joint
-        cross-horizon covariance is not computed in Phase 2b (paper
-        reports pointwise CIs per Pierce-Schott).
+        Per-horizon standard error on the beta-scale. On unweighted fits
+        each horizon uses the INDEPENDENT per-period sandwich from the
+        chosen design path (continuous: CCT-2014 robust divided by
+        ``|den|``; mass-point: structural-residual 2SLS sandwich). On
+        weighted fits (``weights=`` shortcut or ``survey=``) each horizon
+        uses the Binder (1983) Taylor-series linearization via
+        :func:`compute_survey_if_variance` on the per-unit β̂-scale IF
+        (continuous + mass-point both route through the same helper).
+        Pointwise CIs are always populated; a simultaneous confidence
+        band is available only on the weighted path via ``cband_*``
+        below. Joint cross-horizon analytical covariance is not computed
+        in this release (tracked in TODO.md).
     t_stat, p_value : np.ndarray, shape (n_horizons,)
         Per-horizon inference triple element.
     conf_int_low, conf_int_high : np.ndarray, shape (n_horizons,)
@@ -587,8 +593,44 @@ class HeterogeneousAdoptionDiDEventStudyResults:
     cluster_name : str or None
         Column name of the cluster variable when cluster-robust SE is
         requested. ``None`` otherwise.
-    survey_metadata : object or None
-        Always ``None`` in Phase 2b. Field shape kept for future-compat.
+    survey_metadata : SurveyMetadata or None
+        Repo-standard survey metadata dataclass from
+        :class:`diff_diff.survey.SurveyMetadata`. ``None`` when
+        ``fit()`` was called without ``survey=`` or ``weights=``;
+        populated on the weighted event-study path (Phase 4.5 B). See
+        :class:`HeterogeneousAdoptionDiDResults.survey_metadata` for
+        the attribute contract.
+    variance_formula : str or None
+        Per-horizon variance family (applied uniformly across horizons).
+        ``"pweight"`` / ``"pweight_2sls"`` on the ``weights=`` shortcut,
+        ``"survey_binder_tsl"`` / ``"survey_binder_tsl_2sls"`` on the
+        ``survey=`` path. ``None`` on unweighted fits.
+    effective_dose_mean : float or None
+        Weighted denominator used by the β̂-scale rescaling (continuous
+        paths: weighted sample mean of ``d`` or ``d - d_lower``;
+        mass-point: weighted Wald-IV dose gap). ``None`` on unweighted
+        fits.
+    cband_low, cband_high : np.ndarray or None, shape (n_horizons,)
+        Simultaneous confidence-band endpoints constructed by the
+        multiplier-bootstrap sup-t procedure. ``None`` on unweighted
+        fits and when ``fit(..., cband=False)`` is passed. Horizons
+        with ``se <= 0`` or non-finite ``se`` are NaN (matches the
+        pointwise inference gate from ``safe_inference``).
+    cband_crit_value : float or None
+        Sup-t multiplier-bootstrap critical value at level
+        ``1 - alpha``. Under a trivial resolved design (no strata /
+        PSU / FPC) at ``H=1`` reduces to ``Φ⁻¹(1 − alpha/2) ≈ 1.96``
+        up to Monte Carlo error; under stratified designs the helper
+        applies PSU-aggregation + stratum-demeaning + ``sqrt(n_h /
+        (n_h - 1))`` small-sample correction so the bootstrap
+        variance matches the analytical Binder-TSL target term-for-
+        term.
+    cband_method : str or None
+        ``"multiplier_bootstrap"`` on the weighted event-study path
+        with ``cband=True``, else ``None``.
+    cband_n_bootstrap : int or None
+        Number of multiplier-bootstrap replicates used to compute the
+        sup-t critical value.
     bandwidth_diagnostics : list[BandwidthResult] or None
         Per-horizon bandwidth diagnostics on the continuous paths;
         ``None`` on the mass-point path. When non-None, aligned with
@@ -2023,27 +2065,79 @@ def _sup_t_multiplier_bootstrap(
         psu_weights, psu_ids = generate_survey_multiplier_weights_batch(
             n_bootstrap, resolved_survey, bootstrap_weights, rng
         )
+        # Aggregate Psi to PSU level, stratum-demean, and apply the
+        # small-sample correction so Var_xi(xi @ Psi_psu_scaled) matches
+        # the analytical Binder-TSL variance exactly (review R1 P1).
+        # Target:
+        #   V = sum_h (1 - f_h) (n_h / (n_h - 1)) sum_j (psi_hj - psi_h_bar)²
+        # ``generate_survey_multiplier_weights_batch`` already bakes the
+        # (1 - f_h) FPC factor into the multipliers, so we only need to
+        # pre-process Psi at the PSU level (aggregate → stratum-demean →
+        # sqrt(n_h / (n_h - 1)) rescale).
+        n_psu = int(psu_weights.shape[1])
+        psu_id_to_col = {int(p): c for c, p in enumerate(psu_ids)}
+        Psi_psu = np.zeros((n_psu, n_horizons), dtype=np.float64)
         if resolved_survey.psu is not None:
-            unit_psu = resolved_survey.psu
-            psu_id_to_col = {int(p): c for c, p in enumerate(psu_ids)}
-            unit_to_psu_col = np.array([psu_id_to_col[int(unit_psu[i])] for i in range(n_units)])
+            unit_psu = np.asarray(resolved_survey.psu)
+            for i in range(n_units):
+                col = psu_id_to_col[int(unit_psu[i])]
+                Psi_psu[col] += influence_matrix[i]
         else:
-            unit_to_psu_col = np.arange(n_units)
-        all_bootstrap_weights = psu_weights[:, unit_to_psu_col]  # (B, G)
+            # Each unit is its own PSU (psu_ids = np.arange(n_units)).
+            Psi_psu = influence_matrix.copy()
+
+        if resolved_survey.strata is not None:
+            strata = np.asarray(resolved_survey.strata)
+            # Build PSU -> stratum map (strata constant-within-PSU by
+            # SurveyDesign.resolve contract).
+            psu_stratum = np.empty(n_psu, dtype=strata.dtype)
+            if resolved_survey.psu is not None:
+                seen = np.zeros(n_psu, dtype=bool)
+                unit_psu = np.asarray(resolved_survey.psu)
+                for i in range(n_units):
+                    col = psu_id_to_col[int(unit_psu[i])]
+                    if not seen[col]:
+                        psu_stratum[col] = strata[i]
+                        seen[col] = True
+            else:
+                psu_stratum = strata.copy()
+
+            for h in np.unique(psu_stratum):
+                mask_h = psu_stratum == h
+                n_h = int(mask_h.sum())
+                if n_h < 2:
+                    # Singleton / empty stratum contributes 0 variance
+                    # regardless; the helper's lonely-PSU logic already
+                    # zeros those multipliers. Skip centering to avoid
+                    # a divide-by-zero on sqrt(n_h / (n_h - 1)).
+                    continue
+                Psi_psu[mask_h] -= Psi_psu[mask_h].mean(axis=0, keepdims=True)
+                Psi_psu[mask_h] *= np.sqrt(n_h / (n_h - 1))
+        else:
+            # Single implicit stratum — demean across all PSUs, scale by
+            # sqrt(n_psu / (n_psu - 1)).
+            if n_psu >= 2:
+                Psi_psu -= Psi_psu.mean(axis=0, keepdims=True)
+                Psi_psu *= np.sqrt(n_psu / (n_psu - 1))
+
+        # PSU-level perturbations: (B, H) = (B, n_psu) @ (n_psu, H).
+        # No (1/n) prefactor — Psi_psu_scaled is already on the θ̂-scale
+        # matched to the analytical variance.
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            perturbations = psu_weights @ Psi_psu  # (B, H)
     else:
         all_bootstrap_weights = generate_bootstrap_weights_batch(
             n_bootstrap, n_units, bootstrap_weights, rng
         )  # (B, G)
+        # Unit-level iid multipliers: no stratum centering needed.
+        # Var(xi @ Psi) = sum_g psi_g² matches the trivial analytical
+        # variance from compute_survey_if_variance at the IF-scale-
+        # invariant tolerance (PR #359 convention).
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            perturbations = all_bootstrap_weights @ influence_matrix  # (B, H)
 
-    # Perturbations: (B, H) = (B, G) @ (G, H). Matches staggered:373
-    # idiom — no (1/n) prefactor; ``psi`` is already on θ̂-scale.
-    # Silence divide/invalid/overflow warnings from the matmul — NaN /
-    # inf rows from degenerate horizons propagate and are filtered by
-    # the finite-mask below, so these are expected at construction time.
+    # t-statistics via per-horizon analytical SE.
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        perturbations = all_bootstrap_weights @ influence_matrix  # (B, H)
-
-        # t-statistics via per-horizon analytical SE.
         safe_se = np.where(
             (se_per_horizon > 0) & np.isfinite(se_per_horizon),
             se_per_horizon,
@@ -2074,8 +2168,13 @@ def _sup_t_multiplier_bootstrap(
         return float("nan"), None, None, n_valid
 
     q = float(np.quantile(sup_t_dist[finite_mask], 1.0 - alpha))
-    cband_low = att_per_horizon - q * se_per_horizon
-    cband_high = att_per_horizon + q * se_per_horizon
+    # NaN-gate simultaneous-band endpoints for degenerate horizons the
+    # same way ``safe_inference`` gates pointwise output: a horizon with
+    # ``se <= 0`` or non-finite ``se`` gets a NaN band instead of the
+    # point estimate ± 0, avoiding misleading precision (review R1 P0).
+    se_valid_mask = (se_per_horizon > 0) & np.isfinite(se_per_horizon)
+    cband_low = np.where(se_valid_mask, att_per_horizon - q * se_per_horizon, np.nan)
+    cband_high = np.where(se_valid_mask, att_per_horizon + q * se_per_horizon, np.nan)
     return q, cband_low, cband_high, n_valid
 
 
@@ -2693,17 +2792,36 @@ class HeterogeneousAdoptionDiD:
             FPC) must be constant within unit (sampling-unit-level
             assignment); within-unit variance raises ``ValueError``.
             Replicate-weight designs raise ``NotImplementedError``
-            (Phase 4.5 C). ``design="mass_point"`` and
-            ``aggregate="event_study"`` raise ``NotImplementedError`` on
-            survey/weights (Phase 4.5 B).
+            (Phase 4.5 C). Phase 4.5 B support matrix: survey / weights
+            are now accepted on ALL design × aggregate combinations
+            (continuous × {overall, event-study}, mass-point × {overall,
+            event-study}); HAD pretests (``qug_test``, ``stute_test``,
+            ``yatchew_hr_test``, joint variants,
+            ``did_had_pretest_workflow``) still don't accept
+            survey/weights — deferred to Phase 4.5 C / C0.
         weights : np.ndarray or None
             Per-row sampling weights as a lightweight shortcut equivalent
             to ``survey=SurveyDesign(weights=<col>)``. Produces the same
-            ATT; the SE uses lprobust's weighted-robust CCT-2014 formula
-            rather than Binder-TSL (no PSU/strata composition). Mutually
+            ATT; the SE uses the analytical weighted HC1 sandwich
+            (continuous: CCT-2014 weighted-robust; mass-point: pweight
+            2SLS sandwich) rather than Binder-TSL. Must be constant
+            within each unit; row-order aligned with ``data`` (index
+            labels are resolved to positional offsets via
+            ``data.index.get_indexer``, so custom non-RangeIndex inputs
+            work as long as ``data.index`` is unique). Mutually
             exclusive with ``survey=`` — passing both raises
-            ``ValueError``. Must be constant within each unit (same
-            invariant as ``survey=``).
+            ``ValueError``.
+        cband : bool, default True
+            Phase 4.5 B: controls the multiplier-bootstrap simultaneous
+            confidence band on the weighted event-study path. When
+            ``True`` (default) and ``aggregate="event_study"`` AND
+            ``weights=`` or ``survey=`` is supplied, the fit populates
+            ``cband_low`` / ``cband_high`` / ``cband_crit_value`` /
+            ``cband_method`` / ``cband_n_bootstrap`` on the result. When
+            ``False`` those fields stay ``None``. No effect on
+            ``aggregate="overall"`` or on unweighted event-study.
+            ``n_bootstrap`` and ``seed`` (constructor params) control
+            replicate count and RNG; defaults are 999 / ``None``.
 
         Returns
         -------
@@ -3573,11 +3691,25 @@ class HeterogeneousAdoptionDiD:
                     f"weights length ({w_full.shape[0]}) does not match "
                     f"data rows ({int(data.shape[0])})."
                 )
-            # Filter to rows surviving the staggered last-cohort filter.
-            # data_filtered.index is the original integer positional index
-            # into `data`; use positional slicing via `.iloc` elsewhere,
-            # but here `.index` carries the row labels to match.
-            w_filtered = w_full[data_filtered.index.to_numpy()]
+            # Public ``weights`` contract is ROW-ORDER aligned with
+            # ``data``, NOT index-label aligned, so we must translate
+            # ``data_filtered``'s surviving index LABELS back to
+            # POSITIONAL offsets via ``data.index.get_indexer`` (handles
+            # custom int, string, or MultiIndex inputs uniformly; raises
+            # on duplicate labels that would make the mapping ambiguous).
+            # Review R1 P1: using ``data_filtered.index.to_numpy()`` as
+            # positions was a silent-failure vector on non-RangeIndex
+            # inputs.
+            positional_idx = data.index.get_indexer(data_filtered.index)
+            if np.any(positional_idx < 0):
+                raise ValueError(
+                    "Cannot align weights to filtered panel: some "
+                    "data_filtered rows could not be located in the "
+                    "original data.index (possible duplicate / malformed "
+                    "index labels). Pass a DataFrame with a unique index "
+                    "or reset the index before calling fit()."
+                )
+            w_filtered = w_full[positional_idx]
             weights_unit = _aggregate_unit_weights(data_filtered, w_filtered, unit_col)
             raw_weights_unit = weights_unit
         elif survey is not None:
