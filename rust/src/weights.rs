@@ -356,6 +356,239 @@ fn sc_weight_fw_standard(
     converged
 }
 
+/// Weighted Gram-path Frank-Wolfe loop for unit-weight survey-bootstrap.
+///
+/// Identical to `sc_weight_fw_gram` except for the regularization term, which
+/// uses a per-coordinate weight `reg_w[j]` so the objective becomes:
+///   f(lam) = ||A·lam - b||² / N + ζ²·Σ_j reg_w[j] · lam[j]²
+///
+/// Mathematical changes vs the unweighted loop (see PR #352 §2.2):
+///   - half_grad[j] = ata_x[j] - atb[j] + eta · reg_w[j] · lam[j]
+///   - d_x_norm_sq is replaced by `Σ_j reg_w[j] · d[j]²` (weighted quadratic
+///     form), which simplifies to
+///     `Σ_j reg_w[j]·lam[j]² + reg_w[i] - 2·reg_w[i]·lam[i]`
+///     when `d = e_i - lam` (the FW direction toward vertex i).
+///
+/// All control-flow and iteration semantics (incremental ata_x, periodic
+/// refresh, dual convergence checks, GRAM_REFRESH_INTERVAL) are preserved.
+fn sc_weight_fw_gram_weighted(
+    a: &ArrayView2<f64>,
+    b: &ArrayView1<f64>,
+    lam: &mut Array1<f64>,
+    reg_w: &ArrayView1<f64>,
+    eta: f64,
+    zeta: f64,
+    n: usize,
+    min_decrease_sq: f64,
+    max_iter: usize,
+) -> bool {
+    let t0 = lam.len();
+
+    let ata = a.t().dot(a);
+    let atb = a.t().dot(b);
+    let b_norm_sq = b.dot(b);
+
+    let mut ata_diag = Array1::zeros(t0);
+    for j in 0..t0 {
+        ata_diag[j] = ata[[j, j]];
+    }
+
+    let mut ata_x = ata.dot(lam);
+    let mut half_grad = Array1::zeros(t0);
+
+    let mut prev_val = f64::INFINITY;
+    let mut converged = false;
+
+    for t in 0..max_iter {
+        // Weighted regularization in the gradient
+        for j in 0..t0 {
+            half_grad[j] = ata_x[j] - atb[j] + eta * reg_w[j] * lam[j];
+        }
+
+        let i = argmin_f64(&half_grad);
+
+        // Weighted simplex direction norm: Σ_j reg_w[j]·d[j]² with d = e_i - lam
+        let lam_rw_norm_sq: f64 = lam.iter().zip(reg_w.iter()).map(|(&l, &w)| w * l * l).sum();
+        let d_x_w_norm_sq = lam_rw_norm_sq + reg_w[i] - 2.0 * reg_w[i] * lam[i];
+
+        // Weighted regularization in the objective
+        let lam_rw_norm_sq_for_obj = lam_rw_norm_sq;
+
+        if d_x_w_norm_sq < 1e-24 {
+            let xt_ata_x: f64 = ata_x.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
+            let atb_dot_lam: f64 = atb.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
+            let val = zeta * zeta * lam_rw_norm_sq_for_obj
+                + (xt_ata_x - 2.0 * atb_dot_lam + b_norm_sq) / n as f64;
+            if t >= 1 && prev_val - val < min_decrease_sq {
+                converged = true;
+                break;
+            }
+            prev_val = val;
+            continue;
+        }
+
+        let xt_ata_x: f64 = ata_x.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
+        let d_err_sq = ata_diag[i] - 2.0 * ata_x[i] + xt_ata_x;
+        let denom = d_err_sq + eta * d_x_w_norm_sq;
+        if denom <= 0.0 {
+            let atb_dot_lam: f64 = atb.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
+            let val = zeta * zeta * lam_rw_norm_sq_for_obj
+                + (xt_ata_x - 2.0 * atb_dot_lam + b_norm_sq) / n as f64;
+            if t >= 1 && prev_val - val < min_decrease_sq {
+                converged = true;
+                break;
+            }
+            prev_val = val;
+            continue;
+        }
+
+        let hg_dot_lam: f64 = half_grad.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
+        let hg_dot_dx = half_grad[i] - hg_dot_lam;
+        let step = (-hg_dot_dx / denom).max(0.0).min(1.0);
+
+        let one_minus_step = 1.0 - step;
+        for j in 0..t0 {
+            lam[j] *= one_minus_step;
+        }
+        lam[i] += step;
+
+        let ata_col_i = ata.column(i);
+        for j in 0..t0 {
+            ata_x[j] = one_minus_step * ata_x[j] + step * ata_col_i[j];
+        }
+        if t > 0 && t % GRAM_REFRESH_INTERVAL == 0 {
+            ata_x = ata.dot(lam as &Array1<f64>);
+        }
+
+        // Recompute weighted lam-norm after the in-place update
+        let lam_rw_norm_sq_new: f64 =
+            lam.iter().zip(reg_w.iter()).map(|(&l, &w)| w * l * l).sum();
+        let xt_ata_x: f64 = ata_x.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
+        let atb_dot_lam: f64 = atb.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
+        let val = zeta * zeta * lam_rw_norm_sq_new
+            + (xt_ata_x - 2.0 * atb_dot_lam + b_norm_sq) / n as f64;
+
+        if t >= 1 && prev_val - val < min_decrease_sq {
+            converged = true;
+            break;
+        }
+        prev_val = val;
+    }
+    converged
+}
+
+/// Weighted standard-path Frank-Wolfe loop for unit-weight survey-bootstrap.
+///
+/// Mirror of `sc_weight_fw_standard` with the same regularization-weight
+/// modifications described on `sc_weight_fw_gram_weighted`.
+fn sc_weight_fw_standard_weighted(
+    a: &ArrayView2<f64>,
+    b: &ArrayView1<f64>,
+    lam: &mut Array1<f64>,
+    reg_w: &ArrayView1<f64>,
+    eta: f64,
+    zeta: f64,
+    n: usize,
+    min_decrease_sq: f64,
+    max_iter: usize,
+) -> bool {
+    let t0 = lam.len();
+
+    let mut col_norms_sq = Array1::zeros(t0);
+    for j in 0..t0 {
+        let col = a.column(j);
+        col_norms_sq[j] = col.dot(&col);
+    }
+
+    let mut ax = a.dot(lam as &Array1<f64>);
+    let mut half_grad = Array1::zeros(t0);
+    let mut diff = Array1::zeros(n);
+
+    let mut prev_val = f64::INFINITY;
+    let mut converged = false;
+
+    for t in 0..max_iter {
+        // half_grad = A^T (Ax - b); add eta·reg_w·lam component-wise
+        diff.assign(&ax);
+        diff -= &*b;
+        general_mat_vec_mul(1.0, &a.t(), &diff, 0.0, &mut half_grad);
+        for j in 0..t0 {
+            half_grad[j] += eta * reg_w[j] * lam[j];
+        }
+
+        let i = argmin_f64(&half_grad);
+
+        let lam_rw_norm_sq: f64 = lam.iter().zip(reg_w.iter()).map(|(&l, &w)| w * l * l).sum();
+        let d_x_w_norm_sq = lam_rw_norm_sq + reg_w[i] - 2.0 * reg_w[i] * lam[i];
+
+        if d_x_w_norm_sq < 1e-24 {
+            let mut err_sq = 0.0;
+            for k in 0..n {
+                let e = ax[k] - b[k];
+                err_sq += e * e;
+            }
+            let val = zeta * zeta * lam_rw_norm_sq + err_sq / n as f64;
+            if t >= 1 && prev_val - val < min_decrease_sq {
+                converged = true;
+                break;
+            }
+            prev_val = val;
+            continue;
+        }
+
+        let col_i = a.column(i);
+        let col_dot_ax: f64 = col_i.iter().zip(ax.iter()).map(|(&a, &b)| a * b).sum();
+        let ax_dot_ax: f64 = ax.iter().map(|&v| v * v).sum();
+        let d_err_sq = col_norms_sq[i] - 2.0 * col_dot_ax + ax_dot_ax;
+
+        let denom = d_err_sq + eta * d_x_w_norm_sq;
+        if denom <= 0.0 {
+            let mut err_sq = 0.0;
+            for k in 0..n {
+                let e = ax[k] - b[k];
+                err_sq += e * e;
+            }
+            let val = zeta * zeta * lam_rw_norm_sq + err_sq / n as f64;
+            if t >= 1 && prev_val - val < min_decrease_sq {
+                converged = true;
+                break;
+            }
+            prev_val = val;
+            continue;
+        }
+
+        let hg_dot_lam: f64 = half_grad.iter().zip(lam.iter()).map(|(&a, &b)| a * b).sum();
+        let hg_dot_dx = half_grad[i] - hg_dot_lam;
+        let step = (-hg_dot_dx / denom).max(0.0).min(1.0);
+
+        let one_minus_step = 1.0 - step;
+        for j in 0..t0 {
+            lam[j] *= one_minus_step;
+        }
+        lam[i] += step;
+
+        for k in 0..n {
+            ax[k] = one_minus_step * ax[k] + step * col_i[k];
+        }
+
+        let mut err_sq = 0.0;
+        for k in 0..n {
+            let e = ax[k] - b[k];
+            err_sq += e * e;
+        }
+        let lam_rw_norm_sq_new: f64 =
+            lam.iter().zip(reg_w.iter()).map(|(&l, &w)| w * l * l).sum();
+        let val = zeta * zeta * lam_rw_norm_sq_new + err_sq / n as f64;
+
+        if t >= 1 && prev_val - val < min_decrease_sq {
+            converged = true;
+            break;
+        }
+        prev_val = val;
+    }
+    converged
+}
+
 /// Compute synthetic control weights via Frank-Wolfe optimization.
 ///
 /// Matches R's sc.weight.fw() from the synthdid package. Solves:
@@ -418,6 +651,80 @@ fn sc_weight_fw_internal(
     } else {
         // Standard path: allocation-free with 1 GEMV per iteration
         sc_weight_fw_standard(&a, &b, &mut lam, eta, zeta, n, min_decrease_sq, max_iter)
+    };
+
+    (lam, converged)
+}
+
+/// Weighted-regularization Frank-Wolfe dispatcher for SDID survey-bootstrap.
+///
+/// Identical pre-processing to `sc_weight_fw_internal` (column-centering for
+/// intercept, eta = N·ζ², init from uniform or warm-start) but dispatches to
+/// the `_weighted` loop variants which use `reg_weights` for per-coordinate
+/// regularization. Caller is responsible for supplying `reg_weights` of the
+/// same length as `lam` (T0).
+///
+/// When `reg_weights` is `None`, delegates to `sc_weight_fw_internal` —
+/// preserves the unweighted ABI for callers that share a generic dispatch
+/// site.
+fn sc_weight_fw_weighted_internal(
+    y: &ArrayView2<f64>,
+    zeta: f64,
+    intercept: bool,
+    init_weights: Option<&Array1<f64>>,
+    min_decrease: f64,
+    max_iter: usize,
+    reg_weights: Option<&Array1<f64>>,
+) -> (Array1<f64>, bool) {
+    // Default to the existing unweighted kernel when no reg weights provided.
+    let rw = match reg_weights {
+        Some(w) => w,
+        None => {
+            return sc_weight_fw_internal(y, zeta, intercept, init_weights, min_decrease, max_iter);
+        }
+    };
+
+    let t0 = y.ncols() - 1;
+    let n = y.nrows();
+
+    if t0 == 0 {
+        return (Array1::ones(1), true);
+    }
+
+    if rw.len() != t0 {
+        // Defensive: dimension mismatch — fall back to unweighted to avoid a panic.
+        // The Python wrapper validates shapes before calling, so this branch is
+        // not expected to fire in production.
+        return sc_weight_fw_internal(y, zeta, intercept, init_weights, min_decrease, max_iter);
+    }
+
+    let y_owned: Array2<f64> = if intercept {
+        let col_means = y.mean_axis(Axis(0)).unwrap();
+        y - &col_means
+    } else {
+        y.to_owned()
+    };
+
+    let a = y_owned.slice(s![.., ..t0]);
+    let b = y_owned.column(t0);
+    let eta = n as f64 * zeta * zeta;
+
+    let mut lam = match init_weights {
+        Some(w) => w.clone(),
+        None => Array1::from_elem(t0, 1.0 / t0 as f64),
+    };
+
+    let min_decrease_sq = min_decrease * min_decrease;
+    let rw_view = rw.view();
+
+    let converged = if t0 < n {
+        sc_weight_fw_gram_weighted(
+            &a, &b, &mut lam, &rw_view, eta, zeta, n, min_decrease_sq, max_iter,
+        )
+    } else {
+        sc_weight_fw_standard_weighted(
+            &a, &b, &mut lam, &rw_view, eta, zeta, n, min_decrease_sq, max_iter,
+        )
     };
 
     (lam, converged)
@@ -550,6 +857,81 @@ pub fn sc_weight_fw_with_convergence<'py>(
         init.as_ref(),
         min_decrease,
         max_iter,
+    );
+    Ok((result.to_pyarray(py), converged))
+}
+
+/// Weighted-regularization variant of `sc_weight_fw` for SDID survey-bootstrap.
+///
+/// Solves
+///   min_{ω on simplex}  ||A·ω - b||² / N  +  ζ²·Σ_j reg_weights[j]·ω[j]²
+///
+/// where A is the first T0 columns of `y` (column-centered if `intercept` is
+/// true) and b is the last column. When `reg_weights` is `None`, delegates to
+/// the unweighted kernel — same numeric contract as `sc_weight_fw`.
+///
+/// Caller is responsible for any column-scaling of A by per-control survey
+/// weights to match the loss form
+///   Σ_t (Σ_i rw_i·ω_i·Y_i,pre[t] - b_t)²
+/// (i.e., pass `Y'` with first T0 columns column-scaled by `rw` and pass
+/// `reg_weights=rw`). See `compute_sdid_unit_weights_survey` in
+/// `diff_diff/utils.py` for the canonical caller.
+#[pyfunction]
+#[pyo3(signature = (y, zeta, intercept=true, init_weights=None, min_decrease=1e-5, max_iter=10000, reg_weights=None))]
+pub fn sc_weight_fw_weighted<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray2<'py, f64>,
+    zeta: f64,
+    intercept: bool,
+    init_weights: Option<PyReadonlyArray1<'py, f64>>,
+    min_decrease: f64,
+    max_iter: usize,
+    reg_weights: Option<PyReadonlyArray1<'py, f64>>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let y_arr = y.as_array();
+    let init = init_weights.map(|w| w.as_array().to_owned());
+    let rw = reg_weights.map(|w| w.as_array().to_owned());
+    let (result, _converged) = sc_weight_fw_weighted_internal(
+        &y_arr,
+        zeta,
+        intercept,
+        init.as_ref(),
+        min_decrease,
+        max_iter,
+        rw.as_ref(),
+    );
+    Ok(result.to_pyarray(py))
+}
+
+/// Weighted-regularization Frank-Wolfe with explicit convergence flag.
+///
+/// Identical numeric contract to `sc_weight_fw_weighted`; returns
+/// `(weights, converged)` so SDID `_bootstrap_se` can aggregate per-draw
+/// non-convergence into the existing summary `UserWarning` (PR #351 c0d089b
+/// shape).
+#[pyfunction]
+#[pyo3(signature = (y, zeta, intercept=true, init_weights=None, min_decrease=1e-5, max_iter=10000, reg_weights=None))]
+pub fn sc_weight_fw_weighted_with_convergence<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray2<'py, f64>,
+    zeta: f64,
+    intercept: bool,
+    init_weights: Option<PyReadonlyArray1<'py, f64>>,
+    min_decrease: f64,
+    max_iter: usize,
+    reg_weights: Option<PyReadonlyArray1<'py, f64>>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, bool)> {
+    let y_arr = y.as_array();
+    let init = init_weights.map(|w| w.as_array().to_owned());
+    let rw = reg_weights.map(|w| w.as_array().to_owned());
+    let (result, converged) = sc_weight_fw_weighted_internal(
+        &y_arr,
+        zeta,
+        intercept,
+        init.as_ref(),
+        min_decrease,
+        max_iter,
+        rw.as_ref(),
     );
     Ok((result.to_pyarray(py), converged))
 }
@@ -1008,5 +1390,98 @@ mod tests {
         let sum_std: f64 = result_std.sum();
         assert!((sum_std - 1.0).abs() < 1e-6, "Standard intercept=false: weights should sum to 1, got {}", sum_std);
         assert!(result_std.iter().all(|&w| w >= -1e-6), "Standard intercept=false: weights should be non-negative");
+    }
+
+    // -------------------------------------------------------------------------
+    // Weighted FW kernel — survey-bootstrap support
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_weighted_fw_reg_weights_none_delegates() {
+        // reg_weights=None → must produce identical result to the unweighted
+        // kernel (bit-identity, since the weighted dispatcher delegates).
+        let vals: Vec<f64> = (0..120).map(|i| ((i * 7 + 3) % 97) as f64 / 97.0).collect();
+        let y = Array2::from_shape_vec((20, 6), vals).unwrap();
+
+        let (unweighted, conv_unweighted) =
+            sc_weight_fw_internal(&y.view(), 0.3, true, None, 1e-5, 10000);
+        let (weighted, conv_weighted) = sc_weight_fw_weighted_internal(
+            &y.view(), 0.3, true, None, 1e-5, 10000, None,
+        );
+
+        assert_eq!(conv_unweighted, conv_weighted, "convergence flags differ");
+        for j in 0..unweighted.len() {
+            assert!(
+                (unweighted[j] - weighted[j]).abs() < 1e-14,
+                "reg_weights=None must delegate to unweighted; mismatch at {}: {} vs {}",
+                j, unweighted[j], weighted[j]
+            );
+        }
+    }
+
+    #[test]
+    fn test_weighted_fw_uniform_reg_weights_matches_unweighted() {
+        // With reg_weights = ones(t0), the weighted regularization reduces to
+        // ζ²·Σ ω² which is exactly the unweighted reg. The two kernels should
+        // agree to within machine precision (the weighted loop recomputes
+        // lam_norm via the weighted code path each iteration so float
+        // ordering can introduce tiny ULP-scale drift — stay at rel=1e-12).
+        let vals: Vec<f64> = (0..120).map(|i| ((i * 11 + 5) % 73) as f64 / 73.0).collect();
+        let y = Array2::from_shape_vec((20, 6), vals).unwrap();
+        let rw = Array1::from_elem(5, 1.0); // t0 = ncols - 1 = 5
+
+        let (unweighted, _) = sc_weight_fw_internal(&y.view(), 0.3, true, None, 1e-7, 10000);
+        let (weighted, _) = sc_weight_fw_weighted_internal(
+            &y.view(), 0.3, true, None, 1e-7, 10000, Some(&rw),
+        );
+
+        for j in 0..unweighted.len() {
+            assert!(
+                (unweighted[j] - weighted[j]).abs() < 1e-12,
+                "uniform reg_weights must match unweighted at {}: {} vs {}",
+                j, unweighted[j], weighted[j]
+            );
+        }
+    }
+
+    #[test]
+    fn test_weighted_fw_simplex_invariants() {
+        // For arbitrary positive rw, the returned ω must lie on the standard
+        // simplex (sums to 1, non-negative). Exercise both gram (T0 < N) and
+        // standard (T0 >= N) paths.
+        let vals_gram: Vec<f64> =
+            (0..120).map(|i| ((i * 13 + 7) % 89) as f64 / 89.0).collect();
+        let y_gram = Array2::from_shape_vec((20, 6), vals_gram).unwrap();
+        let rw_gram = Array1::from_vec(vec![0.5, 1.0, 1.5, 2.0, 0.8]);
+
+        let (omega_gram, _) = sc_weight_fw_weighted_internal(
+            &y_gram.view(), 0.4, true, None, 1e-6, 10000, Some(&rw_gram),
+        );
+        let sum_gram: f64 = omega_gram.sum();
+        assert!(
+            (sum_gram - 1.0).abs() < 1e-6,
+            "gram weighted-FW: ω must sum to 1, got {}", sum_gram
+        );
+        assert!(
+            omega_gram.iter().all(|&w| w >= -1e-9),
+            "gram weighted-FW: ω must be non-negative"
+        );
+
+        let vals_std: Vec<f64> = (0..45).map(|i| ((i * 17 + 3) % 53) as f64 / 53.0).collect();
+        let y_std = Array2::from_shape_vec((5, 9), vals_std).unwrap();
+        let rw_std = Array1::from_vec(vec![1.0, 0.5, 1.5, 2.0, 0.7, 1.2, 0.9, 1.3]);
+
+        let (omega_std, _) = sc_weight_fw_weighted_internal(
+            &y_std.view(), 0.5, true, None, 1e-6, 10000, Some(&rw_std),
+        );
+        let sum_std: f64 = omega_std.sum();
+        assert!(
+            (sum_std - 1.0).abs() < 1e-6,
+            "standard weighted-FW: ω must sum to 1, got {}", sum_std
+        );
+        assert!(
+            omega_std.iter().all(|&w| w >= -1e-9),
+            "standard weighted-FW: ω must be non-negative"
+        );
     }
 }

@@ -22,6 +22,8 @@ from diff_diff._backend import (
     _rust_compute_noise_level,
     _rust_sc_weight_fw,
     _rust_sc_weight_fw_with_convergence,
+    _rust_sc_weight_fw_weighted,
+    _rust_sc_weight_fw_weighted_with_convergence,
 )
 
 # Numerical constants for optimization algorithms
@@ -1306,12 +1308,19 @@ def _sc_weight_fw(
     min_decrease: float = 1e-5,
     max_iter: int = 10000,
     return_convergence: bool = False,
+    reg_weights: Optional[np.ndarray] = None,
 ):
     """Compute synthetic control weights via Frank-Wolfe optimization.
 
     Matches R's ``sc.weight.fw()`` from the synthdid package. Solves::
 
         min_{lambda on simplex}  zeta^2 * ||lambda||^2
+            + (1/N) * ||A_centered @ lambda - b_centered||^2
+
+    With ``reg_weights`` set, solves the weighted-regularization variant
+    used by SDID survey-bootstrap (PR #352)::
+
+        min_{lambda on simplex}  zeta^2 * sum_j reg_weights[j] * lambda[j]^2
             + (1/N) * ||A_centered @ lambda - b_centered||^2
 
     Parameters
@@ -1340,6 +1349,15 @@ def _sc_weight_fw(
         by SDID bootstrap to surface per-draw FW non-convergence
         explicitly instead of relying on ``warnings.catch_warnings`` (the
         default Rust FW entry point is silent on non-convergence).
+    reg_weights : np.ndarray, optional
+        Per-coordinate regularization weights of shape ``(T0,)``. When
+        set, switches to the weighted-regularization Rust kernel
+        (``sc_weight_fw_weighted`` / ``_with_convergence``) which solves
+        the SDID survey-bootstrap objective with ``ζ²·Σ rw·ω²`` in place
+        of the uniform ``ζ²·||ω||²``. The caller is responsible for any
+        column-scaling of ``Y`` to match the loss form. Default ``None``
+        delegates to the unweighted kernel — preserves the legacy ABI for
+        all existing callers.
 
     Returns
     -------
@@ -1347,38 +1365,44 @@ def _sc_weight_fw(
         Weights of shape (T0,) on the simplex; with
         ``return_convergence=True``, additionally the convergence flag.
     """
+    Y_c = np.ascontiguousarray(Y, dtype=np.float64)
+    init_c = (
+        np.ascontiguousarray(init_weights, dtype=np.float64)
+        if init_weights is not None
+        else None
+    )
+    rw_c = (
+        np.ascontiguousarray(reg_weights, dtype=np.float64)
+        if reg_weights is not None
+        else None
+    )
+
     if HAS_RUST_BACKEND:
+        if reg_weights is not None:
+            if return_convergence:
+                weights, converged = _rust_sc_weight_fw_weighted_with_convergence(
+                    Y_c, zeta, intercept, init_c, min_decrease, max_iter, rw_c,
+                )
+                return np.asarray(weights), converged
+            return np.asarray(
+                _rust_sc_weight_fw_weighted(
+                    Y_c, zeta, intercept, init_c, min_decrease, max_iter, rw_c,
+                )
+            )
         if return_convergence:
             weights, converged = _rust_sc_weight_fw_with_convergence(
-                np.ascontiguousarray(Y, dtype=np.float64),
-                zeta,
-                intercept,
-                (
-                    np.ascontiguousarray(init_weights, dtype=np.float64)
-                    if init_weights is not None
-                    else None
-                ),
-                min_decrease,
-                max_iter,
+                Y_c, zeta, intercept, init_c, min_decrease, max_iter,
             )
             return np.asarray(weights), converged
         return np.asarray(
             _rust_sc_weight_fw(
-                np.ascontiguousarray(Y, dtype=np.float64),
-                zeta,
-                intercept,
-                (
-                    np.ascontiguousarray(init_weights, dtype=np.float64)
-                    if init_weights is not None
-                    else None
-                ),
-                min_decrease,
-                max_iter,
+                Y_c, zeta, intercept, init_c, min_decrease, max_iter,
             )
         )
     return _sc_weight_fw_numpy(
         Y, zeta, intercept, init_weights, min_decrease, max_iter,
         return_convergence=return_convergence,
+        reg_weights=reg_weights,
     )
 
 
@@ -1390,12 +1414,19 @@ def _sc_weight_fw_numpy(
     min_decrease: float = 1e-5,
     max_iter: int = 10000,
     return_convergence: bool = False,
+    reg_weights: Optional[np.ndarray] = None,
 ):
     """Pure NumPy implementation of Frank-Wolfe SC weight solver.
 
     When ``return_convergence=True``, returns a tuple ``(weights, converged)``
     and suppresses the default ``warn_if_not_converged`` side effect — the
     caller is responsible for deciding how to surface non-convergence.
+
+    With ``reg_weights`` set, solves the weighted-regularization variant
+    (matches the Rust ``sc_weight_fw_weighted`` kernel; PR #352). The loss
+    term is unchanged; only the regularization becomes
+    ``ζ²·Σ_j reg_weights[j]·lam[j]²`` and the FW step uses the diag(rw)-
+    weighted simplex direction norm.
     """
     T0 = Y.shape[1] - 1
     N = Y.shape[0]
@@ -1419,12 +1450,53 @@ def _sc_weight_fw_numpy(
     else:
         lam = np.ones(T0) / T0
 
+    if reg_weights is not None:
+        rw = np.asarray(reg_weights, dtype=np.float64)
+        if rw.shape != (T0,):
+            raise ValueError(
+                f"reg_weights shape {rw.shape} does not match expected "
+                f"({T0},) — must equal A.shape[1]"
+            )
+    else:
+        rw = None
+
     vals = np.full(max_iter, np.nan)
     converged = False
     for t in range(max_iter):
-        lam = _fw_step(A, lam, b, eta)
-        err = Y @ np.append(lam, -1.0)
-        vals[t] = zeta**2 * np.sum(lam**2) + np.sum(err**2) / N
+        if rw is None:
+            lam = _fw_step(A, lam, b, eta)
+            err = Y @ np.append(lam, -1.0)
+            vals[t] = zeta**2 * np.sum(lam**2) + np.sum(err**2) / N
+        else:
+            # Weighted FW step with diag(rw) regularization. Mirrors the
+            # Rust sc_weight_fw_*_weighted derivation in rust/src/weights.rs.
+            ax_minus_b = A @ lam - b
+            half_grad = A.T @ ax_minus_b + eta * rw * lam
+            i = int(np.argmin(half_grad))
+            d = -lam.copy()
+            d[i] += 1.0
+            d_x_w_norm_sq = float(np.sum(rw * d * d))
+            if d_x_w_norm_sq < 1e-24:
+                err = ax_minus_b
+                vals[t] = zeta**2 * float(np.sum(rw * lam * lam)) + float(np.sum(err**2)) / N
+                if t >= 1 and vals[t - 1] - vals[t] < min_decrease**2:
+                    converged = True
+                    break
+                continue
+            d_err_sq = float(np.sum((A @ d) ** 2))
+            denom = d_err_sq + eta * d_x_w_norm_sq
+            if denom <= 0.0:
+                err = ax_minus_b
+                vals[t] = zeta**2 * float(np.sum(rw * lam * lam)) + float(np.sum(err**2)) / N
+                if t >= 1 and vals[t - 1] - vals[t] < min_decrease**2:
+                    converged = True
+                    break
+                continue
+            hg_dot_dx = float(half_grad @ d)
+            step = float(np.clip(-hg_dot_dx / denom, 0.0, 1.0))
+            lam = lam + step * d
+            err = A @ lam - b
+            vals[t] = zeta**2 * float(np.sum(rw * lam * lam)) + float(np.sum(err**2)) / N
         if t >= 1 and vals[t - 1] - vals[t] < min_decrease**2:
             converged = True
             break
@@ -1748,6 +1820,263 @@ def compute_sdid_unit_weights(
     )
 
     return omega
+
+
+# =============================================================================
+# Survey-weighted SDID FW helpers (PR #352 — internal, called from
+# SyntheticDiD._bootstrap_se on per-draw survey-weighted refits)
+# =============================================================================
+
+
+def compute_sdid_unit_weights_survey(
+    Y_pre_control: np.ndarray,
+    Y_pre_treated_mean: np.ndarray,
+    rw_control: np.ndarray,
+    zeta_omega: float,
+    intercept: bool = True,
+    min_decrease: float = 1e-5,
+    max_iter_pre_sparsify: int = 100,
+    max_iter: int = 10000,
+    init_weights: Optional[np.ndarray] = None,
+    return_convergence: bool = False,
+):
+    """Survey-weighted SDID unit weights via two-pass weighted Frank-Wolfe.
+
+    Solves the weighted-FW objective (PR #352 §2.2)::
+
+        min_{ω on simplex}
+            Σ_t (Σ_i rw_control[i]·ω[i]·Y_pre_control[t,i] - Y_pre_treated_mean[t])²
+            + ζ²·Σ_i rw_control[i]·ω[i]²
+
+    Implementation: pre-scales each control column of Y_unit by
+    ``rw_control`` (so the loss term picks up the per-control linear
+    combination) and passes ``rw_control`` as ``reg_weights`` to
+    ``_sc_weight_fw`` (so the regularization picks up the per-ω scaling).
+    Two-pass sparsify-refit structure mirrors ``compute_sdid_unit_weights``.
+
+    The returned ω is on the standard simplex. The caller (typically
+    ``SyntheticDiD._bootstrap_se``) is responsible for composing
+    ``ω_eff = rw_control·ω / Σ(rw_control·ω)`` for the downstream SDID
+    estimator, which expects a normalized weight vector.
+
+    Parameters
+    ----------
+    Y_pre_control : np.ndarray
+        Control outcomes in pre-treatment periods, shape (n_pre, n_control).
+    Y_pre_treated_mean : np.ndarray
+        Mean treated outcomes in pre-treatment periods, shape (n_pre,).
+    rw_control : np.ndarray
+        Per-control survey weights, shape (n_control,). Must be non-negative.
+        For pweight-only bootstrap this is the constant survey weight per
+        control unit; for Rao-Wu bootstrap this is the per-draw rescaled
+        weight (``generate_rao_wu_weights`` output sliced to control units).
+    zeta_omega : float
+        Regularization parameter (already normalized by Y_scale).
+    intercept : bool, default True
+        Column-center the optimization matrix.
+    min_decrease : float, default 1e-5
+        Convergence criterion.
+    max_iter_pre_sparsify : int, default 100
+        First-pass iteration cap before sparsification.
+    max_iter : int, default 10000
+        Second-pass iteration cap.
+    init_weights : np.ndarray, optional
+        Warm-start weights for the first pass; shape (n_control,).
+    return_convergence : bool, default False
+        If True, returns ``(ω, converged)`` where converged is the AND of
+        both passes' convergence flags.
+
+    Returns
+    -------
+    np.ndarray or Tuple[np.ndarray, bool]
+        ω on the simplex (NOT ω_eff).
+    """
+    n_control = Y_pre_control.shape[1]
+
+    if rw_control.shape != (n_control,):
+        raise ValueError(
+            f"rw_control shape {rw_control.shape} does not match expected "
+            f"({n_control},)"
+        )
+
+    if n_control == 0:
+        empty = np.asarray([])
+        return (empty, True) if return_convergence else empty
+    if n_control == 1:
+        singleton = np.asarray([1.0])
+        return (singleton, True) if return_convergence else singleton
+
+    # Build the column-scaled Y matrix: each control column j is multiplied by
+    # rw_control[j], so A·ω in the loss equals Σ_j rw_j·ω_j·Y_j,pre.
+    rw = np.ascontiguousarray(rw_control, dtype=np.float64)
+    Y_scaled = np.column_stack([
+        Y_pre_control * rw[np.newaxis, :],
+        Y_pre_treated_mean.reshape(-1, 1),
+    ])
+
+    if return_convergence:
+        omega, conv1 = _sc_weight_fw(
+            Y_scaled,
+            zeta=zeta_omega,
+            intercept=intercept,
+            init_weights=init_weights,
+            max_iter=max_iter_pre_sparsify,
+            min_decrease=min_decrease,
+            return_convergence=True,
+            reg_weights=rw,
+        )
+    else:
+        omega = _sc_weight_fw(
+            Y_scaled,
+            zeta=zeta_omega,
+            intercept=intercept,
+            init_weights=init_weights,
+            max_iter=max_iter_pre_sparsify,
+            min_decrease=min_decrease,
+            reg_weights=rw,
+        )
+
+    omega = _sparsify(omega)
+
+    if return_convergence:
+        omega, conv2 = _sc_weight_fw(
+            Y_scaled,
+            zeta=zeta_omega,
+            intercept=intercept,
+            init_weights=omega,
+            max_iter=max_iter,
+            min_decrease=min_decrease,
+            return_convergence=True,
+            reg_weights=rw,
+        )
+        return omega, bool(conv1 and conv2)
+
+    return _sc_weight_fw(
+        Y_scaled,
+        zeta=zeta_omega,
+        intercept=intercept,
+        init_weights=omega,
+        max_iter=max_iter,
+        min_decrease=min_decrease,
+        reg_weights=rw,
+    )
+
+
+def compute_time_weights_survey(
+    Y_pre_control: np.ndarray,
+    Y_post_control: np.ndarray,
+    rw_control: np.ndarray,
+    zeta_lambda: float,
+    intercept: bool = True,
+    min_decrease: float = 1e-5,
+    max_iter_pre_sparsify: int = 100,
+    max_iter: int = 10000,
+    init_weights: Optional[np.ndarray] = None,
+    return_convergence: bool = False,
+):
+    """Survey-weighted SDID time weights via two-pass row-weighted FW.
+
+    Solves the WLS-style time-weight objective (PR #352 §2.2)::
+
+        min_{λ on simplex}
+            Σ_u rw_control[u]·(Σ_t λ[t]·Y_pre_control[t,u] - Y_post_mean[u])²
+            + ζ²·||λ||²
+
+    Regularization stays uniform on λ (rw is per-control, λ is per-period —
+    no alignment for per-λ reg weighting). Loss term gets per-row weighting,
+    implemented as a √rw row-scale of the (transposed) Y_time matrix before
+    passing to the unweighted Rust kernel — equivalent to running the
+    standard FW on ``diag(√rw)·Y``.
+
+    The returned λ is on the standard simplex.
+
+    Parameters
+    ----------
+    Y_pre_control : np.ndarray
+        Shape (n_pre, n_control).
+    Y_post_control : np.ndarray
+        Shape (n_post, n_control).
+    rw_control : np.ndarray
+        Shape (n_control,), non-negative.
+    zeta_lambda : float
+        Regularization parameter (already normalized by Y_scale).
+    Other parameters mirror ``compute_time_weights``.
+
+    Returns
+    -------
+    np.ndarray or Tuple[np.ndarray, bool]
+        λ on the simplex.
+    """
+    n_pre = Y_pre_control.shape[0]
+    n_control = Y_pre_control.shape[1]
+
+    if rw_control.shape != (n_control,):
+        raise ValueError(
+            f"rw_control shape {rw_control.shape} does not match expected "
+            f"({n_control},)"
+        )
+
+    if Y_post_control.shape[0] == 0:
+        raise ValueError(
+            "Y_post_control has no rows. At least one post-treatment period "
+            "is required for time weight computation."
+        )
+
+    if n_pre <= 1:
+        lam_trivial = np.ones(n_pre)
+        return (lam_trivial, True) if return_convergence else lam_trivial
+
+    # Build collapsed form like compute_time_weights: (N_co, T_pre+1)
+    post_means = np.mean(Y_post_control, axis=0)
+    Y_time = np.column_stack([Y_pre_control.T, post_means])  # (N_co, T_pre+1)
+
+    # Row-scale by sqrt(rw): each control unit's contribution to the loss
+    # is weighted by rw_control[u]. Reg on λ stays uniform (no reg_weights).
+    sqrt_rw = np.sqrt(np.maximum(rw_control, 0.0))
+    Y_weighted = Y_time * sqrt_rw[:, np.newaxis]
+
+    if return_convergence:
+        lam, conv1 = _sc_weight_fw(
+            Y_weighted,
+            zeta=zeta_lambda,
+            intercept=intercept,
+            init_weights=init_weights,
+            min_decrease=min_decrease,
+            max_iter=max_iter_pre_sparsify,
+            return_convergence=True,
+        )
+    else:
+        lam = _sc_weight_fw(
+            Y_weighted,
+            zeta=zeta_lambda,
+            intercept=intercept,
+            init_weights=init_weights,
+            min_decrease=min_decrease,
+            max_iter=max_iter_pre_sparsify,
+        )
+
+    lam = _sparsify(lam)
+
+    if return_convergence:
+        lam, conv2 = _sc_weight_fw(
+            Y_weighted,
+            zeta=zeta_lambda,
+            intercept=intercept,
+            init_weights=lam,
+            min_decrease=min_decrease,
+            max_iter=max_iter,
+            return_convergence=True,
+        )
+        return lam, bool(conv1 and conv2)
+
+    return _sc_weight_fw(
+        Y_weighted,
+        zeta=zeta_lambda,
+        intercept=intercept,
+        init_weights=lam,
+        min_decrease=min_decrease,
+        max_iter=max_iter,
+    )
 
 
 def compute_sdid_estimator(
