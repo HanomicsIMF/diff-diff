@@ -29,10 +29,15 @@ library(DIDmultiplegtDYN)
 library(jsonlite)
 suppressMessages(library(polars))  # required by DIDmultiplegtDYN >= 2.x
 
-# Pin DIDmultiplegtDYN min version because the by_path output slots
-# (res$by_levels, res$by_level_i) were introduced in v2.3.3 and the
-# structure is not version-stable per the R package's own docs.
-stopifnot(packageVersion("DIDmultiplegtDYN") >= "2.3.3")
+# Pin DIDmultiplegtDYN to an exact version because the `by_path` output
+# slots (res$by_levels, res$by_level_i) were introduced in v2.3.3 and
+# the structure is not version-stable per the R package's own docs. A
+# floor constraint (`>= 2.3.3`) could silently drift the fixture schema
+# when regenerated against a future release. Update this pin *and* re-
+# run TestDCDHDynRParityByPath when bumping to a newer known-compatible
+# release; extend to an explicit allowlist (e.g. `%in% c("2.3.3",
+# "2.3.4")`) once a second version is verified.
+stopifnot(packageVersion("DIDmultiplegtDYN") == "2.3.3")
 
 cat("Generating dCDH golden values via DIDmultiplegtDYN at l=1...\n")
 

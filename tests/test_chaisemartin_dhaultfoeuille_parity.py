@@ -492,9 +492,15 @@ class TestDCDHDynRParityByPath:
     explicitly rather than as apples-to-oranges SE gaps.
     """
 
-    # Point-estimate tolerances mirror the Phase 1/2 parity classes.
-    POINT_RTOL = 1e-4
-    MIXED_POINT_RTOL = 0.025
+    # Point-estimate tolerance: 1e-9 locks in the observed exact-match
+    # property on the committed goldens (measured rtol ~1e-11 across
+    # all (path, horizon) cells in both scenarios, well inside R's
+    # 10-digit JSON rounding envelope). This matches the claim in
+    # REGISTRY.md and CHANGELOG.md that per-path point estimates agree
+    # with R exactly. Any material regression on point parity will
+    # trip this; loosening to 2.5% would silently accept a ~6 orders
+    # of magnitude regression.
+    POINT_RTOL = 1e-9
     # SE tolerance: 12% sits between Phase 2 multi-horizon SE_RTOL
     # (0.10 for short panels) and the long-panel widening (0.15). Per-
     # path slices have ~10-40 switchers - comparable to Phase 2's long-
@@ -562,10 +568,27 @@ class TestDCDHDynRParityByPath:
                     f"py={py_h['effect']:.4f} vs r={r_h['effect']:.4f}"
                 )
 
-                if py_h["se"] > 0 and r_h["se"] > 0:
-                    assert py_h["se"] == pytest.approx(r_h["se"], rel=se_rtol), (
+                # Assert matching finite/missing state BEFORE the numeric
+                # tolerance check so that a silent regression to 0/NaN on
+                # one side (while R stays finite, or vice versa) fails the
+                # test rather than skipping this cell.
+                import math
+
+                py_se = py_h["se"]
+                r_se = r_h["se"]
+                py_finite_positive = math.isfinite(py_se) and py_se > 0.0
+                r_finite_positive = math.isfinite(r_se) and r_se > 0.0
+                assert py_finite_positive == r_finite_positive, (
+                    f"path={path_key} h={h} SE state mismatch "
+                    f"(py_se={py_se}, r_se={r_se}): one side is "
+                    f"finite+positive while the other is 0/NaN/inf. "
+                    f"Verify the path subset produces matching "
+                    f"variance-identifiability on both sides."
+                )
+                if py_finite_positive and r_finite_positive:
+                    assert py_se == pytest.approx(r_se, rel=se_rtol), (
                         f"path={path_key} h={h} SE: "
-                        f"py={py_h['se']:.4f} vs r={r_h['se']:.4f}"
+                        f"py={py_se:.4f} vs r={r_se:.4f}"
                     )
 
     def test_parity_mixed_single_switch_by_path(self, golden_values):
@@ -577,7 +600,7 @@ class TestDCDHDynRParityByPath:
             scenario,
             by_path=2,
             L_max=3,
-            point_rtol=self.MIXED_POINT_RTOL,
+            point_rtol=self.POINT_RTOL,
             se_rtol=self.SE_RTOL,
         )
 
@@ -590,6 +613,6 @@ class TestDCDHDynRParityByPath:
             scenario,
             by_path=3,
             L_max=3,
-            point_rtol=self.MIXED_POINT_RTOL,
+            point_rtol=self.POINT_RTOL,
             se_rtol=self.SE_RTOL,
         )
