@@ -29,6 +29,16 @@ library(DIDmultiplegtDYN)
 library(jsonlite)
 suppressMessages(library(polars))  # required by DIDmultiplegtDYN >= 2.x
 
+# Pin DIDmultiplegtDYN to an exact version because the `by_path` output
+# slots (res$by_levels, res$by_level_i) were introduced in v2.3.3 and
+# the structure is not version-stable per the R package's own docs. A
+# floor constraint (`>= 2.3.3`) could silently drift the fixture schema
+# when regenerated against a future release. Update this pin *and* re-
+# run TestDCDHDynRParityByPath when bumping to a newer known-compatible
+# release; extend to an explicit allowlist (e.g. `%in% c("2.3.3",
+# "2.3.4")`) once a second version is verified.
+stopifnot(packageVersion("DIDmultiplegtDYN") == "2.3.3")
+
 cat("Generating dCDH golden values via DIDmultiplegtDYN at l=1...\n")
 
 output_path <- file.path("benchmarks", "data", "dcdh_dynr_golden_values.json")
@@ -51,7 +61,8 @@ gen_reversible <- function(n_groups, n_periods, pattern, seed,
                            cycle_length = 2, treatment_effect = 2.0,
                            heterogeneous_effects = FALSE, effect_sd = 0.5,
                            group_fe_sd = 2.0, time_trend = 0.1, noise_sd = 0.5,
-                           n_never_treated = 20, n_always_treated = 20) {
+                           n_never_treated = 20, n_always_treated = 20,
+                           L_max = 3) {
   # n_never_treated and n_always_treated add stable control cohorts so
   # both Python (AER 2020 zero-retention) and R DIDmultiplegtDYN (dynamic
   # paper, drop-cohort) implementations have controls available at every
@@ -97,6 +108,76 @@ gen_reversible <- function(n_groups, n_periods, pattern, seed,
         D[g, st:n_periods] <- 1L
       } else {
         D[g, seq_len(st - 1L)] <- 1L
+      }
+    }
+  } else if (pattern == "multi_path_reversible") {
+    # Deterministic multi-path DGP designed for by_path R-parity:
+    #   - 4 distinct joiner-style target paths with unequal frequencies
+    #     (so top-k ranking produces unique ranks with no ties)
+    #   - path assignment is a DETERMINISTIC FUNCTION OF F_g, so each
+    #     cohort (D_{g,1}, F_g, S_g) contains switchers from a single
+    #     path. This avoids cross-path cohort sharing in the
+    #     cohort-recentered influence function, which otherwise blows
+    #     out SE parity with R's re-run-per-path convention.
+    #   - post-window treatment is stable at path[L_max+1] (clean
+    #     control-pool eligibility — no post-window contamination)
+    #
+    # Each group:
+    #   - F_g in [2, n_periods - L_max] so the length-(L_max+1) window
+    #     [F_g-1, F_g-1+L_max] fits the panel
+    #   - path is determined by F_g: two F_g values per path (groups in
+    #     {F_g in {2,3}} share path 1, {F_g in {4,5}} share path 2,
+    #     {F_g in {6}} = path 3, {F_g in {7}} = path 4); within a path,
+    #     F_g distribution yields n_groups * path_prop total groups
+    max_switch <- n_periods - L_max - 1L
+    stopifnot(max_switch >= 1L)
+    # With n_periods=10, L_max=3: max_switch=6, F_g in [2,7] (6 values).
+
+    target_paths <- list(
+      c(0L, 1L, 1L, 1L),  # sustained on (rank 1)
+      c(0L, 1L, 1L, 0L),  # on then off  (rank 2)
+      c(0L, 1L, 0L, 0L),  # on briefly   (rank 3)
+      c(0L, 1L, 0L, 1L)   # on-off-on    (rank 4, truncated under by_path=3)
+    )
+    stopifnot(length(target_paths[[1]]) == L_max + 1L)
+
+    # Per-F_g path assignment: 2 F_g values for paths 1 & 2, 1 for paths
+    # 3 & 4. This keeps each (D_{g,1}, F_g, S_g) cohort single-path.
+    f_g_to_path <- c(1L, 1L, 2L, 2L, 3L, 4L)
+    stopifnot(length(f_g_to_path) == max_switch)
+    # Group counts per F_g (rank 1 > rank 2 > rank 3 > rank 4 with unique
+    # ranks — no frequency ties, robust to R's undocumented tiebreak):
+    #   F_g=2: 20 groups (path 1)
+    #   F_g=3: 20 groups (path 1) → rank 1 has 40 switchers total
+    #   F_g=4: 15 groups (path 2)
+    #   F_g=5: 10 groups (path 2) → rank 2 has 25 switchers total
+    #   F_g=6: 10 groups (path 3) → rank 3 has 10 switchers
+    #   F_g=7:  5 groups (path 4) → rank 4 has  5 switchers (excluded by by_path=3)
+    counts_per_F_g <- c(20L, 20L, 15L, 10L, 10L, 5L)
+    stopifnot(sum(counts_per_F_g) == n_groups)
+
+    # Build the group-to-(F_g, path) assignment, deterministic with seed
+    g_idx <- 1L
+    for (f_idx in seq_along(counts_per_F_g)) {
+      F_g <- f_idx + 1L  # F_g in [2, 7] for f_idx in [1, 6]
+      path_idx <- f_g_to_path[f_idx]
+      target <- target_paths[[path_idx]]
+      n_here <- counts_per_F_g[f_idx]
+      for (k in seq_len(n_here)) {
+        g <- g_idx
+        # Pre-baseline [1 .. F_g-2]: initial state
+        if (F_g >= 3L) {
+          D[g, 1:(F_g - 2L)] <- target[1]
+        }
+        # Window [F_g-1 .. F_g-1+L_max]: exactly the target path
+        for (j in 0:L_max) {
+          D[g, F_g - 1L + j] <- target[j + 1L]
+        }
+        # Post-window [F_g+L_max .. n_periods]: stable at path[L_max+1]
+        if (F_g + L_max <= n_periods) {
+          D[g, (F_g + L_max):n_periods] <- target[L_max + 1L]
+        }
+        g_idx <- g_idx + 1L
       }
     }
   } else {
@@ -480,6 +561,87 @@ scenarios$joiners_only_controls_trends_lin <- list(
                 seed = 112, effects = 2, placebo = 1, ci_level = 95,
                 controls = "X1", trends_lin = TRUE),
   results = extract_dcdh_multi(res12, n_effects = 2, n_placebos = 1)
+)
+
+# ---------------------------------------------------------------------------
+# Phase 3 extension: by_path per-path event-study disaggregation
+# ---------------------------------------------------------------------------
+
+# Helper: extract per-path by_path results. When did_multiplegt_dyn is
+# called with by_path=k, the result object has no $results slot; instead
+# per-path results live at res$by_level_1, res$by_level_2, ... in rank
+# order (1 = most frequent observed path). res$by_levels is a character
+# vector of comma-joined path labels (e.g. "0,1,1,1") in the same order.
+extract_dcdh_by_path <- function(res, n_effects) {
+  by_levels <- res$by_levels
+  out <- list()
+  for (i in seq_along(by_levels)) {
+    slot <- res[[paste0("by_level_", i)]]
+    effects <- slot$results$Effects
+    horizons <- list()
+    for (h in seq_len(min(n_effects, nrow(effects)))) {
+      horizons[[as.character(h)]] <- list(
+        effect = as.numeric(effects[h, "Estimate"]),
+        se = as.numeric(effects[h, "SE"]),
+        ci_lo = as.numeric(effects[h, "LB CI"]),
+        ci_hi = as.numeric(effects[h, "UB CI"]),
+        n_switchers = as.numeric(effects[h, "Switchers"]),
+        n_obs = as.numeric(effects[h, "N"])
+      )
+    }
+    out[[i]] <- list(
+      path = by_levels[i],
+      frequency_rank = i,
+      horizons = horizons
+    )
+  }
+  list(by_path = out)
+}
+
+# Scenario 13: mixed_single_switch + by_path=2 (basic 2-path case).
+# The mixed_single_switch DGP produces joiners (path 0,1,1,1) and
+# leavers (path 1,0,0,0) as its only two observed paths at L_max=3, so
+# by_path=2 captures both and tests core per-path parity.
+cat("  Scenario 13: mixed_single_switch_by_path\n")
+d13 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 8,
+                      pattern = "mixed_single_switch", seed = 113)
+res13 <- did_multiplegt_dyn(
+  df = d13, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 3, by_path = 2, ci_level = 95
+)
+scenarios$mixed_single_switch_by_path <- list(
+  data = export_data(d13),
+  params = list(pattern = "mixed_single_switch", n_groups = N_GOLDEN,
+                n_periods = 8, seed = 113, effects = 3, by_path = 2,
+                ci_level = 95),
+  results = extract_dcdh_by_path(res13, n_effects = 3)
+)
+
+# Scenario 14: multi_path_reversible + by_path=3 (top-k ranking case).
+# The `multi_path_reversible` pattern is a DETERMINISTIC multi-path DGP:
+# path assignment is a fixed function of F_g (so every (D_{g,1}, F_g,
+# S_g) cohort contains switchers from a single path), path proportions
+# are fixed at 20/20/15/10/10/5 across the 6 F_g values, and
+# post-window treatment is stable at path[L_max+1]. by_path=3 exercises
+# top-k selection when observed paths exceed k (4 observed paths, top-3
+# selected). n_periods=10 gives every switch_time a complete length-
+# (L_max+1) window. The old `p_switch`-driven random-toggle variant
+# (pre-PR) blew out SE parity with R via cross-path cohort mixing;
+# see the REGISTRY.md `Note (Phase 3 by_path ...)` Deviation bullet.
+cat("  Scenario 14: multi_path_reversible_by_path\n")
+d14 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 10,
+                      pattern = "multi_path_reversible", seed = 114,
+                      L_max = 3)
+res14 <- did_multiplegt_dyn(
+  df = d14, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 3, by_path = 3, ci_level = 95
+)
+scenarios$multi_path_reversible_by_path <- list(
+  data = export_data(d14),
+  params = list(pattern = "multi_path_reversible", n_groups = N_GOLDEN,
+                n_periods = 10, seed = 114, effects = 3, by_path = 3,
+                ci_level = 95),
+  results = extract_dcdh_by_path(res14, n_effects = 3)
 )
 
 # ---------------------------------------------------------------------------
