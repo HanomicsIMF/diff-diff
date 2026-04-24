@@ -3661,3 +3661,362 @@ class TestSummaryPhase3:
             )
         text = r.summary()
         assert "HonestDiD Sensitivity" in text
+
+
+# =============================================================================
+# by_path: per-path event-study disaggregation
+# =============================================================================
+
+
+def _by_path_three_path_data(seed: int = 42) -> pd.DataFrame:
+    """Hand-checkable 6-switcher + 2-never-treated panel with 3 distinct paths.
+
+    Periods 0..3, treatment effect = 2.0.
+
+    - Groups 1, 2, 3: path (0, 1, 1, 1) — single switch, stay on
+    - Groups 4, 5:    path (0, 1, 0, 0) — single pulse
+    - Group  6:       path (0, 1, 1, 0) — two on then off
+    - Groups 7, 8:    never-treated controls (path not defined)
+
+    With treatment effect = 2.0, the per-horizon within-path effect should
+    be ~2.0 when D=1 in the path window and ~0 when D=0, modulo noise.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for g in (1, 2, 3):
+        for t in range(4):
+            d = 0 if t == 0 else 1
+            y = d * 2.0 + rng.normal(0, 0.1)
+            rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+    for g in (4, 5):
+        for t in range(4):
+            d = 1 if t == 1 else 0
+            y = d * 2.0 + rng.normal(0, 0.1)
+            rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+    for g in (6,):
+        for t in range(4):
+            d = 1 if t in (1, 2) else 0
+            y = d * 2.0 + rng.normal(0, 0.1)
+            rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+    for g in (7, 8):
+        for t in range(4):
+            y = rng.normal(0, 0.1)
+            rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+    return pd.DataFrame(rows)
+
+
+def _fit_by_path(data: pd.DataFrame, by_path: int, L_max: int = 3):
+    """Fit with standard by_path kwargs and silence the drop_larger_lower warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        est = ChaisemartinDHaultfoeuille(
+            drop_larger_lower=False,
+            by_path=by_path,
+            twfe_diagnostic=False,
+            placebo=False,
+        )
+        return est, est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+            L_max=L_max,
+        )
+
+
+class TestByPathGates:
+    """Fit-time gates for by_path combinations."""
+
+    def test_default_leaves_path_effects_none(self):
+        data = generate_reversible_did_data(n_groups=40, n_periods=5, seed=1)
+        est = ChaisemartinDHaultfoeuille()
+        results = est.fit(
+            data, outcome="outcome", group="group", time="period", treatment="treatment"
+        )
+        assert results.path_effects is None
+
+    @pytest.mark.parametrize("bad", [0, -1, -5, 1.5, "all", True, False, 2.0])
+    def test_invalid_type_raises(self, bad):
+        with pytest.raises(ValueError, match="by_path"):
+            ChaisemartinDHaultfoeuille(by_path=bad)
+
+    def test_set_params_revalidates(self):
+        est = ChaisemartinDHaultfoeuille()
+        with pytest.raises(ValueError, match="by_path"):
+            est.set_params(by_path=0)
+        with pytest.raises(ValueError, match="by_path"):
+            est.set_params(by_path=-3)
+
+    def test_in_get_params(self):
+        est = ChaisemartinDHaultfoeuille(by_path=5, drop_larger_lower=False)
+        params = est.get_params()
+        assert "by_path" in params
+        assert params["by_path"] == 5
+
+    def test_requires_drop_larger_lower_false(self):
+        data = generate_reversible_did_data(n_groups=40, n_periods=5, seed=1)
+        est = ChaisemartinDHaultfoeuille(by_path=3)
+        with pytest.raises(ValueError, match="drop_larger_lower=False"):
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=2,
+            )
+
+    def test_requires_lmax(self):
+        data = _by_path_three_path_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            with pytest.raises(ValueError, match="L_max"):
+                est.fit(
+                    data,
+                    outcome="outcome",
+                    group="group",
+                    time="period",
+                    treatment="treatment",
+                )
+
+    def test_forbids_n_bootstrap(self):
+        data = _by_path_three_path_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3, n_bootstrap=5)
+            with pytest.raises(NotImplementedError, match="n_bootstrap"):
+                est.fit(
+                    data,
+                    outcome="outcome",
+                    group="group",
+                    time="period",
+                    treatment="treatment",
+                    L_max=2,
+                )
+
+    @pytest.mark.parametrize(
+        "fit_kwargs, msg",
+        [
+            ({"controls": ["outcome"]}, "controls"),
+            ({"trends_linear": True}, "trends_linear"),
+            ({"trends_nonparam": "group"}, "trends_nonparam"),
+            ({"heterogeneity": "group"}, "heterogeneity"),
+            ({"design2": True}, "design2"),
+            ({"honest_did": True}, "honest_did"),
+        ],
+    )
+    def test_forbids_phase3_fit_kwargs(self, fit_kwargs, msg):
+        data = _by_path_three_path_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            with pytest.raises(NotImplementedError, match=msg):
+                est.fit(
+                    data,
+                    outcome="outcome",
+                    group="group",
+                    time="period",
+                    treatment="treatment",
+                    L_max=2,
+                    **fit_kwargs,
+                )
+
+    def test_forbids_non_binary_treatment(self):
+        # Continuous-dose treatment — detected inside the cell aggregator.
+        rng = np.random.default_rng(0)
+        rows = []
+        for g in range(1, 7):
+            for t in range(4):
+                d = float(g % 3) if (g <= 3 and t >= 1) else 0.0
+                y = d + rng.normal()
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        data = pd.DataFrame(rows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, twfe_diagnostic=False
+            )
+            with pytest.raises(NotImplementedError, match="non-binary"):
+                est.fit(
+                    data,
+                    outcome="outcome",
+                    group="group",
+                    time="period",
+                    treatment="treatment",
+                    L_max=2,
+                )
+
+
+class TestByPathBehavior:
+    """Path enumeration, ranking, and result dict shape."""
+
+    def test_top_k_selects_most_common(self):
+        data = _by_path_three_path_data()
+        # by_path=2 → top 2 paths by frequency: (0,1,1,1) with 3 groups
+        # and (0,1,0,0) with 2 groups. The (0,1,1,0) path has 1 group
+        # and should be excluded.
+        _, results = _fit_by_path(data, by_path=2, L_max=3)
+        assert results.path_effects is not None
+        paths = set(results.path_effects.keys())
+        assert paths == {(0, 1, 1, 1), (0, 1, 0, 0)}
+        assert results.path_effects[(0, 1, 1, 1)]["frequency_rank"] == 1
+        assert results.path_effects[(0, 1, 0, 0)]["frequency_rank"] == 2
+        assert results.path_effects[(0, 1, 1, 1)]["n_groups"] == 3
+        assert results.path_effects[(0, 1, 0, 0)]["n_groups"] == 2
+
+    def test_overflow_returns_all_with_warning(self):
+        data = _by_path_three_path_data()
+        # Don't use the helper here — it suppresses UserWarnings that we
+        # want to catch. Call fit directly and record all warnings.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=10,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+        assert results.path_effects is not None
+        assert len(results.path_effects) == 3
+        overflow_msgs = [
+            w for w in caught if "exceeds the number of observed paths" in str(w.message)
+        ]
+        assert overflow_msgs, "Expected a UserWarning about exceeding observed paths"
+
+    def test_lexicographic_tiebreak(self):
+        # Build data where two paths have the SAME frequency; expect the
+        # lexicographically smaller tuple to rank first.
+        rng = np.random.default_rng(0)
+        rows = []
+        # Path (0, 1, 0, 0): 2 groups
+        for g in (1, 2):
+            for t in range(4):
+                d = 1 if t == 1 else 0
+                rows.append(
+                    {
+                        "group": g,
+                        "period": t,
+                        "treatment": d,
+                        "outcome": rng.normal(),
+                    }
+                )
+        # Path (0, 1, 1, 0): 2 groups (tie with above on count)
+        for g in (3, 4):
+            for t in range(4):
+                d = 1 if t in (1, 2) else 0
+                rows.append(
+                    {
+                        "group": g,
+                        "period": t,
+                        "treatment": d,
+                        "outcome": rng.normal(),
+                    }
+                )
+        # Two never-treated for control pool
+        for g in (5, 6):
+            for t in range(4):
+                rows.append(
+                    {
+                        "group": g,
+                        "period": t,
+                        "treatment": 0,
+                        "outcome": rng.normal(),
+                    }
+                )
+        data = pd.DataFrame(rows)
+        _, results = _fit_by_path(data, by_path=2, L_max=3)
+        assert results.path_effects is not None
+        # (0,1,0,0) < (0,1,1,0) lexicographically → rank 1
+        assert results.path_effects[(0, 1, 0, 0)]["frequency_rank"] == 1
+        assert results.path_effects[(0, 1, 1, 0)]["frequency_rank"] == 2
+
+    def test_result_dict_shape(self):
+        data = _by_path_three_path_data()
+        _, results = _fit_by_path(data, by_path=3, L_max=3)
+        assert results.path_effects is not None
+        for path, entry in results.path_effects.items():
+            assert isinstance(path, tuple)
+            assert all(isinstance(v, int) for v in path)
+            assert set(entry.keys()) >= {"n_groups", "frequency_rank", "horizons"}
+            assert isinstance(entry["horizons"], dict)
+            for l_h, h_entry in entry["horizons"].items():
+                assert isinstance(l_h, int)
+                assert set(h_entry.keys()) == {
+                    "effect",
+                    "se",
+                    "t_stat",
+                    "p_value",
+                    "conf_int",
+                    "n_obs",
+                }
+                lo, hi = h_entry["conf_int"]
+                # CI is a tuple of two floats (NaN permitted under degenerate cohorts)
+                assert isinstance(lo, float) and isinstance(hi, float)
+
+    def test_hand_calculable_effects_match_dgp(self):
+        """Path (0,1,1,1) always-on → effect ≈ 2; path (0,1,0,0) on at l=1
+        then off → effect ≈ 2 at l=1 and ≈ 0 at l=2, l=3."""
+        data = _by_path_three_path_data()
+        _, results = _fit_by_path(data, by_path=3, L_max=3)
+        stay_on = results.path_effects[(0, 1, 1, 1)]["horizons"]
+        pulse = results.path_effects[(0, 1, 0, 0)]["horizons"]
+        for l_h in (1, 2, 3):
+            assert (
+                abs(stay_on[l_h]["effect"] - 2.0) < 0.5
+            ), f"stay_on l={l_h} effect={stay_on[l_h]['effect']} not near 2.0"
+        assert abs(pulse[1]["effect"] - 2.0) < 0.5
+        assert abs(pulse[2]["effect"]) < 0.5
+        assert abs(pulse[3]["effect"]) < 0.5
+
+    def test_summary_renders_path_section(self):
+        data = _by_path_three_path_data()
+        _, results = _fit_by_path(data, by_path=2, L_max=3)
+        text = results.summary()
+        assert "Treatment-Path Disaggregation" in text
+        assert "(0, 1, 1, 1)" in text
+        assert "(0, 1, 0, 0)" in text
+        # Per-horizon rows rendered
+        for l_h in (1, 2, 3):
+            assert f"l={l_h}" in text
+
+    def test_to_dataframe_by_path(self):
+        data = _by_path_three_path_data()
+        _, results = _fit_by_path(data, by_path=2, L_max=3)
+        df = results.to_dataframe(level="by_path")
+        assert isinstance(df, pd.DataFrame)
+        # 2 paths * 3 horizons = 6 rows
+        assert len(df) == 6
+        expected_cols = {
+            "path",
+            "frequency_rank",
+            "n_groups",
+            "horizon",
+            "effect",
+            "se",
+            "t_stat",
+            "p_value",
+            "conf_int_lower",
+            "conf_int_upper",
+            "n_obs",
+        }
+        assert expected_cols.issubset(df.columns)
+        assert set(df["horizon"].unique()) == {1, 2, 3}
+
+    def test_to_dataframe_raises_when_not_requested(self):
+        data = generate_reversible_did_data(n_groups=40, n_periods=5, seed=1)
+        est = ChaisemartinDHaultfoeuille()
+        results = est.fit(
+            data, outcome="outcome", group="group", time="period", treatment="treatment"
+        )
+        with pytest.raises(ValueError, match="by_path"):
+            results.to_dataframe(level="by_path")

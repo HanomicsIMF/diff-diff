@@ -318,6 +318,10 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
       ``trends_linear=True``, state-set-specific trends via
       ``trends_nonparam=``, heterogeneity testing, non-binary treatment,
       HonestDiD sensitivity integration on placebos via ``honest_did=True``
+    - Per-path event-study disaggregation via ``by_path=k`` (top-k most
+      common observed treatment paths within the window
+      ``[F_g-1, F_g-1+L_max]``; requires ``drop_larger_lower=False`` and
+      binary treatment)
     - Survey support via ``survey_design=``: pweight with strata/PSU/FPC
       via Taylor Series Linearization (analytical) or replicate-weight
       variance (BRR/Fay/JK1/JKn/SDR)
@@ -391,6 +395,35 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         dataset. Setting to ``False`` is supported for diagnostic
         comparison but produces an inconsistent estimator-variance
         pairing for multi-switch groups; a warning is emitted.
+    by_path : int, optional, default=None
+        If set to a positive integer ``k``, disaggregate the per-horizon
+        event study by the observed treatment trajectory in the window
+        ``[F_g - 1, F_g, ..., F_g - 1 + L_max]``, reporting ATT + SE +
+        inference for the ``k`` most common observed paths (ties broken
+        lexicographically on the path tuple). If ``k`` exceeds the number
+        of observed paths, all paths are returned and a ``UserWarning``
+        is emitted. ``None`` (the default) disables the disaggregation.
+
+        Requires ``drop_larger_lower=False`` (multi-switch groups are
+        the object of interest) and ``L_max >= 1`` (the path window
+        depends on ``L_max``). Binary treatment only — non-binary
+        treatment + ``by_path`` is deferred. Also incompatible with
+        ``controls``, ``trends_linear``, ``trends_nonparam``,
+        ``heterogeneity``, ``design2``, ``honest_did``,
+        ``survey_design``, and ``n_bootstrap > 0`` for the initial
+        release (each combination raises ``NotImplementedError``).
+
+        SE convention: per-path IF parallels the joiners / leavers
+        construction — the switcher-side contribution is zeroed for
+        groups not in the selected path, and the cohort structure and
+        control pool are unchanged. Plug-in SE uses the full-panel
+        divisor ``N_l``. See REGISTRY.md ``ChaisemartinDHaultfoeuille``
+        ``Note`` on ``by_path`` for the full contract.
+
+        Results are exposed on ``results.path_effects`` as a dict keyed
+        by the path tuple, with nested ``"horizons"`` dicts per
+        horizon ``l``. Also available via
+        ``results.to_dataframe(level="by_path")``.
     rank_deficient_action : str, default="warn"
         Action when the TWFE decomposition diagnostic OLS encounters a
         rank-deficient design matrix: ``"warn"``, ``"error"``, or
@@ -436,6 +469,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         placebo: bool = True,
         twfe_diagnostic: bool = True,
         drop_larger_lower: bool = True,
+        by_path: Optional[int] = None,
         rank_deficient_action: str = "warn",
     ) -> None:
         # Parameter validation
@@ -453,6 +487,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             raise ValueError(f"alpha must be in (0, 1), got {alpha}")
         if n_bootstrap < 0:
             raise ValueError(f"n_bootstrap must be non-negative, got {n_bootstrap}")
+        if by_path is not None:
+            if isinstance(by_path, bool) or not isinstance(by_path, int):
+                raise ValueError(
+                    f"by_path must be None or a positive int, got "
+                    f"{by_path!r} of type {type(by_path).__name__}."
+                )
+            if by_path <= 0:
+                raise ValueError(
+                    f"by_path must be a positive int (top-k most common paths), "
+                    f"got {by_path}. Use by_path=None to disable; explicit path "
+                    f"selection via paths_of_interest is a future extension."
+                )
         if cluster is not None:
             raise NotImplementedError(
                 f"cluster={cluster!r}: user-specified clustering is not "
@@ -476,6 +522,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         self.placebo = placebo
         self.twfe_diagnostic = twfe_diagnostic
         self.drop_larger_lower = drop_larger_lower
+        self.by_path = by_path
         self.rank_deficient_action = rank_deficient_action
 
         self.is_fitted_ = False
@@ -496,6 +543,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             "placebo": self.placebo,
             "twfe_diagnostic": self.twfe_diagnostic,
             "drop_larger_lower": self.drop_larger_lower,
+            "by_path": self.by_path,
             "rank_deficient_action": self.rank_deficient_action,
         }
 
@@ -526,6 +574,18 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             raise ValueError(f"alpha must be in (0, 1), got {self.alpha}")
         if self.n_bootstrap < 0:
             raise ValueError(f"n_bootstrap must be non-negative, got {self.n_bootstrap}")
+        if self.by_path is not None:
+            if isinstance(self.by_path, bool) or not isinstance(self.by_path, int):
+                raise ValueError(
+                    f"by_path must be None or a positive int, got "
+                    f"{self.by_path!r} of type {type(self.by_path).__name__}."
+                )
+            if self.by_path <= 0:
+                raise ValueError(
+                    f"by_path must be a positive int (top-k most common paths), "
+                    f"got {self.by_path}. Use by_path=None to disable; explicit "
+                    f"path selection via paths_of_interest is a future extension."
+                )
         if self.cluster is not None:
             raise NotImplementedError(
                 f"cluster={self.cluster!r}: user-specified clustering is "
@@ -865,6 +925,70 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 "drop_larger_lower=True filter. Construct the estimator "
                 "with ChaisemartinDHaultfoeuille(drop_larger_lower=False)."
             )
+
+        # ------------------------------------------------------------------
+        # by_path preconditions and Phase 3 compatibility gates
+        # ------------------------------------------------------------------
+        if self.by_path is not None:
+            if self.drop_larger_lower:
+                raise ValueError(
+                    "by_path requires drop_larger_lower=False because "
+                    "multi-switch groups are the object of interest for "
+                    "per-path disaggregation, but the default "
+                    "drop_larger_lower=True filter removes them. Construct "
+                    "the estimator with "
+                    "ChaisemartinDHaultfoeuille(drop_larger_lower=False, "
+                    "by_path=k)."
+                )
+            if L_max is None:
+                raise ValueError(
+                    "by_path requires L_max >= 1. The path window spans "
+                    "[F_g - 1, F_g - 1 + L_max] and therefore depends on "
+                    "the event-study horizon. Set L_max when calling fit()."
+                )
+            if self.n_bootstrap > 0:
+                raise NotImplementedError(
+                    "by_path combined with n_bootstrap > 0 is deferred to a "
+                    "future release: the methodology choice of whether to "
+                    "hold the path set fixed or re-enumerate paths within "
+                    "each bootstrap draw has not been resolved. Use the "
+                    "analytical plug-in SE (n_bootstrap=0) for now."
+                )
+            if controls is not None:
+                raise NotImplementedError(
+                    "by_path combined with controls (DID^X residualization) "
+                    "is deferred to a future release."
+                )
+            if trends_linear:
+                raise NotImplementedError(
+                    "by_path combined with trends_linear (DID^{fd}) is "
+                    "deferred to a future release."
+                )
+            if trends_nonparam is not None:
+                raise NotImplementedError(
+                    "by_path combined with trends_nonparam (state-set "
+                    "trends) is deferred to a future release."
+                )
+            if heterogeneity is not None:
+                raise NotImplementedError(
+                    "by_path combined with heterogeneity testing is "
+                    "deferred to a future release."
+                )
+            if design2:
+                raise NotImplementedError(
+                    "by_path combined with design2 is deferred to a future " "release."
+                )
+            if honest_did:
+                raise NotImplementedError(
+                    "by_path combined with honest_did (HonestDiD sensitivity "
+                    "analysis) is deferred to a future release."
+                )
+            if survey_design is not None:
+                raise NotImplementedError(
+                    "by_path combined with survey_design is deferred to a "
+                    "future release: the cell-period IF allocator under "
+                    "path subsets has not been derived."
+                )
 
         # ------------------------------------------------------------------
         # Step 4-5: Validate input + aggregate to (g, t) cells via the
@@ -1517,6 +1641,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 "use the per-group DID_{g,l} building block which handles "
                 "non-binary treatment."
             )
+        if self.by_path is not None and not is_binary:
+            raise NotImplementedError(
+                "by_path combined with non-binary treatment is deferred to "
+                "a future release. Path enumeration requires integer-valued "
+                "treatment states to construct deterministic path tuples. "
+                "Use by_path=None with non-binary treatment."
+            )
         if N_S == 0 and (L_max is None or is_binary):
             raise ValueError(
                 "No switching cells found in the data after filtering: every "
@@ -1799,6 +1930,32 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         UserWarning,
                         stacklevel=2,
                     )
+
+        # by_path disaggregation by observed treatment trajectory
+        path_effects: Optional[Dict[Tuple[int, ...], Dict[str, Any]]] = None
+        if (
+            self.by_path is not None
+            and L_max is not None
+            and L_max >= 1
+            and multi_horizon_dids is not None
+        ):
+            _df_s_bp = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
+            path_effects = _compute_path_effects(
+                D_mat=D_mat,
+                Y_mat=Y_mat,
+                N_mat=N_mat,
+                baselines=baselines,
+                first_switch_idx=first_switch_idx_arr,
+                switch_direction=switch_direction_arr,
+                T_g=T_g_arr,
+                L_max=L_max,
+                by_path=self.by_path,
+                eligible_mask_var=eligible_mask_var,
+                multi_horizon_dids=multi_horizon_dids,
+                all_groups=all_groups,
+                alpha=self.alpha,
+                df_inference=_inference_df(_df_s_bp, resolved_survey),
+            )
 
         # Phase 2: placebos, normalized effects, cost-benefit delta
         multi_horizon_placebos: Optional[Dict[int, Dict[str, Any]]] = None
@@ -3191,6 +3348,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 if design2
                 else None
             ),
+            path_effects=path_effects,
             survey_metadata=survey_metadata,
             _estimator_ref=self,
         )
@@ -4571,6 +4729,7 @@ def _compute_per_group_if_multi_horizon(
     L_max: int,
     set_ids: Optional[np.ndarray] = None,
     compute_per_period: bool = True,
+    switcher_subset_mask: Optional[np.ndarray] = None,
 ) -> Dict[int, Tuple[np.ndarray, Optional[np.ndarray]]]:
     """
     Compute per-group influence function ``U^G_{g,l}`` for ``l = 1..L_max``.
@@ -4593,6 +4752,15 @@ def _compute_per_group_if_multi_horizon(
     baselines, first_switch_idx, switch_direction, T_g : np.ndarray
         From ``_compute_group_switch_metadata()``.
     L_max : int
+    switcher_subset_mask : np.ndarray of bool, shape (n_groups,), optional
+        When supplied, restricts the switcher iteration to groups where
+        the mask is ``True``. Groups outside the subset contribute as
+        controls only (their switcher-side contribution is skipped). The
+        control pool is unchanged — this mirrors how the joiners-only /
+        leavers-only IF is constructed (see ``_compute_cohort_recentered_inputs``).
+        Used by ``by_path`` to zero out switcher contributions for groups
+        not in the selected path. Default ``None`` preserves the legacy
+        behavior of iterating over all switchers.
 
     Returns
     -------
@@ -4628,6 +4796,8 @@ def _compute_per_group_if_multi_horizon(
 
         for g in range(n_groups):
             if not is_switcher[g]:
+                continue
+            if switcher_subset_mask is not None and not switcher_subset_mask[g]:
                 continue
             f_g = first_switch_idx[g]
             ref_idx = f_g - 1
@@ -4683,6 +4853,247 @@ def _compute_per_group_if_multi_horizon(
         results[l] = (U_l, U_per_period_l)
 
     return results
+
+
+def _enumerate_treatment_paths(
+    D_mat: np.ndarray,
+    first_switch_idx: np.ndarray,
+    N_mat: np.ndarray,
+    L_max: int,
+    by_path: int,
+) -> Tuple[
+    List[Tuple[int, ...]],
+    Dict[Tuple[int, ...], np.ndarray],
+    Dict[Tuple[int, ...], int],
+]:
+    """
+    Enumerate observed treatment paths and select the top-``by_path`` most common.
+
+    For each switcher group ``g``, the path is the treatment tuple
+    ``(D_{g, F_g-1}, D_{g, F_g}, ..., D_{g, F_g-1+L_max})`` — length
+    ``L_max + 1``, matching R's ``did_multiplegt_dyn`` window convention.
+    Groups whose window falls outside the panel or whose window contains
+    unobserved cells are skipped (they contribute to no path bucket).
+
+    Paths are ranked by group frequency; ties are broken lexicographically
+    on the path tuple for deterministic ordering. If ``by_path`` exceeds
+    the number of observed paths, all observed paths are returned with
+    a ``UserWarning``.
+
+    Parameters
+    ----------
+    D_mat : np.ndarray of shape (n_groups, n_periods)
+        Treatment matrix. Must be binary (0/1); non-binary treatment is
+        gated out upstream.
+    first_switch_idx : np.ndarray of shape (n_groups,)
+        Index of first switch per group; ``-1`` for never-switching groups.
+    N_mat : np.ndarray of shape (n_groups, n_periods)
+        Cell-count matrix (zero where the cell is unobserved).
+    L_max : int
+        Event-study horizon; window length is ``L_max + 1``.
+    by_path : int
+        Number of most-common paths to select.
+
+    Returns
+    -------
+    selected_paths : list of tuple[int, ...]
+        Selected path tuples, ordered by descending frequency.
+    path_to_group_mask : dict[tuple[int, ...], np.ndarray of bool]
+        Per-path boolean mask over all ``n_groups`` identifying switchers
+        that follow that path.
+    path_to_count : dict[tuple[int, ...], int]
+        Count of switcher groups per selected path.
+    """
+    n_groups, n_periods = D_mat.shape
+    path_of_group: Dict[int, Tuple[int, ...]] = {}
+    for g in range(n_groups):
+        f_g = int(first_switch_idx[g])
+        if f_g < 0:
+            continue
+        start = f_g - 1
+        stop = start + L_max + 1
+        if start < 0 or stop > n_periods:
+            continue
+        window_counts = N_mat[g, start:stop]
+        if np.any(window_counts <= 0):
+            continue
+        window = D_mat[g, start:stop]
+        if np.any(np.isnan(window)):
+            continue
+        path_of_group[g] = tuple(int(round(float(v))) for v in window)
+
+    path_counts: Dict[Tuple[int, ...], int] = {}
+    for path in path_of_group.values():
+        path_counts[path] = path_counts.get(path, 0) + 1
+
+    observed_paths = sorted(path_counts.keys(), key=lambda p: (-path_counts[p], p))
+    n_observed = len(observed_paths)
+
+    if by_path >= n_observed:
+        if by_path > n_observed and n_observed > 0:
+            warnings.warn(
+                f"by_path={by_path} exceeds the number of observed paths "
+                f"({n_observed}). Returning all observed paths.",
+                UserWarning,
+                stacklevel=2,
+            )
+        selected_paths = observed_paths
+    else:
+        selected_paths = observed_paths[:by_path]
+
+    path_to_group_mask: Dict[Tuple[int, ...], np.ndarray] = {}
+    for path in selected_paths:
+        mask = np.zeros(n_groups, dtype=bool)
+        for g_idx, g_path in path_of_group.items():
+            if g_path == path:
+                mask[g_idx] = True
+        path_to_group_mask[path] = mask
+
+    path_to_count = {p: path_counts[p] for p in selected_paths}
+    return selected_paths, path_to_group_mask, path_to_count
+
+
+def _compute_path_effects(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+    by_path: int,
+    eligible_mask_var: np.ndarray,
+    multi_horizon_dids: Dict[int, Dict[str, Any]],
+    all_groups: List[Any],
+    alpha: float,
+    df_inference: Optional[int] = None,
+) -> Optional[Dict[Tuple[int, ...], Dict[str, Any]]]:
+    """
+    Compute per-path event-study effects using the joiners/leavers IF pattern.
+
+    For each of the top-``by_path`` observed treatment paths, compute:
+
+    - ``DID_{path, l}`` for ``l = 1..L_max`` as the within-path mean of
+      ``DID_{g, l}`` — equals ``sum(U_l_path) / N_l_path`` where
+      ``U_l_path`` is the per-group IF with switcher contributions zeroed
+      for groups not in the path (control contributions and cohort
+      structure unchanged).
+    - Plug-in SE via ``_plugin_se(U_centered_path, divisor=N_l_path)``
+      after cohort-recentering with the ORIGINAL cohort structure. This
+      mirrors how joiners_se / leavers_se use their respective counts as
+      the divisor and preserve the full cohort structure.
+
+    Returns ``None`` when no paths are observed (all switcher groups have
+    windows outside the panel or unobserved cells).
+    """
+    from diff_diff.utils import safe_inference
+
+    selected_paths, path_to_group_mask, path_to_count = _enumerate_treatment_paths(
+        D_mat=D_mat,
+        first_switch_idx=first_switch_idx,
+        N_mat=N_mat,
+        L_max=L_max,
+        by_path=by_path,
+    )
+
+    if not selected_paths:
+        return None
+
+    # Cohort ids for the variance-eligible set (same construction as the
+    # per-horizon SE path at the primary fit() site: (D_{g,1}, F_g, S_g)).
+    n_groups = D_mat.shape[0]
+    cohort_keys = [
+        (
+            float(baselines[g]),
+            int(first_switch_idx[g]),
+            int(switch_direction[g]),
+        )
+        for g in range(n_groups)
+    ]
+    unique_c: Dict[Tuple[float, int, int], int] = {}
+    cid = np.zeros(n_groups, dtype=int)
+    for g in range(n_groups):
+        if not eligible_mask_var[g]:
+            cid[g] = -1
+            continue
+        key = cohort_keys[g]
+        if key not in unique_c:
+            unique_c[key] = len(unique_c)
+        cid[g] = unique_c[key]
+    cohort_id_eligible = cid[eligible_mask_var]
+
+    path_effects: Dict[Tuple[int, ...], Dict[str, Any]] = {}
+
+    for rank, path in enumerate(selected_paths, start=1):
+        switcher_mask = path_to_group_mask[path]
+        n_path_groups = int(switcher_mask.sum())
+
+        per_path_if = _compute_per_group_if_multi_horizon(
+            D_mat=D_mat,
+            Y_mat=Y_mat,
+            N_mat=N_mat,
+            baselines=baselines,
+            first_switch_idx=first_switch_idx,
+            switch_direction=switch_direction,
+            T_g=T_g,
+            L_max=L_max,
+            set_ids=None,
+            compute_per_period=False,
+            switcher_subset_mask=switcher_mask,
+        )
+
+        horizons: Dict[int, Dict[str, Any]] = {}
+        for l_h in range(1, L_max + 1):
+            U_l_path, _ = per_path_if[l_h]
+
+            # N_l_path: path-restricted count of eligible switchers at
+            # horizon l. Mirror _compute_multi_horizon_dids' eligibility
+            # (the did_g_l array is NaN for non-eligible switchers).
+            did_g_l = multi_horizon_dids[l_h].get("did_g_l")
+            if did_g_l is None:
+                n_l_path = 0
+            else:
+                n_l_path = int(np.sum(switcher_mask & ~np.isnan(did_g_l)))
+
+            if n_l_path == 0:
+                horizons[l_h] = {
+                    "effect": float("nan"),
+                    "se": float("nan"),
+                    "t_stat": float("nan"),
+                    "p_value": float("nan"),
+                    "conf_int": (float("nan"), float("nan")),
+                    "n_obs": 0,
+                }
+                continue
+
+            U_l_path_elig = U_l_path[eligible_mask_var]
+            # Point estimate: within-path mean DID
+            effect_path = float(U_l_path.sum() / n_l_path)
+
+            # SE: cohort-recenter with ORIGINAL cohort structure, then
+            # plug-in with path-specific divisor (joiners/leavers pattern).
+            U_centered_path = _cohort_recenter(U_l_path_elig, cohort_id_eligible)
+            se_path = _plugin_se(U_centered=U_centered_path, divisor=n_l_path)
+
+            t_p, p_p, ci_p = safe_inference(effect_path, se_path, alpha=alpha, df=df_inference)
+
+            horizons[l_h] = {
+                "effect": effect_path,
+                "se": se_path,
+                "t_stat": t_p,
+                "p_value": p_p,
+                "conf_int": ci_p,
+                "n_obs": n_l_path,
+            }
+
+        path_effects[path] = {
+            "n_groups": n_path_groups,
+            "frequency_rank": rank,
+            "horizons": horizons,
+        }
+
+    return path_effects
 
 
 def _compute_per_group_if_placebo_horizon(
@@ -6314,6 +6725,7 @@ def chaisemartin_dhaultfoeuille(
         "placebo",
         "twfe_diagnostic",
         "drop_larger_lower",
+        "by_path",
         "rank_deficient_action",
     }
     init_kwargs = {k: v for k, v in kwargs.items() if k in init_keys}
