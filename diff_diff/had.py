@@ -4261,11 +4261,41 @@ class HeterogeneousAdoptionDiD:
         cband_method_label: Optional[str] = None
         cband_n_bootstrap_eff: Optional[int] = None
         if weighted_es and cband and n_horizons >= 1:
+            # Review R7 P0: the per-unit influence function returned by
+            # _fit_continuous / _fit_mass_point_2sls is HC1-scaled per
+            # the PR #359 convention — compute_survey_if_variance(psi,
+            # trivial_resolved) ≈ V_HC1. Routing the weights= shortcut
+            # through the unit-level ``resolved_survey=None`` branch of
+            # _sup_t_multiplier_bootstrap would normalize against raw
+            # sum(psi²) = ((n-1)/n) · V_HC1, producing silently too-
+            # narrow simultaneous bands. Construct a synthetic trivial
+            # ResolvedSurveyDesign on the weights= shortcut so the
+            # bootstrap always fires the survey-aware branch (centered
+            # + sqrt(n/(n-1))-corrected), matching the variance family
+            # of the analytical per-horizon SE.
+            if resolved_survey_unit_full is not None:
+                resolved_for_bootstrap: Any = resolved_survey_unit_full
+            else:
+                from diff_diff.survey import ResolvedSurveyDesign
+
+                assert weights_unit_full is not None  # weighted_es invariant
+                resolved_for_bootstrap = ResolvedSurveyDesign(
+                    weights=weights_unit_full,
+                    weight_type="pweight",
+                    strata=None,
+                    psu=None,
+                    fpc=None,
+                    n_strata=1,
+                    n_psu=int(weights_unit_full.shape[0]),
+                    lonely_psu="remove",
+                    combined_weights=True,
+                    mse=False,
+                )
             q, cband_low_arr, cband_high_arr, _n_valid = _sup_t_multiplier_bootstrap(
                 influence_matrix=Psi,
                 att_per_horizon=att_arr,
                 se_per_horizon=se_arr,
-                resolved_survey=resolved_survey_unit_full,
+                resolved_survey=resolved_for_bootstrap,
                 n_bootstrap=n_bootstrap_eff,
                 alpha=float(self.alpha),
                 seed=seed_eff,

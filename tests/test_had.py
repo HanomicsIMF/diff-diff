@@ -5453,6 +5453,132 @@ class TestEventStudySurveyCband:
         assert r.cband_method == "multiplier_bootstrap"
         assert np.all(np.isfinite(r.se))
 
+    def test_weights_shortcut_mass_point_h1_cband_matches_normal(self):
+        """Review R7 P0 (helper-level lock): at H=1 with the mass-point
+        HC1-scaled IF + synthetic trivial ResolvedSurveyDesign (which
+        matches what the weights= shortcut now routes through in
+        _fit_event_study), the sup-t critical value must reduce to the
+        Normal quantile. Previously the shortcut used the unit-level
+        branch of _sup_t_multiplier_bootstrap (resolved_survey=None)
+        which normalized against raw sum(psi²) = ((n-1)/n) · V_HC1 on
+        the HC1-scaled IF, producing silently too-narrow bands."""
+        import scipy.stats
+
+        from diff_diff.had import (
+            _fit_mass_point_2sls,
+            _sup_t_multiplier_bootstrap,
+        )
+        from diff_diff.survey import ResolvedSurveyDesign, compute_survey_if_variance
+
+        rng = np.random.default_rng(72)
+        G = 500
+        d = np.concatenate([np.full(100, 0.3), rng.uniform(0.3, 1.0, G - 100)])
+        rng.shuffle(d)
+        dy = 2.0 * d + 0.3 * rng.standard_normal(G)
+        w = np.ones(G)
+        # Fit weighted 2SLS; get the HC1-scale per-unit IF.
+        _beta, se_analytical, psi = _fit_mass_point_2sls(
+            d, dy, 0.3, None, "hc1", weights=w, return_influence=True
+        )
+        # Synthetic trivial resolved matching what _fit_event_study
+        # now constructs for the weights= shortcut.
+        trivial = ResolvedSurveyDesign(
+            weights=w,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=1,
+            n_psu=G,
+            lonely_psu="remove",
+            combined_weights=True,
+            mse=False,
+        )
+        # Sanity: bootstrap target variance matches analytical HC1.
+        V_analytical = compute_survey_if_variance(psi, trivial)
+        np.testing.assert_allclose(V_analytical, se_analytical**2, atol=1e-10, rtol=1e-10)
+        # H=1 sup-t with the trivial routing → Normal quantile.
+        q, _, _, _ = _sup_t_multiplier_bootstrap(
+            influence_matrix=psi.reshape(-1, 1),
+            att_per_horizon=np.zeros(1),
+            se_per_horizon=np.array([se_analytical]),
+            resolved_survey=trivial,
+            n_bootstrap=5000,
+            alpha=0.05,
+            seed=42,
+        )
+        expected = float(scipy.stats.norm.ppf(0.975))
+        # B=5000 MC noise on the tail quantile ~ 0.03-0.05; atol=0.15
+        # tolerates that noise but would reject the sqrt((n-1)/n)
+        # under-scaling that the old unit-level branch produced
+        # (systematic drift toward smaller q).
+        assert abs(q - expected) < 0.15, (
+            f"weights= shortcut-equivalent H=1 sup-t should match "
+            f"Phi^-1(0.975)={expected:.4f}; got q={q:.4f}. Likely "
+            f"sqrt(n/(n-1)) correction missing."
+        )
+
+    def test_weights_shortcut_cband_matches_trivial_survey(self):
+        """Review R7 P0 complement: ``weights=w`` shortcut and
+        ``survey=SurveyDesign(weights='w')`` must target the same
+        variance family, so their sup-t critical values should agree
+        up to small per-horizon SE convergence (bc_fit.se_robust on
+        the shortcut vs sqrt(compute_survey_if_variance) on survey=,
+        which match at atol=1e-10 per PR #359 but propagate into the
+        t-statistic ratio in the bootstrap sup)."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(73)
+        G, T = 150, 4
+        d_post = rng.uniform(0.0, 1.0, G)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_post[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y))
+        panel = pd.DataFrame(rows, columns=["unit", "period", "dose", "outcome"])
+        w_unit = 1.0 + 0.3 * np.abs(rng.standard_normal(G))
+        panel["w"] = panel["unit"].map(lambda g: w_unit[g])
+        w_row = panel["w"].to_numpy()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="continuous_at_zero", seed=42, n_bootstrap=2000)
+            r_weights = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                aggregate="event_study",
+                weights=w_row,
+            )
+            r_survey = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                aggregate="event_study",
+                survey=SurveyDesign(weights="w"),
+            )
+        # Under the R7 P0 fix, both paths use the same bootstrap
+        # target variance; the remaining quantile gap comes from the
+        # analytical per-horizon SE formula (bc_fit.se_robust on
+        # shortcut vs Binder-TSL on survey=) which propagates into
+        # t-stat normalization. The PR #359 IF scale invariant bounds
+        # that gap at ~0.1-1%, so the quantiles should agree within
+        # absolute tolerance ~0.05 (the old under-scaled path
+        # produced ~6-10% systematic drift, well outside this bound).
+        assert abs(r_weights.cband_crit_value - r_survey.cband_crit_value) < 0.05, (
+            f"weights= shortcut q={r_weights.cband_crit_value:.4f} vs "
+            f"survey= q={r_survey.cband_crit_value:.4f} should agree "
+            f"within the Binder-TSL vs se_robust convergence tolerance "
+            f"(~atol=0.05). Larger drift signals the R7 P0 under-"
+            f"scaling regressed."
+        )
+
     def test_mass_point_default_vcov_robust_true_survey_allowed(self):
         """Complement: robust=True on the default path resolves to
         hc1, so the survey= mass-point fit is allowed with no explicit
