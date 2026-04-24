@@ -3803,6 +3803,100 @@ class TestHADSurvey:
         r = est.fit(panel, "outcome", "dose", "period", "unit")
         assert r.effective_dose_mean is None
 
+    # ---------- Round 5 P0: zero-weight units don't drive design ----------
+
+    def test_zero_weight_unit_at_d_min_does_not_flip_design(self):
+        """Round 5 P0: a zero-weight unit sitting at ``d.min() = 0``
+        must not flip the auto-detect design from
+        ``continuous_near_d_lower`` (correct on the positive-weight
+        subpop) to ``continuous_at_zero`` (wrong, boundary=0 chosen from
+        an excluded unit). Previously design detection ran on the full
+        unit set, so a subpopulation-style zero-weight unit at d=0
+        silently mistargeted."""
+        rng = np.random.default_rng(42)
+        G_pop = 200
+        # Full population: one zero-weight unit at d=0; rest positive
+        # weights with d in [0.1, 1.0] (so positive-weight support min = 0.1).
+        d = np.concatenate([[0.0], rng.uniform(0.1, 1.0, G_pop - 1)])
+        dy = 2.0 * (d - 0.1) + rng.normal(0, 0.2, G_pop)
+        w_unit = np.concatenate([[0.0], rng.uniform(0.5, 1.5, G_pop - 1)])
+        panel = _make_panel(d, dy)
+        row_w = np.zeros(panel.shape[0])
+        for g in range(G_pop):
+            row_w[panel["unit"].to_numpy() == g] = w_unit[g]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            # Full panel with zero-weight unit at d=0: auto-detect.
+            est = HeterogeneousAdoptionDiD(design="auto")
+            r_full = est.fit(
+                panel, "outcome", "dose", "period", "unit", weights=row_w
+            )
+            # Physically drop the zero-weight unit and refit.
+            panel_dropped = panel[panel["unit"] != 0].reset_index(drop=True)
+            w_dropped = row_w[panel["unit"].to_numpy() != 0]
+            r_dropped = est.fit(
+                panel_dropped,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                weights=w_dropped,
+            )
+        # Both paths resolve to the SAME design (the positive-weight
+        # support, not the contaminated d=0 boundary).
+        assert r_full.design == r_dropped.design
+        # Both paths produce the same ATT (lprobust already ignored the
+        # zero-weight unit's kernel contribution; filtering earlier
+        # doesn't change the fit numerically).
+        np.testing.assert_allclose(r_full.att, r_dropped.att, atol=1e-10, rtol=1e-10)
+        np.testing.assert_allclose(r_full.se, r_dropped.se, atol=1e-10, rtol=1e-10)
+        # d_lower set by the positive-weight subpopulation (d.min() of
+        # the kept units), NOT the contaminated full d.min()=0.
+        assert r_full.d_lower > 0.0
+        np.testing.assert_allclose(
+            r_full.d_lower, r_dropped.d_lower, atol=1e-12, rtol=1e-12
+        )
+
+    def test_zero_weight_filter_warns_user(self):
+        """Dropping zero-weight units from design resolution should
+        emit a UserWarning so the behavior is visible."""
+        rng = np.random.default_rng(5)
+        G = 150
+        d = rng.uniform(0.0, 1.0, G)
+        dy = 2.0 * d + rng.normal(0, 0.25, G)
+        w_unit = rng.uniform(0.5, 1.5, G)
+        # Zero out 5 units.
+        w_unit[:5] = 0.0
+        panel = _make_panel(d, dy)
+        row_w = np.zeros(panel.shape[0])
+        for g in range(G):
+            row_w[panel["unit"].to_numpy() == g] = w_unit[g]
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with pytest.warns(UserWarning, match="weight == 0"):
+            est.fit(
+                panel, "outcome", "dose", "period", "unit", weights=row_w
+            )
+
+    def test_zero_weight_counts_reflect_positive_subset(self):
+        """``n_obs`` / ``n_treated`` / ``n_control`` on the result must
+        reflect the positive-weight sub-population, not the full panel."""
+        rng = np.random.default_rng(7)
+        G = 120
+        d = rng.uniform(0.0, 1.0, G)
+        dy = 2.0 * d + rng.normal(0, 0.25, G)
+        w_unit = np.ones(G)
+        w_unit[:20] = 0.0  # 20 zero-weight units
+        panel = _make_panel(d, dy)
+        row_w = np.zeros(panel.shape[0])
+        for g in range(G):
+            row_w[panel["unit"].to_numpy() == g] = w_unit[g]
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = est.fit(panel, "outcome", "dose", "period", "unit", weights=row_w)
+        # 100 positive-weight units, not 120.
+        assert r.n_obs == 100
+
     def test_survey_metadata_raw_weights_match_shortcut(self):
         """Round 4 P2: on the ``survey=SurveyDesign(weights="col")``
         path, ``SurveyMetadata.sum_weights`` and ``weight_range`` must

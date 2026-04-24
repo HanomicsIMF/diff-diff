@@ -455,12 +455,26 @@ class HeterogeneousAdoptionDiDResults:
         print(self.summary())
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return results as a dict of scalars + ``survey_metadata`` (dict
-        or ``None``). When ``survey=`` / ``weights=`` is supplied to
-        ``fit()``, ``survey_metadata`` carries the weighted-sample
-        diagnostic (method, weight sum, effective sample size) so
-        downstream consumers can inspect how the fit was weighted without
-        digging into the estimator object."""
+        """Return results as a dict of scalars + weighted-path surfaces.
+
+        Always-present keys mirror the dataclass fields: ``att``, ``se``,
+        ``t_stat``, ``p_value``, ``conf_int_lower`` / ``conf_int_upper``,
+        ``alpha``, ``design``, ``target_parameter``, ``d_lower``,
+        ``dose_mean``, ``n_obs`` / ``n_treated`` / ``n_control`` /
+        ``n_mass_point`` / ``n_above_d_lower``, ``inference_method``,
+        ``vcov_type``, ``cluster_name``.
+
+        Weighted-path keys (``None`` on unweighted fits):
+
+        - ``survey_metadata``: repo-standard
+          :class:`diff_diff.survey.SurveyMetadata` dataclass (object, not
+          dict) carrying ``weight_type`` / ``effective_n`` /
+          ``design_effect`` / ``sum_weights`` / ``weight_range`` +
+          ``n_strata`` / ``n_psu`` / ``df_survey`` (latter three
+          ``None`` on the ``weights=`` shortcut).
+        - ``variance_formula``: ``"pweight"`` or ``"survey_binder_tsl"``.
+        - ``effective_dose_mean``: weighted denominator used by the
+          beta-scale rescaling."""
         return {
             "att": self.att,
             "se": self.se,
@@ -1659,6 +1673,63 @@ def _aggregate_unit_resolved_survey(
     )
 
 
+def _filter_resolved_survey(resolved: Any, keep_mask: np.ndarray) -> Any:
+    """Filter a ResolvedSurveyDesign to a boolean unit-level subset.
+
+    Used by HAD's continuous path to drop zero-weight units from the
+    design-resolution sub-population while preserving the attribute shape
+    that ``compute_survey_if_variance`` expects. PSU/strata counts are
+    recomputed on the positive-weight subset so degenerate singleton
+    strata (after filtering) are counted correctly.
+
+    Parameters
+    ----------
+    resolved : ResolvedSurveyDesign
+        Unit-level resolved design (typically from
+        ``_aggregate_unit_resolved_survey``).
+    keep_mask : np.ndarray, shape (G,), bool
+        True for units to keep (e.g., ``weights > 0``).
+
+    Returns
+    -------
+    ResolvedSurveyDesign with all (G,) arrays filtered by ``keep_mask``.
+    """
+    from diff_diff.survey import ResolvedSurveyDesign
+
+    def _f(arr: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        return arr[keep_mask] if arr is not None else None
+
+    strata_f = _f(resolved.strata)
+    psu_f = _f(resolved.psu)
+    n_strata_f = (
+        int(np.unique(strata_f).shape[0]) if strata_f is not None else 1
+    )
+    n_psu_f = (
+        int(np.unique(psu_f).shape[0])
+        if psu_f is not None
+        else int(keep_mask.sum())
+    )
+    return ResolvedSurveyDesign(
+        weights=resolved.weights[keep_mask],
+        weight_type=resolved.weight_type,
+        strata=strata_f,
+        psu=psu_f,
+        fpc=_f(resolved.fpc),
+        n_strata=n_strata_f,
+        n_psu=n_psu_f,
+        lonely_psu=resolved.lonely_psu,
+        replicate_weights=None,
+        replicate_method=None,
+        fay_rho=0.0,
+        n_replicates=0,
+        replicate_strata=None,
+        combined_weights=resolved.combined_weights,
+        replicate_scale=None,
+        replicate_rscales=None,
+        mse=resolved.mse,
+    )
+
+
 def _aggregate_multi_period_first_differences(
     data: pd.DataFrame,
     outcome_col: str,
@@ -2491,6 +2562,41 @@ class HeterogeneousAdoptionDiD:
             weights_unit = np.asarray(
                 resolved_survey_unit.weights, dtype=np.float64
             )
+
+        # Zero-weight units (e.g., from SurveyDesign.subpopulation(), or
+        # a user-supplied pweight column with excluded observations) must
+        # not drive design resolution. Filter d_arr, dy_arr, weights_unit,
+        # raw_weights_unit, and resolved_survey_unit to the positive-
+        # weight subset BEFORE _detect_design / d_lower / mass-point
+        # threshold / treated+control counts / bandwidth selection run.
+        # The weighted kernel already drops zero-weight observations via
+        # the ``w > 0`` selector in lprobust, so the FIT is unchanged;
+        # only the design-decision logic was previously contaminated
+        # (CI review PR #359 round 5, P0).
+        if weights_unit is not None:
+            positive_mask = weights_unit > 0.0
+            if not bool(positive_mask.all()):
+                n_dropped = int((~positive_mask).sum())
+                warnings.warn(
+                    f"HAD continuous path: {n_dropped} unit(s) have "
+                    f"weight == 0 and are excluded from design resolution "
+                    f"(auto-detect design, d_lower, mass-point threshold, "
+                    f"cohort counts) + the weighted fit. Standard survey "
+                    f"subpopulation designs (SurveyDesign.subpopulation) "
+                    f"zero-out excluded units by design; the estimator "
+                    f"treats them as absent from the analysis sample.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                d_arr = d_arr[positive_mask]
+                dy_arr = dy_arr[positive_mask]
+                weights_unit = weights_unit[positive_mask]
+                if raw_weights_unit is not None:
+                    raw_weights_unit = raw_weights_unit[positive_mask]
+                if resolved_survey_unit is not None:
+                    resolved_survey_unit = _filter_resolved_survey(
+                        resolved_survey_unit, positive_mask
+                    )
 
         n_obs = int(d_arr.shape[0])
         if n_obs < 3:
