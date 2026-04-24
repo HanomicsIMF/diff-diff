@@ -1013,7 +1013,23 @@ class ChaisemartinDHaultfoeuilleResults:
     def _render_path_effects_section(
         self, lines: List[str], width: int, thin: str, header_row: str
     ) -> None:
+        # Distinguish "by_path not requested" (None) from "requested but
+        # empty" ({}). On empty, render a notice so the user sees the
+        # feature was active but produced no rows.
+        if self.path_effects is None:
+            return
         if not self.path_effects:
+            lines.extend(
+                [
+                    thin,
+                    "Treatment-Path Disaggregation (by_path)".center(width),
+                    thin,
+                    "  No observed paths have a complete [F_g-1, F_g-1+L_max] window.",
+                    "  (See UserWarning emitted at fit(); by_path was a no-op " "on this panel.)",
+                    thin,
+                    "",
+                ]
+            )
             return
         lines.extend(
             [
@@ -1361,11 +1377,30 @@ class ChaisemartinDHaultfoeuilleResults:
             return pd.DataFrame([self.design2_effects])
 
         elif level == "by_path":
+            # Distinguish "not requested" from "requested but empty" so the
+            # caller who passed by_path=k isn't told to "pass by_path=k".
+            # Mirrors the linear_trends pattern above.
             if self.path_effects is None:
                 raise ValueError(
                     "Path effects not available. Pass by_path=k (positive int) "
                     "to ChaisemartinDHaultfoeuille(drop_larger_lower=False, "
                     "by_path=k) and L_max >= 1 to fit()."
+                )
+            if not self.path_effects:
+                return pd.DataFrame(
+                    columns=[
+                        "path",
+                        "frequency_rank",
+                        "n_groups",
+                        "horizon",
+                        "effect",
+                        "se",
+                        "t_stat",
+                        "p_value",
+                        "conf_int_lower",
+                        "conf_int_upper",
+                        "n_obs",
+                    ]
                 )
             rows = []
             for path in sorted(

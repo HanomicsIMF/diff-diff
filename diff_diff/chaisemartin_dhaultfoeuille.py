@@ -416,9 +416,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         SE convention: per-path IF parallels the joiners / leavers
         construction — the switcher-side contribution is zeroed for
         groups not in the selected path, and the cohort structure and
-        control pool are unchanged. Plug-in SE uses the full-panel
-        divisor ``N_l``. See REGISTRY.md ``ChaisemartinDHaultfoeuille``
-        ``Note`` on ``by_path`` for the full contract.
+        control pool are unchanged. Plug-in SE uses the path-specific
+        divisor ``N_l_path`` (count of path switchers eligible at horizon
+        ``l``), matching how ``joiners_se`` / ``leavers_se`` use their
+        respective counts as divisors. See REGISTRY.md
+        ``ChaisemartinDHaultfoeuille`` ``Note`` on ``by_path`` for the
+        full contract.
 
         Results are exposed on ``results.path_effects`` as a dict keyed
         by the path tuple, with nested ``"horizons"`` dicts per
@@ -4984,8 +4987,13 @@ def _compute_path_effects(
       mirrors how joiners_se / leavers_se use their respective counts as
       the divisor and preserve the full cohort structure.
 
-    Returns ``None`` when no paths are observed (all switcher groups have
-    windows outside the panel or unobserved cells).
+    Returns an empty dict ``{}`` when ``by_path`` was requested but no
+    switcher group has a complete ``[F_g - 1, F_g - 1 + L_max]`` window
+    (all switchers too late in the panel or with unobserved cells). The
+    empty dict is distinguished from ``None`` at the result layer: ``None``
+    means the feature was not requested, ``{}`` means requested but empty.
+    A ``UserWarning`` is emitted so the caller sees that ``by_path`` was
+    a no-op on this panel.
     """
     from diff_diff.utils import safe_inference
 
@@ -4998,7 +5006,17 @@ def _compute_path_effects(
     )
 
     if not selected_paths:
-        return None
+        warnings.warn(
+            f"by_path={by_path} was requested but no observed treatment "
+            f"path has a complete window [F_g-1, F_g-1+L_max={L_max}] "
+            f"within the panel. results.path_effects is populated as an "
+            f"empty dict to signal 'requested but empty'. Extend the "
+            f"panel so switchers have L_max+1 consecutive observed cells "
+            f"starting at F_g-1, or reduce L_max.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return {}
 
     # Cohort ids for the variance-eligible set (same construction as the
     # per-horizon SE path at the primary fit() site: (D_{g,1}, F_g, S_g)).
@@ -5075,6 +5093,31 @@ def _compute_path_effects(
             # plug-in with path-specific divisor (joiners/leavers pattern).
             U_centered_path = _cohort_recenter(U_l_path_elig, cohort_id_eligible)
             se_path = _plugin_se(U_centered=U_centered_path, divisor=n_l_path)
+
+            # Path-scoped degenerate-cohort warning. Mirrors the overall-
+            # path surface (`Cohort-recentered analytical variance is
+            # unidentified...` at the main fit() site): when the centered
+            # path IF is identically zero, the variance is unidentified
+            # for this (path, horizon) despite n_l_path > 0. Common when
+            # a low-frequency path's switchers all fall in singleton
+            # (D_{g,1}, F_g, S_g) cohorts after the path subset.
+            if np.isnan(se_path) and U_centered_path.size > 0 and n_l_path > 0:
+                warnings.warn(
+                    f"Cohort-recentered analytical variance is "
+                    f"unidentified for path={path} at horizon l={l_h}: "
+                    f"the path-subset centered influence function is "
+                    f"identically zero (every variance-eligible path "
+                    f"switcher forms its own (D_{{g,1}}, F_g, S_g) "
+                    f"cohort, or the path has a single contributing "
+                    f"group). DID_{{path,l}} point estimate is still "
+                    f"valid; SE / t_stat / p_value / conf_int are "
+                    f"NaN-consistent. Rare paths with few contributing "
+                    f"groups routinely hit this case — include more "
+                    f"groups following this trajectory for a non-"
+                    f"degenerate analytical SE.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
             t_p, p_p, ci_p = safe_inference(effect_path, se_path, alpha=alpha, df=df_inference)
 

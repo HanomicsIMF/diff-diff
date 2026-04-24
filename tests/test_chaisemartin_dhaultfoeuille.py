@@ -4020,3 +4020,180 @@ class TestByPathBehavior:
         )
         with pytest.raises(ValueError, match="by_path"):
             results.to_dataframe(level="by_path")
+
+
+class TestByPathEdgeCases:
+    """Empty-result-set and degenerate-cohort branches per plan review."""
+
+    def test_empty_path_surface_when_no_complete_window(self):
+        """by_path requested but every switcher's window falls outside the panel.
+
+        Switchers have F_g = period 3 with n_periods = 4 and L_max = 3, so
+        the window [F_g - 1, F_g - 1 + L_max] = [2, 5] extends past the
+        panel (period 5 doesn't exist). Expected behavior:
+
+        - results.path_effects == {} (NOT None — distinguishes
+          "requested but empty" from "not requested")
+        - UserWarning emitted at fit-time
+        - summary() renders a "no observed paths" notice
+        - to_dataframe(level="by_path") returns empty DataFrame with
+          canonical columns (does NOT raise — the caller already passed
+          by_path=k)
+        """
+        rng = np.random.default_rng(0)
+        rows = []
+        # Switchers switch at t=3 → window [2, 5] with L_max=3 falls
+        # outside the 4-period panel. Not-yet-switched at F_g-1=2,
+        # treated at F_g=3, but the post-switch horizons 2 and 3 are
+        # at t=4 and t=5 which don't exist.
+        for g in (1, 2, 3, 4):
+            for t in range(4):
+                d = 1 if t >= 3 else 0
+                rows.append(
+                    {
+                        "group": g,
+                        "period": t,
+                        "treatment": d,
+                        "outcome": rng.normal(),
+                    }
+                )
+        for g in (5, 6):
+            for t in range(4):
+                rows.append(
+                    {
+                        "group": g,
+                        "period": t,
+                        "treatment": 0,
+                        "outcome": rng.normal(),
+                    }
+                )
+        data = pd.DataFrame(rows)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+
+        # Empty dict, NOT None
+        assert results.path_effects is not None
+        assert results.path_effects == {}
+
+        # Fit-time warning surfaced
+        empty_warnings = [
+            w for w in caught if "no observed treatment path" in str(w.message)
+        ]
+        assert empty_warnings, (
+            "Expected a UserWarning when by_path is requested but no "
+            "observed path has a complete window"
+        )
+
+        # Summary renders a notice instead of the per-path block
+        text = results.summary()
+        assert "Treatment-Path Disaggregation" in text
+        assert "No observed paths" in text
+
+        # to_dataframe returns an empty DataFrame (NOT a ValueError)
+        df = results.to_dataframe(level="by_path")
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 0
+        expected_cols = {
+            "path",
+            "frequency_rank",
+            "n_groups",
+            "horizon",
+            "effect",
+            "se",
+            "t_stat",
+            "p_value",
+            "conf_int_lower",
+            "conf_int_upper",
+            "n_obs",
+        }
+        assert expected_cols.issubset(df.columns)
+
+    def test_degenerate_cohort_path_nan_inference_and_warning(self):
+        """Every variance-eligible group in its own (D_{g,1}, F_g, S_g) cohort.
+
+        Uses the canonical 4-group panel from
+        ``test_methodology_chaisemartin_dhaultfoeuille.TestMethodologyWorkedExample``
+        whose cohort structure is all-singleton:
+
+            g=1: (0, 1, +1)  — path (0, 1) at L_max=1
+            g=2: (1, 2, -1)  — path (1, 0) at L_max=1
+            g=3: (0, -1,  0)
+            g=4: (1, -1,  0)
+
+        With every cohort a singleton, cohort recentering yields an
+        identically-zero centered IF for every selected path →
+        ``_plugin_se`` returns NaN → the per-(path, horizon) degenerate-
+        cohort warning fires. Point estimate remains finite.
+        """
+        panel = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
+                "period": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2],
+                "treatment": [0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1],
+                "outcome": [
+                    10.0, 13.0, 14.0,
+                    10.0, 11.0, 9.0,
+                    10.0, 11.0, 12.0,
+                    10.0, 11.0, 12.0,
+                ],
+            }
+        )
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=2,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            results = est.fit(
+                panel,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=1,
+            )
+
+        assert results.path_effects is not None
+        # At least one (path, horizon) cell should have a NaN SE accompanied
+        # by the degenerate-cohort warning.
+        degenerate_warnings = [
+            w
+            for w in caught
+            if "unidentified for path=" in str(w.message)
+            and "horizon l=" in str(w.message)
+        ]
+        assert degenerate_warnings, (
+            "Expected a per-(path, horizon) degenerate-cohort UserWarning "
+            "when the path-subset centered IF collapses to zero"
+        )
+        # Point-estimate side still populated (only SE/t/p/CI are NaN)
+        any_nan = False
+        for entry in results.path_effects.values():
+            for h in entry["horizons"].values():
+                if np.isnan(h["se"]):
+                    any_nan = True
+                    assert np.isnan(h["t_stat"])
+                    assert np.isnan(h["p_value"])
+                    lo, hi = h["conf_int"]
+                    assert np.isnan(lo) and np.isnan(hi)
+                    # Point estimate is finite (only SE/inference NaN)
+                    assert np.isfinite(h["effect"])
+        assert any_nan, "Expected at least one NaN-SE (path, horizon) entry"
