@@ -4593,6 +4593,73 @@ class TestByPathBootstrap:
             f"Messages: {[str(w.message) for w in overflow_warnings]}"
         )
 
+    def test_summary_footer_mixed_validity_surfaces_live_targets(self):
+        """
+        Mixed-validity case: overall_se / event_study_ses degenerate to
+        NaN while joiners_se / leavers_se / path_effects horizons retain
+        finite bootstrap inference. ``by_path`` zeros switcher-side
+        contributions outside the selected path while keeping the control
+        pool intact, so path-level bootstrap targets can stay finite even
+        when the overall/event-study IF degenerates on a reversible
+        panel. The footer must point the reader at the live targets
+        rather than falsely claiming "non-finite SE on every target."
+
+        Uses a healthy bootstrap fit and post-hoc mutates overall_se /
+        event_study_effects to NaN, pinning the footer logic in
+        isolation from the (hard-to-engineer) natural reversible DGP
+        that produces this exact mixed-validity state.
+        """
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42,
+        )
+        # Sanity: healthy fit has finite overall and path SEs.
+        assert np.isfinite(res.overall_se)
+        assert res.path_effects is not None
+        any_finite_path = any(
+            np.isfinite(h["se"])
+            for e in res.path_effects.values()
+            for h in e["horizons"].values()
+        )
+        assert any_finite_path
+
+        # Force overall + event_study to NaN while leaving path_effects
+        # untouched — simulates the reversible-panel scenario where the
+        # overall IF is identically zero but the by_path subset IF is
+        # not.
+        res.overall_se = float("nan")
+        res.overall_t_stat = float("nan")
+        res.overall_p_value = float("nan")
+        res.overall_conf_int = (float("nan"), float("nan"))
+        if res.event_study_effects is not None:
+            for entry in res.event_study_effects.values():
+                entry["se"] = float("nan")
+                entry["t_stat"] = float("nan")
+                entry["p_value"] = float("nan")
+                entry["conf_int"] = (float("nan"), float("nan"))
+
+        summary_text = res.summary()
+        # Must NOT claim "non-finite SE on every target"
+        assert "produced non-finite SE on every target" not in summary_text, (
+            "Footer falsely claims all-target failure while path_effects "
+            "still has finite bootstrap SE. Summary tail:\n"
+            f"{summary_text[-400:]}"
+        )
+        # Must NOT claim "multiplier-bootstrap percentile inference"
+        # (overall_se is NaN so the headline inference is not bootstrap
+        # percentile).
+        assert "multiplier-bootstrap percentile inference" not in summary_text
+        # Must mention "per-path bootstrap inference is populated"
+        assert (
+            "per-path" in summary_text
+            and "bootstrap inference is populated" in summary_text
+        ), (
+            "Footer must surface which targets retain finite bootstrap "
+            "inference when overall/event-study degenerates. Summary "
+            "tail:\n"
+            f"{summary_text[-400:]}"
+        )
+
     def test_nan_contract_extends_to_overall_and_event_study_horizons(self):
         """
         The bootstrap-contract NaN-on-invalid rule applies to every

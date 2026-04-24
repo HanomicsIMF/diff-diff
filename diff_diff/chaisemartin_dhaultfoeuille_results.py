@@ -710,13 +710,44 @@ class ChaisemartinDHaultfoeuilleResults:
         # least one horizon has a finite SE before claiming bootstrap was
         # "used for event-study horizon inference" — otherwise every
         # bootstrap inference field is NaN and we fall through to the
-        # "bootstrap attempted but invalid" note.
+        # "bootstrap attempted but invalid" note. The `any_finite_*`
+        # predicate below expands the check to cover joiners / leavers /
+        # path_effects too: by_path zeros switcher contributions for non-
+        # path groups while keeping controls intact, so a per-path
+        # bootstrap target can produce a finite SE even when the overall
+        # / event-study bootstrap is degenerate (e.g., a reversible panel
+        # where the overall mix of joiners + leavers produces a zero
+        # centered IF while individual paths do not). Without this
+        # broader predicate, the footer would falsely claim "produced
+        # non-finite SE on every target" while a finite per-path
+        # bootstrap SE sits in the rendered output below.
         event_study_has_finite_bootstrap_se = (
             self.event_study_effects is not None
             and any(
                 np.isfinite(entry.get("se", np.nan))
                 for entry in self.event_study_effects.values()
             )
+        )
+        joiners_has_finite_bootstrap_se = (
+            self.joiners_se is not None and np.isfinite(self.joiners_se)
+        )
+        leavers_has_finite_bootstrap_se = (
+            self.leavers_se is not None and np.isfinite(self.leavers_se)
+        )
+        path_effects_has_finite_bootstrap_se = (
+            self.path_effects is not None
+            and any(
+                np.isfinite(h.get("se", np.nan))
+                for entry in self.path_effects.values()
+                for h in entry.get("horizons", {}).values()
+            )
+        )
+        any_finite_bootstrap_inference = (
+            np.isfinite(self.overall_se)
+            or event_study_has_finite_bootstrap_se
+            or joiners_has_finite_bootstrap_se
+            or leavers_has_finite_bootstrap_se
+            or path_effects_has_finite_bootstrap_se
         )
         if self.bootstrap_results is not None and np.isfinite(self.overall_se) and not is_delta:
             lines.append("Note: p-value and CI are multiplier-bootstrap percentile inference")
@@ -737,6 +768,23 @@ class ChaisemartinDHaultfoeuilleResults:
             lines.append(
                 f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
                 f"used for event-study horizon inference."
+            )
+        elif self.bootstrap_results is not None and any_finite_bootstrap_inference:
+            # Overall / event-study degenerated but joiners / leavers /
+            # path_effects still have finite bootstrap SE. Point the reader
+            # at the targets that succeeded rather than claiming a blanket
+            # failure.
+            live_targets = []
+            if joiners_has_finite_bootstrap_se:
+                live_targets.append("joiners")
+            if leavers_has_finite_bootstrap_se:
+                live_targets.append("leavers")
+            if path_effects_has_finite_bootstrap_se:
+                live_targets.append("per-path")
+            lines.append(
+                f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
+                f"produced non-finite SE on the overall/event-study target; "
+                f"{', '.join(live_targets)} bootstrap inference is populated."
             )
         elif self.bootstrap_results is not None:
             lines.append(
