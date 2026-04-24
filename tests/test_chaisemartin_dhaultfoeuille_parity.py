@@ -464,3 +464,132 @@ class TestDCDHDynRParityPhase3:
             controls=["X1"], trends_linear=True,
             point_rtol=self.POINT_RTOL,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 extension: by_path per-path event-study disaggregation parity
+# ---------------------------------------------------------------------------
+
+
+class TestDCDHDynRParityByPath:
+    """
+    Parity tests for ``by_path`` against R DIDmultiplegtDYN.
+
+    R's ``did_multiplegt_dyn(..., by_path=k)`` returns ``k`` per-path
+    result slots (``res$by_level_1``, ``res$by_level_2``, ...) keyed by
+    frequency rank with path labels in ``res$by_levels``. The generator
+    script captures these under ``results.by_path`` as an ordered list.
+
+    Paths are matched by **tuple label via set equality**, not by
+    frequency rank: R's tied-frequency tiebreak convention is
+    undocumented, while Python's is lexicographic. Set-equality catches
+    silent divergence where Python and R select non-identical top-k
+    path sets under equal frequencies, and the symmetric-difference
+    diagnostic in the assertion message makes the failure actionable.
+
+    Per-path switcher counts are hard-asserted **before** SE
+    comparison so that window-eligibility divergences surface
+    explicitly rather than as apples-to-oranges SE gaps.
+    """
+
+    # Point-estimate tolerances mirror the Phase 1/2 parity classes.
+    POINT_RTOL = 1e-4
+    MIXED_POINT_RTOL = 0.025
+    # SE tolerance: 12% sits between Phase 2 multi-horizon SE_RTOL
+    # (0.10 for short panels) and the long-panel widening (0.15). Per-
+    # path slices have ~10-40 switchers - comparable to Phase 2's long-
+    # panel pure-direction slices where the cell-count vs obs-count
+    # weighting envelope (documented in REGISTRY.md) widens from 0.10
+    # to 0.15 as horizon length compounds the small-sample correction.
+    SE_RTOL = 0.12
+
+    def _path_key_from_r_label(self, r_label: str):
+        return tuple(int(x) for x in r_label.split(","))
+
+    def _compare_by_path(self, scenario, by_path, L_max, point_rtol, se_rtol):
+        import warnings
+
+        df = _golden_to_df(scenario["data"])
+        est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=by_path)
+        # Suppress the per-(path, horizon) degenerate-cohort UserWarning
+        # emitted by the foundation when a path subset produces an
+        # identically-zero centered IF.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            results = est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=L_max,
+            )
+
+        r_by_path = scenario["results"]["by_path"]
+        assert results.path_effects is not None
+
+        py_keys = set(results.path_effects.keys())
+        r_keys = {self._path_key_from_r_label(e["path"]) for e in r_by_path}
+        assert py_keys == r_keys, (
+            f"Path-set mismatch between Python and R.\n"
+            f"  Python only: {py_keys - r_keys}\n"
+            f"  R only:      {r_keys - py_keys}"
+        )
+
+        for r_path_entry in r_by_path:
+            path_key = self._path_key_from_r_label(r_path_entry["path"])
+            py_path = results.path_effects[path_key]
+            for h_str, r_h in r_path_entry["horizons"].items():
+                h = int(h_str)
+                assert (
+                    h in py_path["horizons"]
+                ), f"path={path_key}: horizon {h} missing from Python path_effects"
+                py_h = py_path["horizons"][h]
+
+                # Per-path switcher count sanity check BEFORE SE comparison:
+                # if R and Python disagree on which groups land in this
+                # path's window-eligible set at horizon h, SE gaps become
+                # apples-to-oranges and point-estimate gaps are masked.
+                assert py_h["n_obs"] == int(r_h["n_switchers"]), (
+                    f"path={path_key} h={h}: switcher-count mismatch "
+                    f"py={py_h['n_obs']} vs r={int(r_h['n_switchers'])} "
+                    f"- window-eligibility divergence; investigate before "
+                    f"comparing SE."
+                )
+
+                assert py_h["effect"] == pytest.approx(r_h["effect"], rel=point_rtol), (
+                    f"path={path_key} h={h}: "
+                    f"py={py_h['effect']:.4f} vs r={r_h['effect']:.4f}"
+                )
+
+                if py_h["se"] > 0 and r_h["se"] > 0:
+                    assert py_h["se"] == pytest.approx(r_h["se"], rel=se_rtol), (
+                        f"path={path_key} h={h} SE: "
+                        f"py={py_h['se']:.4f} vs r={r_h['se']:.4f}"
+                    )
+
+    def test_parity_mixed_single_switch_by_path(self, golden_values):
+        """2-path basic case: mixed_single_switch at L_max=3, by_path=2."""
+        scenario = golden_values.get("mixed_single_switch_by_path")
+        if scenario is None:
+            pytest.skip("scenario 'mixed_single_switch_by_path' not in golden values")
+        self._compare_by_path(
+            scenario,
+            by_path=2,
+            L_max=3,
+            point_rtol=self.MIXED_POINT_RTOL,
+            se_rtol=self.SE_RTOL,
+        )
+
+    def test_parity_multi_path_reversible_by_path(self, golden_values):
+        """Top-k ranking case: 4 observed paths, by_path=3 selects top-3."""
+        scenario = golden_values.get("multi_path_reversible_by_path")
+        if scenario is None:
+            pytest.skip("scenario 'multi_path_reversible_by_path' not in golden values")
+        self._compare_by_path(
+            scenario,
+            by_path=3,
+            L_max=3,
+            point_rtol=self.MIXED_POINT_RTOL,
+            se_rtol=self.SE_RTOL,
+        )
