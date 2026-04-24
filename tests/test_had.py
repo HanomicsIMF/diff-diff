@@ -3877,6 +3877,154 @@ class TestHADSurvey:
                 panel, "outcome", "dose", "period", "unit", weights=row_w
             )
 
+    def test_zero_weight_survey_metadata_preserves_full_design(self):
+        """Round 6 P1a: on the ``survey=`` path, zero-weight units
+        (subpopulation convention) stay in the ResolvedSurveyDesign for
+        variance + SurveyMetadata. ``n_psu`` / ``n_strata`` /
+        ``df_survey`` / ``sum_weights`` reflect the FULL sampling frame,
+        not the in-domain subset — that is the standard
+        domain-estimation convention in diff_diff.survey."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(10)
+        G = 160
+        d = rng.uniform(0.0, 1.0, G)
+        dy = 2.0 * d + rng.normal(0, 0.25, G)
+        # Strata + PSU structure on the FULL sample.
+        strata = rng.integers(0, 4, G)
+        psu = strata * 100 + rng.integers(0, 20, G)
+        # Zero out weights on 1/4 of units (subpopulation exclusion).
+        w_unit = rng.uniform(0.5, 1.5, G)
+        zero_idx = rng.choice(G, size=G // 4, replace=False)
+        w_unit[zero_idx] = 0.0
+        panel = _make_panel(d, dy)
+        row_w = np.zeros(panel.shape[0])
+        row_strata = np.zeros(panel.shape[0], dtype=np.int64)
+        row_psu = np.zeros(panel.shape[0], dtype=np.int64)
+        for g in range(G):
+            mask = panel["unit"].to_numpy() == g
+            row_w[mask] = w_unit[g]
+            row_strata[mask] = strata[g]
+            row_psu[mask] = psu[g]
+        panel_sd = panel.assign(w=row_w, strata=row_strata, psu=row_psu)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_full = est.fit(
+                panel_sd, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+            # Reference fit: physically drop the zero-weight units and
+            # refit on the positive-weight subsample. SurveyMetadata
+            # values SHOULD DIFFER because dropping loses sampling frame
+            # structure.
+            keep_rows = panel_sd["unit"].isin(
+                [g for g in range(G) if w_unit[g] > 0]
+            )
+            panel_sub = panel_sd.loc[keep_rows].reset_index(drop=True)
+            r_sub = est.fit(
+                panel_sub, "outcome", "dose", "period", "unit",
+                survey=SurveyDesign(weights="w", strata="strata", psu="psu"),
+            )
+        # Point estimate IDENTICAL — zero-weight units contribute 0 to
+        # fit either way.
+        np.testing.assert_allclose(r_full.att, r_sub.att, atol=1e-10, rtol=1e-10)
+        # Full-design SurveyMetadata counts the FULL sampling frame.
+        assert r_full.survey_metadata is not None
+        assert r_sub.survey_metadata is not None
+        # Full fit's sum_weights includes zero-weight units (sum is the
+        # same as the filtered sum, since w=0 contributes 0). But n_psu
+        # / n_strata preserve the FULL design whereas the filtered fit
+        # sees only in-domain PSUs/strata.
+        assert r_full.survey_metadata.n_psu >= r_sub.survey_metadata.n_psu
+
+    def test_bias_corrected_local_linear_zero_weight_matches_filtered(self):
+        """Round 6 P1b: ``bias_corrected_local_linear(weights=...)``
+        with zero-weight units at the boundary must produce the same
+        fit numbers as physically dropping those units (both in
+        explicit-h/b and auto-bandwidth modes). Previously the wrapper
+        ran ``_validate_had_inputs`` on the full sample, so zero-weight
+        units at ``d.min()=0`` could spuriously trip the Design 1'
+        support heuristic or the mass-point threshold."""
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        rng = np.random.default_rng(21)
+        G = 250
+        # Construct a sample where the positive-weight support has
+        # d.min ~ 0.1 (continuous_near_d_lower shape), but add a
+        # zero-weight unit at d=0 (would otherwise flip the wrapper to
+        # Design 1').
+        d_pos = rng.uniform(0.1, 1.0, G - 1)
+        d_full = np.concatenate([[0.0], d_pos])
+        y_full = np.concatenate([[0.0], 2.0 * (d_pos - 0.1) + rng.normal(0, 0.2, G - 1)])
+        w_full = np.concatenate([[0.0], np.ones(G - 1)])
+        # Reference: physically drop the zero-weight unit.
+        d_ref = d_full[w_full > 0]
+        y_ref = y_full[w_full > 0]
+        # Explicit-h/b mode:
+        r_weighted = bias_corrected_local_linear(
+            d=d_full, y=y_full, boundary=float(d_pos.min()),
+            h=0.3, b=0.3, weights=w_full, return_influence=True,
+        )
+        r_dropped = bias_corrected_local_linear(
+            d=d_ref, y=y_ref, boundary=float(d_pos.min()),
+            h=0.3, b=0.3, return_influence=True,
+        )
+        np.testing.assert_allclose(
+            r_weighted.estimate_bias_corrected,
+            r_dropped.estimate_bias_corrected,
+            atol=1e-12, rtol=1e-12,
+        )
+        np.testing.assert_allclose(
+            r_weighted.se_robust, r_dropped.se_robust, atol=1e-12, rtol=1e-12
+        )
+        # IF zero-padded back to FULL length (original ordering).
+        assert r_weighted.influence_function is not None
+        assert r_weighted.influence_function.shape[0] == G
+        # Zero-weight unit at index 0 has IF=0.
+        np.testing.assert_allclose(
+            r_weighted.influence_function[0], 0.0, atol=1e-14, rtol=1e-14
+        )
+        # Positive-weight positions match the dropped-sample IF.
+        np.testing.assert_allclose(
+            r_weighted.influence_function[1:],
+            r_dropped.influence_function,
+            atol=1e-12, rtol=1e-12,
+        )
+
+    def test_bias_corrected_local_linear_zero_weight_auto_bandwidth(self):
+        """Round 6 P1b: auto-bandwidth selection also runs on the
+        positive-weight subset — otherwise the unweighted MSE-DPI
+        selector sees the zero-weight unit at the boundary as a valid
+        observation and picks a wrong bandwidth."""
+        from diff_diff.local_linear import bias_corrected_local_linear
+
+        rng = np.random.default_rng(22)
+        G = 300
+        d_pos = rng.uniform(0.0, 1.0, G - 1)
+        d_full = np.concatenate([d_pos, [1.0]])  # zero-weight unit at d=1.0
+        y_full = np.concatenate(
+            [2.0 * d_pos + rng.normal(0, 0.25, G - 1), [0.0]]
+        )
+        w_full = np.concatenate([np.ones(G - 1), [0.0]])
+        d_ref = d_full[w_full > 0]
+        y_ref = y_full[w_full > 0]
+        r_weighted = bias_corrected_local_linear(
+            d=d_full, y=y_full, boundary=0.0, weights=w_full
+        )
+        r_dropped = bias_corrected_local_linear(
+            d=d_ref, y=y_ref, boundary=0.0
+        )
+        # Auto-selected h identical between the two paths.
+        np.testing.assert_allclose(
+            r_weighted.h, r_dropped.h, atol=1e-12, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            r_weighted.estimate_bias_corrected,
+            r_dropped.estimate_bias_corrected,
+            atol=1e-12, rtol=1e-12,
+        )
+
     def test_zero_weight_counts_reflect_positive_subset(self):
         """``n_obs`` / ``n_treated`` / ``n_control`` on the result must
         reflect the positive-weight sub-population, not the full panel."""

@@ -1060,14 +1060,59 @@ def bias_corrected_local_linear(
     IDs are in first-appearance order; otherwise BLAS reduction
     ordering can drift to ``atol=1e-10``.
     """
+    # Zero-weight unit handling (Phase 4.5 survey support). Filter
+    # d/y/weights to the positive-weight support BEFORE
+    # ``_validate_had_inputs`` runs. Otherwise zero-weight observations
+    # at the boundary or at ``d.min()`` taint the Design 1' support
+    # heuristic and the mass-point threshold, causing spurious
+    # off-support rejections or design misidentification on valid
+    # weighted domain fits (e.g. ``SurveyDesign.subpopulation()``).
+    # The auto-bandwidth MSE-DPI selector below also sees only
+    # positive-weight observations — kernel density + variance estimates
+    # at the boundary are incorrect if zero-weight units contaminate
+    # the sample. Callers that want the IF aligned with the ORIGINAL
+    # ``d`` ordering get zero-padded positions back via
+    # ``return_influence=True``: positive-weight positions carry the
+    # active IF, zero-weight positions are 0 (consistent with their
+    # zero contribution to the fit).
+    _positive_mask_full: Optional[np.ndarray] = None
+    _n_full_for_if: Optional[int] = None
     if weights is not None:
         weights = np.asarray(weights, dtype=np.float64).ravel()
-        # NOTE: bandwidth selection (auto mode) remains unweighted; the
-        # plug-in MSE-optimal DPI is not yet weight-aware. Weights only
-        # enter the final lprobust fit + its variance propagation. Users
-        # who want a weight-aware bandwidth should pass ``h``/``b`` that
-        # reflect the weighted DGP. See REGISTRY "Weighted extension"
-        # subsection for the documented methodology gap.
+        d_np = np.asarray(d).ravel()
+        # Weight validation fires BEFORE the zero-weight filter below,
+        # so invalid weights (NaN, Inf, negative, zero-sum) raise
+        # consistent ValueErrors regardless of how many zero-weight
+        # units the caller also passed. Duplicates the lprobust-level
+        # validation locally so errors surface at the public-wrapper
+        # boundary with the same messages the port raises downstream.
+        if weights.shape[0] != d_np.shape[0]:
+            raise ValueError(
+                f"weights length ({weights.shape[0]}) does not match "
+                f"d/y ({d_np.shape[0]})."
+            )
+        if not np.all(np.isfinite(weights)):
+            raise ValueError("weights contains non-finite values (NaN or Inf).")
+        if np.any(weights < 0):
+            raise ValueError("weights must be non-negative.")
+        if np.sum(weights) <= 0:
+            raise ValueError(
+                "weights sum to zero — no observations have positive weight."
+            )
+        if weights.shape[0] == d_np.shape[0]:
+            _positive_mask_full = weights > 0.0
+            if not bool(_positive_mask_full.all()):
+                _n_full_for_if = int(d_np.shape[0])
+                d = d_np[_positive_mask_full]
+                y = np.asarray(y).ravel()[_positive_mask_full]
+                weights = weights[_positive_mask_full]
+                if cluster is not None:
+                    cluster = np.asarray(cluster).ravel()[_positive_mask_full]
+        # NOTE: bandwidth selection (auto mode) on the POSITIVE-weight
+        # subset remains unweighted — the plug-in MSE-optimal DPI is
+        # not yet weight-aware. Users who want a weight-aware bandwidth
+        # should pass ``h``/``b`` that reflect the weighted DGP. See
+        # REGISTRY "Weighted extension" subsection.
 
     if kernel not in _KERNEL_NAME_TO_NPROBUST:
         raise ValueError(
@@ -1248,6 +1293,25 @@ def bias_corrected_local_linear(
 
     _, _, (ci_low, ci_high) = safe_inference(result.tau_bc, result.se_rb, alpha=float(alpha))
 
+    # Zero-pad the IF back to the ORIGINAL (pre-positive-weight-filter)
+    # sample ordering when the caller passed a zero-weight vector, so
+    # downstream estimator-level Binder-TSL composition lines up with
+    # the full survey design rather than with the positive-weight
+    # subset. Zero-weight positions get IF=0 (consistent with their
+    # zero contribution to the fit); the survey-design variance
+    # (``compute_survey_if_variance``) can then preserve PSU / stratum
+    # / df_survey structure of the full design — the correct
+    # subpopulation / domain-analysis convention.
+    if_out = result.influence_function
+    if (
+        if_out is not None
+        and _positive_mask_full is not None
+        and _n_full_for_if is not None
+    ):
+        if_full = np.zeros(_n_full_for_if, dtype=np.float64)
+        if_full[_positive_mask_full] = if_out
+        if_out = if_full
+
     return BiasCorrectedFit(
         estimate_classical=result.tau_cl,
         estimate_bias_corrected=result.tau_bc,
@@ -1261,8 +1325,8 @@ def bias_corrected_local_linear(
         bandwidth_source=bw_source,
         bandwidth_diagnostics=bw_diag,
         n_used=result.n_used,
-        n_total=n_total,
+        n_total=int(_n_full_for_if) if _n_full_for_if is not None else n_total,
         kernel=kernel,
         boundary=float(boundary),
-        influence_function=result.influence_function,
+        influence_function=if_out,
     )
