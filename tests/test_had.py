@@ -4990,3 +4990,146 @@ class TestEventStudySurveyCband:
             f"MC noise; got q={q:.4f}. Likely a stratum-centering bug in "
             f"_sup_t_multiplier_bootstrap."
         )
+
+    def test_trivial_survey_h1_sup_t_matches_analytical(self):
+        """Review R3 P1: the survey-aware bootstrap branch must fire even
+        on trivial ``SurveyDesign(weights=...)`` (no explicit strata /
+        PSU / FPC). The analytical target is still the centered
+        (n/(n-1)) · Σ(ψ − ψ̄)² Binder formula, so the bootstrap must
+        also apply stratum-demeaning + small-sample correction — NOT
+        fall through to raw unit-level Rademacher.
+        """
+        from diff_diff.had import _sup_t_multiplier_bootstrap
+        from diff_diff.survey import ResolvedSurveyDesign, compute_survey_if_variance
+
+        rng = np.random.default_rng(11)
+        G = 300
+        # Trivial resolved: weights only, no strata / PSU / FPC.
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(G),
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=1,
+            n_psu=G,
+            lonely_psu="remove",
+            combined_weights=True,
+            mse=False,
+        )
+        psi = rng.standard_normal((G, 1))
+        V_analytical = compute_survey_if_variance(psi[:, 0], resolved)
+        se_analytical = np.sqrt(V_analytical)
+        q, _, _, _ = _sup_t_multiplier_bootstrap(
+            psi,
+            np.zeros(1),
+            np.array([se_analytical]),
+            resolved,
+            n_bootstrap=5000,
+            alpha=0.05,
+            seed=42,
+        )
+        # q ≈ 1.96 at H=1 confirms the trivial-survey branch applies
+        # the same stratum-demean + sqrt(n/(n-1)) correction the
+        # analytical target uses. Pre-R3, use_survey_bootstrap fell
+        # through to unit-level Rademacher, off by sqrt(n/(n-1)).
+        assert abs(q - 1.96) < 0.15, (
+            f"Trivial-survey H=1 sup-t should match Normal quantile "
+            f"1.96 up to MC noise; got q={q:.4f}. Likely the survey-"
+            f"aware bootstrap branch is not firing on trivial "
+            f"SurveyDesign."
+        )
+
+    def test_mass_point_classical_survey_rejected_static(self):
+        """Review R3 P1: vcov_type='classical' + survey= on
+        design='mass_point' rejects with a clear pointer to HC1.
+        Previously the survey path silently overrode classical SE
+        with Binder-TSL composed from the HC1-scale IF."""
+        from diff_diff.survey import SurveyDesign
+
+        rng = np.random.default_rng(20)
+        G = 200
+        d = np.concatenate([np.full(40, 0.3), rng.uniform(0.3, 1.0, G - 40)])
+        rng.shuffle(d)
+        dy = 2.0 * d + 0.3 * rng.standard_normal(G)
+        panel = pd.DataFrame(
+            {
+                "unit": np.repeat(np.arange(G), 2),
+                "period": np.tile([1, 2], G),
+                "dose": np.column_stack([np.zeros(G), d]).ravel(),
+                "outcome": np.column_stack([np.zeros(G), dy]).ravel(),
+                "w": np.ones(2 * G),
+            }
+        )
+        sd = SurveyDesign(weights="w")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="classical")
+            with pytest.raises(NotImplementedError, match="classical.*survey"):
+                est.fit(panel, "outcome", "dose", "period", "unit", survey=sd)
+
+    def test_mass_point_classical_event_study_with_cband_rejected(self):
+        """Review R3 P1 (event-study arm): vcov_type='classical' is
+        rejected on the event-study path whenever the IF matrix gets
+        used (survey= composition OR weights= shortcut + cband=True).
+        With cband=False on the weights= shortcut the classical SE is
+        returned as-is — no IF consumption — so that combination is
+        allowed and covered by the complementary test below."""
+        rng = np.random.default_rng(30)
+        G, T = 150, 4
+        d_mp = np.concatenate([np.full(30, 0.3), rng.uniform(0.3, 1.0, G - 30)])
+        rng.shuffle(d_mp)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_mp[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y))
+        panel = pd.DataFrame(rows, columns=["unit", "period", "dose", "outcome"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(
+                design="mass_point", vcov_type="classical", seed=0, n_bootstrap=100
+            )
+            with pytest.raises(NotImplementedError, match="classical"):
+                est.fit(
+                    panel,
+                    "outcome",
+                    "dose",
+                    "period",
+                    "unit",
+                    aggregate="event_study",
+                    weights=np.ones(panel.shape[0]),
+                    cband=True,
+                )
+
+    def test_mass_point_classical_event_study_cband_false_accepts(self):
+        """Complement to the above: cband=False with classical weighted
+        mass-point event-study is accepted — no IF consumption, the
+        per-horizon classical analytical SE is returned as-is."""
+        rng = np.random.default_rng(31)
+        G, T = 100, 4
+        d_mp = np.concatenate([np.full(20, 0.3), rng.uniform(0.3, 1.0, G - 20)])
+        rng.shuffle(d_mp)
+        rows = []
+        for t in range(T):
+            for g in range(G):
+                dose = d_mp[g] if t == T - 1 else 0.0
+                y = 0.2 * t + (2.0 * dose if t == T - 1 else 0.0) + 0.5 * rng.standard_normal()
+                rows.append((g, t, dose, y))
+        panel = pd.DataFrame(rows, columns=["unit", "period", "dose", "outcome"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="classical", seed=0)
+            r = est.fit(
+                panel,
+                "outcome",
+                "dose",
+                "period",
+                "unit",
+                aggregate="event_study",
+                weights=np.ones(panel.shape[0]),
+                cband=False,
+            )
+        assert r.variance_formula == "pweight_2sls"
+        assert r.cband_crit_value is None
