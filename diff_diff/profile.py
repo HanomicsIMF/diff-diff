@@ -53,8 +53,8 @@ class PanelProfile:
     n_units: int
     n_periods: int
     n_obs: int
-    is_balanced: bool
-    observation_coverage: float
+    is_balanced: bool  # every (unit, time) cell appears at least once
+    observation_coverage: float  # unique (unit, time) keys / (n_units * n_periods)
 
     treatment_type: str
     is_staggered: bool
@@ -190,6 +190,20 @@ def profile_panel(
     ``"categorical"``; cast to ``int`` if you want binary-treatment
     profiling.
 
+    ``has_never_treated`` and ``has_always_treated`` are computed
+    generically across numeric treatment types (both binary and
+    continuous). ``has_never_treated`` fires when some unit has
+    ``treatment == 0`` in every observed non-NaN row; for continuous
+    panels this flags zero-dose controls. ``has_always_treated`` fires
+    when some unit has strictly-positive treatment in every observed
+    non-NaN row. Both are always ``False`` for ``"categorical"``.
+
+    Duplicate ``(unit, time)`` rows are surfaced via the
+    ``duplicate_unit_time_rows`` alert; ``is_balanced`` and
+    ``observation_coverage`` are computed from the unique ``(unit,
+    time)`` support, so ``observation_coverage`` is always in
+    ``[0, 1]``.
+
     The profile does not recommend an estimator. Consult
     ``diff_diff.get_llm_guide("autonomous")`` for the estimator-support
     matrix and per-design-feature reasoning.
@@ -199,9 +213,11 @@ def profile_panel(
     n_units = int(df[unit].nunique())
     n_periods = int(df[time].nunique())
     n_obs = int(len(df))
+    n_unique_keys = int(df[[unit, time]].drop_duplicates().shape[0])
     denom = n_units * n_periods
-    observation_coverage = float(n_obs / denom) if denom > 0 else 0.0
-    is_balanced = n_obs == denom
+    observation_coverage = float(n_unique_keys / denom) if denom > 0 else 0.0
+    is_balanced = n_unique_keys == denom
+    n_duplicate_rows = n_obs - n_unique_keys
 
     (
         treatment_type,
@@ -241,6 +257,7 @@ def profile_panel(
         min_post_periods=min_post,
         outcome_is_binary=outcome_is_binary,
         outcome_dtype_kind=dtype_kind,
+        n_duplicate_rows=n_duplicate_rows,
     )
 
     return PanelProfile(
@@ -307,24 +324,41 @@ def _classify_treatment(
     values_set = set(distinct.tolist())
     if n_distinct == 0:
         return ("categorical", False, {}, False, False, None, None)
-    is_binary_valued = values_set <= {0, 1, 0.0, 1.0}
 
+    # Generic never-/always-treated semantics (applies to both binary
+    # and continuous numeric treatment): "never-treated" means the unit
+    # has treatment == 0 in every observed non-NaN row; "always-treated"
+    # means treatment > 0 in every observed non-NaN row.
+    unit_max = df.groupby(unit)[treatment].max().to_numpy()
+    unit_min = df.groupby(unit)[treatment].min().to_numpy()
+    has_never_treated = bool(np.any(unit_max == 0))
+    has_always_treated = bool(np.any(unit_min > 0))
+
+    is_binary_valued = values_set <= {0, 1, 0.0, 1.0}
     if not is_binary_valued:
-        return ("continuous", False, {}, False, False, None, None)
+        return (
+            "continuous",
+            False,
+            {},
+            has_never_treated,
+            has_always_treated,
+            None,
+            None,
+        )
 
     sorted_df = df.sort_values([unit, time])
 
+    # Monotonicity check on the observed non-NaN subsequence per unit.
+    # A path like [0, 1, NaN, 0] must be detected as non-absorbing: the
+    # non-NaN subsequence [0, 1, 0] violates weak monotonicity.
     is_absorbing = True
     for _, group in sorted_df.groupby(unit, sort=False):
         vals = group[treatment].to_numpy()
-        if len(vals) >= 2 and bool(np.any(np.diff(vals) < 0)):
+        mask = ~pd.isna(vals)
+        observed = vals[mask]
+        if len(observed) >= 2 and bool(np.any(np.diff(observed) < 0)):
             is_absorbing = False
             break
-
-    unit_treatment_max = df.groupby(unit)[treatment].max().to_numpy()
-    unit_treatment_min = df.groupby(unit)[treatment].min().to_numpy()
-    has_never_treated = bool(np.any(unit_treatment_max == 0))
-    has_always_treated = bool(np.any(unit_treatment_min == 1))
 
     if not is_absorbing:
         return (
@@ -418,8 +452,22 @@ def _compute_alerts(
     min_post_periods: Optional[int],
     outcome_is_binary: bool,
     outcome_dtype_kind: str,
+    n_duplicate_rows: int,
 ) -> List[Alert]:
     alerts: List[Alert] = []
+
+    if n_duplicate_rows > 0:
+        alerts.append(
+            Alert(
+                code="duplicate_unit_time_rows",
+                severity="warn",
+                message=(
+                    f"Found {n_duplicate_rows} duplicate (unit, time) row(s); "
+                    "balance and coverage are computed from the unique support."
+                ),
+                observed=int(n_duplicate_rows),
+            )
+        )
 
     if cohort_sizes:
         smallest = min(cohort_sizes.values())

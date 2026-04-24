@@ -316,3 +316,99 @@ def test_top_level_import_surface():
     assert diff_diff.Alert.__name__ == "Alert"
     for name in ("profile_panel", "PanelProfile", "Alert"):
         assert name in diff_diff.__all__, f"{name} missing from __all__"
+
+
+def test_duplicate_unit_time_rows_do_not_inflate_coverage():
+    """Duplicate (unit, time) rows must not make a panel look balanced.
+    observation_coverage must stay in [0, 1] and derive from the unique
+    (unit, time) support, and the duplicate_unit_time_rows alert fires."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(n_units=20, periods=range(0, 4), first_treat=first_treat)
+    df_dup = pd.concat([df, df.iloc[:5].copy()], ignore_index=True)
+    profile = profile_panel(df_dup, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.is_balanced is True
+    assert 0.0 <= profile.observation_coverage <= 1.0
+    assert "duplicate_unit_time_rows" in _alert_codes(profile)
+
+    df_missing_cell = df.drop(df.index[0]).reset_index(drop=True)
+    df_dup_missing = pd.concat(
+        [df_missing_cell, df_missing_cell.iloc[:5].copy()], ignore_index=True
+    )
+    profile2 = profile_panel(df_dup_missing, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile2.is_balanced is False
+    assert profile2.observation_coverage < 1.0
+    assert "duplicate_unit_time_rows" in _alert_codes(profile2)
+
+
+def test_reversal_through_nan_is_binary_non_absorbing():
+    """A 0 -> 1 -> NaN -> 0 path must be detected as non-absorbing: the
+    observed non-NaN subsequence violates weak monotonicity. Previously a
+    NaN-inclusive diff could report False monotonicity violation."""
+    rows = []
+    for u in range(1, 11):
+        treat_seq = [0, 1, np.nan, 0]
+        for t, tr in enumerate(treat_seq):
+            rows.append({"u": u, "t": t, "tr": tr, "y": float(u) + 0.1 * t})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "binary_non_absorbing"
+
+
+def test_continuous_zero_dose_controls_flag_has_never_treated():
+    """Continuous treatment with some zero-dose units must flag
+    has_never_treated=True. Previously continuous panels hardcoded
+    has_never_treated=False regardless of control availability."""
+    rows = []
+    rng = np.random.default_rng(0)
+    for u in range(1, 21):
+        dose = 0.0 if u <= 5 else float(rng.uniform(0.5, 3.0))
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": rng.normal()})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "continuous"
+    assert profile.has_never_treated is True
+    assert profile.has_always_treated is True
+
+
+def test_guide_api_strings_resolve_against_public_api():
+    """Sanity-check that every estimator referenced in the autonomous guide
+    exists in the public API, plus the `hausman_pretest` classmethod location
+    and the `not_yet_treated` control-group string. Guards against guide
+    drift that the CI reviewer has previously flagged."""
+    import diff_diff
+    from diff_diff import get_llm_guide
+
+    text = get_llm_guide("autonomous")
+
+    for name in (
+        "DifferenceInDifferences",
+        "MultiPeriodDiD",
+        "TwoWayFixedEffects",
+        "CallawaySantAnna",
+        "SunAbraham",
+        "ChaisemartinDHaultfoeuille",
+        "ImputationDiD",
+        "TwoStageDiD",
+        "StackedDiD",
+        "WooldridgeDiD",
+        "EfficientDiD",
+        "SyntheticDiD",
+        "TROP",
+        "TripleDifference",
+        "StaggeredTripleDifference",
+        "ContinuousDiD",
+        "HeterogeneousAdoptionDiD",
+    ):
+        assert name in text, f"estimator {name!r} missing from guide"
+        assert hasattr(diff_diff, name), f"{name!r} in guide but not exported"
+
+    assert hasattr(
+        diff_diff.EfficientDiD, "hausman_pretest"
+    ), "EfficientDiD.hausman_pretest classmethod missing from the public API"
+
+    assert "EfficientDiD.hausman_pretest" in text
+    assert "Hausman.hausman_pretest" not in text
+
+    assert 'control_group="not_yet_treated"' in text
+    assert "notyettreated" not in text
