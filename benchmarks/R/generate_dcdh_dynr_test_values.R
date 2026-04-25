@@ -683,7 +683,17 @@ res15 <- did_multiplegt_dyn(
 )
 scenarios$multi_path_reversible_by_path_placebo <- list(
   data = export_data(d15),
-  params = list(pattern = "multi_path_reversible", n_groups = N_GOLDEN,
+  # n_switcher_groups records the switcher cohort count fed into
+  # gen_reversible's `counts_per_F_g` allocator (80 = sum c(20, 20, 15,
+  # 10, 10, 5)); the realized panel has 120 unique groups after the
+  # default 20 never-treated + 20 always-treated control rows are
+  # appended (gen_reversible defaults at line 64). Recording both fields
+  # avoids the metadata-vs-data mismatch the reviewer flagged on
+  # PR #371 R2: anyone reusing this scenario's metadata sees both the
+  # switcher count (the load-bearing number for the DGP allocation) and
+  # the realized panel size.
+  params = list(pattern = "multi_path_reversible",
+                n_switcher_groups = N_GOLDEN, n_realized_groups = N_GOLDEN + 40L,
                 n_periods = 10, seed = 115, effects = 3, placebo = 2,
                 by_path = 3, ci_level = 95),
   results = extract_dcdh_by_path(res15, n_effects = 3, n_placebos = 2)

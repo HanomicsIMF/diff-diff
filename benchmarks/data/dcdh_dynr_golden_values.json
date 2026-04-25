@@ -766,7 +766,8 @@
       },
       "params": {
         "pattern": "multi_path_reversible",
-        "n_groups": 80,
+        "n_switcher_groups": 80,
+        "n_realized_groups": 120,
         "n_periods": 10,
         "seed": 115,
         "effects": 3,
