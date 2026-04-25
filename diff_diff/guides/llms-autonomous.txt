@@ -202,16 +202,21 @@ view. Every field below appears as a top-level key in that dict.
       model can predict outside `[0, 1]`).
 - **`treatment_dose: Optional[TreatmentDoseShape]`** - distributional
   facts for continuous-treatment dose columns; `None` unless
-  `treatment_type == "continuous"`. **Descriptive only — none of these
-  sub-fields are `ContinuousDiD` prerequisites.** The core field-based
-  pre-fit gates are `has_never_treated` (unit-level, above) for the
-  zero-dose-control requirement and `treatment_varies_within_unit ==
-  False` (above) for per-unit full-path dose constancy, matching
+  `treatment_type == "continuous"`. Most sub-fields are descriptive,
+  but `dose_min > 0` IS itself a `ContinuousDiD` pre-fit gate. The
+  full `ContinuousDiD` gate set is `has_never_treated == True`
+  (unit-level, above), `treatment_varies_within_unit == False`
+  (above) for per-unit full-path dose constancy matching
   `ContinuousDiD.fit()`'s `df.groupby(unit)[dose].nunique() > 1`
-  rejection, plus the absence of the `duplicate_unit_time_rows` alert
-  (the precompute path silently resolves duplicate `(unit, time)`
-  cells via last-row-wins, so duplicates must be removed before
-  fitting). Sub-fields:
+  rejection, `is_balanced == True`, absence of the
+  `duplicate_unit_time_rows` alert (the precompute path silently
+  resolves duplicate `(unit, time)` cells via last-row-wins, so
+  duplicates must be removed before fitting), and
+  `treatment_dose.dose_min > 0` (ContinuousDiD.fit() raises
+  `ValueError` on negative treated dose support per
+  `continuous_did.py:287-294`; the field-level `dose_min` is
+  computed over non-zero doses only, so `dose_min > 0` is the
+  operational check). Sub-fields:
     - `n_distinct_doses: int` - count of distinct non-NaN dose values
       (including zero if observed). Useful supplement to the gate
       checks for understanding the dose support.
@@ -222,10 +227,12 @@ view. Every field below appears as a top-level key in that dict.
       which case the panel still fails the ContinuousDiD never-treated
       gate. Consult `has_never_treated` for the unit-level gate.
     - `dose_min: float`, `dose_max: float`, `dose_mean: float` -
-      computed over the strictly non-zero doses; useful for effect-size
-      context and dose-response interpretation. See §5.2 for a worked
-      example showing how these fields supplement (not replace) the
-      authoritative gates.
+      computed over the strictly non-zero doses; useful for
+      effect-size context and dose-response interpretation. As noted
+      above, `dose_min > 0` is also part of the ContinuousDiD gate
+      set: a continuous panel with negative non-zero doses (e.g.
+      `dose_min == -1.5`) would be rejected at fit time. See §5.2 for
+      a worked example.
 
 ### Alerts
 
@@ -504,17 +511,19 @@ When `treatment_type == "continuous"`:
   scalar first-stage adoption summary. Useful when adoption is
   graded rather than binary.
 
-The core field-based ContinuousDiD pre-fit gates are
-`has_never_treated == True` (unit-level never-treated control),
-`treatment_varies_within_unit == False` (per-unit full-path dose
-constancy, including pre-treatment zeros), `is_balanced == True`, and
-the absence of the `duplicate_unit_time_rows` alert (the precompute
-path silently resolves duplicate cells via last-row-wins). The
-`PanelProfile.treatment_dose` sub-fields (`n_distinct_doses`,
-`dose_min/max/mean`, `has_zero_dose`) provide descriptive context
-about the dose support, but are NOT themselves prerequisite gates;
-§5.2 walks through the full profile -> reasoning -> validation flow
-including the gate check.
+The full ContinuousDiD pre-fit gate set is `has_never_treated == True`
+(unit-level never-treated control), `treatment_varies_within_unit ==
+False` (per-unit full-path dose constancy, including pre-treatment
+zeros), `is_balanced == True`, the absence of the
+`duplicate_unit_time_rows` alert (the precompute path silently
+resolves duplicate cells via last-row-wins), and
+`treatment_dose.dose_min > 0` (ContinuousDiD requires strictly
+positive treated doses; negative non-zero doses are rejected at fit
+time). The remaining `PanelProfile.treatment_dose` sub-fields
+(`n_distinct_doses`, `dose_max/mean`, `has_zero_dose`) provide
+descriptive context about the dose support but are not themselves
+prerequisite gates; §5.2 walks through the full profile -> reasoning
+-> validation flow including each gate check.
 
 ### §4.8 Few treated units (one or a handful)
 
@@ -746,21 +755,24 @@ Reasoning chain:
 1. `treatment_type == "continuous"` -> §3 row narrows to
    `ContinuousDiD` (`✓`) and `HeterogeneousAdoptionDiD` (`partial`,
    for graded adoption). All other estimators are `✗` on continuous.
-2. ContinuousDiD prerequisites are checked against the core
-   field-based gates (the existing top-level `PanelProfile` fields,
-   not `treatment_dose`): `has_never_treated == True` (unit-level
-   never-treated control, mapping to `first_treat == 0` units in
+2. ContinuousDiD prerequisites are checked against the full pre-fit
+   gate set: `has_never_treated == True` (unit-level never-treated
+   control, mapping to `first_treat == 0` units in
    `ContinuousDiD.fit()`), `treatment_varies_within_unit == False`
    (per-unit full-path dose constancy, matching
    `ContinuousDiD.fit()`'s `df.groupby(unit)[dose].nunique() > 1`
-   check), `is_balanced == True`, and the absence of a
+   check), `is_balanced == True`, the absence of a
    `duplicate_unit_time_rows` alert (the precompute path silently
    resolves duplicate cells via last-row-wins, so duplicates must
-   be removed before fitting). All four pass, so `ContinuousDiD` is
-   in scope. The `treatment_dose` sub-fields (`n_distinct_doses`,
-   `has_zero_dose`, `dose_min/max/mean`) provide descriptive context
-   — useful for reasoning about dose support and the eventual
-   dose-response interpretation, but not themselves gates.
+   be removed before fitting), and `treatment_dose.dose_min > 0`
+   (ContinuousDiD requires strictly positive treated doses;
+   `continuous_did.py:287-294` raises `ValueError` on negative dose
+   support). All five pass (`dose_min == 1.0 > 0`), so
+   `ContinuousDiD` is in scope. The remaining `treatment_dose`
+   sub-fields (`n_distinct_doses`, `has_zero_dose`, `dose_max`,
+   `dose_mean`) provide descriptive context — useful for reasoning
+   about dose support and the eventual dose-response
+   interpretation, but not themselves gates.
 3. Counter-example: had `treatment_varies_within_unit == True` (any
    unit's full dose path - including pre-treatment zeros - has more
    than one distinct value, e.g., a `0,0,d,d` adoption path with
@@ -774,7 +786,15 @@ Reasoning chain:
    reject the panel under default `control_group="never_treated"`.
    Row-level zeros are not a substitute for unit-level
    never-treated controls.
-5. Fit `ContinuousDiD`; the result object exposes the dose-response
+5. Counter-example: had `treatment_dose.dose_min < 0` (continuous
+   panel with some negative-valued treated doses, e.g. a
+   centered-around-zero treatment encoding), `ContinuousDiD.fit()`
+   would raise at line 287-294 with "Dose must be strictly positive
+   for treated units (D > 0)." Even if all four other gates pass,
+   the negative-dose case requires either re-encoding the treatment
+   to non-negative support or routing to a different estimator
+   (e.g. linear DiD with the treatment as a continuous covariate).
+6. Fit `ContinuousDiD`; the result object exposes the dose-response
    curve (`ATT(d)`) and average causal response (`ACRT(d)`); choose
    the headline estimand based on the business question (overall
    ATT under PT, or the dose-response curve under Strong PT).

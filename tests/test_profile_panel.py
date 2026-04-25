@@ -1168,6 +1168,50 @@ def test_treatment_dose_does_not_gate_continuous_did():
     )
 
 
+def test_treatment_dose_min_flags_negative_dose_continuous_panels():
+    """Regression: a balanced, never-treated, time-invariant continuous
+    panel that otherwise satisfies every documented `ContinuousDiD`
+    field-based gate must still be rejected at fit time when the
+    treated-dose support is negative. `ContinuousDiD.fit()` raises
+    `ValueError` at `continuous_did.py:287-294` ("Dose must be strictly
+    positive for treated units (D > 0)"). The guide and docstring
+    therefore list `treatment_dose.dose_min > 0` as a ContinuousDiD
+    pre-fit gate; this test asserts that an agent reading
+    `dose_min == -1.5` knows the panel is out of ContinuousDiD scope
+    even though all other gates pass."""
+    rng = np.random.default_rng(41)
+    rows = []
+    for u in range(1, 21):
+        # 5 zero-dose (never-treated) units, 15 with one of three
+        # NEGATIVE non-zero dose levels held constant across periods.
+        if u <= 5:
+            dose = 0.0
+        elif u <= 10:
+            dose = -1.0
+        elif u <= 15:
+            dose = -2.5
+        else:
+            dose = -4.0
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    # All other ContinuousDiD gates pass:
+    assert profile.treatment_type == "continuous"
+    assert profile.has_never_treated is True
+    assert profile.treatment_varies_within_unit is False
+    assert profile.is_balanced is True
+    assert "duplicate_unit_time_rows" not in {a.code for a in profile.alerts}
+    # But dose_min > 0 fails: ContinuousDiD would raise at fit time.
+    dose = profile.treatment_dose
+    assert dose is not None
+    assert dose.dose_min < 0, (
+        "Fixture must have negative dose_min so the agent's "
+        "ContinuousDiD pre-fit gate check (`dose_min > 0`) correctly "
+        "fires False on this panel."
+    )
+
+
 def test_treatment_dose_continuous_no_zero_dose():
     """If every unit has a strictly positive dose throughout, has_zero_dose
     must be False — descriptive flag for the absence of dose-zero rows in

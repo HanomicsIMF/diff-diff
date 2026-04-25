@@ -66,16 +66,30 @@ class TreatmentDoseShape:
     """Distributional shape of a continuous treatment dose.
 
     Populated on :class:`PanelProfile` only when ``treatment_type ==
-    "continuous"``; ``None`` otherwise. **Descriptive only** — none of
-    these fields are ``ContinuousDiD`` prerequisites. The core
-    field-based gates are ``PanelProfile.has_never_treated`` (unit-level
-    never-treated existence), ``PanelProfile.treatment_varies_within_unit
-    == False`` (per-unit full-path dose constancy, matching
-    ``ContinuousDiD.fit()``'s ``df.groupby(unit)[dose].nunique() > 1``
-    rejection), and ``PanelProfile.is_balanced``, plus the absence of
-    the ``duplicate_unit_time_rows`` alert (``ContinuousDiD``'s
-    precompute path silently resolves duplicate ``(unit, time)`` cells
-    via last-row-wins, so duplicates must be removed before fitting).
+    "continuous"``; ``None`` otherwise. **Descriptive only** — these
+    fields are not themselves ``ContinuousDiD`` prerequisites, but
+    ``dose_min > 0`` IS used downstream as a hard gate (see below).
+    The full ``ContinuousDiD`` pre-fit gate set is:
+
+    1. ``PanelProfile.has_never_treated == True`` (unit-level
+       never-treated existence; ``ContinuousDiD.fit()`` requires
+       ``P(D=0) > 0`` because Remark 3.1 lowest-dose-as-control is not
+       yet implemented).
+    2. ``PanelProfile.treatment_varies_within_unit == False`` (per-unit
+       full-path dose constancy, matching ``ContinuousDiD.fit()``'s
+       ``df.groupby(unit)[dose].nunique() > 1`` rejection).
+    3. ``PanelProfile.is_balanced == True`` (``ContinuousDiD`` requires
+       a balanced panel).
+    4. Absence of the ``duplicate_unit_time_rows`` alert
+       (``ContinuousDiD``'s precompute path silently resolves
+       duplicate ``(unit, time)`` cells via last-row-wins, so
+       duplicates must be removed before fitting).
+    5. ``treatment_dose.dose_min > 0`` — ``ContinuousDiD.fit()``
+       requires strictly positive treated doses (``D > 0`` for
+       treated units) and raises ``ValueError`` on negative dose
+       support (``continuous_did.py:287-294``). The field-level
+       ``dose_min`` is computed over non-zero doses only, so
+       ``dose_min > 0`` is the operational check.
 
     ``has_zero_dose`` is a row-level fact ("at least one observation has
     dose == 0"); it is NOT a substitute for ``has_never_treated``, which

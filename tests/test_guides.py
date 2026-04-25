@@ -57,6 +57,16 @@ def test_content_stability_autonomous_fingerprints():
         "duplicate (unit, time) cells via last-row-wins, so duplicates "
         "must be removed before fitting."
     )
+    # ContinuousDiD also requires strictly positive treated doses
+    # (`continuous_did.py:287-294` raises on negative dose support).
+    # The autonomous guide must list `dose_min > 0` so an agent reading
+    # `treatment_dose.dose_min == -1.5` knows to route the panel away
+    # from ContinuousDiD before paying for the failed fit.
+    assert "dose_min > 0" in text, (
+        "ContinuousDiD prerequisite summary must mention "
+        "`dose_min > 0`: the estimator hard-rejects negative treated "
+        "dose support at line 287-294 of continuous_did.py."
+    )
 
 
 def test_autonomous_contains_worked_examples_section():
