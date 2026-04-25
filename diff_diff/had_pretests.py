@@ -1236,13 +1236,23 @@ def qug_test(
     survey_design : ResolvedSurveyDesign or None, keyword-only, default None
         Permanently rejected with ``NotImplementedError`` (Phase 4.5 C0
         decision gate). Surface-symmetric kwarg with the rest of the HAD
-        family; see *Notes -- Survey/weighted data*.
+        family — accepted in the signature so all 8 HAD entry points
+        share the canonical kwarg name, but ``qug_test`` has no
+        survey-aware migration target. See *Notes -- Survey/weighted
+        data*.
     survey : SurveyDesign or None, keyword-only, default None
-        DEPRECATED alias of ``survey_design=``. Will be removed in the
-        next minor release.
+        DEPRECATED alias of ``survey_design=``. Surface-symmetric only;
+        any non-``None`` value still raises ``NotImplementedError`` —
+        the deprecation is about kwarg-name consolidation, NOT a
+        migration path (there is no survey-aware QUG). Will be removed
+        in the next minor release.
     weights : np.ndarray or None, keyword-only, default None
-        DEPRECATED alias of ``survey_design=make_pweight_design(arr)``.
-        Will be removed in the next minor release.
+        DEPRECATED alias of ``survey_design=`` for the per-row pweight
+        shortcut on the rest of the HAD array-in family. On
+        ``qug_test``, surface-symmetric only; any non-``None`` value
+        still raises ``NotImplementedError`` — there is no migration
+        path (``make_pweight_design(arr)`` is NOT a valid QUG migration
+        target). Will be removed in the next minor release.
 
     Returns
     -------
