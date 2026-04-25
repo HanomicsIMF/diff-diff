@@ -607,15 +607,19 @@ class HADPretestReport:
         Populated when ``aggregate == "event_study"``; ``None`` on the
         overall path.
     all_pass : bool
-        On the overall path: same Phase 3 semantics - True iff QUG is
-        conclusive AND at least one of Stute/Yatchew is conclusive AND
-        no conclusive test rejects. On the event-study path: True iff
-        ``np.isfinite(qug.p_value)``,
+        On the **unweighted overall path**: same Phase 3 semantics - True
+        iff QUG is conclusive AND at least one of Stute/Yatchew is
+        conclusive AND no conclusive test rejects. On the **unweighted
+        event-study path**: True iff ``np.isfinite(qug.p_value)``,
         ``pretrends_joint is not None and
         np.isfinite(pretrends_joint.p_value)``,
         ``np.isfinite(homogeneity_joint.p_value)``, AND none of the
-        three rejects. Mirrors Phase 3's ``bool(np.isfinite(p_value))``
-        convention - no ``.conclusive()`` helper on any result dataclass.
+        three rejects. On the **survey/weights path** (Phase 4.5 C): the
+        QUG-conclusiveness gate is dropped (qug=None per C0 deferral);
+        ``True`` iff at least one linearity test is conclusive AND no
+        conclusive test rejects (linearity-conditional admissibility).
+        Mirrors Phase 3's ``bool(np.isfinite(p_value))`` convention - no
+        ``.conclusive()`` helper on any result dataclass.
     verdict : str
         Human-readable classification. Paper rule applies symmetrically:
         TWFE is admissible only if NONE of the implemented tests
@@ -1202,18 +1206,18 @@ def qug_test(
     or pweight inputs (Phase 4.5 C0 decision gate, 2026-04). The test
     statistic uses extreme order statistics ``(D_{(1)}, D_{(2)})``, which
     are NOT smooth functionals of the empirical CDF -- standard survey
-    machinery (Binder TSL linearization, Rao-Wu rescaled bootstrap) does
-    not yield a calibrated test, and under cluster sampling the
-    ``Exp(1)/Exp(1)`` limit law's independence assumption breaks. The
-    extreme-value-theory-under-unequal-probability-sampling literature
-    (Quintos et al. 2001, Beirlant et al.) addresses tail-index
-    estimation, not boundary tests; no off-the-shelf survey-aware QUG
-    exists. Use joint Stute via :func:`did_had_pretest_workflow`
-    (``aggregate="event_study"``) for survey-aware HAD pretesting once
-    Phase 4.5 C ships -- Stute tests a smooth empirical-CDF functional
-    and admits a Rao-Wu rescaled bootstrap. See
-    ``docs/methodology/REGISTRY.md`` § "QUG Null Test" for the full
-    methodology note.
+    machinery (Binder TSL linearization, multiplier bootstrap, Rao-Wu
+    rescaled bootstrap) does not yield a calibrated test, and under
+    cluster sampling the ``Exp(1)/Exp(1)`` limit law's independence
+    assumption breaks. The extreme-value-theory-under-unequal-probability-
+    sampling literature (Quintos et al. 2001, Beirlant et al.) addresses
+    tail-index estimation, not boundary tests; no off-the-shelf
+    survey-aware QUG exists. Phase 4.5 C ships survey-aware Stute via
+    :func:`did_had_pretest_workflow` (which skips the QUG step under
+    survey/weights and runs the linearity family with a PSU-level Mammen
+    multiplier bootstrap for Stute and weighted OLS + pweight-sandwich
+    variance components for Yatchew). See ``docs/methodology/REGISTRY.md``
+    § "QUG Null Test" for the full methodology note.
 
     References
     ----------
@@ -3064,8 +3068,24 @@ def joint_pretrends_test(
     # Phase 4.5 C: aggregate per-row weights/survey to per-unit (G,)
     # using the existing HAD helpers (constant-within-unit invariant
     # enforced; replicate-weight rejected on the survey path).
+    # R2 P1 fix: subset row-level `weights` to data_filtered's rows BEFORE
+    # resolution, mirroring did_had_pretest_workflow. When
+    # _validate_had_panel_event_study auto-filters to the last cohort
+    # under staggered timing, the original weights array no longer aligns
+    # with data_filtered's row count. Survey= path is unaffected
+    # (column references resolved internally on data_filtered).
+    weights_for_resolve = weights
+    if weights is not None and len(data_filtered) != len(data):
+        pos_idx = data.index.get_indexer(data_filtered.index)
+        if (pos_idx < 0).any():
+            raise ValueError(
+                "joint_pretrends_test: cannot align row-level weights to "
+                "the staggered-filtered panel; some data_filtered rows do "
+                "not appear in original data.index."
+            )
+        weights_for_resolve = np.asarray(weights, dtype=np.float64)[pos_idx]
     weights_unit, resolved_unit = _resolve_pretest_unit_weights(
-        data_filtered, unit_col, weights, survey, "joint_pretrends_test"
+        data_filtered, unit_col, weights_for_resolve, survey, "joint_pretrends_test"
     )
     # Reorder per-unit weights to match d_arr/dy_by_horizon ordering.
     # _aggregate_for_joint_test sorts the wide pivot by index (unit_col),
@@ -3265,8 +3285,21 @@ def joint_homogeneity_test(
             )
 
     # Phase 4.5 C: aggregate weights/survey to per-unit; thread through.
+    # R2 P1 fix: subset row-level `weights` to data_filtered's rows BEFORE
+    # resolution, mirroring did_had_pretest_workflow / joint_pretrends_test
+    # for staggered last-cohort filtering.
+    weights_for_resolve = weights
+    if weights is not None and len(data_filtered) != len(data):
+        pos_idx = data.index.get_indexer(data_filtered.index)
+        if (pos_idx < 0).any():
+            raise ValueError(
+                "joint_homogeneity_test: cannot align row-level weights to "
+                "the staggered-filtered panel; some data_filtered rows do "
+                "not appear in original data.index."
+            )
+        weights_for_resolve = np.asarray(weights, dtype=np.float64)[pos_idx]
     weights_unit, resolved_unit = _resolve_pretest_unit_weights(
-        data_filtered, unit_col, weights, survey, "joint_homogeneity_test"
+        data_filtered, unit_col, weights_for_resolve, survey, "joint_homogeneity_test"
     )
     w_eff = resolved_unit.weights if resolved_unit is not None else weights_unit
 

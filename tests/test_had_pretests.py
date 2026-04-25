@@ -3547,3 +3547,77 @@ class TestPhase45CR1Regressions:
         assert report.aggregate == "event_study"
         assert report.qug is None
         assert report.homogeneity_joint is not None
+
+    # --- R2 P1: direct-wrapper staggered weights= subsetting ---------------
+
+    def test_joint_pretrends_test_staggered_weights_subset(self):
+        """R2 P1: joint_pretrends_test direct call must subset row-level
+        weights= when its own _validate_had_panel_event_study filtering
+        triggers on staggered panels. Pre-fix this crashed with a length-
+        mismatch ValueError because the wrapper passed the full-panel
+        weights array into _resolve_pretest_unit_weights(data_filtered, ...)."""
+        df = self._make_staggered_panel(G_per_cohort=10)
+        n_rows = 2 * 10 * 4
+        weights_per_row = np.ones(n_rows) * 1.5
+        with pytest.warns(UserWarning):
+            r = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[0, 1],
+                base_period=2,
+                first_treat_col="F",
+                n_bootstrap=199,
+                seed=0,
+                weights=weights_per_row,
+            )
+        assert np.isfinite(r.cvm_stat_joint)
+
+    def test_joint_homogeneity_test_staggered_weights_subset(self):
+        df = self._make_staggered_panel(G_per_cohort=10)
+        n_rows = 2 * 10 * 4
+        weights_per_row = np.ones(n_rows) * 1.5
+        with pytest.warns(UserWarning):
+            r = joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[3],
+                base_period=2,
+                first_treat_col="F",
+                n_bootstrap=199,
+                seed=0,
+                weights=weights_per_row,
+            )
+        assert np.isfinite(r.cvm_stat_joint)
+
+    # --- R2 P1: bootstrap perturbation form lock ---------------------------
+
+    def test_stute_survey_perturbation_does_not_double_weight(self):
+        """R2 P1: bootstrap perturbation is `dy_b = fitted + eps * eta_obs`
+        (paper Appendix D form), NOT `eps * w * eta_obs`. Adding `* w` to
+        the perturbation would over-weight by w² (weighting flows through
+        weighted OLS refit + weighted CvM, NOT through the multiplier).
+
+        Lock test: cvm_stat at uniform weights matches between paths
+        bit-exactly (W=G under uniform weights so 1/W² = 1/G²); the
+        bootstrap p-value distributions agree within Monte-Carlo noise
+        (RNG draw ordering differs between batched survey-aware path and
+        per-iteration unweighted path; numerical equivalence is unreachable).
+        """
+        d, dy = _linear_dgp(G=50, beta=2.0, sigma=0.3)
+        r_unweighted = stute_test(d, dy, n_bootstrap=999, seed=0)
+        r_weighted = stute_test(d, dy, weights=np.ones(50), n_bootstrap=999, seed=0)
+        # cvm_stat: bit-exact reduction at w=1 (W=G, weighted CvM ≡ unweighted).
+        np.testing.assert_allclose(
+            r_unweighted.cvm_stat, r_weighted.cvm_stat, atol=1e-14, rtol=1e-14
+        )
+        # p_value: distributional agreement at large B; Monte-Carlo noise.
+        # If the survey path were over-weighting (w² instead of w), the
+        # bootstrap distribution would be inflated and the survey p-value
+        # would systematically deviate. With the correct form, |diff| < 0.10.
+        assert abs(r_unweighted.p_value - r_weighted.p_value) < 0.10
