@@ -87,19 +87,7 @@ class TreatmentDoseShape:
        lowest-dose-as-control not yet implemented), because the
        canonical setup ties ``first_treat == 0`` to ``D_i == 0``.
        Failure means no never-treated controls exist on the dose
-       column. ``ContinuousDiD`` as currently implemented does not
-       apply (the paper's lowest-dose-as-control fallback in Remark
-       3.1 is not implemented here). Routing alternatives that do
-       not require ``P(D=0) > 0``: ``HeterogeneousAdoptionDiD`` for
-       graded-adoption designs, or linear DiD with the treatment
-       as a continuous covariate. Re-encoding the treatment column
-       to a different scale is an agent-side preprocessing choice
-       that changes the estimand; it is **not** documented in
-       REGISTRY as a supported fallback. Do **not** relabel
-       positive-dose units as ``first_treat == 0`` either: that
-       triggers ``fit()``'s force-zero coercion path, which is
-       implementation behavior for inconsistent inputs and is also
-       not a documented routing option.
+       column; see routing notes below.
     2. ``PanelProfile.treatment_varies_within_unit == False``
        (per-unit full-path dose constancy on the dose column). This
        IS the actual fit-time gate, matching
@@ -120,20 +108,34 @@ class TreatmentDoseShape:
        Predicts ``ContinuousDiD.fit()``'s strictly-positive-treated-
        dose requirement (raises ``ValueError`` on negative dose for
        ``first_treat > 0`` units, ``continuous_did.py:287-294``).
-       Under the canonical setup, treated units carry their dose
-       across all periods so ``dose_min`` over non-zero values
-       reflects the smallest treated dose. Failure means some
-       treated units have negative dose; ``ContinuousDiD`` as
-       currently implemented does not apply. Routing alternatives:
-       ``HeterogeneousAdoptionDiD`` or linear DiD with the
-       treatment as a continuous covariate. Re-encoding the
-       treatment to a non-negative scale is an agent-side
-       preprocessing choice that changes the estimand; not
-       documented in REGISTRY as a supported fallback.
-       The estimator's force-zero coercion on ``first_treat == 0``
-       rows with nonzero ``dose`` is implementation behavior for
-       inconsistent inputs (e.g. an accidentally-nonzero row on a
-       never-treated unit), not a methodological fallback.
+       Failure means some treated units have negative dose; see
+       routing notes below.
+
+    Routing alternatives when (1) or (5) fails:
+
+    - When (1) fails (no never-treated controls but all observed
+      doses non-negative): ``ContinuousDiD`` does not apply (Remark
+      3.1 lowest-dose-as-control is not implemented).
+      ``HeterogeneousAdoptionDiD`` IS a candidate for graded-adoption
+      designs (HAD's contract requires non-negative dose, satisfied
+      here); linear DiD with the treatment as a continuous covariate
+      is another.
+    - When (5) fails (negative treated doses):
+      ``HeterogeneousAdoptionDiD`` is **not** a fallback either —
+      HAD raises on negative post-period dose (``had.py:1450-1459``,
+      paper Section 2). Linear DiD with the treatment as a signed
+      continuous covariate is the applicable routing alternative.
+    - Re-encoding the treatment column (shifting, absolute value,
+      etc.) is an agent-side preprocessing choice that changes the
+      estimand and is not documented in REGISTRY as a supported
+      fallback; if the agent re-encodes to non-negative support,
+      both ``ContinuousDiD`` and ``HeterogeneousAdoptionDiD``
+      become candidates again on the re-encoded scale.
+    - Do **not** relabel positive- or negative-dose units as
+      ``first_treat == 0``: that triggers ``ContinuousDiD.fit()``'s
+      force-zero coercion path, which is implementation behavior
+      for inconsistent inputs (e.g., an accidentally-nonzero row on
+      a never-treated unit), not a documented routing option.
 
     The agent must still validate the supplied ``first_treat``
     column independently: it must contain at least one

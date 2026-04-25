@@ -241,20 +241,30 @@ view. Every field below appears as a top-level key in that dict.
   treated units carry their constant dose across all periods so
   `dose_min` over non-zero values is the smallest treated dose).
 
-  When `has_never_treated == False` or `dose_min <= 0`,
-  `ContinuousDiD` as currently implemented does not apply (Remark
-  3.1 lowest-dose-as-control is not implemented). Routing
-  alternatives that do not require `P(D=0) > 0`:
-  `HeterogeneousAdoptionDiD` for graded-adoption designs, or
-  linear DiD with the treatment as a continuous covariate.
-  Re-encoding the treatment column (shifting, absolute value,
-  etc.) is an agent-side preprocessing choice that changes the
+  When `has_never_treated == False` (no zero-dose controls but
+  all observed doses non-negative), `ContinuousDiD` as currently
+  implemented does not apply (Remark 3.1 lowest-dose-as-control
+  is not implemented). Routing alternatives that do not require
+  `P(D=0) > 0`: `HeterogeneousAdoptionDiD` for graded-adoption
+  designs (HAD's own contract requires non-negative dose, which
+  this branch satisfies), or linear DiD with the treatment as a
+  continuous covariate. When `dose_min <= 0` (negative treated
+  doses), the situation is different: `ContinuousDiD` does not
+  apply, and `HeterogeneousAdoptionDiD` is **not** a fallback
+  either — HAD raises on negative post-period dose
+  (`had.py:1450-1459`). The applicable routing alternative on
+  the negative-dose branch is linear DiD with the treatment as
+  a signed continuous covariate. Re-encoding the treatment
+  column to a non-negative scale (shifting, absolute value, etc.)
+  is an agent-side preprocessing choice that changes the
   estimand and is not documented in REGISTRY as a supported
-  fallback. Do not relabel positive- or negative-dose units as
-  `first_treat == 0`: that triggers the force-zero coercion
-  path, which is implementation behavior for inconsistent inputs
-  (e.g., an accidentally-nonzero row on a never-treated unit),
-  not a documented routing option.
+  fallback; if the agent does re-encode, both `ContinuousDiD`
+  and `HeterogeneousAdoptionDiD` become candidates again on the
+  re-encoded scale. Do not relabel positive- or negative-dose
+  units as `first_treat == 0`: that triggers the force-zero
+  coercion path, which is implementation behavior for
+  inconsistent inputs (e.g., an accidentally-nonzero row on a
+  never-treated unit), not a documented routing option.
 
   The agent must still validate the supplied `first_treat` column
   independently: it must contain at least one `first_treat == 0`
@@ -563,18 +573,10 @@ When `treatment_type == "continuous"`:
   overwritten with last-row-wins (a hard preflight veto, not a
   fit-time raise — the agent must deduplicate before fitting); (a)
   and (e) hold under the canonical setup. When (a) or (e) fails,
-  `ContinuousDiD` as currently implemented does not apply (Remark
-  3.1 lowest-dose-as-control is not implemented). Routing
-  alternatives that do not require `P(D=0) > 0` are
-  `HeterogeneousAdoptionDiD` (graded adoption) and linear DiD with
-  a continuous covariate. Re-encoding the treatment column is an
-  agent-side preprocessing choice that changes the estimand and is
-  not documented in REGISTRY as a supported fallback. Do not
-  relabel positive-dose or negative-dose units as
-  `first_treat == 0` to manufacture controls: that triggers
-  `ContinuousDiD.fit()`'s force-zero coercion path
-  (`UserWarning`), which is implementation behavior for
-  inconsistent inputs, not a documented methodological option.
+  see §2 for the full routing-alternatives discussion (the two
+  branches differ: HAD applies on the no-never-treated branch but
+  not on the negative-dose branch, since HAD requires non-negative
+  dose support per `had.py:1450-1459`).
   Note that staggered adoption IS supported natively (adoption
   timing is expressed via the `first_treat` column, not via
   within-unit dose variation), and `ContinuousDiD.fit()` applies
@@ -886,39 +888,27 @@ Reasoning chain:
    indicator and fall back to a binary staggered estimator.
 4. Counter-example: had `has_never_treated == False` (every unit
    eventually treated, even if some pre-treatment rows have zero
-   dose so `treatment_dose.has_zero_dose == True`), the dose
-   column would carry no never-treated unit. With a `first_treat`
-   column consistent with the dose column on per-unit
-   treated/untreated status, `ContinuousDiD.fit()` would reject
-   the panel under both `control_group="never_treated"` and
+   dose so `treatment_dose.has_zero_dose == True`),
+   `ContinuousDiD.fit()` would reject the panel under both
+   `control_group="never_treated"` and
    `control_group="not_yet_treated"` because Remark 3.1
-   lowest-dose-as-control is not yet implemented. `ContinuousDiD`
-   as currently implemented does not apply on this panel.
-   Available routing alternatives that do not require
-   `P(D=0) > 0`: linear DiD with the treatment as a continuous
-   covariate, or `HeterogeneousAdoptionDiD` for graded-adoption
-   designs. Re-encoding the treatment to a scale that contains a
-   true never-treated group is an agent-side preprocessing choice
-   that changes the estimand; it is not documented in REGISTRY as
-   a supported fallback. Do not relabel not-yet-treated units as
-   `first_treat == 0` to manufacture controls; the force-zero
-   coercion path is implementation behavior for inconsistent
-   inputs, not a documented method for manufacturing
-   never-treated controls.
+   lowest-dose-as-control is not yet implemented. On this branch
+   (no never-treated controls but doses still non-negative),
+   `HeterogeneousAdoptionDiD` IS a routing alternative for
+   graded-adoption designs, and linear DiD with the treatment as
+   a continuous covariate is another; see §2 for the full routing
+   discussion.
 5. Counter-example: had `treatment_dose.dose_min < 0` (continuous
    panel with some negative-valued treated doses, e.g. a
    centered-around-zero treatment encoding), with a `first_treat`
-   column consistent with the dose column (negative-dose units
-   labeled `first_treat > 0`), `ContinuousDiD.fit()` would raise
-   at line 287-294 ("Dose must be strictly positive for treated
-   units (D > 0)"). The principled fixes are to re-encode the
-   treatment to a non-negative support (e.g. shift or absolute
-   value, with the methodology change documented and the new
-   estimand reported on the re-encoded scale) or to route to a
-   different estimator. Do not relabel negative-dose units as
-   `first_treat == 0` to coerce them away — that is implementation
-   behavior for inconsistent inputs, not a documented routing
-   option.
+   column consistent with the dose column, `ContinuousDiD.fit()`
+   would raise at line 287-294 ("Dose must be strictly positive
+   for treated units"). `HeterogeneousAdoptionDiD` is **not** a
+   routing alternative here either — HAD requires non-negative
+   dose support (`had.py:1450-1459`, paper Section 2). The
+   applicable alternative is linear DiD with the treatment as a
+   signed continuous covariate; see §2 for the full routing
+   discussion.
 6. Fit `ContinuousDiD`; the result object exposes the dose-response
    curve (`ATT(d)`) and average causal response (`ACRT(d)`); choose
    the headline estimand based on the business question (overall

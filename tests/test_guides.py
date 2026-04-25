@@ -163,6 +163,40 @@ def test_autonomous_count_outcome_uses_asf_outcome_scale_estimand():
     )
 
 
+def test_autonomous_negative_dose_path_does_not_route_to_had():
+    """The §5.2 negative-dose counter-example must not present
+    `HeterogeneousAdoptionDiD` as a direct routing alternative
+    when `dose_min < 0`. HAD's contract requires non-negative
+    dose support and raises on negative post-period dose
+    (`had.py:1450-1459`, paper Section 2). Routing to HAD on a
+    negative-dose panel without re-encoding would steer the agent
+    into an unsupported estimator path. Guards against the wording
+    regressing back to a too-broad "HAD as fallback" framing on
+    this branch."""
+    text = get_llm_guide("autonomous")
+    # Locate counter-example #5 (negative-dose path) within §5.2.
+    sec_5_2_start = text.index("### §5.2 Continuous-dose panel")
+    sec_5_3_start = text.index("### §5.3 Count-shaped outcome")
+    sec_5_2 = text[sec_5_2_start:sec_5_3_start]
+    # The negative-dose paragraph must explicitly state HAD is NOT a
+    # routing alternative on this branch. We assert the disqualifying
+    # phrase is present; we do not forbid `HeterogeneousAdoptionDiD`
+    # entirely because the section may legitimately mention it as a
+    # candidate AFTER re-encoding.
+    assert "HAD" in sec_5_2 or "HeterogeneousAdoptionDiD" in sec_5_2, (
+        "§5.2 must mention HAD by name on the negative-dose branch "
+        "so its non-applicability can be explicitly called out."
+    )
+    assert "had.py:1450-1459" in sec_5_2, (
+        "§5.2 must cite `had.py:1450-1459` on the negative-dose "
+        "branch to anchor HAD's non-negative-dose contract (HAD "
+        "raises on negative post-period dose, paper Section 2). "
+        "Without this citation, the agent could route a "
+        "negative-dose panel directly to HAD and hit a fit-time "
+        "error."
+    )
+
+
 def test_autonomous_worked_examples_avoid_recommender_language():
     """Worked examples must mirror the rest of the guide's discipline:
     no prescriptive language in the example reasoning. Multiple paths

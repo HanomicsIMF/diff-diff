@@ -1237,17 +1237,19 @@ def test_treatment_dose_min_flags_negative_dose_continuous_panels():
     `ContinuousDiD.fit()` would raise `ValueError` at
     `continuous_did.py:287-294` ("Dose must be strictly positive for
     treated units (D > 0)"). `ContinuousDiD` as currently
-    implemented does not apply on this panel. Routing alternatives
-    that do not require `P(D=0) > 0` include
-    `HeterogeneousAdoptionDiD` and linear DiD with a continuous
-    covariate; re-encoding the treatment to a non-negative scale is
-    an agent-side preprocessing choice that changes the estimand
-    and is not documented in REGISTRY as a supported fallback. The
-    force-zero coercion path on `first_treat == 0` rows is
-    implementation behavior for inconsistent inputs and is not a
-    documented routing option. This test asserts that the profile
-    correctly surfaces `dose_min < 0` so an agent can choose an
-    alternative estimator before reaching `fit()`."""
+    implemented does not apply on this panel. `HeterogeneousAdoptionDiD`
+    is also NOT a routing alternative here: HAD requires non-negative
+    dose support (`had.py:1450-1459`, paper Section 2). The applicable
+    alternative on the negative-dose branch is linear DiD with the
+    treatment as a signed continuous covariate. Re-encoding the
+    treatment to a non-negative scale is an agent-side preprocessing
+    choice that changes the estimand and is not documented in
+    REGISTRY as a supported fallback. The force-zero coercion path
+    on `first_treat == 0` rows is implementation behavior for
+    inconsistent inputs and is not a documented routing option. This
+    test asserts that the profile correctly surfaces `dose_min < 0`
+    so an agent can choose an applicable alternative before reaching
+    `fit()`."""
     rng = np.random.default_rng(41)
     rows = []
     for u in range(1, 21):
@@ -1276,10 +1278,13 @@ def test_treatment_dose_min_flags_negative_dose_continuous_panels():
     # negative-dose units labeled first_treat > 0), fit() would raise
     # at line 287-294 ("Dose must be strictly positive for treated
     # units"). ContinuousDiD as currently implemented does not apply.
-    # Routing alternatives include HeterogeneousAdoptionDiD or linear
-    # DiD with a continuous covariate; re-encoding is an agent-side
-    # preprocessing choice not documented in REGISTRY as a fallback.
-    # Relabeling-to-first_treat==0 is not a documented routing option.
+    # HeterogeneousAdoptionDiD is also NOT a routing alternative on
+    # this branch: HAD requires non-negative dose support (had.py:
+    # 1450-1459, paper Section 2). The applicable alternative is
+    # linear DiD with the treatment as a signed continuous covariate.
+    # Re-encoding is an agent-side preprocessing choice not
+    # documented in REGISTRY as a fallback. Relabeling-to-
+    # first_treat==0 is not a documented routing option.
     dose = profile.treatment_dose
     assert dose is not None
     assert dose.dose_min < 0, (
