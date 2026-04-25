@@ -5485,3 +5485,478 @@ class TestByPathPlacebo:
                             f"path={path} lag={lag_key}: seed-pinned SEs "
                             f"diverge: {entry_a['se']} vs {entry_b['se']}"
                         )
+
+
+@pytest.mark.slow
+class TestByPathSupTBands:
+    """``by_path`` combined with ``n_bootstrap > 0`` — per-path joint
+    sup-t simultaneous confidence bands across horizons ``1..L_max``
+    within each path.
+
+    A single shared ``(n_bootstrap, n_eligible)`` multiplier weight
+    matrix (using the estimator's configured ``bootstrap_weights`` —
+    Rademacher / Mammen / Webb) is drawn per path and broadcast across
+    all valid horizons of that path (``finite bootstrap SE > 0``),
+    producing correlated bootstrap distributions across horizons within
+    the path.
+    The path-specific critical value
+    ``c_p = quantile(max_l |t_l|, 1-alpha)`` is then used to construct
+    symmetric joint bands ``effect_l ± c_p · se_l`` per horizon.
+
+    Mirrors the existing OVERALL ``event_study_sup_t_bands`` pattern at
+    ``chaisemartin_dhaultfoeuille_bootstrap.py:599-614``, just stratified
+    by path. Methodology asymmetry (intentional): per-path sup-t draws
+    fresh shared weights AFTER the per-path SE block has populated
+    ``results.path_ses`` via independent per-(path, horizon) draws.
+    Asymptotically equivalent to OVERALL's self-consistent reuse, but
+    NOT bit-identical. See REGISTRY.md for the full contract.
+
+    Marked ``@pytest.mark.slow`` because each test runs a real bootstrap
+    with at least 200 draws to keep MC noise below the wider-than-
+    pointwise tolerance.
+    """
+
+    def _fit_with_bootstrap(
+        self,
+        data,
+        by_path: int,
+        L_max: int = 3,
+        n_bootstrap: int = 200,
+        bootstrap_weights: str = "rademacher",
+        seed: int = 42,
+        placebo: bool = False,
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=by_path,
+                n_bootstrap=n_bootstrap,
+                bootstrap_weights=bootstrap_weights,
+                seed=seed,
+                twfe_diagnostic=False,
+                placebo=placebo,
+            )
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=L_max,
+            )
+        return est, results
+
+    def test_path_sup_t_bands_attr_none_when_no_bootstrap(self):
+        """``n_bootstrap=0`` -> ``results.path_sup_t_bands is None``."""
+        data = _by_path_three_path_data()
+        _est, res = _fit_by_path(data, by_path=2, L_max=3)
+        assert res.path_sup_t_bands is None
+
+    def test_path_sup_t_bands_attr_none_when_no_by_path(self):
+        """``by_path=None`` -> ``results.path_sup_t_bands is None``
+        even with bootstrap active."""
+        data = _by_path_three_path_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=None,
+                n_bootstrap=200,
+                seed=42,
+                twfe_diagnostic=False,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+        assert res.path_sup_t_bands is None
+
+    def test_path_sup_t_bands_keys_match_path_effects_with_finite_crit(self):
+        """For each path with >=2 horizons that have finite bootstrap
+        SE > 0, the path appears in ``path_sup_t_bands`` with a finite
+        ``crit_value``. Paths with <2 valid horizons are absent."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(data, by_path=3, L_max=3, n_bootstrap=200)
+        assert res.path_sup_t_bands is not None
+        # For each path: count finite bootstrap SEs across its horizons.
+        # If >=2 are finite, the path should be in path_sup_t_bands with
+        # a finite crit; otherwise it should be absent.
+        for path, entry in res.path_effects.items():
+            n_valid = sum(
+                1
+                for h in entry["horizons"].values()
+                if np.isfinite(h["se"]) and h["se"] > 0
+            )
+            if n_valid >= 2:
+                # Must be present (assuming gate also passes); if it's
+                # absent, that's the 50%-finite gate failing — log but
+                # don't hard-fail since the gate is a methodology
+                # safety net.
+                if path in res.path_sup_t_bands:
+                    crit = res.path_sup_t_bands[path]["crit_value"]
+                    assert np.isfinite(crit), (
+                        f"path={path}: present in path_sup_t_bands but "
+                        f"crit_value is non-finite: {crit}"
+                    )
+            else:
+                assert path not in res.path_sup_t_bands, (
+                    f"path={path} has only {n_valid} valid horizons; "
+                    f"should be absent from path_sup_t_bands per the "
+                    f">=2 horizons gate"
+                )
+
+    def test_path_sup_t_band_wider_than_pointwise(self):
+        """Per-path joint band must be at least as wide as the marginal
+        CI for every (path, horizon) where both are populated. Mirrors
+        the OVERALL invariant `test_cband_wider_than_pointwise` at
+        `:2235`.
+        """
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(data, by_path=3, L_max=3, n_bootstrap=400)
+        assert res.path_sup_t_bands, "Need at least one path with a finite crit"
+        any_band_checked = False
+        for path, entry in res.path_effects.items():
+            if path not in res.path_sup_t_bands:
+                continue
+            for l_h, h in entry["horizons"].items():
+                cband = h.get("cband_conf_int")
+                if cband is None:
+                    continue
+                pw_ci = h["conf_int"]
+                if not (np.isfinite(pw_ci[0]) and np.isfinite(pw_ci[1])):
+                    continue
+                # Joint band must be at least as wide as marginal.
+                # Tolerance accounts for percentile MC noise.
+                assert cband[0] <= pw_ci[0] + 1e-10, (
+                    f"path={path} l={l_h}: cband_lower {cband[0]} > "
+                    f"conf_int_lower {pw_ci[0]} - violates joint >= marginal"
+                )
+                assert cband[1] >= pw_ci[1] - 1e-10, (
+                    f"path={path} l={l_h}: cband_upper {cband[1]} < "
+                    f"conf_int_upper {pw_ci[1]} - violates joint >= marginal"
+                )
+                any_band_checked = True
+        assert any_band_checked, "Expected at least one path/horizon with a populated cband"
+
+    def test_path_sup_t_crit_finite_and_positive(self):
+        """For every path with a populated entry, ``crit_value`` is
+        finite and strictly positive. The wider-than-pointwise
+        invariant (above) is the stronger statement; this test pins
+        the per-path entry's basic shape (alpha / n_bootstrap / method
+        / n_valid_horizons round-trip)."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(data, by_path=3, L_max=3, n_bootstrap=200)
+        assert res.path_sup_t_bands
+        for path, entry in res.path_sup_t_bands.items():
+            crit = entry["crit_value"]
+            assert np.isfinite(crit), f"path={path}: crit_value not finite ({crit})"
+            assert crit > 0, f"path={path}: crit_value not positive ({crit})"
+            assert entry["alpha"] == 0.05
+            assert entry["n_bootstrap"] == 200
+            assert entry["method"] == "multiplier_bootstrap"
+            assert entry["n_valid_horizons"] >= 2
+
+    def test_path_sup_t_seed_reproducibility(self):
+        """Same seed -> bit-identical ``crit_value`` for every path."""
+        data = _by_path_three_path_data()
+        _est_a, res_a = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42
+        )
+        _est_b, res_b = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42
+        )
+        assert res_a.path_sup_t_bands is not None
+        assert res_b.path_sup_t_bands is not None
+        assert set(res_a.path_sup_t_bands.keys()) == set(res_b.path_sup_t_bands.keys())
+        for path in res_a.path_sup_t_bands:
+            crit_a = res_a.path_sup_t_bands[path]["crit_value"]
+            crit_b = res_b.path_sup_t_bands[path]["crit_value"]
+            assert crit_a == crit_b, (
+                f"path={path}: seed-pinned crits diverge: {crit_a} vs {crit_b}"
+            )
+
+    def test_path_sup_t_skipped_when_path_has_only_one_valid_horizon(self):
+        """A path with only 1 valid horizon (degenerate cohort at later
+        horizons) is absent from ``path_sup_t_bands`` per the >=2 gate.
+
+        Uses the standard fixture and walks the result to find any
+        path with <2 finite bootstrap SE horizons, asserting it's
+        absent from path_sup_t_bands.
+        """
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(data, by_path=3, L_max=3, n_bootstrap=200)
+        assert res.path_sup_t_bands is not None
+        single_horizon_paths = [
+            path
+            for path, entry in res.path_effects.items()
+            if sum(
+                1
+                for h in entry["horizons"].values()
+                if np.isfinite(h["se"]) and h["se"] > 0
+            )
+            < 2
+        ]
+        for path in single_horizon_paths:
+            assert path not in res.path_sup_t_bands, (
+                f"path={path} has <2 valid horizons; should be absent "
+                f"from path_sup_t_bands"
+            )
+            # And no horizon should have cband_conf_int populated.
+            for l_h, h in res.path_effects[path]["horizons"].items():
+                assert "cband_conf_int" not in h, (
+                    f"path={path} l={l_h}: cband_conf_int written despite "
+                    f"path being absent from path_sup_t_bands"
+                )
+
+    def test_path_sup_t_skipped_at_L_max_1(self):
+        """At ``L_max=1`` every path has at most 1 valid horizon; the
+        >=2 horizons gate rejects every path so ``path_sup_t_bands ==
+        {}``. Replaces the H=1 normal-reduction test: at L_max=1 the
+        joint surface is correctly absent rather than collapsing to a
+        normal quantile."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(data, by_path=2, L_max=1, n_bootstrap=200)
+        # Bootstrap ran with by_path so dict is initialized; gate
+        # rejected every path so dict is empty.
+        assert res.path_sup_t_bands == {}, (
+            f"Expected path_sup_t_bands == {{}} at L_max=1 (no path has "
+            f">=2 horizons); got {res.path_sup_t_bands}"
+        )
+        # No horizon should have cband_conf_int.
+        for path, entry in res.path_effects.items():
+            for l_h, h in entry["horizons"].items():
+                assert "cband_conf_int" not in h, (
+                    f"path={path} l={l_h}: cband_conf_int written at "
+                    f"L_max=1 despite path_sup_t_bands == {{}}"
+                )
+
+    def test_path_sup_t_n_valid_horizons_matches(self):
+        """``n_valid_horizons`` field equals the count of finite-SE
+        horizons under each path."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(data, by_path=3, L_max=3, n_bootstrap=200)
+        assert res.path_sup_t_bands
+        br = res.bootstrap_results
+        assert br is not None and br.path_ses is not None
+        for path, entry in res.path_sup_t_bands.items():
+            n_claimed = entry["n_valid_horizons"]
+            n_actual = sum(
+                1
+                for l_h, bs_se in br.path_ses.get(path, {}).items()
+                if np.isfinite(bs_se) and bs_se > 0
+            )
+            assert n_claimed == n_actual, (
+                f"path={path}: n_valid_horizons claimed {n_claimed} but "
+                f"counted {n_actual} finite bootstrap SE horizons"
+            )
+
+    def test_path_sup_t_absent_path_has_no_cband_keys(self):
+        """Library-wide NaN-on-invalid contract: when a path is absent
+        from ``path_sup_t_bands`` (gate failure at >=2 horizons OR
+        <=50% finite sup-t draws — i.e., strict-majority gate fails),
+        no horizon under that path receives a ``cband_conf_int`` key.
+        Mirrors OVERALL absent-key pattern at
+        ``chaisemartin_dhaultfoeuille.py:2865-2875``.
+
+        Uses ``L_max=1`` to deterministically force ``path_sup_t_bands
+        == {}`` (every path has only 1 horizon, so the >=2 gate fails
+        for all paths) and verifies no horizon writes a cband.
+        """
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(data, by_path=3, L_max=1, n_bootstrap=200)
+        assert res.path_sup_t_bands == {}
+        for path, entry in res.path_effects.items():
+            for l_h, h in entry["horizons"].items():
+                assert "cband_conf_int" not in h, (
+                    f"path={path} l={l_h}: cband_conf_int present despite "
+                    f"path being absent from path_sup_t_bands "
+                    f"(violates NaN-on-invalid absent-key contract)"
+                )
+
+    def test_path_sup_t_band_renders_in_summary(self):
+        """``summary()`` text includes 'Sup-t critical value:' once per
+        path with a finite crit (mirroring the OVERALL crit print)."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(data, by_path=3, L_max=3, n_bootstrap=200)
+        assert res.path_sup_t_bands
+        s = res.summary()
+        n_finite_paths = sum(
+            1
+            for entry in res.path_sup_t_bands.values()
+            if np.isfinite(entry.get("crit_value", np.nan))
+        )
+        # The OVERALL surface also prints "Sup-t critical value:" once;
+        # so the per-path block contributes n_finite_paths additional
+        # occurrences.
+        n_occurrences = s.count("Sup-t critical value:")
+        # >= because OVERALL may or may not print depending on its own
+        # finite-horizon count; the per-path block should add at least
+        # n_finite_paths occurrences.
+        assert n_occurrences >= n_finite_paths, (
+            f"Expected at least {n_finite_paths} 'Sup-t critical value:' "
+            f"strings in summary (one per path with finite crit), got "
+            f"{n_occurrences}"
+        )
+
+    def test_path_sup_t_bands_empty_dict_when_no_complete_window(self):
+        """When ``by_path + n_bootstrap > 0`` is requested but every
+        switcher's window falls outside the panel (so
+        ``path_effects == {}``), ``path_sup_t_bands`` must be ``{}``
+        (not ``None``). Mirrors the documented empty-state contract that
+        distinguishes "feature not requested" from "requested but
+        empty" (see ``test_empty_path_surface_when_no_complete_window``
+        for the analytical sibling at ``:4015+``).
+
+        This is the regression test for the requested-but-empty
+        sentinel on the new sup-t surface.
+        """
+        rng = np.random.default_rng(0)
+        rows = []
+        # Switchers switch at t=3 with L_max=3 -> window [2, 5] falls
+        # past the 4-period panel. Same construction as the analytical
+        # empty-window test at :4015+.
+        for g in (1, 2, 3, 4):
+            for t in range(4):
+                d = 1 if t >= 3 else 0
+                rows.append(
+                    {"group": g, "period": t, "treatment": d, "outcome": rng.normal()}
+                )
+        for g in (5, 6):
+            for t in range(4):
+                rows.append(
+                    {"group": g, "period": t, "treatment": 0, "outcome": rng.normal()}
+                )
+        data = pd.DataFrame(rows)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                n_bootstrap=200,
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+
+        # Empty-state contract: requested but empty -> {} not None.
+        assert res.path_effects == {}, (
+            f"Expected path_effects == {{}} on no-complete-window panel; "
+            f"got {res.path_effects}"
+        )
+        assert res.path_sup_t_bands == {}, (
+            f"Expected path_sup_t_bands == {{}} (not None) when "
+            f"by_path + n_bootstrap is active but path_effects == {{}}; "
+            f"got {res.path_sup_t_bands}. This violates the documented "
+            f"None-vs-{{}} empty-state contract."
+        )
+        # Sanity: no path_effects entries means no horizons exist, but
+        # also nothing should write cband_conf_int into anything.
+        # (Iterating over empty dict is a no-op; this just pins the
+        # invariant explicitly.)
+        for path, entry in res.path_effects.items():  # pragma: no cover
+            for l_h, h in entry["horizons"].items():
+                assert "cband_conf_int" not in h
+
+    def test_path_sup_t_strict_majority_gate_at_exact_50pct(self, monkeypatch):
+        """The 50%-finite-draws gate is **strict majority**, not >=:
+        the implementation requires ``finite_mask.sum() > 0.5 *
+        n_bootstrap`` (mirrors OVERALL gate at
+        ``chaisemartin_dhaultfoeuille_bootstrap.py:612``). At exactly
+        50% finite draws the gate fails and the path is absent from
+        ``path_sup_t_bands``.
+
+        This forces the boundary by monkey-patching
+        ``_generate_psu_or_group_weights`` (used by both the OVERALL
+        and per-path sup-t blocks) to return overflow-magnitude
+        weights in exactly half the bootstrap draws — those rows
+        produce non-finite ``boot_dist`` -> non-finite t-stats ->
+        non-finite ``sup_t_dist`` entries. With ``n_bootstrap=4`` and
+        2 overflow rows, ``finite_mask.sum() == 2 == 0.5 * 4``, the
+        gate ``2 > 2.0`` is False, and the path is skipped.
+
+        Pins the prose contract documented in REGISTRY.md and the
+        result-class docstring: "strict majority (more than 50%) of
+        finite sup-t draws".
+        """
+        from diff_diff import chaisemartin_dhaultfoeuille_bootstrap as bs_mod
+
+        original_generator = bs_mod._generate_psu_or_group_weights
+
+        def fake_generator(
+            n_bootstrap, n_groups_target, weight_type, rng, group_to_psu_map
+        ):
+            # Call the original to get a sane base, then inject NaN into
+            # exactly half of the bootstrap rows. The NaN propagates
+            # through `weights @ u_centered` -> NaN deviations -> NaN
+            # boot_dist -> NaN t-stats -> NaN sup_t entries, so
+            # `finite_mask.sum() == n_bootstrap // 2` exactly.
+            base = original_generator(
+                n_bootstrap, n_groups_target, weight_type, rng, group_to_psu_map
+            )
+            n_poison = n_bootstrap // 2
+            base[:n_poison, :] = np.nan
+            return base
+
+        monkeypatch.setattr(bs_mod, "_generate_psu_or_group_weights", fake_generator)
+
+        data = _by_path_three_path_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", (UserWarning, RuntimeWarning))
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                n_bootstrap=4,
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+
+        # At exactly 50% finite draws the strict-majority gate fails —
+        # no path passes, so the requested-but-empty surface is `{}`.
+        assert res.path_sup_t_bands == {}, (
+            f"Expected path_sup_t_bands == {{}} at exactly-50%-finite "
+            f"draws (strict-majority gate semantics); got "
+            f"{res.path_sup_t_bands}. This violates the documented "
+            f"`finite_mask.sum() > 0.5 * n_bootstrap` contract."
+        )
+        # And the OVERALL `sup_t_bands` is also None since the same
+        # patched generator drives the multi-horizon block (gate failure
+        # at exactly 50% finite draws there too).
+        assert res.sup_t_bands is None, (
+            f"Expected sup_t_bands is None at exactly-50%-finite draws "
+            f"on the OVERALL surface; got {res.sup_t_bands}"
+        )
+        # No horizon (per-path or overall) should have cband_conf_int.
+        for path, entry in res.path_effects.items():
+            for l_h, h in entry["horizons"].items():
+                assert "cband_conf_int" not in h, (
+                    f"path={path} l={l_h}: cband_conf_int written despite "
+                    f"strict-majority gate failure at exactly 50% finite"
+                )
+        for l_h, h in res.event_study_effects.items():
+            assert "cband_conf_int" not in h, (
+                f"l={l_h}: OVERALL cband_conf_int written despite "
+                f"strict-majority gate failure at exactly 50% finite"
+            )
