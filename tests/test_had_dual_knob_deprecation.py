@@ -134,17 +134,39 @@ class TestPublicHelpers:
 
 
 class TestArrayInTypeGuard:
-    """Array-in helpers reject SurveyDesign (cannot resolve column names)."""
+    """Array-in helpers reject SurveyDesign (cannot resolve column names).
+
+    Both the canonical `survey_design=SurveyDesign(...)` form AND the
+    deprecated `survey=SurveyDesign(...)` alias trigger the same TypeError
+    (PR #376 R1 P1: alias must behave identically to the canonical kwarg).
+    """
 
     def test_stute_test_rejects_SurveyDesign(self, array_in_data):
         d, dy = array_in_data
         with pytest.raises(TypeError, match="make_pweight_design"):
             stute_test(d, dy, survey_design=SurveyDesign(weights="w"), n_bootstrap=199, seed=0)
 
+    def test_stute_test_rejects_SurveyDesign_via_legacy_alias(self, array_in_data):
+        """PR #376 R1 P1: `survey=SurveyDesign(...)` (deprecated alias) must
+        trigger the same TypeError as `survey_design=SurveyDesign(...)`."""
+        d, dy = array_in_data
+        with pytest.raises(TypeError, match="make_pweight_design"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                stute_test(d, dy, survey=SurveyDesign(weights="w"), n_bootstrap=199, seed=0)
+
     def test_yatchew_hr_test_rejects_SurveyDesign(self, array_in_data):
         d, dy = array_in_data
         with pytest.raises(TypeError, match="make_pweight_design"):
             yatchew_hr_test(d, dy, survey_design=SurveyDesign(weights="w"))
+
+    def test_yatchew_hr_test_rejects_SurveyDesign_via_legacy_alias(self, array_in_data):
+        """PR #376 R1 P1: alias parity with canonical kwarg."""
+        d, dy = array_in_data
+        with pytest.raises(TypeError, match="make_pweight_design"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                yatchew_hr_test(d, dy, survey=SurveyDesign(weights="w"))
 
     def test_stute_joint_pretest_rejects_SurveyDesign(self):
         rng = np.random.default_rng(3)
@@ -163,6 +185,27 @@ class TestArrayInTypeGuard:
                 n_bootstrap=199,
                 seed=0,
             )
+
+    def test_stute_joint_pretest_rejects_SurveyDesign_via_legacy_alias(self):
+        """PR #376 R1 P1: alias parity with canonical kwarg."""
+        rng = np.random.default_rng(3)
+        G = 30
+        d = rng.uniform(0, 1, size=G)
+        residuals = {0: rng.normal(0, 0.1, G)}
+        fitted = {0: np.zeros(G)}
+        X = np.column_stack([np.ones(G), d])
+        with pytest.raises(TypeError, match="make_pweight_design"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                stute_joint_pretest(
+                    residuals_by_horizon=residuals,
+                    fitted_by_horizon=fitted,
+                    doses=d,
+                    design_matrix=X,
+                    survey=SurveyDesign(weights="w"),
+                    n_bootstrap=199,
+                    seed=0,
+                )
 
 
 class TestScaleInvariance:

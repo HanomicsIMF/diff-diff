@@ -1558,19 +1558,9 @@ def stute_test(
     if n_set > 1:
         raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN)
 
-    # Type guard: array-in helpers reject SurveyDesign (cannot resolve column
-    # names without `data`).
-    if survey_design is not None and isinstance(survey_design, SurveyDesign):
-        raise TypeError(
-            "stute_test: `survey_design=` accepts a pre-resolved "
-            "ResolvedSurveyDesign only (array-in helpers have no `data` to "
-            "resolve column names against). For pweight-only, use "
-            "`survey_design=make_pweight_design(arr)`. For full PSU/strata/"
-            "FPC, pre-resolve via `SurveyDesign(...).resolve(data)` and pass "
-            "the result."
-        )
-
-    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=.
+    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=
+    # FIRST so the type guard below covers `survey=SurveyDesign(...)` too
+    # (PR #376 R1 P1: alias must behave identically to the canonical kwarg).
     # The bit-exact normalization-order invariant requires passing UNNORMALIZED
     # weights to make_pweight_design; the unified path's mean=1 step (~line
     # 1669) fires downstream EXACTLY ONCE.
@@ -1584,6 +1574,20 @@ def stute_test(
             stacklevel=2,
         )
         survey_design = make_pweight_design(np.asarray(weights, dtype=np.float64))
+
+    # Type guard: array-in helpers reject SurveyDesign (cannot resolve column
+    # names without `data`). Runs AFTER alias rebinding so it covers both
+    # `survey_design=SurveyDesign(...)` and the deprecated
+    # `survey=SurveyDesign(...)` form identically.
+    if survey_design is not None and isinstance(survey_design, SurveyDesign):
+        raise TypeError(
+            "stute_test: `survey_design=` accepts a pre-resolved "
+            "ResolvedSurveyDesign only (array-in helpers have no `data` to "
+            "resolve column names against). For pweight-only, use "
+            "`survey_design=make_pweight_design(arr)`. For full PSU/strata/"
+            "FPC, pre-resolve via `SurveyDesign(...).resolve(data)` and pass "
+            "the result."
+        )
 
     # Internal alias rebind: downstream code uses `survey` and `weights` as
     # internal variable names (Phase 4.5 C convention). After the deprecation
@@ -2031,17 +2035,9 @@ def yatchew_hr_test(
     if n_set > 1:
         raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN)
 
-    # Type guard: array-in helpers reject SurveyDesign.
-    if survey_design is not None and isinstance(survey_design, SurveyDesign):
-        raise TypeError(
-            "yatchew_hr_test: `survey_design=` accepts a pre-resolved "
-            "ResolvedSurveyDesign only (array-in helpers have no `data` to "
-            "resolve column names against). For pweight-only, use "
-            "`survey_design=make_pweight_design(arr)`. For full PSU/strata/"
-            "FPC, pre-resolve via `SurveyDesign(...).resolve(data)`."
-        )
-
-    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=.
+    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=
+    # FIRST so the type guard below covers `survey=SurveyDesign(...)` too
+    # (PR #376 R1 P1: alias must behave identically to the canonical kwarg).
     if survey is not None:
         warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
         survey_design = survey
@@ -2052,6 +2048,18 @@ def yatchew_hr_test(
             stacklevel=2,
         )
         survey_design = make_pweight_design(np.asarray(weights, dtype=np.float64))
+
+    # Type guard: array-in helpers reject SurveyDesign. Runs AFTER alias
+    # rebinding so it covers both `survey_design=SurveyDesign(...)` and the
+    # deprecated `survey=SurveyDesign(...)` form identically.
+    if survey_design is not None and isinstance(survey_design, SurveyDesign):
+        raise TypeError(
+            "yatchew_hr_test: `survey_design=` accepts a pre-resolved "
+            "ResolvedSurveyDesign only (array-in helpers have no `data` to "
+            "resolve column names against). For pweight-only, use "
+            "`survey_design=make_pweight_design(arr)`. For full PSU/strata/"
+            "FPC, pre-resolve via `SurveyDesign(...).resolve(data)`."
+        )
 
     # Internal alias rebind for back-compat with downstream code.
     survey = survey_design
@@ -2709,17 +2717,9 @@ def stute_joint_pretest(
     if n_set > 1:
         raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN)
 
-    # Type guard: array-in helpers reject SurveyDesign.
-    if survey_design is not None and isinstance(survey_design, SurveyDesign):
-        raise TypeError(
-            "stute_joint_pretest: `survey_design=` accepts a pre-resolved "
-            "ResolvedSurveyDesign only (array-in helpers have no `data` to "
-            "resolve column names against). For pweight-only, use "
-            "`survey_design=make_pweight_design(arr)`. For full PSU/strata/"
-            "FPC, pre-resolve via `SurveyDesign(...).resolve(data)`."
-        )
-
-    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=.
+    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=
+    # FIRST so the type guard below covers `survey=SurveyDesign(...)` too
+    # (PR #376 R1 P1: alias must behave identically to the canonical kwarg).
     if survey is not None:
         warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
         survey_design = survey
@@ -2730,6 +2730,18 @@ def stute_joint_pretest(
             stacklevel=2,
         )
         survey_design = make_pweight_design(np.asarray(weights, dtype=np.float64))
+
+    # Type guard: array-in helpers reject SurveyDesign. Runs AFTER alias
+    # rebinding so it covers both `survey_design=SurveyDesign(...)` and the
+    # deprecated `survey=SurveyDesign(...)` form identically.
+    if survey_design is not None and isinstance(survey_design, SurveyDesign):
+        raise TypeError(
+            "stute_joint_pretest: `survey_design=` accepts a pre-resolved "
+            "ResolvedSurveyDesign only (array-in helpers have no `data` to "
+            "resolve column names against). For pweight-only, use "
+            "`survey_design=make_pweight_design(arr)`. For full PSU/strata/"
+            "FPC, pre-resolve via `SurveyDesign(...).resolve(data)`."
+        )
 
     # Internal alias rebind for back-compat with downstream code.
     survey = survey_design
