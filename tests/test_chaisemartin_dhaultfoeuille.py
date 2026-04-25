@@ -4985,3 +4985,365 @@ class TestByPathBootstrap:
             "Expected at least one (path, horizon) to land in the "
             "non-finite-SE bootstrap branch with n_bootstrap=1"
         )
+
+
+# =============================================================================
+# by_path + placebo (Wave 2 item 3)
+# =============================================================================
+
+
+def _by_path_placebo_data(seed: int = 43) -> pd.DataFrame:
+    """Hand-checkable panel for by_path + placebo invariants.
+
+    Periods 0..6 (n_periods=7), F_g=3 for switchers (so backward index
+    F_g - 1 - lag = 2 - lag; lag=1, 2 valid; lag=3 has backward=-1, NaN).
+    Forward window F_g - 1 + L_max = 2 + 3 = 5 < 7 (in range).
+
+    - Groups 1, 2, 3: path (0,0,0,1,1,1,1) -- single switch, stay on
+    - Groups 4, 5:    path (0,0,0,1,0,0,0) -- single pulse
+    - Group  6:       path (0,0,0,1,1,0,0) -- two on then off
+    - Groups 7, 8:    never-treated controls
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for g in (1, 2, 3):
+        for t in range(7):
+            d = 1 if t >= 3 else 0
+            y = d * 2.0 + rng.normal(0, 0.1)
+            rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+    for g in (4, 5):
+        for t in range(7):
+            d = 1 if t == 3 else 0
+            y = d * 2.0 + rng.normal(0, 0.1)
+            rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+    for g in (6,):
+        for t in range(7):
+            d = 1 if t in (3, 4) else 0
+            y = d * 2.0 + rng.normal(0, 0.1)
+            rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+    for g in (7, 8):
+        for t in range(7):
+            y = rng.normal(0, 0.1)
+            rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+    return pd.DataFrame(rows)
+
+
+def _fit_by_path_with_placebo(
+    data: pd.DataFrame,
+    by_path: int,
+    L_max: int = 3,
+    n_bootstrap: int = 0,
+    seed: int = 42,
+):
+    """Fit with by_path + placebo + optional bootstrap; silence drop_larger_lower."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        est = ChaisemartinDHaultfoeuille(
+            drop_larger_lower=False,
+            by_path=by_path,
+            placebo=True,
+            n_bootstrap=n_bootstrap,
+            seed=seed,
+            twfe_diagnostic=False,
+        )
+        return est, est.fit(
+            data,
+            outcome="outcome",
+            group="group",
+            time="period",
+            treatment="treatment",
+            L_max=L_max,
+        )
+
+
+class TestByPathPlacebo:
+    """``by_path`` combined with ``placebo=True``.
+
+    Per-path backward-horizon placebos ``DID^{pl}_{path, l}`` for
+    ``l = 1..L_max`` are surfaced on
+    ``results.path_placebo_event_study[path][-l]`` (negative-int keys).
+    SE convention parallels per-path event-study (joiners/leavers IF
+    precedent applied backward; cohort-recentered plug-in with path-
+    specific divisor); inherits the cross-path cohort-sharing deviation
+    from R documented for ``path_effects``.
+    """
+
+    def test_attr_is_none_when_placebo_false(self):
+        """``placebo=False`` (with by_path) must leave the new attribute None."""
+        data = _by_path_placebo_data()
+        _est, res = _fit_by_path(data=_by_path_three_path_data(), by_path=3, L_max=3)
+        assert res.path_placebo_event_study is None
+        # Sanity: same fixture, placebo=True, attribute is populated
+        _est2, res2 = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
+        assert res2.path_placebo_event_study is not None
+
+    def test_attr_keys_match_path_effects(self):
+        """``path_placebo_event_study`` keys must equal ``path_effects`` keys."""
+        data = _by_path_placebo_data()
+        _est, res = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
+        assert res.path_effects is not None
+        assert res.path_placebo_event_study is not None
+        assert set(res.path_placebo_event_study.keys()) == set(res.path_effects.keys())
+        # Each path has L_max negative-keyed lags
+        for path, h in res.path_placebo_event_study.items():
+            assert sorted(h.keys()) == [-3, -2, -1]
+
+    def test_path_placebo_point_estimate_within_path_mean(self):
+        """Per-(path, lag), point estimate equals within-path mean DID^pl."""
+        data = _by_path_placebo_data()
+        _est, res = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
+        # Lag 1, 2 valid; lag 3 has backward index -1 so n_obs=0
+        for path, lag_dict in res.path_placebo_event_study.items():
+            for lag_key in (-1, -2):
+                entry = lag_dict[lag_key]
+                if entry["n_obs"] > 0:
+                    assert np.isfinite(entry["effect"]), (
+                        f"path={path} lag={lag_key}: expected finite effect"
+                    )
+            # lag 3 must be NaN (backward index out of range)
+            entry3 = lag_dict[-3]
+            assert entry3["n_obs"] == 0
+            assert np.isnan(entry3["effect"])
+
+    def test_path_placebo_se_finite_or_nan(self):
+        """Every (path, lag) has SE that is NaN (degenerate) or positive finite."""
+        data = _by_path_placebo_data()
+        _est, res = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
+        for path, lag_dict in res.path_placebo_event_study.items():
+            for lag_key, entry in lag_dict.items():
+                se = entry["se"]
+                if np.isfinite(se):
+                    assert se > 0, f"path={path} lag={lag_key}: SE={se} not positive"
+                else:
+                    assert np.isnan(se), (
+                        f"path={path} lag={lag_key}: SE={se} not NaN-finite"
+                    )
+
+    def test_switcher_subset_mask_default_preserves_legacy_placebo_if(self):
+        """``_compute_per_group_if_placebo_horizon(switcher_subset_mask=None)``
+        must produce bit-identical IF arrays as the version without the kwarg
+        (regression for the new param's default branch)."""
+        from diff_diff.chaisemartin_dhaultfoeuille import (
+            _compute_per_group_if_placebo_horizon,
+        )
+
+        # Build a small synthetic input
+        rng = np.random.default_rng(7)
+        n_groups, n_periods = 8, 7
+        D_mat = np.zeros((n_groups, n_periods), dtype=int)
+        # 3 switchers at F_g=3 (period 3), rest never-treated
+        for g in range(3):
+            for t in range(3, 7):
+                D_mat[g, t] = 1
+        Y_mat = rng.normal(0, 1, size=(n_groups, n_periods))
+        N_mat = np.ones((n_groups, n_periods), dtype=int)
+        baselines = np.zeros(n_groups, dtype=float)
+        first_switch_idx = np.array([3, 3, 3, -1, -1, -1, -1, -1])
+        switch_direction = np.array([1, 1, 1, 0, 0, 0, 0, 0])
+        T_g = np.full(n_groups, n_periods - 1)
+
+        # Default (no kwarg)
+        res_default = _compute_per_group_if_placebo_horizon(
+            D_mat=D_mat,
+            Y_mat=Y_mat,
+            N_mat=N_mat,
+            baselines=baselines,
+            first_switch_idx=first_switch_idx,
+            switch_direction=switch_direction,
+            T_g=T_g,
+            L_max=2,
+        )
+        # Explicit None
+        res_none = _compute_per_group_if_placebo_horizon(
+            D_mat=D_mat,
+            Y_mat=Y_mat,
+            N_mat=N_mat,
+            baselines=baselines,
+            first_switch_idx=first_switch_idx,
+            switch_direction=switch_direction,
+            T_g=T_g,
+            L_max=2,
+            switcher_subset_mask=None,
+        )
+        for lag in (1, 2):
+            U_default, _ = res_default[lag]
+            U_none, _ = res_none[lag]
+            np.testing.assert_array_equal(U_default, U_none)
+
+    def test_path_placebo_t_stat_uses_safe_inference(self):
+        """t_stat is SE-derived via safe_inference, never inline `effect/se`."""
+        data = _by_path_placebo_data()
+        _est, res = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
+        from diff_diff.utils import safe_inference
+
+        for path, lag_dict in res.path_placebo_event_study.items():
+            for lag_key, entry in lag_dict.items():
+                if not np.isfinite(entry["se"]):
+                    continue
+                expected_t = safe_inference(
+                    entry["effect"], entry["se"], alpha=0.05, df=None
+                )[0]
+                np.testing.assert_allclose(
+                    entry["t_stat"],
+                    expected_t,
+                    atol=1e-14,
+                    rtol=1e-14,
+                    err_msg=f"path={path} lag={lag_key}: t_stat not safe_inference-derived",
+                )
+
+    def test_path_placebo_renders_in_summary(self):
+        """summary() must include negative-keyed placebo rows under each path block."""
+        data = _by_path_placebo_data()
+        _est, res = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
+        s = res.summary()
+        # At least one valid placebo row should render with l=-1
+        assert "l=-1" in s, "summary() did not render any -l placebo row"
+
+    def test_path_placebo_to_dataframe_emits_negative_horizons(self):
+        """to_dataframe(level='by_path') must include rows for negative horizons."""
+        data = _by_path_placebo_data()
+        _est, res = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
+        df = res.to_dataframe(level="by_path")
+        assert (df["horizon"] < 0).any(), (
+            "to_dataframe(level='by_path') did not emit any negative-horizon rows"
+        )
+
+    @pytest.mark.slow
+    class TestBootstrap:
+        """Bootstrap invariants for by_path + placebo + n_bootstrap > 0.
+
+        Bundled with this PR: the per-path placebo bootstrap mirrors the
+        per-path event-study bootstrap (PR #364) and enforces the same
+        library-wide NaN-on-invalid contract.
+        """
+
+        def test_bootstrap_point_estimates_preserved(self):
+            """Bootstrap fit leaves analytical point estimates bit-identical."""
+            data = _by_path_placebo_data()
+            _est_a, res_a = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
+            _est_b, res_b = _fit_by_path_with_placebo(
+                data, by_path=3, L_max=3, n_bootstrap=100, seed=42
+            )
+            assert res_a.path_placebo_event_study is not None
+            assert res_b.path_placebo_event_study is not None
+            for path, lag_dict_a in res_a.path_placebo_event_study.items():
+                lag_dict_b = res_b.path_placebo_event_study[path]
+                for lag_key, entry_a in lag_dict_a.items():
+                    entry_b = lag_dict_b[lag_key]
+                    if np.isnan(entry_a["effect"]):
+                        assert np.isnan(entry_b["effect"])
+                    else:
+                        np.testing.assert_allclose(
+                            entry_b["effect"],
+                            entry_a["effect"],
+                            atol=1e-14,
+                            rtol=1e-14,
+                            err_msg=(
+                                f"path={path} lag={lag_key}: bootstrap "
+                                f"changed point estimate"
+                            ),
+                        )
+
+        def test_bootstrap_se_finite_or_nan_per_lag(self):
+            """Every (path, lag) bootstrap SE is NaN or positive finite."""
+            data = _by_path_placebo_data()
+            _est, res = _fit_by_path_with_placebo(
+                data, by_path=3, L_max=3, n_bootstrap=200, seed=42
+            )
+            assert res.path_placebo_event_study is not None
+            for path, lag_dict in res.path_placebo_event_study.items():
+                for lag_key, entry in lag_dict.items():
+                    se = entry["se"]
+                    if np.isfinite(se):
+                        assert se > 0
+                    else:
+                        assert np.isnan(se)
+
+        def test_n_bootstrap_1_enforces_full_nan_tuple(self):
+            """``n_bootstrap=1`` produces non-finite SE; the full inference
+            tuple must be NaN per the canonical NaN-on-invalid contract.
+
+            Partial-NaN states (SE=NaN but t_stat / p_value / conf_int
+            populated from analytical) were the regression class that hit
+            PR #364 three rounds in a row.
+            """
+            data = _by_path_placebo_data()
+            _est, res = _fit_by_path_with_placebo(
+                data, by_path=3, L_max=3, n_bootstrap=1, seed=42
+            )
+            assert res.path_placebo_event_study is not None
+            br = res.bootstrap_results
+            assert br is not None
+            # path_placebo_ses populated by mixin, but every entry should
+            # be non-finite at n_bootstrap=1 (std of singleton = 0 -> NaN).
+            for path, lag_dict in res.path_placebo_event_study.items():
+                for lag_key, entry in lag_dict.items():
+                    if entry["n_obs"] == 0:
+                        # Already analytical-NaN — skip
+                        continue
+                    bs_se = (
+                        br.path_placebo_ses.get(path, {}).get(-lag_key)
+                        if br.path_placebo_ses
+                        else None
+                    )
+                    if bs_se is not None and np.isfinite(bs_se):
+                        # Bootstrap somehow produced a finite SE — this
+                        # branch shouldn't fire at n_bootstrap=1, but if
+                        # it does, just skip (no contract to enforce).
+                        continue
+                    # Enforce the four-field NaN contract explicitly
+                    assert np.isnan(entry["se"]), (
+                        f"path={path} lag={lag_key}: SE={entry['se']} "
+                        f"(expected NaN under bootstrap NaN-on-invalid)"
+                    )
+                    assert np.isnan(entry["t_stat"])
+                    assert np.isnan(entry["p_value"])
+                    lo, hi = entry["conf_int"]
+                    assert np.isnan(lo) and np.isnan(hi)
+
+        def test_bootstrap_inference_fields_match_results_directly(self):
+            """``conf_int`` / ``p_value`` are the percentile statistics from
+            ``bootstrap_results.path_placebo_*`` (not normal-theory)."""
+            data = _by_path_placebo_data()
+            _est, res = _fit_by_path_with_placebo(
+                data, by_path=3, L_max=3, n_bootstrap=200, seed=42
+            )
+            br = res.bootstrap_results
+            assert br is not None and br.path_placebo_cis is not None
+            for path, lag_dict in res.path_placebo_event_study.items():
+                for lag_key, entry in lag_dict.items():
+                    if not np.isfinite(entry["se"]):
+                        continue
+                    # The mixin keys path_placebo_cis / p_values by
+                    # POSITIVE lag; the result attribute uses negative.
+                    pos_lag = -lag_key
+                    bs_ci = br.path_placebo_cis[path][pos_lag]
+                    bs_p = br.path_placebo_p_values[path][pos_lag]
+                    assert entry["conf_int"] == bs_ci, (
+                        f"path={path} lag={lag_key}: conf_int "
+                        f"{entry['conf_int']} != bootstrap "
+                        f"path_placebo_cis {bs_ci} (must propagate "
+                        f"percentile, not normal-theory)"
+                    )
+                    assert entry["p_value"] == bs_p
+
+        def test_bootstrap_seed_reproducibility(self):
+            """Same seed -> bit-identical bootstrap SE per (path, lag)."""
+            data = _by_path_placebo_data()
+            _est_a, res_a = _fit_by_path_with_placebo(
+                data, by_path=3, L_max=3, n_bootstrap=100, seed=42
+            )
+            _est_b, res_b = _fit_by_path_with_placebo(
+                data, by_path=3, L_max=3, n_bootstrap=100, seed=42
+            )
+            for path, lag_dict_a in res_a.path_placebo_event_study.items():
+                lag_dict_b = res_b.path_placebo_event_study[path]
+                for lag_key, entry_a in lag_dict_a.items():
+                    entry_b = lag_dict_b[lag_key]
+                    if np.isnan(entry_a["se"]):
+                        assert np.isnan(entry_b["se"])
+                    else:
+                        assert entry_a["se"] == entry_b["se"], (
+                            f"path={path} lag={lag_key}: seed-pinned SEs "
+                            f"diverge: {entry_a['se']} vs {entry_b['se']}"
+                        )

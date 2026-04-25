@@ -572,7 +572,7 @@ scenarios$joiners_only_controls_trends_lin <- list(
 # per-path results live at res$by_level_1, res$by_level_2, ... in rank
 # order (1 = most frequent observed path). res$by_levels is a character
 # vector of comma-joined path labels (e.g. "0,1,1,1") in the same order.
-extract_dcdh_by_path <- function(res, n_effects) {
+extract_dcdh_by_path <- function(res, n_effects, n_placebos = 0) {
   by_levels <- res$by_levels
   out <- list()
   for (i in seq_along(by_levels)) {
@@ -588,6 +588,26 @@ extract_dcdh_by_path <- function(res, n_effects) {
         n_switchers = as.numeric(effects[h, "Switchers"]),
         n_obs = as.numeric(effects[h, "N"])
       )
+    }
+    # Per-path placebos. When did_multiplegt_dyn is called with
+    # by_path=k AND placebo=N, each by_level_i has its own
+    # slot$results$Placebos table with N rows. Negative-keyed
+    # ("-1", "-2", ...) so the Python parity loop can iterate the
+    # full forward+backward horizon set with int(k) on the keys.
+    if (n_placebos > 0) {
+      placebos <- slot$results$Placebos
+      if (!is.null(placebos)) {
+        for (h in seq_len(min(n_placebos, nrow(placebos)))) {
+          horizons[[as.character(-h)]] <- list(
+            effect = as.numeric(placebos[h, "Estimate"]),
+            se = as.numeric(placebos[h, "SE"]),
+            ci_lo = as.numeric(placebos[h, "LB CI"]),
+            ci_hi = as.numeric(placebos[h, "UB CI"]),
+            n_switchers = as.numeric(placebos[h, "Switchers"]),
+            n_obs = as.numeric(placebos[h, "N"])
+          )
+        }
+      }
     }
     out[[i]] <- list(
       path = by_levels[i],
@@ -642,6 +662,31 @@ scenarios$multi_path_reversible_by_path <- list(
                 n_periods = 10, seed = 114, effects = 3, by_path = 3,
                 ci_level = 95),
   results = extract_dcdh_by_path(res14, n_effects = 3)
+)
+
+# Scenario 15: multi_path_reversible + by_path=3 + placebo=2 (per-path
+# backward placebo case). Same deterministic DGP and n_periods=10 as
+# scenario 14 (the DGP's `f_g_to_path` is sized for max_switch=6, fixed
+# at L_max=3 + n_periods=10). For placebo=2: F_g=2 cohort has backward
+# index F_g-1-2=-1 out of range, so those 20 switchers contribute NaN
+# at lag=2; F_g in [3..7] (60 switchers) produce a valid lag=2 estimate.
+# R drops the F_g=2 cohort from Placebo_2 automatically; the parity
+# test compares only over the rows that R produced.
+cat("  Scenario 15: multi_path_reversible_by_path_placebo\n")
+d15 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 10,
+                      pattern = "multi_path_reversible", seed = 115,
+                      L_max = 3)
+res15 <- did_multiplegt_dyn(
+  df = d15, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 3, placebo = 2, by_path = 3,
+  ci_level = 95
+)
+scenarios$multi_path_reversible_by_path_placebo <- list(
+  data = export_data(d15),
+  params = list(pattern = "multi_path_reversible", n_groups = N_GOLDEN,
+                n_periods = 10, seed = 115, effects = 3, placebo = 2,
+                by_path = 3, ci_level = 95),
+  results = extract_dcdh_by_path(res15, n_effects = 3, n_placebos = 2)
 )
 
 # ---------------------------------------------------------------------------

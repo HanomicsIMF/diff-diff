@@ -630,3 +630,124 @@ class TestDCDHDynRParityByPath:
             point_rtol=self.POINT_RTOL,
             se_rtol=self.SE_RTOL,
         )
+
+
+class TestDCDHDynRParityByPathPlacebo:
+    """
+    Parity tests for ``by_path + placebo`` against R DIDmultiplegtDYN.
+
+    R's ``did_multiplegt_dyn(..., by_path=k, placebo=N)`` re-runs the
+    estimator per path; each ``res$by_level_i$results$Placebos`` row
+    holds the per-path backward-horizon placebo. The R generator
+    captures these under the same ``horizons`` dict on each per-path
+    entry, with negative-int string keys ("-1", "-2", ...) parallel
+    to the existing positive-keyed event-study horizons.
+
+    Per-path placebos inherit the same cross-path cohort-sharing SE
+    deviation from R that ``path_effects`` shows (full-panel cohort-
+    centered plug-in vs R's per-path re-run); the
+    ``multi_path_reversible_by_path_placebo`` scenario is constructed
+    on a deterministic, single-path-per-cohort DGP so analytical SE
+    tracks R within the same Phase-2 envelope used by
+    ``TestDCDHDynRParityByPath`` for positive horizons.
+
+    R's placebo iteration is conditional on per-path cohort
+    eligibility: paths whose smallest F_g cohort has backward index
+    ``F_g - 1 - lag < 0`` produce fewer placebo rows than the user
+    requested. The test iterates over the rows R actually produced
+    (negative-string keys present in ``r_path_entry["horizons"]``)
+    rather than over the requested ``placebo`` parameter.
+    """
+
+    POINT_RTOL = 1e-9
+    SE_RTOL = 0.12
+
+    def _path_key_from_r_label(self, r_label: str):
+        return tuple(int(x) for x in r_label.split(","))
+
+    def test_parity_multi_path_reversible_by_path_placebo(self, golden_values):
+        """Per-path placebos R-parity on the cohort-clean deterministic
+        DGP. Bundle of (path, lag) cells produced by R is compared row-
+        by-row to Python's ``path_placebo_event_study``.
+        """
+        import math
+        import warnings
+
+        scenario = golden_values.get("multi_path_reversible_by_path_placebo")
+        if scenario is None:
+            pytest.skip(
+                "scenario 'multi_path_reversible_by_path_placebo' not in golden values"
+            )
+
+        df = _golden_to_df(scenario["data"])
+        est = ChaisemartinDHaultfoeuille(
+            drop_larger_lower=False, by_path=3, placebo=True
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            results = est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+
+        r_by_path = scenario["results"]["by_path"]
+        assert results.path_placebo_event_study is not None
+
+        # Same path-set equality check as positive horizons; R-parity
+        # over a different surface but the path enumeration must match.
+        py_keys = set(results.path_placebo_event_study.keys())
+        r_keys = {self._path_key_from_r_label(e["path"]) for e in r_by_path}
+        assert py_keys == r_keys, (
+            f"Path-set mismatch between Python and R placebos.\n"
+            f"  Python only: {py_keys - r_keys}\n"
+            f"  R only:      {r_keys - py_keys}"
+        )
+
+        for r_path_entry in r_by_path:
+            path_key = self._path_key_from_r_label(r_path_entry["path"])
+            py_lag_dict = results.path_placebo_event_study[path_key]
+
+            # Iterate over R's negative-keyed horizons. R generator emits
+            # `as.character(-h)` keys ("-1", "-2", ...); convert via int().
+            for h_str, r_h in r_path_entry["horizons"].items():
+                h = int(h_str)
+                if h >= 0:
+                    continue  # positive horizons covered by TestDCDHDynRParityByPath
+
+                assert h in py_lag_dict, (
+                    f"path={path_key}: placebo lag {h} present in R goldens "
+                    f"but missing from Python path_placebo_event_study"
+                )
+                py_h = py_lag_dict[h]
+
+                assert py_h["n_obs"] == int(r_h["n_switchers"]), (
+                    f"path={path_key} lag={h}: switcher-count mismatch "
+                    f"py={py_h['n_obs']} vs r={int(r_h['n_switchers'])} "
+                    f"- per-path placebo eligibility divergence; investigate "
+                    f"before comparing SE."
+                )
+
+                assert py_h["effect"] == pytest.approx(
+                    r_h["effect"], rel=self.POINT_RTOL
+                ), (
+                    f"path={path_key} lag={h}: "
+                    f"py={py_h['effect']:.4f} vs r={r_h['effect']:.4f}"
+                )
+
+                py_se = py_h["se"]
+                r_se = r_h["se"]
+                py_finite_positive = math.isfinite(py_se) and py_se > 0.0
+                r_finite_positive = math.isfinite(r_se) and r_se > 0.0
+                assert py_finite_positive == r_finite_positive, (
+                    f"path={path_key} lag={h} placebo SE state mismatch "
+                    f"(py_se={py_se}, r_se={r_se})"
+                )
+                if py_finite_positive and r_finite_positive:
+                    assert py_se == pytest.approx(r_se, rel=self.SE_RTOL), (
+                        f"path={path_key} lag={h} placebo SE: "
+                        f"py={py_se:.4f} vs r={r_se:.4f}"
+                    )
