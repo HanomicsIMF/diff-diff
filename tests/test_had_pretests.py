@@ -178,6 +178,71 @@ class TestQUGTest:
         with pytest.raises(ValueError, match="negative value"):
             qug_test(np.array([0.1, -0.3, 0.5, 0.9]))
 
+    # -------------------------------------------------------------------
+    # Phase 4.5 C0 decision-gate guards
+    # -------------------------------------------------------------------
+
+    def test_weights_kwarg_raises_not_implemented(self):
+        """Phase 4.5 C0: qug_test(weights=) raises NotImplementedError."""
+        d = np.array([0.1, 0.5, 0.9])
+        with pytest.raises(NotImplementedError, match="qug_test does not support"):
+            qug_test(d, weights=np.ones(3))
+
+    def test_survey_kwarg_raises_not_implemented(self):
+        """Phase 4.5 C0: qug_test(survey=) raises NotImplementedError."""
+        from diff_diff import SurveyDesign
+
+        d = np.array([0.1, 0.5, 0.9])
+        with pytest.raises(NotImplementedError, match="qug_test does not support"):
+            qug_test(d, survey=SurveyDesign(weights="w"))
+
+    def test_mutex_both_set_raises_value_error(self):
+        """Phase 4.5 C0: passing both survey= AND weights= raises ValueError
+        (mirroring HeterogeneousAdoptionDiD.fit() at had.py:2890), BEFORE the
+        NotImplementedError fires. Mutex pattern is consistent across the HAD
+        surface so users get the same error text whether they hit the
+        estimator or a pretest."""
+        from diff_diff import SurveyDesign
+
+        d = np.array([0.1, 0.5, 0.9])
+        with pytest.raises(ValueError, match="OR weights=.*not both"):
+            qug_test(d, survey=SurveyDesign(weights="w"), weights=np.ones(3))
+
+    def test_methodology_pointer_in_message(self):
+        """Phase 4.5 C0: the NotImplementedError must point users to (a) the
+        joint Stute alternative and (b) Phase 4.5 C, AND name the three
+        methodology reasons (extreme order statistics not smooth, Exp(1)/Exp(1)
+        independence breaks under clustering, EVT-under-sampling literature
+        sparse). This locks the cross-surface parity audit (docstring vs error
+        message vs REGISTRY note must agree on the rationale)."""
+        d = np.array([0.1, 0.5, 0.9])
+        with pytest.raises(NotImplementedError) as exc_info:
+            qug_test(d, weights=np.ones(3))
+        msg = str(exc_info.value)
+        # Methodology rationale tags
+        assert "smallest order statistics" in msg
+        assert "Exp(1)/Exp(1)" in msg
+        assert "extreme-value theory" in msg
+        # Routing pointers
+        assert "joint Stute" in msg
+        assert "Phase 4.5 C" in msg
+        assert "did_had_pretest_workflow" in msg
+        # REGISTRY pointer
+        assert "REGISTRY.md" in msg
+
+    def test_unweighted_call_unchanged_after_kwargs_added(self):
+        """Stability invariant: existing positional / kwarg-free calls must
+        produce bit-exact pre-PR output after the new keyword-only kwargs are
+        added. Locks the closed-form parity at atol=1e-12 (same tolerance as
+        test_tight_parity_closed_form)."""
+        d = np.array([0.2, 0.5, 0.9])
+        r = qug_test(d, alpha=0.05)
+        expected_T = 0.2 / (0.5 - 0.2)
+        expected_p = 1.0 / (1.0 + expected_T)
+        np.testing.assert_allclose(r.t_stat, expected_T, atol=1e-12)
+        np.testing.assert_allclose(r.p_value, expected_p, atol=1e-12)
+        assert r.reject is False  # T = 0.667 < 1/0.05 - 1 = 19
+
 
 class TestNegativeDoseGuardsOnLinearityTests:
     """R6 P1 fix: stute_test and yatchew_hr_test must enforce the same
@@ -2779,3 +2844,126 @@ class TestHADPretestReportSerialization:
         )
         r = repr(report)
         assert "aggregate='event_study'" in r
+
+
+# =============================================================================
+# Phase 4.5 C0 decision-gate guards on did_had_pretest_workflow
+# =============================================================================
+
+
+class TestHADPretestWorkflowSurveyGuards:
+    """Phase 4.5 C0 guards on did_had_pretest_workflow.
+
+    Reciprocal half of the qug_test guards in TestQUGTest above: the workflow
+    has its own survey/weights kwargs that must reject for the same reasons.
+    QUG-under-survey is permanently deferred (extreme-value theory under
+    complex sampling not a settled toolkit); the linearity-family pretests
+    are deferred to Phase 4.5 C. Until C ships the workflow has no
+    survey-aware dispatch, so it must reject."""
+
+    def _make_minimal_overall_panel(self):
+        """Two-period, single-cohort panel sufficient for overall workflow."""
+        d_arr, dy_arr = _linear_dgp(G=20, beta=2.0, sigma=0.3)
+        return _make_two_period_panel(G=20, d=d_arr, dy=dy_arr)
+
+    def test_workflow_weights_raises(self):
+        """Phase 4.5 C0: did_had_pretest_workflow(weights=) raises
+        NotImplementedError BEFORE running any of the underlying tests."""
+        df = self._make_minimal_overall_panel()
+        with pytest.raises(NotImplementedError, match="does not yet accept"):
+            did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                weights=np.ones(20),
+            )
+
+    def test_workflow_survey_raises(self):
+        """Phase 4.5 C0: did_had_pretest_workflow(survey=) raises
+        NotImplementedError."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_minimal_overall_panel()
+        with pytest.raises(NotImplementedError, match="does not yet accept"):
+            did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey=SurveyDesign(weights="w"),
+            )
+
+    def test_workflow_mutex_both_raises(self):
+        """Phase 4.5 C0: passing both survey= AND weights= raises ValueError
+        (mutex), mirroring HeterogeneousAdoptionDiD.fit() at had.py:2890."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_minimal_overall_panel()
+        with pytest.raises(ValueError, match="OR weights=.*not both"):
+            did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey=SurveyDesign(weights="w"),
+                weights=np.ones(20),
+            )
+
+    def test_workflow_message_points_to_phase_4_5_c(self):
+        """Phase 4.5 C0: the NotImplementedError must explicitly route users
+        to Phase 4.5 C and explain the QUG-under-survey vs Stute-under-survey
+        distinction."""
+        df = self._make_minimal_overall_panel()
+        with pytest.raises(NotImplementedError) as exc_info:
+            did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                weights=np.ones(20),
+            )
+        msg = str(exc_info.value)
+        # Routing pointers
+        assert "Phase 4.5 C" in msg
+        assert "Rao-Wu" in msg
+        # Why QUG specifically can't be done (cross-reference to qug_test)
+        assert "qug_test" in msg
+        assert "permanently deferred" in msg
+
+    def test_workflow_unweighted_overall_path_unchanged(self):
+        """Stability invariant: existing positional / unweighted calls must
+        produce a valid HADPretestReport after the new keyword-only kwargs
+        are added. Smoke-tests the overall path."""
+        df = self._make_minimal_overall_panel()
+        report = did_had_pretest_workflow(df, "y", "d", "time", "unit", n_bootstrap=199, seed=0)
+        # Overall-path invariant: stute and yatchew populated; joint variants None.
+        assert report.aggregate == "overall"
+        assert report.qug is not None
+        assert report.stute is not None
+        assert report.yatchew is not None
+        assert report.pretrends_joint is None
+        assert report.homogeneity_joint is None
+
+    def test_workflow_survey_rejects_on_event_study_path_too(self):
+        """Phase 4.5 C0: rejection happens at the front door regardless of
+        which aggregate path the user picked. The mutex/reject guards fire
+        BEFORE the panel validator does any work, so the user gets the
+        methodology-aware message even on an invalid event-study panel."""
+        df = (
+            self._make_minimal_overall_panel()
+        )  # only two periods - would fail event_study validation
+        with pytest.raises(NotImplementedError, match="does not yet accept"):
+            did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                weights=np.ones(20),
+            )
