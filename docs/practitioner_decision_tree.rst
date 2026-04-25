@@ -205,6 +205,14 @@ a joiners-only view `DID_+`, and a leavers-only view `DID_-`.
    influence-function derivation for the single-lag placebo is a planned
    extension. Dynamic placebos (``L_max >= 1``) do have valid analytical SE.
 
+.. tip::
+
+   For a full walkthrough on a marketing-pulse panel - including the TWFE
+   decomposition diagnostic, joiners-vs-leavers reading, multi-horizon event
+   study with multiplier bootstrap, and a stakeholder communication template,
+   see `Tutorial 19: dCDH Marketing Pulse Campaigns
+   <tutorials/19_dcdh_marketing_pulse.ipynb>`_.
+
 
 .. _section-dose:
 

@@ -280,6 +280,8 @@ sources:
       - path: docs/practitioner_decision_tree.rst
         section: "Reversible Treatment"
         type: user_guide
+      - path: docs/tutorials/19_dcdh_marketing_pulse.ipynb
+        type: tutorial
       - path: ROADMAP.md
         section: "de Chaisemartin-D'Haultfœuille (dCDH) Estimator"
         type: roadmap
