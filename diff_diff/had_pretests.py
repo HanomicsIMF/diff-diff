@@ -66,12 +66,16 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from diff_diff.bootstrap_utils import generate_survey_multiplier_weights_batch
 from diff_diff.had import (
     _aggregate_first_difference,
+    _aggregate_unit_resolved_survey,
+    _aggregate_unit_weights,
     _json_safe_scalar,
     _validate_had_panel,
     _validate_had_panel_event_study,
 )
+from diff_diff.survey import _make_trivial_resolved
 from diff_diff.utils import _generate_mammen_weights
 
 __all__ = [
@@ -584,8 +588,11 @@ class HADPretestReport:
 
     Attributes
     ----------
-    qug : QUGTestResults
-        Always populated.
+    qug : QUGTestResults or None
+        Populated by default; ``None`` only when the workflow runs under
+        ``survey=`` / ``weights=`` (Phase 4.5 C path), where the QUG step
+        is permanently skipped per Phase 4.5 C0 (extreme-value theory under
+        complex sampling not a settled toolkit; see :func:`qug_test`).
     stute : StuteTestResults or None
         Populated when ``aggregate == "overall"``; ``None`` when
         ``aggregate == "event_study"``.
@@ -600,15 +607,28 @@ class HADPretestReport:
         Populated when ``aggregate == "event_study"``; ``None`` on the
         overall path.
     all_pass : bool
-        On the overall path: same Phase 3 semantics - True iff QUG is
-        conclusive AND at least one of Stute/Yatchew is conclusive AND
-        no conclusive test rejects. On the event-study path: True iff
-        ``np.isfinite(qug.p_value)``,
+        On the **unweighted overall path**: same Phase 3 semantics - True
+        iff QUG is conclusive AND at least one of Stute/Yatchew is
+        conclusive AND no conclusive test rejects. On the **unweighted
+        event-study path**: True iff ``np.isfinite(qug.p_value)``,
         ``pretrends_joint is not None and
         np.isfinite(pretrends_joint.p_value)``,
         ``np.isfinite(homogeneity_joint.p_value)``, AND none of the
-        three rejects. Mirrors Phase 3's ``bool(np.isfinite(p_value))``
-        convention - no ``.conclusive()`` helper on any result dataclass.
+        three rejects. On the **survey/weights path** (Phase 4.5 C) the
+        QUG-conclusiveness gate is dropped (``qug=None`` per C0
+        deferral); the linearity-conditional rule splits by aggregate:
+
+        - ``aggregate="overall"`` survey: True iff at least one of
+          Stute/Yatchew is conclusive AND no conclusive test rejects.
+        - ``aggregate="event_study"`` survey: True iff
+          ``pretrends_joint`` is non-None and conclusive,
+          ``homogeneity_joint`` is conclusive, AND neither rejects.
+          (Both joint variants must be conclusive on the event-study
+          path - same step-2 + step-3 closure as the unweighted
+          aggregate, just without the QUG step.)
+
+        Mirrors Phase 3's ``bool(np.isfinite(p_value))`` convention - no
+        ``.conclusive()`` helper on any result dataclass.
     verdict : str
         Human-readable classification. Paper rule applies symmetrically:
         TWFE is admissible only if NONE of the implemented tests
@@ -626,7 +646,7 @@ class HADPretestReport:
         to render.
     """
 
-    qug: QUGTestResults
+    qug: Optional[QUGTestResults]
     stute: Optional[StuteTestResults]
     yatchew: Optional[YatchewTestResults]
     all_pass: bool
@@ -659,13 +679,20 @@ class HADPretestReport:
         # Preserve Phase 3 summary bit-exactly on the overall path. The
         # `aggregate: ...` header line is only rendered on the event-
         # study path; two-period reports produce the Phase 3 layout.
+        # QUG block: rendered when self.qug is populated, else a skip note
+        # (Phase 4.5 C survey/weights path leaves qug=None; see C0 deferral).
+        qug_block = (
+            self.qug.summary()
+            if self.qug is not None
+            else "(QUG step skipped - permanently deferred under survey/weights per Phase 4.5 C0)"
+        )
         if self.aggregate == "event_study":
             header = [
                 "=" * width,
                 "HAD pre-test workflow".center(width),
                 f"aggregate: {self.aggregate}".center(width),
                 "=" * width,
-                self.qug.summary(),
+                qug_block,
                 "",
             ]
             if self.pretrends_joint is not None:
@@ -678,12 +705,13 @@ class HADPretestReport:
             if self.homogeneity_joint is not None:
                 body += [self.homogeneity_joint.summary(), ""]
         else:
-            # aggregate == "overall" - Phase 3 layout preserved.
+            # aggregate == "overall" - Phase 3 layout preserved when qug is
+            # not None (unweighted path); QUG-skip block on the survey path.
             header = [
                 "=" * width,
                 "HAD pre-test workflow".center(width),
                 "=" * width,
-                self.qug.summary(),
+                qug_block,
                 "",
             ]
             body = []
@@ -713,10 +741,14 @@ class HADPretestReport:
         ``pretrends_joint``, ``homogeneity_joint`` and omits the
         ``None``-valued ``stute`` / ``yatchew`` keys entirely.
         """
+        # qug serializes as None on the survey/weights path (Phase 4.5 C
+        # QUG-skip per C0 deferral); rendered as the existing dict on the
+        # default unweighted path.
+        qug_dict = None if self.qug is None else self.qug.to_dict()
         if self.aggregate == "event_study":
             return {
                 "aggregate": str(self.aggregate),
-                "qug": self.qug.to_dict(),
+                "qug": qug_dict,
                 "pretrends_joint": (
                     None if self.pretrends_joint is None else self.pretrends_joint.to_dict()
                 ),
@@ -728,10 +760,11 @@ class HADPretestReport:
                 "alpha": float(self.alpha),
                 "n_obs": int(self.n_obs),
             }
-        # aggregate == "overall" - Phase 3 schema preserved bit-exactly,
-        # including key order and the absence of the aggregate field.
+        # aggregate == "overall" - Phase 3 schema preserved bit-exactly on
+        # the unweighted path (qug populated); the qug=None survey path
+        # surfaces qug: null.
         return {
-            "qug": self.qug.to_dict(),
+            "qug": qug_dict,
             "stute": None if self.stute is None else self.stute.to_dict(),
             "yatchew": None if self.yatchew is None else self.yatchew.to_dict(),
             "all_pass": bool(self.all_pass),
@@ -756,15 +789,29 @@ class HADPretestReport:
         no earlier pre-period exists) are emitted with NaN statistic
         values and ``reject=False`` to preserve the 3-row shape.
         """
-        qug_row = {
-            "test": "qug",
-            "statistic_name": "t_stat",
-            "statistic_value": _json_safe_scalar(self.qug.t_stat),
-            "p_value": _json_safe_scalar(self.qug.p_value),
-            "reject": bool(self.qug.reject),
-            "alpha": float(self.qug.alpha),
-            "n_obs": int(self.qug.n_obs),
-        }
+        # qug row: NaN-skip when self.qug is None (Phase 4.5 C survey/weights
+        # path leaves qug=None per C0 deferral). Mirrors the joint NaN-row
+        # shape from `_joint_row_or_nan` so the 3-row contract is preserved.
+        if self.qug is None:
+            qug_row = {
+                "test": "qug",
+                "statistic_name": "t_stat",
+                "statistic_value": float("nan"),
+                "p_value": float("nan"),
+                "reject": False,
+                "alpha": float(self.alpha),
+                "n_obs": int(self.n_obs),
+            }
+        else:
+            qug_row = {
+                "test": "qug",
+                "statistic_name": "t_stat",
+                "statistic_value": _json_safe_scalar(self.qug.t_stat),
+                "p_value": _json_safe_scalar(self.qug.p_value),
+                "reject": bool(self.qug.reject),
+                "alpha": float(self.qug.alpha),
+                "n_obs": int(self.qug.n_obs),
+            }
         if self.aggregate == "event_study":
             pre_row = self._joint_row_or_nan("pretrends_joint", self.pretrends_joint)
             hom_row = self._joint_row_or_nan("homogeneity_joint", self.homogeneity_joint)
@@ -893,6 +940,46 @@ def _fit_ols_intercept_slope(d: np.ndarray, dy: np.ndarray) -> "tuple[float, flo
     return a_hat, b_hat, residuals
 
 
+def _fit_weighted_ols_intercept_slope(
+    d: np.ndarray, dy: np.ndarray, w: np.ndarray
+) -> "tuple[float, float, np.ndarray]":
+    """Weighted OLS analog of :func:`_fit_ols_intercept_slope`.
+
+    Solves the weighted normal equations for ``dy = a + b*d + eps`` where
+    each observation has weight ``w_g``. Returns ``(a_hat, b_hat,
+    residuals)`` with ``residuals`` in the ORIGINAL input order (not
+    sorted) and on the un-weighted scale (``residuals = dy - a_hat - b_hat * d``,
+    NOT ``sqrt(w) * (dy - ...)``).
+
+    At ``w = ones(G)`` reduces bit-exactly to ``_fit_ols_intercept_slope``
+    (Phase 4.5 C stability invariant #1; locked at ``atol=1e-14`` by the
+    survey-path tests).
+
+    Closed form:
+        b_hat = sum(w * (d - d_w_mean) * (dy - dy_w_mean)) / sum(w * (d - d_w_mean)^2)
+        a_hat = dy_w_mean - b_hat * d_w_mean
+
+    where ``d_w_mean = sum(w * d) / sum(w)`` (and similarly for ``dy``).
+    """
+    sw = float(np.sum(w))
+    if sw <= 0.0:
+        raise ValueError(
+            f"_fit_weighted_ols_intercept_slope: sum(w) = {sw} <= 0; "
+            "weighted OLS requires positive total mass."
+        )
+    d_wmean = float(np.sum(w * d) / sw)
+    dy_wmean = float(np.sum(w * dy) / sw)
+    d_dev = d - d_wmean
+    var_d_w = float(np.sum(w * d_dev * d_dev))
+    if var_d_w <= 0.0:
+        # Degenerate case: all dose values equal (under weights).
+        return float(dy_wmean), 0.0, dy - dy_wmean
+    b_hat = float(np.sum(w * d_dev * (dy - dy_wmean)) / var_d_w)
+    a_hat = float(dy_wmean - b_hat * d_wmean)
+    residuals = dy - a_hat - b_hat * d
+    return a_hat, b_hat, residuals
+
+
 def _cvm_statistic(eps_sorted: np.ndarray, d_sorted: np.ndarray) -> float:
     """Compute the tie-safe Cramer-von Mises cusum statistic.
 
@@ -937,6 +1024,86 @@ def _cvm_statistic(eps_sorted: np.ndarray, d_sorted: np.ndarray) -> float:
     tie_end_idx = np.cumsum(counts) - 1
     cumsum_tie_safe = np.repeat(cumsum[tie_end_idx], counts)
     return float(np.sum(cumsum_tie_safe * cumsum_tie_safe) / (G * G))
+
+
+def _has_lonely_psu_adjust_singletons(resolved: Any) -> bool:
+    """Detect singleton strata under ``lonely_psu='adjust'``.
+
+    Returns ``True`` iff (a) the resolved design uses
+    ``lonely_psu='adjust'`` AND (b) at least one stratum has fewer than
+    2 PSUs. Under those conditions, the bootstrap multiplier helper
+    pools singletons into a pseudo-stratum with NONZERO multipliers
+    while the analytical variance target requires a pseudo-stratum
+    centering transform that is not derived for the Stute CvM
+    (Phase 4.5 C R5 P1; mirrors the explicit lonely-PSU reject on
+    HeterogeneousAdoptionDiD's sup-t bootstrap at ``had.py:2081-2118``).
+    """
+    if getattr(resolved, "lonely_psu", "remove") != "adjust":
+        return False
+    strata_arr = resolved.strata
+    if strata_arr is None:
+        return False
+    psu_arr = resolved.psu
+    for h in np.unique(strata_arr):
+        mask_h = np.asarray(strata_arr) == h
+        if psu_arr is not None:
+            n_psu_h = int(np.unique(np.asarray(psu_arr)[mask_h]).shape[0])
+        else:
+            n_psu_h = int(mask_h.sum())
+        if n_psu_h < 2:
+            return True
+    return False
+
+
+def _cvm_statistic_weighted(
+    eps_sorted: np.ndarray, d_sorted: np.ndarray, w_sorted: np.ndarray
+) -> float:
+    """Weighted analog of :func:`_cvm_statistic` (survey-weighted plug-in).
+
+    The unweighted Stute CvM `S = (1/G) * sum_g c_G(D_g)^2` integrates
+    the squared cusum process against the empirical CDF
+    ``F_hat = (1/G) sum_i delta_{D_i}``. The weighted plug-in replaces
+    ``F_hat`` by the survey-weighted EDF
+    ``F_hat_w = (1/W) sum_i w_i delta_{D_i}``, which weights BOTH the
+    inner cusum AND the outer integration measure:
+
+        C_g = sum_{h : D_h <= D_g} w_h * eps_h     (inner cusum, weighted)
+        S_w = (1 / W^2) * sum_g w_g * (C_g)^2      (outer measure, weighted)
+        W   = sum(w)
+
+    The outer ``w_g`` factor on each squared cusum (R7 P0 fix) is what
+    distinguishes this from a count-weighted-cusum form
+    ``(1/W^2) * sum_g C_g^2`` (no outer ``w_g``), which silently
+    misreports survey-weighted Stute statistics for non-uniform weights.
+    At ``w = ones(G)`` both forms reduce to ``(1/G^2) sum_g C_g^2``
+    (unweighted) -- only non-uniform weights distinguish them.
+
+    Tie-block collapse uses the same ``np.unique(d_sorted)`` count
+    machinery as the unweighted form -- positions are determined by
+    ``d_sorted`` ties (independent of weights), so the collapse pattern
+    is weight-invariant. The outer ``w_sorted`` factor applies to the
+    tie-collapsed cusum at each observation.
+
+    Parameters
+    ----------
+    eps_sorted, d_sorted, w_sorted : np.ndarray, shape (G,)
+        Residuals, regressor values, and weights sorted CONSISTENTLY by
+        ``d``. Caller is responsible for the sort alignment.
+
+    Returns
+    -------
+    float
+        Weighted CvM statistic.
+    """
+    weighted_eps = w_sorted * eps_sorted
+    cumsum = np.cumsum(weighted_eps)
+    _, counts = np.unique(d_sorted, return_counts=True)
+    tie_end_idx = np.cumsum(counts) - 1
+    cumsum_tie_safe = np.repeat(cumsum[tie_end_idx], counts)
+    W = float(np.sum(w_sorted))
+    # R7 P0: integrate outer measure against F_hat_w via the w_sorted
+    # factor on each squared cusum (NOT against uniform 1/G measure).
+    return float(np.sum(w_sorted * cumsum_tie_safe * cumsum_tie_safe) / (W * W))
 
 
 def _compose_verdict(
@@ -1089,18 +1256,18 @@ def qug_test(
     or pweight inputs (Phase 4.5 C0 decision gate, 2026-04). The test
     statistic uses extreme order statistics ``(D_{(1)}, D_{(2)})``, which
     are NOT smooth functionals of the empirical CDF -- standard survey
-    machinery (Binder TSL linearization, Rao-Wu rescaled bootstrap) does
-    not yield a calibrated test, and under cluster sampling the
-    ``Exp(1)/Exp(1)`` limit law's independence assumption breaks. The
-    extreme-value-theory-under-unequal-probability-sampling literature
-    (Quintos et al. 2001, Beirlant et al.) addresses tail-index
-    estimation, not boundary tests; no off-the-shelf survey-aware QUG
-    exists. Use joint Stute via :func:`did_had_pretest_workflow`
-    (``aggregate="event_study"``) for survey-aware HAD pretesting once
-    Phase 4.5 C ships -- Stute tests a smooth empirical-CDF functional
-    and admits a Rao-Wu rescaled bootstrap. See
-    ``docs/methodology/REGISTRY.md`` § "QUG Null Test" for the full
-    methodology note.
+    machinery (Binder TSL linearization, multiplier bootstrap, Rao-Wu
+    rescaled bootstrap) does not yield a calibrated test, and under
+    cluster sampling the ``Exp(1)/Exp(1)`` limit law's independence
+    assumption breaks. The extreme-value-theory-under-unequal-probability-
+    sampling literature (Quintos et al. 2001, Beirlant et al.) addresses
+    tail-index estimation, not boundary tests; no off-the-shelf
+    survey-aware QUG exists. Phase 4.5 C ships survey-aware Stute via
+    :func:`did_had_pretest_workflow` (which skips the QUG step under
+    survey/weights and runs the linearity family with a PSU-level Mammen
+    multiplier bootstrap for Stute and weighted OLS + pweight-sandwich
+    variance components for Yatchew). See ``docs/methodology/REGISTRY.md``
+    § "QUG Null Test" for the full methodology note.
 
     References
     ----------
@@ -1135,18 +1302,21 @@ def qug_test(
             "statistics, T = D_(1) / (D_(2) - D_(1)). "
             "Extreme-order-statistic functionals are not smooth in the "
             "empirical CDF, so standard survey machinery (Binder "
-            "linearization, Rao-Wu rescaled bootstrap) does not provide "
-            "a calibrated test. Under cluster sampling the Exp(1)/Exp(1) "
-            "limit law's independence assumption breaks. The literature "
-            "on extreme-value theory under unequal-probability sampling "
-            "(Quintos et al. 2001, Beirlant et al.) addresses tail-index "
-            "estimation, not boundary tests; no off-the-shelf "
-            "survey-aware QUG exists.\n"
+            "linearization, multiplier bootstrap, Rao-Wu rescaled "
+            "bootstrap) does not provide a calibrated test. Under "
+            "cluster sampling the Exp(1)/Exp(1) limit law's independence "
+            "assumption breaks. The literature on extreme-value theory "
+            "under unequal-probability sampling (Quintos et al. 2001, "
+            "Beirlant et al.) addresses tail-index estimation, not "
+            "boundary tests; no off-the-shelf survey-aware QUG exists.\n"
             "\n"
-            "For survey-aware HAD pretesting, use joint Stute (Phase 4.5 "
-            "C, planned) via did_had_pretest_workflow(..., survey=..., "
-            "aggregate=...). Stute tests a smooth empirical-CDF "
-            "functional and admits a Rao-Wu rescaled bootstrap. See "
+            "For survey-aware HAD pretesting, use the joint Stute family "
+            "via did_had_pretest_workflow(..., survey=..., "
+            "aggregate=...) -- shipped in Phase 4.5 C. The workflow "
+            "skips the QUG step under survey/weights with a UserWarning "
+            "and runs the linearity family with a PSU-level Mammen "
+            "multiplier bootstrap (Stute) + weighted OLS + pweight-"
+            "sandwich variance components (Yatchew). See "
             "docs/methodology/REGISTRY.md § 'QUG Null Test' for the "
             "full methodology note."
         )
@@ -1247,6 +1417,9 @@ def stute_test(
     alpha: float = 0.05,
     n_bootstrap: int = 999,
     seed: Optional[int] = None,
+    *,
+    weights: Optional[np.ndarray] = None,
+    survey: Any = None,
 ) -> StuteTestResults:
     """Run the Stute Cramer-von Mises linearity test (paper Appendix D).
 
@@ -1273,6 +1446,19 @@ def stute_test(
     seed : int or None, default None
         Seed for ``np.random.default_rng``. Pass an integer for
         reproducible results.
+    weights : np.ndarray or None, keyword-only, default None
+        Per-unit positive weights for the pweight shortcut. Mutually
+        exclusive with ``survey``. When supplied, the bootstrap is routed
+        through a synthetic trivial ``ResolvedSurveyDesign`` (no
+        strata/PSU/FPC) so that the same survey-aware kernel handles both
+        entry points. See *Notes -- Survey/weighted data*.
+    survey : ResolvedSurveyDesign or None, keyword-only, default None
+        Already-resolved survey design (per-unit). Triggers the survey-
+        aware Stute calibration: PSU-level Mammen multipliers via
+        :func:`diff_diff.bootstrap_utils.generate_survey_multiplier_weights_batch`,
+        broadcast to per-unit residual perturbation, with weighted CvM
+        recompute. Replicate-weight designs raise ``NotImplementedError``
+        (deferred to a parallel follow-up after Phase 4.5 C).
 
     Returns
     -------
@@ -1284,7 +1470,14 @@ def stute_test(
         If ``d`` / ``dy`` are not 1D numeric, contain NaN, have unequal
         lengths, if any ``d`` value is negative (paper Section 2 HAD
         support restriction), if ``alpha`` is outside ``(0, 1)``, or if
-        ``n_bootstrap < 99``.
+        ``n_bootstrap < 99``. Also raised if BOTH ``weights`` and
+        ``survey`` are supplied (mutex).
+    NotImplementedError
+        If ``survey.replicate_weights is not None``. Replicate-weight
+        pretests are a parallel follow-up after Phase 4.5 C; the
+        per-replicate weight-ratio rescaling for the OLS-on-residuals
+        refit step is not covered by the multiplier-bootstrap composition
+        used here.
 
     Notes
     -----
@@ -1296,6 +1489,23 @@ def stute_test(
     runtime; the function emits a ``UserWarning`` pointing users to
     :func:`yatchew_hr_test`. Memory usage remains ``O(G)`` regardless
     (no G x G matrix).
+
+    Survey/weighted data (Phase 4.5 C): when ``weights`` or ``survey`` is
+    supplied, the OLS baseline becomes weighted OLS
+    (:func:`_fit_weighted_ols_intercept_slope`), the bootstrap multipliers
+    become PSU-level Mammen draws (broadcast to per-obs perturbation), and
+    the test statistic uses :func:`_cvm_statistic_weighted`. Per-unit
+    constant-within-unit invariant on weights/strata/psu/fpc is the
+    CALLER's responsibility; the workflow
+    (:func:`did_had_pretest_workflow`) enforces it via
+    :func:`_aggregate_unit_weights` /
+    :func:`_aggregate_unit_resolved_survey` from ``had.py``. At ``w =
+    ones(G)``, weighted helpers reduce bit-exactly to the unweighted
+    versions but bootstrap p-values diverge by Monte-Carlo noise (different
+    RNG consumption between batched ``generate_survey_multiplier_weights_batch``
+    and per-iteration ``_generate_mammen_weights``); use the
+    distribution-equivalence reduction test (large B) for trivial-pweight
+    parity, NOT numerical equivalence.
 
     References
     ----------
@@ -1312,6 +1522,32 @@ def stute_test(
             f"n_bootstrap must be >= {_MIN_N_BOOTSTRAP} (below this the "
             f"discretised p-value grid is too coarse to be meaningful). "
             f"Got n_bootstrap={n_bootstrap}."
+        )
+
+    # Phase 4.5 C: survey/weights mutex + replicate-weight rejection.
+    # Mirrors the C0 pattern from qug_test and HeterogeneousAdoptionDiD.fit().
+    if survey is not None and weights is not None:
+        raise ValueError(
+            "stute_test: pass survey=<ResolvedSurveyDesign> OR weights=<array>, "
+            "not both. survey= triggers full PSU-aware bootstrap; weights= is "
+            "the pweight shortcut routed through a synthetic trivial design."
+        )
+    if survey is not None and getattr(survey, "replicate_weights", None) is not None:
+        raise NotImplementedError(
+            "stute_test: replicate-weight survey designs (BRR/Fay/JK1/JKn/SDR) "
+            "are not yet supported on HAD pretests. The per-replicate weight-"
+            "ratio rescaling for the OLS-on-residuals refit step is not covered "
+            "by the multiplier-bootstrap composition. Replicate-weight pretests "
+            "are a parallel follow-up after Phase 4.5 C."
+        )
+    # R1 P1: pweight-only guard on the direct-helper survey entry (mirrors
+    # _resolve_pretest_unit_weights for the workflow path).
+    if survey is not None and getattr(survey, "weight_type", "pweight") != "pweight":
+        raise ValueError(
+            f"stute_test: HAD pretests require weight_type='pweight'. Got "
+            f"weight_type={survey.weight_type!r}. aweight / fweight have "
+            "different sandwich-variance semantics that are not derived "
+            "for the Stute CvM bootstrap calibration."
         )
 
     d_arr = _validate_1d_numeric(d, "d")
@@ -1359,7 +1595,57 @@ def stute_test(
             stacklevel=2,
         )
 
-    a_hat, b_hat, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
+    # Phase 4.5 C: resolve effective per-unit weights (None on the
+    # unweighted path, preserves bit-exact regression). When survey= is
+    # supplied, w is taken from the resolved design.
+    # R4 P1: validate 1D explicitly so column-vector inputs (e.g.
+    # df[["w"]].to_numpy()) raise instead of silently broadcasting.
+    if survey is not None:
+        w_arr = _validate_1d_numeric(np.asarray(survey.weights), "stute_test: survey.weights")
+        if w_arr.shape[0] != G:
+            raise ValueError(
+                f"stute_test: survey.weights length {w_arr.shape[0]} does not "
+                f"match d/dy length {G}."
+            )
+        if (w_arr <= 0).any():
+            raise ValueError(
+                "stute_test: survey weights must be strictly positive. "
+                "Zero / negative weights would leave units in the "
+                "variance / CvM computation while contributing zero "
+                "population mass; pre-filter the panel to the positive-"
+                "weight subpopulation before calling stute_test."
+            )
+    elif weights is not None:
+        w_arr = _validate_1d_numeric(np.asarray(weights), "stute_test: weights")
+        if w_arr.shape[0] != G:
+            raise ValueError(
+                f"stute_test: weights length {w_arr.shape[0]} does not match " f"d/dy length {G}."
+            )
+        if (w_arr <= 0).any():
+            raise ValueError(
+                "stute_test: weights must be strictly positive (the pweight "
+                "shortcut does not support zero weights; use survey= with "
+                "explicit lonely-PSU handling for zero-mass strata)."
+            )
+    else:
+        w_arr = None
+
+    # R4 P0: normalize pweights to mean=1 (matches SurveyDesign.resolve()
+    # convention). Makes the test statistic scale-invariant under uniform
+    # rescaling of weights AND ensures weights= shortcut and
+    # survey=SurveyDesign(weights=...) produce identical results for the
+    # same design. Stute is internally scale-invariant in functional form,
+    # but the survey-aware bootstrap helper consumes weight values
+    # directly under non-trivial PSU/strata, so normalization is required
+    # for cross-path agreement.
+    if w_arr is not None:
+        w_arr = w_arr * (float(w_arr.shape[0]) / float(np.sum(w_arr)))
+
+    if w_arr is None:
+        a_hat, b_hat, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
+    else:
+        a_hat, b_hat, eps = _fit_weighted_ols_intercept_slope(d_arr, dy_arr, w_arr)
+
     # Genuine degeneracy: zero dose variation. The CvM cusum is defined
     # against the regressor, and constant d carries no signal to test
     # linearity against - emit NaN.
@@ -1414,16 +1700,119 @@ def stute_test(
 
     idx = np.argsort(d_arr, kind="stable")
     d_sorted = d_arr[idx]
-    S = _cvm_statistic(eps[idx], d_sorted)
+    if w_arr is None:
+        S = _cvm_statistic(eps[idx], d_sorted)
+    else:
+        S = _cvm_statistic_weighted(eps[idx], d_sorted, w_arr[idx])
 
     rng = np.random.default_rng(seed)
     bootstrap_S = np.empty(n_bootstrap, dtype=np.float64)
     fitted = a_hat + b_hat * d_arr  # baseline fitted values under H_0
-    for b in range(n_bootstrap):
-        eta = _generate_mammen_weights(G, rng)
-        dy_b = fitted + eps * eta
-        _, _, eps_b = _fit_ols_intercept_slope(d_arr, dy_b)
-        bootstrap_S[b] = _cvm_statistic(eps_b[idx], d_sorted)
+
+    if w_arr is None:
+        # Unweighted bit-exact path - identical to pre-PR code.
+        for b in range(n_bootstrap):
+            eta = _generate_mammen_weights(G, rng)
+            dy_b = fitted + eps * eta
+            _, _, eps_b = _fit_ols_intercept_slope(d_arr, dy_b)
+            bootstrap_S[b] = _cvm_statistic(eps_b[idx], d_sorted)
+    else:
+        # Phase 4.5 C survey-aware path: PSU-level Mammen multipliers
+        # (broadcast to per-obs perturbation), weighted OLS refit, weighted
+        # CvM recompute. Routes via synthetic trivial ResolvedSurveyDesign
+        # for the weights= shortcut to share the same kernel.
+        resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        # R10 P1: reject stratified designs explicitly until a derived
+        # Stute-specific correction lands. The HAD sup-t bootstrap
+        # (had.py:2120+) applies a within-stratum demean +
+        # sqrt(n_h/(n_h-1)) small-sample correction AFTER
+        # generate_survey_multiplier_weights_batch returns, to make the
+        # bootstrap variance match the Binder-TSL stratified target.
+        # That same correction has NOT been derived for the Stute CvM
+        # functional, so applying the helper's raw multipliers directly
+        # to residual perturbations on stratified designs leaves the
+        # bootstrap p-value silently miscalibrated. Pweight-only,
+        # PSU-only, and FPC-only designs are still supported (the
+        # helper's output is appropriately scaled for those).
+        if resolved_for_boot.strata is not None:
+            raise NotImplementedError(
+                "stute_test: SurveyDesign(strata=...) with stratified "
+                "sampling is not yet supported. The Stute CvM bootstrap "
+                "calibration on stratified designs requires a within-"
+                "stratum demean + sqrt(n_h/(n_h-1)) small-sample "
+                "correction analogous to the HAD sup-t bootstrap, but "
+                "the matching derivation for the Stute functional has "
+                "not been completed. Pweight-only or PSU-only "
+                "(SurveyDesign(weights=..., psu=...)) designs are "
+                "supported; pre-process stratified designs to remove "
+                "the strata column or wait for the derivation in a "
+                "follow-up PR."
+            )
+        # R5 P1: reject lonely_psu='adjust' singleton-strata designs
+        # explicitly (now redundant with the strata guard above; kept
+        # for defense in depth and for residual non-stratified
+        # singleton-strata edge cases).
+        if _has_lonely_psu_adjust_singletons(resolved_for_boot):
+            raise NotImplementedError(
+                "stute_test: SurveyDesign(lonely_psu='adjust') with "
+                "singleton strata is not yet supported on the multiplier "
+                "bootstrap. The bootstrap helper pools singletons with "
+                "nonzero multipliers but the matching analytical "
+                "variance target requires a pseudo-stratum centering "
+                "transform that has not been derived for the Stute CvM. "
+                "Use lonely_psu='remove' (drops singleton contributions) "
+                "or 'certainty' (zero-variance singletons), or pre-"
+                "process the panel to remove singleton strata."
+            )
+        # R3 P0: variance-unidentified survey-design guard. When
+        # n_psu - n_strata <= 0 (e.g. unstratified single-PSU, or one PSU
+        # per stratum under lonely_psu='remove'/'certainty'),
+        # generate_survey_multiplier_weights_batch returns an all-zero
+        # multiplier matrix. Without this guard, the code below would
+        # treat zero perturbations as a valid bootstrap law and emit
+        # p_value = 1/(B+1) for any positive observed CvM (spurious
+        # rejection). Mirrors compute_survey_vcov's df_survey-driven
+        # NaN treatment elsewhere in the package. The lonely_psu='adjust'
+        # singleton case (which has nonzero multipliers but a separate
+        # methodology gap) is already rejected above, so this branch
+        # only catches genuinely degenerate designs.
+        df_survey = resolved_for_boot.df_survey
+        if df_survey is None or df_survey <= 0:
+            warnings.warn(
+                f"stute_test: survey design is variance-unidentified "
+                f"(df_survey={df_survey}); the multiplier bootstrap "
+                "cannot calibrate the test (single-PSU unstratified or "
+                "one-PSU-per-stratum design). Returning NaN result.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return StuteTestResults(
+                cvm_stat=float(S),
+                p_value=float("nan"),
+                reject=False,
+                alpha=alpha,
+                n_bootstrap=int(n_bootstrap),
+                n_obs=G,
+                seed=seed,
+            )
+        psu_mults, psu_ids = generate_survey_multiplier_weights_batch(
+            n_bootstrap, resolved_for_boot, weight_type="mammen", rng=rng
+        )
+        # Build per-obs PSU-column index. When psu is None (trivial path),
+        # each obs is its own PSU and psu_ids = arange(G) - so psu_col_idx
+        # is just arange(G).
+        if resolved_for_boot.psu is None:
+            psu_col_idx = np.arange(G)
+        else:
+            psu_to_col = {int(p): c for c, p in enumerate(psu_ids)}
+            psu_arr = np.asarray(resolved_for_boot.psu)
+            psu_col_idx = np.array([psu_to_col[int(psu_arr[g])] for g in range(G)])
+
+        for b in range(n_bootstrap):
+            eta_obs = psu_mults[b, psu_col_idx]  # (G,)
+            dy_b = fitted + eps * eta_obs
+            _, _, eps_b = _fit_weighted_ols_intercept_slope(d_arr, dy_b, w_arr)
+            bootstrap_S[b] = _cvm_statistic_weighted(eps_b[idx], d_sorted, w_arr[idx])
 
     p_value = float((1.0 + float(np.sum(bootstrap_S >= S))) / (n_bootstrap + 1.0))
     reject = p_value <= alpha
@@ -1439,7 +1828,14 @@ def stute_test(
     )
 
 
-def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> YatchewTestResults:
+def yatchew_hr_test(
+    d: np.ndarray,
+    dy: np.ndarray,
+    alpha: float = 0.05,
+    *,
+    weights: Optional[np.ndarray] = None,
+    survey: Any = None,
+) -> YatchewTestResults:
     """Run the Yatchew heteroskedasticity-robust linearity test.
 
     Tests ``H_0: E[ΔY | D_2]`` is linear in ``D_2`` (paper Assumption 8,
@@ -1462,6 +1858,17 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
         Dose and first-difference outcome vectors.
     alpha : float, default 0.05
         One-sided significance level.
+    weights : np.ndarray or None, keyword-only, default None
+        Per-unit STRICTLY POSITIVE weights for the pweight shortcut.
+        Mutually exclusive with ``survey``. See *Notes -- Survey/weighted data*.
+    survey : ResolvedSurveyDesign or None, keyword-only, default None
+        Already-resolved survey design (per-unit). When supplied, the OLS
+        baseline becomes weighted OLS and all three variance components
+        become their pweight-sandwich analogs. PSU clustering is NOT
+        propagated through the variance-ratio statistic (would require
+        deriving a survey-aware variance-of-variance estimator; out of
+        scope per Phase 4.5 C). Replicate-weight designs raise
+        ``NotImplementedError``.
 
     Returns
     -------
@@ -1473,6 +1880,10 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
         If ``d`` / ``dy`` are not 1D numeric, contain NaN, have unequal
         lengths, if any ``d`` value is negative (paper Section 2 HAD
         support restriction), or if ``alpha`` is outside ``(0, 1)``.
+        Also raised if BOTH ``weights`` and ``survey`` supplied (mutex),
+        or if any weight is non-positive.
+    NotImplementedError
+        If ``survey.replicate_weights is not None`` (deferred follow-up).
 
     Notes
     -----
@@ -1512,14 +1923,57 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
     with a ``UserWarning``, rather than unconditionally mapping this to
     ``p=1`` (which would flip a legitimate rejection).
 
+    Survey/weighted data (Phase 4.5 C): when ``weights`` or ``survey`` is
+    supplied, all three variance components use their pweight-sandwich
+    analogs:
+
+    - ``sigma2_lin = sum(w * eps^2) / sum(w)`` (weighted OLS residual variance).
+    - ``sigma2_diff = sum(w_avg * (dy_g - dy_{g-1})^2) / (2 * sum(w))``
+      where ``w_avg_g = (w_g + w_{g-1}) / 2`` and the divisor uses
+      ``sum(w)`` (not ``sum(w_avg)``) so the formula reduces bit-exactly
+      to the unweighted ``(1/(2G))`` divisor at ``w = ones(G)``.
+    - ``sigma4_W = sum(w_avg * eps_g^2 * eps_{g-1}^2) / sum(w_avg)`` with
+      arithmetic-mean pair weights; reduces to the unweighted ``(1/(G-1))``
+      divisor at ``w = ones(G)``.
+    - ``T_hr = sqrt(sum(w)) * (sigma2_lin - sigma2_diff) / sigma2_W``.
+
+    The pair-weight convention follows Krieger-Pfeffermann (1997, §3) for
+    design-consistent inference on smooth functionals; PSU clustering is
+    NOT propagated through the variance-ratio statistic. Strictly positive
+    weights are required (the adjacent-difference formula has
+    ``sum(w_avg)`` in the denominator). Per-unit constant-within-unit
+    invariant on weights/strata/psu/fpc is the CALLER's responsibility.
+
     References
     ----------
     Yatchew, A. (1997). An elementary estimator of the partial linear
     model. Economics Letters 57, 135-143.
     de Chaisemartin et al. (2026), Theorem 7 / Equation 29.
+    Krieger, A., Pfeffermann, D. (1997). Testing of distribution functions
+    from complex sample surveys. Journal of Official Statistics 13(2),
+    123-142.
     """
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must satisfy 0 < alpha < 1, got {alpha}.")
+
+    # Phase 4.5 C: survey/weights mutex + replicate-weight rejection.
+    if survey is not None and weights is not None:
+        raise ValueError(
+            "yatchew_hr_test: pass survey=<ResolvedSurveyDesign> OR " "weights=<array>, not both."
+        )
+    if survey is not None and getattr(survey, "replicate_weights", None) is not None:
+        raise NotImplementedError(
+            "yatchew_hr_test: replicate-weight survey designs (BRR/Fay/JK1/JKn/"
+            "SDR) are not yet supported on HAD pretests. Replicate-weight "
+            "pretests are a parallel follow-up after Phase 4.5 C."
+        )
+    # R1 P1: pweight-only guard (aweight/fweight have different sandwich-
+    # variance semantics not derived for the variance-ratio statistic).
+    if survey is not None and getattr(survey, "weight_type", "pweight") != "pweight":
+        raise ValueError(
+            f"yatchew_hr_test: HAD pretests require weight_type='pweight'. "
+            f"Got weight_type={survey.weight_type!r}."
+        )
 
     d_arr = _validate_1d_numeric(d, "d")
     dy_arr = _validate_1d_numeric(dy, "dy")
@@ -1540,6 +1994,50 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
 
     G = int(d_arr.shape[0])
     critical_value = float(stats.norm.ppf(1.0 - alpha))
+
+    # Phase 4.5 C: resolve effective per-unit weights. Strictly positive
+    # required (the adjacent-difference formula divides by sum(w_avg) which
+    # collapses to zero in any contiguous-zero block).
+    # R4 P1: validate 1D explicitly so column-vector inputs raise.
+    if survey is not None:
+        w_arr = _validate_1d_numeric(np.asarray(survey.weights), "yatchew_hr_test: survey.weights")
+        if w_arr.shape[0] != G:
+            raise ValueError(
+                f"yatchew_hr_test: survey.weights length {w_arr.shape[0]} "
+                f"does not match d/dy length {G}."
+            )
+        if (w_arr <= 0).any():
+            raise ValueError(
+                "yatchew_hr_test: survey.weights must be strictly positive "
+                "(adjacent-difference variance is undefined under contiguous "
+                "zero-weight blocks)."
+            )
+    elif weights is not None:
+        w_arr = _validate_1d_numeric(np.asarray(weights), "yatchew_hr_test: weights")
+        if w_arr.shape[0] != G:
+            raise ValueError(
+                f"yatchew_hr_test: weights length {w_arr.shape[0]} does not "
+                f"match d/dy length {G}."
+            )
+        if (w_arr <= 0).any():
+            raise ValueError(
+                "yatchew_hr_test: weights must be strictly positive (the "
+                "adjacent-difference variance is undefined under contiguous "
+                "zero-weight blocks)."
+            )
+    else:
+        w_arr = None
+
+    # R4 P0: normalize pweights to mean=1 (matches SurveyDesign.resolve()
+    # convention). Yatchew uses sqrt(sum(w)) as the effective sample size,
+    # which without normalization would scale as sqrt(c) under uniform
+    # rescaling weights -> w * c, producing different p-values for
+    # weights=w vs weights=100*w. Normalization makes the statistic
+    # scale-invariant AND ensures weights= and survey=SurveyDesign(...)
+    # produce identical results (the latter resolve()s to mean=1
+    # internally, the former previously did not).
+    if w_arr is not None:
+        w_arr = w_arr * (float(w_arr.shape[0]) / float(np.sum(w_arr)))
 
     if G < _MIN_G_YATCHEW:
         warnings.warn(
@@ -1593,8 +2091,16 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
             n_obs=G,
         )
 
-    _, _, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
-    sigma2_lin = float(np.mean(eps * eps))
+    # Phase 4.5 C: weighted vs unweighted OLS dispatch. Unweighted path is
+    # bit-exact pre-PR (stability invariant #1).
+    if w_arr is None:
+        _, _, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
+        sigma2_lin = float(np.mean(eps * eps))
+        sum_w = float(G)  # uniform-weights effective sample size = G
+    else:
+        _, _, eps = _fit_weighted_ols_intercept_slope(d_arr, dy_arr, w_arr)
+        sum_w = float(np.sum(w_arr))
+        sigma2_lin = float(np.sum(w_arr * eps * eps) / sum_w)
 
     # Numerically exact linear fit: same short-circuit as `stute_test`.
     # Assumption 8 holds to IEEE precision; the Yatchew statistic is
@@ -1610,9 +2116,18 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
         # - dy_centered_sq == 0: dy is constant (trivially linear).
         # - relative SSR below IEEE precision: near-exact OLS fit.
         # For reporting, compute sigma2_diff on the sorted dy (finite,
-        # well-defined even in the exact-linear case).
+        # well-defined even in the exact-linear case). Use the weighted
+        # divisor (2 * sum(w)) when weights are supplied so the reported
+        # sigma2_diff matches the same convention as the active branch.
         idx_early = np.argsort(d_arr, kind="stable")
-        sigma2_diff_exact = float(np.sum(np.diff(dy_arr[idx_early]) ** 2) / (2.0 * G))
+        if w_arr is None:
+            sigma2_diff_exact = float(np.sum(np.diff(dy_arr[idx_early]) ** 2) / (2.0 * G))
+        else:
+            w_s_e = w_arr[idx_early]
+            w_avg_e = 0.5 * (w_s_e[1:] + w_s_e[:-1])
+            sigma2_diff_exact = float(
+                np.sum(w_avg_e * np.diff(dy_arr[idx_early]) ** 2) / (2.0 * sum_w)
+            )
         return YatchewTestResults(
             t_stat_hr=float("-inf"),
             p_value=1.0,
@@ -1630,14 +2145,24 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
     eps_s = eps[idx]
 
     diff_dy = np.diff(dy_s)  # length G - 1
-    # Paper-literal divisor: 2G (NOT 2(G-1)). This matches paper review
-    # line 168: sigma2_diff := (1/(2G)) * sum((dy_{(g)} - dy_{(g-1)})^2).
-    sigma2_diff = float(np.sum(diff_dy * diff_dy) / (2.0 * G))
-
-    # sigma4_W = (1/(G-1)) * sum(eps_(g)^2 * eps_(g-1)^2) using np.mean
-    # which divides by the length of the input (G-1 here). Matches paper
-    # review line 171.
-    sigma4_W = float(np.mean(eps_s[1:] ** 2 * eps_s[:-1] ** 2))
+    if w_arr is None:
+        # Paper-literal divisor: 2G (NOT 2(G-1)). This matches paper review
+        # line 168: sigma2_diff := (1/(2G)) * sum((dy_{(g)} - dy_{(g-1)})^2).
+        sigma2_diff = float(np.sum(diff_dy * diff_dy) / (2.0 * G))
+        # sigma4_W = (1/(G-1)) * sum(eps_(g)^2 * eps_(g-1)^2) using np.mean
+        # which divides by the length of the input (G-1 here). Matches paper
+        # review line 171.
+        sigma4_W = float(np.mean(eps_s[1:] ** 2 * eps_s[:-1] ** 2))
+    else:
+        # Phase 4.5 C: pweight-sandwich weighted variance components.
+        # Pair-weights (Krieger-Pfeffermann 1997 §3): w_avg_g = (w_g + w_{g-1})/2.
+        # Reduction at w=ones(G): w_avg = ones(G-1), sum(w) = G, so
+        #   sigma2_diff = sum(diff^2) / (2*G)        (matches existing 2G divisor)
+        #   sigma4_W   = sum(prod) / (G-1)            (matches existing G-1 divisor)
+        w_s = w_arr[idx]
+        w_avg = 0.5 * (w_s[1:] + w_s[:-1])
+        sigma2_diff = float(np.sum(w_avg * diff_dy * diff_dy) / (2.0 * sum_w))
+        sigma4_W = float(np.sum(w_avg * eps_s[1:] ** 2 * eps_s[:-1] ** 2) / np.sum(w_avg))
     if sigma4_W <= 0.0:
         # sigma4_W = 0 AFTER the exact-linear short-circuit means OLS
         # residuals are NOT zero (the shortcut already caught that case)
@@ -1684,7 +2209,9 @@ def yatchew_hr_test(d: np.ndarray, dy: np.ndarray, alpha: float = 0.05) -> Yatch
         )
     sigma2_W = float(np.sqrt(sigma4_W))
 
-    t_stat_hr = float(np.sqrt(G) * (sigma2_lin - sigma2_diff) / sigma2_W)
+    # Phase 4.5 C: effective sample size = sum(w) (=G under uniform weights,
+    # so unweighted path is bit-exact).
+    t_stat_hr = float(np.sqrt(sum_w) * (sigma2_lin - sigma2_diff) / sigma2_W)
     p_value = float(1.0 - stats.norm.cdf(t_stat_hr))
     reject = t_stat_hr >= critical_value
 
@@ -1989,6 +2516,8 @@ def stute_joint_pretest(
     n_bootstrap: int = 999,
     seed: Optional[int] = None,
     null_form: str = "custom",
+    weights: Optional[np.ndarray] = None,
+    survey: Any = None,
 ) -> StuteJointResult:
     """Joint Cramer-von Mises pretest across multiple horizons.
 
@@ -2034,6 +2563,21 @@ def stute_joint_pretest(
         (``"mean_independence"`` | ``"linearity"`` | ``"custom"``).
         The wrappers :func:`joint_pretrends_test` and
         :func:`joint_homogeneity_test` set this automatically.
+    weights : np.ndarray or None, keyword-only, default None
+        Per-unit positive weights (Phase 4.5 C). When supplied, the
+        per-horizon CvM uses :func:`_cvm_statistic_weighted` and the
+        bootstrap routes through a synthetic trivial
+        ``ResolvedSurveyDesign``. Mutually exclusive with ``survey``.
+    survey : ResolvedSurveyDesign or None, keyword-only, default None
+        Already-resolved per-unit survey design (Phase 4.5 C). When
+        supplied, the bootstrap is a PSU-level Mammen multiplier
+        bootstrap with the multiplier matrix shared across horizons
+        within each replicate (preserves both vector-valued empirical-
+        process unit-level dependence + PSU clustering). Replicate-
+        weight designs raise ``NotImplementedError``; non-pweight
+        weight types are rejected. Variance-unidentified designs
+        (``df_survey <= 0``) return NaN with a ``UserWarning`` instead
+        of calibrating against an all-zero multiplier matrix.
 
     Returns
     -------
@@ -2058,6 +2602,26 @@ def stute_joint_pretest(
         negative values, ``n_bootstrap < _MIN_N_BOOTSTRAP``, or invalid
         ``alpha``. ``G < _MIN_G_STUTE`` does NOT raise; see Returns.
     """
+    # Phase 4.5 C: survey/weights mutex + replicate-weight rejection
+    # (mirrors stute_test, yatchew_hr_test, did_had_pretest_workflow).
+    if survey is not None and weights is not None:
+        raise ValueError(
+            "stute_joint_pretest: pass survey=<ResolvedSurveyDesign> OR "
+            "weights=<array>, not both."
+        )
+    if survey is not None and getattr(survey, "replicate_weights", None) is not None:
+        raise NotImplementedError(
+            "stute_joint_pretest: replicate-weight survey designs (BRR/Fay/JK1/"
+            "JKn/SDR) are not yet supported on HAD pretests. Replicate-weight "
+            "pretests are a parallel follow-up after Phase 4.5 C."
+        )
+    # R1 P1: pweight-only guard.
+    if survey is not None and getattr(survey, "weight_type", "pweight") != "pweight":
+        raise ValueError(
+            f"stute_joint_pretest: HAD pretests require weight_type='pweight'. "
+            f"Got weight_type={survey.weight_type!r}."
+        )
+
     if not isinstance(residuals_by_horizon, dict) or not isinstance(fitted_by_horizon, dict):
         raise ValueError(
             "residuals_by_horizon and fitted_by_horizon must be dicts " "keyed by horizon label."
@@ -2231,12 +2795,59 @@ def stute_joint_pretest(
             exact_linear_short_circuited=False,
         )
 
+    # Phase 4.5 C: resolve effective per-unit weights (None → bit-exact
+    # unweighted path).
+    # R4 P1: validate 1D explicitly so column-vector inputs raise.
+    if survey is not None:
+        w_arr = _validate_1d_numeric(
+            np.asarray(survey.weights), "stute_joint_pretest: survey.weights"
+        )
+        if w_arr.shape[0] != G:
+            raise ValueError(
+                f"stute_joint_pretest: survey.weights length {w_arr.shape[0]} "
+                f"does not match doses length {G}."
+            )
+        # R1 P0: strictly-positive guard (mirrors stute_test single-horizon).
+        if (w_arr <= 0).any():
+            raise ValueError(
+                "stute_joint_pretest: survey weights must be strictly "
+                "positive. Zero / negative weights would leave units in "
+                "the variance / CvM computation while contributing zero "
+                "population mass."
+            )
+    elif weights is not None:
+        w_arr = _validate_1d_numeric(np.asarray(weights), "stute_joint_pretest: weights")
+        if w_arr.shape[0] != G:
+            raise ValueError(
+                f"stute_joint_pretest: weights length {w_arr.shape[0]} does "
+                f"not match doses length {G}."
+            )
+        if (w_arr <= 0).any():
+            raise ValueError(
+                "stute_joint_pretest: weights must be strictly positive (the "
+                "pweight shortcut does not support zero weights)."
+            )
+    else:
+        w_arr = None
+
+    # R4 P0: normalize pweights to mean=1 (matches SurveyDesign.resolve()
+    # convention; same fix as stute_test / yatchew_hr_test).
+    if w_arr is not None:
+        w_arr = w_arr * (float(w_arr.shape[0]) / float(np.sum(w_arr)))
+
     idx = np.argsort(doses_arr, kind="stable")
     d_sorted = doses_arr[idx]
 
     per_horizon_stats: Dict[str, float] = {}
-    for k in horizon_labels:
-        per_horizon_stats[k] = _cvm_statistic(residuals_arrays[k][idx], d_sorted)
+    if w_arr is None:
+        for k in horizon_labels:
+            per_horizon_stats[k] = _cvm_statistic(residuals_arrays[k][idx], d_sorted)
+    else:
+        w_sorted = w_arr[idx]
+        for k in horizon_labels:
+            per_horizon_stats[k] = _cvm_statistic_weighted(
+                residuals_arrays[k][idx], d_sorted, w_sorted
+            )
     S_joint = float(sum(per_horizon_stats.values()))
 
     # Per-horizon exact-linear short-circuit (scale- and translation-
@@ -2279,12 +2890,19 @@ def stute_joint_pretest(
     # Precompute OLS projection matrix once: same X per bootstrap draw,
     # so (X'X)^-1 X' is constant across iterations. Keeps refit O(Gp)
     # per draw without changing semantics from the literal paper form.
+    # Weighted variant uses (X' W X)^-1 X' W; same precompute idiom.
     # Catch rank-deficient designs explicitly rather than surfacing a
     # raw ``np.linalg.LinAlgError`` to direct callers of the public
     # residuals-in core; matches the front-door validation style of
     # the other guards in this function.
     try:
-        XtX_inv_Xt = np.linalg.solve(X.T @ X, X.T)
+        if w_arr is None:
+            XtX_inv_Xt = np.linalg.solve(X.T @ X, X.T)
+        else:
+            # Weighted OLS projection: (X' W X)^-1 X' W
+            XtWX = X.T @ (w_arr[:, np.newaxis] * X)
+            XtW = X.T * w_arr  # broadcasts (p, G)
+            XtX_inv_Xt = np.linalg.solve(XtWX, XtW)
     except np.linalg.LinAlgError as exc:
         raise ValueError(
             f"design_matrix is rank-deficient (singular X^T X); cannot "
@@ -2295,18 +2913,107 @@ def stute_joint_pretest(
 
     rng = np.random.default_rng(seed)
     bootstrap_S = np.empty(n_bootstrap, dtype=np.float64)
-    for b in range(n_bootstrap):
-        # SHARED eta across horizons - preserves unit-level dependence
-        # in the vector-valued empirical process. Independent-per-horizon
-        # draws would overstate precision.
-        eta = _generate_mammen_weights(G, rng)
-        S_b = 0.0
-        for k in horizon_labels:
-            dy_b = fitted_arrays[k] + residuals_arrays[k] * eta
-            beta_b = XtX_inv_Xt @ dy_b
-            eps_b = dy_b - X @ beta_b
-            S_b += _cvm_statistic(eps_b[idx], d_sorted)
-        bootstrap_S[b] = S_b
+
+    if w_arr is None:
+        # Unweighted bit-exact path (stability invariant #1).
+        for b in range(n_bootstrap):
+            # SHARED eta across horizons - preserves unit-level dependence
+            # in the vector-valued empirical process. Independent-per-horizon
+            # draws would overstate precision.
+            eta = _generate_mammen_weights(G, rng)
+            S_b = 0.0
+            for k in horizon_labels:
+                dy_b = fitted_arrays[k] + residuals_arrays[k] * eta
+                beta_b = XtX_inv_Xt @ dy_b
+                eps_b = dy_b - X @ beta_b
+                S_b += _cvm_statistic(eps_b[idx], d_sorted)
+            bootstrap_S[b] = S_b
+    else:
+        # Phase 4.5 C survey-aware path: PSU-level Mammen multipliers
+        # SHARED across horizons within each replicate. The (B, n_psu)
+        # matrix is drawn ONCE per replicate; the per-horizon loop
+        # broadcasts the SAME multipliers, preserving both the
+        # vector-valued empirical-process unit-level dependence (paper
+        # convention) AND PSU clustering (Krieger-Pfeffermann 1997).
+        resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        # R10 P1: reject stratified designs explicitly until a derived
+        # Stute-specific correction lands (mirrors stute_test
+        # single-horizon).
+        if resolved_for_boot.strata is not None:
+            raise NotImplementedError(
+                "stute_joint_pretest: SurveyDesign(strata=...) with "
+                "stratified sampling is not yet supported. The Stute "
+                "CvM bootstrap calibration on stratified designs "
+                "requires a within-stratum demean + sqrt(n_h/(n_h-1)) "
+                "small-sample correction analogous to the HAD sup-t "
+                "bootstrap, but the matching derivation for the joint "
+                "Stute functional has not been completed. Pweight-only "
+                "or PSU-only designs are supported; pre-process "
+                "stratified designs to remove the strata column or wait "
+                "for the derivation in a follow-up PR."
+            )
+        # R5 P1: reject lonely_psu='adjust' singleton-strata designs
+        # explicitly (now redundant with the strata guard above; kept
+        # for defense in depth).
+        if _has_lonely_psu_adjust_singletons(resolved_for_boot):
+            raise NotImplementedError(
+                "stute_joint_pretest: SurveyDesign(lonely_psu='adjust') "
+                "with singleton strata is not yet supported on the "
+                "multiplier bootstrap. The bootstrap helper pools "
+                "singletons with nonzero multipliers but the matching "
+                "analytical variance target requires a pseudo-stratum "
+                "centering transform that has not been derived for the "
+                "Stute CvM. Use lonely_psu='remove' (drops singleton "
+                "contributions) or 'certainty' (zero-variance "
+                "singletons), or pre-process the panel to remove "
+                "singleton strata."
+            )
+        # R3 P0: variance-unidentified survey-design guard (mirrors
+        # stute_test single-horizon).
+        df_survey = resolved_for_boot.df_survey
+        if df_survey is None or df_survey <= 0:
+            warnings.warn(
+                f"stute_joint_pretest: survey design is variance-"
+                f"unidentified (df_survey={df_survey}); the multiplier "
+                "bootstrap cannot calibrate the joint test. Returning "
+                "NaN result.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return StuteJointResult(
+                cvm_stat_joint=S_joint,
+                p_value=float("nan"),
+                reject=False,
+                alpha=float(alpha),
+                horizon_labels=horizon_labels,
+                per_horizon_stats=per_horizon_stats,
+                n_bootstrap=int(n_bootstrap),
+                n_obs=int(G),
+                n_horizons=int(K),
+                seed=None if seed is None else int(seed),
+                null_form=str(null_form),
+                exact_linear_short_circuited=False,
+            )
+        psu_mults, psu_ids = generate_survey_multiplier_weights_batch(
+            n_bootstrap, resolved_for_boot, weight_type="mammen", rng=rng
+        )
+        if resolved_for_boot.psu is None:
+            psu_col_idx = np.arange(G)
+        else:
+            psu_to_col = {int(p): c for c, p in enumerate(psu_ids)}
+            psu_arr = np.asarray(resolved_for_boot.psu)
+            psu_col_idx = np.array([psu_to_col[int(psu_arr[g])] for g in range(G)])
+        w_sorted = w_arr[idx]
+
+        for b in range(n_bootstrap):
+            eta_obs = psu_mults[b, psu_col_idx]  # (G,) - shared across horizons
+            S_b = 0.0
+            for k in horizon_labels:
+                dy_b = fitted_arrays[k] + residuals_arrays[k] * eta_obs
+                beta_b = XtX_inv_Xt @ dy_b
+                eps_b = dy_b - X @ beta_b
+                S_b += _cvm_statistic_weighted(eps_b[idx], d_sorted, w_sorted)
+            bootstrap_S[b] = S_b
 
     p_value = float((1.0 + np.sum(bootstrap_S >= S_joint)) / (n_bootstrap + 1))
     reject = bool(p_value <= alpha)
@@ -2327,6 +3034,110 @@ def stute_joint_pretest(
     )
 
 
+def _resolve_pretest_unit_weights(
+    data: pd.DataFrame,
+    unit_col: str,
+    weights: Optional[np.ndarray],
+    survey: Any,
+    caller_name: str,
+) -> "tuple[Optional[np.ndarray], Optional[Any]]":
+    """Resolve per-row ``weights`` / ``survey`` kwargs to per-unit (G,) form.
+
+    Used by ``joint_pretrends_test``, ``joint_homogeneity_test``, and
+    ``did_had_pretest_workflow`` (data-in entry points). Reuses the HAD
+    helpers ``_aggregate_unit_weights`` and ``_aggregate_unit_resolved_survey``
+    which enforce constant-within-unit invariant on weights and on every
+    survey design column (strata, psu, fpc).
+
+    Mutex on ``weights`` AND ``survey`` (cannot supply both). Replicate-
+    weight survey designs raise ``NotImplementedError`` (deferred to a
+    parallel follow-up after Phase 4.5 C).
+
+    Returns
+    -------
+    (weights_unit, resolved_unit) : Tuple[Optional[np.ndarray], Optional[ResolvedSurveyDesign]]
+        - If neither kwarg supplied: ``(None, None)`` (unweighted path).
+        - If ``weights`` supplied: ``(weights_unit, None)``.
+        - If ``survey`` supplied: ``(None, resolved_unit)`` where
+          ``resolved_unit.weights`` is the per-unit weight vector and
+          strata/psu/fpc are also per-unit.
+    """
+    if weights is None and survey is None:
+        return None, None
+    if weights is not None and survey is not None:
+        raise ValueError(
+            f"{caller_name}: pass survey=<SurveyDesign> OR weights=<array>, " "not both."
+        )
+    if weights is not None:
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        # R4 P1: validate 1D explicitly (column-vector inputs would otherwise
+        # broadcast through downstream computations and silently corrupt
+        # results).
+        if weights_arr.ndim != 1:
+            raise ValueError(
+                f"{caller_name}: weights must be 1-dimensional, got shape "
+                f"{weights_arr.shape}. (A common mistake is passing "
+                "df[['w']].to_numpy() which produces (N, 1); use "
+                "df['w'].to_numpy() for (N,).)"
+            )
+        weights_unit = _aggregate_unit_weights(data, weights_arr, unit_col)
+        # R1 P0: strictly-positive weights required on the pweight shortcut
+        # (matches stute_test/yatchew_hr_test direct entry behavior; the CvM
+        # cusum + adjacent-difference variance assume all rows contribute).
+        if (weights_unit <= 0).any():
+            raise ValueError(
+                f"{caller_name}: weights must be strictly positive at the "
+                "per-unit level. Zero / negative weights would leave units "
+                "in the variance/CvM computation while contributing zero "
+                "mass; use survey= with explicit lonely-PSU handling for "
+                "principled subpopulation analysis."
+            )
+        # R4 P0: normalize per-unit weights to mean=1 (matches
+        # SurveyDesign.resolve() convention so weights= and survey= entry
+        # paths produce identical statistic values; ensures Yatchew is
+        # scale-invariant under uniform rescaling).
+        weights_unit = weights_unit * (float(weights_unit.shape[0]) / float(np.sum(weights_unit)))
+        return weights_unit, None
+    # survey is not None
+    if not hasattr(survey, "resolve"):
+        raise TypeError(
+            f"{caller_name}: survey= must be a SurveyDesign instance "
+            f"(with .resolve()); got {type(survey).__name__}."
+        )
+    resolved_full = survey.resolve(data)
+    if getattr(resolved_full, "replicate_weights", None) is not None:
+        raise NotImplementedError(
+            f"{caller_name}: replicate-weight survey designs (BRR/Fay/JK1/JKn/"
+            "SDR) are not yet supported on HAD pretests. Replicate-weight "
+            "pretests are a parallel follow-up after Phase 4.5 C."
+        )
+    # R1 P1: pweight-only guard. aweight/fweight slip through pweight-only
+    # formulas silently otherwise (mirrors HeterogeneousAdoptionDiD.fit() at
+    # had.py:2976+ and survey._resolve_pweight_only at survey.py:914).
+    if getattr(resolved_full, "weight_type", "pweight") != "pweight":
+        raise ValueError(
+            f"{caller_name}: HAD pretests require weight_type='pweight'. "
+            f"Got weight_type={resolved_full.weight_type!r}. aweight / "
+            "fweight have different sandwich-variance semantics that are "
+            "not derived for the pretest variance components."
+        )
+    resolved_unit = _aggregate_unit_resolved_survey(data, resolved_full, unit_col)
+    # R1 P0: strictly-positive weights at the per-unit level (mirrors the
+    # weights= shortcut). Zero per-unit weights leave units in the dose-
+    # variation check / CvM sum while contributing zero population mass,
+    # which can produce silently-wrong pretest decisions.
+    if (np.asarray(resolved_unit.weights) <= 0).any():
+        raise ValueError(
+            f"{caller_name}: survey weights must be strictly positive at "
+            "the per-unit level. Zero / negative weights would leave units "
+            "in the variance/CvM computation while contributing zero "
+            "mass; this would produce silent wrong pretest decisions on "
+            "subpopulation-restricted designs. Pre-filter the panel to "
+            "the positive-weight subpopulation before calling the workflow."
+        )
+    return None, resolved_unit
+
+
 def joint_pretrends_test(
     data: pd.DataFrame,
     outcome_col: str,
@@ -2340,6 +3151,8 @@ def joint_pretrends_test(
     alpha: float = 0.05,
     n_bootstrap: int = 999,
     seed: Optional[int] = None,
+    weights: Optional[np.ndarray] = None,
+    survey: Any = None,
 ) -> StuteJointResult:
     """Joint Stute pre-trends test (paper Section 4.2 step 2).
 
@@ -2376,6 +3189,18 @@ def joint_pretrends_test(
         handling follows the HAD contract (staggered auto-filter warns
         and proceeds on last cohort; solo cohort proceeds).
     alpha, n_bootstrap, seed : as in :func:`stute_test`.
+    weights : np.ndarray or None, keyword-only, default None
+        Per-row positive weights (Phase 4.5 C). Aggregated to per-unit
+        via :func:`diff_diff.had._aggregate_unit_weights` (constant-
+        within-unit invariant enforced). On staggered panels the
+        wrapper subsets ``weights`` to the surviving cohort BEFORE
+        aggregation. Mutually exclusive with ``survey``.
+    survey : SurveyDesign or None, keyword-only, default None
+        Survey design (Phase 4.5 C). Resolved on the filtered panel;
+        replicate-weight designs raise ``NotImplementedError``;
+        ``weight_type`` must be ``"pweight"``. Forwarded to
+        :func:`stute_joint_pretest` as a per-unit
+        ``ResolvedSurveyDesign``.
 
     Returns
     -------
@@ -2493,10 +3318,61 @@ def joint_pretrends_test(
             f"anchor."
         )
 
+    # Phase 4.5 C: aggregate per-row weights/survey to per-unit (G,)
+    # using the existing HAD helpers (constant-within-unit invariant
+    # enforced; replicate-weight rejected on the survey path).
+    # R2 P1 fix: subset row-level `weights` to data_filtered's rows BEFORE
+    # resolution, mirroring did_had_pretest_workflow. When
+    # _validate_had_panel_event_study auto-filters to the last cohort
+    # under staggered timing, the original weights array no longer aligns
+    # with data_filtered's row count. Survey= path is unaffected
+    # (column references resolved internally on data_filtered).
+    weights_for_resolve = weights
+    if weights is not None:
+        # R9 P1: validate 1D + length-matched-to-data BEFORE any
+        # staggered-panel subsetting. Otherwise oversized arrays would
+        # be silently truncated and undersized arrays would surface raw
+        # NumPy indexing errors instead of the package's front-door
+        # ValueError.
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        if weights_arr.ndim != 1:
+            raise ValueError(
+                f"joint_pretrends_test: weights must be 1-dimensional, got "
+                f"shape {weights_arr.shape}. (A common mistake is passing "
+                "df[['w']].to_numpy() which produces (N, 1); use "
+                "df['w'].to_numpy() for (N,).)"
+            )
+        if weights_arr.shape[0] != len(data):
+            raise ValueError(
+                f"joint_pretrends_test: weights length {weights_arr.shape[0]} "
+                f"does not match data length {len(data)}."
+            )
+        if len(data_filtered) != len(data):
+            pos_idx = data.index.get_indexer(data_filtered.index)
+            if (pos_idx < 0).any():
+                raise ValueError(
+                    "joint_pretrends_test: cannot align row-level weights to "
+                    "the staggered-filtered panel; some data_filtered rows "
+                    "do not appear in original data.index."
+                )
+            weights_for_resolve = weights_arr[pos_idx]
+        else:
+            weights_for_resolve = weights_arr
+    weights_unit, resolved_unit = _resolve_pretest_unit_weights(
+        data_filtered, unit_col, weights_for_resolve, survey, "joint_pretrends_test"
+    )
+    # Reorder per-unit weights to match d_arr/dy_by_horizon ordering.
+    # _aggregate_for_joint_test sorts the wide pivot by index (unit_col),
+    # so per-unit order is the SAME as _aggregate_unit_weights' output.
+    w_eff = resolved_unit.weights if resolved_unit is not None else weights_unit
+
     residuals_by_horizon: Dict[str, np.ndarray] = {}
     fitted_by_horizon: Dict[str, np.ndarray] = {}
     for label, dy_t in dy_by_horizon.items():
-        mean_t = float(dy_t.mean())
+        if w_eff is None:
+            mean_t = float(dy_t.mean())
+        else:
+            mean_t = float(np.sum(w_eff * dy_t) / np.sum(w_eff))
         fitted_t = np.full(G, mean_t, dtype=np.float64)
         residuals_t = dy_t - fitted_t
         residuals_by_horizon[label] = residuals_t
@@ -2513,6 +3389,8 @@ def joint_pretrends_test(
         n_bootstrap=n_bootstrap,
         seed=seed,
         null_form="mean_independence",
+        weights=weights_unit if resolved_unit is None else None,
+        survey=resolved_unit,
     )
 
 
@@ -2529,6 +3407,8 @@ def joint_homogeneity_test(
     alpha: float = 0.05,
     n_bootstrap: int = 999,
     seed: Optional[int] = None,
+    weights: Optional[np.ndarray] = None,
+    survey: Any = None,
 ) -> StuteJointResult:
     """Joint Stute homogeneity-linearity test (paper Section 4.3 joint).
 
@@ -2560,6 +3440,14 @@ def joint_homogeneity_test(
     first_treat_col : str or None
         Forwarded to the underlying panel validator.
     alpha, n_bootstrap, seed : as in :func:`stute_test`.
+    weights : np.ndarray or None, keyword-only, default None
+        Per-row positive weights (Phase 4.5 C). See
+        :func:`joint_pretrends_test` for the contract; semantics are
+        identical (per-unit aggregation, staggered subsetting,
+        replicate-weight rejection).
+    survey : SurveyDesign or None, keyword-only, default None
+        Survey design (Phase 4.5 C). Same contract as
+        :func:`joint_pretrends_test`.
 
     Returns
     -------
@@ -2678,10 +3566,47 @@ def joint_homogeneity_test(
                 f"zero-dose invariant)."
             )
 
+    # Phase 4.5 C: aggregate weights/survey to per-unit; thread through.
+    # R2 P1 fix: subset row-level `weights` to data_filtered's rows BEFORE
+    # resolution, mirroring did_had_pretest_workflow / joint_pretrends_test
+    # for staggered last-cohort filtering.
+    # R9 P1 fix: validate 1D + length-matched-to-data BEFORE subsetting.
+    weights_for_resolve = weights
+    if weights is not None:
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        if weights_arr.ndim != 1:
+            raise ValueError(
+                f"joint_homogeneity_test: weights must be 1-dimensional, got "
+                f"shape {weights_arr.shape}."
+            )
+        if weights_arr.shape[0] != len(data):
+            raise ValueError(
+                f"joint_homogeneity_test: weights length {weights_arr.shape[0]} "
+                f"does not match data length {len(data)}."
+            )
+        if len(data_filtered) != len(data):
+            pos_idx = data.index.get_indexer(data_filtered.index)
+            if (pos_idx < 0).any():
+                raise ValueError(
+                    "joint_homogeneity_test: cannot align row-level weights to "
+                    "the staggered-filtered panel; some data_filtered rows do "
+                    "not appear in original data.index."
+                )
+            weights_for_resolve = weights_arr[pos_idx]
+        else:
+            weights_for_resolve = weights_arr
+    weights_unit, resolved_unit = _resolve_pretest_unit_weights(
+        data_filtered, unit_col, weights_for_resolve, survey, "joint_homogeneity_test"
+    )
+    w_eff = resolved_unit.weights if resolved_unit is not None else weights_unit
+
     residuals_by_horizon: Dict[str, np.ndarray] = {}
     fitted_by_horizon: Dict[str, np.ndarray] = {}
     for label, dy_t in dy_by_horizon.items():
-        a_hat, b_hat, residuals_t = _fit_ols_intercept_slope(d_arr, dy_t)
+        if w_eff is None:
+            a_hat, b_hat, residuals_t = _fit_ols_intercept_slope(d_arr, dy_t)
+        else:
+            a_hat, b_hat, residuals_t = _fit_weighted_ols_intercept_slope(d_arr, dy_t, w_eff)
         fitted_t = a_hat + b_hat * d_arr
         residuals_by_horizon[label] = residuals_t
         fitted_by_horizon[label] = fitted_t
@@ -2697,10 +3622,120 @@ def joint_homogeneity_test(
         n_bootstrap=n_bootstrap,
         seed=seed,
         null_form="linearity",
+        weights=weights_unit if resolved_unit is None else None,
+        survey=resolved_unit,
     )
 
 
 _VALID_AGGREGATES = ("overall", "event_study")
+
+_QUG_DEFERRED_SUFFIX = (
+    " (linearity-conditional verdict; QUG-under-survey deferred per Phase 4.5 C0)"
+)
+
+
+def _compose_verdict_overall_survey(
+    stute: Optional[StuteTestResults],
+    yatchew: Optional[YatchewTestResults],
+) -> str:
+    """Build the overall-path :class:`HADPretestReport` verdict on the
+    survey/weights branch (Phase 4.5 C).
+
+    Drops the QUG step from consideration (skipped per Phase 4.5 C0)
+    and composes the verdict from Stute + Yatchew alone, with the
+    linearity-conditional suffix appended in every branch. R7 P1 fix:
+    explicit survey-aware composer replaces the prior approach of
+    composing the unweighted verdict with a NaN QUG and string-replacing
+    the resulting "QUG NaN" suffix, which could leave pass cases starting
+    with "inconclusive".
+
+    Priority (mirrors :func:`_compose_verdict` minus QUG):
+      1. Conclusive rejections of Stute or Yatchew lead.
+      2. No conclusive rejection but linearity inconclusive (both NaN)
+         -> "inconclusive - both linearity tests NaN".
+      3. Linearity conclusive (at least one of Stute/Yatchew finite) AND
+         no rejection -> fail-to-reject string.
+    All branches end with `_QUG_DEFERRED_SUFFIX`.
+    """
+    stute_ok = stute is not None and bool(np.isfinite(stute.p_value))
+    yatchew_ok = yatchew is not None and bool(np.isfinite(yatchew.p_value))
+    stute_rej = stute_ok and bool(stute.reject)
+    yatchew_rej = yatchew_ok and bool(yatchew.reject)
+
+    reasons = []
+    if stute_rej:
+        reasons.append("linearity rejected - heterogeneity bias (Stute)")
+    if yatchew_rej:
+        reasons.append("linearity rejected - heterogeneity bias (Yatchew)")
+
+    unresolved = []
+    if not stute_ok:
+        unresolved.append("Stute NaN")
+    if not yatchew_ok:
+        unresolved.append("Yatchew NaN")
+
+    if reasons:
+        verdict = "; ".join(reasons)
+        if unresolved:
+            verdict += "; additional steps unresolved: " + "; ".join(unresolved)
+        return verdict + _QUG_DEFERRED_SUFFIX
+
+    # No rejections.
+    if not (stute_ok or yatchew_ok):
+        return "inconclusive - both Stute and Yatchew linearity tests NaN" + _QUG_DEFERRED_SUFFIX
+
+    # At least one linearity test conclusive AND no rejection.
+    skipped_note = ""
+    if not stute_ok:
+        skipped_note = " (Stute NaN - skipped)"
+    elif not yatchew_ok:
+        skipped_note = " (Yatchew NaN - skipped)"
+    return (
+        "Stute and Yatchew linearity diagnostics fail-to-reject"
+        + skipped_note
+        + _QUG_DEFERRED_SUFFIX
+    )
+
+
+def _compose_verdict_event_study_survey(
+    pretrends_joint: Optional[StuteJointResult],
+    homogeneity_joint: Optional[StuteJointResult],
+) -> str:
+    """Event-study survey-path verdict (R7 P1 fix; mirrors
+    :func:`_compose_verdict_event_study` minus QUG)."""
+    pretrends_ok = pretrends_joint is not None and bool(np.isfinite(pretrends_joint.p_value))
+    homogeneity_ok = homogeneity_joint is not None and bool(np.isfinite(homogeneity_joint.p_value))
+    pretrends_rej = pretrends_joint is not None and pretrends_ok and bool(pretrends_joint.reject)
+    homogeneity_rej = (
+        homogeneity_joint is not None and homogeneity_ok and bool(homogeneity_joint.reject)
+    )
+
+    reasons = []
+    if pretrends_rej:
+        reasons.append("joint pre-trends rejected - assumption 7 violated (joint Stute)")
+    if homogeneity_rej:
+        reasons.append("joint linearity rejected - heterogeneity bias (joint Stute)")
+
+    unresolved = []
+    if pretrends_joint is None:
+        unresolved.append("joint pre-trends skipped (no earlier pre-period)")
+    elif not pretrends_ok:
+        unresolved.append("joint pre-trends NaN")
+    if homogeneity_joint is None:
+        unresolved.append("joint linearity skipped")
+    elif not homogeneity_ok:
+        unresolved.append("joint linearity NaN")
+
+    if reasons:
+        verdict = "; ".join(reasons)
+        if unresolved:
+            verdict += "; additional steps unresolved: " + "; ".join(unresolved)
+        return verdict + _QUG_DEFERRED_SUFFIX
+
+    if unresolved:
+        return "inconclusive - " + "; ".join(unresolved) + _QUG_DEFERRED_SUFFIX
+
+    return "joint pre-trends and joint linearity diagnostics fail-to-reject" + _QUG_DEFERRED_SUFFIX
 
 
 def did_had_pretest_workflow(
@@ -2769,11 +3804,16 @@ def did_had_pretest_workflow(
     aggregate : str, keyword-only, default ``"overall"``
         Dispatch mode. Invalid values raise ``ValueError``.
     survey : SurveyDesign or None, keyword-only, default None
-        Currently rejected with ``NotImplementedError``. See
-        *Notes -- Survey/weighted data*.
+        Survey design for design-based pretest inference. Linearity-family
+        pretests use PSU-level Mammen multiplier bootstrap (Stute family)
+        and weighted OLS + weighted variance components (Yatchew). The QUG
+        step is skipped under survey with a ``UserWarning`` (permanent
+        deferral per Phase 4.5 C0). Replicate-weight designs raise
+        ``NotImplementedError``. Mutually exclusive with ``weights``.
     weights : np.ndarray or None, keyword-only, default None
-        Currently rejected with ``NotImplementedError``. See
-        *Notes -- Survey/weighted data*.
+        Per-row positive weights for the pweight shortcut. Mutually
+        exclusive with ``survey``. Routed through a synthetic trivial
+        ``ResolvedSurveyDesign`` so the same kernel handles both paths.
 
     Returns
     -------
@@ -2783,7 +3823,9 @@ def did_had_pretest_workflow(
         event-study path: ``pretrends_joint`` (``None`` if no earlier
         pre-period) and ``homogeneity_joint`` populated, ``stute`` /
         ``yatchew`` are ``None``. ``aggregate`` is recorded on the
-        report for serialization dispatch.
+        report for serialization dispatch. On the survey/weights path,
+        ``qug`` is ``None`` (Phase 4.5 C0 deferral); other components
+        populated as on the unweighted path.
 
     Raises
     ------
@@ -2792,34 +3834,46 @@ def did_had_pretest_workflow(
         non-None, or any downstream front-door failure (panel balance,
         dtype, dose invariant).
     NotImplementedError
-        If ``survey`` or ``weights`` is non-None. See
-        *Notes -- Survey/weighted data*.
+        If ``survey.replicate_weights is not None`` (replicate-weight
+        pretests deferred to a parallel follow-up after Phase 4.5 C).
 
     Notes
     -----
-    Survey/weighted data: the workflow does not yet accept ``survey=`` /
-    ``weights=`` kwargs. Two reasons:
+    Survey/weighted data (Phase 4.5 C): under ``survey=`` or ``weights=``,
+    the workflow:
 
-    1. QUG-under-survey is **permanently deferred** (Phase 4.5 C0
-       decision gate). Extreme-order-statistic tests are not smooth
-       functionals of the empirical CDF and have no off-the-shelf
-       survey-aware analog. See :func:`qug_test` Notes.
-    2. Survey support for the linearity-family pretests is planned for
-       Phase 4.5 C, with mechanism varying by test: Rao-Wu rescaled
-       bootstrap for the Stute family (:func:`stute_test`,
-       :func:`stute_joint_pretest`, :func:`joint_pretrends_test`,
-       :func:`joint_homogeneity_test`) -- weighted multipliers + PSU
-       clustering in the bootstrap draw; weighted OLS residuals +
-       weighted variance estimator for :func:`yatchew_hr_test` (Yatchew
-       1997 is a closed-form variance-ratio test, not bootstrap-based).
-       Until C ships, those sister pretests still raise bare
-       ``TypeError`` on ``survey=`` / ``weights=`` because their
-       signatures are closed (no kwargs added) -- adding rejection-only
-       kwargs in C0 then implementing in C is API churn for no user
-       benefit.
+    1. **Skips QUG** with a ``UserWarning`` and sets ``qug=None`` on the
+       report. QUG-under-survey is permanently deferred per Phase 4.5 C0;
+       extreme-order-statistic tests are not smooth functionals of the
+       empirical CDF and have no off-the-shelf survey-aware analog. See
+       :func:`qug_test` Notes for the full methodology rationale.
+    2. **Runs the linearity family** with the survey-aware mechanism
+       (PSU-level Mammen multiplier bootstrap for Stute / joint variants;
+       weighted OLS + weighted variance components for Yatchew) routed
+       via the existing kernels.
+    3. **Verdict** carries a ``"linearity-conditional verdict; QUG-under-
+       survey deferred per Phase 4.5 C0"`` suffix to remind callers that
+       admissibility is conditional on the linearity family alone.
+    4. **`all_pass`** drops the QUG-conclusiveness gate (one less
+       precondition). The linearity-conditional rule splits by aggregate:
 
-    Until Phase 4.5 C ships, run the workflow without ``survey`` /
-    ``weights`` kwargs and verify identification manually.
+       - ``aggregate="overall"`` survey: ``True`` iff at least one of
+         Stute/Yatchew is conclusive AND no conclusive test rejects
+         (paper Section 4 step-3 "Stute OR Yatchew" wording).
+       - ``aggregate="event_study"`` survey: ``True`` iff
+         ``pretrends_joint`` is non-None and conclusive,
+         ``homogeneity_joint`` is conclusive, AND neither rejects.
+         Both joint variants must be conclusive on the event-study
+         path (same step-2 + step-3 closure as the unweighted
+         aggregate, just without the QUG step).
+
+    Sister pretests are unchanged on the workflow path; direct callers
+    can also pass ``weights=`` / ``survey=`` to :func:`stute_test`,
+    :func:`yatchew_hr_test`, etc. (Phase 4.5 C extends each helper's
+    signature). Per-unit constant-within-unit invariant on weights /
+    strata / psu / fpc is enforced by the workflow via
+    :func:`diff_diff.had._aggregate_unit_weights` /
+    :func:`diff_diff.had._aggregate_unit_resolved_survey`.
 
     References
     ----------
@@ -2831,37 +3885,30 @@ def did_had_pretest_workflow(
             f"aggregate must be one of {list(_VALID_AGGREGATES)!r}; " f"got {aggregate!r}."
         )
 
-    # Mutex on survey/weights, mirroring HeterogeneousAdoptionDiD.fit()
-    # at had.py:2890.
+    # Phase 4.5 C: survey/weights mutex + presence detection. R6 P1 fix:
+    # do NOT call _resolve_pretest_unit_weights on the FULL panel here --
+    # under aggregate='event_study' the panel may be staggered and the
+    # cohort filter at _validate_multi_period_panel can drop units. If
+    # those dropped units have zero/invalid weights, eager full-panel
+    # resolution would abort an otherwise-valid event-study run. Defer
+    # resolution to the per-aggregate branches: overall path resolves on
+    # the original data (no filtering); event-study path lets the joint
+    # wrappers handle resolution on data_filtered.
     if survey is not None and weights is not None:
         raise ValueError(
-            "Pass survey=<SurveyDesign> OR weights=<array>, not both. "
-            "did_had_pretest_workflow does not yet accept either kwarg "
-            "(Phase 4.5 C0 + Phase 4.5 C); see the NotImplementedError "
-            "below for the methodology rationale."
+            "did_had_pretest_workflow: pass survey=<SurveyDesign> OR " "weights=<array>, not both."
         )
+    use_survey_path = (survey is not None) or (weights is not None)
 
-    # Phase 4.5 C0 decision gate (workflow surface). QUG-under-survey is
-    # permanently deferred; the linearity-family pretests are deferred to
-    # Phase 4.5 C. Until C ships, the workflow has no survey-aware
-    # dispatch and rejects the kwargs at the front door.
-    if survey is not None or weights is not None:
-        raise NotImplementedError(
-            "did_had_pretest_workflow does not yet accept survey= / "
-            "weights= kwargs.\n"
-            "\n"
-            "QUG-under-survey is permanently deferred (extreme-value "
-            "theory under complex sampling is not a settled toolkit; see "
-            "qug_test docstring for the methodology rationale). Survey "
-            "support for the linearity-family pretests is planned for "
-            "Phase 4.5 C, with mechanism varying by test: Rao-Wu "
-            "rescaled bootstrap for the Stute family (stute_test, "
-            "stute_joint_pretest, joint_pretrends_test, "
-            "joint_homogeneity_test); weighted OLS residuals + weighted "
-            "variance estimator for yatchew_hr_test (Yatchew 1997 is a "
-            "closed-form variance-ratio test, not bootstrap-based). "
-            "Until that ships, run the workflow without survey/weights "
-            "kwargs and verify identification manually."
+    if use_survey_path:
+        # Phase 4.5 C0 deferral surface: skip QUG with educational warning.
+        warnings.warn(
+            "did_had_pretest_workflow: QUG step skipped under survey/weights "
+            "(permanently deferred per Phase 4.5 C0; extreme-value theory "
+            "under complex sampling is not a settled toolkit). Verdict "
+            "reflects the linearity family only ('linearity-conditional').",
+            UserWarning,
+            stacklevel=2,
         )
 
     if aggregate == "event_study":
@@ -2886,13 +3933,58 @@ def did_had_pretest_workflow(
 
         # Step 1: QUG on dose distribution at F. Doses are
         # time-invariant in HAD, so D_g at F equals max_t D_{g,t}.
+        # Phase 4.5 C: skipped under survey/weights (qug_res = None).
         doses_at_F = (
             data_filtered.loc[data_filtered[time_col] == F, [unit_col, dose_col]]
             .set_index(unit_col)
             .sort_index()[dose_col]
             .to_numpy(dtype=np.float64)
         )
-        qug_res = qug_test(doses_at_F, alpha=alpha)
+        qug_res = None if use_survey_path else qug_test(doses_at_F, alpha=alpha)
+
+        # Phase 4.5 C: forward weights/survey to the joint helpers. The
+        # data-in wrappers handle their own per-row → per-unit aggregation
+        # via _resolve_pretest_unit_weights internally on `data_filtered`.
+        # R1 P1 fix: subset row-level `weights` to data_filtered's rows
+        # BEFORE passing through. Otherwise on staggered panels (where
+        # _validate_multi_period_panel auto-filters to last cohort),
+        # the wrappers would call _aggregate_unit_weights(data_filtered,
+        # weights[full_panel_length], ...) and crash on length mismatch.
+        # Mirrors HeterogeneousAdoptionDiD.fit()'s positional-index
+        # subsetting via `data.index.get_indexer(data_filtered.index)`.
+        # `survey=` carries column references resolved internally on
+        # data_filtered, so no subsetting needed there.
+        if use_survey_path and weights is not None:
+            # R9 P1: validate 1D + length-matched-to-data BEFORE staggered-
+            # panel subsetting. Otherwise oversized arrays would be
+            # silently truncated and undersized arrays would surface raw
+            # NumPy indexing errors.
+            weights_arr = np.asarray(weights, dtype=np.float64)
+            if weights_arr.ndim != 1:
+                raise ValueError(
+                    "did_had_pretest_workflow: weights must be 1-dimensional, "
+                    f"got shape {weights_arr.shape}. (A common mistake is "
+                    "passing df[['w']].to_numpy() which produces (N, 1); "
+                    "use df['w'].to_numpy() for (N,).)"
+                )
+            if weights_arr.shape[0] != len(data):
+                raise ValueError(
+                    f"did_had_pretest_workflow: weights length "
+                    f"{weights_arr.shape[0]} does not match data length "
+                    f"{len(data)}."
+                )
+            pos_idx = data.index.get_indexer(data_filtered.index)
+            if (pos_idx < 0).any():
+                raise ValueError(
+                    "did_had_pretest_workflow: cannot align row-level "
+                    "weights to the staggered-filtered panel "
+                    "(some data_filtered rows do not appear in original "
+                    "data.index). This is a bug; please report."
+                )
+            joint_weights = weights_arr[pos_idx]
+        else:
+            joint_weights = None
+        joint_survey = survey if use_survey_path and survey is not None else None
 
         # Step 2: joint pre-trends on earlier pre-periods (those
         # strictly before base_period). If only the base pre-period is
@@ -2920,6 +4012,8 @@ def did_had_pretest_workflow(
                 alpha=alpha,
                 n_bootstrap=n_bootstrap,
                 seed=seed,
+                weights=joint_weights,
+                survey=joint_survey,
             )
         else:
             pretrends_joint = None
@@ -2937,26 +4031,42 @@ def did_had_pretest_workflow(
             alpha=alpha,
             n_bootstrap=n_bootstrap,
             seed=seed,
+            weights=joint_weights,
+            survey=joint_survey,
         )
 
-        # Event-study `all_pass`: True iff every implemented step is
-        # conclusive AND none reject. `pretrends_joint` must exist
-        # (cannot be None) for the step-2 gap to be closed. Uses
-        # `np.isfinite(p_value)` per Phase 3 convention (no
-        # `.conclusive()` helper on result dataclasses).
-        qug_ok = bool(np.isfinite(qug_res.p_value))
+        # Event-study `all_pass`. On the unweighted path, every implemented
+        # step must be conclusive AND none reject (Phase 3 convention). On
+        # the survey/weights path, drop the QUG-conclusiveness condition
+        # (qug=None per Phase 4.5 C0 deferral); admissibility becomes
+        # linearity-conditional.
         pretrends_ok = pretrends_joint is not None and bool(np.isfinite(pretrends_joint.p_value))
         homogeneity_ok = bool(np.isfinite(homogeneity_joint.p_value))
-        all_pass = bool(
-            qug_ok
-            and pretrends_ok
-            and pretrends_joint is not None
-            and not pretrends_joint.reject
-            and homogeneity_ok
-            and not homogeneity_joint.reject
-            and not qug_res.reject
-        )
-        verdict = _compose_verdict_event_study(qug_res, pretrends_joint, homogeneity_joint)
+        if use_survey_path:
+            all_pass = bool(
+                pretrends_ok
+                and pretrends_joint is not None
+                and not pretrends_joint.reject
+                and homogeneity_ok
+                and not homogeneity_joint.reject
+            )
+            # R7 P1 fix: explicit survey-aware verdict composer instead
+            # of post-processing the unweighted-verdict output (the
+            # previous string-replace approach could leave pass cases
+            # starting with "inconclusive" even when all_pass=True).
+            verdict = _compose_verdict_event_study_survey(pretrends_joint, homogeneity_joint)
+        else:
+            qug_ok = bool(np.isfinite(qug_res.p_value))
+            all_pass = bool(
+                qug_ok
+                and pretrends_ok
+                and pretrends_joint is not None
+                and not pretrends_joint.reject
+                and homogeneity_ok
+                and not homogeneity_joint.reject
+                and not qug_res.reject
+            )
+            verdict = _compose_verdict_event_study(qug_res, pretrends_joint, homogeneity_joint)
 
         return HADPretestReport(
             qug=qug_res,
@@ -2971,7 +4081,9 @@ def did_had_pretest_workflow(
             aggregate="event_study",
         )
 
-    # aggregate == "overall" - Phase 3 behavior, unchanged.
+    # aggregate == "overall" - Phase 3 behavior on the unweighted path
+    # (bit-exact regression preserved); Phase 4.5 C survey path skips QUG
+    # and dispatches stute / yatchew with weights=/survey=.
     t_pre, t_post = _validate_had_panel(
         data, outcome_col, dose_col, time_col, unit_col, first_treat_col
     )
@@ -2986,9 +4098,33 @@ def did_had_pretest_workflow(
         cluster_col=None,  # pretests do not use cluster-robust SE
     )
 
-    qug_res = qug_test(d_arr, alpha=alpha)
-    stute_res = stute_test(d_arr, dy_arr, alpha=alpha, n_bootstrap=n_bootstrap, seed=seed)
-    yatchew_res = yatchew_hr_test(d_arr, dy_arr, alpha=alpha)
+    # R6 P1 fix: resolve weights/survey HERE (overall path operates on
+    # the original data; no cohort filter to interact with).
+    weights_unit, resolved_unit = _resolve_pretest_unit_weights(
+        data, unit_col, weights, survey, "did_had_pretest_workflow"
+    )
+
+    qug_res = None if use_survey_path else qug_test(d_arr, alpha=alpha)
+    # Forward weights/survey to per-test calls. The data-in workflow has
+    # already aggregated to per-unit (weights_unit / resolved_unit); the
+    # _aggregate_first_difference call above also collapses to per-unit
+    # (one row per unit), so weights_unit and resolved_unit are aligned.
+    stute_res = stute_test(
+        d_arr,
+        dy_arr,
+        alpha=alpha,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+        weights=weights_unit if resolved_unit is None else None,
+        survey=resolved_unit,
+    )
+    yatchew_res = yatchew_hr_test(
+        d_arr,
+        dy_arr,
+        alpha=alpha,
+        weights=weights_unit if resolved_unit is None else None,
+        survey=resolved_unit,
+    )
 
     # `all_pass` must be conclusive under the paper's four-step workflow
     # (step 1 QUG + step 3 linearity via Stute OR Yatchew):
@@ -3001,11 +4137,18 @@ def did_had_pretest_workflow(
     #   - No conclusive test may reject. NaN-p tests have reject=False by
     #     convention, so the OR across `.reject` naturally counts only
     #     the conclusive rejections.
-    qug_conclusive = bool(np.isfinite(qug_res.p_value))
+    # On the survey path, drop QUG conclusiveness (qug=None per C0 deferral).
     linearity_conclusive = bool(np.isfinite(stute_res.p_value) or np.isfinite(yatchew_res.p_value))
-    any_reject = qug_res.reject or stute_res.reject or yatchew_res.reject
-    all_pass = bool(qug_conclusive and linearity_conclusive and not any_reject)
-    verdict = _compose_verdict(qug_res, stute_res, yatchew_res)
+    if use_survey_path:
+        any_reject = stute_res.reject or yatchew_res.reject
+        all_pass = bool(linearity_conclusive and not any_reject)
+        # R7 P1 fix: explicit survey-aware verdict composer.
+        verdict = _compose_verdict_overall_survey(stute_res, yatchew_res)
+    else:
+        qug_conclusive = bool(np.isfinite(qug_res.p_value))
+        any_reject = qug_res.reject or stute_res.reject or yatchew_res.reject
+        all_pass = bool(qug_conclusive and linearity_conclusive and not any_reject)
+        verdict = _compose_verdict(qug_res, stute_res, yatchew_res)
 
     return HADPretestReport(
         qug=qug_res,

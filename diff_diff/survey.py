@@ -678,6 +678,45 @@ class ResolvedSurveyDesign:
         return True  # Any resolved survey design uses the survey vcov path
 
 
+def _make_trivial_resolved(weights: np.ndarray) -> "ResolvedSurveyDesign":
+    """Construct a trivial pweight-only ResolvedSurveyDesign (no strata/PSU/FPC).
+
+    Used by survey-aware code paths invoked via a bare per-row ``weights``
+    array (the pweight shortcut). Routing through this synthetic resolved
+    design lets the same bootstrap / variance kernel handle both the
+    ``weights=`` shortcut and the full ``survey=SurveyDesign(...)`` path
+    uniformly. Mirrors the PR #363 synthetic-trivial-resolved pattern that
+    fixed sup-t under the ``weights=`` shortcut on
+    ``HeterogeneousAdoptionDiD.fit()``.
+
+    Parameters
+    ----------
+    weights : np.ndarray, shape (n_obs,)
+        Per-observation positive weights. Caller is responsible for any
+        non-negativity / per-unit-constancy validation.
+
+    Returns
+    -------
+    ResolvedSurveyDesign
+        With ``weight_type="pweight"``, ``strata=psu=fpc=None``,
+        ``n_strata=0``, ``n_psu=n_obs`` (each observation is its own PSU
+        under the trivial design), ``lonely_psu="remove"``,
+        ``replicate_weights=None``.
+    """
+    w = np.asarray(weights, dtype=np.float64)
+    n_obs = int(w.shape[0])
+    return ResolvedSurveyDesign(
+        weights=w,
+        weight_type="pweight",
+        strata=None,
+        psu=None,
+        fpc=None,
+        n_strata=0,
+        n_psu=n_obs,
+        lonely_psu="remove",
+    )
+
+
 @dataclass
 class SurveyMetadata:
     """
@@ -1338,17 +1377,17 @@ class _PsuScaffolding:
     variance_computable: bool
     legitimate_zero_count: int
     # stratified-mode fields (None in other modes):
-    psu_codes: Optional[np.ndarray] = None          # (n,) int, global PSU id 0..P-1
-    psu_stratum: Optional[np.ndarray] = None        # (P,) int, stratum of each PSU
+    psu_codes: Optional[np.ndarray] = None  # (n,) int, global PSU id 0..P-1
+    psu_stratum: Optional[np.ndarray] = None  # (P,) int, stratum of each PSU
     n_psu_per_stratum: Optional[np.ndarray] = None  # (S,) int
-    singleton_strata: Optional[np.ndarray] = None   # (S,) bool
-    adjustment_h: Optional[np.ndarray] = None       # (S,) float, (1-f_h)*n_h/(n_h-1); 0 for singletons
+    singleton_strata: Optional[np.ndarray] = None  # (S,) bool
+    adjustment_h: Optional[np.ndarray] = None  # (S,) float, (1-f_h)*n_h/(n_h-1); 0 for singletons
     # psu_only-mode fields (None in other modes):
-    psu_codes_only: Optional[np.ndarray] = None     # (n,) int, PSU id 0..P-1
+    psu_codes_only: Optional[np.ndarray] = None  # (n,) int, PSU id 0..P-1
     n_psu_only: Optional[int] = None
-    adjustment_only: Optional[float] = None         # (1-f)*n_psu/(n_psu-1) or 0
+    adjustment_only: Optional[float] = None  # (1-f)*n_psu/(n_psu-1) or 0
     # no_strata_no_psu-mode fields (None in other modes):
-    adjustment_direct: Optional[float] = None       # (1-f)*n/(n-1) or 0
+    adjustment_direct: Optional[float] = None  # (1-f)*n/(n-1) or 0
 
 
 def _precompute_psu_scaffolding(resolved: "ResolvedSurveyDesign") -> _PsuScaffolding:
@@ -1530,9 +1569,7 @@ def _precompute_psu_scaffolding(resolved: "ResolvedSurveyDesign") -> _PsuScaffol
     #   - Under "adjust", any singleton stratum also counts (adds V_h even if 0).
     has_non_singleton = bool(np.any(~singleton_strata))
     has_singleton = bool(np.any(singleton_strata))
-    variance_computable = has_non_singleton or (
-        lonely_psu == "adjust" and has_singleton
-    )
+    variance_computable = has_non_singleton or (lonely_psu == "adjust" and has_singleton)
 
     return _PsuScaffolding(
         mode="stratified",
@@ -1610,9 +1647,7 @@ def _compute_if_variance_fast(
 
     psu_sums = np.bincount(scaffolding.psu_codes, weights=psi, minlength=P)
     sum_by_h = np.bincount(scaffolding.psu_stratum, weights=psu_sums, minlength=S)
-    sum2_by_h = np.bincount(
-        scaffolding.psu_stratum, weights=psu_sums * psu_sums, minlength=S
-    )
+    sum2_by_h = np.bincount(scaffolding.psu_stratum, weights=psu_sums * psu_sums, minlength=S)
 
     with np.errstate(divide="ignore", invalid="ignore"):
         centered_ss = np.where(
