@@ -3290,15 +3290,36 @@ def joint_pretrends_test(
     # with data_filtered's row count. Survey= path is unaffected
     # (column references resolved internally on data_filtered).
     weights_for_resolve = weights
-    if weights is not None and len(data_filtered) != len(data):
-        pos_idx = data.index.get_indexer(data_filtered.index)
-        if (pos_idx < 0).any():
+    if weights is not None:
+        # R9 P1: validate 1D + length-matched-to-data BEFORE any
+        # staggered-panel subsetting. Otherwise oversized arrays would
+        # be silently truncated and undersized arrays would surface raw
+        # NumPy indexing errors instead of the package's front-door
+        # ValueError.
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        if weights_arr.ndim != 1:
             raise ValueError(
-                "joint_pretrends_test: cannot align row-level weights to "
-                "the staggered-filtered panel; some data_filtered rows do "
-                "not appear in original data.index."
+                f"joint_pretrends_test: weights must be 1-dimensional, got "
+                f"shape {weights_arr.shape}. (A common mistake is passing "
+                "df[['w']].to_numpy() which produces (N, 1); use "
+                "df['w'].to_numpy() for (N,).)"
             )
-        weights_for_resolve = np.asarray(weights, dtype=np.float64)[pos_idx]
+        if weights_arr.shape[0] != len(data):
+            raise ValueError(
+                f"joint_pretrends_test: weights length {weights_arr.shape[0]} "
+                f"does not match data length {len(data)}."
+            )
+        if len(data_filtered) != len(data):
+            pos_idx = data.index.get_indexer(data_filtered.index)
+            if (pos_idx < 0).any():
+                raise ValueError(
+                    "joint_pretrends_test: cannot align row-level weights to "
+                    "the staggered-filtered panel; some data_filtered rows "
+                    "do not appear in original data.index."
+                )
+            weights_for_resolve = weights_arr[pos_idx]
+        else:
+            weights_for_resolve = weights_arr
     weights_unit, resolved_unit = _resolve_pretest_unit_weights(
         data_filtered, unit_col, weights_for_resolve, survey, "joint_pretrends_test"
     )
@@ -3511,16 +3532,31 @@ def joint_homogeneity_test(
     # R2 P1 fix: subset row-level `weights` to data_filtered's rows BEFORE
     # resolution, mirroring did_had_pretest_workflow / joint_pretrends_test
     # for staggered last-cohort filtering.
+    # R9 P1 fix: validate 1D + length-matched-to-data BEFORE subsetting.
     weights_for_resolve = weights
-    if weights is not None and len(data_filtered) != len(data):
-        pos_idx = data.index.get_indexer(data_filtered.index)
-        if (pos_idx < 0).any():
+    if weights is not None:
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        if weights_arr.ndim != 1:
             raise ValueError(
-                "joint_homogeneity_test: cannot align row-level weights to "
-                "the staggered-filtered panel; some data_filtered rows do "
-                "not appear in original data.index."
+                f"joint_homogeneity_test: weights must be 1-dimensional, got "
+                f"shape {weights_arr.shape}."
             )
-        weights_for_resolve = np.asarray(weights, dtype=np.float64)[pos_idx]
+        if weights_arr.shape[0] != len(data):
+            raise ValueError(
+                f"joint_homogeneity_test: weights length {weights_arr.shape[0]} "
+                f"does not match data length {len(data)}."
+            )
+        if len(data_filtered) != len(data):
+            pos_idx = data.index.get_indexer(data_filtered.index)
+            if (pos_idx < 0).any():
+                raise ValueError(
+                    "joint_homogeneity_test: cannot align row-level weights to "
+                    "the staggered-filtered panel; some data_filtered rows do "
+                    "not appear in original data.index."
+                )
+            weights_for_resolve = weights_arr[pos_idx]
+        else:
+            weights_for_resolve = weights_arr
     weights_unit, resolved_unit = _resolve_pretest_unit_weights(
         data_filtered, unit_col, weights_for_resolve, survey, "joint_homogeneity_test"
     )
@@ -3781,8 +3817,17 @@ def did_had_pretest_workflow(
        survey deferred per Phase 4.5 C0"`` suffix to remind callers that
        admissibility is conditional on the linearity family alone.
     4. **`all_pass`** drops the QUG-conclusiveness gate (one less
-       precondition); ``True`` iff at least one linearity test is
-       conclusive AND no conclusive test rejects.
+       precondition). The linearity-conditional rule splits by aggregate:
+
+       - ``aggregate="overall"`` survey: ``True`` iff at least one of
+         Stute/Yatchew is conclusive AND no conclusive test rejects
+         (paper Section 4 step-3 "Stute OR Yatchew" wording).
+       - ``aggregate="event_study"`` survey: ``True`` iff
+         ``pretrends_joint`` is non-None and conclusive,
+         ``homogeneity_joint`` is conclusive, AND neither rejects.
+         Both joint variants must be conclusive on the event-study
+         path (same step-2 + step-3 closure as the unweighted
+         aggregate, just without the QUG step).
 
     Sister pretests are unchanged on the workflow path; direct callers
     can also pass ``weights=`` / ``survey=`` to :func:`stute_test`,
@@ -3872,6 +3917,24 @@ def did_had_pretest_workflow(
         # `survey=` carries column references resolved internally on
         # data_filtered, so no subsetting needed there.
         if use_survey_path and weights is not None:
+            # R9 P1: validate 1D + length-matched-to-data BEFORE staggered-
+            # panel subsetting. Otherwise oversized arrays would be
+            # silently truncated and undersized arrays would surface raw
+            # NumPy indexing errors.
+            weights_arr = np.asarray(weights, dtype=np.float64)
+            if weights_arr.ndim != 1:
+                raise ValueError(
+                    "did_had_pretest_workflow: weights must be 1-dimensional, "
+                    f"got shape {weights_arr.shape}. (A common mistake is "
+                    "passing df[['w']].to_numpy() which produces (N, 1); "
+                    "use df['w'].to_numpy() for (N,).)"
+                )
+            if weights_arr.shape[0] != len(data):
+                raise ValueError(
+                    f"did_had_pretest_workflow: weights length "
+                    f"{weights_arr.shape[0]} does not match data length "
+                    f"{len(data)}."
+                )
             pos_idx = data.index.get_indexer(data_filtered.index)
             if (pos_idx < 0).any():
                 raise ValueError(
@@ -3880,7 +3943,7 @@ def did_had_pretest_workflow(
                     "(some data_filtered rows do not appear in original "
                     "data.index). This is a bug; please report."
                 )
-            joint_weights = np.asarray(weights, dtype=np.float64)[pos_idx]
+            joint_weights = weights_arr[pos_idx]
         else:
             joint_weights = None
         joint_survey = survey if use_survey_path and survey is not None else None

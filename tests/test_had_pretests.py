@@ -4099,3 +4099,83 @@ class TestPhase45CR1Regressions:
             assert not report.verdict.startswith("inconclusive"), (
                 f"all_pass=True but verdict starts with 'inconclusive': " f"{report.verdict!r}"
             )
+
+    # --- R9 P1: front-door length validation on staggered weights= path ---
+
+    def test_workflow_event_study_oversized_weights_raises(self):
+        """R9 P1: oversized row-level weights= must raise a clean
+        ValueError BEFORE the staggered-panel pos_idx subsetting (pre-fix
+        the workflow silently truncated by slicing original weights to
+        data_filtered's row count without checking length first)."""
+        df = self._make_staggered_panel(G_per_cohort=10)
+        weights_oversized = np.ones(100) * 1.5  # 80 rows expected
+        with pytest.raises(ValueError, match="weights length 100"):
+            did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                first_treat_col="F",
+                aggregate="event_study",
+                weights=weights_oversized,
+                n_bootstrap=199,
+                seed=0,
+            )
+
+    def test_workflow_event_study_undersized_weights_raises(self):
+        """R9 P1: undersized weights= must raise clean ValueError, not
+        a raw IndexError from pos_idx slicing."""
+        df = self._make_staggered_panel(G_per_cohort=10)
+        weights_undersized = np.ones(60) * 1.5
+        with pytest.raises(ValueError, match="weights length 60"):
+            did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                first_treat_col="F",
+                aggregate="event_study",
+                weights=weights_undersized,
+                n_bootstrap=199,
+                seed=0,
+            )
+
+    def test_joint_pretrends_test_oversized_weights_raises(self):
+        """R9 P1: same length-validation contract on the direct wrapper."""
+        df = self._make_staggered_panel(G_per_cohort=10)
+        weights_oversized = np.ones(100) * 1.5
+        with pytest.raises(ValueError, match="weights length 100"):
+            joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[0, 1],
+                base_period=2,
+                first_treat_col="F",
+                n_bootstrap=199,
+                seed=0,
+                weights=weights_oversized,
+            )
+
+    def test_joint_homogeneity_test_undersized_weights_raises(self):
+        """R9 P1: same on joint_homogeneity_test."""
+        df = self._make_staggered_panel(G_per_cohort=10)
+        weights_undersized = np.ones(60) * 1.5
+        with pytest.raises(ValueError, match="weights length 60"):
+            joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[3],
+                base_period=2,
+                first_treat_col="F",
+                n_bootstrap=199,
+                seed=0,
+                weights=weights_undersized,
+            )
