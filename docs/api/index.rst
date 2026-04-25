@@ -240,6 +240,7 @@ Estimators
    triple_diff
    trop
    continuous_did
+   had
    efficient_did
    two_stage
    wooldridge_etwfe
