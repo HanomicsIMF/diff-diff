@@ -1548,19 +1548,15 @@ def stute_test(
     # Phase 4.5 C: resolve effective per-unit weights (None on the
     # unweighted path, preserves bit-exact regression). When survey= is
     # supplied, w is taken from the resolved design.
+    # R4 P1: validate 1D explicitly so column-vector inputs (e.g.
+    # df[["w"]].to_numpy()) raise instead of silently broadcasting.
     if survey is not None:
-        w_arr = np.asarray(survey.weights, dtype=np.float64)
+        w_arr = _validate_1d_numeric(np.asarray(survey.weights), "stute_test: survey.weights")
         if w_arr.shape[0] != G:
             raise ValueError(
                 f"stute_test: survey.weights length {w_arr.shape[0]} does not "
                 f"match d/dy length {G}."
             )
-        # R1 P0: strictly-positive weights at the per-unit level (mirrors
-        # workflow guard in _resolve_pretest_unit_weights). Zero-weight
-        # units would leak into the dose-variation check + CvM cusum +
-        # bootstrap refit, producing silent wrong pretest decisions on
-        # subpopulation-restricted designs (e.g. only zero-weight units
-        # carry dose variation -> spurious finite test statistic).
         if (w_arr <= 0).any():
             raise ValueError(
                 "stute_test: survey weights must be strictly positive. "
@@ -1570,7 +1566,7 @@ def stute_test(
                 "weight subpopulation before calling stute_test."
             )
     elif weights is not None:
-        w_arr = np.asarray(weights, dtype=np.float64)
+        w_arr = _validate_1d_numeric(np.asarray(weights), "stute_test: weights")
         if w_arr.shape[0] != G:
             raise ValueError(
                 f"stute_test: weights length {w_arr.shape[0]} does not match " f"d/dy length {G}."
@@ -1583,6 +1579,17 @@ def stute_test(
             )
     else:
         w_arr = None
+
+    # R4 P0: normalize pweights to mean=1 (matches SurveyDesign.resolve()
+    # convention). Makes the test statistic scale-invariant under uniform
+    # rescaling of weights AND ensures weights= shortcut and
+    # survey=SurveyDesign(weights=...) produce identical results for the
+    # same design. Stute is internally scale-invariant in functional form,
+    # but the survey-aware bootstrap helper consumes weight values
+    # directly under non-trivial PSU/strata, so normalization is required
+    # for cross-path agreement.
+    if w_arr is not None:
+        w_arr = w_arr * (float(w_arr.shape[0]) / float(np.sum(w_arr)))
 
     if w_arr is None:
         a_hat, b_hat, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
@@ -1895,8 +1902,9 @@ def yatchew_hr_test(
     # Phase 4.5 C: resolve effective per-unit weights. Strictly positive
     # required (the adjacent-difference formula divides by sum(w_avg) which
     # collapses to zero in any contiguous-zero block).
+    # R4 P1: validate 1D explicitly so column-vector inputs raise.
     if survey is not None:
-        w_arr = np.asarray(survey.weights, dtype=np.float64)
+        w_arr = _validate_1d_numeric(np.asarray(survey.weights), "yatchew_hr_test: survey.weights")
         if w_arr.shape[0] != G:
             raise ValueError(
                 f"yatchew_hr_test: survey.weights length {w_arr.shape[0]} "
@@ -1909,7 +1917,7 @@ def yatchew_hr_test(
                 "zero-weight blocks)."
             )
     elif weights is not None:
-        w_arr = np.asarray(weights, dtype=np.float64)
+        w_arr = _validate_1d_numeric(np.asarray(weights), "yatchew_hr_test: weights")
         if w_arr.shape[0] != G:
             raise ValueError(
                 f"yatchew_hr_test: weights length {w_arr.shape[0]} does not "
@@ -1923,6 +1931,17 @@ def yatchew_hr_test(
             )
     else:
         w_arr = None
+
+    # R4 P0: normalize pweights to mean=1 (matches SurveyDesign.resolve()
+    # convention). Yatchew uses sqrt(sum(w)) as the effective sample size,
+    # which without normalization would scale as sqrt(c) under uniform
+    # rescaling weights -> w * c, producing different p-values for
+    # weights=w vs weights=100*w. Normalization makes the statistic
+    # scale-invariant AND ensures weights= and survey=SurveyDesign(...)
+    # produce identical results (the latter resolve()s to mean=1
+    # internally, the former previously did not).
+    if w_arr is not None:
+        w_arr = w_arr * (float(w_arr.shape[0]) / float(np.sum(w_arr)))
 
     if G < _MIN_G_YATCHEW:
         warnings.warn(
@@ -2682,8 +2701,11 @@ def stute_joint_pretest(
 
     # Phase 4.5 C: resolve effective per-unit weights (None → bit-exact
     # unweighted path).
+    # R4 P1: validate 1D explicitly so column-vector inputs raise.
     if survey is not None:
-        w_arr = np.asarray(survey.weights, dtype=np.float64)
+        w_arr = _validate_1d_numeric(
+            np.asarray(survey.weights), "stute_joint_pretest: survey.weights"
+        )
         if w_arr.shape[0] != G:
             raise ValueError(
                 f"stute_joint_pretest: survey.weights length {w_arr.shape[0]} "
@@ -2698,7 +2720,7 @@ def stute_joint_pretest(
                 "population mass."
             )
     elif weights is not None:
-        w_arr = np.asarray(weights, dtype=np.float64)
+        w_arr = _validate_1d_numeric(np.asarray(weights), "stute_joint_pretest: weights")
         if w_arr.shape[0] != G:
             raise ValueError(
                 f"stute_joint_pretest: weights length {w_arr.shape[0]} does "
@@ -2711,6 +2733,11 @@ def stute_joint_pretest(
             )
     else:
         w_arr = None
+
+    # R4 P0: normalize pweights to mean=1 (matches SurveyDesign.resolve()
+    # convention; same fix as stute_test / yatchew_hr_test).
+    if w_arr is not None:
+        w_arr = w_arr * (float(w_arr.shape[0]) / float(np.sum(w_arr)))
 
     idx = np.argsort(doses_arr, kind="stable")
     d_sorted = doses_arr[idx]
@@ -2915,6 +2942,16 @@ def _resolve_pretest_unit_weights(
         )
     if weights is not None:
         weights_arr = np.asarray(weights, dtype=np.float64)
+        # R4 P1: validate 1D explicitly (column-vector inputs would otherwise
+        # broadcast through downstream computations and silently corrupt
+        # results).
+        if weights_arr.ndim != 1:
+            raise ValueError(
+                f"{caller_name}: weights must be 1-dimensional, got shape "
+                f"{weights_arr.shape}. (A common mistake is passing "
+                "df[['w']].to_numpy() which produces (N, 1); use "
+                "df['w'].to_numpy() for (N,).)"
+            )
         weights_unit = _aggregate_unit_weights(data, weights_arr, unit_col)
         # R1 P0: strictly-positive weights required on the pweight shortcut
         # (matches stute_test/yatchew_hr_test direct entry behavior; the CvM
@@ -2927,6 +2964,11 @@ def _resolve_pretest_unit_weights(
                 "mass; use survey= with explicit lonely-PSU handling for "
                 "principled subpopulation analysis."
             )
+        # R4 P0: normalize per-unit weights to mean=1 (matches
+        # SurveyDesign.resolve() convention so weights= and survey= entry
+        # paths produce identical statistic values; ensures Yatchew is
+        # scale-invariant under uniform rescaling).
+        weights_unit = weights_unit * (float(weights_unit.shape[0]) / float(np.sum(weights_unit)))
         return weights_unit, None
     # survey is not None
     if not hasattr(survey, "resolve"):

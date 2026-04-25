@@ -3724,3 +3724,103 @@ class TestPhase45CR1Regressions:
         assert report.yatchew is not None and np.isfinite(report.yatchew.p_value)
         # Verdict carries the linearity-conditional suffix.
         assert "linearity-conditional verdict" in report.verdict
+
+    # --- R4 P0: weight-scale invariance + cross-path agreement ------------
+
+    def test_yatchew_weights_scale_invariant(self):
+        """R4 P0: Yatchew test statistic must be invariant under uniform
+        rescaling of weights. Pre-fix `T_hr = sqrt(sum(w)) * (...)` made
+        the stat scale as sqrt(c), so weights=w and weights=100*w gave
+        different p-values. Fix: helper normalizes pweights to mean=1
+        before any computation."""
+        d, dy = _linear_dgp(G=30, beta=2.0, sigma=0.3)
+        w = np.random.default_rng(7).uniform(0.5, 2.0, size=30)
+        r1 = yatchew_hr_test(d, dy, weights=w)
+        r2 = yatchew_hr_test(d, dy, weights=100.0 * w)
+        np.testing.assert_allclose(r1.t_stat_hr, r2.t_stat_hr, atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(r1.p_value, r2.p_value, atol=1e-12, rtol=1e-12)
+
+    def test_stute_weights_scale_invariant(self):
+        """R4 P0 mirror: Stute is internally scale-invariant in functional
+        form, but normalization is required so weights= and survey=
+        entry paths agree numerically."""
+        d, dy = _linear_dgp(G=30, beta=2.0, sigma=0.3)
+        w = np.random.default_rng(7).uniform(0.5, 2.0, size=30)
+        r1 = stute_test(d, dy, weights=w, n_bootstrap=199, seed=0)
+        r2 = stute_test(d, dy, weights=100.0 * w, n_bootstrap=199, seed=0)
+        np.testing.assert_allclose(r1.cvm_stat, r2.cvm_stat, atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(r1.p_value, r2.p_value, atol=1e-12, rtol=1e-12)
+
+    def test_workflow_weights_eq_survey_at_overall_path(self):
+        """R4 P0: workflow's weights= shortcut and survey=SurveyDesign(
+        weights="w") must produce identical Yatchew/Stute results for
+        the same design. SurveyDesign.resolve() normalizes pweights to
+        mean=1; the helper now applies the same normalization on the
+        weights= path so both paths agree numerically."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_overall_panel(with_w_col=True)
+        # Build a per-row weights array matching df["w"] for the shortcut.
+        weights_per_row = df["w"].to_numpy()
+        with pytest.warns(UserWarning):
+            r_weights = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                weights=weights_per_row,
+                n_bootstrap=199,
+                seed=0,
+            )
+        with pytest.warns(UserWarning):
+            r_survey = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey=SurveyDesign(weights="w"),
+                n_bootstrap=199,
+                seed=0,
+            )
+        # Yatchew: closed-form, must match exactly under mean=1 normalization.
+        assert r_weights.yatchew is not None and r_survey.yatchew is not None
+        np.testing.assert_allclose(
+            r_weights.yatchew.t_stat_hr,
+            r_survey.yatchew.t_stat_hr,
+            atol=1e-10,
+            rtol=1e-10,
+        )
+        # Stute: bootstrap is seeded; same multiplier matrix shape under
+        # both paths means same RNG draws -> identical p-values.
+        assert r_weights.stute is not None and r_survey.stute is not None
+        np.testing.assert_allclose(
+            r_weights.stute.cvm_stat, r_survey.stute.cvm_stat, atol=1e-10, rtol=1e-10
+        )
+        np.testing.assert_allclose(
+            r_weights.stute.p_value, r_survey.stute.p_value, atol=1e-10, rtol=1e-10
+        )
+
+    # --- R4 P1: 1D weights validation ------------------------------------
+
+    def test_stute_test_rejects_2d_weights(self):
+        """R4 P1: column-vector weights must raise, not silently broadcast."""
+        d, dy = _linear_dgp(G=30)
+        w_2d = np.ones((30, 1))  # common df[["w"]].to_numpy() pattern
+        with pytest.raises(ValueError, match="1-dimensional"):
+            stute_test(d, dy, weights=w_2d, n_bootstrap=199, seed=0)
+
+    def test_yatchew_hr_test_rejects_2d_weights(self):
+        d, dy = _linear_dgp(G=30)
+        w_2d = np.ones((30, 1))
+        with pytest.raises(ValueError, match="1-dimensional"):
+            yatchew_hr_test(d, dy, weights=w_2d)
+
+    def test_workflow_rejects_2d_weights(self):
+        df = self._make_overall_panel()
+        w_2d = np.ones((40, 1))
+        with pytest.raises(ValueError, match="1-dimensional"):
+            did_had_pretest_workflow(
+                df, "y", "d", "time", "unit", weights=w_2d, n_bootstrap=199, seed=0
+            )
