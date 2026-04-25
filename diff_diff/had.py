@@ -701,10 +701,13 @@ class HeterogeneousAdoptionDiDEventStudyResults:
     # fits stay unchanged; all None on unweighted fits).
     variance_formula: Optional[str] = None
     """Per-horizon variance family label (applied uniformly across all
-    horizons in the fit). One of ``"pweight"`` / ``"pweight_2sls"``
-    (weights= shortcut; continuous / mass-point), ``"survey_binder_tsl"``
-    / ``"survey_binder_tsl_2sls"`` (survey= path), or ``None`` on
-    unweighted fits. Mirrors the static-path ``variance_formula`` field."""
+    horizons in the fit). One of ``"pweight"`` / ``"pweight_2sls"`` (when
+    a per-row weight array was supplied, including via the deprecated
+    ``weights=`` alias; continuous / mass-point), ``"survey_binder_tsl"``
+    / ``"survey_binder_tsl_2sls"`` (when a SurveyDesign was supplied via
+    ``survey_design=`` or the deprecated ``survey=`` alias), or ``None``
+    on unweighted fits. Mirrors the static-path ``variance_formula``
+    field."""
     effective_dose_mean: Optional[float] = None
     """Weighted denominator used by the β̂-scale rescaling. For continuous
     designs: weighted ``sum(w · d)/sum(w)`` (continuous_at_zero) or
@@ -2849,18 +2852,28 @@ class HeterogeneousAdoptionDiD:
             to the last-treatment cohort with a ``UserWarning``.
         survey_design : SurveyDesign or None, keyword-only
             Survey design (sampling weights + optional strata / PSU / FPC)
-            for design-based inference on the two continuous-dose paths
-            (``continuous_at_zero``, ``continuous_near_d_lower``). Passes
-            through :func:`compute_survey_if_variance` (Binder 1983 TSL)
-            for the SE; weights propagate pointwise into the lprobust
-            kernel composition. Only ``weight_type="pweight"`` is
-            supported in Phase 4.5 A — ``aweight`` / ``fweight`` raise
-            ``NotImplementedError``. Survey design columns (strata / PSU /
-            FPC) must be constant within unit (sampling-unit-level
-            assignment); within-unit variance raises ``ValueError``.
-            Replicate-weight designs raise ``NotImplementedError``
-            (Phase 4.5 C). Mutually exclusive with the deprecated
-            ``survey=`` and ``weights=`` aliases.
+            for design-based inference. Supported on ALL design × aggregate
+            combinations after Phase 4.5 B: continuous paths
+            (``continuous_at_zero``, ``continuous_near_d_lower``) on both
+            ``aggregate="overall"`` and ``aggregate="event_study"``, AND
+            the ``mass_point`` design on both aggregates. Continuous paths
+            compose the SE via :func:`compute_survey_if_variance` (Binder
+            1983 TSL); weights propagate pointwise into the lprobust
+            kernel. Mass-point composes the per-unit 2SLS IF on the
+            HC1-scale and Binder-TSL-aggregates that — requires
+            ``vcov_type='hc1'`` (the classical default raises
+            ``NotImplementedError`` on the survey path). Event-study fits
+            with ``cband=True`` add a multiplier-bootstrap simultaneous
+            confidence band. Only ``weight_type="pweight"`` is supported
+            (``aweight`` / ``fweight`` raise ``NotImplementedError``).
+            Survey design columns (strata / PSU / FPC) must be constant
+            within unit (sampling-unit-level assignment); within-unit
+            variance raises ``ValueError``. Replicate-weight designs raise
+            ``NotImplementedError``. Mutually exclusive with the deprecated
+            ``survey=`` and ``weights=`` aliases. See
+            ``docs/methodology/REGISTRY.md`` § HeterogeneousAdoptionDiD —
+            "Note (HAD survey-design API consolidation)" for the full
+            dispatch matrix.
         survey : SurveyDesign or None
             DEPRECATED alias of ``survey_design=``. Remains positional-or-
             keyword for one minor cycle to preserve pre-PR call shapes;
