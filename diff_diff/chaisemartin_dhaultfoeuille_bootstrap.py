@@ -94,15 +94,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         u_centered_overall: np.ndarray,
         divisor_overall: int,
         original_overall: float,
-        joiners_inputs: Optional[
-            Tuple[np.ndarray, int, float, Optional[np.ndarray]]
-        ] = None,
-        leavers_inputs: Optional[
-            Tuple[np.ndarray, int, float, Optional[np.ndarray]]
-        ] = None,
-        placebo_inputs: Optional[
-            Tuple[np.ndarray, int, float, Optional[np.ndarray]]
-        ] = None,
+        joiners_inputs: Optional[Tuple[np.ndarray, int, float, Optional[np.ndarray]]] = None,
+        leavers_inputs: Optional[Tuple[np.ndarray, int, float, Optional[np.ndarray]]] = None,
+        placebo_inputs: Optional[Tuple[np.ndarray, int, float, Optional[np.ndarray]]] = None,
         # --- Phase 2: multi-horizon inputs ---
         multi_horizon_inputs: Optional[
             Dict[int, Tuple[np.ndarray, int, float, Optional[np.ndarray]]]
@@ -118,6 +112,19 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
         # level wild PSU bootstrap for per-path targets is a future
         # wave item).
         path_bootstrap_inputs: Optional[
+            Dict[
+                Tuple[int, ...],
+                Dict[int, Tuple[np.ndarray, int, float, Optional[np.ndarray]]],
+            ]
+        ] = None,
+        # --- Phase 3: per-path placebo (by_path + placebo) bootstrap inputs ---
+        # Nested dict keyed by path tuple -> positive lag l (l = 1..L_max)
+        # -> 4-tuple `(u_centered_pl_path, n_pl_l_path, effect_pl_path,
+        # None)`. Sibling of `path_bootstrap_inputs` for backward
+        # placebo horizons; same reason for the 4th-slot `None`
+        # (survey + by_path + placebo + bootstrap is gated out, no
+        # cell-level path needed).
+        path_placebo_bootstrap_inputs: Optional[
             Dict[
                 Tuple[int, ...],
                 Dict[int, Tuple[np.ndarray, int, float, Optional[np.ndarray]]],
@@ -333,7 +340,8 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                         "analytical TSL path."
                     )
                 u_boot_overall, map_boot_overall = _unroll_target_to_cells(
-                    u_per_period_overall, psu_codes_per_cell,
+                    u_per_period_overall,
+                    psu_codes_per_cell,
                 )
             else:
                 u_boot_overall = u_centered_overall
@@ -382,12 +390,15 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                             "when PSU varies within group, got None."
                         )
                     u_boot_j, map_boot_j = _unroll_target_to_cells(
-                        u_pp_j, psu_codes_per_cell,
+                        u_pp_j,
+                        psu_codes_per_cell,
                     )
                 else:
                     u_boot_j = u_j
                     map_boot_j = _map_for_target(
-                        u_j.size, group_id_to_psu_code, eligible_group_ids,
+                        u_j.size,
+                        group_id_to_psu_code,
+                        eligible_group_ids,
                     )
                 se_j, ci_j, p_j, _ = _bootstrap_one_target(
                     u_centered=u_boot_j,
@@ -417,12 +428,15 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                             "when PSU varies within group, got None."
                         )
                     u_boot_l, map_boot_l = _unroll_target_to_cells(
-                        u_pp_l, psu_codes_per_cell,
+                        u_pp_l,
+                        psu_codes_per_cell,
                     )
                 else:
                     u_boot_l = u_l
                     map_boot_l = _map_for_target(
-                        u_l.size, group_id_to_psu_code, eligible_group_ids,
+                        u_l.size,
+                        group_id_to_psu_code,
+                        eligible_group_ids,
                     )
                 se_l, ci_l, p_l, _ = _bootstrap_one_target(
                     u_centered=u_boot_l,
@@ -457,7 +471,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     context="dCDH placebo DID_M^pl bootstrap",
                     return_distribution=False,
                     group_to_psu_map=_map_for_target(
-                        u_pl.size, group_id_to_psu_code, eligible_group_ids,
+                        u_pl.size,
+                        group_id_to_psu_code,
+                        eligible_group_ids,
                     ),
                 )
                 results.placebo_se = se_pl
@@ -511,7 +527,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                     weight_type=self.bootstrap_weights,
                     rng=rng,
                     group_to_psu_map=_map_for_target(
-                        n_groups_mh, group_id_to_psu_code, eligible_group_ids,
+                        n_groups_mh,
+                        group_id_to_psu_code,
+                        eligible_group_ids,
                     ),
                 )
                 shared_psu_weights = None
@@ -552,7 +570,8 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                         # Cell-level: unroll this horizon's cells and
                         # broadcast the shared PSU weights.
                         u_cell_h, psu_cell_h = _unroll_target_to_cells(
-                            u_pp_h, psu_codes_per_cell,
+                            u_pp_h,
+                            psu_codes_per_cell,
                         )
                         if u_cell_h.size == 0:
                             continue
@@ -616,14 +635,17 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                                 f"varies within group, got None."
                             )
                         u_boot_plh, map_boot_plh = _unroll_target_to_cells(
-                            u_pp_h, psu_codes_per_cell,
+                            u_pp_h,
+                            psu_codes_per_cell,
                         )
                         if u_boot_plh.size == 0:
                             continue
                     else:
                         u_boot_plh = u_h
                         map_boot_plh = _map_for_target(
-                            u_h.size, group_id_to_psu_code, eligible_group_ids,
+                            u_h.size,
+                            group_id_to_psu_code,
+                            eligible_group_ids,
                         )
                     se_h, ci_h, p_h, _ = _bootstrap_one_target(
                         u_centered=u_boot_plh,
@@ -666,7 +688,9 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
                 for l_h, (u_h, n_h, eff_h, _u_pp_h) in sorted(horizon_inputs.items()):
                     if u_h.size > 0 and n_h > 0:
                         map_boot_ph = _map_for_target(
-                            u_h.size, group_id_to_psu_code, eligible_group_ids,
+                            u_h.size,
+                            group_id_to_psu_code,
+                            eligible_group_ids,
                         )
                         # np.errstate wrap: an identically-zero
                         # centered IF (degenerate path + horizon) would
@@ -701,6 +725,58 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
             results.path_ses = path_ses
             results.path_cis = path_cis
             results.path_p_values = path_pvals
+
+        # --- Phase 3: Per-path placebo (by_path + placebo) bootstrap ---
+        # Sibling of the per-path event-study block above for backward
+        # placebo lags. Same independent single-target dispatch per
+        # (path, lag_l) via `_bootstrap_one_target`; the survey cell-
+        # level path is unreachable here because
+        # `by_path + survey_design` is gated out in fit() before
+        # bootstrap is invoked. The `np.errstate` wrap mirrors the
+        # event-study block's degenerate-IF stacked-warning suppression.
+        if path_placebo_bootstrap_inputs is not None:
+            path_pl_ses: Dict[Tuple[int, ...], Dict[int, float]] = {}
+            path_pl_cis: Dict[Tuple[int, ...], Dict[int, Tuple[float, float]]] = {}
+            path_pl_pvals: Dict[Tuple[int, ...], Dict[int, float]] = {}
+
+            for path_key, horizon_inputs in path_placebo_bootstrap_inputs.items():
+                path_pl_ses[path_key] = {}
+                path_pl_cis[path_key] = {}
+                path_pl_pvals[path_key] = {}
+                for lag_l, (u_pl, n_pl, eff_pl, _u_pp_pl) in sorted(horizon_inputs.items()):
+                    if u_pl.size > 0 and n_pl > 0:
+                        map_boot_pl_path = _map_for_target(
+                            u_pl.size,
+                            group_id_to_psu_code,
+                            eligible_group_ids,
+                        )
+                        with np.errstate(invalid="ignore", divide="ignore"):
+                            (
+                                se_pl_h,
+                                ci_pl_h,
+                                p_pl_h,
+                                _,
+                            ) = _bootstrap_one_target(
+                                u_centered=u_pl,
+                                divisor=n_pl,
+                                original=eff_pl,
+                                n_bootstrap=self.n_bootstrap,
+                                weight_type=self.bootstrap_weights,
+                                alpha=self.alpha,
+                                rng=rng,
+                                context=(
+                                    f"dCDH by_path placebo " f"path={path_key} l={lag_l} bootstrap"
+                                ),
+                                return_distribution=False,
+                                group_to_psu_map=map_boot_pl_path,
+                            )
+                        path_pl_ses[path_key][lag_l] = se_pl_h
+                        path_pl_cis[path_key][lag_l] = ci_pl_h
+                        path_pl_pvals[path_key][lag_l] = p_pl_h
+
+            results.path_placebo_ses = path_pl_ses
+            results.path_placebo_cis = path_pl_cis
+            results.path_placebo_p_values = path_pl_pvals
 
         return results
 
@@ -794,9 +870,7 @@ def _unroll_target_to_cells(
     # that column). Dropping that mass silently would under-cluster the
     # bootstrap in a supported panel regime.
     sentinel_mass = flat_u[~mask]
-    if sentinel_mass.size > 0 and bool(
-        np.any(np.abs(sentinel_mass) > 1e-12)
-    ):
+    if sentinel_mass.size > 0 and bool(np.any(np.abs(sentinel_mass) > 1e-12)):
         raise ValueError(
             "Cell-level bootstrap cannot be computed on this survey "
             "panel: cohort-recentered IF mass landed on cells with "
@@ -1011,5 +1085,3 @@ def _bootstrap_one_target(
     )
 
     return se, ci, p_value, (boot_dist if return_distribution else None)
-
-

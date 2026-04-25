@@ -413,13 +413,23 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         ``survey_design`` (each combination raises
         ``NotImplementedError`` in the current release).
 
-        Compatible with ``n_bootstrap > 0`` — the top-k paths are
+        Compatible with ``n_bootstrap > 0`` -- the top-k paths are
         enumerated once on the observed data (paths held fixed across
         bootstrap draws, matching R ``did_multiplegt_dyn(..., by_path,
         bootstrap=B)``) and bootstrap SE / percentile CI / percentile
         p-value are written to ``path_effects[path]["horizons"][l]``
         in place of the analytical fields. See REGISTRY.md for the
         full bootstrap contract.
+
+        Compatible with ``placebo=True`` -- when both are active,
+        per-path backward-horizon placebos ``DID^{pl}_{path, l}`` for
+        ``l = 1..L_max`` are surfaced on
+        ``results.path_placebo_event_study[path][-l]`` (negative-int
+        keys mirroring ``placebo_event_study``). The same per-path SE
+        convention is applied backward (joiners/leavers IF precedent;
+        cohort-recentered plug-in with path-specific divisor); the
+        cross-path cohort-sharing deviation from R is inherited from
+        the analytical event-study path.
 
         SE convention: per-path IF parallels the joiners / leavers
         construction — the switcher-side contribution is zeroed for
@@ -1936,6 +1946,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
 
         # by_path disaggregation by observed treatment trajectory
         path_effects: Optional[Dict[Tuple[int, ...], Dict[str, Any]]] = None
+        path_placebos: Optional[Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]] = None
         if (
             self.by_path is not None
             and L_max is not None
@@ -2087,6 +2098,31 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         "conf_int": ci_pl_l,
                         "n_obs": pl_data["N_pl_l"],
                     }
+
+            # Per-path backward-horizon placebos under by_path. Sibling
+            # of the per-path event-study computation above; keyed by
+            # path tuple -> negative-int lag (-l for lag l) to match
+            # `placebo_event_study`'s convention. Inherits the cross-
+            # path cohort-sharing SE deviation from R documented for
+            # `path_effects` (full-panel cohort-centered plug-in vs
+            # R's per-path re-run).
+            if self.by_path is not None and self.placebo and multi_horizon_placebos is not None:
+                _df_s_bp_pl = _effective_df_survey(resolved_survey, _replicate_n_valid_list)
+                path_placebos = _compute_path_placebos(
+                    D_mat=D_mat,
+                    Y_mat=Y_mat,
+                    N_mat=N_mat,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    switch_direction=switch_direction_arr,
+                    T_g=T_g_arr,
+                    L_max=L_max,
+                    by_path=self.by_path,
+                    eligible_mask_var=eligible_mask_var,
+                    multi_horizon_placebos=multi_horizon_placebos,
+                    alpha=self.alpha,
+                    df_inference=_inference_df(_df_s_bp_pl, resolved_survey),
+                )
 
             # Normalized effects DID^n_l (suppressed under trends_linear
             # because event_study_effects holds second-differences DID^{fd}_l,
@@ -2631,6 +2667,36 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     path_effects=path_effects,
                 )
 
+            # Sibling collector for per-path backward placebos. Mirrors
+            # the path_bootstrap_inputs gating: only invoke when by_path
+            # + placebo are both active, multi_horizon_placebos is
+            # populated, and analytical path_placebos returned a non-
+            # empty dict.
+            path_placebo_bootstrap_inputs = None
+            if (
+                self.by_path is not None
+                and self.placebo
+                and L_max is not None
+                and L_max >= 1
+                and multi_horizon_placebos is not None
+                and path_placebos is not None
+                and len(path_placebos) > 0
+            ):
+                path_placebo_bootstrap_inputs = _collect_path_placebo_bootstrap_inputs(
+                    D_mat=D_mat,
+                    Y_mat=Y_mat,
+                    N_mat=N_mat,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    switch_direction=switch_direction_arr,
+                    T_g=T_g_arr,
+                    L_max=L_max,
+                    by_path=self.by_path,
+                    eligible_mask_var=eligible_mask_var,
+                    multi_horizon_placebos=multi_horizon_placebos,
+                    path_placebos=path_placebos,
+                )
+
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
                 u_centered_overall=U_centered_overall,
@@ -2642,6 +2708,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 multi_horizon_inputs=mh_boot_inputs,
                 placebo_horizon_inputs=pl_boot_inputs,
                 path_bootstrap_inputs=path_bootstrap_inputs,
+                path_placebo_bootstrap_inputs=path_placebo_bootstrap_inputs,
                 group_id_to_psu_code=group_id_to_psu_code_bootstrap,
                 eligible_group_ids=eligible_group_ids_bootstrap,
                 u_per_period_overall=U_centered_pp_overall,
@@ -2859,16 +2926,65 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         path_effects[path_key]["horizons"][l_h]["conf_int"] = (
                             bs_ci if bs_ci is not None else (np.nan, np.nan)
                         )
-                        path_effects[path_key]["horizons"][l_h]["t_stat"] = (
-                            safe_inference(eff_p, bs_se, alpha=self.alpha, df=None)[0]
-                        )
+                        path_effects[path_key]["horizons"][l_h]["t_stat"] = safe_inference(
+                            eff_p, bs_se, alpha=self.alpha, df=None
+                        )[0]
                     else:
                         path_effects[path_key]["horizons"][l_h]["se"] = np.nan
                         path_effects[path_key]["horizons"][l_h]["p_value"] = np.nan
                         path_effects[path_key]["horizons"][l_h]["conf_int"] = (
-                            np.nan, np.nan,
+                            np.nan,
+                            np.nan,
                         )
                         path_effects[path_key]["horizons"][l_h]["t_stat"] = np.nan
+
+        # Phase 3: propagate bootstrap results to per-path placebos
+        # (by_path + placebo). Sibling of the path_effects propagation
+        # block above. Library-wide NaN-on-invalid bootstrap contract:
+        # non-finite bootstrap SE writes NaN to the full inference
+        # tuple rather than falling back to the analytical SE -- the
+        # caller opted into bootstrap by setting n_bootstrap > 0, and
+        # mixing analytical + bootstrap semantics inside one result
+        # object is a public-surface inconsistency.
+        if (
+            bootstrap_results is not None
+            and bootstrap_results.path_placebo_ses
+            and path_placebos is not None
+        ):
+            for path_key, lag_ses in bootstrap_results.path_placebo_ses.items():
+                if path_key not in path_placebos:
+                    continue
+                for lag_l, bs_se_pl in lag_ses.items():
+                    neg_key = -lag_l
+                    if neg_key not in path_placebos[path_key]:
+                        continue
+                    bs_ci_pl = (
+                        bootstrap_results.path_placebo_cis.get(path_key, {}).get(lag_l)
+                        if bootstrap_results.path_placebo_cis
+                        else None
+                    )
+                    bs_p_pl = (
+                        bootstrap_results.path_placebo_p_values.get(path_key, {}).get(lag_l)
+                        if bootstrap_results.path_placebo_p_values
+                        else None
+                    )
+                    eff_pl = path_placebos[path_key][neg_key]["effect"]
+                    if bs_se_pl is not None and np.isfinite(bs_se_pl):
+                        path_placebos[path_key][neg_key]["se"] = bs_se_pl
+                        path_placebos[path_key][neg_key]["p_value"] = (
+                            bs_p_pl if bs_p_pl is not None else np.nan
+                        )
+                        path_placebos[path_key][neg_key]["conf_int"] = (
+                            bs_ci_pl if bs_ci_pl is not None else (np.nan, np.nan)
+                        )
+                        path_placebos[path_key][neg_key]["t_stat"] = safe_inference(
+                            eff_pl, bs_se_pl, alpha=self.alpha, df=None
+                        )[0]
+                    else:
+                        path_placebos[path_key][neg_key]["se"] = np.nan
+                        path_placebos[path_key][neg_key]["p_value"] = np.nan
+                        path_placebos[path_key][neg_key]["conf_int"] = (np.nan, np.nan)
+                        path_placebos[path_key][neg_key]["t_stat"] = np.nan
 
         # When L_max >= 1 and the per-group path is active, sync
         # overall_* from event_study_effects[1] AFTER bootstrap propagation
@@ -3065,7 +3181,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         placebo_event_study_dict[neg_key]["se"] = np.nan
                         placebo_event_study_dict[neg_key]["p_value"] = np.nan
                         placebo_event_study_dict[neg_key]["conf_int"] = (
-                            np.nan, np.nan,
+                            np.nan,
+                            np.nan,
                         )
                         placebo_event_study_dict[neg_key]["t_stat"] = np.nan
 
@@ -3500,6 +3617,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 else None
             ),
             path_effects=path_effects,
+            path_placebo_event_study=path_placebos,
             survey_metadata=survey_metadata,
             _estimator_ref=self,
         )
@@ -5287,6 +5405,179 @@ def _compute_path_effects(
     return path_effects
 
 
+def _compute_path_placebos(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+    by_path: int,
+    eligible_mask_var: np.ndarray,
+    multi_horizon_placebos: Dict[int, Dict[str, Any]],
+    alpha: float,
+    df_inference: Optional[int] = None,
+) -> Optional[Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]]:
+    """
+    Compute per-path backward-horizon placebos ``DID^{pl}_{path, l}``.
+
+    Sibling of ``_compute_path_effects``: walks the same path enumeration
+    and cohort-id pipeline but loops over backward horizons (lag
+    ``l = 1..L_max``) using ``_compute_per_group_if_placebo_horizon``
+    with the new ``switcher_subset_mask`` parameter to zero out switcher
+    contributions for groups not in the selected path. SE is the
+    cohort-recentered plug-in with path-specific divisor
+    ``N^{pl}_{l, path}`` (joiners/leavers IF precedent applied backward).
+
+    Inner-dict keys are **negative** ints (-l for lag l) to match the
+    overall ``placebo_event_study`` convention, so a unified
+    ``{**path_effects[p]["horizons"], **path_placebo_event_study[p]}``
+    view is well-formed.
+
+    Returns ``{path: {-l: {effect, se, t_stat, p_value, conf_int,
+    n_obs}}}`` directly (no ``n_groups`` / ``frequency_rank`` wrapper —
+    those are already on ``path_effects[path]``; the rendering layer
+    sorts by that rank). Returns ``{}`` when ``by_path`` was requested
+    but no path has a complete window (mirrors ``_compute_path_effects``);
+    the empty dict is the "requested but empty" sentinel distinct from
+    ``None``.
+
+    Inherits the cross-path cohort-sharing SE deviation from R that
+    PR #360 documented for ``_compute_path_effects`` (full-panel
+    cohort-centered plug-in vs R's per-path re-run): tracks R within
+    numerical tolerance on single-path cohort panels; diverges on
+    cohort-mixed panels. See ``Note (Phase 3 by_path ...)`` in
+    ``docs/methodology/REGISTRY.md``.
+
+    The ``_enumerate_treatment_paths`` call here is wrapped in
+    ``warnings.catch_warnings`` to suppress the overflow ``UserWarning``
+    duplicate — the analytical event-study pass
+    (``_compute_path_effects``) has already surfaced that warning to
+    the caller.
+    """
+    from diff_diff.utils import safe_inference
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        selected_paths, path_to_group_mask, _ = _enumerate_treatment_paths(
+            D_mat=D_mat,
+            first_switch_idx=first_switch_idx,
+            N_mat=N_mat,
+            L_max=L_max,
+            by_path=by_path,
+        )
+
+    if not selected_paths:
+        return {}
+
+    n_groups = D_mat.shape[0]
+    cohort_keys = [
+        (
+            float(baselines[g]),
+            int(first_switch_idx[g]),
+            int(switch_direction[g]),
+        )
+        for g in range(n_groups)
+    ]
+    unique_c: Dict[Tuple[float, int, int], int] = {}
+    cid = np.zeros(n_groups, dtype=int)
+    for g in range(n_groups):
+        if not eligible_mask_var[g]:
+            cid[g] = -1
+            continue
+        key = cohort_keys[g]
+        if key not in unique_c:
+            unique_c[key] = len(unique_c)
+        cid[g] = unique_c[key]
+    cohort_id_eligible = cid[eligible_mask_var]
+
+    path_placebos: Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]] = {}
+
+    for path in selected_paths:
+        switcher_mask = path_to_group_mask[path]
+
+        per_path_pl_if = _compute_per_group_if_placebo_horizon(
+            D_mat=D_mat,
+            Y_mat=Y_mat,
+            N_mat=N_mat,
+            baselines=baselines,
+            first_switch_idx=first_switch_idx,
+            switch_direction=switch_direction,
+            T_g=T_g,
+            L_max=L_max,
+            set_ids=None,
+            compute_per_period=False,
+            switcher_subset_mask=switcher_mask,
+        )
+
+        horizons: Dict[int, Dict[str, Any]] = {}
+        for lag_l in range(1, L_max + 1):
+            U_pl_l_path, _ = per_path_pl_if[lag_l]
+
+            pl_data = multi_horizon_placebos.get(lag_l)
+            if pl_data is None:
+                n_pl_l_path = 0
+            else:
+                eligible_mask_pl = pl_data.get("eligible_mask")
+                if eligible_mask_pl is None:
+                    n_pl_l_path = 0
+                else:
+                    n_pl_l_path = int(np.sum(switcher_mask & eligible_mask_pl))
+
+            if n_pl_l_path == 0:
+                horizons[-lag_l] = {
+                    "effect": float("nan"),
+                    "se": float("nan"),
+                    "t_stat": float("nan"),
+                    "p_value": float("nan"),
+                    "conf_int": (float("nan"), float("nan")),
+                    "n_obs": 0,
+                }
+                continue
+
+            U_pl_l_path_elig = U_pl_l_path[eligible_mask_var]
+            effect_pl_path = float(U_pl_l_path.sum() / n_pl_l_path)
+
+            U_centered_pl_path = _cohort_recenter(U_pl_l_path_elig, cohort_id_eligible)
+            se_pl_path = _plugin_se(U_centered=U_centered_pl_path, divisor=n_pl_l_path)
+
+            if np.isnan(se_pl_path) and U_centered_pl_path.size > 0 and n_pl_l_path > 0:
+                warnings.warn(
+                    f"Cohort-recentered analytical variance is "
+                    f"unidentified for path={path} at placebo lag "
+                    f"l={lag_l}: the path-subset centered placebo "
+                    f"influence function is identically zero (every "
+                    f"variance-eligible path switcher forms its own "
+                    f"(D_{{g,1}}, F_g, S_g) cohort, or the path has a "
+                    f"single contributing group). DID^{{pl}}_{{path,l}} "
+                    f"point estimate is still valid; SE / t_stat / "
+                    f"p_value / conf_int are NaN-consistent. Rare paths "
+                    f"with few contributing groups routinely hit this "
+                    f"case at placebo horizons.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+            t_pl, p_pl, ci_pl = safe_inference(
+                effect_pl_path, se_pl_path, alpha=alpha, df=df_inference
+            )
+
+            horizons[-lag_l] = {
+                "effect": effect_pl_path,
+                "se": se_pl_path,
+                "t_stat": t_pl,
+                "p_value": p_pl,
+                "conf_int": ci_pl,
+                "n_obs": n_pl_l_path,
+            }
+
+        path_placebos[path] = horizons
+
+    return path_placebos
+
+
 def _collect_path_bootstrap_inputs(
     D_mat: np.ndarray,
     Y_mat: np.ndarray,
@@ -5364,9 +5655,9 @@ def _collect_path_bootstrap_inputs(
         cid[g] = unique_c[key]
     cohort_id_eligible = cid[eligible_mask_var]
 
-    path_bootstrap_inputs: Dict[
-        Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]
-    ] = {}
+    path_bootstrap_inputs: Dict[Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]] = (
+        {}
+    )
 
     for path in selected_paths:
         switcher_mask = path_to_group_mask[path]
@@ -5402,15 +5693,143 @@ def _collect_path_bootstrap_inputs(
             U_l_path_elig = U_l_path[eligible_mask_var]
             U_centered_path = _cohort_recenter(U_l_path_elig, cohort_id_eligible)
 
-            effect_path = float(
-                path_analytical["horizons"][l_h]["effect"]
-            )
+            effect_path = float(path_analytical["horizons"][l_h]["effect"])
             horizon_inputs[l_h] = (U_centered_path, n_l_path, effect_path, None)
 
         if horizon_inputs:
             path_bootstrap_inputs[path] = horizon_inputs
 
     return path_bootstrap_inputs
+
+
+def _collect_path_placebo_bootstrap_inputs(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+    by_path: int,
+    eligible_mask_var: np.ndarray,
+    multi_horizon_placebos: Dict[int, Dict[str, Any]],
+    path_placebos: Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]],
+) -> Dict[Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]]:
+    """
+    Collect per-(path, lag) inputs for the placebo bootstrap mixin
+    dispatch.
+
+    Sibling of ``_collect_path_bootstrap_inputs``. Walks the same path
+    enumeration / per-path placebo IF / cohort-recentering pipeline
+    that ``_compute_path_placebos`` uses, but returns the
+    ``(U_centered_path, n_pl_l_path, effect_pl_path)`` triples needed
+    by ``_compute_dcdh_bootstrap``'s per-`(path, lag_l)` placebo
+    dispatch block.
+
+    Returned dict keys lag by **positive** int (l = 1..L_max), matching
+    the inner-key convention of ``placebo_horizon_inputs`` already
+    consumed by the bootstrap mixin. The propagation block in
+    ``fit()`` translates back to negative-keyed
+    ``path_placebo_event_study[path][-lag_l]`` post-bootstrap.
+
+    The point estimate per ``(path, lag_l)`` is read from
+    ``path_placebos[path][-lag_l]["effect"]`` (note: no ``["horizons"]``
+    wrapper -- ``_compute_path_placebos`` returns the negative-keyed
+    inner dict directly, unlike ``_compute_path_effects`` which wraps
+    its horizons under a ``["horizons"]`` key) to stay bit-identical
+    with the analytical pass; the bootstrap distribution gets centered
+    on this value by ``_bootstrap_one_target`` downstream.
+
+    The ``warnings.catch_warnings`` block suppresses the
+    re-enumeration overflow ``UserWarning``; the analytical
+    event-study pass (``_compute_path_effects``) already surfaced that
+    warning.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        selected_paths, path_to_group_mask, _ = _enumerate_treatment_paths(
+            D_mat=D_mat,
+            first_switch_idx=first_switch_idx,
+            N_mat=N_mat,
+            L_max=L_max,
+            by_path=by_path,
+        )
+
+    n_groups = D_mat.shape[0]
+    cohort_keys = [
+        (
+            float(baselines[g]),
+            int(first_switch_idx[g]),
+            int(switch_direction[g]),
+        )
+        for g in range(n_groups)
+    ]
+    unique_c: Dict[Tuple[float, int, int], int] = {}
+    cid = np.zeros(n_groups, dtype=int)
+    for g in range(n_groups):
+        if not eligible_mask_var[g]:
+            cid[g] = -1
+            continue
+        key = cohort_keys[g]
+        if key not in unique_c:
+            unique_c[key] = len(unique_c)
+        cid[g] = unique_c[key]
+    cohort_id_eligible = cid[eligible_mask_var]
+
+    path_placebo_bootstrap_inputs: Dict[
+        Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]
+    ] = {}
+
+    for path in selected_paths:
+        switcher_mask = path_to_group_mask[path]
+
+        per_path_pl_if = _compute_per_group_if_placebo_horizon(
+            D_mat=D_mat,
+            Y_mat=Y_mat,
+            N_mat=N_mat,
+            baselines=baselines,
+            first_switch_idx=first_switch_idx,
+            switch_direction=switch_direction,
+            T_g=T_g,
+            L_max=L_max,
+            set_ids=None,
+            compute_per_period=False,
+            switcher_subset_mask=switcher_mask,
+        )
+
+        horizon_inputs: Dict[int, Tuple[np.ndarray, int, float, None]] = {}
+        path_analytical = path_placebos.get(path)
+        if path_analytical is None:
+            continue
+
+        for lag_l in range(1, L_max + 1):
+            U_pl_l_path, _ = per_path_pl_if[lag_l]
+            pl_data = multi_horizon_placebos.get(lag_l)
+            if pl_data is None:
+                continue
+            eligible_mask_pl = pl_data.get("eligible_mask")
+            if eligible_mask_pl is None:
+                continue
+            n_pl_l_path = int(np.sum(switcher_mask & eligible_mask_pl))
+            if n_pl_l_path == 0:
+                continue
+
+            U_pl_l_path_elig = U_pl_l_path[eligible_mask_var]
+            U_centered_pl_path = _cohort_recenter(U_pl_l_path_elig, cohort_id_eligible)
+
+            effect_pl_path = float(path_analytical[-lag_l]["effect"])
+            horizon_inputs[lag_l] = (
+                U_centered_pl_path,
+                n_pl_l_path,
+                effect_pl_path,
+                None,
+            )
+
+        if horizon_inputs:
+            path_placebo_bootstrap_inputs[path] = horizon_inputs
+
+    return path_placebo_bootstrap_inputs
 
 
 def _compute_per_group_if_placebo_horizon(
@@ -5424,6 +5843,7 @@ def _compute_per_group_if_placebo_horizon(
     L_max: int,
     set_ids: Optional[np.ndarray] = None,
     compute_per_period: bool = True,
+    switcher_subset_mask: Optional[np.ndarray] = None,
 ) -> Dict[int, Tuple[np.ndarray, Optional[np.ndarray]]]:
     """
     Compute per-group influence function for placebo horizons.
@@ -5438,6 +5858,18 @@ def _compute_per_group_if_placebo_horizon(
     by the **positive**-horizon cutoff ``F_{g'} > F_g - 1 + l`` AND
     observation at ``ref_idx``, ``backward_idx``, AND ``forward_idx``
     (the terminal-missingness guard from Phase 2 Round 9).
+
+    Parameters
+    ----------
+    switcher_subset_mask : np.ndarray of bool, shape (n_groups,), optional
+        When supplied, restricts the switcher iteration to groups where
+        the mask is ``True``. Groups outside the subset contribute as
+        controls only (their switcher-side contribution is skipped). The
+        control pool is unchanged. Mirrors the same parameter on
+        ``_compute_per_group_if_multi_horizon`` and is used by
+        ``by_path`` placebos to zero out switcher contributions for
+        groups not in the selected path. Default ``None`` preserves the
+        legacy behavior of iterating over all switchers.
 
     Returns
     -------
@@ -5470,6 +5902,8 @@ def _compute_per_group_if_placebo_horizon(
 
         for g in range(n_groups):
             if not is_switcher[g]:
+                continue
+            if switcher_subset_mask is not None and not switcher_subset_mask[g]:
                 continue
             f_g = first_switch_idx[g]
             ref_idx = f_g - 1

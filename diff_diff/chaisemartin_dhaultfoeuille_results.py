@@ -136,13 +136,28 @@ class DCDHBootstrapResults:
     # CI + percentile p-value per library Round-10 convention; caller
     # (fit()) propagates these to path_effects[path]["horizons"][l]
     # directly and computes a SE-derived t-stat via `safe_inference`.
-    path_ses: Optional[Dict[Tuple[int, ...], Dict[int, float]]] = field(
-        default=None, repr=False
-    )
+    path_ses: Optional[Dict[Tuple[int, ...], Dict[int, float]]] = field(default=None, repr=False)
     path_cis: Optional[Dict[Tuple[int, ...], Dict[int, Tuple[float, float]]]] = field(
         default=None, repr=False
     )
     path_p_values: Optional[Dict[Tuple[int, ...], Dict[int, float]]] = field(
+        default=None, repr=False
+    )
+
+    # --- Phase 3: per-path placebo bootstrap (by_path + placebo) ---
+    # Same shape and library convention as path_ses / path_cis /
+    # path_p_values, but for backward placebo lags (l = 1..L_max). Keyed
+    # by **positive** int internally; the propagation block in fit()
+    # writes them to path_placebo_event_study[path][-l] (negative key)
+    # to match the placebo_event_study convention. Populated only when
+    # by_path + placebo + n_bootstrap > 0 is active; `None` otherwise.
+    path_placebo_ses: Optional[Dict[Tuple[int, ...], Dict[int, float]]] = field(
+        default=None, repr=False
+    )
+    path_placebo_cis: Optional[Dict[Tuple[int, ...], Dict[int, Tuple[float, float]]]] = field(
+        default=None, repr=False
+    )
+    path_placebo_p_values: Optional[Dict[Tuple[int, ...], Dict[int, float]]] = field(
         default=None, repr=False
     )
 
@@ -359,6 +374,26 @@ class ChaisemartinDHaultfoeuilleResults:
         ``{"n_groups": int, "frequency_rank": int,
         "horizons": {l: {"effect", "se", "t_stat", "p_value",
         "conf_int", "n_obs"}}}`` for ``l = 1..L_max``.
+    path_placebo_event_study : dict, optional
+        Per-path backward-horizon placebos ``DID^{pl}_{path, l}`` for
+        ``l = 1..L_max``, keyed by observed treatment trajectory (tuple
+        of int). Inner dict keys are **negative** ints (``-l`` for lag
+        ``l``) to mirror the ``placebo_event_study`` convention so a
+        unified ``{**path_effects[p]["horizons"],
+        **path_placebo_event_study[p]}`` view is well-formed across
+        forward and backward horizons. Each inner entry holds
+        ``{"effect", "se", "t_stat", "p_value", "conf_int", "n_obs"}``.
+        Populated when ``by_path`` is a positive int AND
+        ``placebo=True`` AND ``L_max >= 1``. Empty-state contract
+        mirrors ``path_effects``: ``None`` when ``by_path + placebo``
+        was not requested; ``{}`` when requested but no observed path
+        has a complete window ``[F_g-1, F_g-1+L_max]`` within the
+        panel (the same regime where ``path_effects`` returns ``{}``,
+        with the same ``UserWarning`` at fit-time). Downstream callers
+        should distinguish the two states. Inherits the cross-path
+        cohort-sharing SE deviation from R documented for
+        ``path_effects``. See REGISTRY.md
+        ``Note (Phase 3 by_path ...)`` → "Per-path placebos".
     honest_did_results : HonestDiDResults, optional
         HonestDiD sensitivity analysis bounds (Rambachan & Roth 2023).
         Populated when ``honest_did=True`` in ``fit()`` or by calling
@@ -462,6 +497,14 @@ class ChaisemartinDHaultfoeuilleResults:
     heterogeneity_effects: Optional[Dict[int, Dict[str, Any]]] = field(default=None, repr=False)
     design2_effects: Optional[Dict[str, Any]] = field(default=None, repr=False)
     path_effects: Optional[Dict[Tuple[int, ...], Dict[str, Any]]] = field(default=None, repr=False)
+    # Per-path backward-horizon placebos. Inner dict keys are NEGATIVE
+    # ints (-l for lag l) to match `placebo_event_study`'s convention,
+    # so a unified `{**path_effects[p]["horizons"],
+    # **path_placebo_event_study[p]}` view is well-formed across both
+    # forward and backward horizons within a single path.
+    path_placebo_event_study: Optional[Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]] = field(
+        default=None, repr=False
+    )
     honest_did_results: Optional["HonestDiDResults"] = field(default=None, repr=False)
 
     # --- Repr-suppressed metadata ---
@@ -721,26 +764,24 @@ class ChaisemartinDHaultfoeuilleResults:
         # broader predicate, the footer would falsely claim "produced
         # non-finite SE on every target" while a finite per-path
         # bootstrap SE sits in the rendered output below.
-        event_study_has_finite_bootstrap_se = (
-            self.event_study_effects is not None
-            and any(
-                np.isfinite(entry.get("se", np.nan))
-                for entry in self.event_study_effects.values()
-            )
+        event_study_has_finite_bootstrap_se = self.event_study_effects is not None and any(
+            np.isfinite(entry.get("se", np.nan)) for entry in self.event_study_effects.values()
         )
-        joiners_has_finite_bootstrap_se = (
-            self.joiners_se is not None and np.isfinite(self.joiners_se)
+        joiners_has_finite_bootstrap_se = self.joiners_se is not None and np.isfinite(
+            self.joiners_se
         )
-        leavers_has_finite_bootstrap_se = (
-            self.leavers_se is not None and np.isfinite(self.leavers_se)
+        leavers_has_finite_bootstrap_se = self.leavers_se is not None and np.isfinite(
+            self.leavers_se
         )
-        path_effects_has_finite_bootstrap_se = (
-            self.path_effects is not None
-            and any(
-                np.isfinite(h.get("se", np.nan))
-                for entry in self.path_effects.values()
-                for h in entry.get("horizons", {}).values()
-            )
+        path_effects_has_finite_bootstrap_se = self.path_effects is not None and any(
+            np.isfinite(h.get("se", np.nan))
+            for entry in self.path_effects.values()
+            for h in entry.get("horizons", {}).values()
+        )
+        path_placebo_has_finite_bootstrap_se = self.path_placebo_event_study is not None and any(
+            np.isfinite(h.get("se", np.nan))
+            for entry in self.path_placebo_event_study.values()
+            for h in entry.values()
         )
         any_finite_bootstrap_inference = (
             np.isfinite(self.overall_se)
@@ -748,6 +789,7 @@ class ChaisemartinDHaultfoeuilleResults:
             or joiners_has_finite_bootstrap_se
             or leavers_has_finite_bootstrap_se
             or path_effects_has_finite_bootstrap_se
+            or path_placebo_has_finite_bootstrap_se
         )
         if self.bootstrap_results is not None and np.isfinite(self.overall_se) and not is_delta:
             lines.append("Note: p-value and CI are multiplier-bootstrap percentile inference")
@@ -756,9 +798,7 @@ class ChaisemartinDHaultfoeuilleResults:
                 f"{self.bootstrap_results.weight_type} weights)."
             )
         elif (
-            self.bootstrap_results is not None
-            and is_delta
-            and event_study_has_finite_bootstrap_se
+            self.bootstrap_results is not None and is_delta and event_study_has_finite_bootstrap_se
         ):
             lines.append(
                 f"Note: delta SE is delta-method (normal-theory) from per-horizon "
@@ -781,6 +821,8 @@ class ChaisemartinDHaultfoeuilleResults:
                 live_targets.append("leavers")
             if path_effects_has_finite_bootstrap_se:
                 live_targets.append("per-path")
+            if path_placebo_has_finite_bootstrap_se:
+                live_targets.append("per-path placebo")
             lines.append(
                 f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
                 f"produced non-finite SE on the overall/event-study target; "
@@ -1146,6 +1188,26 @@ class ChaisemartinDHaultfoeuilleResults:
                 ]
             )
             horizons = entry.get("horizons", {})
+            # Backward placebo lags first (negative-keyed), then
+            # positive event-study horizons. Skips silently when
+            # path_placebo_event_study is None or this path lacks an
+            # entry.
+            placebo_horizons = (
+                self.path_placebo_event_study.get(path, {})
+                if self.path_placebo_event_study is not None
+                else {}
+            )
+            for lag_key in sorted(placebo_horizons.keys()):
+                ph = placebo_horizons[lag_key]
+                lines.append(
+                    _format_inference_row(
+                        f"  l={lag_key}",
+                        ph["effect"],
+                        ph["se"],
+                        ph["t_stat"],
+                        ph["p_value"],
+                    )
+                )
             for l_h in sorted(horizons.keys()):
                 h = horizons[l_h]
                 lines.append(
@@ -1503,6 +1565,33 @@ class ChaisemartinDHaultfoeuilleResults:
                 rank = entry["frequency_rank"]
                 n_groups = entry["n_groups"]
                 horizons = entry.get("horizons", {})
+                # Backward placebo lags first (negative-keyed), then
+                # positive event-study horizons. Both placebo and
+                # event-study rows are emitted in a single
+                # `level="by_path"` table so callers see the full
+                # forward+backward inference per path.
+                placebo_horizons = (
+                    self.path_placebo_event_study.get(path, {})
+                    if self.path_placebo_event_study is not None
+                    else {}
+                )
+                for lag_key in sorted(placebo_horizons.keys()):
+                    ph_entry = placebo_horizons[lag_key]
+                    rows.append(
+                        {
+                            "path": path,
+                            "frequency_rank": rank,
+                            "n_groups": n_groups,
+                            "horizon": lag_key,
+                            "effect": ph_entry["effect"],
+                            "se": ph_entry["se"],
+                            "t_stat": ph_entry["t_stat"],
+                            "p_value": ph_entry["p_value"],
+                            "conf_int_lower": ph_entry["conf_int"][0],
+                            "conf_int_upper": ph_entry["conf_int"][1],
+                            "n_obs": ph_entry["n_obs"],
+                        }
+                    )
                 for l_h in sorted(horizons.keys()):
                     h_entry = horizons[l_h]
                     rows.append(
