@@ -5734,9 +5734,12 @@ def _collect_path_placebo_bootstrap_inputs(
     ``path_placebo_event_study[path][-lag_l]`` post-bootstrap.
 
     The point estimate per ``(path, lag_l)`` is read from
-    ``path_placebos[path]["horizons"][-lag_l]["effect"]`` to stay
-    bit-identical with the analytical pass; the bootstrap distribution
-    gets centered on this value by ``_bootstrap_one_target`` downstream.
+    ``path_placebos[path][-lag_l]["effect"]`` (note: no ``["horizons"]``
+    wrapper -- ``_compute_path_placebos`` returns the negative-keyed
+    inner dict directly, unlike ``_compute_path_effects`` which wraps
+    its horizons under a ``["horizons"]`` key) to stay bit-identical
+    with the analytical pass; the bootstrap distribution gets centered
+    on this value by ``_bootstrap_one_target`` downstream.
 
     The ``warnings.catch_warnings`` block suppresses the
     re-enumeration overflow ``UserWarning``; the analytical
