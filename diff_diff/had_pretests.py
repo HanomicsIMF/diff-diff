@@ -1252,18 +1252,21 @@ def qug_test(
             "statistics, T = D_(1) / (D_(2) - D_(1)). "
             "Extreme-order-statistic functionals are not smooth in the "
             "empirical CDF, so standard survey machinery (Binder "
-            "linearization, Rao-Wu rescaled bootstrap) does not provide "
-            "a calibrated test. Under cluster sampling the Exp(1)/Exp(1) "
-            "limit law's independence assumption breaks. The literature "
-            "on extreme-value theory under unequal-probability sampling "
-            "(Quintos et al. 2001, Beirlant et al.) addresses tail-index "
-            "estimation, not boundary tests; no off-the-shelf "
-            "survey-aware QUG exists.\n"
+            "linearization, multiplier bootstrap, Rao-Wu rescaled "
+            "bootstrap) does not provide a calibrated test. Under "
+            "cluster sampling the Exp(1)/Exp(1) limit law's independence "
+            "assumption breaks. The literature on extreme-value theory "
+            "under unequal-probability sampling (Quintos et al. 2001, "
+            "Beirlant et al.) addresses tail-index estimation, not "
+            "boundary tests; no off-the-shelf survey-aware QUG exists.\n"
             "\n"
-            "For survey-aware HAD pretesting, use joint Stute (Phase 4.5 "
-            "C, planned) via did_had_pretest_workflow(..., survey=..., "
-            "aggregate=...). Stute tests a smooth empirical-CDF "
-            "functional and admits a Rao-Wu rescaled bootstrap. See "
+            "For survey-aware HAD pretesting, use the joint Stute family "
+            "via did_had_pretest_workflow(..., survey=..., "
+            "aggregate=...) -- shipped in Phase 4.5 C. The workflow "
+            "skips the QUG step under survey/weights with a UserWarning "
+            "and runs the linearity family with a PSU-level Mammen "
+            "multiplier bootstrap (Stute) + weighted OLS + pweight-"
+            "sandwich variance components (Yatchew). See "
             "docs/methodology/REGISTRY.md § 'QUG Null Test' for the "
             "full methodology note."
         )
@@ -1662,6 +1665,33 @@ def stute_test(
         # CvM recompute. Routes via synthetic trivial ResolvedSurveyDesign
         # for the weights= shortcut to share the same kernel.
         resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        # R3 P0: variance-unidentified survey-design guard. When
+        # n_psu - n_strata <= 0 (e.g. unstratified single-PSU, or one PSU
+        # per stratum), generate_survey_multiplier_weights_batch returns
+        # an all-zero multiplier matrix. Without this guard, the code
+        # below would treat zero perturbations as a valid bootstrap law
+        # and emit p_value = 1/(B+1) for any positive observed CvM
+        # (spurious rejection). Mirrors compute_survey_vcov's
+        # df_survey-driven NaN treatment elsewhere in the package.
+        df_survey = resolved_for_boot.df_survey
+        if df_survey is None or df_survey <= 0:
+            warnings.warn(
+                f"stute_test: survey design is variance-unidentified "
+                f"(df_survey={df_survey}); the multiplier bootstrap "
+                "cannot calibrate the test (single-PSU unstratified or "
+                "one-PSU-per-stratum design). Returning NaN result.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return StuteTestResults(
+                cvm_stat=float(S),
+                p_value=float("nan"),
+                reject=False,
+                alpha=alpha,
+                n_bootstrap=int(n_bootstrap),
+                n_obs=G,
+                seed=seed,
+            )
         psu_mults, psu_ids = generate_survey_multiplier_weights_batch(
             n_bootstrap, resolved_for_boot, weight_type="mammen", rng=rng
         )
@@ -2418,6 +2448,21 @@ def stute_joint_pretest(
         (``"mean_independence"`` | ``"linearity"`` | ``"custom"``).
         The wrappers :func:`joint_pretrends_test` and
         :func:`joint_homogeneity_test` set this automatically.
+    weights : np.ndarray or None, keyword-only, default None
+        Per-unit positive weights (Phase 4.5 C). When supplied, the
+        per-horizon CvM uses :func:`_cvm_statistic_weighted` and the
+        bootstrap routes through a synthetic trivial
+        ``ResolvedSurveyDesign``. Mutually exclusive with ``survey``.
+    survey : ResolvedSurveyDesign or None, keyword-only, default None
+        Already-resolved per-unit survey design (Phase 4.5 C). When
+        supplied, the bootstrap is a PSU-level Mammen multiplier
+        bootstrap with the multiplier matrix shared across horizons
+        within each replicate (preserves both vector-valued empirical-
+        process unit-level dependence + PSU clustering). Replicate-
+        weight designs raise ``NotImplementedError``; non-pweight
+        weight types are rejected. Variance-unidentified designs
+        (``df_survey <= 0``) return NaN with a ``UserWarning`` instead
+        of calibrating against an all-zero multiplier matrix.
 
     Returns
     -------
@@ -2768,6 +2813,32 @@ def stute_joint_pretest(
         # vector-valued empirical-process unit-level dependence (paper
         # convention) AND PSU clustering (Krieger-Pfeffermann 1997).
         resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        # R3 P0: variance-unidentified survey-design guard (mirrors
+        # stute_test single-horizon).
+        df_survey = resolved_for_boot.df_survey
+        if df_survey is None or df_survey <= 0:
+            warnings.warn(
+                f"stute_joint_pretest: survey design is variance-"
+                f"unidentified (df_survey={df_survey}); the multiplier "
+                "bootstrap cannot calibrate the joint test. Returning "
+                "NaN result.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return StuteJointResult(
+                cvm_stat_joint=S_joint,
+                p_value=float("nan"),
+                reject=False,
+                alpha=float(alpha),
+                horizon_labels=horizon_labels,
+                per_horizon_stats=per_horizon_stats,
+                n_bootstrap=int(n_bootstrap),
+                n_obs=int(G),
+                n_horizons=int(K),
+                seed=None if seed is None else int(seed),
+                null_form=str(null_form),
+                exact_linear_short_circuited=False,
+            )
         psu_mults, psu_ids = generate_survey_multiplier_weights_batch(
             n_bootstrap, resolved_for_boot, weight_type="mammen", rng=rng
         )
@@ -2948,6 +3019,18 @@ def joint_pretrends_test(
         handling follows the HAD contract (staggered auto-filter warns
         and proceeds on last cohort; solo cohort proceeds).
     alpha, n_bootstrap, seed : as in :func:`stute_test`.
+    weights : np.ndarray or None, keyword-only, default None
+        Per-row positive weights (Phase 4.5 C). Aggregated to per-unit
+        via :func:`diff_diff.had._aggregate_unit_weights` (constant-
+        within-unit invariant enforced). On staggered panels the
+        wrapper subsets ``weights`` to the surviving cohort BEFORE
+        aggregation. Mutually exclusive with ``survey``.
+    survey : SurveyDesign or None, keyword-only, default None
+        Survey design (Phase 4.5 C). Resolved on the filtered panel;
+        replicate-weight designs raise ``NotImplementedError``;
+        ``weight_type`` must be ``"pweight"``. Forwarded to
+        :func:`stute_joint_pretest` as a per-unit
+        ``ResolvedSurveyDesign``.
 
     Returns
     -------
@@ -3166,6 +3249,14 @@ def joint_homogeneity_test(
     first_treat_col : str or None
         Forwarded to the underlying panel validator.
     alpha, n_bootstrap, seed : as in :func:`stute_test`.
+    weights : np.ndarray or None, keyword-only, default None
+        Per-row positive weights (Phase 4.5 C). See
+        :func:`joint_pretrends_test` for the contract; semantics are
+        identical (per-unit aggregation, staggered subsetting,
+        replicate-weight rejection).
+    survey : SurveyDesign or None, keyword-only, default None
+        Survey design (Phase 4.5 C). Same contract as
+        :func:`joint_pretrends_test`.
 
     Returns
     -------

@@ -3621,3 +3621,106 @@ class TestPhase45CR1Regressions:
         # bootstrap distribution would be inflated and the survey p-value
         # would systematically deviate. With the correct form, |diff| < 0.10.
         assert abs(r_unweighted.p_value - r_weighted.p_value) < 0.10
+
+    # --- R3 P0: variance-unidentified survey-design guard ------------------
+
+    def test_stute_test_single_psu_unstratified_returns_nan(self):
+        """R3 P0: unstratified single-PSU survey designs are
+        variance-unidentified (df_survey = n_psu - 1 = 0). The multiplier
+        bootstrap helper returns an all-zero matrix; without the guard
+        the code below would treat that as a valid bootstrap law and emit
+        p_value ≈ 1/(B+1) (spurious rejection). Guard returns NaN +
+        UserWarning instead."""
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        d, dy = _linear_dgp(G=30)
+        # All units in a single PSU, unstratified -> df_survey = 0.
+        single_psu = np.zeros(30, dtype=np.int64)
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(30),
+            weight_type="pweight",
+            strata=None,
+            psu=single_psu,
+            fpc=None,
+            n_strata=0,
+            n_psu=1,
+            lonely_psu="remove",
+        )
+        with pytest.warns(UserWarning, match="variance-unidentified"):
+            r = stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
+        assert np.isnan(r.p_value)
+        assert r.reject is False
+        # cvm_stat is the OBSERVED value (still computed pre-guard); only
+        # p_value goes NaN because the bootstrap calibration is invalid.
+        assert np.isfinite(r.cvm_stat)
+
+    def test_stute_joint_pretest_single_psu_unstratified_returns_nan(self):
+        """R3 P0: same guard on the joint variant."""
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        G = 20
+        residuals_by_horizon = {
+            "0": np.random.default_rng(0).normal(size=G),
+            "1": np.random.default_rng(1).normal(size=G),
+        }
+        fitted_by_horizon = {"0": np.zeros(G), "1": np.zeros(G)}
+        doses = np.linspace(0.1, 1.0, G)
+        design_matrix = np.column_stack([np.ones(G), doses])
+        single_psu = np.zeros(G, dtype=np.int64)
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(G),
+            weight_type="pweight",
+            strata=None,
+            psu=single_psu,
+            fpc=None,
+            n_strata=0,
+            n_psu=1,
+            lonely_psu="remove",
+        )
+        with pytest.warns(UserWarning, match="variance-unidentified"):
+            r = stute_joint_pretest(
+                residuals_by_horizon=residuals_by_horizon,
+                fitted_by_horizon=fitted_by_horizon,
+                doses=doses,
+                design_matrix=design_matrix,
+                n_bootstrap=199,
+                seed=0,
+                survey=resolved,
+            )
+        assert np.isnan(r.p_value)
+        assert r.reject is False
+        assert np.isfinite(r.cvm_stat_joint)
+
+    def test_workflow_single_psu_propagates_nan_through_stute(self):
+        """R3 P0: workflow-level: single-PSU survey design makes the
+        survey Stute multiplier bootstrap variance-unidentified, so
+        report.stute.p_value is NaN (the guard fired). Yatchew under
+        survey is unaffected by PSU clustering by design (REGISTRY
+        note: PSU clustering is NOT propagated through the variance-
+        ratio statistic), so report.yatchew.p_value is still finite.
+        The verdict carries the linearity-conditional suffix; users
+        should read REGISTRY for the per-test mechanism caveat."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_overall_panel(with_w_col=True)
+        # Add a constant 'psu' column (single PSU).
+        df["psu"] = 0
+        with pytest.warns(UserWarning):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey=SurveyDesign(weights="w", psu="psu"),
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert report.aggregate == "overall"
+        assert report.qug is None  # skipped per C0
+        # Stute: variance-unidentified -> NaN p-value (R3 P0 guard fired).
+        assert report.stute is not None and np.isnan(report.stute.p_value)
+        # Yatchew: closed-form, PSU-agnostic by design -> still finite.
+        assert report.yatchew is not None and np.isfinite(report.yatchew.p_value)
+        # Verdict carries the linearity-conditional suffix.
+        assert "linearity-conditional verdict" in report.verdict
