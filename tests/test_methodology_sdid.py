@@ -1534,6 +1534,90 @@ class TestJackknifeSERParity:
         )
         assert abs(results.se - self.R_JACKKNIFE_SE) < 1e-10
 
+    def test_placebo_se_matches_r(self, r_panel_df):
+        """Placebo SE should match R's vcov(method='placebo') under the
+        same panel and the exact permutation sequence R consumed.
+
+        Loads ``tests/data/sdid_placebo_indices_r.json``, which pins
+        R's per-rep permutation indices (200 × N0, 0-indexed) and the
+        SE from R's ``placebo_se`` loop.
+
+        Intercepts ``_placebo_variance_se`` to capture the per-fit args
+        the dispatcher would have passed (Y_*_n, zetas, init_omega,
+        init_lambda, etc.), then re-invokes the method directly with
+        the same args plus the ``_placebo_indices`` test seam carrying
+        R's permutations. Avoids manually reconstructing the
+        normalization constants.
+
+        Python uses the same warm-start ``weights.boot$omega =
+        sum_normalize(omega[ind[1:N0_placebo]])`` that R's
+        ``placebo_se`` consumes from ``attr(estimate, "weights")`` —
+        the warm-start matters for finite-iter FW convergence under
+        R's ``update.omega=TRUE`` semantics, even though the global
+        FW optimum is init-independent.
+
+        Skip if the fixture file is missing — CI's isolated-install
+        job copies only ``tests/``, but ``tests/data/`` is included
+        (this skip is a defensive guard per the existing convention).
+        """
+        import json
+        import pathlib
+
+        fixture_path = (
+            pathlib.Path(__file__).parent
+            / "data" / "sdid_placebo_indices_r.json"
+        )
+        if not fixture_path.exists():
+            pytest.skip(
+                f"Missing R-parity fixture {fixture_path}; regenerate via "
+                "`Rscript benchmarks/R/generate_sdid_placebo_parity_fixture.R`."
+            )
+        payload = json.loads(fixture_path.read_text())
+        r_se = payload["R_PLACEBO_SE"]
+        r_perms = np.asarray(payload["R_PERMUTATIONS"], dtype=np.int64)
+        replications = payload["metadata"]["replications"]
+        assert r_perms.shape == (replications, self.N0)
+
+        sdid = SyntheticDiD(
+            variance_method="placebo",
+            n_bootstrap=replications,
+            seed=42,
+        )
+        # Capture the dispatcher's call args for `_placebo_variance_se`.
+        captured: Dict[str, Any] = {}
+        original_method = sdid._placebo_variance_se
+
+        def capture_then_call(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return original_method(*args, **kwargs)
+
+        sdid._placebo_variance_se = capture_then_call  # type: ignore[assignment]
+        sdid.fit(
+            r_panel_df, outcome="outcome", treatment="treated",
+            unit="unit", time="time",
+            post_periods=[5, 6, 7],
+        )
+        sdid._placebo_variance_se = original_method  # type: ignore[assignment]
+
+        # Re-call `_placebo_variance_se` with the SAME normalized inputs
+        # the dispatcher used, plus R's permutations through the seam.
+        # The recovered Y_scale rescales the normalized SE back to user
+        # outcome scale (matches the dispatcher's `se = se_n * Y_scale`
+        # at synthetic_did.py around L1164).
+        kwargs = dict(captured["kwargs"])
+        kwargs["replications"] = replications
+        kwargs["_placebo_indices"] = r_perms
+        se_n, _ = sdid._placebo_variance_se(*captured["args"], **kwargs)
+        Y_scale = sdid.results_.zeta_omega / kwargs["zeta_omega"]
+        py_se = se_n * Y_scale
+        # Match R within cross-library FW tolerance (Rust vs R BLAS
+        # reductions differ at sub-ULP; 1e-8 absorbs that without
+        # masking a real divergence).
+        assert abs(py_se - r_se) < 1e-8, (
+            f"Python placebo SE {py_se} != R {r_se} (delta {py_se - r_se})"
+        )
+
 
 # =============================================================================
 # Edge Cases
@@ -2886,7 +2970,21 @@ class TestScaleEquivariance:
     # Hard-coded baselines captured pre-fix on a well-scaled panel. If these
     # drift the fix is not a true no-op on normal data and review is warranted.
     _BASELINE = {
-        "placebo":   (4.603349837478791,   0.29385822261006445, 0.004975124378109453,    200),
+        # placebo = R-default warm-start (PR follow-up to #349 R-parity
+        # work): per-draw FW is initialized with ``sum_normalize(
+        # unit_weights[pseudo_control_idx])`` for ω and with the
+        # fit-time ``time_weights`` for λ, matching R's
+        # ``vcov.R::placebo_se`` ``weights.boot$omega = sum_normalize(
+        # weights$omega[ind[1:N0_placebo]])`` warm-start. Drift from
+        # the cold-start capture (0.29385822261006445) is the same
+        # finite-iter convergence-pattern shift as the bootstrap warm-
+        # start landed in PR #349 — strict-convexity guarantees the
+        # converged answer is unique, but the 100-iter pre-sparsify
+        # pass produces different sparsification under uniform vs warm
+        # init on a handful of draws. Warm-start matches R at machine
+        # precision (test_placebo_se_matches_r in
+        # TestJackknifeSERParity).
+        "placebo":   (4.603349837478791,   0.293840360160448, 0.004975124378109453, 200),
         # bootstrap = paper-faithful refit with R-default warm-start: FW is
         # initialized with ``sum_normalize(unit_weights[boot_control_idx])``
         # for ω and with the fit-time ``time_weights`` for λ on each draw,

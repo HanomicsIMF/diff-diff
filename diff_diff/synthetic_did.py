@@ -1153,6 +1153,8 @@ class SyntheticDiD(DifferenceInDifferences):
                     min_decrease=min_decrease,
                     replications=self.n_bootstrap,
                     w_control=w_control,
+                    init_omega=unit_weights,
+                    init_lambda=time_weights,
                 )
             se = se_n * Y_scale
             placebo_effects = np.asarray(placebo_effects_n) * Y_scale
@@ -1695,6 +1697,9 @@ class SyntheticDiD(DifferenceInDifferences):
         min_decrease: float = 1e-5,
         replications: int = 200,
         w_control=None,
+        init_omega: Optional[np.ndarray] = None,
+        init_lambda: Optional[np.ndarray] = None,
+        _placebo_indices: Optional[np.ndarray] = None,
     ) -> Tuple[float, np.ndarray]:
         """
         Compute placebo-based variance matching R's synthdid methodology.
@@ -1747,6 +1752,21 @@ class SyntheticDiD(DifferenceInDifferences):
         rng = np.random.default_rng(self.seed)
         n_pre, n_control = Y_pre_control.shape
 
+        # R-parity test seam (PR follow-up to #349). When
+        # ``_placebo_indices`` is provided, each row replaces the
+        # per-draw ``rng.permutation(n_control)`` so a Python fit can
+        # consume R's exact permutation sequence and produce a
+        # bit-identical SE. Shape: ``(replications, n_control)``,
+        # 0-indexed. Underscore-prefixed → test-only / private API.
+        if _placebo_indices is not None:
+            _placebo_indices = np.asarray(_placebo_indices, dtype=np.int64)
+            if _placebo_indices.ndim != 2 or _placebo_indices.shape[1] != n_control:
+                raise ValueError(
+                    f"_placebo_indices shape {_placebo_indices.shape} does not "
+                    f"match expected (replications, {n_control})"
+                )
+            replications = _placebo_indices.shape[0]
+
         # Ensure we have enough controls for the split
         n_pseudo_control = n_control - n_treated
         if n_pseudo_control < 1:
@@ -1771,10 +1791,17 @@ class SyntheticDiD(DifferenceInDifferences):
 
         placebo_estimates = []
 
-        for _ in range(replications):
+        for _rep in range(replications):
             try:
-                # Random permutation of control indices (Algorithm 4, step 1)
-                perm = rng.permutation(n_control)
+                # Random permutation of control indices (Algorithm 4, step 1).
+                # Test seam: when ``_placebo_indices`` is supplied, consume
+                # the externally-provided permutation instead — used by
+                # ``test_placebo_se_matches_r`` to feed R's exact
+                # permutation sequence through Python for bit-identical SE.
+                if _placebo_indices is not None:
+                    perm = _placebo_indices[_rep]
+                else:
+                    perm = rng.permutation(n_control)
 
                 # Split into pseudo-controls and pseudo-treated (step 2)
                 pseudo_control_idx = perm[:n_pseudo_control]
@@ -1805,15 +1832,28 @@ class SyntheticDiD(DifferenceInDifferences):
                         Y_post_control[:, pseudo_treated_idx], axis=1
                     )
 
-                # Re-estimate weights on permuted data (matching R's behavior)
-                # R passes update.omega=TRUE, update.lambda=TRUE via opts,
-                # re-estimating weights from uniform initialization (fresh start).
-                # Unit weights: re-estimate on pseudo-control/pseudo-treated data
+                # Re-estimate weights on permuted data (matching R's behavior).
+                # R's `placebo_se` (synthdid:::placebo_se in R/vcov.R) passes
+                # `weights.boot$omega = sum_normalize(weights$omega[ind[1:N0]])`
+                # as a warm-start to `synthdid_estimate` with `update.omega=TRUE`,
+                # then re-estimates ω. Python mirrors that: when fit-time ω
+                # (`init_omega`) is supplied, seed the FW first pass with the
+                # subsetted-renormalized fit-time omega; otherwise use cold-
+                # start (uniform). At the global FW optimum the two are
+                # equivalent, but the warm-start matches R's exact iterates
+                # for bit-identical SE under the R-parity test.
+                if init_omega is not None:
+                    pseudo_omega_init = _sum_normalize(
+                        init_omega[pseudo_control_idx]
+                    )
+                else:
+                    pseudo_omega_init = None
                 pseudo_omega = compute_sdid_unit_weights(
                     Y_pre_pseudo_control,
                     Y_pre_pseudo_treated_mean,
                     zeta_omega=zeta_omega,
                     min_decrease=min_decrease,
+                    init_weights=pseudo_omega_init,
                 )
 
                 # Compose pseudo_omega with control survey weights
@@ -1824,12 +1864,17 @@ class SyntheticDiD(DifferenceInDifferences):
                 else:
                     pseudo_omega_eff = pseudo_omega
 
-                # Time weights: re-estimate on pseudo-control data
+                # Time weights: re-estimate on pseudo-control data.
+                # R's `placebo_se` reuses the same `weights.boot` (with
+                # the original ``weights$lambda`` untouched) as warm-
+                # start to ``synthdid_estimate``. Mirror by passing
+                # fit-time λ as ``init_weights`` when supplied.
                 pseudo_lambda = compute_time_weights(
                     Y_pre_pseudo_control,
                     Y_post_pseudo_control,
                     zeta_lambda=zeta_lambda,
                     min_decrease=min_decrease,
+                    init_weights=init_lambda,
                 )
 
                 # Compute placebo SDID estimate (step 4)
