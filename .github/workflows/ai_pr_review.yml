@@ -49,7 +49,7 @@ jobs:
     steps:
       - name: Resolve PR number + metadata
         id: pr
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const prNumber =
@@ -91,7 +91,7 @@ jobs:
 
       - name: Fetch previous AI review (if any)
         id: prev_review
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -169,7 +169,7 @@ jobs:
           effort: xhigh
 
       - name: Post PR comment (new on /ai-review, update on opened)
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
