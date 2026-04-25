@@ -905,10 +905,14 @@ class TestEdgeCases:
         rows, including negative values. The negative-dose rejection at
         line 287-294 of continuous_did.py applies only to treated units
         (`first_treat > 0`); never-treated rows are coerced to dose=0
-        with a `UserWarning` regardless of sign. This contract is what
-        lets agents legally relabel negative-dose units as
-        `first_treat == 0` to coerce them away (as documented in the
-        autonomous guide §5.2 counter-example #5)."""
+        with a `UserWarning` regardless of sign. This is observed
+        implementation behavior for inconsistent inputs (an
+        accidentally-nonzero dose on a never-treated row), NOT a
+        documented routing option for manufacturing never-treated
+        controls — REGISTRY does not list relabeling as a fallback.
+        The test locks in the coercion contract; the autonomous guide
+        §5.2 counter-example #5 explicitly tells agents not to use this
+        path methodologically."""
         rows = []
         for unit in range(4):
             if unit < 2:

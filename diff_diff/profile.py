@@ -70,66 +70,67 @@ class TreatmentDoseShape:
     distributional context.
 
     **profile_panel only sees the dose column**, not the separate
-    ``first_treat`` column ``ContinuousDiD.fit()`` consumes. The
-    estimator's actual fit-time gates key off ``first_treat`` (it
-    defines never-treated controls as ``first_treat == 0``,
-    force-zeroes nonzero ``dose`` on ``first_treat == 0`` rows with a
-    ``UserWarning``, drops units where ``first_treat > 0`` AND
-    ``dose == 0``, and rejects negative dose only among treated units
-    where ``first_treat > 0``; see ``continuous_did.py:276-327`` and
-    ``:348-360``). The profile-side facts below are therefore
-    **conservative agent-side preflight checks**, predictive of
-    ``ContinuousDiD.fit()`` success **only under the standard
-    workflow** where the agent derives ``first_treat`` from the same
-    dose column the profile reports on (``first_treat == 0`` for
-    units that are never treated according to the dose column;
-    ``first_treat`` set to the first treated period for the rest):
+    ``first_treat`` column ``ContinuousDiD.fit()`` consumes. In the
+    canonical ``ContinuousDiD`` setup (Callaway, Goodman-Bacon,
+    Sant'Anna 2024) the dose ``D_i`` is **time-invariant per unit**
+    (``D_i = 0`` for never-treated, ``D_i > 0`` constant across all
+    periods for treated unit i) and ``first_treat`` is a **separate
+    column** the caller supplies — not derived from the dose column.
+    Under that canonical setup, several profile-side facts on the
+    dose column predict ``ContinuousDiD.fit()`` outcomes:
 
-    1. ``PanelProfile.has_never_treated == True`` (unit-level
-       all-zero treatment existence). Under the standard workflow
-       this implies a ``first_treat == 0`` unit will exist; the
-       estimator requires ``P(D=0) > 0`` under both
+    1. ``PanelProfile.has_never_treated == True`` (some unit has
+       dose 0 in every period). Predicts the estimator's
+       ``P(D=0) > 0`` requirement under both
        ``control_group="never_treated"`` and
-       ``control_group="not_yet_treated"`` because Remark 3.1
-       lowest-dose-as-control is not yet implemented. Failure of
-       this preflight is **not** an opportunity to relabel
-       positive-dose units as ``first_treat == 0`` to manufacture
-       controls — that is not a documented methodological option in
-       the registry. Re-encode the treatment column or pick a
-       different estimator instead.
-    2. ``PanelProfile.treatment_varies_within_unit == False`` (per-unit
-       full-path dose constancy on the treatment column). This IS
-       the actual fit-time gate, matching ``ContinuousDiD.fit()``'s
+       ``control_group="not_yet_treated"`` (Remark 3.1
+       lowest-dose-as-control not yet implemented), because the
+       canonical setup ties ``first_treat == 0`` to ``D_i == 0``.
+       Failure means no never-treated controls exist on the dose
+       column — the documented fixes are to re-encode the treatment
+       to a scale that contains a true never-treated group, or to
+       route to a different estimator (linear DiD with continuous
+       covariate, ``HeterogeneousAdoptionDiD`` for graded
+       adoption). Do **not** relabel positive-dose units as
+       ``first_treat == 0``: REGISTRY does not document this as a
+       routing option.
+    2. ``PanelProfile.treatment_varies_within_unit == False``
+       (per-unit full-path dose constancy on the dose column). This
+       IS the actual fit-time gate, matching
+       ``ContinuousDiD.fit()``'s
        ``df.groupby(unit)[dose].nunique() > 1`` rejection at line
-       222-228; not first_treat-dependent.
+       222-228; holds regardless of ``first_treat``. ``True`` rules
+       ``ContinuousDiD`` out — for graded-adoption panels with
+       dose changes use ``HeterogeneousAdoptionDiD``.
     3. ``PanelProfile.is_balanced == True``. Actual fit-time gate
-       (``continuous_did.py:329-338``).
+       (``continuous_did.py:329-338``); not ``first_treat``-dependent.
     4. Absence of the ``duplicate_unit_time_rows`` alert. The
        precompute path silently resolves duplicate ``(unit, time)``
        cells via last-row-wins (``continuous_did.py:818-823``);
-       this is **not** a fit-time raise. Agents must deduplicate
-       before fit because ``ContinuousDiD`` will otherwise overwrite
+       **not** a fit-time raise. The agent must deduplicate before
+       fit because ``ContinuousDiD`` will otherwise overwrite
        silently.
-    5. ``treatment_dose.dose_min > 0``. ``ContinuousDiD.fit()``
-       raises ``ValueError`` on negative dose only for
-       ``first_treat > 0`` units (``continuous_did.py:287-294``);
-       under the standard workflow this maps to ``dose_min > 0`` on
-       the treatment column. ``ContinuousDiD.fit()`` separately
-       force-zeroes any nonzero ``dose`` on ``first_treat == 0``
-       rows with a ``UserWarning`` — that coercion is implementation
-       behavior for inconsistent inputs, not a methodological
-       fallback for re-encoding negative-dose units.
+    5. ``treatment_dose.dose_min > 0`` (over non-zero doses).
+       Predicts ``ContinuousDiD.fit()``'s strictly-positive-treated-
+       dose requirement (raises ``ValueError`` on negative dose for
+       ``first_treat > 0`` units, ``continuous_did.py:287-294``).
+       Under the canonical setup, treated units carry their dose
+       across all periods so ``dose_min`` over non-zero values
+       reflects the smallest treated dose. Failure means some
+       treated units have negative dose — re-encode the treatment
+       to a non-negative scale, or route to a different estimator.
+       The estimator's force-zero coercion on ``first_treat == 0``
+       rows with nonzero ``dose`` is implementation behavior for
+       inconsistent inputs (e.g. an accidentally-nonzero row on a
+       never-treated unit), not a methodological fallback.
 
-    Practical rule: under the standard workflow, panels that fail
-    (1) or (5) require either re-encoding the treatment column to a
-    non-negative scale that includes a true never-treated group, or
-    routing to a different estimator
-    (e.g. ``HeterogeneousAdoptionDiD`` for graded-adoption panels,
-    or linear DiD with the treatment as a continuous covariate).
-    Failures of (2) or (3) are hard fit-time raises independent of
-    how ``first_treat`` is constructed; failure of (4) is a silent
-    last-row-wins overwrite that the agent must prevent by
-    deduplicating before fit.
+    The agent must still validate the supplied ``first_treat``
+    column independently: it must contain at least one
+    ``first_treat == 0`` unit (``P(D=0) > 0``), be non-negative
+    integer-valued (or ``+inf`` / 0 for never-treated), and be
+    consistent with the dose column on per-unit treated/untreated
+    status. ``profile_panel`` does not see ``first_treat`` and
+    cannot validate it.
 
     ``has_zero_dose`` is a row-level fact ("at least one observation has
     dose == 0"); it is NOT a substitute for ``has_never_treated``, which
@@ -182,10 +183,14 @@ class PanelProfile:
     outcome_has_negatives: bool
     outcome_missing_fraction: float
     outcome_summary: Mapping[str, float]
-    outcome_shape: Optional[OutcomeShape]
-    treatment_dose: Optional[TreatmentDoseShape]
 
     alerts: Tuple[Alert, ...]
+
+    # Wave 2 additions are kept defaulted so direct PanelProfile(...)
+    # construction by external callers does not break when the new
+    # fields are not supplied. profile_panel() always populates both.
+    outcome_shape: Optional[OutcomeShape] = None
+    treatment_dose: Optional[TreatmentDoseShape] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-serializable dict representation of the profile."""

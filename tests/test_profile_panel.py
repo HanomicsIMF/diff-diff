@@ -1220,15 +1220,19 @@ def test_treatment_dose_min_flags_negative_dose_continuous_panels():
     assert profile.treatment_varies_within_unit is False
     assert profile.is_balanced is True
     assert "duplicate_unit_time_rows" not in {a.code for a in profile.alerts}
-    # But dose_min > 0 fails: under the standard workflow,
-    # ContinuousDiD.fit() would raise on the negative-dose treated
-    # units. (Relabel-to-`first_treat==0` would coerce instead.)
+    # But dose_min > 0 fails: under the canonical ContinuousDiD setup
+    # (per-unit time-invariant dose + separate first_treat with
+    # negative-dose units labeled first_treat > 0), fit() would raise
+    # at line 287-294 ("Dose must be strictly positive for treated
+    # units"). The documented fixes are to re-encode the treatment to
+    # a non-negative scale or route to a different estimator;
+    # relabeling-to-first_treat==0 is not a documented routing option.
     dose = profile.treatment_dose
     assert dose is not None
     assert dose.dose_min < 0, (
-        "Fixture must have negative dose_min so the agent's "
-        "standard-workflow preflight check (`dose_min > 0`) correctly "
-        "fires False on this panel."
+        "Fixture must have negative dose_min so the canonical-setup "
+        "preflight check (`dose_min > 0`) correctly fires False on "
+        "this panel."
     )
 
 
@@ -1316,6 +1320,46 @@ def test_outcome_shape_dataclass_is_frozen():
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         s.n_distinct_values = 999  # type: ignore[misc]
+
+
+def test_panel_profile_direct_construction_without_wave2_fields():
+    """`PanelProfile` is a public top-level type. Wave 2 added two
+    optional fields (`outcome_shape`, `treatment_dose`) with `None`
+    defaults so direct callers that instantiated `PanelProfile(...)`
+    pre-Wave-2 do not break with `TypeError: missing keyword
+    argument`. Verify direct construction without the new fields
+    succeeds and yields the documented defaults."""
+    profile = PanelProfile(
+        n_units=2,
+        n_periods=2,
+        n_obs=4,
+        is_balanced=True,
+        observation_coverage=1.0,
+        treatment_type="binary_absorbing",
+        is_staggered=False,
+        n_cohorts=1,
+        cohort_sizes={1: 1},
+        has_never_treated=True,
+        has_always_treated=False,
+        treatment_varies_within_unit=True,
+        first_treatment_period=1,
+        last_treatment_period=1,
+        min_pre_periods=1,
+        min_post_periods=1,
+        outcome_dtype="float64",
+        outcome_is_binary=False,
+        outcome_has_zeros=False,
+        outcome_has_negatives=False,
+        outcome_missing_fraction=0.0,
+        outcome_summary={"min": 0.0, "max": 1.0, "mean": 0.5, "std": 0.5},
+        alerts=(),
+    )
+    assert profile.outcome_shape is None
+    assert profile.treatment_dose is None
+    # to_dict() must serialize the defaulted fields as None values
+    payload = profile.to_dict()
+    assert payload["outcome_shape"] is None
+    assert payload["treatment_dose"] is None
 
 
 def test_treatment_dose_dataclass_is_frozen():
