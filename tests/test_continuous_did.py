@@ -166,9 +166,7 @@ class TestBSplineDerivativeDegenerateBasis:
         with patch.object(bspline_mod, "BSpline", side_effect=flaky_bspline):
             with _w.catch_warnings(record=True) as caught:
                 _w.simplefilter("always")
-                dB = bspline_derivative_design_matrix(
-                    x, knots, degree=deg, include_intercept=True
-                )
+                dB = bspline_derivative_design_matrix(x, knots, degree=deg, include_intercept=True)
 
         deriv_warnings = [
             w for w in caught if "B-spline derivative construction failed" in str(w.message)
@@ -192,9 +190,7 @@ class TestBSplineDerivativeDegenerateBasis:
         # (except columns 1 and 3 which were forced to zero). This guards
         # a regression that would zero or corrupt the entire derivative
         # matrix on any ValueError.
-        dB_baseline = bspline_derivative_design_matrix(
-            x, knots, degree=deg, include_intercept=True
-        )
+        dB_baseline = bspline_derivative_design_matrix(x, knots, degree=deg, include_intercept=True)
         for col in range(dB.shape[1]):
             if col in (1, 3):
                 continue
@@ -290,13 +286,15 @@ class TestContinuousDiDDataValidation:
             est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
 
     def test_non_time_invariant_dose(self):
-        data = pd.DataFrame({
-            "unit": [1, 1, 2, 2],
-            "period": [1, 2, 1, 2],
-            "outcome": [1.0, 2.0, 1.0, 2.0],
-            "first_treat": [2, 2, 0, 0],
-            "dose": [1.0, 2.0, 0.0, 0.0],  # Dose changes over time!
-        })
+        data = pd.DataFrame(
+            {
+                "unit": [1, 1, 2, 2],
+                "period": [1, 2, 1, 2],
+                "outcome": [1.0, 2.0, 1.0, 2.0],
+                "first_treat": [2, 2, 0, 0],
+                "dose": [1.0, 2.0, 0.0, 0.0],  # Dose changes over time!
+            }
+        )
         est = ContinuousDiD()
         with pytest.raises(ValueError, match="time-invariant"):
             est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
@@ -307,18 +305,24 @@ class TestContinuousDiDDataValidation:
         rows = []
         uid = 0
         # 1 treated unit with zero dose (should be dropped)
-        rows += [{"unit": uid, "period": 1, "outcome": 1.0, "first_treat": 2, "dose": 0.0},
-                 {"unit": uid, "period": 2, "outcome": 3.0, "first_treat": 2, "dose": 0.0}]
+        rows += [
+            {"unit": uid, "period": 1, "outcome": 1.0, "first_treat": 2, "dose": 0.0},
+            {"unit": uid, "period": 2, "outcome": 3.0, "first_treat": 2, "dose": 0.0},
+        ]
         uid += 1
         # 4 treated units with positive dose (should remain)
         for d in [1.0, 2.0, 3.0, 4.0]:
-            rows += [{"unit": uid, "period": 1, "outcome": 0.0, "first_treat": 2, "dose": d},
-                     {"unit": uid, "period": 2, "outcome": 2 * d, "first_treat": 2, "dose": d}]
+            rows += [
+                {"unit": uid, "period": 1, "outcome": 0.0, "first_treat": 2, "dose": d},
+                {"unit": uid, "period": 2, "outcome": 2 * d, "first_treat": 2, "dose": d},
+            ]
             uid += 1
         # 3 control units
         for _ in range(3):
-            rows += [{"unit": uid, "period": 1, "outcome": 0.0, "first_treat": 0, "dose": 0.0},
-                     {"unit": uid, "period": 2, "outcome": 0.0, "first_treat": 0, "dose": 0.0}]
+            rows += [
+                {"unit": uid, "period": 1, "outcome": 0.0, "first_treat": 0, "dose": 0.0},
+                {"unit": uid, "period": 2, "outcome": 0.0, "first_treat": 0, "dose": 0.0},
+            ]
             uid += 1
 
         data = pd.DataFrame(rows)
@@ -329,52 +333,61 @@ class TestContinuousDiDDataValidation:
         assert results.n_treated_units == 4
 
     def test_unbalanced_panel_error(self):
-        data = pd.DataFrame({
-            "unit": [1, 1, 2],
-            "period": [1, 2, 1],
-            "outcome": [1.0, 2.0, 1.0],
-            "first_treat": [2, 2, 0],
-            "dose": [1.0, 1.0, 0.0],
-        })
+        data = pd.DataFrame(
+            {
+                "unit": [1, 1, 2],
+                "period": [1, 2, 1],
+                "outcome": [1.0, 2.0, 1.0],
+                "first_treat": [2, 2, 0],
+                "dose": [1.0, 1.0, 0.0],
+            }
+        )
         est = ContinuousDiD()
         with pytest.raises(ValueError, match="[Uu]nbalanced"):
             est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
 
     def test_unbalanced_panel_same_count_different_periods(self):
         """Units with same period count but different periods should be caught."""
-        data = pd.DataFrame({
-            "unit": [1, 1, 1, 2, 2, 2],
-            "period": [1, 2, 3, 1, 2, 4],  # Same count (3) but unit 2 has {1,2,4} vs {1,2,3}
-            "outcome": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
-            "first_treat": [2, 2, 2, 0, 0, 0],
-            "dose": [1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
-        })
+        data = pd.DataFrame(
+            {
+                "unit": [1, 1, 1, 2, 2, 2],
+                "period": [1, 2, 3, 1, 2, 4],  # Same count (3) but unit 2 has {1,2,4} vs {1,2,3}
+                "outcome": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+                "first_treat": [2, 2, 2, 0, 0, 0],
+                "dose": [1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            }
+        )
         est = ContinuousDiD()
         with pytest.raises(ValueError, match="[Uu]nbalanced"):
             est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
 
     def test_invalid_aggregate_raises(self):
         """Invalid aggregate value should raise ValueError."""
-        data = pd.DataFrame({
-            "unit": [1, 1, 2, 2],
-            "period": [1, 2, 1, 2],
-            "outcome": [1.0, 2.0, 1.0, 2.0],
-            "first_treat": [2, 2, 0, 0],
-            "dose": [1.0, 1.0, 0.0, 0.0],
-        })
+        data = pd.DataFrame(
+            {
+                "unit": [1, 1, 2, 2],
+                "period": [1, 2, 1, 2],
+                "outcome": [1.0, 2.0, 1.0, 2.0],
+                "first_treat": [2, 2, 0, 0],
+                "dose": [1.0, 1.0, 0.0, 0.0],
+            }
+        )
         est = ContinuousDiD()
         with pytest.raises(ValueError, match="Invalid aggregate"):
-            est.fit(data, "outcome", "unit", "period", "first_treat", "dose",
-                    aggregate="event_study")
+            est.fit(
+                data, "outcome", "unit", "period", "first_treat", "dose", aggregate="event_study"
+            )
 
     def test_no_never_treated_error(self):
-        data = pd.DataFrame({
-            "unit": [1, 1, 2, 2],
-            "period": [1, 2, 1, 2],
-            "outcome": [1.0, 3.0, 1.0, 4.0],
-            "first_treat": [2, 2, 2, 2],
-            "dose": [1.0, 1.0, 2.0, 2.0],
-        })
+        data = pd.DataFrame(
+            {
+                "unit": [1, 1, 2, 2],
+                "period": [1, 2, 1, 2],
+                "outcome": [1.0, 3.0, 1.0, 4.0],
+                "first_treat": [2, 2, 2, 2],
+                "dose": [1.0, 1.0, 2.0, 2.0],
+            }
+        )
         est = ContinuousDiD(control_group="never_treated")
         with pytest.raises(ValueError, match="[Nn]ever-treated"):
             est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
@@ -385,22 +398,16 @@ class TestContinuousDiDFit:
 
     @pytest.fixture
     def basic_data(self):
-        return generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42, noise_sd=0.5
-        )
+        return generate_continuous_did_data(n_units=100, n_periods=3, seed=42, noise_sd=0.5)
 
     def test_fit_returns_results(self, basic_data):
         est = ContinuousDiD()
-        results = est.fit(
-            basic_data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(basic_data, "outcome", "unit", "period", "first_treat", "dose")
         assert isinstance(results, ContinuousDiDResults)
 
     def test_dose_response_shapes(self, basic_data):
         est = ContinuousDiD()
-        results = est.fit(
-            basic_data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(basic_data, "outcome", "unit", "period", "first_treat", "dose")
         n_grid = len(results.dose_grid)
         assert results.dose_response_att.effects.shape == (n_grid,)
         assert results.dose_response_acrt.effects.shape == (n_grid,)
@@ -409,17 +416,13 @@ class TestContinuousDiDFit:
 
     def test_overall_parameters(self, basic_data):
         est = ContinuousDiD()
-        results = est.fit(
-            basic_data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(basic_data, "outcome", "unit", "period", "first_treat", "dose")
         assert np.isfinite(results.overall_att)
         assert np.isfinite(results.overall_acrt)
 
     def test_group_time_effects_populated(self, basic_data):
         est = ContinuousDiD()
-        results = est.fit(
-            basic_data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(basic_data, "outcome", "unit", "period", "first_treat", "dose")
         assert len(results.group_time_effects) > 0
 
     def test_results_contain_init_params(self, basic_data):
@@ -431,9 +434,7 @@ class TestContinuousDiDFit:
             seed=123,
             rank_deficient_action="error",
         )
-        results = est.fit(
-            basic_data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(basic_data, "outcome", "unit", "period", "first_treat", "dose")
         assert results.base_period == "universal"
         assert results.anticipation == 0
         assert results.n_bootstrap == 49
@@ -443,12 +444,13 @@ class TestContinuousDiDFit:
 
     def test_not_yet_treated_control(self):
         data = generate_continuous_did_data(
-            n_units=100, n_periods=4, cohort_periods=[2, 3], seed=42,
+            n_units=100,
+            n_periods=4,
+            cohort_periods=[2, 3],
+            seed=42,
         )
         est = ContinuousDiD(control_group="not_yet_treated")
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         assert isinstance(results, ContinuousDiDResults)
 
 
@@ -457,13 +459,9 @@ class TestContinuousDiDResults:
 
     @pytest.fixture
     def results(self):
-        data = generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42, noise_sd=0.1
-        )
+        data = generate_continuous_did_data(n_units=100, n_periods=3, seed=42, noise_sd=0.1)
         est = ContinuousDiD(n_bootstrap=49, seed=42)
-        return est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        return est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
 
     def test_summary(self, results):
         s = results.summary()
@@ -515,12 +513,20 @@ class TestDoseAggregation:
 
     def test_multi_period_aggregation(self):
         data = generate_continuous_did_data(
-            n_units=200, n_periods=5, cohort_periods=[2, 4],
-            seed=42, noise_sd=0.1,
+            n_units=200,
+            n_periods=5,
+            cohort_periods=[2, 4],
+            seed=42,
+            noise_sd=0.1,
         )
         est = ContinuousDiD(degree=1, num_knots=0)
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="dose",
         )
         # With linear DGP (ATT(d) = 1 + 2d) and degree=1, should recover well
@@ -529,11 +535,19 @@ class TestDoseAggregation:
 
     def test_single_cohort_aggregation(self):
         data = generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42, noise_sd=0.1,
+            n_units=100,
+            n_periods=3,
+            seed=42,
+            noise_sd=0.1,
         )
         est = ContinuousDiD(degree=1, num_knots=0)
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="dose",
         )
         assert len(results.groups) == 1
@@ -545,12 +559,20 @@ class TestEventStudyAggregation:
 
     def test_event_study_computed(self):
         data = generate_continuous_did_data(
-            n_units=200, n_periods=5, cohort_periods=[2, 4],
-            seed=42, noise_sd=0.5,
+            n_units=200,
+            n_periods=5,
+            cohort_periods=[2, 4],
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(n_bootstrap=49, seed=42)
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="eventstudy",
         )
         assert results.event_study_effects is not None
@@ -561,12 +583,20 @@ class TestEventStudyAggregation:
 
     def test_event_study_to_dataframe(self):
         data = generate_continuous_did_data(
-            n_units=200, n_periods=4, cohort_periods=[2, 3],
-            seed=42, noise_sd=0.5,
+            n_units=200,
+            n_periods=4,
+            cohort_periods=[2, 3],
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD()
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="eventstudy",
         )
         df = results.to_dataframe(level="event_study")
@@ -576,12 +606,20 @@ class TestEventStudyAggregation:
     def test_event_study_not_yet_treated(self):
         """Event study with control_group='not_yet_treated' and analytic SE."""
         data = generate_continuous_did_data(
-            n_units=200, n_periods=5, cohort_periods=[2, 4],
-            seed=42, noise_sd=0.5,
+            n_units=200,
+            n_periods=5,
+            cohort_periods=[2, 4],
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(control_group="not_yet_treated", n_bootstrap=0)
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="eventstudy",
         )
         assert results.event_study_effects is not None
@@ -595,12 +633,20 @@ class TestEventStudyAggregation:
     def test_event_study_universal_base_period(self):
         """Event study with base_period='universal' and analytic SE."""
         data = generate_continuous_did_data(
-            n_units=200, n_periods=5, cohort_periods=[2, 4],
-            seed=42, noise_sd=0.5,
+            n_units=200,
+            n_periods=5,
+            cohort_periods=[2, 4],
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(base_period="universal", n_bootstrap=0)
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="eventstudy",
         )
         assert results.event_study_effects is not None
@@ -615,14 +661,24 @@ class TestEventStudyAggregation:
         """Event study with not_yet_treated control group and bootstrap SE."""
         n_boot = ci_params.bootstrap(99)
         data = generate_continuous_did_data(
-            n_units=200, n_periods=5, cohort_periods=[2, 4],
-            seed=42, noise_sd=0.5,
+            n_units=200,
+            n_periods=5,
+            cohort_periods=[2, 4],
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(
-            control_group="not_yet_treated", n_bootstrap=n_boot, seed=42,
+            control_group="not_yet_treated",
+            n_bootstrap=n_boot,
+            seed=42,
         )
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="eventstudy",
         )
         assert results.event_study_effects is not None
@@ -641,12 +697,13 @@ class TestBootstrap:
     def test_bootstrap_ses_positive(self, ci_params):
         n_boot = ci_params.bootstrap(99)
         data = generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42, noise_sd=0.5,
+            n_units=100,
+            n_periods=3,
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(n_bootstrap=n_boot, seed=42)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         assert results.overall_att_se > 0
         assert results.overall_acrt_se > 0
         # Dose-response SEs should be positive
@@ -655,12 +712,13 @@ class TestBootstrap:
     def test_bootstrap_ci_contains_estimate(self, ci_params):
         n_boot = ci_params.bootstrap(99)
         data = generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42, noise_sd=0.5,
+            n_units=100,
+            n_periods=3,
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(n_bootstrap=n_boot, seed=42)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         lo, hi = results.overall_att_conf_int
         assert lo <= results.overall_att <= hi
 
@@ -668,13 +726,16 @@ class TestBootstrap:
         """Bootstrap ACRT CI should bracket the point estimate, not zero."""
         n_boot = ci_params.bootstrap(99)
         data = generate_continuous_did_data(
-            n_units=200, n_periods=3, seed=42, noise_sd=0.5,
-            att_function="linear", att_slope=2.0, att_intercept=1.0,
+            n_units=200,
+            n_periods=3,
+            seed=42,
+            noise_sd=0.5,
+            att_function="linear",
+            att_slope=2.0,
+            att_intercept=1.0,
         )
         est = ContinuousDiD(n_bootstrap=n_boot, seed=42)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         lo, hi = results.overall_acrt_conf_int
         assert lo <= results.overall_acrt <= hi, (
             f"ACRT CI [{lo:.4f}, {hi:.4f}] does not bracket "
@@ -691,12 +752,13 @@ class TestBootstrap:
     def test_bootstrap_p_values_valid(self, ci_params):
         n_boot = ci_params.bootstrap(99)
         data = generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42, noise_sd=0.5,
+            n_units=100,
+            n_periods=3,
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(n_bootstrap=n_boot, seed=42)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         assert 0 <= results.overall_att_p_value <= 1
         assert 0 <= results.overall_acrt_p_value <= 1
 
@@ -704,25 +766,26 @@ class TestBootstrap:
         """Bootstrap dose-response should use bootstrap p-values, not normal approx."""
         n_boot = ci_params.bootstrap(99)
         data = generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42, noise_sd=0.5,
+            n_units=100,
+            n_periods=3,
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(n_bootstrap=n_boot, seed=42)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         for curve in [results.dose_response_att, results.dose_response_acrt]:
             df = curve.to_dataframe()
             # Bootstrap mode: t-stat is undefined
-            assert all(np.isnan(df["t_stat"])), (
-                f"t_stat should be NaN in bootstrap mode for {curve.target}"
-            )
+            assert all(
+                np.isnan(df["t_stat"])
+            ), f"t_stat should be NaN in bootstrap mode for {curve.target}"
             # Bootstrap p-values should be present and valid
-            assert all(np.isfinite(df["p_value"])), (
-                f"p_value should be finite in bootstrap mode for {curve.target}"
-            )
-            assert all((df["p_value"] >= 0) & (df["p_value"] <= 1)), (
-                f"p_value out of [0,1] range for {curve.target}"
-            )
+            assert all(
+                np.isfinite(df["p_value"])
+            ), f"p_value should be finite in bootstrap mode for {curve.target}"
+            assert all(
+                (df["p_value"] >= 0) & (df["p_value"] <= 1)
+            ), f"p_value out of [0,1] range for {curve.target}"
 
 
 class TestAnalyticalSE:
@@ -730,23 +793,25 @@ class TestAnalyticalSE:
 
     def test_analytical_se_positive(self):
         data = generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42, noise_sd=0.5,
+            n_units=100,
+            n_periods=3,
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(n_bootstrap=0)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         assert results.overall_att_se > 0
         assert results.overall_acrt_se > 0
 
     def test_analytical_ci(self):
         data = generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42, noise_sd=0.5,
+            n_units=100,
+            n_periods=3,
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(n_bootstrap=0)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         lo, hi = results.overall_att_conf_int
         assert lo < results.overall_att < hi
 
@@ -757,13 +822,13 @@ class TestEdgeCases:
     def test_few_treated_units(self):
         """Estimator should handle very few treated units."""
         data = generate_continuous_did_data(
-            n_units=30, n_periods=3, seed=42,
+            n_units=30,
+            n_periods=3,
+            seed=42,
             never_treated_frac=0.8,  # Only ~6 treated
         )
         est = ContinuousDiD(degree=1, num_knots=0)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         assert isinstance(results, ContinuousDiDResults)
 
     def test_inf_first_treat_normalization(self):
@@ -781,9 +846,7 @@ class TestEdgeCases:
             UserWarning,
             match=rf"{n_inf_rows} row\(s\) have inf in 'first_treat'",
         ):
-            results = est.fit(
-                data, "outcome", "unit", "period", "first_treat", "dose"
-            )
+            results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         assert results.n_control_units > 0
 
     def test_no_inf_first_treat_no_warning(self):
@@ -814,10 +877,15 @@ class TestEdgeCases:
             else:
                 ft, dose_val = 2.0, 1.0  # treated
             for t in range(1, 4):
-                rows.append({
-                    "unit": unit, "period": t, "outcome": float(unit + t),
-                    "first_treat": ft, "dose": dose_val,
-                })
+                rows.append(
+                    {
+                        "unit": unit,
+                        "period": t,
+                        "outcome": float(unit + t),
+                        "first_treat": ft,
+                        "dose": dose_val,
+                    }
+                )
         data = pd.DataFrame(rows)
         est = ContinuousDiD()
 
@@ -832,9 +900,60 @@ class TestEdgeCases:
                 # treated for OLS); we only care about the dose-coercion warning.
                 pass
 
+    def test_negative_dose_on_never_treated_coerces_not_rejects(self):
+        """Force-zero coercion applies to ANY nonzero dose on `first_treat=0`
+        rows, including negative values. The negative-dose rejection at
+        line 287-294 of continuous_did.py applies only to treated units
+        (`first_treat > 0`); never-treated rows are coerced to dose=0
+        with a `UserWarning` regardless of sign. This is observed
+        implementation behavior for inconsistent inputs (an
+        accidentally-nonzero dose on a never-treated row), NOT a
+        documented routing option for manufacturing never-treated
+        controls — REGISTRY does not list relabeling as a fallback.
+        The test locks in the coercion contract; the autonomous guide
+        §5.2 counter-example #5 explicitly tells agents not to use this
+        path methodologically."""
+        rows = []
+        for unit in range(4):
+            if unit < 2:
+                ft, dose_val = 0.0, -1.5  # never-treated with NEGATIVE dose
+            else:
+                ft, dose_val = 2.0, 1.0  # treated, positive dose
+            for t in range(1, 4):
+                rows.append(
+                    {
+                        "unit": unit,
+                        "period": t,
+                        "outcome": float(unit + t),
+                        "first_treat": ft,
+                        "dose": dose_val,
+                    }
+                )
+        data = pd.DataFrame(rows)
+        est = ContinuousDiD()
+        with pytest.warns(
+            UserWarning,
+            match=r"6 row\(s\) have 'first_treat'=0 \(never-treated\) but nonzero 'dose'",
+        ):
+            try:
+                est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
+            except ValueError as e:
+                # Downstream may reject the minimal panel for other reasons,
+                # but the rejection MUST NOT be the "negative dose" message
+                # (which only applies to treated units).
+                assert "negative dose" not in str(e).lower(), (
+                    "Negative dose on never-treated rows must coerce, not "
+                    "raise the treated-unit negative-dose error."
+                )
+            except Exception:
+                # Other downstream errors (small-panel OLS) are acceptable;
+                # the warning emission is what we are guarding here.
+                pass
+
     def test_clean_never_treated_doses_silent(self):
         """Never-treated rows with dose=0 must not trigger the coercion warning."""
         import warnings
+
         data = generate_continuous_did_data(n_units=50, n_periods=3, seed=42)
         # generate_continuous_did_data already sets dose=0 for never-treated.
         est = ContinuousDiD()
@@ -844,8 +963,7 @@ class TestEdgeCases:
             est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
 
         coerce_warnings = [
-            x for x in w
-            if "never-treated" in str(x.message) and "nonzero 'dose'" in str(x.message)
+            x for x in w if "never-treated" in str(x.message) and "nonzero 'dose'" in str(x.message)
         ]
         assert coerce_warnings == []
 
@@ -864,10 +982,15 @@ class TestEdgeCases:
             else:
                 ft = 0.0
             for t in range(1, 4):
-                rows.append({
-                    "unit": unit, "period": t, "outcome": float(unit + t),
-                    "first_treat": ft, "dose": 0.0,
-                })
+                rows.append(
+                    {
+                        "unit": unit,
+                        "period": t,
+                        "outcome": float(unit + t),
+                        "first_treat": ft,
+                        "dose": 0.0,
+                    }
+                )
         data = pd.DataFrame(rows)
         est = ContinuousDiD()
 
@@ -887,10 +1010,15 @@ class TestEdgeCases:
             # Unit 0 has NaN first_treat across all 3 periods (3 NaN rows).
             ft = np.nan if unit == 0 else 0.0
             for t in range(1, 4):
-                rows.append({
-                    "unit": unit, "period": t, "outcome": float(unit + t),
-                    "first_treat": ft, "dose": 0.0,
-                })
+                rows.append(
+                    {
+                        "unit": unit,
+                        "period": t,
+                        "outcome": float(unit + t),
+                        "first_treat": ft,
+                        "dose": 0.0,
+                    }
+                )
         data = pd.DataFrame(rows)
         est = ContinuousDiD()
 
@@ -905,14 +1033,20 @@ class TestEdgeCases:
         non-negative values (including just 0 and positive periods) must
         never trigger the recategorization warning."""
         import warnings
+
         rows = []
         for unit in range(4):
             ft = 0.0 if unit < 2 else 2.0
             for t in range(1, 4):
-                rows.append({
-                    "unit": unit, "period": t, "outcome": float(unit + t),
-                    "first_treat": ft, "dose": 0.0 if unit < 2 else 1.0,
-                })
+                rows.append(
+                    {
+                        "unit": unit,
+                        "period": t,
+                        "outcome": float(unit + t),
+                        "first_treat": ft,
+                        "dose": 0.0 if unit < 2 else 1.0,
+                    }
+                )
         data = pd.DataFrame(rows)
         est = ContinuousDiD()
 
@@ -937,10 +1071,15 @@ class TestEdgeCases:
             ft = np.inf if unit < 2 else 2.0
             dose = 0.0 if unit < 2 else 1.0
             for t in range(1, 4):
-                rows.append({
-                    "unit": unit, "period": t, "outcome": float(unit + t),
-                    "first_treat": ft, "dose": dose,
-                })
+                rows.append(
+                    {
+                        "unit": unit,
+                        "period": t,
+                        "outcome": float(unit + t),
+                        "first_treat": ft,
+                        "dose": dose,
+                    }
+                )
         data = pd.DataFrame(rows)
         est = ContinuousDiD()
 
@@ -960,9 +1099,7 @@ class TestEdgeCases:
         data = generate_continuous_did_data(n_units=100, n_periods=3, seed=42)
         custom_grid = np.array([1.0, 2.0, 3.0])
         est = ContinuousDiD(dvals=custom_grid)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         np.testing.assert_array_equal(results.dose_grid, custom_grid)
         assert len(results.dose_response_att.effects) == 3
 
@@ -992,10 +1129,15 @@ class TestEdgeCases:
         for i in range(n_per_group):
             uid = i
             for t in periods:
-                rows.append({
-                    "unit": uid, "period": t, "first_treat": 0, "dose": 0.0,
-                    "outcome": rng.normal(0, 0.5),
-                })
+                rows.append(
+                    {
+                        "unit": uid,
+                        "period": t,
+                        "first_treat": 0,
+                        "dose": 0.0,
+                        "outcome": rng.normal(0, 0.5),
+                    }
+                )
         # Group 2: treated at period 2 (g=2), moderate dose
         for i in range(n_per_group):
             uid = n_per_group + i
@@ -1004,10 +1146,15 @@ class TestEdgeCases:
                 y = rng.normal(0, 0.5)
                 if t >= 2:
                     y += 5.0 * dose_i  # strong treatment effect
-                rows.append({
-                    "unit": uid, "period": t, "first_treat": 2, "dose": dose_i,
-                    "outcome": y,
-                })
+                rows.append(
+                    {
+                        "unit": uid,
+                        "period": t,
+                        "first_treat": 2,
+                        "dose": dose_i,
+                        "outcome": y,
+                    }
+                )
         # Group 3: treated at period 3 (g=3), high dose
         for i in range(n_per_group):
             uid = 2 * n_per_group + i
@@ -1016,25 +1163,37 @@ class TestEdgeCases:
                 y = rng.normal(0, 0.5)
                 if t >= 3:
                     y += 5.0 * dose_i
-                rows.append({
-                    "unit": uid, "period": t, "first_treat": 3, "dose": dose_i,
-                    "outcome": y,
-                })
+                rows.append(
+                    {
+                        "unit": uid,
+                        "period": t,
+                        "first_treat": 3,
+                        "dose": dose_i,
+                        "outcome": y,
+                    }
+                )
 
         data = pd.DataFrame(rows)
         est = ContinuousDiD(
-            control_group="not_yet_treated", degree=1, num_knots=0, n_bootstrap=0,
+            control_group="not_yet_treated",
+            degree=1,
+            num_knots=0,
+            n_bootstrap=0,
         )
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
         )
 
         # Pre-treatment cells for g=2 should be near zero (t=1 is pre-treatment)
         # If cohort g=2 were included in its own control set, the pre-treatment
         # difference would be contaminated by the cohort's own outcomes
         pre_treatment_effects = {
-            (g, t): v for (g, t), v in results.group_time_effects.items()
-            if t < g
+            (g, t): v for (g, t), v in results.group_time_effects.items() if t < g
         }
         for (g, t), cell in pre_treatment_effects.items():
             att_glob = cell.get("att_glob", 0)
@@ -1051,12 +1210,13 @@ class TestAnalyticalSEParity:
         """Analytical SEs should be within ~50% of bootstrap SEs."""
         n_boot = ci_params.bootstrap(999, min_n=199)
         data = generate_continuous_did_data(
-            n_units=200, n_periods=3, seed=42, noise_sd=1.0,
+            n_units=200,
+            n_periods=3,
+            seed=42,
+            noise_sd=1.0,
         )
         est_boot = ContinuousDiD(n_bootstrap=n_boot, seed=42)
-        results_boot = est_boot.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results_boot = est_boot.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         est_analytic = ContinuousDiD(n_bootstrap=0)
         results_analytic = est_analytic.fit(
             data, "outcome", "unit", "period", "first_treat", "dose"
@@ -1075,7 +1235,9 @@ class TestDiscreteDoseWarning:
     def test_discrete_dose_warning(self):
         """Integer-valued doses should trigger a discrete dose warning."""
         data = generate_continuous_did_data(
-            n_units=100, n_periods=3, seed=42,
+            n_units=100,
+            n_periods=3,
+            seed=42,
         )
         data["dose"] = data["dose"].round().astype(float)
         data.loc[data["first_treat"] == 0, "dose"] = 0.0
@@ -1090,20 +1252,28 @@ class TestAnticipationEventStudy:
     def test_anticipation_event_study(self):
         """Event study with anticipation > 0 should include anticipation periods."""
         data = generate_continuous_did_data(
-            n_units=100, n_periods=5, cohort_periods=[3], seed=42,
+            n_units=100,
+            n_periods=5,
+            cohort_periods=[3],
+            seed=42,
         )
         est = ContinuousDiD(anticipation=1, n_bootstrap=0)
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="eventstudy",
         )
         assert results.event_study_effects is not None
         # With anticipation=1 and g=3, post-treatment starts at t=2 (g - anticipation).
         # Relative times e = t - g, so t=2 → e=-1 (the anticipation period).
         rel_times = sorted(results.event_study_effects.keys())
-        assert -1 in rel_times, (
-            f"Anticipation period e=-1 missing from event study; got {rel_times}"
-        )
+        assert (
+            -1 in rel_times
+        ), f"Anticipation period e=-1 missing from event study; got {rel_times}"
         assert np.isfinite(results.event_study_effects[-1]["effect"])
 
     def test_anticipation_event_study_excludes_contaminated_periods(self):
@@ -1116,33 +1286,45 @@ class TestAnticipationEventStudy:
         # Never-treated
         for i in range(n_per_group):
             for t in periods:
-                rows.append({
-                    "unit": i, "period": t, "first_treat": 0,
-                    "dose": 0.0, "outcome": rng.normal(0, 0.5),
-                })
+                rows.append(
+                    {
+                        "unit": i,
+                        "period": t,
+                        "first_treat": 0,
+                        "dose": 0.0,
+                        "outcome": rng.normal(0, 0.5),
+                    }
+                )
         # Cohort g=5 — treatment at t=5, anticipation=2 means post at t>=3
         for i in range(n_per_group):
             uid = n_per_group + i
             d = rng.uniform(0.5, 2.0)
             for t in periods:
                 y = rng.normal(0, 0.5) + (2.0 * d if t >= 5 else 0)
-                rows.append({
-                    "unit": uid, "period": t, "first_treat": 5,
-                    "dose": d, "outcome": y,
-                })
+                rows.append(
+                    {
+                        "unit": uid,
+                        "period": t,
+                        "first_treat": 5,
+                        "dose": d,
+                        "outcome": y,
+                    }
+                )
 
         data = pd.DataFrame(rows)
         est = ContinuousDiD(anticipation=2, n_bootstrap=0)
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="eventstudy",
         )
         assert results.event_study_effects is not None
         for e in results.event_study_effects.keys():
-            assert e >= -2, (
-                f"Found relative period e={e} with anticipation=2; "
-                f"expected e >= -2"
-            )
+            assert e >= -2, f"Found relative period e={e} with anticipation=2; " f"expected e >= -2"
 
     def test_anticipation_not_yet_treated_excludes_anticipation_window(self):
         """Not-yet-treated controls must exclude cohorts in the anticipation window.
@@ -1161,10 +1343,15 @@ class TestAnticipationEventStudy:
         for i in range(n_per_group):
             uid = i
             for t in periods:
-                rows.append({
-                    "unit": uid, "period": t, "first_treat": 0,
-                    "dose": 0.0, "outcome": rng.normal(0, 0.5),
-                })
+                rows.append(
+                    {
+                        "unit": uid,
+                        "period": t,
+                        "first_treat": 0,
+                        "dose": 0.0,
+                        "outcome": rng.normal(0, 0.5),
+                    }
+                )
 
         # Early cohort: g=3, treatment effect = +5*dose at t>=3
         for i in range(n_per_group):
@@ -1172,10 +1359,15 @@ class TestAnticipationEventStudy:
             d = rng.uniform(1, 3)
             for t in periods:
                 y = rng.normal(0, 0.5) + (5.0 * d if t >= 3 else 0)
-                rows.append({
-                    "unit": uid, "period": t, "first_treat": 3,
-                    "dose": d, "outcome": y,
-                })
+                rows.append(
+                    {
+                        "unit": uid,
+                        "period": t,
+                        "first_treat": 3,
+                        "dose": d,
+                        "outcome": y,
+                    }
+                )
 
         # Late cohort: g=5, treatment effect = +5*dose at t>=5
         for i in range(n_per_group):
@@ -1183,26 +1375,36 @@ class TestAnticipationEventStudy:
             d = rng.uniform(1, 3)
             for t in periods:
                 y = rng.normal(0, 0.5) + (5.0 * d if t >= 5 else 0)
-                rows.append({
-                    "unit": uid, "period": t, "first_treat": 5,
-                    "dose": d, "outcome": y,
-                })
+                rows.append(
+                    {
+                        "unit": uid,
+                        "period": t,
+                        "first_treat": 5,
+                        "dose": d,
+                        "outcome": y,
+                    }
+                )
 
         data = pd.DataFrame(rows)
 
         est = ContinuousDiD(
-            anticipation=1, control_group="not_yet_treated", n_bootstrap=0,
+            anticipation=1,
+            control_group="not_yet_treated",
+            n_bootstrap=0,
         )
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
         )
 
-        assert np.isfinite(results.overall_att), (
-            "overall_att should be finite with anticipation + not_yet_treated"
-        )
-        assert results.dose_response_att is not None, (
-            "dose-response curve should exist"
-        )
+        assert np.isfinite(
+            results.overall_att
+        ), "overall_att should be finite with anticipation + not_yet_treated"
+        assert results.dose_response_att is not None, "dose-response curve should exist"
 
 
 class TestEmptyPostTreatment:
@@ -1211,13 +1413,14 @@ class TestEmptyPostTreatment:
     def test_no_post_treatment_cells_warns(self):
         """When no post-treatment cells exist, should warn and return NaN."""
         data = generate_continuous_did_data(
-            n_units=50, n_periods=3, cohort_periods=[5], seed=42,
+            n_units=50,
+            n_periods=3,
+            cohort_periods=[5],
+            seed=42,
         )
         est = ContinuousDiD()
         with pytest.warns(UserWarning, match="[Nn]o post-treatment"):
-            results = est.fit(
-                data, "outcome", "unit", "period", "first_treat", "dose"
-            )
+            results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         assert np.isnan(results.overall_att)
         assert np.isnan(results.overall_acrt)
 
@@ -1255,12 +1458,13 @@ class TestBootstrapPercentileInference:
         """Bootstrap CIs should use percentile method (generally asymmetric)."""
         n_boot = ci_params.bootstrap(499, min_n=199)
         data = generate_continuous_did_data(
-            n_units=200, n_periods=3, seed=42, noise_sd=0.5,
+            n_units=200,
+            n_periods=3,
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(n_bootstrap=n_boot, seed=42)
-        results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose"
-        )
+        results = est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
         lo, hi = results.overall_att_conf_int
         estimate = results.overall_att
         # CI should contain estimate
@@ -1290,9 +1494,7 @@ class TestNotYetTreatedNoDZeroError:
         )
         est = ContinuousDiD(control_group="not_yet_treated", degree=1, num_knots=0)
         with pytest.raises(ValueError, match="D=0"):
-            est.fit(
-                data, "outcome", "unit", "period", "first_treat", "dose"
-            )
+            est.fit(data, "outcome", "unit", "period", "first_treat", "dose")
 
 
 class TestEventStudyAnalyticalSE:
@@ -1301,12 +1503,20 @@ class TestEventStudyAnalyticalSE:
     def test_event_study_analytical_se_finite(self):
         """Event study with n_bootstrap=0 should produce finite SE/t/p for all bins."""
         data = generate_continuous_did_data(
-            n_units=200, n_periods=5, cohort_periods=[2, 4],
-            seed=42, noise_sd=0.5,
+            n_units=200,
+            n_periods=5,
+            cohort_periods=[2, 4],
+            seed=42,
+            noise_sd=0.5,
         )
         est = ContinuousDiD(n_bootstrap=0)
         results = est.fit(
-            data, "outcome", "unit", "period", "first_treat", "dose",
+            data,
+            "outcome",
+            "unit",
+            "period",
+            "first_treat",
+            "dose",
             aggregate="eventstudy",
         )
         assert results.event_study_effects is not None
@@ -1317,6 +1527,4 @@ class TestEventStudyAnalyticalSE:
             assert np.isfinite(info["p_value"]), f"p_value is NaN for e={e}"
             assert 0 <= info["p_value"] <= 1, f"p_value out of range for e={e}"
             lo, hi = info["conf_int"]
-            assert np.isfinite(lo) and np.isfinite(hi), (
-                f"conf_int contains NaN for e={e}"
-            )
+            assert np.isfinite(lo) and np.isfinite(hi), f"conf_int contains NaN for e={e}"

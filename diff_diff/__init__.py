@@ -250,7 +250,13 @@ from diff_diff.diagnostic_report import (
     DiagnosticReportResults,
 )
 from diff_diff._guides_api import get_llm_guide
-from diff_diff.profile import Alert, PanelProfile, profile_panel
+from diff_diff.profile import (
+    Alert,
+    OutcomeShape,
+    PanelProfile,
+    TreatmentDoseShape,
+    profile_panel,
+)
 from diff_diff.datasets import (
     clear_cache,
     list_datasets,
@@ -498,6 +504,8 @@ __all__ = [
     "profile_panel",
     "PanelProfile",
     "Alert",
+    "OutcomeShape",
+    "TreatmentDoseShape",
     # LLM guide accessor
     "get_llm_guide",
 ]

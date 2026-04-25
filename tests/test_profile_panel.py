@@ -317,6 +317,8 @@ def test_to_dict_is_json_serializable():
         "outcome_has_negatives",
         "outcome_missing_fraction",
         "outcome_summary",
+        "outcome_shape",
+        "treatment_dose",
         "alerts",
     }
 
@@ -400,14 +402,23 @@ def test_all_nan_treatment_is_categorical():
 
 
 def test_top_level_import_surface():
-    """profile_panel, PanelProfile, and Alert must be importable from the
-    top-level namespace so `help(diff_diff)` points at real symbols."""
+    """profile_panel, PanelProfile, Alert, OutcomeShape, and
+    TreatmentDoseShape must be importable from the top-level namespace
+    so `help(diff_diff)` points at real symbols."""
     import diff_diff
 
     assert callable(diff_diff.profile_panel)
     assert diff_diff.PanelProfile.__name__ == "PanelProfile"
     assert diff_diff.Alert.__name__ == "Alert"
-    for name in ("profile_panel", "PanelProfile", "Alert"):
+    assert diff_diff.OutcomeShape.__name__ == "OutcomeShape"
+    assert diff_diff.TreatmentDoseShape.__name__ == "TreatmentDoseShape"
+    for name in (
+        "profile_panel",
+        "PanelProfile",
+        "Alert",
+        "OutcomeShape",
+        "TreatmentDoseShape",
+    ):
         assert name in diff_diff.__all__, f"{name} missing from __all__"
 
 
@@ -464,6 +475,38 @@ def test_continuous_zero_dose_controls_flag_has_never_treated():
     assert profile.treatment_type == "continuous"
     assert profile.has_never_treated is True
     assert profile.has_always_treated is False
+
+
+def test_continuous_negative_then_zero_does_not_count_as_never_treated():
+    """Regression: on continuous panels with negative dose support, a
+    unit path like `[-1, 0]` has `groupby(unit).max() == 0` but is NOT
+    a zero-dose never-treated control (`-1` is non-zero). The implementation
+    must check both endpoints (`unit_max == 0` AND `unit_min == 0`) so
+    `has_never_treated` matches the documented contract: "some unit has
+    treatment == 0 in every observed non-NaN row." The autonomous guide's
+    ContinuousDiD preflight uses this field as the `P(D=0) > 0` proxy, so
+    a false-positive here would silently mislead an agent about control
+    availability."""
+    rng = np.random.default_rng(7)
+    rows = []
+    for u in range(1, 21):
+        for t in range(4):
+            if u <= 5:
+                # Mixed negative/zero path - max is 0 but min < 0;
+                # must NOT count as never-treated.
+                dose = -1.0 if t < 2 else 0.0
+            else:
+                dose = float(rng.uniform(0.5, 3.0))
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "continuous"
+    assert profile.has_never_treated is False, (
+        "Unit path [-1, -1, 0, 0] has unit_max == 0 but is not a "
+        "zero-dose never-treated control (some rows are negative). "
+        "Profile must enforce the documented contract: 'treatment == 0 "
+        "in every observed non-NaN row' (i.e., unit_min == unit_max == 0)."
+    )
 
 
 def test_guide_api_strings_resolve_against_public_api():
@@ -866,3 +909,526 @@ def test_empty_after_id_drop_raises_value_error():
     )
     with pytest.raises(ValueError, match="no rows remain"):
         profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+
+
+# ---------------------------------------------------------------------------
+# Outcome shape (numeric outcome distributional facts)
+# ---------------------------------------------------------------------------
+
+
+def test_outcome_shape_count_like_poisson():
+    """A Poisson-distributed outcome (integer-valued, has zeros, right-skewed)
+    must satisfy is_count_like=True so an agent can gate WooldridgeDiD over
+    linear OLS pre-fit. Uses Poisson(lambda=0.5) on a 200-unit panel for a
+    reliably-skewed empirical sample (theoretical skew = 1/sqrt(0.5) ~ 1.41)."""
+    rng = np.random.default_rng(7)
+    first_treat = {u: 2 for u in range(101, 201)}
+    df = _make_panel(
+        n_units=200,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: int(rng.poisson(0.5 + 0.2 * tr)),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.is_integer_valued is True
+    assert shape.is_count_like is True
+    assert shape.pct_zeros > 0.1
+    assert shape.skewness is not None and shape.skewness > 0.5
+    assert shape.n_distinct_values >= 3
+
+
+def test_outcome_shape_binary_outcome_not_count_like():
+    """Binary 0/1 outcome must NOT trigger is_count_like (only 2 distinct
+    values; skewness gate fires None) and is_bounded_unit must be True."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: int(tr),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.is_count_like is False
+    assert shape.is_bounded_unit is True
+    assert shape.skewness is None
+    assert shape.excess_kurtosis is None
+    assert shape.n_distinct_values == 2
+
+
+def test_outcome_shape_count_like_excludes_negative_support():
+    """`is_count_like` is the routing signal toward
+    `WooldridgeDiD(method="poisson")`, which raises `ValueError` on
+    negative outcomes (`wooldridge.py:1105`). The heuristic must
+    therefore gate on `value_min >= 0`: a right-skewed integer outcome
+    with zeros AND some negative values must NOT set `is_count_like`,
+    even though the other four conditions (integer-valued, has zeros,
+    skewness > 0.5, > 2 distinct values) are satisfied. Otherwise the
+    autonomous-guide §5.3 reasoning chain would steer agents toward an
+    estimator that will then refuse to fit the panel."""
+    rng = np.random.default_rng(37)
+    first_treat = {u: 2 for u in range(101, 201)}
+
+    # Mix Poisson with a small share of negative integers - integer-valued,
+    # has zeros (Poisson(0.5) yields ~60% zeros), and right-skewed; but
+    # value_min < 0 should kill is_count_like.
+    def _outcome_fn(u, t, tr, _rng):
+        base = int(rng.poisson(0.5 + 0.2 * tr))
+        # 5% of cells become a small negative integer, e.g. -1 or -2.
+        if rng.random() < 0.05:
+            return -int(rng.integers(1, 3))
+        return base
+
+    df = _make_panel(
+        n_units=200,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=_outcome_fn,
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.value_min < 0, "fixture must include some negative outcomes"
+    assert shape.is_integer_valued is True
+    assert shape.pct_zeros > 0.1
+    assert shape.skewness is not None
+    assert shape.is_count_like is False, (
+        "is_count_like must be False when value_min < 0; otherwise an "
+        "agent following the §5.3 worked example would route the panel "
+        "to WooldridgeDiD(method='poisson'), which raises ValueError on "
+        "negative outcomes."
+    )
+
+
+def test_outcome_shape_continuous_normal():
+    """Normally-distributed float outcome must have is_integer_valued=False,
+    is_count_like=False, is_bounded_unit=False (signed values exit [0,1])."""
+    rng = np.random.default_rng(11)
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: float(rng.normal(0.0, 1.0)),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.is_integer_valued is False
+    assert shape.is_count_like is False
+    assert shape.is_bounded_unit is False
+    assert shape.skewness is not None
+    assert shape.excess_kurtosis is not None
+
+
+def test_outcome_shape_bounded_unit():
+    """Outcome confined to [0, 1] (e.g., a proportion / probability) must
+    set is_bounded_unit=True so an agent can flag the bounded-support
+    consideration when interpreting linear-OLS estimates."""
+    rng = np.random.default_rng(13)
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: float(rng.uniform(0.0, 1.0)),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.is_bounded_unit is True
+    assert 0.0 <= shape.value_min <= shape.value_max <= 1.0
+
+
+def test_outcome_shape_categorical_returns_none():
+    """Object-dtype outcome (string labels) must return outcome_shape=None;
+    skewness/kurtosis are not defined for non-numeric data."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    rows = []
+    for u in range(1, 21):
+        for t in range(4):
+            tr = 1 if (u in first_treat and t >= first_treat[u]) else 0
+            rows.append({"u": u, "t": t, "tr": tr, "y": "high" if tr else "low"})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.outcome_shape is None
+
+
+def test_outcome_shape_skewness_kurtosis_gated_on_distinct_values():
+    """Outcomes with fewer than 3 distinct values must report
+    skewness=None and excess_kurtosis=None — moments are undefined or
+    degenerate at that distinctness floor."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: float(tr),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.n_distinct_values == 2
+    assert shape.skewness is None
+    assert shape.excess_kurtosis is None
+
+
+def test_outcome_shape_to_dict_roundtrips_through_json():
+    """outcome_shape must serialize to a JSON-compatible nested dict and
+    survive ``json.loads(json.dumps(...))`` without loss."""
+    rng = np.random.default_rng(17)
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(
+        n_units=20,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=lambda u, t, tr, _rng: int(rng.poisson(2.0)),
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    payload = profile.to_dict()
+    roundtrip = json.loads(json.dumps(payload))
+    shape_dict = roundtrip["outcome_shape"]
+    assert shape_dict is not None
+    assert set(shape_dict.keys()) == {
+        "n_distinct_values",
+        "pct_zeros",
+        "value_min",
+        "value_max",
+        "skewness",
+        "excess_kurtosis",
+        "is_integer_valued",
+        "is_count_like",
+        "is_bounded_unit",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Treatment dose (continuous-treatment distributional facts)
+# ---------------------------------------------------------------------------
+
+
+def test_treatment_dose_continuous_zero_baseline():
+    """Continuous panel with zero-dose controls and multiple distinct
+    treated doses populates treatment_dose with has_zero_dose=True and
+    the correct n_distinct_doses + dose support."""
+    rng = np.random.default_rng(19)
+    rows = []
+    for u in range(1, 21):
+        # 5 zero-dose units, 15 with one of three nonzero dose levels
+        if u <= 5:
+            dose = 0.0
+        elif u <= 10:
+            dose = 1.0
+        elif u <= 15:
+            dose = 2.5
+        else:
+            dose = 4.0
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    dose = profile.treatment_dose
+    assert profile.treatment_type == "continuous"
+    assert dose is not None
+    assert dose.has_zero_dose is True
+    assert dose.n_distinct_doses == 4  # {0, 1, 2.5, 4}
+    assert dose.dose_min == pytest.approx(1.0)
+    assert dose.dose_max == pytest.approx(4.0)
+
+
+def test_treatment_dose_descriptive_fields_supplement_existing_gates():
+    """Regression: most TreatmentDoseShape fields are descriptive
+    distributional context. In the canonical ContinuousDiD setup
+    (Callaway, Goodman-Bacon, Sant'Anna 2024) the dose `D_i` is
+    time-invariant per unit and `first_treat` is a separate
+    caller-supplied column — `profile_panel` sees only the dose
+    column. Profile-side screening on the dose column includes
+    `treatment_varies_within_unit` (the actual fit-time gate; rules
+    out `0,0,d,d` paths) and `has_never_treated` (predicts
+    `P(D=0) > 0` under the canonical convention that `first_treat ==
+    0` ties to `D_i == 0`). The two cases below exercise those
+    signals:
+
+    1. `0,0,d,d` within-unit dose path: a single unit toggles between
+       zero (pre-treatment) and a single nonzero dose `d` (post). The
+       PanelProfile.treatment_varies_within_unit field correctly fires
+       True. This IS the actual fit-time gate (line 222-228 of
+       continuous_did.py uses `df.groupby(unit)[dose].nunique() > 1`
+       independent of `first_treat`). The canonical ContinuousDiD
+       setup expects time-invariant per-unit dose, so a `0,0,d,d`
+       path is incompatible regardless of how `first_treat` is
+       constructed.
+    2. Row-level zeros without never-treated: every unit eventually
+       gets treated, but pre-treatment rows have dose=0. has_zero_dose
+       fires True (row-level), while has_never_treated correctly fires
+       False (unit-level). With a `first_treat` column consistent
+       with the dose column on per-unit treated/untreated status,
+       `ContinuousDiD.fit()` will reject the panel via
+       `n_control == 0`. `ContinuousDiD` as currently implemented
+       does not apply (Remark 3.1 lowest-dose-as-control is not
+       implemented). Routing alternatives that do not require
+       `P(D=0) > 0` include linear DiD with the treatment as a
+       continuous covariate and `HeterogeneousAdoptionDiD` for
+       graded-adoption designs. Re-encoding the treatment column
+       is an agent-side preprocessing choice that changes the
+       estimand and is not documented in REGISTRY. Do not relabel
+       units to manufacture controls via the force-zero coercion
+       path."""
+    # Case 1: 0,0,d,d within-unit path
+    rows1 = []
+    for u in range(1, 21):
+        for t in range(4):
+            if u <= 5:
+                dose = 0.0  # never-treated controls
+            else:
+                # 0,0,2.5,2.5 path - constant nonzero dose, but full
+                # path nunique == 2
+                dose = 0.0 if t < 2 else 2.5
+            rows1.append({"u": u, "t": t, "tr": dose, "y": 0.0})
+    df1 = pd.DataFrame(rows1)
+    profile1 = profile_panel(df1, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile1.treatment_type == "continuous"
+    assert profile1.treatment_varies_within_unit is True, (
+        "treatment_varies_within_unit must fire True on `0,0,d,d` paths "
+        "(matching ContinuousDiD.fit() unit-level full-path nunique check at "
+        "line 222-228 of continuous_did.py); this is an actual fit-time gate "
+        "that holds independent of `first_treat`."
+    )
+
+    # Case 2: row-level zeros, no never-treated units
+    rows2 = []
+    for u in range(1, 21):
+        # Every unit eventually treated; pre-treatment dose=0, post-treatment
+        # constant nonzero dose. No unit is never-treated.
+        adopt_period = 1 if u <= 10 else 2
+        for t in range(4):
+            dose = 1.5 if t >= adopt_period else 0.0
+            rows2.append({"u": u, "t": t, "tr": dose, "y": 0.0})
+    df2 = pd.DataFrame(rows2)
+    profile2 = profile_panel(df2, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile2.treatment_type == "continuous"
+    dose2 = profile2.treatment_dose
+    assert dose2 is not None
+    assert dose2.has_zero_dose is True, "row-level zero dose rows are present"
+    assert profile2.has_never_treated is False, (
+        "every unit eventually treated -> has_never_treated must be False, "
+        "even though row-level has_zero_dose==True. Under the canonical "
+        "ContinuousDiD setup, has_never_treated==False signals to the "
+        "agent that no `first_treat == 0` units exist; ContinuousDiD.fit() "
+        "will reject the panel via `n_control == 0`. ContinuousDiD as "
+        "currently implemented does not apply on this panel; routing "
+        "alternatives include HeterogeneousAdoptionDiD or linear DiD with "
+        "a continuous covariate. Re-encoding is an agent-side preprocessing "
+        "choice not documented in REGISTRY as a supported fallback."
+    )
+
+
+def test_treatment_dose_min_flags_negative_dose_continuous_panels():
+    """Regression: a balanced, never-treated, time-invariant continuous
+    panel with negative non-zero treated doses fails the canonical-
+    setup `dose_min > 0` preflight check. The canonical ContinuousDiD
+    setup uses time-invariant per-unit dose `D_i` and a separate
+    caller-supplied `first_treat` column; with a `first_treat`
+    consistent with the dose column on per-unit treated/untreated
+    status (negative-dose units labeled `first_treat > 0`),
+    `ContinuousDiD.fit()` would raise `ValueError` at
+    `continuous_did.py:287-294` ("Dose must be strictly positive for
+    treated units (D > 0)"). `ContinuousDiD` as currently
+    implemented does not apply on this panel. `HeterogeneousAdoptionDiD`
+    is also NOT a routing alternative here: HAD requires non-negative
+    dose support (`had.py:1450-1459`, paper Section 2). The applicable
+    alternative on the negative-dose branch is linear DiD with the
+    treatment as a signed continuous covariate. Re-encoding the
+    treatment to a non-negative scale is an agent-side preprocessing
+    choice that changes the estimand and is not documented in
+    REGISTRY as a supported fallback. The force-zero coercion path
+    on `first_treat == 0` rows is implementation behavior for
+    inconsistent inputs and is not a documented routing option. This
+    test asserts that the profile correctly surfaces `dose_min < 0`
+    so an agent can choose an applicable alternative before reaching
+    `fit()`."""
+    rng = np.random.default_rng(41)
+    rows = []
+    for u in range(1, 21):
+        # 5 zero-dose (never-treated) units, 15 with one of three
+        # NEGATIVE non-zero dose levels held constant across periods.
+        if u <= 5:
+            dose = 0.0
+        elif u <= 10:
+            dose = -1.0
+        elif u <= 15:
+            dose = -2.5
+        else:
+            dose = -4.0
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    # All other canonical-setup preflight checks pass:
+    assert profile.treatment_type == "continuous"
+    assert profile.has_never_treated is True
+    assert profile.treatment_varies_within_unit is False
+    assert profile.is_balanced is True
+    assert "duplicate_unit_time_rows" not in {a.code for a in profile.alerts}
+    # But dose_min > 0 fails: under the canonical ContinuousDiD setup
+    # (per-unit time-invariant dose + separate first_treat with
+    # negative-dose units labeled first_treat > 0), fit() would raise
+    # at line 287-294 ("Dose must be strictly positive for treated
+    # units"). ContinuousDiD as currently implemented does not apply.
+    # HeterogeneousAdoptionDiD is also NOT a routing alternative on
+    # this branch: HAD requires non-negative dose support (had.py:
+    # 1450-1459, paper Section 2). The applicable alternative is
+    # linear DiD with the treatment as a signed continuous covariate.
+    # Re-encoding is an agent-side preprocessing choice not
+    # documented in REGISTRY as a fallback. Relabeling-to-
+    # first_treat==0 is not a documented routing option.
+    dose = profile.treatment_dose
+    assert dose is not None
+    assert dose.dose_min < 0, (
+        "Fixture must have negative dose_min so the canonical-setup "
+        "preflight check (`dose_min > 0`) correctly fires False on "
+        "this panel."
+    )
+
+
+def test_treatment_dose_continuous_no_zero_dose():
+    """If every unit has a strictly positive dose throughout, has_zero_dose
+    must be False — descriptive flag for the absence of dose-zero rows in
+    the panel."""
+    rng = np.random.default_rng(29)
+    rows = []
+    for u in range(1, 21):
+        dose = float(rng.uniform(0.5, 3.0))
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    dose = profile.treatment_dose
+    assert dose is not None
+    assert dose.has_zero_dose is False
+
+
+def test_treatment_dose_binary_treatment_returns_none():
+    """Binary treatment must produce treatment_dose=None — dose semantics
+    only apply to continuous treatments."""
+    first_treat = {u: 2 for u in range(11, 21)}
+    df = _make_panel(n_units=20, periods=range(0, 4), first_treat=first_treat)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "binary_absorbing"
+    assert profile.treatment_dose is None
+
+
+def test_treatment_dose_categorical_treatment_returns_none():
+    """Categorical (object-dtype) treatment must produce treatment_dose=None."""
+    rows = []
+    for u in range(1, 11):
+        arm = "A" if u <= 5 else "B"
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": arm, "y": float(u) + 0.1 * t})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "categorical"
+    assert profile.treatment_dose is None
+
+
+def test_treatment_dose_to_dict_roundtrips_through_json():
+    """treatment_dose must serialize to a JSON-compatible nested dict."""
+    rng = np.random.default_rng(31)
+    rows = []
+    for u in range(1, 21):
+        dose = 0.0 if u <= 5 else 2.5
+        for t in range(4):
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    payload = profile.to_dict()
+    roundtrip = json.loads(json.dumps(payload))
+    dose_dict = roundtrip["treatment_dose"]
+    assert dose_dict is not None
+    assert set(dose_dict.keys()) == {
+        "n_distinct_doses",
+        "has_zero_dose",
+        "dose_min",
+        "dose_max",
+        "dose_mean",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Frozen invariants
+# ---------------------------------------------------------------------------
+
+
+def test_outcome_shape_dataclass_is_frozen():
+    from diff_diff.profile import OutcomeShape
+
+    s = OutcomeShape(
+        n_distinct_values=3,
+        pct_zeros=0.1,
+        value_min=0.0,
+        value_max=1.0,
+        skewness=0.5,
+        excess_kurtosis=0.0,
+        is_integer_valued=False,
+        is_count_like=False,
+        is_bounded_unit=True,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        s.n_distinct_values = 999  # type: ignore[misc]
+
+
+def test_panel_profile_direct_construction_without_wave2_fields():
+    """`PanelProfile` is a public top-level type. Wave 2 added two
+    optional fields (`outcome_shape`, `treatment_dose`) with `None`
+    defaults so direct callers that instantiated `PanelProfile(...)`
+    pre-Wave-2 do not break with `TypeError: missing keyword
+    argument`. Verify direct construction without the new fields
+    succeeds and yields the documented defaults."""
+    profile = PanelProfile(
+        n_units=2,
+        n_periods=2,
+        n_obs=4,
+        is_balanced=True,
+        observation_coverage=1.0,
+        treatment_type="binary_absorbing",
+        is_staggered=False,
+        n_cohorts=1,
+        cohort_sizes={1: 1},
+        has_never_treated=True,
+        has_always_treated=False,
+        treatment_varies_within_unit=True,
+        first_treatment_period=1,
+        last_treatment_period=1,
+        min_pre_periods=1,
+        min_post_periods=1,
+        outcome_dtype="float64",
+        outcome_is_binary=False,
+        outcome_has_zeros=False,
+        outcome_has_negatives=False,
+        outcome_missing_fraction=0.0,
+        outcome_summary={"min": 0.0, "max": 1.0, "mean": 0.5, "std": 0.5},
+        alerts=(),
+    )
+    assert profile.outcome_shape is None
+    assert profile.treatment_dose is None
+    # to_dict() must serialize the defaulted fields as None values
+    payload = profile.to_dict()
+    assert payload["outcome_shape"] is None
+    assert payload["treatment_dose"] is None
+
+
+def test_treatment_dose_dataclass_is_frozen():
+    from diff_diff.profile import TreatmentDoseShape
+
+    d = TreatmentDoseShape(
+        n_distinct_doses=3,
+        has_zero_dose=True,
+        dose_min=1.0,
+        dose_max=3.0,
+        dose_mean=2.0,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        d.has_zero_dose = False  # type: ignore[misc]

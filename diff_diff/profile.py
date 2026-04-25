@@ -41,6 +41,127 @@ class Alert:
 
 
 @dataclass(frozen=True)
+class OutcomeShape:
+    """Distributional shape of a numeric outcome column.
+
+    Populated on :class:`PanelProfile` when the outcome dtype is integer or
+    float (``np.dtype(...).kind in {"i", "u", "f"}``); ``None`` otherwise.
+    Descriptive only — these fields surface what is observed in the outcome
+    distribution. They never recommend a specific estimator family.
+    """
+
+    n_distinct_values: int
+    pct_zeros: float
+    value_min: float
+    value_max: float
+    skewness: Optional[float]
+    excess_kurtosis: Optional[float]
+    is_integer_valued: bool
+    is_count_like: bool
+    is_bounded_unit: bool
+
+
+@dataclass(frozen=True)
+class TreatmentDoseShape:
+    """Distributional shape of a continuous treatment dose.
+
+    Populated on :class:`PanelProfile` only when ``treatment_type ==
+    "continuous"``; ``None`` otherwise. Most fields are descriptive
+    distributional context.
+
+    **profile_panel only sees the dose column**, not the separate
+    ``first_treat`` column ``ContinuousDiD.fit()`` consumes. In the
+    canonical ``ContinuousDiD`` setup (Callaway, Goodman-Bacon,
+    Sant'Anna 2024) the dose ``D_i`` is **time-invariant per unit**
+    (``D_i = 0`` for never-treated, ``D_i > 0`` constant across all
+    periods for treated unit i) and ``first_treat`` is a **separate
+    column** the caller supplies — not derived from the dose column.
+    Under that canonical setup, several profile-side facts on the
+    dose column predict ``ContinuousDiD.fit()`` outcomes:
+
+    1. ``PanelProfile.has_never_treated == True`` (some unit has
+       dose 0 in every period). Predicts the estimator's
+       ``P(D=0) > 0`` requirement under both
+       ``control_group="never_treated"`` and
+       ``control_group="not_yet_treated"`` (Remark 3.1
+       lowest-dose-as-control not yet implemented), because the
+       canonical setup ties ``first_treat == 0`` to ``D_i == 0``.
+       Failure means no never-treated controls exist on the dose
+       column; see routing notes below.
+    2. ``PanelProfile.treatment_varies_within_unit == False``
+       (per-unit full-path dose constancy on the dose column). This
+       IS the actual fit-time gate, matching
+       ``ContinuousDiD.fit()``'s
+       ``df.groupby(unit)[dose].nunique() > 1`` rejection at line
+       222-228; holds regardless of ``first_treat``. ``True`` rules
+       ``ContinuousDiD`` out — for graded-adoption panels with
+       dose changes use ``HeterogeneousAdoptionDiD``.
+    3. ``PanelProfile.is_balanced == True``. Actual fit-time gate
+       (``continuous_did.py:329-338``); not ``first_treat``-dependent.
+    4. Absence of the ``duplicate_unit_time_rows`` alert. The
+       precompute path silently resolves duplicate ``(unit, time)``
+       cells via last-row-wins (``continuous_did.py:818-823``);
+       **not** a fit-time raise. The agent must deduplicate before
+       fit because ``ContinuousDiD`` will otherwise overwrite
+       silently.
+    5. ``treatment_dose.dose_min > 0`` (over non-zero doses).
+       Predicts ``ContinuousDiD.fit()``'s strictly-positive-treated-
+       dose requirement (raises ``ValueError`` on negative dose for
+       ``first_treat > 0`` units, ``continuous_did.py:287-294``).
+       Failure means some treated units have negative dose; see
+       routing notes below.
+
+    Routing alternatives when (1) or (5) fails:
+
+    - When (1) fails (no never-treated controls but all observed
+      doses non-negative): ``ContinuousDiD`` does not apply (Remark
+      3.1 lowest-dose-as-control is not implemented).
+      ``HeterogeneousAdoptionDiD`` IS a candidate for graded-adoption
+      designs (HAD's contract requires non-negative dose, satisfied
+      here); linear DiD with the treatment as a continuous covariate
+      is another.
+    - When (5) fails (negative treated doses):
+      ``HeterogeneousAdoptionDiD`` is **not** a fallback either —
+      HAD raises on negative post-period dose (``had.py:1450-1459``,
+      paper Section 2). Linear DiD with the treatment as a signed
+      continuous covariate is the applicable routing alternative.
+    - Re-encoding the treatment column (shifting, absolute value,
+      etc.) is an agent-side preprocessing choice that changes the
+      estimand and is not documented in REGISTRY as a supported
+      fallback; if the agent re-encodes to non-negative support,
+      both ``ContinuousDiD`` and ``HeterogeneousAdoptionDiD``
+      become candidates again on the re-encoded scale.
+    - Do **not** relabel positive- or negative-dose units as
+      ``first_treat == 0``: that triggers ``ContinuousDiD.fit()``'s
+      force-zero coercion path, which is implementation behavior
+      for inconsistent inputs (e.g., an accidentally-nonzero row on
+      a never-treated unit), not a documented routing option.
+
+    The agent must still validate the supplied ``first_treat``
+    column independently: it must contain at least one
+    ``first_treat == 0`` unit (``P(D=0) > 0``), be non-negative
+    integer-valued (or ``+inf`` / 0 for never-treated), and be
+    consistent with the dose column on per-unit treated/untreated
+    status. ``profile_panel`` does not see ``first_treat`` and
+    cannot validate it.
+
+    ``has_zero_dose`` is a row-level fact ("at least one observation has
+    dose == 0"); it is NOT a substitute for ``has_never_treated``, which
+    is the unit-level field. A panel can have ``has_zero_dose == True``
+    (pre-treatment zero rows) while ``has_never_treated == False`` (every
+    unit eventually treated), in which case the standard-workflow agent
+    would conclude no never-treated controls exist before calling
+    ``ContinuousDiD.fit()``.
+    """
+
+    n_distinct_doses: int
+    has_zero_dose: bool
+    dose_min: float
+    dose_max: float
+    dose_mean: float
+
+
+@dataclass(frozen=True)
 class PanelProfile:
     """Structural facts about a DiD panel.
 
@@ -78,6 +199,12 @@ class PanelProfile:
 
     alerts: Tuple[Alert, ...]
 
+    # Wave 2 additions are kept defaulted so direct PanelProfile(...)
+    # construction by external callers does not break when the new
+    # fields are not supplied. profile_panel() always populates both.
+    outcome_shape: Optional[OutcomeShape] = None
+    treatment_dose: Optional[TreatmentDoseShape] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-serializable dict representation of the profile."""
         return {
@@ -103,6 +230,40 @@ class PanelProfile:
             "outcome_has_negatives": self.outcome_has_negatives,
             "outcome_missing_fraction": self.outcome_missing_fraction,
             "outcome_summary": {k: float(v) for k, v in self.outcome_summary.items()},
+            "outcome_shape": (
+                None
+                if self.outcome_shape is None
+                else {
+                    "n_distinct_values": int(self.outcome_shape.n_distinct_values),
+                    "pct_zeros": float(self.outcome_shape.pct_zeros),
+                    "value_min": float(self.outcome_shape.value_min),
+                    "value_max": float(self.outcome_shape.value_max),
+                    "skewness": (
+                        None
+                        if self.outcome_shape.skewness is None
+                        else float(self.outcome_shape.skewness)
+                    ),
+                    "excess_kurtosis": (
+                        None
+                        if self.outcome_shape.excess_kurtosis is None
+                        else float(self.outcome_shape.excess_kurtosis)
+                    ),
+                    "is_integer_valued": bool(self.outcome_shape.is_integer_valued),
+                    "is_count_like": bool(self.outcome_shape.is_count_like),
+                    "is_bounded_unit": bool(self.outcome_shape.is_bounded_unit),
+                }
+            ),
+            "treatment_dose": (
+                None
+                if self.treatment_dose is None
+                else {
+                    "n_distinct_doses": int(self.treatment_dose.n_distinct_doses),
+                    "has_zero_dose": bool(self.treatment_dose.has_zero_dose),
+                    "dose_min": float(self.treatment_dose.dose_min),
+                    "dose_max": float(self.treatment_dose.dose_max),
+                    "dose_mean": float(self.treatment_dose.dose_mean),
+                }
+            ),
             "alerts": [
                 {
                     "code": a.code,
@@ -281,6 +442,8 @@ def profile_panel(
     outcome_summary = _summarize_outcome(valid)
 
     dtype_kind = getattr(outcome_col.dtype, "kind", "O")
+    outcome_shape = _compute_outcome_shape(valid, dtype_kind)
+    treatment_dose = _compute_treatment_dose(df, treatment=treatment, treatment_type=treatment_type)
     alerts = _compute_alerts(
         n_periods=n_periods,
         observation_coverage=observation_coverage,
@@ -318,6 +481,8 @@ def profile_panel(
         outcome_has_negatives=outcome_has_negatives,
         outcome_missing_fraction=outcome_missing_fraction,
         outcome_summary=outcome_summary,
+        outcome_shape=outcome_shape,
+        treatment_dose=treatment_dose,
         alerts=tuple(alerts),
     )
 
@@ -370,11 +535,19 @@ def _classify_treatment(
     # has_never_treated has a single well-defined meaning across binary
     # and continuous numeric treatment: some unit has treatment == 0 in
     # every observed non-NaN row. For binary this is the clean-control
-    # group; for continuous this is the zero-dose control required by
-    # ContinuousDiD (P(D=0) > 0).
+    # group; for continuous this is the zero-dose control proxy used
+    # alongside ContinuousDiD's `P(D=0) > 0` requirement.
+    #
+    # On binary panels (values in {0, 1}), `unit_max == 0` is equivalent
+    # to "all observed values are 0". On continuous panels with negative
+    # dose support, that equivalence breaks: a unit with path `[-1, 0]`
+    # would falsely satisfy `unit_max == 0` even though no row is a
+    # zero-dose control. Check both endpoints (`unit_max == 0` AND
+    # `unit_min == 0`) to enforce the documented contract — for any
+    # numeric panel this is exactly "every observed dose is 0".
     unit_max = df.groupby(unit)[treatment].max().to_numpy()
     unit_min = df.groupby(unit)[treatment].min().to_numpy()
-    has_never_treated = bool(np.any(unit_max == 0))
+    has_never_treated = bool(np.any((unit_max == 0) & (unit_min == 0)))
 
     is_binary_valued = values_set <= {0, 1, 0.0, 1.0}
     # has_always_treated has binary-only semantics: "unit is treated in
@@ -505,6 +678,117 @@ def _summarize_outcome(valid: pd.Series) -> Dict[str, float]:
         "mean": float(valid.mean()),
         "std": float(valid.std(ddof=1)) if len(valid) > 1 else 0.0,
     }
+
+
+def _compute_outcome_shape(valid: pd.Series, outcome_dtype_kind: str) -> Optional[OutcomeShape]:
+    """Compute distributional shape for a numeric outcome.
+
+    Returns ``None`` for non-numeric dtypes (kind not in ``{"i", "u", "f"}``)
+    or empty series. Skewness and excess kurtosis are gated on
+    ``n_distinct_values >= 3`` and non-zero variance; otherwise ``None``.
+    """
+    if outcome_dtype_kind not in {"i", "u", "f"}:
+        return None
+    if len(valid) == 0:
+        return None
+
+    arr = np.asarray(valid, dtype=float)
+    n = int(arr.size)
+    n_distinct = int(np.unique(arr).size)
+    pct_zeros = float(np.sum(arr == 0)) / n
+    value_min = float(arr.min())
+    value_max = float(arr.max())
+
+    # Tolerance-aware integer detection: a CSV-roundtripped count column
+    # may carry float64 representation noise (e.g., 1.0 stored as
+    # 1.0000000000000002), and that should still classify as
+    # integer-valued for the purpose of the count-like heuristic.
+    is_integer_valued = bool(np.all(np.isclose(arr, np.round(arr), rtol=0.0, atol=1e-12)))
+    is_bounded_unit = bool(np.all((arr >= 0.0) & (arr <= 1.0)))
+
+    skewness: Optional[float] = None
+    excess_kurtosis: Optional[float] = None
+    if n_distinct >= 3:
+        mean = float(np.mean(arr))
+        m2 = float(np.mean((arr - mean) ** 2))
+        if m2 > 0.0:
+            std = m2**0.5
+            m3 = float(np.mean((arr - mean) ** 3))
+            m4 = float(np.mean((arr - mean) ** 4))
+            skewness = float(m3 / (std**3))
+            excess_kurtosis = float(m4 / (m2**2) - 3.0)
+
+    # Non-negativity is part of the contract: `is_count_like == True`
+    # is the routing signal toward `WooldridgeDiD(method="poisson")`,
+    # which hard-rejects negative outcomes at fit time
+    # (`wooldridge.py:1105` raises `ValueError` on `y < 0`). Without the
+    # `value_min >= 0` guard, a right-skewed integer outcome with zeros
+    # and some negatives could set `is_count_like=True` and steer an
+    # agent toward an estimator that will then refuse to fit.
+    is_count_like = bool(
+        is_integer_valued
+        and pct_zeros > 0.0
+        and skewness is not None
+        and skewness > 0.5
+        and n_distinct > 2
+        and value_min >= 0.0
+    )
+
+    return OutcomeShape(
+        n_distinct_values=n_distinct,
+        pct_zeros=pct_zeros,
+        value_min=value_min,
+        value_max=value_max,
+        skewness=skewness,
+        excess_kurtosis=excess_kurtosis,
+        is_integer_valued=is_integer_valued,
+        is_count_like=is_count_like,
+        is_bounded_unit=is_bounded_unit,
+    )
+
+
+def _compute_treatment_dose(
+    df: pd.DataFrame,
+    *,
+    treatment: str,
+    treatment_type: str,
+) -> Optional[TreatmentDoseShape]:
+    """Compute distributional shape for a continuous-treatment dose column.
+
+    Returns ``None`` unless ``treatment_type == "continuous"``. Most
+    fields are descriptive distributional context; ``dose_min > 0``
+    is one of the profile-side screening checks for ``ContinuousDiD``
+    (see :class:`TreatmentDoseShape` docstring for the full screening
+    set and the ``first_treat`` validation that
+    ``ContinuousDiD.fit()`` applies separately).
+    """
+    if treatment_type != "continuous":
+        return None
+
+    col = df[treatment].dropna()
+    if col.empty:
+        return None
+
+    n_distinct_doses = int(col.nunique())
+    has_zero_dose = bool((col == 0).any())
+
+    # `treatment_type == "continuous"` is reached only when the
+    # treatment column has more than two distinct values OR a 2-valued
+    # numeric outside `{0, 1}` (see `_classify_treatment`). An all-zero
+    # numeric column is classified as `binary_absorbing` and never
+    # reaches this branch, so `nonzero` is guaranteed non-empty.
+    nonzero = col[col != 0]
+    dose_min = float(nonzero.min())
+    dose_max = float(nonzero.max())
+    dose_mean = float(nonzero.mean())
+
+    return TreatmentDoseShape(
+        n_distinct_doses=n_distinct_doses,
+        has_zero_dose=has_zero_dose,
+        dose_min=dose_min,
+        dose_max=dose_max,
+        dose_mean=dose_mean,
+    )
 
 
 def _compute_alerts(
