@@ -187,15 +187,18 @@ view. Every field below appears as a top-level key in that dict.
       (covers integer dtype and floats that happen to be integer-valued).
     - `is_count_like: bool` - heuristic for count-shaped outcomes:
       `is_integer_valued AND pct_zeros > 0 AND skewness > 0.5 AND
-      n_distinct_values > 2 AND value_min >= 0`. When `True`, an OLS
-      DiD on the raw outcome may have well-behaved point estimates
-      but questionable asymptotic SEs; consider
-      `WooldridgeDiD(method="poisson")` (QMLE), which estimates the
-      overall ATT as an ASF-based outcome-scale difference (NOT a
-      multiplicative ratio) and rejects negative outcomes at fit
-      time. The non-negativity gate aligns the routing signal with
-      that hard requirement so the estimator will accept the panel.
-      See §5.3 for a worked example.
+      n_distinct_values > 2 AND value_min >= 0`. When `True`, OLS
+      DiD imposes an additive functional form on a non-negative
+      count outcome (cluster-robust SEs are still calibrated, but
+      the model can be inefficient and may produce counterfactual
+      predictions outside the non-negative support);
+      `WooldridgeDiD(method="poisson")` (QMLE) is the multiplicative
+      (log-link) ETWFE alternative that respects the non-negative
+      support and matches the typical generative process for count
+      data, with QMLE sandwich SEs robust to distributional
+      misspecification. The Poisson fitter rejects negative outcomes
+      at fit time, which is why the heuristic gates on
+      `value_min >= 0`. See §5.3 for a worked example.
     - `is_bounded_unit: bool` - all non-NaN values lie in `[0, 1]`.
       When `True` and the linear-DiD point estimate is near the
       boundary of feasible support, interpret with care (the linear
@@ -659,9 +662,12 @@ docs explicitly say otherwise. When routing, also:
 
 The matrix in §3 routes by treatment shape. Outcome shape is a separate
 axis: a panel that is binary-absorbing and staggered may still have a
-count-shaped outcome (e.g., number of incidents per unit-period) for
-which linear DiD point estimates are unbiased but asymptotic SEs may
-mislead. `PanelProfile.outcome_shape` exposes the relevant facts:
+count-shaped outcome (e.g., number of incidents per unit-period), and
+on such an outcome linear DiD imposes an additive functional form that
+can be inefficient and may produce counterfactual predictions outside
+the non-negative support — even though the cluster-robust SEs remain
+calibrated. The functional-form choice is what matters here, not SE
+calibration. `PanelProfile.outcome_shape` exposes the relevant facts:
 
 - `outcome_shape.is_count_like == True` (integer-valued, non-negative,
   has zeros, right-skewed, more than two distinct values) - linear-OLS
