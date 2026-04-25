@@ -464,8 +464,17 @@ class SyntheticDiD(DifferenceInDifferences):
             # sees a generic bootstrap-exhaustion message instead of a
             # targeted FPC/design error. Validate upstream so the user
             # gets a clean error before the bootstrap loop even starts.
+            #
+            # R10 P1 fix: gate this validator on variance methods that
+            # actually use FPC. Bootstrap (Rao-Wu) and jackknife (Rust
+            # & Rao stratum aggregation) both consume FPC; placebo is
+            # documented as FPC-no-op (Pesarin 2001 §1.5 — permutation
+            # tests condition on the observed sample). Running the
+            # validator on placebo would block legitimate placebo fits
+            # for a constraint that doesn't apply to permutation math.
             if (
-                resolved_survey_unit.psu is None
+                self.variance_method in ("bootstrap", "jackknife")
+                and resolved_survey_unit.psu is None
                 and resolved_survey_unit.fpc is not None
             ):
                 if resolved_survey_unit.strata is None:

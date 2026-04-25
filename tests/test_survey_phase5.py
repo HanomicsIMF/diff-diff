@@ -1031,6 +1031,82 @@ class TestSDIDSurveyPlaceboFullDesign:
         assert r_fpc.se == pytest.approx(r_pw.se, rel=1e-12)
         assert r_fpc.att == pytest.approx(r_pw.att, abs=1e-12)
 
+    def test_placebo_low_fpc_no_psu_warns_no_validator_block(
+        self, sdid_survey_data_full_design
+    ):
+        """R10 P1 fix: implicit-PSU FPC validator skipped on placebo.
+
+        The implicit-PSU FPC validator (PR #355 R8 P1) rejects designs
+        where ``psu is None`` and ``fpc < n_units`` because Rao-Wu
+        bootstrap treats each unit as its own PSU and would fail mid-
+        draw. But placebo doesn't use FPC at all (Pesarin 2001 §1.5 —
+        permutation tests condition on the observed sample), so the
+        validator should be skipped on the placebo path. Otherwise a
+        legitimate placebo fit raises on a constraint that doesn't
+        apply to its math.
+
+        Test: ``fpc_col = 5`` is well below ``n_units = 30``, which
+        would trip the bootstrap validator. With ``variance_method=
+        "placebo"``, the fit must succeed, emit the documented FPC
+        no-op ``UserWarning``, and produce SE matching the no-FPC
+        pweight-only fit (true no-op).
+        """
+        df = sdid_survey_data_full_design.copy()
+        # 5 << n_units=30 — would trip the bootstrap implicit-PSU
+        # FPC validator (FPC must be >= n_units when psu is None).
+        df["fpc_col"] = 5.0
+
+        sd_low_fpc = SurveyDesign(weights="weight", fpc="fpc_col")
+        sd_pweight = SurveyDesign(weights="weight")
+
+        est_fpc = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        with pytest.warns(
+            UserWarning,
+            match=r"SurveyDesign\(fpc=\.\.\.\) is a no-op on variance_method='placebo'",
+        ):
+            r_fpc = est_fpc.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd_low_fpc,
+            )
+
+        est_pw = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        r_pw = est_pw.fit(
+            df,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_pweight,
+        )
+
+        # FPC truly is a no-op for placebo: SE/ATT must match the no-FPC
+        # fit at machine precision regardless of FPC value.
+        assert r_fpc.se == pytest.approx(r_pw.se, rel=1e-12)
+        assert r_fpc.att == pytest.approx(r_pw.att, abs=1e-12)
+        # And bootstrap on the same low-FPC design must still raise the
+        # implicit-PSU validator error (validator stays gated on
+        # bootstrap/jackknife only).
+        est_boot = SyntheticDiD(variance_method="bootstrap", n_bootstrap=50, seed=42)
+        with pytest.raises(
+            ValueError,
+            match=r"FPC \(5\.0\) is less than the number of units",
+        ):
+            est_boot.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd_low_fpc,
+            )
+
     def test_placebo_full_design_psu_only_routes_through_survey_path(
         self, sdid_survey_data_jk_well_formed
     ):
