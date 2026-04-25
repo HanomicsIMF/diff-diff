@@ -1307,13 +1307,37 @@ def qug_test(
         )
 
     # Soft deprecation: route legacy survey=/weights= aliases through
-    # survey_design= for the gated NotImplementedError below.
+    # survey_design= for the gated NotImplementedError below. PR #376 R10
+    # P3: qug_test-specific deprecation messages — the shared
+    # HAD_DEPRECATION_MSG_*_KWARG_ARRAY_IN strings tell users to migrate to
+    # `survey_design=` / `make_pweight_design(...)`, but qug_test
+    # permanently rejects ALL survey-aware kwargs (Phase 4.5 C0 deferral).
+    # Use qug-specific warning text that says the aliases are deprecated
+    # but survey-aware QUG remains unsupported, and points users to
+    # unweighted `qug_test()` or `did_had_pretest_workflow(...,
+    # survey_design=...)` for the survey-aware linearity family.
     if survey is not None:
-        warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+        warnings.warn(
+            "`survey=` is deprecated on qug_test (will be removed in the "
+            "next minor release). Note that qug_test does NOT support "
+            "survey-aware inputs at all (Phase 4.5 C0 permanent deferral; "
+            "see the NotImplementedError below). For survey-aware HAD "
+            "pretesting, use `did_had_pretest_workflow(..., "
+            "survey_design=...)` (the workflow skips the QUG step under "
+            "survey/weights and runs the linearity family).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         survey_design = survey
     elif weights is not None:
         warnings.warn(
-            HAD_DEPRECATION_MSG_WEIGHTS_KWARG_ARRAY_IN,
+            "`weights=` is deprecated on qug_test (will be removed in the "
+            "next minor release). Note that qug_test does NOT support "
+            "weighted/survey inputs at all (Phase 4.5 C0 permanent deferral; "
+            "see the NotImplementedError below). For survey-aware HAD "
+            "pretesting, use `did_had_pretest_workflow(..., "
+            "survey_design=...)` (the workflow skips the QUG step under "
+            "survey/weights and runs the linearity family).",
             DeprecationWarning,
             stacklevel=2,
         )

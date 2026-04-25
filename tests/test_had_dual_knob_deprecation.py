@@ -640,6 +640,41 @@ class TestJointPretrendsTestDeprecation:
         assert r_legacy.cvm_stat_joint == r_new.cvm_stat_joint
         assert r_legacy.p_value == r_new.p_value
 
+    def test_legacy_alias_parity_weights(self, event_study_panel):
+        """PR #376 R10 P3: deprecated `weights=np.ones(n)` ≡ canonical
+        `survey_design=SurveyDesign(weights="w")` (uniform 1.0 column) on
+        joint_pretrends_test."""
+        df = event_study_panel
+        n = len(df)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            r_legacy = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[0],
+                base_period=1,
+                weights=np.ones(n),
+                n_bootstrap=199,
+                seed=0,
+            )
+        r_new = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[0],
+            base_period=1,
+            survey_design=SurveyDesign(weights="w"),
+            n_bootstrap=199,
+            seed=0,
+        )
+        assert r_legacy.cvm_stat_joint == r_new.cvm_stat_joint
+        assert r_legacy.p_value == r_new.p_value
+
 
 class TestJointHomogeneityTestDeprecation:
     def test_survey_design_kwarg_smoke(self, event_study_panel):
@@ -719,6 +754,41 @@ class TestJointHomogeneityTestDeprecation:
             post_periods=[2, 3],
             base_period=1,
             survey_design=sd,
+            n_bootstrap=199,
+            seed=0,
+        )
+        assert r_legacy.cvm_stat_joint == r_new.cvm_stat_joint
+        assert r_legacy.p_value == r_new.p_value
+
+    def test_legacy_alias_parity_weights(self, event_study_panel):
+        """PR #376 R10 P3: deprecated `weights=np.ones(n)` ≡ canonical
+        `survey_design=SurveyDesign(weights="w")` on
+        joint_homogeneity_test."""
+        df = event_study_panel
+        n = len(df)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            r_legacy = joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[2, 3],
+                base_period=1,
+                weights=np.ones(n),
+                n_bootstrap=199,
+                seed=0,
+            )
+        r_new = joint_homogeneity_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            post_periods=[2, 3],
+            base_period=1,
+            survey_design=SurveyDesign(weights="w"),
             n_bootstrap=199,
             seed=0,
         )
@@ -960,6 +1030,40 @@ class TestDidHadPretestWorkflowDeprecation:
                 "time",
                 "unit",
                 survey_design=sd,
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert r_legacy.stute.cvm_stat == r_new.stute.cvm_stat
+        assert r_legacy.stute.p_value == r_new.stute.p_value
+        assert r_legacy.yatchew.t_stat_hr == r_new.yatchew.t_stat_hr
+
+    def test_legacy_alias_parity_weights_overall(self, two_period_panel):
+        """PR #376 R10 P3: deprecated `weights=np.ones(n)` ≡ canonical
+        `survey_design=SurveyDesign(weights="w")` on
+        did_had_pretest_workflow(aggregate='overall'). Closes the data-in
+        rebinding-parity gap on the weights= shortcut path."""
+        df = two_period_panel
+        n = len(df)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            warnings.simplefilter("ignore", DeprecationWarning)
+            r_legacy = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                weights=np.ones(n),
+                n_bootstrap=199,
+                seed=0,
+            )
+            r_new = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey_design=SurveyDesign(weights="w"),
                 n_bootstrap=199,
                 seed=0,
             )
