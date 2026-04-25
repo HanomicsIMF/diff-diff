@@ -722,3 +722,243 @@ class TestDidHadPretestWorkflowDeprecation:
                 n_bootstrap=199,
                 seed=0,
             )
+
+
+# =============================================================================
+# 3. PR #376 R2 P1: extended dispatch-matrix coverage on the new front door
+# =============================================================================
+#
+# Reviewer flagged that the canonical `survey_design=` kwarg was added across
+# all HAD design × aggregate combinations but only directly tested on the
+# two-period continuous_at_zero / overall path. These tests cover the
+# weighted mass_point overall path, the weighted continuous event-study
+# path, and the workflow event-study path — each with both a
+# `survey_design=` smoke and a legacy-alias parity check.
+
+
+@pytest.fixture
+def mass_point_panel():
+    """Two-period panel with a continuous mass-point at d_lower=0.05.
+
+    G=200 units, fraction `0.06 > 0.02` modal at d_lower triggers the
+    mass-point heuristic in HAD's auto-detection. Used to exercise
+    `design="mass_point"` survey_design= forwarding through the weighted
+    2SLS sandwich.
+    """
+    rng = np.random.default_rng(13)
+    G = 200
+    n_modal = int(0.06 * G)  # 12 units at d_lower
+    d_modal = np.full(n_modal, 0.05)
+    d_continuous = rng.uniform(0.06, 1.0, size=G - n_modal)
+    d = np.concatenate([d_modal, d_continuous])
+    rng.shuffle(d)
+    rows = []
+    for g in range(G):
+        for t in (0, 1):
+            y = 0.0 if t == 0 else d[g] * 1.2 + rng.normal(0, 0.1)
+            rows.append({"unit": g, "time": t, "y": y, "d": (0.0 if t == 0 else d[g])})
+    df = pd.DataFrame(rows)
+    df["w"] = 1.0
+    return df
+
+
+@pytest.fixture
+def event_study_continuous_panel():
+    """Multi-period continuous_at_zero panel for HAD.fit aggregate='event_study'.
+
+    G=200 units, T=3 periods (t=0 pre, t=1 base, t=2 post), Beta(0.5, 1)
+    doses so d.min() approaches 0 (Design 1' boundary heuristic satisfied),
+    F=2 (treatment starts at t=2)."""
+    rng = np.random.default_rng(14)
+    G = 200
+    d = rng.beta(0.5, 1.0, size=G)
+    rows = []
+    F = 2
+    for g in range(G):
+        for t in range(3):
+            d_t = 0.0 if t < F else d[g]
+            y = (0.0 if t < F else d_t * 1.2) + rng.normal(0, 0.1)
+            rows.append({"unit": g, "time": t, "y": y, "d": d_t})
+    df = pd.DataFrame(rows)
+    df["w"] = 1.0
+    return df
+
+
+class TestHADFitMassPointSurveyDesign:
+    """PR #376 R2 P1: cover `design='mass_point'` + survey_design= path.
+
+    Mass-point + survey requires vcov_type='hc1' (not the classical default)
+    per the documented Phase 4.5 B deviation: the survey path composes
+    Binder-TSL on the HC1-scale IF.
+    """
+
+    def test_survey_design_kwarg_smoke(self, mass_point_panel):
+        df = mass_point_panel
+        est = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="hc1")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # mass-point methodology warning
+            r = est.fit(df, "y", "d", "time", "unit", survey_design=SurveyDesign(weights="w"))
+        assert np.isfinite(r.att)
+        assert np.isfinite(r.se)
+
+    def test_legacy_alias_parity_weights(self, mass_point_panel):
+        """weights=arr (deprecated) ≡ survey_design=SurveyDesign(weights='w')
+        produce identical point estimate on mass_point overall path. SE differs
+        by variance family (weights= → HC1 sandwich; survey_design= →
+        Binder-TSL on HC1-scale IF), so we assert att-only parity."""
+        df = mass_point_panel
+        n = len(df)
+        est = HeterogeneousAdoptionDiD(design="mass_point", vcov_type="hc1")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            warnings.simplefilter("ignore", UserWarning)
+            r_legacy = est.fit(df, "y", "d", "time", "unit", weights=np.ones(n))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_new = est.fit(df, "y", "d", "time", "unit", survey_design=SurveyDesign(weights="w"))
+        np.testing.assert_allclose(r_legacy.att, r_new.att, atol=1e-10, rtol=1e-10)
+
+
+class TestHADFitEventStudySurveyDesign:
+    """PR #376 R2 P1: cover aggregate='event_study' + cband=True + survey_design=."""
+
+    def test_survey_design_kwarg_smoke(self, event_study_continuous_panel):
+        df = event_study_continuous_panel
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", n_bootstrap=99, seed=0)
+        r = est.fit(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            aggregate="event_study",
+            survey_design=SurveyDesign(weights="w"),
+            cband=True,
+        )
+        # Event-study returns HeterogeneousAdoptionDiDEventStudyResults
+        assert r.att.shape[0] >= 1
+        assert np.all(np.isfinite(r.att))
+        assert r.cband_low is not None
+        assert r.cband_high is not None
+
+    def test_legacy_alias_parity_survey(self, event_study_continuous_panel):
+        """survey=SurveyDesign(...) (deprecated) ≡ survey_design=SurveyDesign(...)
+        on event-study path."""
+        df = event_study_continuous_panel
+        sd = SurveyDesign(weights="w")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            r_legacy = HeterogeneousAdoptionDiD(
+                design="continuous_at_zero", n_bootstrap=99, seed=0
+            ).fit(df, "y", "d", "time", "unit", aggregate="event_study", survey=sd, cband=True)
+        r_new = HeterogeneousAdoptionDiD(design="continuous_at_zero", n_bootstrap=99, seed=0).fit(
+            df, "y", "d", "time", "unit", aggregate="event_study", survey_design=sd, cband=True
+        )
+        np.testing.assert_array_equal(r_legacy.att, r_new.att)
+        np.testing.assert_array_equal(r_legacy.se, r_new.se)
+
+
+class TestDidHadPretestWorkflowEventStudySurveyDesign:
+    """PR #376 R2 P1: cover did_had_pretest_workflow(aggregate='event_study',
+    survey_design=...)."""
+
+    def test_survey_design_kwarg_smoke(self, event_study_panel):
+        df = event_study_panel
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # QUG-skip + staggered
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                survey_design=SurveyDesign(weights="w"),
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert report.qug is None  # skipped under survey path
+        assert report.homogeneity_joint is not None
+
+    def test_legacy_alias_parity_survey(self, event_study_panel):
+        """survey=SurveyDesign(...) (deprecated) ≡ survey_design=SurveyDesign(...)
+        on workflow event-study path."""
+        df = event_study_panel
+        sd = SurveyDesign(weights="w")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            warnings.simplefilter("ignore", DeprecationWarning)
+            r_legacy = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                survey=sd,
+                n_bootstrap=199,
+                seed=0,
+            )
+            r_new = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                survey_design=sd,
+                n_bootstrap=199,
+                seed=0,
+            )
+        # Joint Stute on the event-study path is bootstrap-driven; both calls
+        # use the same seed=0 + same survey design → identical bootstrap
+        # multiplier draws → identical p-values + statistics.
+        assert r_legacy.homogeneity_joint.cvm_stat_joint == r_new.homogeneity_joint.cvm_stat_joint
+        assert r_legacy.homogeneity_joint.p_value == r_new.homogeneity_joint.p_value
+
+    def test_legacy_alias_parity_weights(self, event_study_panel):
+        """weights=arr (deprecated) ≡ survey_design=SurveyDesign(weights='w')
+        with uniform 1.0 weights on the workflow event-study path. Locks the
+        nested-DeprecationWarning suppression: the user-facing warning fires
+        ONCE at the workflow front door, no extra warnings from the joint
+        wrappers when survey/weights are forwarded internally."""
+        df = event_study_panel
+        n = len(df)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with warnings.catch_warnings(record=True) as w_record:
+                warnings.simplefilter("always", DeprecationWarning)
+                r_legacy = did_had_pretest_workflow(
+                    df,
+                    "y",
+                    "d",
+                    "time",
+                    "unit",
+                    aggregate="event_study",
+                    weights=np.ones(n),
+                    n_bootstrap=199,
+                    seed=0,
+                )
+            # PR #376 R2 P3 fix: workflow event-study weights= path emits
+            # exactly ONE DeprecationWarning (not three — joint wrappers'
+            # nested warnings are suppressed since the user-facing one
+            # already fired at the workflow's front door).
+            n_dep_warnings = sum(1 for w in w_record if issubclass(w.category, DeprecationWarning))
+            assert n_dep_warnings == 1, (
+                f"expected 1 DeprecationWarning at workflow front door, got " f"{n_dep_warnings}"
+            )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_new = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                survey_design=SurveyDesign(weights="w"),
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert r_legacy.homogeneity_joint.cvm_stat_joint == r_new.homogeneity_joint.cvm_stat_joint
+        assert r_legacy.homogeneity_joint.p_value == r_new.homogeneity_joint.p_value

@@ -1291,13 +1291,20 @@ def qug_test(
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must satisfy 0 < alpha < 1, got {alpha}.")
 
-    # Three-way mutex on survey_design / survey / weights. Mirrors the
-    # consolidation pattern in HeterogeneousAdoptionDiD.fit() so users get
-    # a consistent error across the HAD surface area. The migration target
-    # text differs by surface (data-in vs array-in); qug_test is array-in.
+    # Three-way mutex on survey_design / survey / weights. qug_test rejects
+    # ALL non-None survey-aware inputs (Phase 4.5 C0 permanent deferral, see
+    # NotImplementedError below), so the mutex message here is qug-specific
+    # and does NOT point users to `make_pweight_design(arr)` (which the
+    # array-in mutex on `stute_test`/`yatchew_hr_test`/`stute_joint_pretest`
+    # does suggest as the migration target). PR #376 R2 P3 fix.
     n_set = sum(x is not None for x in (survey_design, survey, weights))
     if n_set > 1:
-        raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN)
+        raise ValueError(
+            "qug_test: pass at most one of `survey_design=`, `survey=`, or "
+            "`weights=`. All three are permanently rejected on qug_test "
+            "(Phase 4.5 C0 deferral) — there is no migration path; see the "
+            "NotImplementedError raised below for the methodology rationale."
+        )
 
     # Soft deprecation: route legacy survey=/weights= aliases through
     # survey_design= for the gated NotImplementedError below.
@@ -4235,46 +4242,54 @@ def did_had_pretest_workflow(
         # whose lexical and chronological order disagree (e.g. "q10" <
         # "q2" lexically but > chronologically).
         earlier_pre = list(t_pre_list[:-1])
-        if len(earlier_pre) >= 1:
-            pretrends_joint = joint_pretrends_test(
+        # PR #376 R2 P3: when `weights=joint_weights` is forwarded to the joint
+        # wrappers (the only joint-internal entry that takes a numpy array),
+        # the wrapper would re-emit a DeprecationWarning. Suppress those
+        # nested warnings — the user-facing warning has already fired at the
+        # workflow's front door above. survey_design=joint_survey is a
+        # SurveyDesign (column-referencing) on the survey path and goes
+        # through canonically; only the weights= forwarding path needs the
+        # suppression. The joint wrappers also can't accept a pre-resolved
+        # ResolvedSurveyDesign (their `_resolve_pretest_unit_weights` requires
+        # a SurveyDesign with .resolve()), so converting weights= to
+        # survey_design= via make_pweight_design isn't an option here.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            if len(earlier_pre) >= 1:
+                pretrends_joint = joint_pretrends_test(
+                    data_filtered,
+                    outcome_col=outcome_col,
+                    dose_col=dose_col,
+                    time_col=time_col,
+                    unit_col=unit_col,
+                    pre_periods=earlier_pre,
+                    base_period=base_period,
+                    first_treat_col=first_treat_col,
+                    alpha=alpha,
+                    n_bootstrap=n_bootstrap,
+                    seed=seed,
+                    survey_design=joint_survey,
+                    weights=joint_weights,
+                )
+            else:
+                pretrends_joint = None
+
+            # Step 3: joint homogeneity-linearity on post-periods.
+            homogeneity_joint = joint_homogeneity_test(
                 data_filtered,
                 outcome_col=outcome_col,
                 dose_col=dose_col,
                 time_col=time_col,
                 unit_col=unit_col,
-                pre_periods=earlier_pre,
+                post_periods=list(t_post_list),
                 base_period=base_period,
                 first_treat_col=first_treat_col,
                 alpha=alpha,
                 n_bootstrap=n_bootstrap,
                 seed=seed,
-                # Internal forwarding: pass via canonical kwargs to skip
-                # deprecation warnings on internal calls. The user-facing
-                # warning has already fired at the workflow's front door.
                 survey_design=joint_survey,
                 weights=joint_weights,
             )
-        else:
-            pretrends_joint = None
-
-        # Step 3: joint homogeneity-linearity on post-periods.
-        homogeneity_joint = joint_homogeneity_test(
-            data_filtered,
-            outcome_col=outcome_col,
-            dose_col=dose_col,
-            time_col=time_col,
-            unit_col=unit_col,
-            post_periods=list(t_post_list),
-            base_period=base_period,
-            first_treat_col=first_treat_col,
-            alpha=alpha,
-            n_bootstrap=n_bootstrap,
-            seed=seed,
-            # Internal forwarding via canonical kwargs (skip deprecation
-            # warnings; the user-facing one fired at the workflow front door).
-            survey_design=joint_survey,
-            weights=joint_weights,
-        )
 
         # Event-study `all_pass`. On the unweighted path, every implemented
         # step must be conclusive AND none reject (Phase 3 convention). On
