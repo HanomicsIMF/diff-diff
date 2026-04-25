@@ -1483,6 +1483,15 @@ def stute_test(
             "by the multiplier-bootstrap composition. Replicate-weight pretests "
             "are a parallel follow-up after Phase 4.5 C."
         )
+    # R1 P1: pweight-only guard on the direct-helper survey entry (mirrors
+    # _resolve_pretest_unit_weights for the workflow path).
+    if survey is not None and getattr(survey, "weight_type", "pweight") != "pweight":
+        raise ValueError(
+            f"stute_test: HAD pretests require weight_type='pweight'. Got "
+            f"weight_type={survey.weight_type!r}. aweight / fweight have "
+            "different sandwich-variance semantics that are not derived "
+            "for the Stute CvM bootstrap calibration."
+        )
 
     d_arr = _validate_1d_numeric(d, "d")
     dy_arr = _validate_1d_numeric(dy, "dy")
@@ -1538,6 +1547,20 @@ def stute_test(
             raise ValueError(
                 f"stute_test: survey.weights length {w_arr.shape[0]} does not "
                 f"match d/dy length {G}."
+            )
+        # R1 P0: strictly-positive weights at the per-unit level (mirrors
+        # workflow guard in _resolve_pretest_unit_weights). Zero-weight
+        # units would leak into the dose-variation check + CvM cusum +
+        # bootstrap refit, producing silent wrong pretest decisions on
+        # subpopulation-restricted designs (e.g. only zero-weight units
+        # carry dose variation -> spurious finite test statistic).
+        if (w_arr <= 0).any():
+            raise ValueError(
+                "stute_test: survey weights must be strictly positive. "
+                "Zero / negative weights would leave units in the "
+                "variance / CvM computation while contributing zero "
+                "population mass; pre-filter the panel to the positive-"
+                "weight subpopulation before calling stute_test."
             )
     elif weights is not None:
         w_arr = np.asarray(weights, dtype=np.float64)
@@ -1806,6 +1829,13 @@ def yatchew_hr_test(
             "yatchew_hr_test: replicate-weight survey designs (BRR/Fay/JK1/JKn/"
             "SDR) are not yet supported on HAD pretests. Replicate-weight "
             "pretests are a parallel follow-up after Phase 4.5 C."
+        )
+    # R1 P1: pweight-only guard (aweight/fweight have different sandwich-
+    # variance semantics not derived for the variance-ratio statistic).
+    if survey is not None and getattr(survey, "weight_type", "pweight") != "pweight":
+        raise ValueError(
+            f"yatchew_hr_test: HAD pretests require weight_type='pweight'. "
+            f"Got weight_type={survey.weight_type!r}."
         )
 
     d_arr = _validate_1d_numeric(d, "d")
@@ -2421,6 +2451,12 @@ def stute_joint_pretest(
             "JKn/SDR) are not yet supported on HAD pretests. Replicate-weight "
             "pretests are a parallel follow-up after Phase 4.5 C."
         )
+    # R1 P1: pweight-only guard.
+    if survey is not None and getattr(survey, "weight_type", "pweight") != "pweight":
+        raise ValueError(
+            f"stute_joint_pretest: HAD pretests require weight_type='pweight'. "
+            f"Got weight_type={survey.weight_type!r}."
+        )
 
     if not isinstance(residuals_by_horizon, dict) or not isinstance(fitted_by_horizon, dict):
         raise ValueError(
@@ -2603,6 +2639,14 @@ def stute_joint_pretest(
             raise ValueError(
                 f"stute_joint_pretest: survey.weights length {w_arr.shape[0]} "
                 f"does not match doses length {G}."
+            )
+        # R1 P0: strictly-positive guard (mirrors stute_test single-horizon).
+        if (w_arr <= 0).any():
+            raise ValueError(
+                "stute_joint_pretest: survey weights must be strictly "
+                "positive. Zero / negative weights would leave units in "
+                "the variance / CvM computation while contributing zero "
+                "population mass."
             )
     elif weights is not None:
         w_arr = np.asarray(weights, dtype=np.float64)
@@ -2797,6 +2841,17 @@ def _resolve_pretest_unit_weights(
     if weights is not None:
         weights_arr = np.asarray(weights, dtype=np.float64)
         weights_unit = _aggregate_unit_weights(data, weights_arr, unit_col)
+        # R1 P0: strictly-positive weights required on the pweight shortcut
+        # (matches stute_test/yatchew_hr_test direct entry behavior; the CvM
+        # cusum + adjacent-difference variance assume all rows contribute).
+        if (weights_unit <= 0).any():
+            raise ValueError(
+                f"{caller_name}: weights must be strictly positive at the "
+                "per-unit level. Zero / negative weights would leave units "
+                "in the variance/CvM computation while contributing zero "
+                "mass; use survey= with explicit lonely-PSU handling for "
+                "principled subpopulation analysis."
+            )
         return weights_unit, None
     # survey is not None
     if not hasattr(survey, "resolve"):
@@ -2811,7 +2866,30 @@ def _resolve_pretest_unit_weights(
             "SDR) are not yet supported on HAD pretests. Replicate-weight "
             "pretests are a parallel follow-up after Phase 4.5 C."
         )
+    # R1 P1: pweight-only guard. aweight/fweight slip through pweight-only
+    # formulas silently otherwise (mirrors HeterogeneousAdoptionDiD.fit() at
+    # had.py:2976+ and survey._resolve_pweight_only at survey.py:914).
+    if getattr(resolved_full, "weight_type", "pweight") != "pweight":
+        raise ValueError(
+            f"{caller_name}: HAD pretests require weight_type='pweight'. "
+            f"Got weight_type={resolved_full.weight_type!r}. aweight / "
+            "fweight have different sandwich-variance semantics that are "
+            "not derived for the pretest variance components."
+        )
     resolved_unit = _aggregate_unit_resolved_survey(data, resolved_full, unit_col)
+    # R1 P0: strictly-positive weights at the per-unit level (mirrors the
+    # weights= shortcut). Zero per-unit weights leave units in the dose-
+    # variation check / CvM sum while contributing zero population mass,
+    # which can produce silently-wrong pretest decisions.
+    if (np.asarray(resolved_unit.weights) <= 0).any():
+        raise ValueError(
+            f"{caller_name}: survey weights must be strictly positive at "
+            "the per-unit level. Zero / negative weights would leave units "
+            "in the variance/CvM computation while contributing zero "
+            "mass; this would produce silent wrong pretest decisions on "
+            "subpopulation-restricted designs. Pre-filter the panel to "
+            "the positive-weight subpopulation before calling the workflow."
+        )
     return None, resolved_unit
 
 
@@ -3413,8 +3491,28 @@ def did_had_pretest_workflow(
 
         # Phase 4.5 C: forward weights/survey to the joint helpers. The
         # data-in wrappers handle their own per-row → per-unit aggregation
-        # via _resolve_pretest_unit_weights internally.
-        joint_weights = weights if use_survey_path and weights is not None else None
+        # via _resolve_pretest_unit_weights internally on `data_filtered`.
+        # R1 P1 fix: subset row-level `weights` to data_filtered's rows
+        # BEFORE passing through. Otherwise on staggered panels (where
+        # _validate_multi_period_panel auto-filters to last cohort),
+        # the wrappers would call _aggregate_unit_weights(data_filtered,
+        # weights[full_panel_length], ...) and crash on length mismatch.
+        # Mirrors HeterogeneousAdoptionDiD.fit()'s positional-index
+        # subsetting via `data.index.get_indexer(data_filtered.index)`.
+        # `survey=` carries column references resolved internally on
+        # data_filtered, so no subsetting needed there.
+        if use_survey_path and weights is not None:
+            pos_idx = data.index.get_indexer(data_filtered.index)
+            if (pos_idx < 0).any():
+                raise ValueError(
+                    "did_had_pretest_workflow: cannot align row-level "
+                    "weights to the staggered-filtered panel "
+                    "(some data_filtered rows do not appear in original "
+                    "data.index). This is a bug; please report."
+                )
+            joint_weights = np.asarray(weights, dtype=np.float64)[pos_idx]
+        else:
+            joint_weights = None
         joint_survey = survey if use_survey_path and survey is not None else None
 
         # Step 2: joint pre-trends on earlier pre-periods (those

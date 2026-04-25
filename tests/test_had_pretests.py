@@ -3354,3 +3354,196 @@ class TestJointStuteSurvey:
                 seed=0,
                 survey=resolved_with_rep,
             )
+
+
+# =============================================================================
+# Phase 4.5 C R1 review regressions: zero-weight survey, aweight/fweight
+# pweight-only guard, staggered event-study weights= subsetting.
+# =============================================================================
+
+
+class TestPhase45CR1Regressions:
+    """R1 P0 / P1 / P3 regressions on the survey-aware pretest paths."""
+
+    def _make_overall_panel(self, with_w_col=False):
+        d_arr, dy_arr = _linear_dgp(G=20, beta=2.0, sigma=0.3)
+        df = _make_two_period_panel(G=20, d=d_arr, dy=dy_arr)
+        if with_w_col:
+            rng = np.random.default_rng(7)
+            w_per_unit = rng.uniform(0.5, 2.0, size=20)
+            df["w"] = df["unit"].map(dict(zip(np.arange(20), w_per_unit)))
+        return df
+
+    def _make_staggered_panel(self, G_per_cohort=10, with_w_col=False):
+        """Two-cohort staggered panel: cohort A treats at F=2, cohort B at F=3.
+
+        Last-cohort filter (per HAD Appendix B.2) keeps only cohort B.
+        Workflow / data-in wrappers under aggregate='event_study' must
+        subset row-level weights= to the surviving cohort (R1 P1)."""
+        rng = np.random.default_rng(0)
+        rows = []
+        for cohort, F_g in [("A", 2), ("B", 3)]:
+            for g in range(G_per_cohort):
+                unit_id = (0 if cohort == "A" else G_per_cohort) + g
+                d_post = rng.uniform(0.1, 1.0)
+                for t in range(4):
+                    d_t = d_post if t >= F_g else 0.0
+                    y_t = rng.normal() + (2.0 * d_post * (t - F_g + 1) if t >= F_g else 0.0)
+                    rows.append({"unit": unit_id, "time": t, "y": y_t, "d": d_t, "F": F_g})
+        df = pd.DataFrame(rows)
+        if with_w_col:
+            n_units = 2 * G_per_cohort
+            w_per_unit = np.random.default_rng(7).uniform(0.5, 2.0, size=n_units)
+            df["w"] = df["unit"].map(dict(zip(np.arange(n_units), w_per_unit)))
+        return df
+
+    # --- R1 P0: zero-weight survey rejection -------------------------------
+
+    def test_stute_test_zero_survey_weight_raises(self):
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        d, dy = _linear_dgp(G=30)
+        w = np.ones(30)
+        w[0] = 0.0
+        resolved = ResolvedSurveyDesign(
+            weights=w,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=30,
+            lonely_psu="remove",
+        )
+        with pytest.raises(ValueError, match="strictly positive"):
+            stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
+
+    def test_stute_joint_pretest_zero_survey_weight_raises(self):
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        G = 20
+        residuals_by_horizon = {
+            "0": np.random.default_rng(0).normal(size=G),
+            "1": np.random.default_rng(1).normal(size=G),
+        }
+        fitted_by_horizon = {"0": np.zeros(G), "1": np.zeros(G)}
+        doses = np.linspace(0.1, 1.0, G)
+        design_matrix = np.column_stack([np.ones(G), doses])
+        w = np.ones(G)
+        w[0] = 0.0
+        resolved = ResolvedSurveyDesign(
+            weights=w,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=G,
+            lonely_psu="remove",
+        )
+        with pytest.raises(ValueError, match="strictly positive"):
+            stute_joint_pretest(
+                residuals_by_horizon=residuals_by_horizon,
+                fitted_by_horizon=fitted_by_horizon,
+                doses=doses,
+                design_matrix=design_matrix,
+                n_bootstrap=199,
+                seed=0,
+                survey=resolved,
+            )
+
+    def test_workflow_zero_survey_weight_column_rejected(self):
+        from diff_diff import SurveyDesign
+
+        df = self._make_overall_panel(with_w_col=True)
+        df.loc[df["unit"] == 0, "w"] = 0.0
+        with pytest.raises(ValueError, match="strictly positive"):
+            did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey=SurveyDesign(weights="w"),
+                n_bootstrap=199,
+                seed=0,
+            )
+
+    # --- R1 P1: aweight/fweight pweight-only guard -------------------------
+
+    def test_stute_test_aweight_rejected(self):
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        d, dy = _linear_dgp(G=30)
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(30),
+            weight_type="aweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=30,
+            lonely_psu="remove",
+        )
+        with pytest.raises(ValueError, match="weight_type='pweight'"):
+            stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
+
+    def test_yatchew_hr_test_fweight_rejected(self):
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        d, dy = _linear_dgp(G=30)
+        resolved = ResolvedSurveyDesign(
+            weights=np.ones(30),
+            weight_type="fweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=30,
+            lonely_psu="remove",
+        )
+        with pytest.raises(ValueError, match="weight_type='pweight'"):
+            yatchew_hr_test(d, dy, survey=resolved)
+
+    def test_workflow_aweight_rejected_at_resolution(self):
+        from diff_diff import SurveyDesign
+
+        df = self._make_overall_panel(with_w_col=True)
+        with pytest.raises(ValueError, match="weight_type='pweight'"):
+            did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey=SurveyDesign(weights="w", weight_type="aweight"),
+                n_bootstrap=199,
+                seed=0,
+            )
+
+    # --- R1 P1: staggered event-study weights= subsetting ------------------
+
+    def test_workflow_staggered_event_study_weights_subset_correctly(self):
+        """R1 P1: on staggered panels, _validate_multi_period_panel filters
+        to the last cohort; row-level weights= must be subset to the
+        surviving cohort BEFORE re-aggregation. Pre-fix this crashed with
+        a length-mismatch ValueError."""
+        df = self._make_staggered_panel(G_per_cohort=10)
+        n_rows = 2 * 10 * 4
+        weights_per_row = np.ones(n_rows) * 1.5
+        with pytest.warns(UserWarning):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                first_treat_col="F",
+                aggregate="event_study",
+                weights=weights_per_row,
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert report.aggregate == "event_study"
+        assert report.qug is None
+        assert report.homogeneity_joint is not None
