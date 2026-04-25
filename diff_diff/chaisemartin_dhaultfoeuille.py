@@ -1490,18 +1490,42 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             )
             _switch_metadata_computed = True
 
-            # by_path + controls multi-baseline deviation from R: R re-runs
-            # the per-baseline OLS residualization on each path's restricted
-            # subsample (path's switchers + same-baseline not-yet-treated
-            # controls), so its residualization coefficients can differ per
-            # path. We residualize once on the full panel before path
-            # enumeration. On single-baseline switcher panels (every
-            # switcher has the same D_{g,1}) the two strategies coincide
-            # and per-path point estimates match R exactly. On multi-
-            # baseline switcher panels they can diverge — warn the user
-            # explicitly so they don't silently consume estimates that
-            # disagree with R. SE inheritance (cross-path cohort-sharing)
-            # is documented separately in REGISTRY.md.
+            # by_path + controls residualization-sample deviation from R.
+            # R's `did_multiplegt_dyn(..., by_path, controls)` calls
+            # `did_multiplegt_main()` once per path with `df_main` filtered
+            # to: rows of the path's switchers OR rows where
+            # `yet_to_switch=1 AND baseline matches the path's baseline`
+            # (R/R/did_multiplegt_dyn.R lines 401-405). Inside the per-path
+            # `did_multiplegt_main()` call, the per-baseline first-stage
+            # residualization regression uses `(g, t)` cells where g's
+            # treatment hasn't changed yet at t. Critically, R's path-
+            # restricted subset INCLUDES the pre-switch rows of OTHER-path
+            # switchers via the `yet_to_switch=1 AND baseline matches`
+            # clause, so the first-stage SAMPLE that R uses for path B
+            # equals: pre-switch rows of all switchers with matching
+            # baseline + all rows of never-switchers with matching
+            # baseline. This is BIT-IDENTICAL to the first-stage sample
+            # we use under our global residualization — first-stage
+            # coefficients (and therefore residualized outcomes) coincide,
+            # and per-path point estimates match R exactly **under single-
+            # baseline switcher panels** (every switcher has the same
+            # `D_{g,1}`, regardless of how `F_g` varies across paths or
+            # within a path). Empirical confirmation: the
+            # `multi_path_reversible_by_path_controls` R-parity scenario
+            # has 4 paths with switcher `F_g` values spanning [0..6] under
+            # `D_{g,1}=0` for every switcher, and Python matches R to
+            # rtol ~1e-11 across all `(path, horizon)` cells.
+            #
+            # On MULTI-baseline switcher panels the per-baseline regression
+            # coefficients diverge per path under R (R's per-path subset
+            # for path B drops switchers whose baseline differs from B's
+            # baseline), so point estimates can diverge between Python and
+            # R — warn the user explicitly. The check filters to switcher
+            # groups only (never-switchers do not contribute to "switcher
+            # baseline" multiplicity even if they appear at multiple
+            # `D_{g,1}` values across the never-treated / always-treated
+            # control mix). SE inheritance (cross-path cohort-sharing) is
+            # documented separately in REGISTRY.md.
             if self.by_path is not None:
                 _switcher_mask = first_switch_idx_arr >= 0
                 if _switcher_mask.any():
