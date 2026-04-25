@@ -76,8 +76,11 @@ def phase1_results(panel):
 
 @pytest.fixture(scope="module")
 def event_study_results(panel):
-    """Event-study fit: L_max=2 + multiplier bootstrap. Same warning
-    treatment as the notebook (Accelerate matmul filter; A7 visible)."""
+    """Event-study fit: L_max=2 + multiplier bootstrap. The A7
+    UserWarning is intentionally muted here so the fixture is quiet
+    for the value-checking tests below; the notebook's actual
+    warning-policy contract (A7 visible, only matmul filtered) is
+    validated separately by `test_event_study_warning_policy_matches_notebook`."""
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -123,13 +126,12 @@ def test_overall_ci_covers_truth(phase1_results):
 
 
 def test_overall_ci_endpoints_match_quoted(phase1_results):
-    """Section 3 narrative quotes '95% CI: 11.3 to 12.8'. Lock the
-    rounded endpoints so prose drift fails this test."""
+    """Section 3 narrative quotes '95% CI: 11.3 to 12.8'. Pin the
+    one-decimal display exactly so any drift past the displayed
+    rounding fails this test."""
     ci_low, ci_high = phase1_results.overall_conf_int
-    # CI lower endpoint rounds to 11.3 -> band covers 11.0..11.6
-    assert 11.0 <= ci_low <= 11.6, ci_low
-    # CI upper endpoint rounds to 12.8 -> band covers 12.5..13.1
-    assert 12.5 <= ci_high <= 13.1, ci_high
+    assert round(ci_low, 1) == 11.3, ci_low
+    assert round(ci_high, 1) == 12.8, ci_high
 
 
 def test_joiners_leavers_consistent(phase1_results):
@@ -154,14 +156,14 @@ def test_event_study_horizons_cover_truth(event_study_results):
 
 def test_event_study_ci_endpoints_match_quoted(event_study_results):
     """Section 4 narrative quotes l=1 CI [11.4, 13.3] and l=2 CI
-    [11.5, 13.6]. Lock the rounded endpoints so prose drift fails."""
+    [11.5, 13.6]. Pin the one-decimal display exactly."""
     es = event_study_results.event_study_effects
     # l=1 CI [11.4, 13.3]
-    assert 11.1 <= es[1]["conf_int"][0] <= 11.7, es[1]["conf_int"]
-    assert 13.0 <= es[1]["conf_int"][1] <= 13.6, es[1]["conf_int"]
+    assert round(es[1]["conf_int"][0], 1) == 11.4, es[1]["conf_int"]
+    assert round(es[1]["conf_int"][1], 1) == 13.3, es[1]["conf_int"]
     # l=2 CI [11.5, 13.6]
-    assert 11.2 <= es[2]["conf_int"][0] <= 11.8, es[2]["conf_int"]
-    assert 13.3 <= es[2]["conf_int"][1] <= 13.9, es[2]["conf_int"]
+    assert round(es[2]["conf_int"][0], 1) == 11.5, es[2]["conf_int"]
+    assert round(es[2]["conf_int"][1], 1) == 13.6, es[2]["conf_int"]
 
 
 def test_event_study_significance(event_study_results):
@@ -209,6 +211,48 @@ def test_assumption7_warning_fires_as_expected(panel):
         and "leavers present" in str(w.message)
     ]
     assert len(a7_warnings) >= 1, [str(w.message)[:80] for w in ws]
+
+
+def test_event_study_warning_policy_matches_notebook(panel):
+    """Mirror the notebook's exact warning policy on the visible
+    event-study fit and assert the resulting warning set matches the
+    documented contract: exactly one UserWarning (the A7 leavers-present
+    warning that the notebook's markdown explains), and zero
+    RuntimeWarnings (matmul-pattern ones filtered; everything else
+    surfaces). If the library starts emitting an unexpected warning on
+    this code path, this test fails and the notebook prose may need to
+    be updated."""
+    with warnings.catch_warnings(record=True) as ws:
+        warnings.simplefilter("always")
+        # MIRROR the notebook's narrow filter exactly (no np.errstate, no
+        # blanket A7 suppression).
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*encountered in matmul",
+            category=RuntimeWarning,
+        )
+        model = DCDH(
+            twfe_diagnostic=False, placebo=True, n_bootstrap=199, seed=42
+        )
+        model.fit(
+            panel,
+            outcome="sessions",
+            group="market_id",
+            time="week",
+            treatment="promo_on",
+            L_max=2,
+        )
+    user_warnings = [w for w in ws if w.category is UserWarning]
+    runtime_warnings = [w for w in ws if w.category is RuntimeWarning]
+    # Exactly one UserWarning, and it's the documented A7 warning.
+    assert len(user_warnings) == 1, [str(w.message)[:120] for w in user_warnings]
+    msg = str(user_warnings[0].message)
+    assert "Assumption 7" in msg, msg
+    assert "leavers present" in msg, msg
+    # All RuntimeWarnings should be the matmul pattern (filtered) - so
+    # zero remaining. If a new RuntimeWarning fires from somewhere else,
+    # this fails.
+    assert len(runtime_warnings) == 0, [str(w.message)[:120] for w in runtime_warnings]
 
 
 def test_a11_warning_does_not_fire():
