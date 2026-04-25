@@ -2861,12 +2861,15 @@ class HeterogeneousAdoptionDiD:
             Replicate-weight designs raise ``NotImplementedError``
             (Phase 4.5 C). Mutually exclusive with the deprecated
             ``survey=`` and ``weights=`` aliases.
-        survey : SurveyDesign or None, keyword-only
-            DEPRECATED alias of ``survey_design=``. Will be removed in
-            the next minor release; prefer ``survey_design=``.
-        weights : np.ndarray or None, keyword-only
-            DEPRECATED alias for the per-row pweight shortcut. Prefer
-            adding the weights as a column on ``data`` and passing
+        survey : SurveyDesign or None
+            DEPRECATED alias of ``survey_design=``. Remains positional-or-
+            keyword for one minor cycle to preserve pre-PR call shapes;
+            will be removed in the next minor release. Prefer
+            ``survey_design=``.
+        weights : np.ndarray or None
+            DEPRECATED alias for the per-row pweight shortcut. Remains
+            positional-or-keyword for one minor cycle. Prefer adding the
+            weights as a column on ``data`` and passing
             ``survey_design=SurveyDesign(weights='col_name')`` instead.
             Will be removed in the next minor release. Currently
             preserved as the analytical-HC1-sandwich shortcut (continuous:
@@ -2876,14 +2879,14 @@ class HeterogeneousAdoptionDiD:
         cband : bool, default True
             Phase 4.5 B: controls the multiplier-bootstrap simultaneous
             confidence band on the weighted event-study path. When
-            ``True`` (default) and ``aggregate="event_study"`` AND
-            ``weights=`` or ``survey=`` is supplied, the fit populates
-            ``cband_low`` / ``cband_high`` / ``cband_crit_value`` /
-            ``cband_method`` / ``cband_n_bootstrap`` on the result. When
-            ``False`` those fields stay ``None``. No effect on
-            ``aggregate="overall"`` or on unweighted event-study.
-            ``n_bootstrap`` and ``seed`` (constructor params) control
-            replicate count and RNG; defaults are 999 / ``None``.
+            ``True`` (default) and ``aggregate="event_study"`` AND any of
+            ``survey_design=`` / ``survey=`` / ``weights=`` is supplied,
+            the fit populates ``cband_low`` / ``cband_high`` /
+            ``cband_crit_value`` / ``cband_method`` / ``cband_n_bootstrap``
+            on the result. When ``False`` those fields stay ``None``. No
+            effect on ``aggregate="overall"`` or on unweighted event-
+            study. ``n_bootstrap`` and ``seed`` (constructor params)
+            control replicate count and RNG; defaults are 999 / ``None``.
 
         Returns
         -------
