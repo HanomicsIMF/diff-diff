@@ -330,8 +330,41 @@ class SyntheticDiD(DifferenceInDifferences):
             _validate_unit_constant_survey,
         )
 
+        # R11 P1 fix: FPC is a documented no-op on placebo (Pesarin 2001
+        # §1.5 — permutation tests condition on the observed sample), but
+        # ``SurveyDesign.resolve()`` itself enforces ``FPC >= n_PSU``
+        # design-validity constraints (survey.py:349-368). On placebo,
+        # those constraints would block legitimate fits for a design
+        # element that doesn't enter the placebo math. Drop FPC from a
+        # copy of the survey design before resolution so placebo
+        # bypasses the validator entirely; emit the FPC no-op warning
+        # at the same time. The original survey_design object is
+        # preserved (caller's reference unchanged).
+        survey_design_for_resolve = survey_design
+        if (
+            self.variance_method == "placebo"
+            and survey_design is not None
+            and getattr(survey_design, "fpc", None) is not None
+        ):
+            import dataclasses as _dc
+            warnings.warn(
+                "SurveyDesign(fpc=...) is a no-op on "
+                "variance_method='placebo': permutation tests are "
+                "conditional on the observed sample (Pesarin 2001 §1.5), "
+                "so the sampling fraction does not enter Algorithm 4 or "
+                "its stratified-permutation survey extension. The FPC "
+                "column is dropped from the resolved survey design for "
+                "the placebo fit (this also bypasses the FPC >= n_PSU "
+                "design-validity check in SurveyDesign.resolve()). Use "
+                "variance_method='bootstrap' or 'jackknife' if you need "
+                "FPC to participate in the variance computation.",
+                UserWarning,
+                stacklevel=2,
+            )
+            survey_design_for_resolve = _dc.replace(survey_design, fpc=None)
+
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
-            _resolve_survey_for_fit(survey_design, data, "analytical")
+            _resolve_survey_for_fit(survey_design_for_resolve, data, "analytical")
         )
         # Reject replicate-weight designs — SyntheticDiD has no replicate-
         # weight variance path. Analytical (pweight / strata / PSU / FPC)
@@ -822,25 +855,11 @@ class SyntheticDiD(DifferenceInDifferences):
                 or resolved_survey_unit.psu is not None
             )
         )
-        if (
-            self.variance_method == "placebo"
-            and resolved_survey_unit is not None
-            and resolved_survey_unit.fpc is not None
-        ):
-            warnings.warn(
-                "SurveyDesign(fpc=...) is a no-op on "
-                "variance_method='placebo': permutation tests are "
-                "conditional on the observed sample (Pesarin 2001 §1.5), "
-                "so the sampling fraction does not enter Algorithm 4 or "
-                "its stratified-permutation survey extension. The FPC "
-                "column is preserved in the design metadata for other "
-                "purposes but the placebo SE is computed as if FPC were "
-                "absent. Use variance_method='bootstrap' or 'jackknife' "
-                "if you need FPC to participate in the variance "
-                "computation.",
-                UserWarning,
-                stacklevel=2,
-            )
+        # NOTE: the FPC no-op warning for placebo is emitted earlier
+        # (before ``_resolve_survey_for_fit``); ``resolved_survey_unit.fpc``
+        # is already None on the placebo path because the FPC column is
+        # dropped from a copy of the survey design pre-resolve. No
+        # duplicate warning here.
 
         # Jackknife routes to the survey allocator whenever PSU or FPC or
         # strata is declared. PSU-without-strata is treated as a single
@@ -929,38 +948,60 @@ class SyntheticDiD(DifferenceInDifferences):
                         "same full survey design via weighted-FW + Rao-Wu "
                         "without a per-draw positive-mass constraint)."
                     )
-                if n_c_h > int(n_t_h):
+                # Non-degenerate iff this stratum yields ≥2 distinct
+                # positive-mass pseudo-treated draws. Two necessary
+                # conditions, both required:
+                #   * ``n_c_h > n_t_h`` — raw without-replacement count
+                #     allows multiple subsets (otherwise only the
+                #     "all-controls-as-pseudo-treated" subset exists,
+                #     regardless of weights — Case D classical shape).
+                #   * ``n_c_h_positive >= 2`` — at least 2 distinct
+                #     positive-mass means are reachable. With only 1
+                #     positive-weight control, every successful pick
+                #     reduces to that single control's mean (zero-
+                #     weight cohabitants contribute 0 to numerator and
+                #     denominator), regardless of how many subsets the
+                #     raw allocator can construct (Case D effective
+                #     single-support shape, R11 P1).
+                if n_c_h > int(n_t_h) and n_c_h_positive >= 2:
                     has_nondegenerate_stratum = True
-            # Case D: every treated stratum is exact-count
-            # (``n_c_h == n_t_h``). The stratified permutation support
-            # collapses to a single allocation — every placebo draw
-            # reproduces the same pseudo-treated set, giving a degenerate
-            # null (SE ≈ 0 up to FP noise, no meaningful sampling
-            # distribution). Reject at fit-time rather than silently
-            # reporting a near-zero SE; the overall permutation support is
-            # ``∏_h C(n_c_h, n_t_h)``, so at least one treated stratum must
-            # satisfy ``n_c_h > n_t_h`` for the test to have ≥2 distinct
-            # allocations.
+            # Case D: every treated stratum is effectively single-
+            # support, so the placebo null collapses to a single
+            # positive-mass allocation. Two paths into this:
+            #   * Raw exact-count (``n_c_h == n_t_h`` for every treated
+            #     stratum, R4 P1): the without-replacement permutation
+            #     yields a single subset, every draw is identical.
+            #   * Effective single-support (``n_c_h_positive < 2`` for
+            #     every treated stratum, R11 P1): positive-mass picks
+            #     reduce to a single distinct mean even when raw count
+            #     counts are larger, because zero-weight controls
+            #     contribute 0 to numerator and denominator. Successful
+            #     draws all collapse to the unique positive-weight
+            #     subset.
+            # Both shapes produce SE = FP noise (~1e-16) — reject up
+            # front rather than silently reporting a near-zero SE.
             if not has_nondegenerate_stratum:
                 detail = ", ".join(
                     f"stratum {h}: n_c={int(np.sum(_strata_control_eff == h))}, "
+                    f"n_c_positive={int(np.sum(w_control[_strata_control_eff == h] > 0))}, "
                     f"n_t={int(n_t_h)}"
                     for h, n_t_h in zip(unique_treated_strata, treated_counts)
                 )
                 raise ValueError(
                     "Stratified-permutation placebo support is degenerate: "
-                    "every treated-containing stratum has exactly "
-                    "n_controls == n_treated, so the within-stratum "
-                    "permutation yields a single allocation across all "
-                    f"draws ({detail}). The resulting placebo distribution "
-                    "collapses to one point and SE is not a meaningful "
-                    "null estimate. At least one treated stratum must "
-                    "have n_controls > n_treated for the permutation to "
-                    "have ≥2 distinct allocations. Either rebalance the "
-                    "panel, or use variance_method='bootstrap' (which "
-                    "supports the same full survey design via weighted-FW "
-                    "+ Rao-Wu without a permutation-feasibility "
-                    "constraint)."
+                    "every treated-containing stratum has fewer than 2 "
+                    "positive-weight controls, so within-stratum "
+                    "permutation yields a single distinct positive-mass "
+                    f"pseudo-treated mean across all draws ({detail}). "
+                    "The resulting placebo distribution collapses to one "
+                    "point and SE is not a meaningful null estimate. At "
+                    "least one treated stratum must have ≥2 positive-"
+                    "weight controls (and n_c_positive > n_t for the "
+                    "test to have ≥2 distinct allocations). Either "
+                    "rebalance the panel, or use "
+                    "variance_method='bootstrap' (which supports the "
+                    "same full survey design via weighted-FW + Rao-Wu "
+                    "without a permutation-feasibility constraint)."
                 )
 
         # Compute standard errors on normalized Y, rescale to original units.

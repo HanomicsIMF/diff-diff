@@ -841,6 +841,53 @@ class TestSDIDSurveyPlaceboFullDesign:
                 survey_design=sd,
             )
 
+    def test_placebo_full_design_raises_on_effective_single_support(
+        self, sdid_survey_data_full_design
+    ):
+        """R11 P1 fix: Case D effective single-support — n_t_h == 1 with
+        only one positive-weight control + zero-weight cohabitants.
+
+        Row-count guards pass (``n_c_h > n_t_h``) and Case E passes
+        (``n_c_h_positive == n_t_h``), but every successful pseudo-
+        treated draw collapses to the single positive-weight control's
+        outcome (zero-weight cohabitants contribute 0 to numerator and
+        denominator). The placebo distribution is degenerate: SE ≈ 0
+        from FP noise across identical means, not a meaningful null.
+
+        Without this guard, the previous code marked the stratum as
+        non-degenerate based on ``n_c_h > n_t_h`` (raw count), and the
+        retry loop would silently succeed on any positive-mass pick
+        with the same effective mean → ``SE = 0.0``.
+        """
+        # Build a fixture where stratum 0 has 1 treated + 1 positive-
+        # weight control + multiple zero-weight controls; stratum 1
+        # has only controls. This sets up effective single-support
+        # in stratum 0 even though raw n_c_h > n_t_h.
+        # Reuse sdid_survey_data_full_design but trim to 1 treated and
+        # zero out most stratum-0 controls' weights.
+        df = sdid_survey_data_full_design.copy()
+        # Drop treated units 1-4, keep unit 0 as the sole treated.
+        df = df[~df["unit"].isin([1, 2, 3, 4])].copy()
+        # Stratum 0 controls (5-14): keep unit 5 with positive weight,
+        # zero out 6-14.
+        df.loc[df["unit"].isin(range(6, 15)), "weight"] = 0.0
+
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        with pytest.raises(
+            ValueError,
+            match=r"single distinct positive-mass pseudo-treated mean",
+        ):
+            est.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd,
+            )
+
     def test_placebo_full_design_raises_on_zero_weight_controls_in_stratum(
         self, sdid_survey_data_full_design
     ):
@@ -897,7 +944,7 @@ class TestSDIDSurveyPlaceboFullDesign:
         est = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
         with pytest.raises(
             ValueError,
-            match=r"permutation yields a single allocation across all draws",
+            match=r"single distinct positive-mass pseudo-treated mean across all draws",
         ):
             est.fit(
                 sdid_survey_data,
@@ -1030,6 +1077,82 @@ class TestSDIDSurveyPlaceboFullDesign:
         # introduce on `fpc is not None`).
         assert r_fpc.se == pytest.approx(r_pw.se, rel=1e-12)
         assert r_fpc.att == pytest.approx(r_pw.att, abs=1e-12)
+
+    def test_placebo_low_fpc_with_explicit_psu_skips_resolve_validator(
+        self, sdid_survey_data_full_design
+    ):
+        """R11 P1 fix: ``SurveyDesign.resolve()`` itself enforces
+        ``FPC >= n_PSU`` design-validity, but FPC is a placebo no-op
+        (Pesarin 2001 §1.5). On the placebo path, FPC is dropped from
+        a copy of the SurveyDesign before resolution so the
+        resolve-time validator never fires; the user sees the
+        documented FPC no-op warning and the fit succeeds.
+
+        Test: explicit ``psu`` + low ``fpc`` (below the per-stratum
+        ``n_PSU`` threshold) — would normally raise inside
+        ``SurveyDesign.resolve()`` with "FPC must be >= n_PSU". On
+        placebo, it succeeds with the no-op warning. Bootstrap on the
+        same design still raises (validator-skip is variance-method-
+        gated).
+        """
+        df = sdid_survey_data_full_design.copy()
+        # Each stratum has 3 PSUs in the well-formed-jackknife layout,
+        # but sdid_survey_data_full_design has stratum 0 with PSUs
+        # {0,1,2} and stratum 1 with PSUs {3,4,5} — 3 PSUs each. fpc=2
+        # is below the 3-PSU threshold per stratum.
+        df["fpc_low"] = 2.0
+
+        sd_low_fpc_psu = SurveyDesign(
+            weights="weight", strata="stratum", psu="psu", fpc="fpc_low"
+        )
+        sd_no_fpc = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+
+        est_fpc = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        with pytest.warns(
+            UserWarning,
+            match=r"SurveyDesign\(fpc=\.\.\.\) is a no-op on variance_method='placebo'",
+        ):
+            r_fpc = est_fpc.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd_low_fpc_psu,
+            )
+
+        est_no_fpc = SyntheticDiD(variance_method="placebo", n_bootstrap=50, seed=42)
+        r_no_fpc = est_no_fpc.fit(
+            df,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_no_fpc,
+        )
+
+        # FPC truly is a no-op for placebo even with explicit psu: SE
+        # matches the no-FPC fit at machine precision.
+        assert r_fpc.se == pytest.approx(r_no_fpc.se, rel=1e-12)
+        assert r_fpc.att == pytest.approx(r_no_fpc.att, abs=1e-12)
+        # Bootstrap on the same low-FPC design still raises the resolve-
+        # time validator error (validator-skip stays placebo-only).
+        est_boot = SyntheticDiD(variance_method="bootstrap", n_bootstrap=20, seed=42)
+        with pytest.raises(
+            ValueError,
+            match=r"FPC \(2\.0\) is less than the number of PSUs",
+        ):
+            est_boot.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd_low_fpc_psu,
+            )
 
     def test_placebo_low_fpc_no_psu_warns_no_validator_block(
         self, sdid_survey_data_full_design
