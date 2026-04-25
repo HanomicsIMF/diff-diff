@@ -70,6 +70,15 @@ Survey-aware DiD with complex sampling designs (strata, PSU, FPC, weights):
 - DEFF diagnostics
 - Repeated cross-sections with survey design
 
+### 17. Brand Awareness Survey (`17_brand_awareness_survey.ipynb`)
+Practitioner walkthrough for measuring brand-campaign lift on survey data with complex sampling:
+- The brand-tracker problem framed for marketing analytics
+- Naive vs survey-aware DiD comparison (overconfidence under naive)
+- `SurveyDesign` setup (strata, PSU, FPC, weights) wired into the fit
+- Funnel-metric extension across awareness / consideration / purchase intent
+- Diagnostics (parallel trends, placebo, automated `practitioner_next_steps()`)
+- Stakeholder communication template
+
 ### 18. Geo-Experiment Analysis with SyntheticDiD (`18_geo_experiments.ipynb`)
 Practitioner walkthrough for marketing analytics teams measuring geo-experiment lift:
 - The geo-experiment problem framed for marketing analytics
@@ -77,6 +86,14 @@ Practitioner walkthrough for marketing analytics teams measuring geo-experiment 
 - `SyntheticDiD` fit, diagnostics, and inference (placebo + bootstrap)
 - Unit weights and time weights interpretation
 - Stakeholder communication template (Tutorial 17 Section 9 pattern)
+
+### 19. dCDH Marketing Pulse Campaigns (`19_dcdh_marketing_pulse.ipynb`)
+Practitioner walkthrough for measuring lift from on/off promotional pulses across markets, where treatment can switch in both directions:
+- The marketing-pulse problem framed for reversible (non-absorbing) treatment
+- TWFE decomposition diagnostic (`twowayfeweights`) showing why standard regression misleads on reversible panels (de Chaisemartin & D'Haultfoeuille 2020 Theorem 1)
+- `DCDH` Phase 1: DID_M, joiners-vs-leavers decomposition, single-lag placebo
+- Multi-horizon event study with `L_max` + multiplier bootstrap
+- Stakeholder communication template + drift guards
 
 ## Running the Notebooks
 
