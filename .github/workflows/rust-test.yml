@@ -19,6 +19,9 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/rust-test.yml'
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
