@@ -3673,14 +3673,20 @@ def did_had_pretest_workflow(
             f"aggregate must be one of {list(_VALID_AGGREGATES)!r}; " f"got {aggregate!r}."
         )
 
-    # Phase 4.5 C: survey/weights mutex + per-helper resolution. Reuses
-    # the data-in helper that aggregates per-row weights/survey to per-unit
-    # form via the HAD aggregators (constant-within-unit invariant
-    # enforced; replicate-weight rejected on the survey path).
-    weights_unit, resolved_unit = _resolve_pretest_unit_weights(
-        data, unit_col, weights, survey, "did_had_pretest_workflow"
-    )
-    use_survey_path = (weights_unit is not None) or (resolved_unit is not None)
+    # Phase 4.5 C: survey/weights mutex + presence detection. R6 P1 fix:
+    # do NOT call _resolve_pretest_unit_weights on the FULL panel here --
+    # under aggregate='event_study' the panel may be staggered and the
+    # cohort filter at _validate_multi_period_panel can drop units. If
+    # those dropped units have zero/invalid weights, eager full-panel
+    # resolution would abort an otherwise-valid event-study run. Defer
+    # resolution to the per-aggregate branches: overall path resolves on
+    # the original data (no filtering); event-study path lets the joint
+    # wrappers handle resolution on data_filtered.
+    if survey is not None and weights is not None:
+        raise ValueError(
+            "did_had_pretest_workflow: pass survey=<SurveyDesign> OR " "weights=<array>, not both."
+        )
+    use_survey_path = (survey is not None) or (weights is not None)
 
     if use_survey_path:
         # Phase 4.5 C0 deferral surface: skip QUG with educational warning.
@@ -3882,6 +3888,12 @@ def did_had_pretest_workflow(
         t_pre,
         t_post,
         cluster_col=None,  # pretests do not use cluster-robust SE
+    )
+
+    # R6 P1 fix: resolve weights/survey HERE (overall path operates on
+    # the original data; no cohort filter to interact with).
+    weights_unit, resolved_unit = _resolve_pretest_unit_weights(
+        data, unit_col, weights, survey, "did_had_pretest_workflow"
     )
 
     qug_res = None if use_survey_path else qug_test(d_arr, alpha=alpha)

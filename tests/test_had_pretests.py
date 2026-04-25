@@ -3894,3 +3894,123 @@ class TestPhase45CR1Regressions:
         with pytest.warns(UserWarning, match="variance-unidentified"):
             r = stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
         assert np.isnan(r.p_value)
+
+    # --- R6 P1: positive non-trivial PSU/strata survey coverage -----------
+
+    def _make_event_study_panel_with_psu_strata(
+        self,
+        n_strata=2,
+        n_psu_per_stratum=3,
+        n_units_per_psu=2,
+        T_pre=2,
+        T_post=2,
+        seed=42,
+    ):
+        """Balanced event-study panel with non-trivial PSU/strata structure."""
+        rng = np.random.default_rng(seed)
+        rows = []
+        unit_id = 0
+        for h in range(n_strata):
+            for p in range(n_psu_per_stratum):
+                psu_global = h * n_psu_per_stratum + p
+                for _ in range(n_units_per_psu):
+                    d_post = rng.uniform(0.1, 1.0)
+                    w_unit = rng.uniform(0.5, 2.0)
+                    for t in range(T_pre + T_post):
+                        d_t = d_post if t >= T_pre else 0.0
+                        y_t = rng.normal() + (2.0 * d_post * (t - T_pre + 1) if t >= T_pre else 0.0)
+                        rows.append(
+                            {
+                                "unit": unit_id,
+                                "time": t,
+                                "y": y_t,
+                                "d": d_t,
+                                "stratum": h,
+                                "psu": psu_global,
+                                "w": w_unit,
+                            }
+                        )
+                    unit_id += 1
+        return pd.DataFrame(rows)
+
+    def test_joint_homogeneity_test_psu_strata_survey_smoke(self):
+        """R6 P1: positive coverage on joint_homogeneity_test with a
+        non-trivial PSU/strata survey design."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_event_study_panel_with_psu_strata(
+            n_strata=2, n_psu_per_stratum=3, n_units_per_psu=2
+        )
+        r = joint_homogeneity_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            post_periods=[2, 3],
+            base_period=1,
+            n_bootstrap=199,
+            seed=0,
+            survey=SurveyDesign(weights="w", strata="stratum", psu="psu"),
+        )
+        assert np.isfinite(r.cvm_stat_joint)
+        assert 0.0 <= r.p_value <= 1.0
+
+    def test_workflow_event_study_psu_strata_survey_smoke(self):
+        """R6 P1: positive coverage on did_had_pretest_workflow event-study
+        path with non-trivial PSU/strata structure. Exercises the full
+        survey-aware dispatch (validate_multi_period_panel + resolve on
+        data_filtered + joint_pretrends_test + joint_homogeneity_test
+        under PSU clustering)."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_event_study_panel_with_psu_strata(
+            n_strata=2, n_psu_per_stratum=3, n_units_per_psu=2
+        )
+        with pytest.warns(UserWarning, match="QUG step skipped"):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                survey=SurveyDesign(weights="w", strata="stratum", psu="psu"),
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert report.aggregate == "event_study"
+        assert report.qug is None
+        assert report.pretrends_joint is not None
+        assert np.isfinite(report.pretrends_joint.cvm_stat_joint)
+        assert report.homogeneity_joint is not None
+        assert np.isfinite(report.homogeneity_joint.cvm_stat_joint)
+
+    def test_workflow_event_study_zero_weights_on_dropped_cohort(self):
+        """R6 P1 regression: previously the workflow eagerly resolved
+        weights= on the FULL panel (before _validate_multi_period_panel's
+        last-cohort filter), so zero/invalid weights on the soon-to-be-
+        dropped cohort would abort an otherwise-valid event-study run.
+        Fix: resolution moved into the per-aggregate branches; the
+        event-study path lets joint wrappers handle resolution on
+        data_filtered. This test verifies a panel where the dropped
+        (early) cohort has zero weights succeeds on the surviving last
+        cohort."""
+        df = self._make_staggered_panel(G_per_cohort=10)
+        weights_per_row = np.array([0.0 if df.iloc[i]["F"] == 2 else 1.5 for i in range(len(df))])
+        with pytest.warns(UserWarning):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                first_treat_col="F",
+                aggregate="event_study",
+                weights=weights_per_row,
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert report.aggregate == "event_study"
+        assert report.qug is None
+        assert report.homogeneity_joint is not None
