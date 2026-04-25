@@ -1722,14 +1722,36 @@ def stute_test(
         # CvM recompute. Routes via synthetic trivial ResolvedSurveyDesign
         # for the weights= shortcut to share the same kernel.
         resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        # R10 P1: reject stratified designs explicitly until a derived
+        # Stute-specific correction lands. The HAD sup-t bootstrap
+        # (had.py:2120+) applies a within-stratum demean +
+        # sqrt(n_h/(n_h-1)) small-sample correction AFTER
+        # generate_survey_multiplier_weights_batch returns, to make the
+        # bootstrap variance match the Binder-TSL stratified target.
+        # That same correction has NOT been derived for the Stute CvM
+        # functional, so applying the helper's raw multipliers directly
+        # to residual perturbations on stratified designs leaves the
+        # bootstrap p-value silently miscalibrated. Pweight-only,
+        # PSU-only, and FPC-only designs are still supported (the
+        # helper's output is appropriately scaled for those).
+        if resolved_for_boot.strata is not None:
+            raise NotImplementedError(
+                "stute_test: SurveyDesign(strata=...) with stratified "
+                "sampling is not yet supported. The Stute CvM bootstrap "
+                "calibration on stratified designs requires a within-"
+                "stratum demean + sqrt(n_h/(n_h-1)) small-sample "
+                "correction analogous to the HAD sup-t bootstrap, but "
+                "the matching derivation for the Stute functional has "
+                "not been completed. Pweight-only or PSU-only "
+                "(SurveyDesign(weights=..., psu=...)) designs are "
+                "supported; pre-process stratified designs to remove "
+                "the strata column or wait for the derivation in a "
+                "follow-up PR."
+            )
         # R5 P1: reject lonely_psu='adjust' singleton-strata designs
-        # explicitly (mirrors HAD sup-t bootstrap at had.py:2081-2118).
-        # The bootstrap helper pools singletons into a pseudo-stratum with
-        # NONZERO multipliers, but the matching variance target requires
-        # a pseudo-stratum centering transform that is not derived for
-        # the Stute CvM. Other lonely_psu modes ("remove" / "certainty")
-        # produce zero multipliers for singletons and are caught by the
-        # df_survey guard below.
+        # explicitly (now redundant with the strata guard above; kept
+        # for defense in depth and for residual non-stratified
+        # singleton-strata edge cases).
         if _has_lonely_psu_adjust_singletons(resolved_for_boot):
             raise NotImplementedError(
                 "stute_test: SurveyDesign(lonely_psu='adjust') with "
@@ -2914,9 +2936,25 @@ def stute_joint_pretest(
         # vector-valued empirical-process unit-level dependence (paper
         # convention) AND PSU clustering (Krieger-Pfeffermann 1997).
         resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        # R10 P1: reject stratified designs explicitly until a derived
+        # Stute-specific correction lands (mirrors stute_test
+        # single-horizon).
+        if resolved_for_boot.strata is not None:
+            raise NotImplementedError(
+                "stute_joint_pretest: SurveyDesign(strata=...) with "
+                "stratified sampling is not yet supported. The Stute "
+                "CvM bootstrap calibration on stratified designs "
+                "requires a within-stratum demean + sqrt(n_h/(n_h-1)) "
+                "small-sample correction analogous to the HAD sup-t "
+                "bootstrap, but the matching derivation for the joint "
+                "Stute functional has not been completed. Pweight-only "
+                "or PSU-only designs are supported; pre-process "
+                "stratified designs to remove the strata column or wait "
+                "for the derivation in a follow-up PR."
+            )
         # R5 P1: reject lonely_psu='adjust' singleton-strata designs
-        # explicitly (mirrors stute_test single-horizon and HAD sup-t
-        # bootstrap).
+        # explicitly (now redundant with the strata guard above; kept
+        # for defense in depth).
         if _has_lonely_psu_adjust_singletons(resolved_for_boot):
             raise NotImplementedError(
                 "stute_joint_pretest: SurveyDesign(lonely_psu='adjust') "

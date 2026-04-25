@@ -3849,18 +3849,21 @@ class TestPhase45CR1Regressions:
             lonely_psu=lonely_psu,
         )
 
-    def test_stute_test_lonely_psu_adjust_singletons_raises(self):
-        """R5 P1: Stute survey path explicitly rejects
-        lonely_psu='adjust' with singleton strata (mirrors HAD sup-t
-        bootstrap)."""
+    def test_stute_test_stratified_design_raises(self):
+        """R10 P1: Stute survey path explicitly rejects ANY stratified
+        design (`SurveyDesign(strata=...)`) -- the matching Stute-CvM
+        stratified-correction derivation is not yet completed. This
+        guard supersedes the prior R5 P1 lonely_psu='adjust' guard,
+        which only fired on the singleton-stratum subset of stratified
+        designs. PSU-only and pweight-only designs remain supported."""
         d, dy = _linear_dgp(G=30)
         resolved = self._make_singleton_strata_resolved(G=30, lonely_psu="adjust")
-        with pytest.raises(NotImplementedError, match="lonely_psu='adjust'"):
+        with pytest.raises(NotImplementedError, match="stratified"):
             stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
 
-    def test_stute_joint_pretest_lonely_psu_adjust_singletons_raises(self):
-        """R5 P1: joint-Stute survey path explicitly rejects
-        lonely_psu='adjust' with singleton strata."""
+    def test_stute_joint_pretest_stratified_design_raises(self):
+        """R10 P1: joint-Stute survey path explicitly rejects stratified
+        designs (mirrors stute_test single-horizon)."""
         G = 20
         residuals_by_horizon = {
             "0": np.random.default_rng(0).normal(size=G),
@@ -3870,7 +3873,7 @@ class TestPhase45CR1Regressions:
         doses = np.linspace(0.1, 1.0, G)
         design_matrix = np.column_stack([np.ones(G), doses])
         resolved = self._make_singleton_strata_resolved(G=G, lonely_psu="adjust")
-        with pytest.raises(NotImplementedError, match="lonely_psu='adjust'"):
+        with pytest.raises(NotImplementedError, match="stratified"):
             stute_joint_pretest(
                 residuals_by_horizon=residuals_by_horizon,
                 fitted_by_horizon=fitted_by_horizon,
@@ -3880,20 +3883,6 @@ class TestPhase45CR1Regressions:
                 seed=0,
                 survey=resolved,
             )
-
-    def test_stute_test_lonely_psu_remove_singletons_returns_nan(self):
-        """R5 P1: under lonely_psu='remove' (or 'certainty'), singleton
-        strata produce all-zero multipliers in the bootstrap helper.
-        The df_survey<=0 guard catches this and returns NaN with a
-        UserWarning (rather than the spurious p≈1/(B+1) without the
-        guard). Confirms that the explicit 'adjust' rejection above
-        does NOT change behavior on the well-defined 'remove' /
-        'certainty' modes."""
-        d, dy = _linear_dgp(G=30)
-        resolved = self._make_singleton_strata_resolved(G=30, lonely_psu="remove")
-        with pytest.warns(UserWarning, match="variance-unidentified"):
-            r = stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
-        assert np.isnan(r.p_value)
 
     # --- R6 P1: positive non-trivial PSU/strata survey coverage -----------
 
@@ -3933,9 +3922,10 @@ class TestPhase45CR1Regressions:
                     unit_id += 1
         return pd.DataFrame(rows)
 
-    def test_joint_homogeneity_test_psu_strata_survey_smoke(self):
-        """R6 P1: positive coverage on joint_homogeneity_test with a
-        non-trivial PSU/strata survey design."""
+    def test_joint_homogeneity_test_psu_only_survey_smoke(self):
+        """R6 P1 + R10 P1: positive coverage on joint_homogeneity_test
+        with PSU-only survey design (NO strata, since stratified is
+        rejected per R10 P1 narrowing)."""
         from diff_diff import SurveyDesign
 
         df = self._make_event_study_panel_with_psu_strata(
@@ -3951,17 +3941,36 @@ class TestPhase45CR1Regressions:
             base_period=1,
             n_bootstrap=199,
             seed=0,
-            survey=SurveyDesign(weights="w", strata="stratum", psu="psu"),
+            survey=SurveyDesign(weights="w", psu="psu"),
         )
         assert np.isfinite(r.cvm_stat_joint)
         assert 0.0 <= r.p_value <= 1.0
 
-    def test_workflow_event_study_psu_strata_survey_smoke(self):
-        """R6 P1: positive coverage on did_had_pretest_workflow event-study
-        path with non-trivial PSU/strata structure. Exercises the full
-        survey-aware dispatch (validate_multi_period_panel + resolve on
-        data_filtered + joint_pretrends_test + joint_homogeneity_test
-        under PSU clustering)."""
+    def test_joint_homogeneity_test_stratified_raises(self):
+        """R10 P1: stratified designs raise NotImplementedError on
+        joint_homogeneity_test (propagates via stute_joint_pretest)."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_event_study_panel_with_psu_strata(
+            n_strata=2, n_psu_per_stratum=3, n_units_per_psu=2
+        )
+        with pytest.raises(NotImplementedError, match="stratified"):
+            joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[2, 3],
+                base_period=1,
+                n_bootstrap=199,
+                seed=0,
+                survey=SurveyDesign(weights="w", strata="stratum", psu="psu"),
+            )
+
+    def test_workflow_event_study_psu_only_survey_smoke(self):
+        """R6 P1 + R10 P1: positive coverage on did_had_pretest_workflow
+        event-study path with PSU-only structure (no strata)."""
         from diff_diff import SurveyDesign
 
         df = self._make_event_study_panel_with_psu_strata(
@@ -3975,7 +3984,7 @@ class TestPhase45CR1Regressions:
                 "time",
                 "unit",
                 aggregate="event_study",
-                survey=SurveyDesign(weights="w", strata="stratum", psu="psu"),
+                survey=SurveyDesign(weights="w", psu="psu"),
                 n_bootstrap=199,
                 seed=0,
             )
@@ -4077,7 +4086,8 @@ class TestPhase45CR1Regressions:
             )
 
     def test_workflow_event_study_survey_pass_does_not_say_inconclusive(self):
-        """R7 P1: same invariant on the event-study survey path."""
+        """R7 P1: same invariant on the event-study survey path. Uses
+        PSU-only design (no strata) per R10 P1 narrowing."""
         from diff_diff import SurveyDesign
 
         df = self._make_event_study_panel_with_psu_strata(
@@ -4091,7 +4101,7 @@ class TestPhase45CR1Regressions:
                 "time",
                 "unit",
                 aggregate="event_study",
-                survey=SurveyDesign(weights="w", strata="stratum", psu="psu"),
+                survey=SurveyDesign(weights="w", psu="psu"),
                 n_bootstrap=199,
                 seed=0,
             )
