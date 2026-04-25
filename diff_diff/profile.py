@@ -67,12 +67,15 @@ class TreatmentDoseShape:
 
     Populated on :class:`PanelProfile` only when ``treatment_type ==
     "continuous"``; ``None`` otherwise. **Descriptive only** — none of
-    these fields are ``ContinuousDiD`` prerequisites. The authoritative
-    gates are ``PanelProfile.has_never_treated`` (unit-level
+    these fields are ``ContinuousDiD`` prerequisites. The core
+    field-based gates are ``PanelProfile.has_never_treated`` (unit-level
     never-treated existence), ``PanelProfile.treatment_varies_within_unit
     == False`` (per-unit full-path dose constancy, matching
     ``ContinuousDiD.fit()``'s ``df.groupby(unit)[dose].nunique() > 1``
-    rejection), and ``PanelProfile.is_balanced``.
+    rejection), and ``PanelProfile.is_balanced``, plus the absence of
+    the ``duplicate_unit_time_rows`` alert (``ContinuousDiD``'s
+    precompute path silently resolves duplicate ``(unit, time)`` cells
+    via last-row-wins, so duplicates must be removed before fitting).
 
     ``has_zero_dose`` is a row-level fact ("at least one observation has
     dose == 0"); it is NOT a substitute for ``has_never_treated``, which

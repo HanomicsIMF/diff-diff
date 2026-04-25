@@ -45,6 +45,18 @@ def test_content_stability_autonomous_fingerprints():
     # has_never_treated is the authoritative ContinuousDiD gate;
     # treatment_dose fields are descriptive only.
     assert "has_never_treated" in text
+    # The ContinuousDiD prerequisite summary must continue to mention
+    # the duplicate-row hard stop alongside the field-based gates -
+    # `_precompute_structures()` silently resolves duplicate cells via
+    # last-row-wins, so a reader treating the summary as exhaustive
+    # could route duplicate-containing panels into a silent-overwrite
+    # path. Guard against that wording regression.
+    assert "duplicate_unit_time_rows" in text, (
+        "ContinuousDiD prerequisite summary must mention the "
+        "`duplicate_unit_time_rows` alert: the precompute path resolves "
+        "duplicate (unit, time) cells via last-row-wins, so duplicates "
+        "must be removed before fitting."
+    )
 
 
 def test_autonomous_contains_worked_examples_section():

@@ -198,12 +198,15 @@ view. Every field below appears as a top-level key in that dict.
 - **`treatment_dose: Optional[TreatmentDoseShape]`** - distributional
   facts for continuous-treatment dose columns; `None` unless
   `treatment_type == "continuous"`. **Descriptive only — none of these
-  sub-fields are `ContinuousDiD` prerequisites.** The authoritative
+  sub-fields are `ContinuousDiD` prerequisites.** The core field-based
   pre-fit gates are `has_never_treated` (unit-level, above) for the
   zero-dose-control requirement and `treatment_varies_within_unit ==
   False` (above) for per-unit full-path dose constancy, matching
   `ContinuousDiD.fit()`'s `df.groupby(unit)[dose].nunique() > 1`
-  rejection. Sub-fields:
+  rejection, plus the absence of the `duplicate_unit_time_rows` alert
+  (the precompute path silently resolves duplicate `(unit, time)`
+  cells via last-row-wins, so duplicates must be removed before
+  fitting). Sub-fields:
     - `n_distinct_doses: int` - count of distinct non-NaN dose values
       (including zero if observed). Useful supplement to the gate
       checks for understanding the dose support.
@@ -496,11 +499,13 @@ When `treatment_type == "continuous"`:
   scalar first-stage adoption summary. Useful when adoption is
   graded rather than binary.
 
-The authoritative ContinuousDiD pre-fit gates are
-`has_never_treated == True` (unit-level never-treated control) and
+The core field-based ContinuousDiD pre-fit gates are
+`has_never_treated == True` (unit-level never-treated control),
 `treatment_varies_within_unit == False` (per-unit full-path dose
-constancy, including pre-treatment zeros) plus `is_balanced == True`.
-The `PanelProfile.treatment_dose` sub-fields (`n_distinct_doses`,
+constancy, including pre-treatment zeros), `is_balanced == True`, and
+the absence of the `duplicate_unit_time_rows` alert (the precompute
+path silently resolves duplicate cells via last-row-wins). The
+`PanelProfile.treatment_dose` sub-fields (`n_distinct_doses`,
 `dose_min/max/mean`, `has_zero_dose`) provide descriptive context
 about the dose support, but are NOT themselves prerequisite gates;
 §5.2 walks through the full profile -> reasoning -> validation flow
@@ -729,19 +734,21 @@ Reasoning chain:
 1. `treatment_type == "continuous"` -> §3 row narrows to
    `ContinuousDiD` (`✓`) and `HeterogeneousAdoptionDiD` (`partial`,
    for graded adoption). All other estimators are `✗` on continuous.
-2. ContinuousDiD prerequisites are checked against the authoritative
-   gates (the existing top-level `PanelProfile` fields, not
-   `treatment_dose`): `has_never_treated == True` (unit-level
+2. ContinuousDiD prerequisites are checked against the core
+   field-based gates (the existing top-level `PanelProfile` fields,
+   not `treatment_dose`): `has_never_treated == True` (unit-level
    never-treated control, mapping to `first_treat == 0` units in
    `ContinuousDiD.fit()`), `treatment_varies_within_unit == False`
    (per-unit full-path dose constancy, matching
    `ContinuousDiD.fit()`'s `df.groupby(unit)[dose].nunique() > 1`
-   check), and `is_balanced == True`. All three pass, so
-   `ContinuousDiD` is in scope. The `treatment_dose` sub-fields
-   (`n_distinct_doses`, `has_zero_dose`, `dose_min/max/mean`)
-   provide descriptive context — useful for reasoning about dose
-   support and the eventual dose-response interpretation, but not
-   themselves gates.
+   check), `is_balanced == True`, and the absence of a
+   `duplicate_unit_time_rows` alert (the precompute path silently
+   resolves duplicate cells via last-row-wins, so duplicates must
+   be removed before fitting). All four pass, so `ContinuousDiD` is
+   in scope. The `treatment_dose` sub-fields (`n_distinct_doses`,
+   `has_zero_dose`, `dose_min/max/mean`) provide descriptive context
+   — useful for reasoning about dose support and the eventual
+   dose-response interpretation, but not themselves gates.
 3. Counter-example: had `treatment_varies_within_unit == True` (any
    unit's full dose path - including pre-treatment zeros - has more
    than one distinct value, e.g., a `0,0,d,d` adoption path with
