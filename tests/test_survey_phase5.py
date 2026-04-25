@@ -1078,6 +1078,35 @@ class TestSDIDSurveyPlaceboFullDesign:
         assert r_fpc.se == pytest.approx(r_pw.se, rel=1e-12)
         assert r_fpc.att == pytest.approx(r_pw.att, abs=1e-12)
 
+    def test_placebo_typo_fpc_column_still_raises(
+        self, sdid_survey_data_full_design
+    ):
+        """R13 P3 fix: typoed FPC column name must still raise on placebo.
+
+        The FPC pre-resolve drop on placebo (R11 P1) bypasses
+        ``SurveyDesign.resolve()``'s missing-column check. A typoed
+        ``fpc="fpc_typo"`` would be silently ignored behind the no-op
+        warning, hiding a genuine input-spec mistake. The fix
+        validates the FPC column name against ``data.columns`` BEFORE
+        dropping; missing columns surface the same targeted error
+        ``resolve()`` would have raised.
+        """
+        sd_typo = SurveyDesign(weights="weight", fpc="nonexistent_col")
+        est = SyntheticDiD(variance_method="placebo", n_bootstrap=30, seed=42)
+        with pytest.raises(
+            ValueError,
+            match=r"FPC column 'nonexistent_col' not found in data",
+        ):
+            est.fit(
+                sdid_survey_data_full_design,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd_typo,
+            )
+
     def test_placebo_low_fpc_with_explicit_psu_skips_resolve_validator(
         self, sdid_survey_data_full_design
     ):

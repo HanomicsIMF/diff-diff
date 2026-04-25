@@ -346,6 +346,18 @@ class SyntheticDiD(DifferenceInDifferences):
             and survey_design is not None
             and getattr(survey_design, "fpc", None) is not None
         ):
+            # R13 P3 fix: validate the FPC column name exists in `data`
+            # before dropping. Otherwise a typoed ``fpc="fpc_typo"`` is
+            # silently ignored on the placebo path (the missing-column
+            # check inside ``SurveyDesign.resolve()`` never runs because
+            # we strip FPC pre-resolve). Raise the same targeted error
+            # ``resolve()`` would have raised so input-spec mistakes
+            # surface even when the value is mathematically a no-op.
+            fpc_col = survey_design.fpc
+            if fpc_col not in data.columns:
+                raise ValueError(
+                    f"FPC column '{fpc_col}' not found in data"
+                )
             import dataclasses as _dc
             warnings.warn(
                 "SurveyDesign(fpc=...) is a no-op on "
