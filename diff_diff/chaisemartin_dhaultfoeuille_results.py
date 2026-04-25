@@ -384,9 +384,15 @@ class ChaisemartinDHaultfoeuilleResults:
         forward and backward horizons. Each inner entry holds
         ``{"effect", "se", "t_stat", "p_value", "conf_int", "n_obs"}``.
         Populated when ``by_path`` is a positive int AND
-        ``placebo=True`` AND ``L_max >= 1``; ``None`` otherwise.
-        Inherits the cross-path cohort-sharing SE deviation from R
-        documented for ``path_effects``. See REGISTRY.md
+        ``placebo=True`` AND ``L_max >= 1``. Empty-state contract
+        mirrors ``path_effects``: ``None`` when ``by_path + placebo``
+        was not requested; ``{}`` when requested but no observed path
+        has a complete window ``[F_g-1, F_g-1+L_max]`` within the
+        panel (the same regime where ``path_effects`` returns ``{}``,
+        with the same ``UserWarning`` at fit-time). Downstream callers
+        should distinguish the two states. Inherits the cross-path
+        cohort-sharing SE deviation from R documented for
+        ``path_effects``. See REGISTRY.md
         ``Note (Phase 3 by_path ...)`` → "Per-path placebos".
     honest_did_results : HonestDiDResults, optional
         HonestDiD sensitivity analysis bounds (Rambachan & Roth 2023).

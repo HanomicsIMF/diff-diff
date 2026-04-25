@@ -5284,6 +5284,68 @@ class TestByPathPlacebo:
             "to_dataframe(level='by_path') did not emit any negative-horizon rows"
         )
 
+    def test_empty_path_placebo_surface_when_no_complete_window(self):
+        """``path_placebo_event_study`` empty-state contract: ``{}`` (NOT
+        ``None``) when ``by_path + placebo`` was requested but no observed
+        path has a complete ``[F_g-1, F_g-1+L_max]`` window within the
+        panel. Mirrors ``test_empty_path_surface_when_no_complete_window``
+        for the placebo sibling so a regression on the empty-state
+        sentinel can't slip through.
+
+        Switchers have F_g = period 3 with n_periods = 4 and L_max = 3, so
+        the window [F_g - 1, F_g - 1 + L_max] = [2, 5] extends past the
+        panel — same construction as the path_effects empty-state test.
+        """
+        rng = np.random.default_rng(0)
+        rows = []
+        for g in (1, 2, 3, 4):
+            for t in range(4):
+                d = 1 if t >= 3 else 0
+                rows.append(
+                    {
+                        "group": g,
+                        "period": t,
+                        "treatment": d,
+                        "outcome": rng.normal(),
+                    }
+                )
+        for g in (5, 6):
+            for t in range(4):
+                rows.append(
+                    {
+                        "group": g,
+                        "period": t,
+                        "treatment": 0,
+                        "outcome": rng.normal(),
+                    }
+                )
+        data = pd.DataFrame(rows)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                placebo=True,
+                twfe_diagnostic=False,
+            )
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+
+        # Empty dict, NOT None — distinguishes "requested but empty" from
+        # "not requested" on the new placebo sibling surface.
+        assert results.path_placebo_event_study is not None
+        assert results.path_placebo_event_study == {}
+        # path_effects parallel state confirms both surfaces hit the
+        # same empty-state branch consistently.
+        assert results.path_effects == {}
+
     @pytest.mark.slow
     class TestBootstrap:
         """Bootstrap invariants for by_path + placebo + n_bootstrap > 0.
