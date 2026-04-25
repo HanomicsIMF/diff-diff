@@ -505,16 +505,25 @@ worth considering.
 When `treatment_type == "continuous"`:
 
 - `ContinuousDiD` (Callaway, Goodman-Bacon, Sant'Anna 2024) -
-  continuous / dose-response treatment. **Three eligibility
-  prerequisites**: (a) zero-dose control units must exist
-  (`P(D=0) > 0`) because Remark 3.1 (lowest-dose-as-control) is not
-  yet implemented, (b) dose must be time-invariant per unit (rule out
-  panels where `PanelProfile.treatment_varies_within_unit == True`),
-  and (c) the panel must be balanced (`PanelProfile.is_balanced ==
-  True`). `fit()` raises `ValueError` in any of the three cases. Note that
-  staggered adoption IS supported natively (adoption timing is
-  expressed via the `first_treat` column, not via within-unit dose
-  variation). The estimator exposes several dose-indexed targets that
+  continuous / dose-response treatment. **Five profile-side
+  screening checks** (the full list is enumerated in the paragraph
+  immediately below this bullet list): (a) zero-dose control units
+  must exist (`P(D=0) > 0`) because Remark 3.1
+  (lowest-dose-as-control) is not yet implemented; (b) dose must be
+  time-invariant per unit (rule out panels where
+  `PanelProfile.treatment_varies_within_unit == True`); (c) the
+  panel must be balanced (`PanelProfile.is_balanced == True`);
+  (d) no `duplicate_unit_time_rows` alert (the precompute path
+  silently resolves duplicate cells via last-row-wins); and (e)
+  strictly positive treated doses (`treatment_dose.dose_min > 0`).
+  `fit()` raises `ValueError` on (a), (b), (c), and (e); duplicate
+  rows in (d) coerce silently. Note that staggered adoption IS
+  supported natively (adoption timing is expressed via the
+  `first_treat` column, not via within-unit dose variation), and
+  `ContinuousDiD.fit()` applies additional validation on the
+  `first_treat` column itself — see the paragraph below and §2 for
+  the full list. The estimator exposes several dose-indexed targets
+  that
   require different assumptions: `ATT(d|d)` (effect of dose `d` on
   units that received `d`) and `ATT^{loc}` (binarized overall ATT)
   are identified under Parallel Trends; `ATT(d)` (full dose-response
