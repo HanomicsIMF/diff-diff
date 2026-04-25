@@ -19,6 +19,17 @@ Two-Way Fixed Effects
 
 - **Imai, K., & Kim, I. S. (2021).** "On the Use of Two-Way Fixed Effects Regression Models for Causal Inference with Panel Data." *Political Analysis*, 29(3), 405-415. https://doi.org/10.1017/pan.2020.33
 
+Wooldridge ETWFE
+----------------
+
+- **Wooldridge, J. M. (2025).** "Two-Way Fixed Effects, the Two-Way Mundlak Regression, and Difference-in-Differences Estimators." *Empirical Economics*, 69(5), 2545-2587. (Published version of NBER Working Paper 29154.)
+
+  Primary source for the saturated OLS ETWFE design implemented in our ``WooldridgeDiD`` class.
+
+- **Wooldridge, J. M. (2023).** "Simple Approaches to Nonlinear Difference-in-Differences with Panel Data." *The Econometrics Journal*, 26(3), C31-C66. https://doi.org/10.1093/ectj/utad016
+
+  Secondary source for the logit/Poisson QMLE (ASF-based ATT) extensions in ``WooldridgeDiD``.
+
 Robust Standard Errors
 ----------------------
 
@@ -131,9 +142,28 @@ Multi-Period and Staggered Adoption
 
 - **de Chaisemartin, C., & D'Haultfœuille, X. (2020).** "Two-Way Fixed Effects Estimators with Heterogeneous Treatment Effects." *American Economic Review*, 110(9), 2964-2996. https://doi.org/10.1257/aer.20181169
 
+- **de Chaisemartin, C., & D'Haultfœuille, X. (2022, revised 2024).** "Difference-in-Differences Estimators of Intertemporal Treatment Effects." *NBER Working Paper* 29873. https://www.nber.org/papers/w29873
+
+  Dynamic companion to the 2020 paper. Web Appendix Section 3.7.3 contains the cohort-recentered plug-in variance formula implemented in our ``ChaisemartinDHaultfoeuille`` class.
+
 - **Goodman-Bacon, A. (2021).** "Difference-in-Differences with Variation in Treatment Timing." *Journal of Econometrics*, 225(2), 254-277. https://doi.org/10.1016/j.jeconom.2021.03.014
 
 - **Wing, C., Freedman, S. M., & Hollingsworth, A. (2024).** "Stacked Difference-in-Differences." *NBER Working Paper* 32054. https://www.nber.org/papers/w32054
+
+- **Chen, X., Sant'Anna, P. H. C., & Xie, H. (2025).** "Efficient Difference-in-Differences and Event Study Estimators." *Working Paper*.
+
+  Primary source for the optimal-weighting / PT-All / PT-Post efficient DiD implemented in our ``EfficientDiD`` class.
+
+- **Baker, A. C., Larcker, D. F., Wang, C. C. Y., & Wang, X. (2025).** "Difference-in-Differences Designs: A Practitioner's Guide." *arXiv preprint* arXiv:2503.13323. https://arxiv.org/abs/2503.13323
+
+  Source for the 8-step practitioner workflow surfaced via ``diff_diff.get_llm_guide("practitioner")`` and the README ``## Practitioner Workflow`` section. See ``docs/methodology/REGISTRY.md`` for the diff-diff renumbering and per-step deviations.
+
+Continuous Treatment DiD
+------------------------
+
+- **Callaway, B., Goodman-Bacon, A., & Sant'Anna, P. H. C. (2024).** "Difference-in-Differences with a Continuous Treatment." *NBER Working Paper* 32117. https://www.nber.org/papers/w32117
+
+  Primary source for ATT(d), ACRT, dose-response curves, and B-spline flexibility implemented in our ``ContinuousDiD`` class.
 
 Power Analysis
 --------------

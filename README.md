@@ -51,7 +51,7 @@ results.print_summary()     # full statsmodels-style table
 
 - [Quickstart](https://diff-diff.readthedocs.io/en/stable/quickstart.html) - basic 2x2 DiD with column-name and formula interfaces, covariates, fixed effects, cluster-robust SEs
 - [Choosing an Estimator](https://diff-diff.readthedocs.io/en/stable/choosing_estimator.html) - decision flowchart for picking the right estimator
-- [Tutorials](https://diff-diff.readthedocs.io/en/stable/tutorials/01_basic_did.html) - 18 hands-on Jupyter notebooks covering every estimator and design pattern
+- [Tutorials](https://diff-diff.readthedocs.io/en/stable/tutorials/01_basic_did.html) - hands-on Jupyter notebooks covering every estimator and design pattern
 - [Troubleshooting](https://diff-diff.readthedocs.io/en/stable/troubleshooting.html) - common issues and solutions
 - [R Comparison](https://diff-diff.readthedocs.io/en/stable/r_comparison.html) | [Python Comparison](https://diff-diff.readthedocs.io/en/stable/python_comparison.html) | [Benchmarks](https://diff-diff.readthedocs.io/en/stable/benchmarks.html) - validation results vs `did`, `synthdid`, `fixest`
 - [API Reference](https://diff-diff.readthedocs.io/en/stable/api/index.html) - full API for all estimators, results classes, diagnostics, utilities
@@ -80,7 +80,7 @@ Measuring campaign lift? Evaluating a product launch? Rolling out a policy in wa
 - [Brand awareness survey tutorial](https://diff-diff.readthedocs.io/en/stable/tutorials/17_brand_awareness_survey.html) - full example with complex survey design, brand funnel analysis, and staggered rollouts
 - Have BRFSS/ACS/CPS individual records? Use [`aggregate_survey()`](https://diff-diff.readthedocs.io/en/stable/api/prep.html) to roll respondent-level microdata into a geographic-period panel with inverse-variance precision weights for second-stage DiD
 
-`BusinessReport` and `DiagnosticReport` are experimental preview classes that produce plain-English output and a structured `to_dict()` schema from any fitted result - wording and schema will evolve. See [docs/methodology/REPORTING.md](docs/methodology/REPORTING.md) for usage and stability notes.
+`BusinessReport` and `DiagnosticReport` are experimental preview classes that produce plain-English output and a structured `to_dict()` schema from any fitted result - wording and schema will evolve. See [docs/methodology/REPORTING.md](https://github.com/igerber/diff-diff/blob/main/docs/methodology/REPORTING.md) for usage and stability notes.
 
 ## Practitioner Workflow (Baker et al. 2025)
 
@@ -179,9 +179,9 @@ If you use diff-diff in your research, please cite it:
 
 The DOI above is the Zenodo concept DOI - it always resolves to the latest release. To cite a specific version, look up its versioned DOI on [the Zenodo project page](https://doi.org/10.5281/zenodo.19646175).
 
-See [`CITATION.cff`](CITATION.cff) for the full citation metadata.
+See [`CITATION.cff`](https://github.com/igerber/diff-diff/blob/main/CITATION.cff) for the full citation metadata.
 
-**Note on authorship**: academic citation (`CITATION.cff`, the BibTeX above) lists individual authors with ORCIDs per scholarly convention. Package metadata surfaces (`pyproject.toml`, Sphinx docs) list "diff-diff contributors" to acknowledge the collective - see [`CONTRIBUTORS.md`](CONTRIBUTORS.md) for the full list.
+**Note on authorship**: academic citation (`CITATION.cff`, the BibTeX above) lists individual authors with ORCIDs per scholarly convention. Package metadata surfaces (`pyproject.toml`, Sphinx docs) list "diff-diff contributors" to acknowledge the collective - see [`CONTRIBUTORS.md`](https://github.com/igerber/diff-diff/blob/main/CONTRIBUTORS.md) for the full list.
 
 ## License
 
