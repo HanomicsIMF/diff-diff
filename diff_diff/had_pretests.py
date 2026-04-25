@@ -1506,8 +1506,16 @@ def stute_test(
         If ``d`` / ``dy`` are not 1D numeric, contain NaN, have unequal
         lengths, if any ``d`` value is negative (paper Section 2 HAD
         support restriction), if ``alpha`` is outside ``(0, 1)``, or if
-        ``n_bootstrap < 99``. Also raised if BOTH ``weights`` and
-        ``survey`` are supplied (mutex).
+        ``n_bootstrap < 99``. Also raised if more than one of
+        ``survey_design``, ``survey``, ``weights`` is supplied (3-way
+        mutex; ``survey=`` and ``weights=`` are deprecated aliases of
+        ``survey_design=``).
+    TypeError
+        If ``survey_design=SurveyDesign(...)`` (or the deprecated
+        ``survey=SurveyDesign(...)`` alias) is passed; array-in helpers
+        accept ``ResolvedSurveyDesign`` only. Use
+        ``survey_design=make_pweight_design(arr)`` for pweight-only or
+        pre-resolve via ``SurveyDesign(...).resolve(data)``.
     NotImplementedError
         If ``survey.replicate_weights is not None``. Replicate-weight
         pretests are a parallel follow-up after Phase 4.5 C; the
@@ -1961,8 +1969,16 @@ def yatchew_hr_test(
         If ``d`` / ``dy`` are not 1D numeric, contain NaN, have unequal
         lengths, if any ``d`` value is negative (paper Section 2 HAD
         support restriction), or if ``alpha`` is outside ``(0, 1)``.
-        Also raised if BOTH ``weights`` and ``survey`` supplied (mutex),
-        or if any weight is non-positive.
+        Also raised if more than one of ``survey_design``, ``survey``,
+        ``weights`` is supplied (3-way mutex; ``survey=`` and
+        ``weights=`` are deprecated aliases of ``survey_design=``), or
+        if any weight is non-positive.
+    TypeError
+        If ``survey_design=SurveyDesign(...)`` (or the deprecated
+        ``survey=SurveyDesign(...)`` alias) is passed; array-in helpers
+        accept ``ResolvedSurveyDesign`` only. Use
+        ``survey_design=make_pweight_design(arr)`` for pweight-only or
+        pre-resolve via ``SurveyDesign(...).resolve(data)``.
     NotImplementedError
         If ``survey.replicate_weights is not None`` (deferred follow-up).
 
@@ -4049,9 +4065,11 @@ def did_had_pretest_workflow(
     Raises
     ------
     ValueError
-        On invalid ``aggregate``, ``survey`` and ``weights`` both
-        non-None, or any downstream front-door failure (panel balance,
-        dtype, dose invariant).
+        On invalid ``aggregate``; if more than one of ``survey_design``,
+        ``survey``, ``weights`` is supplied (3-way mutex; ``survey=`` and
+        ``weights=`` are deprecated aliases of ``survey_design=``); or
+        any downstream front-door failure (panel balance, dtype, dose
+        invariant).
     NotImplementedError
         If ``survey.replicate_weights is not None`` (replicate-weight
         pretests deferred to a parallel follow-up after Phase 4.5 C).
