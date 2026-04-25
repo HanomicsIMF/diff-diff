@@ -110,6 +110,7 @@ Full guide: `diff_diff.get_llm_guide("practitioner")`.
 - [SyntheticDiD](https://diff-diff.readthedocs.io/en/stable/api/estimators.html) - Synthetic DiD combining standard DiD and synthetic control for few treated units
 - [TripleDifference](https://diff-diff.readthedocs.io/en/stable/api/triple_diff.html) - triple difference (DDD) estimator for designs requiring two criteria for treatment eligibility
 - [ContinuousDiD](https://diff-diff.readthedocs.io/en/stable/api/continuous_did.html) - Callaway, Goodman-Bacon & Sant'Anna (2024) continuous treatment DiD with dose-response curves
+- [HeterogeneousAdoptionDiD](https://diff-diff.readthedocs.io/en/stable/api/had.html) - de Chaisemartin, Ciccia, D'Haultfœuille & Knau (2026) for **no-untreated-unit panels** where every unit receives a strictly positive heterogeneous dose; local-linear estimator targeting the Weighted Average Slope (WAS) at the support boundary, with multi-period event-study extension. Alias `HAD`.
 - [StackedDiD](https://diff-diff.readthedocs.io/en/stable/api/stacked_did.html) - Wing, Freedman & Hollingsworth (2024) stacked DiD with Q-weights and sub-experiments
 - [EfficientDiD](https://diff-diff.readthedocs.io/en/stable/api/efficient_did.html) - Chen, Sant'Anna & Xie (2025) efficient DiD with optimal weighting for tighter SEs
 - [TROP](https://diff-diff.readthedocs.io/en/stable/api/trop.html) - Triply Robust Panel estimator (Athey et al. 2025) with nuclear norm factor adjustment

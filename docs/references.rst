@@ -165,6 +165,13 @@ Continuous Treatment DiD
 
   Primary source for ATT(d), ACRT, dose-response curves, and B-spline flexibility implemented in our ``ContinuousDiD`` class.
 
+Heterogeneous Adoption (No-Untreated Designs)
+---------------------------------------------
+
+- **de Chaisemartin, C., Ciccia, D., D'Haultfœuille, X., & Knau, F. (2026).** "Difference-in-Differences Estimators When No Unit Remains Untreated." *arXiv preprint* arXiv:2405.04465v6. https://arxiv.org/abs/2405.04465
+
+  Primary source for the Weighted Average Slope (WAS) estimator and its multi-period event-study extension implemented in our ``HeterogeneousAdoptionDiD`` class. Targets settings where every unit receives a strictly positive heterogeneous dose at treatment time, using local-linear regression at the support boundary.
+
 Power Analysis
 --------------
 

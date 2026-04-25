@@ -361,6 +361,37 @@ sources:
         section: "Varying Spending Levels"
         type: user_guide
 
+  # ── HeterogeneousAdoptionDiD (HAD) ──────────────────────────────────
+
+  diff_diff/had.py:
+    drift_risk: medium
+    docs:
+      - path: docs/methodology/REGISTRY.md
+        section: "HeterogeneousAdoptionDiD"
+        type: methodology
+      - path: docs/api/had.rst
+        type: api_reference
+      - path: README.md
+        section: "Estimators (one-line catalog entry)"
+        type: user_guide
+      - path: docs/references.rst
+        type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
+        type: user_guide
+      # Note: llms-full.txt does not yet have a HeterogeneousAdoptionDiD section
+      # (deferred to TODO.md Phase 5 follow-up); the dependency mapping will be
+      # added when that section lands.
+
+  diff_diff/had_pretests.py:
+    drift_risk: medium
+    docs:
+      - path: docs/methodology/REGISTRY.md
+        section: "HeterogeneousAdoptionDiD"
+        type: methodology
+      - path: docs/api/had.rst
+        type: api_reference
+
   # ── SyntheticDiD ───────────��───────────────────────────────────────
 
   diff_diff/synthetic_did.py:

@@ -48,6 +48,7 @@ The following estimators/features MUST have documentation:
 | EfficientDiD | "EfficientDiD" | "EfficientDiD" | efficient_did.rst | "Multi-Period and Staggered" |
 | StackedDiD | "StackedDiD" | "StackedDiD" | stacked_did.rst | "Multi-Period and Staggered" |
 | ContinuousDiD | "ContinuousDiD" | "ContinuousDiD" | continuous_did.rst | "Multi-Period and Staggered" |
+| HeterogeneousAdoptionDiD | "HeterogeneousAdoptionDiD" | "HeterogeneousAdoptionDiD" | had.rst | "Heterogeneous Adoption (No-Untreated Designs)" |
 | TripleDifference | "TripleDifference" | "TripleDifference" | triple_diff.rst | "Triple Difference" |
 | StaggeredTripleDifference | "StaggeredTripleDifference" | "StaggeredTripleDifference" | staggered.rst | "Triple Difference" |
 | WooldridgeDiD | "WooldridgeDiD" | "WooldridgeDiD" | wooldridge_etwfe.rst | "Multi-Period and Staggered" |
