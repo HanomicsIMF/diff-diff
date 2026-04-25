@@ -419,9 +419,21 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         bootstrap SE, per-path placebos, and per-path sup-t bands all
         consume the residualized ``Y_mat`` automatically (Frisch-
         Waugh-Lovell). Per-period effects remain unadjusted, consistent
-        with the existing ``controls`` + per-period DID contract. The
-        cross-path cohort-sharing SE deviation from R documented for
-        ``path_effects`` is inherited unchanged.
+        with the existing ``controls`` + per-period DID contract.
+
+        **Deviation from R on multi-baseline switcher panels:** R
+        ``did_multiplegt_dyn(..., by_path, controls)`` re-runs the
+        per-baseline residualization on each path's restricted
+        subsample (path's switchers + same-baseline not-yet-treated
+        controls), so its residualization coefficients vary per path
+        when switchers have different baseline values. Our global-
+        residualization architecture coincides with R on single-
+        baseline panels (every switcher shares the same ``D_{g,1}``)
+        and per-path point estimates match exactly. On multi-baseline
+        panels, point estimates can diverge — a ``UserWarning`` is
+        emitted at fit-time when this configuration is detected.
+        SE inherits the cross-path cohort-sharing deviation from R
+        documented for ``path_effects``.
 
         Compatible with ``n_bootstrap > 0`` -- the top-k paths are
         enumerated once on the observed data (paths held fixed across
@@ -1477,6 +1489,39 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 _compute_group_switch_metadata(D_mat, N_mat)
             )
             _switch_metadata_computed = True
+
+            # by_path + controls multi-baseline deviation from R: R re-runs
+            # the per-baseline OLS residualization on each path's restricted
+            # subsample (path's switchers + same-baseline not-yet-treated
+            # controls), so its residualization coefficients can differ per
+            # path. We residualize once on the full panel before path
+            # enumeration. On single-baseline switcher panels (every
+            # switcher has the same D_{g,1}) the two strategies coincide
+            # and per-path point estimates match R exactly. On multi-
+            # baseline switcher panels they can diverge — warn the user
+            # explicitly so they don't silently consume estimates that
+            # disagree with R. SE inheritance (cross-path cohort-sharing)
+            # is documented separately in REGISTRY.md.
+            if self.by_path is not None:
+                _switcher_mask = first_switch_idx_arr >= 0
+                if _switcher_mask.any():
+                    _switcher_baselines = baselines[_switcher_mask]
+                    if np.unique(_switcher_baselines).size > 1:
+                        warnings.warn(
+                            "by_path + controls: switcher baselines D_{g,1} "
+                            "take multiple values in this panel. Python "
+                            "residualizes once on the full panel before path "
+                            "enumeration; R `did_multiplegt_dyn(..., by_path, "
+                            "controls)` re-runs residualization per path on "
+                            "the path-restricted subsample, so per-path point "
+                            "estimates can diverge between Python and R on "
+                            "this panel. See `docs/methodology/REGISTRY.md` "
+                            "(`Note (Phase 3 by_path ...)` -> Per-path "
+                            "covariate residualization) for the full "
+                            "deviation contract.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
 
             Y_mat_residualized, covariate_diagnostics, _failed_baselines = (
                 _compute_covariate_residualization(

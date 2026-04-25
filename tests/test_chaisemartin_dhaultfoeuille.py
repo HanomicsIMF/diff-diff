@@ -6556,3 +6556,106 @@ class TestByPathControls:
             "to_dataframe(level='by_path') produced no rows with finite "
             "cband columns under controls + bootstrap"
         )
+
+    # Multi-baseline R-deviation warning ---------------------------------
+    def test_multi_baseline_panel_emits_r_deviation_warning(self):
+        """When ``by_path + controls`` is fit on a panel where switchers
+        have multiple ``D_{g,1}`` baseline values, the estimator must
+        emit a ``UserWarning`` documenting the deviation from R's
+        per-path re-residualization. Verified against a panel with both
+        joiner switchers (``D_{g,1}=0``) and leaver switchers
+        (``D_{g,1}=1``), plus a longer panel and always-treated
+        controls so per-baseline residualization stays well-conditioned
+        on both baseline values."""
+        # 6 joiners (D_{g,1}=0) + 6 leavers (D_{g,1}=1) + 4 always-
+        # treated (D_{g,1}=1 controls) + 4 never-treated (D_{g,1}=0
+        # controls), 6 periods.
+        rng = np.random.default_rng(7)
+        rows = []
+
+        def _add(group, treatment_path):
+            for t, d in enumerate(treatment_path):
+                x = 0.05 * group + 0.15 * t + rng.normal(0, 0.1)
+                y = d * 2.0 + 1.0 * x + rng.normal(0, 0.1)
+                rows.append(
+                    {"group": group, "period": t, "treatment": d, "outcome": y, "X1": x}
+                )
+
+        for g in (1, 2, 3):
+            _add(g, [0, 0, 1, 1, 1, 1])  # joiner-late path 0,0,1,1,1,1
+        for g in (4, 5, 6):
+            _add(g, [0, 1, 1, 1, 1, 1])  # joiner-early path 0,1,1,1,1,1
+        for g in (7, 8, 9):
+            _add(g, [1, 0, 0, 0, 0, 0])  # leaver-early path 1,0,0,0,0,0
+        for g in (10, 11, 12):
+            _add(g, [1, 1, 1, 0, 0, 0])  # leaver-late path 1,1,1,0,0,0
+        for g in (13, 14, 15, 16):
+            _add(g, [1, 1, 1, 1, 1, 1])  # always-treated controls
+        for g in (17, 18, 19, 20):
+            _add(g, [0, 0, 0, 0, 0, 0])  # never-treated controls
+        data = pd.DataFrame(rows)
+
+        # Sanity: panel has switcher baselines {0, 1}
+        baselines_seen = data[data["period"] == 0].groupby("group")["treatment"].first()
+        assert sorted(baselines_seen.unique()) == [0, 1]
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=2
+            )
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+
+        deviation_msgs = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, UserWarning)
+            and "by_path + controls" in str(w.message)
+            and "multi-baseline" not in str(w.message).lower()
+            or (
+                issubclass(w.category, UserWarning)
+                and "switcher baselines" in str(w.message)
+            )
+        ]
+        assert deviation_msgs, (
+            "Expected a UserWarning mentioning 'by_path + controls' and "
+            "'switcher baselines D_{g,1}' on a multi-baseline panel. "
+            f"Captured warnings: {[str(w.message) for w in caught]}"
+        )
+
+    def test_single_baseline_panel_does_not_emit_r_deviation_warning(self):
+        """The multi-baseline R-deviation warning must NOT fire on a
+        single-baseline panel (every switcher has the same ``D_{g,1}``).
+        Pinned against the standard 3-path fixture (joiners-only, all
+        ``D_{g,1}=0``)."""
+        data = _by_path_three_path_data_with_controls()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        deviation_msgs = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, UserWarning)
+            and "switcher baselines" in str(w.message)
+        ]
+        assert not deviation_msgs, (
+            "Multi-baseline deviation warning fired on a single-baseline "
+            f"panel: {deviation_msgs}"
+        )

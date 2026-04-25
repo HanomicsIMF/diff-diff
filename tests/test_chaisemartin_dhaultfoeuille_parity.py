@@ -760,21 +760,29 @@ class TestDCDHDynRParityByPathControls:
 
     R's ``did_multiplegt_dyn(..., by_path=k, controls="X1")`` re-runs
     the estimator per path with a path-restricted subsample (path's
-    switchers + same-baseline not-yet-treated controls). Our
-    architecture residualizes once on the full panel before path
-    enumeration. On the ``multi_path_reversible`` DGP, all switchers
-    share baseline ``D_{g,1}=0``, so the per-path control pool that R
-    feeds to its per-baseline OLS residualization equals the global
-    control pool we use — and the residualization coefficients (and
-    therefore the residualized outcomes) coincide. Per-path point
-    estimates then match R exactly (rtol ~1e-11). Per-path SE
-    inherits the documented cross-path cohort-sharing deviation
-    (Phase 2 envelope).
+    switchers + same-baseline not-yet-treated controls); see the
+    canonical R source at ``R/R/did_multiplegt_dyn.R`` lines 393-411
+    where the per-path dispatch loop calls ``did_multiplegt_main()``
+    once per path with ``df_main`` filtered to that path's groups
+    plus same-baseline not-yet-treated controls. Our architecture
+    residualizes once on the full panel before path enumeration.
 
-    On multi-baseline DGPs the residualization coefficients can
-    diverge across paths under R's per-path call, producing a small
-    deviation in point estimates. The fixture intentionally sticks to
-    the single-baseline scenario to keep the parity claim tight.
+    On the ``multi_path_reversible`` DGP, every switcher shares
+    baseline ``D_{g,1}=0``, so R's per-path control pool reduces to
+    the global control pool we use — and the per-baseline OLS
+    residualization coefficients coincide. Per-path point estimates
+    then match R exactly (measured rtol ~1e-11). Per-path SE inherits
+    the documented cross-path cohort-sharing deviation (Phase 2
+    envelope, ~6.5% rtol on this scenario).
+
+    **On multi-baseline switcher panels** the residualization
+    coefficients vary per path under R's per-path call, producing a
+    point-estimate deviation between Python and R. The fixture
+    intentionally restricts to the single-baseline scenario to keep
+    the parity claim tight, and the production estimator emits a
+    ``UserWarning`` whenever ``by_path + controls`` is fit on a
+    multi-baseline panel so practitioners do not silently consume
+    estimates that disagree with R.
     """
 
     POINT_RTOL = 1e-9

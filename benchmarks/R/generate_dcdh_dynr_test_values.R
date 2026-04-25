@@ -703,16 +703,25 @@ scenarios$multi_path_reversible_by_path_placebo <- list(
 # Wave 3 #5: by_path + DID^X residualization). Same deterministic DGP
 # and n_periods=10 as scenarios 14/15, with a confounding covariate X1
 # added via the same `add_covariate` helper used by scenario 10's
-# `joiners_only_controls`. Per-baseline OLS residualization runs once
-# globally before path enumeration on both Python and R sides
-# (verified against `chaisemartinPackages/did_multiplegt_dyn` source —
-# `did_multiplegt_by_path` calls `did_multiplegt_main()` once with the
-# global controls residualization, then disaggregates per-path through
-# aggregation). Per-path event-study point estimates and switcher
-# counts must match R exactly; per-path SE within the documented Phase
-# 2 envelope and inherits the cross-path cohort-sharing deviation from
-# R documented for `path_effects`. Single covariate keeps the scenario
-# tight; multi-covariate is exercised via internal regression tests.
+# `joiners_only_controls`. **R re-runs `did_multiplegt_main()` per path**
+# with a path-restricted subsample (path's switchers + same-baseline
+# not-yet-treated controls), so its per-baseline OLS residualization
+# coefficients can vary per path (verified against
+# `chaisemartinPackages/did_multiplegt_dyn` source —
+# `R/R/did_multiplegt_dyn.R` lines 393-411 dispatch the per-path loop;
+# `did_multiplegt_by_path` is a path-classifier preprocessor only).
+# Python residualizes once on the full panel before path enumeration,
+# then disaggregates per path. **The two strategies coincide on
+# single-baseline switcher panels** (every switcher shares D_{g,1}=0)
+# because R's per-path control pool then equals the global control pool
+# — `multi_path_reversible` is built precisely for this property, so
+# per-path event-study point estimates and switcher counts must match R
+# exactly. Per-path SE inherits the documented cross-path cohort-sharing
+# deviation from R for `path_effects`. On multi-baseline switcher panels
+# the residualization coefficients can diverge per path between Python
+# and R; the production fit emits a `UserWarning` in that configuration.
+# Single covariate keeps the scenario tight; multi-covariate is
+# exercised via internal regression tests.
 cat("  Scenario 16: multi_path_reversible_by_path_controls\n")
 d16 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 10,
                       pattern = "multi_path_reversible", seed = 116,
