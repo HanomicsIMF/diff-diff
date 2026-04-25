@@ -2528,7 +2528,8 @@ Shipped in `diff_diff/had_pretests.py` as `stute_joint_pretest()` (residuals-in 
 - [ ] Phase 4: Pierce-Schott (2016) replication harness reproduces Figure 2 values.
 - [ ] Phase 4: Full DGP 1/2/3 coverage-rate reproduction from Table 1.
 - [ ] Phase 5: `practitioner_next_steps()` integration for HAD results.
-- [ ] Phase 5: Tutorial notebook + `llms.txt` + `llms-full.txt` updates (preserving the UTF-8 fingerprint).
+- [x] Phase 5 (partial): README catalog one-liner, bundled `llms.txt` `## Estimators` entry, `docs/api/had.rst` (autoclass for the three classes), and `docs/references.rst` citation landed in PR #372 docs refresh.
+- [ ] Phase 5 (remaining): Tutorial notebook + `llms-full.txt` HeterogeneousAdoptionDiD section (preserving the UTF-8 fingerprint).
 - [ ] Documentation of non-testability of Assumptions 5 and 6.
 - [ ] Warnings for staggered treatment timing (redirect to `ChaisemartinDHaultfoeuille`).
 - [ ] `NotImplementedError` phase pointer when `covariates=` is passed (Theorem 6 future work).

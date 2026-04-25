@@ -58,6 +58,18 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
    analytical covariance is not computed in this release; tracked in
    ``TODO.md``.
 
+   **Mass-point ``vcov_type="classical"`` deviation.** The mass-point
+   ``survey=`` paths (static and event-study) and the ``weights=`` +
+   ``aggregate="event_study"`` + ``cband=True`` path reject
+   ``vcov_type="classical"`` with ``NotImplementedError``. The per-unit
+   2SLS influence function returned by the mass-point fit is HC1-scaled
+   so that ``compute_survey_if_variance`` and the sup-t bootstrap target
+   ``V_HC1`` consistently; mixing it with a classical analytical SE
+   would silently report a ``V_HC1``-targeted variance under a
+   ``classical`` label. Use ``vcov_type="hc1"`` (or leave it unset with
+   the default ``robust=True`` mapping); a classical-aligned IF
+   derivation is queued for a follow-up PR.
+
 HeterogeneousAdoptionDiD
 ------------------------
 
