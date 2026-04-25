@@ -474,6 +474,120 @@ cannot produce an ATT estimate.
        post_obs = group[group['period'] >= g]
        print(f"Cohort {g}: {len(post_obs)} post-treatment observations")
 
+HeterogeneousAdoptionDiD (HAD) Issues
+-------------------------------------
+
+"Resolved estimand is not what I expected (WAS vs WAS_d_lower)"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** ``HeterogeneousAdoptionDiD`` resolves ``target_parameter`` to
+``"WAS_d_lower"`` when you expected ``"WAS"`` (or vice versa).
+
+**Cause:** HAD auto-detects the design path from the dose distribution. Design
+1' (QUG case, ``d_lower = 0``) targets WAS by treating the smallest-dose
+units as a quasi-untreated anchor; Design 1 (no QUG, ``d_lower > 0``) targets
+``WAS_{d_lower}``. If your data has no observations at ``dose = 0`` the
+estimator routes to Design 1 even when you intend a WAS interpretation.
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Inspect the dose support before fitting
+   print(data['dose'].describe())
+   print((data['dose'] == 0).sum(), "observations at dose=0")
+
+   # Check the resolved estimand after fitting
+   results = est.fit(data, outcome='y', unit='unit',
+                     time='period', dose='dose')
+   print(f"Resolved: {results.target_parameter}")
+
+   # If you genuinely have a Design 1' panel but lack dose=0 rows, verify
+   # the dose variable encoding (e.g. log-transformed doses where 0 was
+   # mapped to a small positive value)
+
+"Mass-point fit fallback"
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** HAD reports that the ``mass_point`` fit path was used instead of
+the expected ``continuous_at_zero`` or ``continuous_near_d_lower`` path.
+
+**Cause:** Local-linear regression at the dose-support boundary requires a
+sufficiently dense neighborhood. When the dose distribution has a heavy
+mass-point at the boundary (e.g. many units at ``dose = d_lower``), HAD falls
+back to the structural-residual 2SLS sandwich derived in dCDH 2026 Appendix.
+This is a correct fallback, not a failure - it just changes the SE regime.
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Inspect the fit path used
+   print(f"Fit path: {results.fit_path}")  # 'mass_point' indicates fallback
+
+   # The 2SLS sandwich is the correct inference for mass-point designs;
+   # accept the fallback unless you can re-bin the dose variable to a
+   # smoother distribution.
+
+"NotImplementedError on survey + mass-point + vcov_type='classical'"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** Calling ``HeterogeneousAdoptionDiD.fit(..., vcov_type="classical")``
+under ``survey_design=`` (or under the deprecated ``survey=`` / ``weights=``
+aliases) raises ``NotImplementedError`` on the mass-point path. The same
+``NotImplementedError`` fires on
+``survey_design=make_pweight_design(weights)`` + ``aggregate="event_study"`` +
+``cband=True``.
+
+**Cause:** The per-unit 2SLS influence function returned by the mass-point fit
+is HC1-scaled so that ``compute_survey_if_variance`` and the sup-t bootstrap
+target ``V_HC1`` consistently. Mixing it with a classical analytical SE would
+silently report a ``V_HC1``-targeted variance under a ``classical`` label.
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Use the default robust=True (which maps to vcov_type='hc1')
+   est = HeterogeneousAdoptionDiD()  # robust=True by default
+
+   # Or explicitly request HC1
+   est = HeterogeneousAdoptionDiD(vcov_type='hc1')
+
+A classical-aligned IF derivation is queued for a follow-up release; until
+then, ``vcov_type='hc1'`` is the recommended path for survey + mass-point
+fits. See :doc:`api/had` for the full SE-regime contract.
+
+"Panel-only event-study restriction"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** ``HeterogeneousAdoptionDiD.fit(..., aggregate="event_study")``
+raises because the panel is not balanced or the staggered-timing structure
+violates the last-treatment-cohort restriction.
+
+**Cause:** The Appendix B.2 event-study extension requires staggered-timing
+panels restricted to the last-treatment cohort (which retains never-treated
+units as comparisons). Unbalanced panels or earlier-treated cohorts are not
+supported in the current release.
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Verify panel balance
+   periods_per_unit = data.groupby('unit')['period'].nunique()
+   assert periods_per_unit.nunique() == 1, "Panel is unbalanced"
+
+   # Restrict to the last-treatment cohort manually if needed
+   last_cohort = data['first_treat'].max()
+   subset = data[(data['first_treat'] == last_cohort) |
+                 (data['first_treat'] == 0)]
+
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(subset, outcome='y', unit='unit',
+                     time='period', dose='dose',
+                     aggregate='event_study')
+
 Imputation / Two-Stage DiD Issues
 ----------------------------------
 

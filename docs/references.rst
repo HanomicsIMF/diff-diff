@@ -66,7 +66,7 @@ Survey-Design Inference (Taylor-Series Linearization)
 
 - **Binder, D. A. (1983).** "On the Variances of Asymptotically Normal Estimators from Complex Surveys." *International Statistical Review*, 51(3), 279-292. https://doi.org/10.2307/1402588
 
-  Foundational TSL (Taylor-Series Linearization) variance derivation used across diff-diff's survey-aware estimators (``compute_survey_if_variance`` and the per-estimator influence-function compositions, including the dCDH and HeterogeneousAdoptionDiD ``survey=`` paths).
+  Foundational TSL (Taylor-Series Linearization) variance derivation used across diff-diff's survey-aware estimators (``compute_survey_if_variance`` and the per-estimator influence-function compositions, including the dCDH and HeterogeneousAdoptionDiD ``survey_design=`` paths).
 
 Placebo Tests and DiD Diagnostics
 ---------------------------------

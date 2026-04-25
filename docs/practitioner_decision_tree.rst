@@ -44,6 +44,11 @@ Which of these best describes your situation?
    Your outcome comes from a survey with complex sampling. Go to
    :ref:`section-survey`.
 
+7. **All my markets received the campaign at the same time, but spend levels varied** (no untreated control market exists)
+
+   Universal rollout with dose-only variation. Go to
+   :ref:`section-no-untreated`.
+
 .. tip::
 
    In academic literature, "rolling out in waves" is called *staggered adoption*,
@@ -258,6 +263,51 @@ appropriate identification assumptions in place.
    require Strong Parallel Trends (see warning above).
 
 
+.. _section-no-untreated:
+
+Universal Rollout (No Untreated Markets)
+----------------------------------------
+
+**Your situation:** Every market got the campaign at the same time - there is no
+holdout group - but spending levels varied across markets. ``ContinuousDiD`` cannot
+help here because it requires an untreated comparison group; standard DiD has no
+control to anchor the contrast.
+
+**Recommended method:** :class:`~diff_diff.HeterogeneousAdoptionDiD`
+
+This estimator implements de Chaisemartin, Ciccia, D'Haultfoeuille and Knau (2026)
+and resolves to one of two estimands depending on whether the smallest-dose
+markets can serve as a quasi-untreated anchor (Design 1') or whether the
+identification rests on stronger structural assumptions (Design 1).
+
+.. code-block:: python
+
+   from diff_diff import HeterogeneousAdoptionDiD, did_had_pretest_workflow
+
+   # Run the pretest workflow first - it adjudicates which design path
+   # your data supports and surfaces assumption violations
+   pretests = did_had_pretest_workflow(
+       data, outcome="y", unit="unit", time="period", dose="dose",
+   )
+   print(pretests)
+
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(
+       data, outcome="y", unit="unit", time="period", dose="dose",
+   )
+   print(f"Resolved estimand: {results.target_parameter}")
+   print(f"Average lift per unit of dose: {results.coef:.2f}")
+
+.. note::
+
+   **Academic term:** The estimator targets the *Weighted Average Slope (WAS)* under
+   the QUG / Design 1' case, or *WAS_{d_lower}* under Design 1. Neither identifying
+   assumption is testable via pre-trends alone - run
+   :func:`~diff_diff.did_had_pretest_workflow` for the recommended battery. See
+   :doc:`api/had` for the inference contract (three SE regimes; pointwise CIs;
+   sup-t bands only on the weighted event-study path).
+
+
 .. _section-few-markets:
 
 Few Test Markets
@@ -377,6 +427,9 @@ At a Glance
    * - Varied spending levels
      - ``ContinuousDiD``
      - Dose-response curve
+   * - Universal rollout, no untreated markets
+     - ``HeterogeneousAdoptionDiD``
+     - Targets WAS / WAS_{d_lower} when no holdout exists
    * - Only a few test markets
      - ``SyntheticDiD``
      - Optimal with few treated units

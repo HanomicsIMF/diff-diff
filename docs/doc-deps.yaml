@@ -390,6 +390,19 @@ sources:
         section: "HeterogeneousAdoptionDiD"
         type: methodology
       - path: docs/api/had.rst
+        section: "HAD Pretests"
+        type: api_reference
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
+        type: user_guide
+
+  diff_diff/local_linear.py:
+    drift_risk: low
+    docs:
+      - path: docs/methodology/REGISTRY.md
+        section: "HeterogeneousAdoptionDiD"
+        type: methodology
+      - path: docs/api/had.rst
         type: api_reference
 
   # ── SyntheticDiD ───────────��───────────────────────────────────────

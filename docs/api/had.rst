@@ -46,12 +46,18 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
    - **Unweighted** - continuous paths use the CCT-2014 weighted-robust SE
      from the in-house ``lprobust`` port; the mass-point path uses a
      structural-residual 2SLS sandwich. No cross-horizon covariance.
-   - **``weights=`` shortcut** - continuous paths reuse the CCT-2014 SE;
-     the mass-point path uses an analytical weighted 2SLS sandwich
-     (``classical`` / ``hc1`` only - ``hc2`` / ``hc2_bm`` raise
-     ``NotImplementedError`` pending a 2SLS-specific leverage derivation).
-   - **``survey=``** - both paths compose Binder (1983) Taylor-series
-     linearization with ``df_survey`` threaded into ``safe_inference``.
+   - **``survey_design=make_pweight_design(weights)``** (pweight-only
+     shortcut) - continuous paths reuse the CCT-2014 SE; the mass-point
+     path uses an analytical weighted 2SLS sandwich (``classical`` /
+     ``hc1`` only - ``hc2`` / ``hc2_bm`` raise ``NotImplementedError``
+     pending a 2SLS-specific leverage derivation).
+   - **``survey_design=SurveyDesign(...)``** (full TSL with strata / PSU
+     / FPC) - both paths compose Binder (1983) Taylor-series linearization
+     with ``df_survey`` threaded into ``safe_inference``.
+
+   The deprecated ``survey=`` and ``weights=`` aliases still resolve to
+   the same paths with a ``DeprecationWarning`` (removal queued for the
+   next minor release).
 
    A simultaneous confidence band (sup-t) is available only on the
    **weighted event-study path** via ``cband=True``. Joint cross-horizon
@@ -59,7 +65,8 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
    ``TODO.md``.
 
    **Mass-point ``vcov_type="classical"`` deviation.** The mass-point
-   ``survey=`` paths (static and event-study) and the ``weights=`` +
+   ``survey_design=SurveyDesign(...)`` paths (static and event-study) and
+   the ``survey_design=make_pweight_design(weights)`` +
    ``aggregate="event_study"`` + ``cband=True`` path reject
    ``vcov_type="classical"`` with ``NotImplementedError``. The per-unit
    2SLS influence function returned by the mass-point fit is HC1-scaled
@@ -94,6 +101,62 @@ HeterogeneousAdoptionDiDEventStudyResults
 Multi-period event-study results container for the Appendix B.2 extension.
 
 .. autoclass:: diff_diff.HeterogeneousAdoptionDiDEventStudyResults
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+HAD Pretests
+------------
+
+Diagnostic pretests for the HAD identification assumptions from de Chaisemartin
+et al. (2026). The composite orchestrator
+:func:`~diff_diff.did_had_pretest_workflow` dispatches to two shapes based on
+panel structure: the **overall** path (two-period first-differenced sample)
+runs single-period tests; the **event-study** path (three or more periods)
+runs joint multi-period tests. Both paths return a unified
+:class:`~diff_diff.HADPretestReport`.
+
+.. autofunction:: diff_diff.did_had_pretest_workflow
+
+.. autoclass:: diff_diff.HADPretestReport
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Single-period tests (``aggregate="overall"``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autofunction:: diff_diff.qug_test
+
+.. autofunction:: diff_diff.stute_test
+
+.. autofunction:: diff_diff.yatchew_hr_test
+
+.. autoclass:: diff_diff.QUGTestResults
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: diff_diff.StuteTestResults
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: diff_diff.YatchewTestResults
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Joint multi-period tests (``aggregate="event_study"``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autofunction:: diff_diff.stute_joint_pretest
+
+.. autofunction:: diff_diff.joint_pretrends_test
+
+.. autofunction:: diff_diff.joint_homogeneity_test
+
+.. autoclass:: diff_diff.StuteJointResult
    :members:
    :undoc-members:
    :show-inheritance:

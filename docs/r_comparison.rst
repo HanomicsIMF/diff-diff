@@ -213,6 +213,30 @@ The synthdid package implements Arkhangelsky et al. (2021):
        post_periods=post_periods
    )
 
+No-Untreated Designs (no R parallel)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When every unit is treated at the post period (universal-rollout policies,
+industry-wide regime changes) but treatment intensity varies across units,
+the standard R DiD ecosystem has no direct entry point - ``did``, ``fixest``,
+``synthdid``, and ``DIDmultiplegtDYN`` all assume an untreated comparison
+group exists. ``diff-diff`` ships
+:class:`~diff_diff.HeterogeneousAdoptionDiD`, which implements
+de Chaisemartin, Ciccia, D'Haultfoeuille and Knau (2026, arXiv:2405.04465v6).
+The estimator targets the Weighted Average Slope (WAS) when the smallest
+dose serves as a quasi-untreated anchor (Design 1') or ``WAS_{d_lower}``
+otherwise (Design 1, requiring Assumption 6 or sign-only Assumption 5).
+The dCDH 2026 paper has not yet been packaged in R, so this is a
+methodology niche covered in Python first.
+
+.. code-block:: python
+
+   from diff_diff import HeterogeneousAdoptionDiD
+
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(data, outcome='y', unit='unit',
+                     time='period', dose='dose')
+
 Key Differences
 ---------------
 
@@ -372,6 +396,11 @@ Feature Comparison Table
      - ❌
      - ❌
      - ❌
+   * - Heterogeneous adoption / no-untreated designs
+     - ✅
+     - ❌
+     - ❌
+     - ❌
 
 .. note::
 
@@ -382,7 +411,8 @@ Feature Comparison Table
    Stacked DiD requires manual implementation or the ``stackedev`` package;
    Continuous DiD is available via the ``did`` package continuous extension;
    Triple Difference requires manual implementation in R.
-   TROP and Efficient DiD have no direct R equivalents.
+   TROP, Efficient DiD, and HeterogeneousAdoptionDiD (dCDH 2026, the
+   no-untreated-control design) have no direct R equivalents.
 
 Migration Tips
 --------------
@@ -399,3 +429,9 @@ Migration Tips
 
 5. **Missing data**: diff-diff requires complete data; use ``balance_panel()``
    or ``dropna()`` first
+
+6. **No-untreated designs**: If your R workflow stalls because every unit was
+   treated at the post period (universal rollout, dose-only variation), reach
+   for :class:`~diff_diff.HeterogeneousAdoptionDiD`. See the
+   `No-Untreated Designs (no R parallel)`_ section above for the migration
+   pattern.
