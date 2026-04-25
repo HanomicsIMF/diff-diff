@@ -431,6 +431,24 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         cross-path cohort-sharing deviation from R is inherited from
         the analytical event-study path.
 
+        With ``n_bootstrap > 0``, per-path joint sup-t simultaneous
+        confidence bands are also computed across horizons
+        ``1..L_max`` within each path. A path-specific critical value
+        ``c_p`` (constructed from a fresh shared-weights multiplier-
+        bootstrap draw per path) is surfaced at top level as
+        ``results.path_sup_t_bands[path] = {"crit_value", "alpha",
+        "n_bootstrap", "method", "n_valid_horizons"}``, applied
+        per-horizon as ``cband_conf_int`` on
+        ``path_effects[path]["horizons"][l]``, and rendered as
+        ``cband_lower`` / ``cband_upper`` columns on
+        ``results.to_dataframe(level="by_path")`` (mirroring the
+        OVERALL ``level="event_study"`` schema). Bands cover joint
+        inference WITHIN a single path across horizons; they do NOT
+        provide simultaneous coverage across paths. Python-only
+        library extension; R ``did_multiplegt_dyn`` provides no joint
+        bands at any surface. See REGISTRY.md ``Note (Phase 3 by_path
+        per-path joint sup-t bands)``.
+
         SE convention: per-path IF parallels the joiners / leavers
         construction — the switcher-side contribution is zeroed for
         groups not in the selected path, and the cohort structure and
@@ -2986,6 +3004,33 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         path_placebos[path_key][neg_key]["conf_int"] = (np.nan, np.nan)
                         path_placebos[path_key][neg_key]["t_stat"] = np.nan
 
+        # Phase 3: propagate per-path sup-t critical values to per-
+        # horizon `cband_conf_int` entries on path_effects (by_path +
+        # n_bootstrap > 0). Sibling of the OVERALL event-study cband
+        # propagation at `:2865-2875`. For each path with a finite
+        # crit, write `cband_conf_int = (eff - c_p*se, eff + c_p*se)`
+        # into each horizon's dict whose bootstrap-replaced SE is
+        # finite > 0. Mirror the OVERALL absent-key pattern: non-finite
+        # SE horizons simply don't get the `cband_conf_int` key.
+        if (
+            bootstrap_results is not None
+            and bootstrap_results.path_cband_crit_values is not None
+            and path_effects is not None
+        ):
+            for path_key, crit in bootstrap_results.path_cband_crit_values.items():
+                if path_key not in path_effects:
+                    continue
+                if not np.isfinite(crit):
+                    continue
+                for l_h, h_dict in path_effects[path_key]["horizons"].items():
+                    se = h_dict.get("se", np.nan)
+                    eff = h_dict.get("effect", np.nan)
+                    if np.isfinite(se) and se > 0:
+                        h_dict["cband_conf_int"] = (
+                            eff - crit * se,
+                            eff + crit * se,
+                        )
+
         # When L_max >= 1 and the per-group path is active, sync
         # overall_* from event_study_effects[1] AFTER bootstrap propagation
         # so that bootstrap SE/p/CI flow to the top-level surface.
@@ -3618,6 +3663,45 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             ),
             path_effects=path_effects,
             path_placebo_event_study=path_placebos,
+            path_sup_t_bands=(
+                # When by_path + n_bootstrap > 0 is active, surface a
+                # dict (possibly empty) — preserving the documented
+                # `None` (not requested) vs `{}` (requested but empty)
+                # contract that mirrors `path_effects` / `path_placebo_
+                # event_study` empty-state behavior. The empty case
+                # arises in two ways:
+                #   1. `path_effects == {}` — no observed path has a
+                #      complete window; the per-path bootstrap collector
+                #      is skipped upstream and `path_cband_crit_values`
+                #      stays `None`. We materialize `{}` here.
+                #   2. Bootstrap ran but no path passed both gates
+                #      (>=2 valid horizons AND a strict majority — more
+                #      than 50% — of finite sup-t draws);
+                #      `path_cband_crit_values == {}` — passes through.
+                {
+                    path_key: {
+                        "crit_value": crit,
+                        "alpha": self.alpha,
+                        "n_bootstrap": self.n_bootstrap,
+                        "method": "multiplier_bootstrap",
+                        "n_valid_horizons": (
+                            bootstrap_results.path_cband_n_valid_horizons.get(path_key, 0)
+                            if bootstrap_results is not None
+                            and bootstrap_results.path_cband_n_valid_horizons is not None
+                            else 0
+                        ),
+                    }
+                    for path_key, crit in (
+                        bootstrap_results.path_cband_crit_values
+                        if bootstrap_results is not None
+                        and bootstrap_results.path_cband_crit_values is not None
+                        else {}
+                    ).items()
+                    if np.isfinite(crit)
+                }
+                if (self.by_path is not None and self.n_bootstrap > 0)
+                else None
+            ),
             survey_metadata=survey_metadata,
             _estimator_ref=self,
         )

@@ -778,6 +778,94 @@ class ChaisemartinDHaultfoeuilleBootstrapMixin:
             results.path_placebo_cis = path_pl_cis
             results.path_placebo_p_values = path_pl_pvals
 
+        # --- Phase 3: Per-path joint sup-t (by_path + n_bootstrap > 0) ---
+        # Sibling of the OVERALL event-study sup-t at the multi-horizon
+        # block above (`:599-614`). Per-path joint simultaneous
+        # confidence bands across horizons 1..L_max within each path:
+        # one shared (n_bootstrap, n_eligible) multiplier weight matrix
+        # (using `self.bootstrap_weights` — Rademacher / Mammen / Webb)
+        # per path is broadcast across all valid horizons of that path,
+        # producing correlated bootstrap distributions across horizons.
+        # The path-specific critical value
+        # `c_p = quantile(max_l |t_l|, 1-alpha)` is the band half-width
+        # multiplier applied to each horizon's bootstrap SE in fit().
+        #
+        # Note (asymmetry vs OVERALL): this draws a FRESH shared-weights
+        # matrix per path AFTER the per-path SE block above has populated
+        # results.path_ses via independent per-(path, horizon) draws.
+        # Numerator: fresh shared draws; denominator: bootstrap SEs from
+        # the earlier independent draws. Asymptotically equivalent to
+        # OVERALL's self-consistent reuse, but NOT bit-identical. The
+        # fresh draw is intentional: it preserves RNG-state isolation
+        # for existing per-path SE seed-reproducibility tests.
+        #
+        # Gates: a path needs >=2 valid horizons (finite bootstrap SE>0)
+        # AND a strict majority (>50%) of finite sup-t draws to receive
+        # a band. Otherwise the path is absent from
+        # path_cband_crit_values (mirrors OVERALL absent-key pattern at
+        # `:605,612`; the strict-majority gate matches the OVERALL
+        # `finite_mask.sum() > 0.5 * n_bootstrap` semantics — exactly
+        # half finite is NOT enough).
+        if path_bootstrap_inputs is not None and results.path_ses:
+            path_cband_crits: Dict[Tuple[int, ...], float] = {}
+            path_cband_n_valid: Dict[Tuple[int, ...], int] = {}
+
+            for path_key, horizon_inputs in path_bootstrap_inputs.items():
+                bs_ses_for_path = results.path_ses.get(path_key, {})
+                valid_horizons = []
+                for l_h, (u_h, n_h, eff_h, _u_pp_h) in sorted(horizon_inputs.items()):
+                    if u_h.size == 0 or n_h <= 0:
+                        continue
+                    bs_se = bs_ses_for_path.get(l_h, np.nan)
+                    if not np.isfinite(bs_se) or bs_se <= 0:
+                        continue
+                    valid_horizons.append((l_h, u_h, n_h, eff_h, bs_se))
+
+                if len(valid_horizons) < 2:
+                    continue
+
+                # All horizons within a path use the same n_eligible
+                # (variance-eligible group ordering enforced by
+                # _collect_path_bootstrap_inputs's use of
+                # eligible_mask_var for cohort-recentering); use the
+                # first valid horizon's IF size as the shared dim.
+                n_dim = valid_horizons[0][1].size
+                map_path = _map_for_target(
+                    n_dim,
+                    group_id_to_psu_code,
+                    eligible_group_ids,
+                )
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    shared_weights = _generate_psu_or_group_weights(
+                        n_bootstrap=self.n_bootstrap,
+                        n_groups_target=n_dim,
+                        weight_type=self.bootstrap_weights,
+                        rng=rng,
+                        group_to_psu_map=map_path,
+                    )
+                    es_dists_path = []
+                    for _l_h, u_h, n_h, eff_h, _bs_se in valid_horizons:
+                        deviations = (shared_weights @ u_h) / n_h
+                        es_dists_path.append(eff_h + deviations)
+                    boot_matrix = np.asarray(es_dists_path)
+                    effects_vec = np.array([v[3] for v in valid_horizons])
+                    ses_vec = np.array([v[4] for v in valid_horizons])
+                    t_stats = np.abs((boot_matrix - effects_vec[:, None]) / ses_vec[:, None])
+                    sup_t_dist = np.max(t_stats, axis=0)
+                    finite_mask = np.isfinite(sup_t_dist)
+                    if finite_mask.sum() <= 0.5 * self.n_bootstrap:
+                        continue
+                    crit_p = float(np.quantile(sup_t_dist[finite_mask], 1.0 - self.alpha))
+
+                if not np.isfinite(crit_p):
+                    continue
+
+                path_cband_crits[path_key] = crit_p
+                path_cband_n_valid[path_key] = len(valid_horizons)
+
+            results.path_cband_crit_values = path_cband_crits
+            results.path_cband_n_valid_horizons = path_cband_n_valid
+
         return results
 
 

@@ -161,6 +161,21 @@ class DCDHBootstrapResults:
         default=None, repr=False
     )
 
+    # --- Phase 3: per-path joint sup-t critical values (by_path + n_bootstrap > 0) ---
+    # Per-path sup-t simultaneous-band critical value `c_p =
+    # quantile(max_l |t_l|, 1-alpha)` from a fresh shared-weights
+    # multiplier-bootstrap draw per path. Naming parity with the OVERALL
+    # `cband_crit_value` scalar at line 131 (singular -> plural since one
+    # crit per path). Gates: a path appears only when (>=2 valid horizons
+    # with finite bootstrap SE > 0) AND (a strict majority — more than
+    # 50% — of sup-t draws are finite); paths failing either gate are
+    # absent from the dict. `None` when bootstrap didn't run; empty dict
+    # when ran but no path passed both gates.
+    path_cband_crit_values: Optional[Dict[Tuple[int, ...], float]] = field(default=None, repr=False)
+    path_cband_n_valid_horizons: Optional[Dict[Tuple[int, ...], int]] = field(
+        default=None, repr=False
+    )
+
 
 @dataclass
 class ChaisemartinDHaultfoeuilleResults:
@@ -354,7 +369,16 @@ class ChaisemartinDHaultfoeuilleResults:
     cost_benefit_delta : dict, optional
         Cost-benefit aggregate ``delta``. Populated when ``L_max >= 2``.
     sup_t_bands : dict, optional
-        Phase 2 placeholder (sup-t simultaneous confidence bands).
+        Sup-t simultaneous confidence-band metadata for the OVERALL
+        event-study surface. Holds ``{"crit_value": float, "alpha":
+        float, "n_bootstrap": int, "method": str}``. Populated when
+        ``n_bootstrap > 0`` AND there are at least 2 valid horizons
+        with finite bootstrap SE > 0 AND a strict majority (more than
+        50%) of sup-t draws are finite. The band itself is written
+        per-horizon as
+        ``cband_conf_int`` on ``event_study_effects[l]``. ``None``
+        otherwise. Python-only library extension; R
+        ``did_multiplegt_dyn`` provides no joint / sup-t bands.
     covariate_residuals : pd.DataFrame, optional
         ``DID^X`` first-stage diagnostics: per-baseline ``theta_hat``,
         ``n_obs``, and ``r_squared``. Populated when ``controls`` is set.
@@ -394,6 +418,29 @@ class ChaisemartinDHaultfoeuilleResults:
         cohort-sharing SE deviation from R documented for
         ``path_effects``. See REGISTRY.md
         ``Note (Phase 3 by_path ...)`` → "Per-path placebos".
+    path_sup_t_bands : dict, optional
+        Per-path joint sup-t simultaneous-band metadata, keyed by
+        observed treatment trajectory (tuple of int). Each entry holds
+        ``{"crit_value": float, "alpha": float, "n_bootstrap": int,
+        "method": str, "n_valid_horizons": int}``. Populated when
+        ``by_path`` is a positive int AND ``n_bootstrap > 0``. The
+        band itself is applied per-horizon as ``cband_conf_int`` on
+        ``path_effects[path]["horizons"][l]`` and rendered as
+        ``cband_lower`` / ``cband_upper`` columns on
+        ``to_dataframe(level="by_path")``. Empty-state contract:
+        ``None`` when not requested (no bootstrap or ``by_path is None``);
+        ``{}`` when requested but no path passed both gates (``>=2``
+        valid horizons with finite bootstrap SE ``> 0`` AND a strict
+        majority — more than 50% — of finite sup-t draws). Bands
+        cover joint inference WITHIN a
+        single path across horizons; they do NOT provide simultaneous
+        coverage across paths. Inherits the cross-path cohort-sharing
+        SE deviation from R documented for ``path_effects`` (the
+        bootstrap SE used as the t-stat denominator carries the same
+        deviation). Python-only library extension; R
+        ``did_multiplegt_dyn`` provides no joint / sup-t bands at any
+        surface. See REGISTRY.md ``Note (Phase 3 by_path per-path
+        joint sup-t bands)``.
     honest_did_results : HonestDiDResults, optional
         HonestDiD sensitivity analysis bounds (Rambachan & Roth 2023).
         Populated when ``honest_did=True`` in ``fit()`` or by calling
@@ -503,6 +550,23 @@ class ChaisemartinDHaultfoeuilleResults:
     # **path_placebo_event_study[p]}` view is well-formed across both
     # forward and backward horizons within a single path.
     path_placebo_event_study: Optional[Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]] = field(
+        default=None, repr=False
+    )
+    # Per-path joint sup-t simultaneous-band metadata. Keyed by path
+    # tuple; each entry holds `{"crit_value", "alpha", "n_bootstrap",
+    # "method", "n_valid_horizons"}`. Populated when `by_path` is a
+    # positive int AND `n_bootstrap > 0`. The joint band itself is
+    # written per-horizon as `cband_conf_int` on
+    # `path_effects[path]["horizons"][l]` (mirrors the OVERALL
+    # `event_study_effects[l]["cband_conf_int"]` pattern at
+    # `chaisemartin_dhaultfoeuille.py:2865-2875`). Empty-state contract:
+    # `None` when not requested (no bootstrap or `by_path is None`); `{}`
+    # when requested but no path passed both gates (>=2 valid horizons
+    # AND a strict majority — more than 50% — of finite sup-t draws).
+    # The bands cover joint inference
+    # WITHIN a single path across horizons; they do NOT provide
+    # simultaneous coverage across paths.
+    path_sup_t_bands: Optional[Dict[Tuple[int, ...], Dict[str, Any]]] = field(
         default=None, repr=False
     )
     honest_did_results: Optional["HonestDiDResults"] = field(default=None, repr=False)
@@ -783,6 +847,9 @@ class ChaisemartinDHaultfoeuilleResults:
             for entry in self.path_placebo_event_study.values()
             for h in entry.values()
         )
+        path_sup_t_has_finite_crit = self.path_sup_t_bands is not None and any(
+            np.isfinite(v.get("crit_value", np.nan)) for v in self.path_sup_t_bands.values()
+        )
         any_finite_bootstrap_inference = (
             np.isfinite(self.overall_se)
             or event_study_has_finite_bootstrap_se
@@ -790,6 +857,7 @@ class ChaisemartinDHaultfoeuilleResults:
             or leavers_has_finite_bootstrap_se
             or path_effects_has_finite_bootstrap_se
             or path_placebo_has_finite_bootstrap_se
+            or path_sup_t_has_finite_crit
         )
         if self.bootstrap_results is not None and np.isfinite(self.overall_se) and not is_delta:
             lines.append("Note: p-value and CI are multiplier-bootstrap percentile inference")
@@ -823,6 +891,8 @@ class ChaisemartinDHaultfoeuilleResults:
                 live_targets.append("per-path")
             if path_placebo_has_finite_bootstrap_se:
                 live_targets.append("per-path placebo")
+            if path_sup_t_has_finite_crit:
+                live_targets.append("per-path sup-t")
             lines.append(
                 f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
                 f"produced non-finite SE on the overall/event-study target; "
@@ -1219,6 +1289,16 @@ class ChaisemartinDHaultfoeuilleResults:
                         h["p_value"],
                     )
                 )
+            # Per-path joint sup-t critical value (when populated).
+            # Mirrors the OVERALL sup-t crit print at line ~1019.
+            if self.path_sup_t_bands is not None and path in self.path_sup_t_bands:
+                crit_p = self.path_sup_t_bands[path].get("crit_value", np.nan)
+                if np.isfinite(crit_p):
+                    conf_level = int((1 - self.alpha) * 100)
+                    lines.append(
+                        f"  Sup-t critical value: {crit_p:.4f} "
+                        f"(simultaneous {conf_level}% bands)"
+                    )
             lines.extend([thin])
         lines.extend([""])
 
@@ -1293,10 +1373,19 @@ class ChaisemartinDHaultfoeuilleResults:
             - ``"design2"``: Design-2 switch-in/switch-out descriptive
               summary. Available when ``design2=True``.
             - ``"by_path"``: one row per (path, horizon) when
-              ``by_path=k`` was passed to the estimator. Columns include
+              ``by_path=k`` was passed to the estimator. Columns:
               ``path``, ``frequency_rank``, ``n_groups``, ``horizon``,
               ``effect``, ``se``, ``t_stat``, ``p_value``,
-              ``conf_int_lower``, ``conf_int_upper``, ``n_obs``.
+              ``conf_int_lower``, ``conf_int_upper``, ``n_obs``,
+              ``cband_lower``, ``cband_upper``. The ``horizon`` column
+              takes negative ints for placebo rows when
+              ``placebo=True``. The ``cband_*`` columns mirror the
+              OVERALL ``level="event_study"`` schema (joint sup-t
+              simultaneous bands); they are populated for positive-
+              horizon rows of paths with a finite per-path sup-t crit
+              (``n_bootstrap > 0``) and NaN otherwise (placebo rows,
+              unbanded paths, or the requested-but-empty fallback
+              DataFrame).
 
         Returns
         -------
@@ -1554,6 +1643,8 @@ class ChaisemartinDHaultfoeuilleResults:
                         "conf_int_lower",
                         "conf_int_upper",
                         "n_obs",
+                        "cband_lower",
+                        "cband_upper",
                     ]
                 )
             rows = []
@@ -1577,6 +1668,12 @@ class ChaisemartinDHaultfoeuilleResults:
                 )
                 for lag_key in sorted(placebo_horizons.keys()):
                     ph_entry = placebo_horizons[lag_key]
+                    # Placebos do not get joint sup-t bands in this
+                    # release (only positive event-study horizons do —
+                    # mirrors OVERALL placebo / event-study sup-t
+                    # convention). Emit NaN cband columns for schema
+                    # parity with the OVERALL level="event_study" table.
+                    ph_cband = ph_entry.get("cband_conf_int", (np.nan, np.nan))
                     rows.append(
                         {
                             "path": path,
@@ -1590,10 +1687,17 @@ class ChaisemartinDHaultfoeuilleResults:
                             "conf_int_lower": ph_entry["conf_int"][0],
                             "conf_int_upper": ph_entry["conf_int"][1],
                             "n_obs": ph_entry["n_obs"],
+                            "cband_lower": ph_cband[0] if ph_cband else np.nan,
+                            "cband_upper": ph_cband[1] if ph_cband else np.nan,
                         }
                     )
                 for l_h in sorted(horizons.keys()):
                     h_entry = horizons[l_h]
+                    # Per-path joint sup-t band (when populated) mirrors
+                    # OVERALL `level="event_study"` cband emission. Absent
+                    # key / missing path entry -> NaN columns. Pinned at
+                    # `TestByPathSupTBands::test_path_sup_t_to_dataframe_emits_cband_columns`.
+                    h_cband = h_entry.get("cband_conf_int", (np.nan, np.nan))
                     rows.append(
                         {
                             "path": path,
@@ -1607,6 +1711,8 @@ class ChaisemartinDHaultfoeuilleResults:
                             "conf_int_lower": h_entry["conf_int"][0],
                             "conf_int_upper": h_entry["conf_int"][1],
                             "n_obs": h_entry["n_obs"],
+                            "cband_lower": h_cband[0] if h_cband else np.nan,
+                            "cband_upper": h_cband[1] if h_cband else np.nan,
                         }
                     )
             return pd.DataFrame(rows)

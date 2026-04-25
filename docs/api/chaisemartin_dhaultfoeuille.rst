@@ -16,7 +16,10 @@ covariate adjustment (``controls``); group-specific linear trends
 heterogeneity testing; non-binary treatment; HonestDiD sensitivity
 integration on placebos; survey support via Taylor-series linearization
 (pweight + strata/PSU/FPC); and per-path event-study disaggregation via
-``by_path=k`` (mirrors R ``did_multiplegt_dyn(..., by_path=k)``).
+``by_path=k`` (mirrors R ``did_multiplegt_dyn(..., by_path=k)``,
+including per-path backward placebos and per-path joint sup-t
+simultaneous bands when ``n_bootstrap > 0`` — Python-only extension
+beyond R, which provides no joint bands at any surface).
 
 The estimator:
 
