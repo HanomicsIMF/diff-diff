@@ -48,6 +48,26 @@ Wild Cluster Bootstrap
 
 - **MacKinnon, J. G., & Webb, M. D. (2018).** "The Wild Bootstrap for Few (Treated) Clusters." *The Econometrics Journal*, 21(2), 114-135. https://doi.org/10.1111/ectj.12107
 
+Nonparametric Bias-Corrected Inference
+--------------------------------------
+
+- **Calonico, S., Cattaneo, M. D., & Titiunik, R. (2014).** "Robust Nonparametric Confidence Intervals for Regression-Discontinuity Designs." *Econometrica*, 82(6), 2295-2326. https://doi.org/10.3982/ECTA11757
+
+  Source of the bias-combined design matrix used by the in-house ``lprobust`` port that backs ``HeterogeneousAdoptionDiD`` Phase 1c (continuous-dose paths) for the bias-corrected weighted-robust SE.
+
+- **Calonico, S., Cattaneo, M. D., & Farrell, M. H. (2018).** "On the Effect of Bias Estimation on Coverage Accuracy in Nonparametric Inference." *Journal of the American Statistical Association*, 113(522), 767-779. https://doi.org/10.1080/01621459.2017.1285776
+
+- **Calonico, S., Cattaneo, M. D., & Farrell, M. H. (2019).** "nprobust: Nonparametric Kernel-Based Estimation and Robust Bias-Corrected Inference." *Journal of Statistical Software*, 91(8), 1-33. https://doi.org/10.18637/jss.v091.i08
+
+  CCF (2018, 2019) is the underlying ``nprobust`` machinery (MSE-optimal bandwidth selection and robust bias-corrected CIs) that ``HeterogeneousAdoptionDiD`` ports in-house for the continuous-dose paths.
+
+Survey-Design Inference (Taylor-Series Linearization)
+-----------------------------------------------------
+
+- **Binder, D. A. (1983).** "On the Variances of Asymptotically Normal Estimators from Complex Surveys." *International Statistical Review*, 51(3), 279-292. https://doi.org/10.2307/1402588
+
+  Foundational TSL (Taylor-Series Linearization) variance derivation used across diff-diff's survey-aware estimators (``compute_survey_if_variance`` and the per-estimator influence-function compositions, including the dCDH and HeterogeneousAdoptionDiD ``survey=`` paths).
+
 Placebo Tests and DiD Diagnostics
 ---------------------------------
 
@@ -170,7 +190,7 @@ Heterogeneous Adoption (No-Untreated Designs)
 
 - **de Chaisemartin, C., Ciccia, D., D'Haultfœuille, X., & Knau, F. (2026).** "Difference-in-Differences Estimators When No Unit Remains Untreated." *arXiv preprint* arXiv:2405.04465v6. https://arxiv.org/abs/2405.04465
 
-  Primary source for the Weighted Average Slope (WAS) estimator and its multi-period event-study extension implemented in our ``HeterogeneousAdoptionDiD`` class. Targets settings where every unit receives a strictly positive heterogeneous dose at treatment time, using local-linear regression at the support boundary.
+  Primary source for the Weighted Average Slope (WAS) estimator and its multi-period event-study extension implemented in our ``HeterogeneousAdoptionDiD`` class. Targets panels where no unit remains untreated at the post period and treatment dose ``D_{g,2}`` is nonnegative, using local-linear regression at the dose support boundary - both Design 1' (the QUG case with ``d̲ = 0``) and Design 1 (no QUG with ``d̲ > 0``) are supported.
 
 Power Analysis
 --------------
