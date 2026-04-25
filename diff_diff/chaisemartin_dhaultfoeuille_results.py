@@ -374,6 +374,20 @@ class ChaisemartinDHaultfoeuilleResults:
         ``{"n_groups": int, "frequency_rank": int,
         "horizons": {l: {"effect", "se", "t_stat", "p_value",
         "conf_int", "n_obs"}}}`` for ``l = 1..L_max``.
+    path_placebo_event_study : dict, optional
+        Per-path backward-horizon placebos ``DID^{pl}_{path, l}`` for
+        ``l = 1..L_max``, keyed by observed treatment trajectory (tuple
+        of int). Inner dict keys are **negative** ints (``-l`` for lag
+        ``l``) to mirror the ``placebo_event_study`` convention so a
+        unified ``{**path_effects[p]["horizons"],
+        **path_placebo_event_study[p]}`` view is well-formed across
+        forward and backward horizons. Each inner entry holds
+        ``{"effect", "se", "t_stat", "p_value", "conf_int", "n_obs"}``.
+        Populated when ``by_path`` is a positive int AND
+        ``placebo=True`` AND ``L_max >= 1``; ``None`` otherwise.
+        Inherits the cross-path cohort-sharing SE deviation from R
+        documented for ``path_effects``. See REGISTRY.md
+        ``Note (Phase 3 by_path ...)`` → "Per-path placebos".
     honest_did_results : HonestDiDResults, optional
         HonestDiD sensitivity analysis bounds (Rambachan & Roth 2023).
         Populated when ``honest_did=True`` in ``fit()`` or by calling

@@ -5069,13 +5069,14 @@ class TestByPathPlacebo:
     """
 
     def test_attr_is_none_when_placebo_false(self):
-        """``placebo=False`` (with by_path) must leave the new attribute None."""
+        """``placebo=False`` (with by_path) must leave the new attribute None;
+        ``placebo=True`` populates it. Both branches use the SAME fixture so
+        the difference is attributable solely to the ``placebo`` flag."""
         data = _by_path_placebo_data()
-        _est, res = _fit_by_path(data=_by_path_three_path_data(), by_path=3, L_max=3)
-        assert res.path_placebo_event_study is None
-        # Sanity: same fixture, placebo=True, attribute is populated
-        _est2, res2 = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
-        assert res2.path_placebo_event_study is not None
+        _est, res_off = _fit_by_path(data, by_path=3, L_max=3)
+        assert res_off.path_placebo_event_study is None
+        _est2, res_on = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
+        assert res_on.path_placebo_event_study is not None
 
     def test_attr_keys_match_path_effects(self):
         """``path_placebo_event_study`` keys must equal ``path_effects`` keys."""
@@ -5089,18 +5090,93 @@ class TestByPathPlacebo:
             assert sorted(h.keys()) == [-3, -2, -1]
 
     def test_path_placebo_point_estimate_within_path_mean(self):
-        """Per-(path, lag), point estimate equals within-path mean DID^pl."""
+        """Per-(path, lag), the reported ``effect`` must equal the explicit
+        within-path-mean DID^pl identity ``mean_g(Y_{g, F_g-1-l} - Y_{g, F_g-1})
+        - mean_ctrl(Y_{g', F_g-1-l} - Y_{g', F_g-1})`` evaluated on the
+        path-eligible switcher set, mirroring how
+        ``_compute_per_group_if_placebo_horizon`` constructs U_pl_l. This
+        pins the estimand identity, not just finiteness, against silent
+        regressions in the per-path IF construction."""
         data = _by_path_placebo_data()
         _est, res = _fit_by_path_with_placebo(data, by_path=3, L_max=3)
-        # Lag 1, 2 valid; lag 3 has backward index -1 so n_obs=0
+
+        # Recompute the within-path mean DID^pl independently from the raw
+        # data and assert exact equality at np.testing.assert_allclose tols.
+        L_max = 3
+        n_periods = 7  # set by _by_path_placebo_data
+        g_to_F_g = {}
+        for g, grp in data.groupby("group"):
+            grp = grp.sort_values("period")
+            treated = grp[grp["treatment"] == 1]
+            if len(treated):
+                g_to_F_g[int(g)] = int(treated["period"].iloc[0])
+
+        outcome_lookup = {
+            (int(r["group"]), int(r["period"])): float(r["outcome"])
+            for _, r in data.iterrows()
+        }
+        # Per-group path tuple
+        g_to_path = {}
+        for g, F_g in g_to_F_g.items():
+            ref = F_g - 1
+            if ref < 0 or ref + L_max >= n_periods:
+                continue
+            grp = data[data["group"] == g].sort_values("period")
+            treatment_arr = grp.set_index("period")["treatment"].to_dict()
+            path_tuple = tuple(int(treatment_arr.get(ref + i, 0)) for i in range(L_max + 1))
+            g_to_path[g] = (F_g, path_tuple)
+        # Never-treated group ids
+        never_treated = [int(g) for g in data["group"].unique() if int(g) not in g_to_F_g]
+
         for path, lag_dict in res.path_placebo_event_study.items():
-            for lag_key in (-1, -2):
-                entry = lag_dict[lag_key]
-                if entry["n_obs"] > 0:
-                    assert np.isfinite(entry["effect"]), (
-                        f"path={path} lag={lag_key}: expected finite effect"
+            path_groups = {g for g, (_, p) in g_to_path.items() if p == path}
+            for lag in (-1, -2):
+                entry = lag_dict[lag]
+                if entry["n_obs"] == 0:
+                    continue
+                lag_pos = -lag
+                contributions = []
+                for g in path_groups:
+                    F_g = g_to_F_g[g]
+                    backward = F_g - 1 - lag_pos
+                    forward = F_g - 1 + lag_pos
+                    if backward < 0 or forward >= n_periods:
+                        continue
+                    # Controls: same baseline (D_{g',1}=0; all path
+                    # switchers in this fixture share baseline 0), not
+                    # switched by forward, observed at ref+backward+forward
+                    ctrl_groups = [
+                        gc
+                        for gc in g_to_F_g
+                        if gc != g and g_to_F_g[gc] > forward
+                    ] + never_treated
+                    if not ctrl_groups:
+                        continue
+                    switcher_change = (
+                        outcome_lookup[(g, backward)] - outcome_lookup[(g, F_g - 1)]
                     )
-            # lag 3 must be NaN (backward index out of range)
+                    ctrl_changes = [
+                        outcome_lookup[(int(gc), backward)] - outcome_lookup[(int(gc), F_g - 1)]
+                        for gc in ctrl_groups
+                    ]
+                    contributions.append(
+                        switcher_change - sum(ctrl_changes) / len(ctrl_changes)
+                    )
+                if contributions:
+                    expected_mean = sum(contributions) / len(contributions)
+                    np.testing.assert_allclose(
+                        entry["effect"],
+                        expected_mean,
+                        atol=1e-10,
+                        rtol=1e-10,
+                        err_msg=(
+                            f"path={path} lag={lag}: reported effect "
+                            f"{entry['effect']} != within-path mean "
+                            f"identity {expected_mean}"
+                        ),
+                    )
+            # lag -3 is structurally NaN under this fixture (smallest
+            # F_g=3 means backward = F_g - 1 - 3 = -1, out of range)
             entry3 = lag_dict[-3]
             assert entry3["n_obs"] == 0
             assert np.isnan(entry3["effect"])
