@@ -3000,8 +3000,16 @@ class TestScaleEquivariance:
         # pass produces different sparsification under uniform vs warm
         # init on a handful of draws. Warm-start matches R at machine
         # precision (test_placebo_se_matches_r in
-        # TestJackknifeSERParity).
-        "placebo":   (4.603349837478791,   0.293840360160448, 0.004975124378109453, 200),
+        # TestJackknifeSERParity). Capture: Linux/OpenBLAS (CI runner) —
+        # warm-start carries ``unit_weights`` (fit-time FW output) into
+        # per-draw init, which is platform-divergent at sub-ULP from
+        # BLAS reduction order; across 200 draws with path-dependent
+        # sparsification the SE diverges ~1e-9 between Apple Accelerate
+        # (macOS local: 0.293840360160448) and OpenBLAS (Linux CI:
+        # 0.2938403592163006). Linux value pinned because CI is the
+        # gating surface; macOS local fits will drift at ~1e-9 — that
+        # delta is finite-iter FW path-dependence, not a numerical bug.
+        "placebo":   (4.603349837478791,   0.2938403592163006, 0.004975124378109453, 200),
         # bootstrap = paper-faithful refit with R-default warm-start: FW is
         # initialized with ``sum_normalize(unit_weights[boot_control_idx])``
         # for ω and with the fit-time ``time_weights`` for λ on each draw,
