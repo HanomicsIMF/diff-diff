@@ -3262,9 +3262,22 @@ def _resolve_pretest_unit_weights(
         return weights_unit, None
     # survey is not None
     if not hasattr(survey, "resolve"):
+        # PR #376 R9 P3: error message names the canonical kwarg
+        # `survey_design=` (with the deprecated `survey=` alias mentioned
+        # for back-compat), and points pre-resolved-design users to the
+        # array-in pretest helpers where ResolvedSurveyDesign /
+        # make_pweight_design(arr) belong.
         raise TypeError(
-            f"{caller_name}: survey= must be a SurveyDesign instance "
-            f"(with .resolve()); got {type(survey).__name__}."
+            f"{caller_name}: `survey_design=` (or the deprecated `survey=` "
+            f"alias) accepts a SurveyDesign instance (column-referencing, "
+            f"gets `.resolve(data)`'d at fit time) on data-in surfaces; "
+            f"got {type(survey).__name__} (no `.resolve()` method). "
+            "If you have a pre-resolved ResolvedSurveyDesign or used "
+            "`make_pweight_design(arr)`, that pattern is for the array-in "
+            "pretest helpers (`stute_test`, `yatchew_hr_test`, "
+            "`stute_joint_pretest`). On data-in surfaces, add the weights "
+            "as a column on `data` and pass "
+            "`survey_design=SurveyDesign(weights='col_name', ...)`."
         )
     resolved_full = survey.resolve(data)
     if getattr(resolved_full, "replicate_weights", None) is not None:

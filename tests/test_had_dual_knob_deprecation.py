@@ -605,6 +605,41 @@ class TestJointPretrendsTestDeprecation:
                 seed=0,
             )
 
+    def test_legacy_alias_parity_survey(self, event_study_panel):
+        """PR #376 R9 P3: deprecated `survey=SurveyDesign(...)` ≡ canonical
+        `survey_design=SurveyDesign(...)` on joint_pretrends_test (locks
+        rebinding parity)."""
+        df = event_study_panel
+        sd = SurveyDesign(weights="w")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            r_legacy = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[0],
+                base_period=1,
+                survey=sd,
+                n_bootstrap=199,
+                seed=0,
+            )
+        r_new = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[0],
+            base_period=1,
+            survey_design=sd,
+            n_bootstrap=199,
+            seed=0,
+        )
+        assert r_legacy.cvm_stat_joint == r_new.cvm_stat_joint
+        assert r_legacy.p_value == r_new.p_value
+
 
 class TestJointHomogeneityTestDeprecation:
     def test_survey_design_kwarg_smoke(self, event_study_panel):
@@ -655,6 +690,40 @@ class TestJointHomogeneityTestDeprecation:
                 n_bootstrap=199,
                 seed=0,
             )
+
+    def test_legacy_alias_parity_survey(self, event_study_panel):
+        """PR #376 R9 P3: deprecated `survey=SurveyDesign(...)` ≡ canonical
+        `survey_design=SurveyDesign(...)` on joint_homogeneity_test."""
+        df = event_study_panel
+        sd = SurveyDesign(weights="w")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            r_legacy = joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[2, 3],
+                base_period=1,
+                survey=sd,
+                n_bootstrap=199,
+                seed=0,
+            )
+        r_new = joint_homogeneity_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            post_periods=[2, 3],
+            base_period=1,
+            survey_design=sd,
+            n_bootstrap=199,
+            seed=0,
+        )
+        assert r_legacy.cvm_stat_joint == r_new.cvm_stat_joint
+        assert r_legacy.p_value == r_new.p_value
 
 
 class TestHADFitDeprecation:
@@ -863,6 +932,40 @@ class TestDidHadPretestWorkflowDeprecation:
                 n_bootstrap=199,
                 seed=0,
             )
+
+    def test_legacy_alias_parity_survey_overall(self, two_period_panel):
+        """PR #376 R9 P3: deprecated `survey=SurveyDesign(...)` ≡ canonical
+        `survey_design=SurveyDesign(...)` on
+        did_had_pretest_workflow(aggregate='overall'). Locks rebinding
+        parity on the workflow's overall-path data-in surface."""
+        df = two_period_panel
+        sd = SurveyDesign(weights="w")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # QUG-skip warning
+            warnings.simplefilter("ignore", DeprecationWarning)
+            r_legacy = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey=sd,
+                n_bootstrap=199,
+                seed=0,
+            )
+            r_new = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey_design=sd,
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert r_legacy.stute.cvm_stat == r_new.stute.cvm_stat
+        assert r_legacy.stute.p_value == r_new.stute.p_value
+        assert r_legacy.yatchew.t_stat_hr == r_new.yatchew.t_stat_hr
 
 
 # =============================================================================
