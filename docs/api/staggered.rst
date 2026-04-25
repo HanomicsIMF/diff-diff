@@ -3,12 +3,13 @@ Staggered Adoption
 
 Estimators for staggered DiD designs where treatment is adopted at different times.
 
-This module provides two main estimators for staggered adoption settings:
+This module provides three estimators for staggered adoption settings:
 
 1. **Callaway-Sant'Anna (2021)**: Aggregates group-time 2x2 DiD comparisons
 2. **Sun-Abraham (2021)**: Interaction-weighted regression approach
+3. **Ortiz-Villavicencio & Sant'Anna (2025)**: Staggered triple-difference (DDD) with group-time ATT
 
-Running both provides a useful robustness check—when they agree, results are more credible.
+Running CS and SA together provides a useful robustness check - when they agree, results are more credible.
 
 .. module:: diff_diff.staggered
 
@@ -120,6 +121,27 @@ SABootstrapResults
 Bootstrap inference results for Sun-Abraham estimation.
 
 .. autoclass:: diff_diff.SABootstrapResults
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+StaggeredTripleDifference
+-------------------------
+
+Ortiz-Villavicencio & Sant'Anna (2025) staggered triple-difference (DDD) estimator
+with group-time ATT identification under heterogeneous treatment timing.
+
+.. autoclass:: diff_diff.StaggeredTripleDifference
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+StaggeredTripleDiffResults
+--------------------------
+
+Results container for ``StaggeredTripleDifference`` estimation.
+
+.. autoclass:: diff_diff.StaggeredTripleDiffResults
    :members:
    :undoc-members:
    :show-inheritance:

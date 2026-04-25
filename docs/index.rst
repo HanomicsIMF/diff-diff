@@ -70,6 +70,7 @@ Quick Links
    quickstart
    choosing_estimator
    troubleshooting
+   references
 
 .. toctree::
    :maxdepth: 1

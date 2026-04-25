@@ -24,6 +24,7 @@ Core estimator classes for DiD analysis:
    diff_diff.TripleDifference
    diff_diff.TROP
    diff_diff.ContinuousDiD
+   diff_diff.HeterogeneousAdoptionDiD
    diff_diff.EfficientDiD
    diff_diff.TwoStageDiD
    diff_diff.WooldridgeDiD
@@ -56,6 +57,8 @@ Result containers returned by estimators:
    diff_diff.TROPResults
    diff_diff.ContinuousDiDResults
    diff_diff.DoseResponseCurve
+   diff_diff.HeterogeneousAdoptionDiDResults
+   diff_diff.HeterogeneousAdoptionDiDEventStudyResults
    diff_diff.EfficientDiDResults
    diff_diff.EDiDBootstrapResults
    diff_diff.TwoStageDiDResults
@@ -237,6 +240,7 @@ Estimators
    triple_diff
    trop
    continuous_did
+   had
    efficient_did
    two_stage
    wooldridge_etwfe

@@ -187,7 +187,9 @@ Based on your changes to: <list of changed files>
 ```
 ### Documentation Sync
 - [ ] Docstrings updated for changed function signatures
-- [ ] README updated if user-facing behavior changes
+- [ ] `diff_diff/guides/llms.txt` updated if the public API surface changed (AI-agent contract)
+- [ ] `docs/api/*.rst` and `docs/references.rst` updated as appropriate
+- [ ] `README.md` updated ONLY for landing-page-relevant changes (catalog one-liner, hero/badges/tagline, top-level capability paragraph). Per CONTRIBUTING.md, README is not the place for usage examples or per-estimator sections.
 ```
 
 #### If This Appears to Be a Bug Fix

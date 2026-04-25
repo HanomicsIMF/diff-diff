@@ -152,8 +152,11 @@ Final checklist before approving a PR:
 
 3. **Documentation Sync**:
    - [ ] Docstrings updated for all changed signatures
-   - [ ] README updated if user-facing behavior changes
-   - [ ] REGISTRY.md updated if methodology edge cases change
+   - [ ] `diff_diff/guides/llms.txt` updated if a new estimator/feature appears in the public API (this is the AI-agent contract; it cascades to RTD)
+   - [ ] `docs/api/*.rst` updated for new modules / signatures
+   - [ ] `docs/references.rst` updated if a new scholarly source is cited
+   - [ ] `README.md` updated ONLY if (a) new estimator catalog one-liner, (b) hero/badges/tagline change, or (c) top-level capability paragraph (Diagnostics & Sensitivity, Survey Support). Do NOT add usage examples, parameter tables, or per-estimator sections.
+   - [ ] `REGISTRY.md` updated if methodology edge cases change
 
 ## Quick Reference: Common Patterns to Check
 

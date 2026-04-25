@@ -45,8 +45,10 @@ Analyze PRs across 6 dimensions:
 
 ### 4. Documentation Review
 - Docstrings for new/modified functions
-- README updates if needed
-- API documentation (RST files)
+- `diff_diff/guides/llms.txt` updated if a new public-API surface landed (AI-agent contract)
+- API documentation (RST files in `docs/api/`)
+- `docs/references.rst` updated for new scholarly citations
+- README updated ONLY for landing-page-relevant changes (catalog one-liner, hero/badges/tagline, top-level capability paragraph). Per CONTRIBUTING.md, README is not the place for usage examples or per-estimator sections.
 - Inline comments for complex logic
 
 ### 5. Performance
@@ -133,7 +135,7 @@ If no PR number is provided, use AskUserQuestion to request it.
 
 ## Part 4: Documentation Assessment
 
-[Check for docstrings, README updates, API docs as needed]
+[Check docstrings, llms.txt for new public-API surfaces, API RST docs, references.rst for new citations, README only for landing-page-relevant changes]
 
 ---
 

@@ -4,52 +4,68 @@
 
 When implementing new functionality, **always include accompanying documentation updates**.
 
+### README is a landing page, not the docs
+
+`README.md` is the GitHub/PyPI first-impression surface. Keep it lean (~190 lines). Most new content does NOT belong here.
+
+**Only edit `README.md` when**:
+- A new estimator is added (one line in the `## Estimators` flat catalog)
+- A new top-level capability lands (one paragraph in `## Diagnostics & Sensitivity` or `## Survey Support`)
+- Hero image, badges, or top-of-fold value-prop changes
+- Documentation links rot
+
+If you find yourself adding a usage example, a parameter table, or a multi-paragraph explanation to the README, you are in the wrong file - those belong on RTD or in `diff_diff/guides/llms.txt`.
+
 ### For New Estimators or Major Features
 
-1. **README.md** - Add:
-   - Feature mention in the features list
-   - Full usage section with code examples
-   - Parameter documentation table
-   - API reference section (constructor params, fit() params, results attributes/methods)
-   - Scholarly references if applicable
+1. **`diff_diff/guides/llms.txt`** (AI-agent source of truth) - Add:
+   - One-line catalog entry in the `## Estimators` section with paper citation + RTD link
+   - One-line entry in `## Diagnostics and Sensitivity Analysis` if applicable
+   - This file is published on RTD via `docs/conf.py` `html_extra_path` and bundled in the wheel via `get_llm_guide()` - it is the canonical machine-readable contract
 
-2. **docs/api/*.rst** - Add:
+2. **`docs/api/*.rst`** (technical source of truth) - Add:
    - RST documentation with `autoclass` directives
    - Method summaries
    - References to academic papers
 
-3. **docs/tutorials/*.ipynb** - Update relevant tutorial or create new one:
+3. **`docs/tutorials/*.ipynb`** - Update relevant tutorial or create new one:
    - Working code examples
    - Explanation of when/why to use the feature
-   - Comparison with related functionality
 
-4. **CLAUDE.md** - Update only if adding new critical rules or design patterns
+4. **`docs/references.rst`** (bibliography source of truth) - Add:
+   - Full citation under the appropriate sub-section (matches the `### Subsection` headings already in that file)
+   - Use the RST format: `**Author (Year).** "Title." *Journal*, vol(num), pages. <https://doi.org/X>`
 
-5. **ROADMAP.md** - Update:
-   - Move implemented features from planned to current status
-   - Update version numbers
+5. **`README.md`** - Add ONLY:
+   - One line in the `## Estimators` catalog with the paper citation and RTD link
 
-6. **docs/doc-deps.yaml** - Add source-to-doc mappings for the new module
+6. **`CHANGELOG.md`** - Add a release-note bullet under the next unreleased version.
+
+7. **`CLAUDE.md`** - Update only if adding new critical rules or design patterns.
+
+8. **`ROADMAP.md`** - Update only if shipping moves an item from planned to current.
+
+9. **`docs/doc-deps.yaml`** - Add source-to-doc mappings for the new module.
 
 ### For Bug Fixes or Minor Enhancements
 
 - Update relevant docstrings
 - Add/update tests
-- Update CHANGELOG.md (if exists)
+- Update `CHANGELOG.md`
 - **If methodology-related**: Update `docs/methodology/REGISTRY.md` edge cases section
+- **README is almost never the right place** - skip it unless the bug was in a README claim
 
 ### Scholarly References
 
 For methods based on academic papers, always include:
-- Full citation in README.md references section
-- Reference in RST docs with paper details
+- Full citation in **`docs/references.rst`** under the appropriate `### Subsection` heading (NOT in README)
+- Reference in RST API docs with paper details
 - Citation in tutorial summary
+- Optional: methodology reference in `docs/methodology/REGISTRY.md` for non-trivial design choices
 
-Example format:
+Example format (RST):
 ```
-Sun, L., & Abraham, S. (2021). Estimating dynamic treatment effects in
-event studies with heterogeneous treatment effects. *Journal of Econometrics*,
-225(2), 175-199.
+- **Sun, L., & Abraham, S. (2021).** "Estimating Dynamic Treatment Effects in Event Studies with Heterogeneous Treatment Effects." *Journal of Econometrics*, 225(2), 175-199. https://doi.org/10.1016/j.jeconom.2020.09.006
 ```
 
 ## Test Writing Guidelines
