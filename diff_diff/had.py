@@ -2789,11 +2789,15 @@ class HeterogeneousAdoptionDiD:
         unit_col: str,
         first_treat_col: Optional[str] = None,
         aggregate: str = "overall",
-        *,
-        survey_design: Any = None,
+        # PR #376 R4 P1: preserve pre-PR positional-or-keyword status of
+        # `survey`, `weights`, `cband` for back-compat with positional
+        # callers. `survey_design=` is the only new addition and is
+        # keyword-only.
         survey: Any = None,
         weights: Optional[np.ndarray] = None,
         cband: bool = True,
+        *,
+        survey_design: Any = None,
     ) -> HeterogeneousAdoptionDiDResults:
         """Fit the HAD estimator.
 

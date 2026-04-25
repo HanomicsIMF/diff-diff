@@ -692,6 +692,32 @@ class TestHADFitDeprecation:
                 weights=np.ones(n),
             )
 
+    def test_legacy_positional_call_back_compat(self, two_period_panel):
+        """PR #376 R4 P1: pre-PR positional call shape for `survey`,
+        `weights`, `cband` MUST still work (the consolidation is additive,
+        not breaking). Tests the full positional sequence:
+        `fit(data, outcome, dose, time, unit, first_treat, aggregate,
+        survey, weights, cband)`."""
+        df = two_period_panel
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        # Pre-PR positional order: ..., first_treat_col, aggregate, survey,
+        # weights, cband. None of these should be flagged as keyword-only.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            r = est.fit(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                None,  # first_treat_col
+                "overall",  # aggregate
+                SurveyDesign(weights="w"),  # survey (positional)
+                None,  # weights (positional)
+                True,  # cband (positional)
+            )
+        assert np.isfinite(r.att)
+
 
 class TestDidHadPretestWorkflowDeprecation:
     def test_survey_design_kwarg_smoke(self, two_period_panel):
