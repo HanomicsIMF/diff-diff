@@ -1109,30 +1109,36 @@ def test_treatment_dose_continuous_zero_baseline():
 
 def test_treatment_dose_descriptive_fields_supplement_existing_gates():
     """Regression: most TreatmentDoseShape fields are descriptive
-    distributional context. The agent-side preflight checks the
-    profile exposes for the standard ContinuousDiD workflow (where
-    `first_treat` is derived from the same dose column passed to
-    `profile_panel`) include `has_never_treated` and
-    `treatment_varies_within_unit`. The two cases below exercise
-    those preflight signals, which are predictive under the
-    standard workflow but are not the literal `ContinuousDiD.fit()`
-    gates (the estimator's own gates key off `first_treat`):
+    distributional context. In the canonical ContinuousDiD setup
+    (Callaway, Goodman-Bacon, Sant'Anna 2024) the dose `D_i` is
+    time-invariant per unit and `first_treat` is a separate
+    caller-supplied column — `profile_panel` sees only the dose
+    column. Profile-side screening on the dose column includes
+    `treatment_varies_within_unit` (the actual fit-time gate; rules
+    out `0,0,d,d` paths) and `has_never_treated` (predicts
+    `P(D=0) > 0` under the canonical convention that `first_treat ==
+    0` ties to `D_i == 0`). The two cases below exercise those
+    signals:
 
     1. `0,0,d,d` within-unit dose path: a single unit toggles between
        zero (pre-treatment) and a single nonzero dose `d` (post). The
        PanelProfile.treatment_varies_within_unit field correctly fires
        True. This IS the actual fit-time gate (line 222-228 of
        continuous_did.py uses `df.groupby(unit)[dose].nunique() > 1`
-       independent of `first_treat`).
+       independent of `first_treat`). The canonical ContinuousDiD
+       setup expects time-invariant per-unit dose, so a `0,0,d,d`
+       path is incompatible regardless of how `first_treat` is
+       constructed.
     2. Row-level zeros without never-treated: every unit eventually
        gets treated, but pre-treatment rows have dose=0. has_zero_dose
        fires True (row-level), while has_never_treated correctly fires
-       False (unit-level). Under the standard workflow this signals
-       no `first_treat == 0` units exist; `ContinuousDiD.fit()` will
-       reject the panel via `n_control == 0`. The registry-documented
-       fixes are to re-encode the treatment column to a non-negative
-       scale that contains a true never-treated group, or to route to
-       a different estimator (linear DiD with continuous covariate,
+       False (unit-level). With a `first_treat` column consistent
+       with the dose column on per-unit treated/untreated status,
+       `ContinuousDiD.fit()` will reject the panel via
+       `n_control == 0`. The registry-documented fixes are to
+       re-encode the treatment column to a non-negative scale that
+       contains a true never-treated group, or to route to a
+       different estimator (linear DiD with continuous covariate,
        or `HeterogeneousAdoptionDiD`) — not to relabel units to
        manufacture controls via the force-zero coercion path."""
     # Case 1: 0,0,d,d within-unit path
@@ -1183,10 +1189,12 @@ def test_treatment_dose_descriptive_fields_supplement_existing_gates():
 
 def test_treatment_dose_min_flags_negative_dose_continuous_panels():
     """Regression: a balanced, never-treated, time-invariant continuous
-    panel with negative non-zero treated doses fails the standard-
-    workflow `dose_min > 0` preflight check. Under the standard
-    workflow (`first_treat` derived from the dose column), the
-    negative-dose units would be labeled `first_treat > 0` and
+    panel with negative non-zero treated doses fails the canonical-
+    setup `dose_min > 0` preflight check. The canonical ContinuousDiD
+    setup uses time-invariant per-unit dose `D_i` and a separate
+    caller-supplied `first_treat` column; with a `first_treat`
+    consistent with the dose column on per-unit treated/untreated
+    status (negative-dose units labeled `first_treat > 0`),
     `ContinuousDiD.fit()` would raise `ValueError` at
     `continuous_did.py:287-294` ("Dose must be strictly positive for
     treated units (D > 0)"). The registry-documented fixes are to
