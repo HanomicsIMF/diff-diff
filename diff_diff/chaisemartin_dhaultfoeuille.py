@@ -408,10 +408,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         the object of interest) and ``L_max >= 1`` (the path window
         depends on ``L_max``). Binary treatment only — non-binary
         treatment + ``by_path`` is deferred. Also incompatible with
-        ``controls``, ``trends_linear``, ``trends_nonparam``,
-        ``heterogeneity``, ``design2``, ``honest_did``, and
-        ``survey_design`` (each combination raises
-        ``NotImplementedError`` in the current release).
+        ``trends_linear``, ``trends_nonparam``, ``heterogeneity``,
+        ``design2``, ``honest_did``, and ``survey_design`` (each
+        combination raises ``NotImplementedError`` in the current
+        release).
+
+        Compatible with ``controls`` (DID^X residualization) -- the
+        per-baseline OLS residualization runs once on first-differenced
+        ``Y`` BEFORE path enumeration, so per-path point estimates,
+        bootstrap SE, per-path placebos, and per-path sup-t bands all
+        consume the residualized ``Y_mat`` automatically (Frisch-
+        Waugh-Lovell). Per-period effects remain unadjusted, consistent
+        with the existing ``controls`` + per-period DID contract. The
+        cross-path cohort-sharing SE deviation from R documented for
+        ``path_effects`` is inherited unchanged.
 
         Compatible with ``n_bootstrap > 0`` -- the top-k paths are
         enumerated once on the observed data (paths held fixed across
@@ -984,11 +994,6 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "by_path requires L_max >= 1. The path window spans "
                     "[F_g - 1, F_g - 1 + L_max] and therefore depends on "
                     "the event-study horizon. Set L_max when calling fit()."
-                )
-            if controls is not None:
-                raise NotImplementedError(
-                    "by_path combined with controls (DID^X residualization) "
-                    "is deferred to a future release."
                 )
             if trends_linear:
                 raise NotImplementedError(

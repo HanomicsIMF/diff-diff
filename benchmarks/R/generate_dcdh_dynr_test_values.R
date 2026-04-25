@@ -699,6 +699,45 @@ scenarios$multi_path_reversible_by_path_placebo <- list(
   results = extract_dcdh_by_path(res15, n_effects = 3, n_placebos = 2)
 )
 
+# Scenario 16: multi_path_reversible + by_path=3 + controls="X1" (Phase 3
+# Wave 3 #5: by_path + DID^X residualization). Same deterministic DGP
+# and n_periods=10 as scenarios 14/15, with a confounding covariate X1
+# added via the same `add_covariate` helper used by scenario 10's
+# `joiners_only_controls`. Per-baseline OLS residualization runs once
+# globally before path enumeration on both Python and R sides
+# (verified against `chaisemartinPackages/did_multiplegt_dyn` source —
+# `did_multiplegt_by_path` calls `did_multiplegt_main()` once with the
+# global controls residualization, then disaggregates per-path through
+# aggregation). Per-path event-study point estimates and switcher
+# counts must match R exactly; per-path SE within the documented Phase
+# 2 envelope and inherits the cross-path cohort-sharing deviation from
+# R documented for `path_effects`. Single covariate keeps the scenario
+# tight; multi-covariate is exercised via internal regression tests.
+cat("  Scenario 16: multi_path_reversible_by_path_controls\n")
+d16 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 10,
+                      pattern = "multi_path_reversible", seed = 116,
+                      L_max = 3)
+d16 <- add_covariate(d16, seed = 216, x_effect = 1.5)
+res16 <- did_multiplegt_dyn(
+  df = d16, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 3, by_path = 3, controls = "X1",
+  ci_level = 95
+)
+scenarios$multi_path_reversible_by_path_controls <- list(
+  data = list(
+    group = as.numeric(d16$group),
+    period = as.numeric(d16$period),
+    treatment = as.numeric(d16$treatment),
+    outcome = as.numeric(d16$outcome),
+    X1 = as.numeric(d16$X1)
+  ),
+  params = list(pattern = "multi_path_reversible",
+                n_switcher_groups = N_GOLDEN, n_realized_groups = N_GOLDEN + 40L,
+                n_periods = 10, seed = 116, effects = 3, by_path = 3,
+                controls = "X1", ci_level = 95),
+  results = extract_dcdh_by_path(res16, n_effects = 3)
+)
+
 # ---------------------------------------------------------------------------
 # Write output
 # ---------------------------------------------------------------------------

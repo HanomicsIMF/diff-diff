@@ -751,3 +751,112 @@ class TestDCDHDynRParityByPathPlacebo:
                         f"path={path_key} lag={h} placebo SE: "
                         f"py={py_se:.4f} vs r={r_se:.4f}"
                     )
+
+
+class TestDCDHDynRParityByPathControls:
+    """
+    Parity tests for ``by_path + controls`` (DID^X residualization)
+    against R DIDmultiplegtDYN 2.3.3.
+
+    R's ``did_multiplegt_dyn(..., by_path=k, controls="X1")`` re-runs
+    the estimator per path with a path-restricted subsample (path's
+    switchers + same-baseline not-yet-treated controls). Our
+    architecture residualizes once on the full panel before path
+    enumeration. On the ``multi_path_reversible`` DGP, all switchers
+    share baseline ``D_{g,1}=0``, so the per-path control pool that R
+    feeds to its per-baseline OLS residualization equals the global
+    control pool we use — and the residualization coefficients (and
+    therefore the residualized outcomes) coincide. Per-path point
+    estimates then match R exactly (rtol ~1e-11). Per-path SE
+    inherits the documented cross-path cohort-sharing deviation
+    (Phase 2 envelope).
+
+    On multi-baseline DGPs the residualization coefficients can
+    diverge across paths under R's per-path call, producing a small
+    deviation in point estimates. The fixture intentionally sticks to
+    the single-baseline scenario to keep the parity claim tight.
+    """
+
+    POINT_RTOL = 1e-9
+    SE_RTOL = 0.12
+
+    def _path_key_from_r_label(self, r_label: str):
+        return tuple(int(x) for x in r_label.split(","))
+
+    def test_parity_multi_path_reversible_by_path_controls(self, golden_values):
+        """3-path case with covariate residualization: by_path=3, controls=X1."""
+        import math
+        import warnings
+
+        scenario = golden_values.get("multi_path_reversible_by_path_controls")
+        if scenario is None:
+            pytest.skip(
+                "scenario 'multi_path_reversible_by_path_controls' not in golden values"
+            )
+
+        df = _golden_to_df_with_covariates(scenario["data"])
+        est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            results = est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+
+        r_by_path = scenario["results"]["by_path"]
+        assert results.path_effects is not None
+
+        py_keys = set(results.path_effects.keys())
+        r_keys = {self._path_key_from_r_label(e["path"]) for e in r_by_path}
+        assert py_keys == r_keys, (
+            f"Path-set mismatch.\n"
+            f"  Python only: {py_keys - r_keys}\n"
+            f"  R only:      {r_keys - py_keys}"
+        )
+
+        for r_path_entry in r_by_path:
+            path_key = self._path_key_from_r_label(r_path_entry["path"])
+            py_path = results.path_effects[path_key]
+
+            assert py_path["frequency_rank"] == r_path_entry["frequency_rank"], (
+                f"path={path_key}: frequency_rank mismatch "
+                f"py={py_path['frequency_rank']} vs r={r_path_entry['frequency_rank']}"
+            )
+
+            for h_str, r_h in r_path_entry["horizons"].items():
+                h = int(h_str)
+                assert (
+                    h in py_path["horizons"]
+                ), f"path={path_key}: horizon {h} missing from Python path_effects"
+                py_h = py_path["horizons"][h]
+
+                assert py_h["n_obs"] == int(r_h["n_switchers"]), (
+                    f"path={path_key} h={h}: switcher-count mismatch "
+                    f"py={py_h['n_obs']} vs r={int(r_h['n_switchers'])}"
+                )
+
+                assert py_h["effect"] == pytest.approx(
+                    r_h["effect"], rel=self.POINT_RTOL
+                ), (
+                    f"path={path_key} h={h}: "
+                    f"py={py_h['effect']:.4f} vs r={r_h['effect']:.4f}"
+                )
+
+                py_se = py_h["se"]
+                r_se = r_h["se"]
+                py_finite_positive = math.isfinite(py_se) and py_se > 0.0
+                r_finite_positive = math.isfinite(r_se) and r_se > 0.0
+                assert py_finite_positive == r_finite_positive, (
+                    f"path={path_key} h={h} SE state mismatch "
+                    f"(py_se={py_se}, r_se={r_se})"
+                )
+                if py_finite_positive and r_finite_positive:
+                    assert py_se == pytest.approx(r_se, rel=self.SE_RTOL), (
+                        f"path={path_key} h={h} SE: "
+                        f"py={py_se:.4f} vs r={r_se:.4f}"
+                    )

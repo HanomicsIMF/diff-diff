@@ -3786,7 +3786,13 @@ class TestByPathGates:
     @pytest.mark.parametrize(
         "fit_kwargs, msg",
         [
-            ({"controls": ["outcome"]}, "controls"),
+            # NB: the prior `controls` entry was removed when the
+            # `by_path + controls` gate was lifted (Wave 3 #5). The
+            # entry used `controls=["outcome"]` as a "any column works
+            # because the gate fires first" shortcut; after gate
+            # removal the column-existence path runs and `outcome` is
+            # itself a valid column, so there is no equivalent
+            # NotImplementedError-raising input to migrate to.
             ({"trends_linear": True}, "trends_linear"),
             ({"trends_nonparam": "group"}, "trends_nonparam"),
             ({"heterogeneity": "group"}, "heterogeneity"),
@@ -6065,3 +6071,488 @@ class TestByPathSupTBands:
                 f"l={l_h}: OVERALL cband_conf_int written despite "
                 f"strict-majority gate failure at exactly 50% finite"
             )
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 #5: by_path + controls (DID^X residualization)
+# ---------------------------------------------------------------------------
+
+
+def _by_path_three_path_data_with_controls(
+    seed: int = 42, x_effect: float = 3.0
+) -> pd.DataFrame:
+    """Three-path panel with confounding covariate X1.
+
+    Extends ``_by_path_three_path_data``: same 8-group / 4-period
+    structure with the same path assignment, but adds an X1 column
+    whose group-level mean is tied to the group identity (group g
+    has X1 base = 0.3*g) and outcome includes ``x_effect * X1`` as
+    a confounding term. Designed so that fitting WITHOUT controls
+    produces a biased per-path estimate and WITH ``controls=["X1"]``
+    recovers the underlying treatment effect (= 2.0) via FWL
+    residualization.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+
+    def _build(group, treatment_path, x_base):
+        for t, d in enumerate(treatment_path):
+            x = x_base + 0.2 * t + rng.normal(0, 0.1)
+            y = d * 2.0 + x_effect * x + rng.normal(0, 0.1)
+            rows.append(
+                {
+                    "group": group,
+                    "period": t,
+                    "treatment": d,
+                    "outcome": y,
+                    "X1": x,
+                }
+            )
+
+    for g in (1, 2, 3):
+        _build(g, [0, 1, 1, 1], x_base=0.1 * g)
+    for g in (4, 5):
+        _build(g, [0, 1, 0, 0], x_base=0.1 * g)
+    _build(6, [0, 1, 1, 0], x_base=0.1 * 6)
+    for g in (7, 8):
+        _build(g, [0, 0, 0, 0], x_base=0.1 * g)
+    return pd.DataFrame(rows)
+
+
+def _load_by_path_controls_scenario():
+    """Load the golden-value scenario for by_path + controls.
+
+    Returns the data frame including X1, or pytest.skip if the golden
+    file is missing (CI's isolated-install job ships only tests/, not
+    benchmarks/, per ``feedback_golden_file_pytest_skip.md``).
+    """
+    golden_path = (
+        Path(__file__).parents[1]
+        / "benchmarks"
+        / "data"
+        / "dcdh_dynr_golden_values.json"
+    )
+    if not golden_path.exists():
+        pytest.skip(
+            f"dCDH golden values file not found at {golden_path}; "
+            "run: Rscript benchmarks/R/generate_dcdh_dynr_test_values.R"
+        )
+    with open(golden_path) as f:
+        sc = json.load(f)["scenarios"].get("multi_path_reversible_by_path_controls")
+    if sc is None:
+        pytest.skip("scenario 'multi_path_reversible_by_path_controls' absent")
+    return pd.DataFrame(sc["data"])
+
+
+class TestByPathControls:
+    """Wave 3 #5: ``by_path`` + ``controls`` (DID^X residualization).
+
+    Tests the gate-lift PR. Validates that all four downstream surfaces
+    (analytical SE, bootstrap SE, per-path placebos, per-path sup-t
+    bands) auto-inherit residualized ``Y_mat`` produced once at
+    ``chaisemartin_dhaultfoeuille.py:1498`` (the residualization runs
+    BEFORE path enumeration, so the per-path computation consumes the
+    residualized outcome).
+
+    R parity for per-path point estimates is validated separately at
+    ``tests/test_chaisemartin_dhaultfoeuille_parity.py::TestDCDHDynRParityByPathControls``.
+    """
+
+    # Gate removal -------------------------------------------------------
+    def test_no_longer_raises(self):
+        """``by_path + controls`` no longer raises NotImplementedError."""
+        data = _by_path_three_path_data_with_controls()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        assert res.path_effects is not None
+        assert len(res.path_effects) >= 1
+
+    # Analytical SE ------------------------------------------------------
+    def test_residualization_changes_per_path_estimates(self):
+        """Strongly-confounded DGP: with vs without controls per-path
+        coefficients differ for at least one (path, horizon) by a
+        non-trivial margin."""
+        data = _by_path_three_path_data_with_controls(x_effect=5.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est_no = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            res_no = est_no.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+            est_yes = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            res_yes = est_yes.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+
+        max_diff = 0.0
+        for path, entry_yes in res_yes.path_effects.items():
+            entry_no = res_no.path_effects.get(path, {"horizons": {}})
+            for l_h, vals_yes in entry_yes["horizons"].items():
+                vals_no = entry_no["horizons"].get(l_h, {})
+                if "effect" in vals_no and np.isfinite(vals_no["effect"]):
+                    max_diff = max(max_diff, abs(vals_yes["effect"] - vals_no["effect"]))
+
+        # At least one (path, horizon) must differ noticeably
+        assert max_diff > 0.5, (
+            f"Residualization had no effect on any per-path estimate "
+            f"(max abs diff = {max_diff}). Expected confounding to be "
+            f"corrected by controls=['X1']."
+        )
+
+    def test_path_enumeration_unaffected_by_controls(self):
+        """Path enumeration depends only on D_mat / first_switch_idx,
+        not on residualized Y_mat — same paths enumerated with or
+        without controls."""
+        data = _by_path_three_path_data_with_controls()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            _, res_no = _fit_by_path(data, by_path=3, L_max=3)
+            est_yes = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            res_yes = est_yes.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+
+        assert set(res_no.path_effects.keys()) == set(res_yes.path_effects.keys()), (
+            f"Path set differs between no-controls and controls fits: "
+            f"no={sorted(res_no.path_effects.keys())} "
+            f"yes={sorted(res_yes.path_effects.keys())}"
+        )
+        # Frequency rank must also match (path counts unchanged)
+        for path, entry_yes in res_yes.path_effects.items():
+            entry_no = res_no.path_effects[path]
+            assert entry_yes["frequency_rank"] == entry_no["frequency_rank"]
+            assert entry_yes["n_groups"] == entry_no["n_groups"]
+
+    def test_multi_covariate_works(self):
+        """``controls=["X1", "X2"]`` fits successfully and produces
+        finite per-path estimates and SEs."""
+        data = _by_path_three_path_data_with_controls()
+        # Add a second covariate
+        rng = np.random.default_rng(99)
+        data = data.assign(
+            X2=lambda d: 0.5 * d["X1"] + rng.normal(0, 0.5, size=len(d))
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1", "X2"],
+                L_max=3,
+            )
+        assert res.path_effects is not None
+        for path, entry in res.path_effects.items():
+            for l_h, vals in entry["horizons"].items():
+                assert np.isfinite(vals["effect"]), (
+                    f"path={path} l={l_h}: effect not finite under multi-covariate"
+                )
+
+    # Bootstrap SE inheritance ------------------------------------------
+    @pytest.mark.slow
+    def test_bootstrap_with_controls_finite_se(self):
+        """Bootstrap SE is finite > 0 on a non-degenerate panel under
+        ``controls`` — verifies the per-path bootstrap pipeline
+        consumes the residualized Y_mat without breaking."""
+        data = _load_by_path_controls_scenario()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, n_bootstrap=200, seed=42
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        any_finite = False
+        for path, entry in res.path_effects.items():
+            for _l_h, vals in entry["horizons"].items():
+                if np.isfinite(vals["se"]) and vals["se"] > 0:
+                    any_finite = True
+                    break
+        assert any_finite, "No (path, horizon) produced a finite > 0 bootstrap SE"
+
+    @pytest.mark.slow
+    def test_bootstrap_point_estimates_unchanged(self):
+        """Bootstrap perturbs SE only; point estimates equal the
+        analytical-only fit on the same seed."""
+        data = _load_by_path_controls_scenario()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est_a = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, seed=42
+            )
+            res_a = est_a.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+            est_b = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, n_bootstrap=200, seed=42
+            )
+            res_b = est_b.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        for path, entry_a in res_a.path_effects.items():
+            entry_b = res_b.path_effects[path]
+            for l_h, vals_a in entry_a["horizons"].items():
+                vals_b = entry_b["horizons"][l_h]
+                np.testing.assert_allclose(
+                    vals_a["effect"],
+                    vals_b["effect"],
+                    rtol=1e-12,
+                    atol=1e-12,
+                    err_msg=f"path={path} l={l_h}: bootstrap changed point estimate",
+                )
+
+    # Per-path placebos inheritance -------------------------------------
+    @pytest.mark.slow
+    def test_per_path_placebos_with_controls_present(self):
+        """``placebo=True + controls=['X1']`` populates
+        ``path_placebo_event_study[path][-l]`` with finite values for at
+        least one (path, l)."""
+        data = _load_by_path_controls_scenario()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, placebo=True, seed=42
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        assert res.path_placebo_event_study is not None
+        any_finite = False
+        for path, lags in res.path_placebo_event_study.items():
+            for lag, vals in lags.items():
+                if np.isfinite(vals.get("effect", np.nan)):
+                    any_finite = True
+                    break
+        assert any_finite, (
+            "No per-path placebo lag produced a finite effect under "
+            "controls + by_path + placebo"
+        )
+
+    @pytest.mark.slow
+    def test_per_path_placebos_with_controls_bootstrap(self):
+        """Bootstrap SEs on the per-path placebo surface are finite under
+        ``controls + by_path + placebo + n_bootstrap``."""
+        data = _load_by_path_controls_scenario()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                placebo=True,
+                n_bootstrap=200,
+                seed=42,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        assert res.path_placebo_event_study is not None
+        any_finite_se = False
+        for path, lags in res.path_placebo_event_study.items():
+            for lag, vals in lags.items():
+                se = vals.get("se", np.nan)
+                if np.isfinite(se) and se > 0:
+                    any_finite_se = True
+                    break
+        assert any_finite_se, (
+            "No per-path placebo lag produced a finite > 0 bootstrap SE"
+        )
+
+    # Per-path sup-t bands inheritance ----------------------------------
+    @pytest.mark.slow
+    def test_sup_t_bands_with_controls_finite_crit(self):
+        """``path_sup_t_bands[path]['crit_value']`` is finite > 0 for
+        paths passing the >=2 valid horizons + strict-majority gates
+        under ``controls``. Uses ``n_bootstrap=400`` to keep the gate
+        margin comfortable on the small per-path samples."""
+        data = _load_by_path_controls_scenario()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, n_bootstrap=400, seed=42
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        assert res.path_sup_t_bands is not None
+        # At least one path should pass both gates
+        any_finite = any(
+            np.isfinite(entry.get("crit_value", np.nan))
+            and entry.get("crit_value", -1) > 0
+            for entry in res.path_sup_t_bands.values()
+        )
+        assert any_finite, (
+            "No path produced a finite > 0 sup-t crit_value under controls; "
+            f"path_sup_t_bands keys: {list(res.path_sup_t_bands.keys())}"
+        )
+
+    # Edge cases --------------------------------------------------------
+    def test_per_period_effects_unadjusted_with_by_path_controls(self):
+        """Per-period DID does not support residualization
+        (``chaisemartin_dhaultfoeuille.py:1493-1496``); the per-period
+        effects surface returned by ``fit()`` must be unaffected by
+        controls when by_path is also set, mirroring the existing
+        controls + per-period contract."""
+        data = _by_path_three_path_data_with_controls()
+        # Fit with by_path + controls AND with by_path alone, comparing
+        # per_period_effects (raw Y path).
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            _, res_no = _fit_by_path(data, by_path=3, L_max=3)
+            est_yes = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            res_yes = est_yes.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        # Per-period DID is unaffected by controls residualization
+        # (operates on raw Y, not residualized Y) — both fits produce
+        # identical per_period_effects. Per-period dicts contain
+        # `did_plus_t` and `did_minus_t` (not `effect`); both fields
+        # must match bit-identically across the no-controls / controls
+        # fits to lock in the unadjusted contract.
+        if res_no.per_period_effects is not None:
+            assert res_yes.per_period_effects is not None
+            for t in res_no.per_period_effects:
+                assert t in res_yes.per_period_effects, (
+                    f"per_period_effects period {t} missing under controls"
+                )
+                for field in ("did_plus_t", "did_minus_t"):
+                    np.testing.assert_allclose(
+                        res_no.per_period_effects[t][field],
+                        res_yes.per_period_effects[t][field],
+                        rtol=1e-12,
+                        atol=1e-12,
+                        err_msg=(
+                            f"per_period_effects[{t}][{field}] differs "
+                            f"under controls — per-period DID was expected "
+                            f"to remain unadjusted (raw Y_mat)"
+                        ),
+                    )
+
+    def test_covariate_residuals_round_trip_with_by_path(self):
+        """``results.covariate_residuals`` is a non-empty DataFrame
+        after fitting ``by_path + controls`` — the field is set
+        unconditionally on the controls path
+        (``chaisemartin_dhaultfoeuille_results.py:532``) and must
+        surface intact regardless of whether by_path is also active."""
+        data = _by_path_three_path_data_with_controls()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        assert res.covariate_residuals is not None
+        assert isinstance(res.covariate_residuals, pd.DataFrame)
+        assert len(res.covariate_residuals) > 0
+
+    @pytest.mark.slow
+    def test_to_dataframe_by_path_with_controls_and_bootstrap(self):
+        """``results.to_dataframe(level='by_path')`` populates
+        ``cband_lower`` / ``cband_upper`` for paths passing the PR #374
+        sup-t gates under ``controls`` — pre-empts the cross-surface
+        adjacency CI reviewers cycle on per
+        ``feedback_cross_surface_parity_audit.md``."""
+        data = _load_by_path_controls_scenario()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, n_bootstrap=400, seed=42
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                controls=["X1"],
+                L_max=3,
+            )
+        df_long = res.to_dataframe(level="by_path")
+        assert "cband_lower" in df_long.columns
+        assert "cband_upper" in df_long.columns
+        # At least one row must have a finite cband
+        any_finite_cband = (
+            df_long["cband_lower"].notna() & df_long["cband_upper"].notna()
+        ).any()
+        assert any_finite_cband, (
+            "to_dataframe(level='by_path') produced no rows with finite "
+            "cband columns under controls + bootstrap"
+        )
