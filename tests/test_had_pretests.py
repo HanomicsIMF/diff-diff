@@ -4014,3 +4014,88 @@ class TestPhase45CR1Regressions:
         assert report.aggregate == "event_study"
         assert report.qug is None
         assert report.homogeneity_joint is not None
+
+    # --- R7 P0: weighted-CvM outer-measure oracle -------------------------
+
+    def test_cvm_statistic_weighted_outer_measure_oracle(self):
+        """R7 P0: weighted CvM must integrate outer measure against F_hat_w
+        too. Hand-computed oracle distinguishes outer-weighted form
+        ((1/W^2) sum_g w_g C_g^2) from count-weighted-cusum form
+        ((1/W^2) sum_g C_g^2). Uniform weights cannot tell the two apart."""
+        from diff_diff.had_pretests import _cvm_statistic_weighted
+
+        eps = np.array([1.0, -2.0, 3.0])
+        d = np.array([0.1, 0.2, 0.3])
+        w = np.array([1.0, 2.0, 3.0])
+        # C_1=1, C_2=-3, C_3=6, W=6.
+        # Outer-weighted: (1*1 + 2*9 + 3*36) / 36 = 127/36.
+        # Count-weighted (WRONG): (1+9+36) / 36 = 46/36.
+        result = _cvm_statistic_weighted(eps, d, w)
+        outer_weighted = (1 * 1.0**2 + 2 * (-3.0) ** 2 + 3 * 6.0**2) / (6.0**2)
+        count_weighted = (1.0**2 + (-3.0) ** 2 + 6.0**2) / (6.0**2)
+        np.testing.assert_allclose(result, outer_weighted, atol=1e-14, rtol=1e-14)
+        assert abs(outer_weighted - count_weighted) > 1.0
+        assert abs(result - count_weighted) > 1.0
+
+    def test_cvm_statistic_weighted_reduces_at_uniform_weights(self):
+        """At w=ones(G), outer-weighted form reduces bit-exactly to the
+        unweighted statistic."""
+        from diff_diff.had_pretests import _cvm_statistic, _cvm_statistic_weighted
+
+        eps = np.array([1.0, -2.0, 3.0, 0.5, -0.7])
+        d = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+        w_uniform = np.ones(5)
+        np.testing.assert_allclose(
+            _cvm_statistic_weighted(eps, d, w_uniform),
+            _cvm_statistic(eps, d),
+            atol=1e-14,
+            rtol=1e-14,
+        )
+
+    # --- R7 P1: survey verdict consistency --------------------------------
+
+    def test_workflow_overall_survey_pass_does_not_say_inconclusive(self):
+        """R7 P1: when all_pass=True on the overall survey path, the
+        verdict must NOT start with 'inconclusive'. Locks the explicit
+        survey-aware verdict composer."""
+        df = self._make_overall_panel()
+        weights_per_row = np.full(40, 1.5)
+        with pytest.warns(UserWarning):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                weights=weights_per_row,
+                n_bootstrap=199,
+                seed=0,
+            )
+        if report.all_pass:
+            assert not report.verdict.startswith("inconclusive"), (
+                f"all_pass=True but verdict starts with 'inconclusive': " f"{report.verdict!r}"
+            )
+
+    def test_workflow_event_study_survey_pass_does_not_say_inconclusive(self):
+        """R7 P1: same invariant on the event-study survey path."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_event_study_panel_with_psu_strata(
+            n_strata=2, n_psu_per_stratum=3, n_units_per_psu=2
+        )
+        with pytest.warns(UserWarning, match="QUG step skipped"):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                survey=SurveyDesign(weights="w", strata="stratum", psu="psu"),
+                n_bootstrap=199,
+                seed=0,
+            )
+        if report.all_pass:
+            assert not report.verdict.startswith("inconclusive"), (
+                f"all_pass=True but verdict starts with 'inconclusive': " f"{report.verdict!r}"
+            )

@@ -1049,21 +1049,31 @@ def _has_lonely_psu_adjust_singletons(resolved: Any) -> bool:
 def _cvm_statistic_weighted(
     eps_sorted: np.ndarray, d_sorted: np.ndarray, w_sorted: np.ndarray
 ) -> float:
-    """Weighted analog of :func:`_cvm_statistic`.
+    """Weighted analog of :func:`_cvm_statistic` (survey-weighted plug-in).
 
-    Aggregates weighted residuals into the cusum:
+    The unweighted Stute CvM `S = (1/G) * sum_g c_G(D_g)^2` integrates
+    the squared cusum process against the empirical CDF
+    ``F_hat = (1/G) sum_i delta_{D_i}``. The weighted plug-in replaces
+    ``F_hat`` by the survey-weighted EDF
+    ``F_hat_w = (1/W) sum_i w_i delta_{D_i}``, which weights BOTH the
+    inner cusum AND the outer integration measure:
 
-        C_g = sum_{h : D_h <= D_g} w_h * eps_h
-        S   = (1 / W^2) * sum_g (C_g)^2,  W = sum(w)
+        C_g = sum_{h : D_h <= D_g} w_h * eps_h     (inner cusum, weighted)
+        S_w = (1 / W^2) * sum_g w_g * (C_g)^2      (outer measure, weighted)
+        W   = sum(w)
 
-    At ``w = ones(G)``, ``W = G`` and the formula reduces bit-exactly to
-    the unweighted ``_cvm_statistic`` (locked at ``atol=1e-14`` by the
-    survey-path direct helper tests; Phase 4.5 C stability invariant #1).
+    The outer ``w_g`` factor on each squared cusum (R7 P0 fix) is what
+    distinguishes this from a count-weighted-cusum form
+    ``(1/W^2) * sum_g C_g^2`` (no outer ``w_g``), which silently
+    misreports survey-weighted Stute statistics for non-uniform weights.
+    At ``w = ones(G)`` both forms reduce to ``(1/G^2) sum_g C_g^2``
+    (unweighted) -- only non-uniform weights distinguish them.
 
     Tie-block collapse uses the same ``np.unique(d_sorted)`` count
-    machinery as the unweighted form — positions are determined by
-    ``d_sorted`` ties (independent of weights), so the collapse pattern is
-    weight-invariant.
+    machinery as the unweighted form -- positions are determined by
+    ``d_sorted`` ties (independent of weights), so the collapse pattern
+    is weight-invariant. The outer ``w_sorted`` factor applies to the
+    tie-collapsed cusum at each observation.
 
     Parameters
     ----------
@@ -1082,7 +1092,9 @@ def _cvm_statistic_weighted(
     tie_end_idx = np.cumsum(counts) - 1
     cumsum_tie_safe = np.repeat(cumsum[tie_end_idx], counts)
     W = float(np.sum(w_sorted))
-    return float(np.sum(cumsum_tie_safe * cumsum_tie_safe) / (W * W))
+    # R7 P0: integrate outer measure against F_hat_w via the w_sorted
+    # factor on each squared cusum (NOT against uniform 1/G measure).
+    return float(np.sum(w_sorted * cumsum_tie_safe * cumsum_tie_safe) / (W * W))
 
 
 def _compose_verdict(
@@ -3534,6 +3546,114 @@ def joint_homogeneity_test(
 
 _VALID_AGGREGATES = ("overall", "event_study")
 
+_QUG_DEFERRED_SUFFIX = (
+    " (linearity-conditional verdict; QUG-under-survey deferred per Phase 4.5 C0)"
+)
+
+
+def _compose_verdict_overall_survey(
+    stute: Optional[StuteTestResults],
+    yatchew: Optional[YatchewTestResults],
+) -> str:
+    """Build the overall-path :class:`HADPretestReport` verdict on the
+    survey/weights branch (Phase 4.5 C).
+
+    Drops the QUG step from consideration (skipped per Phase 4.5 C0)
+    and composes the verdict from Stute + Yatchew alone, with the
+    linearity-conditional suffix appended in every branch. R7 P1 fix:
+    explicit survey-aware composer replaces the prior approach of
+    composing the unweighted verdict with a NaN QUG and string-replacing
+    the resulting "QUG NaN" suffix, which could leave pass cases starting
+    with "inconclusive".
+
+    Priority (mirrors :func:`_compose_verdict` minus QUG):
+      1. Conclusive rejections of Stute or Yatchew lead.
+      2. No conclusive rejection but linearity inconclusive (both NaN)
+         -> "inconclusive - both linearity tests NaN".
+      3. Linearity conclusive (at least one of Stute/Yatchew finite) AND
+         no rejection -> fail-to-reject string.
+    All branches end with `_QUG_DEFERRED_SUFFIX`.
+    """
+    stute_ok = stute is not None and bool(np.isfinite(stute.p_value))
+    yatchew_ok = yatchew is not None and bool(np.isfinite(yatchew.p_value))
+    stute_rej = stute_ok and bool(stute.reject)
+    yatchew_rej = yatchew_ok and bool(yatchew.reject)
+
+    reasons = []
+    if stute_rej:
+        reasons.append("linearity rejected - heterogeneity bias (Stute)")
+    if yatchew_rej:
+        reasons.append("linearity rejected - heterogeneity bias (Yatchew)")
+
+    unresolved = []
+    if not stute_ok:
+        unresolved.append("Stute NaN")
+    if not yatchew_ok:
+        unresolved.append("Yatchew NaN")
+
+    if reasons:
+        verdict = "; ".join(reasons)
+        if unresolved:
+            verdict += "; additional steps unresolved: " + "; ".join(unresolved)
+        return verdict + _QUG_DEFERRED_SUFFIX
+
+    # No rejections.
+    if not (stute_ok or yatchew_ok):
+        return "inconclusive - both Stute and Yatchew linearity tests NaN" + _QUG_DEFERRED_SUFFIX
+
+    # At least one linearity test conclusive AND no rejection.
+    skipped_note = ""
+    if not stute_ok:
+        skipped_note = " (Stute NaN - skipped)"
+    elif not yatchew_ok:
+        skipped_note = " (Yatchew NaN - skipped)"
+    return (
+        "Stute and Yatchew linearity diagnostics fail-to-reject"
+        + skipped_note
+        + _QUG_DEFERRED_SUFFIX
+    )
+
+
+def _compose_verdict_event_study_survey(
+    pretrends_joint: Optional[StuteJointResult],
+    homogeneity_joint: Optional[StuteJointResult],
+) -> str:
+    """Event-study survey-path verdict (R7 P1 fix; mirrors
+    :func:`_compose_verdict_event_study` minus QUG)."""
+    pretrends_ok = pretrends_joint is not None and bool(np.isfinite(pretrends_joint.p_value))
+    homogeneity_ok = homogeneity_joint is not None and bool(np.isfinite(homogeneity_joint.p_value))
+    pretrends_rej = pretrends_joint is not None and pretrends_ok and bool(pretrends_joint.reject)
+    homogeneity_rej = (
+        homogeneity_joint is not None and homogeneity_ok and bool(homogeneity_joint.reject)
+    )
+
+    reasons = []
+    if pretrends_rej:
+        reasons.append("joint pre-trends rejected - assumption 7 violated (joint Stute)")
+    if homogeneity_rej:
+        reasons.append("joint linearity rejected - heterogeneity bias (joint Stute)")
+
+    unresolved = []
+    if pretrends_joint is None:
+        unresolved.append("joint pre-trends skipped (no earlier pre-period)")
+    elif not pretrends_ok:
+        unresolved.append("joint pre-trends NaN")
+    if homogeneity_joint is None:
+        unresolved.append("joint linearity skipped")
+    elif not homogeneity_ok:
+        unresolved.append("joint linearity NaN")
+
+    if reasons:
+        verdict = "; ".join(reasons)
+        if unresolved:
+            verdict += "; additional steps unresolved: " + "; ".join(unresolved)
+        return verdict + _QUG_DEFERRED_SUFFIX
+
+    if unresolved:
+        return "inconclusive - " + "; ".join(unresolved) + _QUG_DEFERRED_SUFFIX
+
+    return "joint pre-trends and joint linearity diagnostics fail-to-reject" + _QUG_DEFERRED_SUFFIX
+
 
 def did_had_pretest_workflow(
     data: pd.DataFrame,
@@ -3820,33 +3940,11 @@ def did_had_pretest_workflow(
                 and homogeneity_ok
                 and not homogeneity_joint.reject
             )
-            # Reuse the unweighted verdict composer with a synthetic NaN
-            # qug (all_finite=False, reject=False) so the existing logic
-            # produces a "linearity-conditional" verdict. Then append the
-            # explicit Phase 4.5 C0 suffix per Reviewer LOW #2.
-            qug_skip = QUGTestResults(
-                t_stat=float("nan"),
-                p_value=float("nan"),
-                reject=False,
-                alpha=alpha,
-                critical_value=float("nan"),
-                n_obs=int(doses_at_F.shape[0]),
-                n_excluded_zero=0,
-                d_order_1=float("nan"),
-                d_order_2=float("nan"),
-            )
-            base_verdict = _compose_verdict_event_study(
-                qug_skip, pretrends_joint, homogeneity_joint
-            )
-            # Strip the "QUG NaN" mention from the unresolved-steps suffix
-            # since users get a more informative QUG-skip warning + suffix.
-            base_verdict = base_verdict.replace(
-                "; additional steps unresolved: QUG NaN", ""
-            ).replace("inconclusive - QUG NaN", "inconclusive")
-            verdict = (
-                base_verdict + " (linearity-conditional verdict; QUG-under-survey "
-                "deferred per Phase 4.5 C0)"
-            )
+            # R7 P1 fix: explicit survey-aware verdict composer instead
+            # of post-processing the unweighted-verdict output (the
+            # previous string-replace approach could leave pass cases
+            # starting with "inconclusive" even when all_pass=True).
+            verdict = _compose_verdict_event_study_survey(pretrends_joint, homogeneity_joint)
         else:
             qug_ok = bool(np.isfinite(qug_res.p_value))
             all_pass = bool(
@@ -3934,28 +4032,8 @@ def did_had_pretest_workflow(
     if use_survey_path:
         any_reject = stute_res.reject or yatchew_res.reject
         all_pass = bool(linearity_conclusive and not any_reject)
-        # Compose verdict from existing _compose_verdict but omit QUG;
-        # synthesize a NaN QUG so existing logic produces "QUG NaN" suffix,
-        # then strip that and append Phase 4.5 C0 suffix.
-        qug_skip = QUGTestResults(
-            t_stat=float("nan"),
-            p_value=float("nan"),
-            reject=False,
-            alpha=alpha,
-            critical_value=float("nan"),
-            n_obs=int(d_arr.shape[0]),
-            n_excluded_zero=0,
-            d_order_1=float("nan"),
-            d_order_2=float("nan"),
-        )
-        base_verdict = _compose_verdict(qug_skip, stute_res, yatchew_res)
-        base_verdict = base_verdict.replace("; additional steps unresolved: QUG NaN", "").replace(
-            "inconclusive - QUG NaN", "inconclusive"
-        )
-        verdict = (
-            base_verdict + " (linearity-conditional verdict; QUG-under-survey "
-            "deferred per Phase 4.5 C0)"
-        )
+        # R7 P1 fix: explicit survey-aware verdict composer.
+        verdict = _compose_verdict_overall_survey(stute_res, yatchew_res)
     else:
         qug_conclusive = bool(np.isfinite(qug_res.p_value))
         any_reject = qug_res.reject or stute_res.reject or yatchew_res.reject
