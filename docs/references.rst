@@ -154,7 +154,7 @@ Multi-Period and Staggered Adoption
 
   Primary source for the optimal-weighting / PT-All / PT-Post efficient DiD implemented in our ``EfficientDiD`` class.
 
-- **Baker, A. C., Larcker, D. F., Wang, C. C. Y., & Wang, X. (2025).** "Difference-in-Differences Designs: A Practitioner's Guide." *arXiv preprint* arXiv:2503.13323. https://arxiv.org/abs/2503.13323
+- **Baker, A., Callaway, B., Cunningham, S., Goodman-Bacon, A., & Sant'Anna, P. H. C. (2025).** "Difference-in-Differences Designs: A Practitioner's Guide." *arXiv preprint* arXiv:2503.13323. https://arxiv.org/abs/2503.13323
 
   Source for the 8-step practitioner workflow surfaced via ``diff_diff.get_llm_guide("practitioner")`` and the README ``## Practitioner Workflow`` section. See ``docs/methodology/REGISTRY.md`` for the diff-diff renumbering and per-step deviations.
 
