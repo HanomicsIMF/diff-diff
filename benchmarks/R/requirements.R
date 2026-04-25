@@ -12,6 +12,7 @@ required_packages <- c(
   "fixest",        # Fast TWFE and basic DiD
   "triplediff",    # Ortiz-Villavicencio & Sant'Anna (2025) triple difference
   "survey",        # Lumley (2004) complex survey analysis
+  "estimatr",      # Blair et al. (2019) weighted robust / IV SE (HAD mass-point parity)
 
   # Utilities
   "jsonlite",      # JSON output for Python interop
