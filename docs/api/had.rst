@@ -10,11 +10,18 @@ This module implements the methodology from de Chaisemartin, Ciccia,
 D'Haultfœuille & Knau (2026), "Difference-in-Differences Estimators When No
 Unit Remains Untreated" (arXiv:2405.04465v6), which:
 
-1. **Targets the Weighted Average Slope (WAS)** as the identified parameter
-   when no untreated comparison group exists (paper Equation 2).
-2. **Estimates WAS via local-linear regression at the dose support boundary**
-   for both Design 1' (the QUG / Quasi-Untreated-Group case where the support
-   infimum ``d̲ = 0``) and Design 1 (no QUG, ``d̲ > 0``).
+1. **Targets WAS or WAS_{d̲} depending on design path:** Design 1' (the
+   QUG / Quasi-Untreated-Group case with ``d̲ = 0``) identifies the
+   Weighted Average Slope (WAS, paper Equation 2); Design 1 (no QUG,
+   ``d̲ > 0``) identifies ``WAS_{d̲}`` under Assumption 6, or sign
+   identification only under Assumption 5 (neither additional assumption
+   is testable via pre-trends). The shipped result classes expose
+   ``target_parameter == "WAS"`` versus ``"WAS_d_lower"`` so callers can
+   key on the resolved estimand.
+2. **Estimates the target via local-linear regression at the dose support
+   boundary**, with three concrete fit paths: ``continuous_at_zero`` for
+   Design 1', and ``continuous_near_d_lower`` or ``mass_point`` for
+   Design 1 (auto-detected from the dose distribution).
 3. **Provides bias-corrected confidence intervals** ported from the
    ``nprobust`` machinery for the continuous-dose paths, and a
    structural-residual 2SLS sandwich for the mass-point path.
