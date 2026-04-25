@@ -128,13 +128,12 @@ Full guide: `diff_diff.get_llm_guide("practitioner")`.
 
 ## Survey Support
 
-All estimators accept an optional `survey_design` parameter for design-based variance estimation:
+Most estimators accept an optional `survey_design` parameter (or `survey=` / `weights=` for `HeterogeneousAdoptionDiD`) for design-based variance estimation. Coverage and supported weight types vary by estimator - see the [Survey Design Support compatibility matrix](https://diff-diff.readthedocs.io/en/stable/choosing_estimator.html#survey-design-support) for the per-estimator support table.
 
-- **Design elements**: strata, PSU, FPC, weight types (pweight/fweight/aweight), lonely PSU handling, nest
-- **Variance methods**: Taylor Series Linearization (TSL), replicate weights (BRR/Fay/JK1/JKn/SDR), survey-aware bootstrap
+- **Design elements available across the supported set**: strata, PSU, FPC, lonely PSU handling, nest. Weight types vary by estimator: some surfaces (e.g. CallawaySantAnna, StackedDiD, the HAD continuous path) accept `pweight` only; others accept `pweight` / `fweight` / `aweight`.
+- **Variance methods**: Taylor Series Linearization (TSL via Binder 1983), replicate weights (BRR / Fay / JK1 / JKn / SDR), survey-aware bootstrap
 - **Diagnostics**: DEFF per coefficient, effective n, subpopulation analysis, weight trimming, CV on estimates
 - **Repeated cross-sections**: `CallawaySantAnna(panel=False)` for BRFSS, ACS, CPS
-- **Compatibility matrix**: see [Survey Design Support](https://diff-diff.readthedocs.io/en/stable/choosing_estimator.html#survey-design-support)
 
 No other Python or R DiD package offers design-based variance estimation for modern heterogeneity-robust estimators.
 
