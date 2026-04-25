@@ -66,30 +66,45 @@ class TreatmentDoseShape:
     """Distributional shape of a continuous treatment dose.
 
     Populated on :class:`PanelProfile` only when ``treatment_type ==
-    "continuous"``; ``None`` otherwise. **Descriptive only** — these
-    fields are not themselves ``ContinuousDiD`` prerequisites, but
-    ``dose_min > 0`` IS used downstream as a hard gate (see below).
-    The full ``ContinuousDiD`` pre-fit gate set is:
+    "continuous"``; ``None`` otherwise. Most fields are descriptive
+    distributional context. ``dose_min > 0`` is also one of the
+    **profile-side screening checks** an agent runs before calling
+    ``ContinuousDiD.fit()``.
+
+    The profile-side screening checks (everything ``profile_panel``
+    can see from the four columns it accepts) are:
 
     1. ``PanelProfile.has_never_treated == True`` (unit-level
-       never-treated existence; ``ContinuousDiD.fit()`` requires
-       ``P(D=0) > 0`` because Remark 3.1 lowest-dose-as-control is not
-       yet implemented).
+       never-treated existence on the treatment column; this is the
+       profile-side proxy for ``ContinuousDiD``'s ``P(D=0) > 0``
+       requirement, which the estimator enforces under both
+       ``control_group="never_treated"`` and
+       ``control_group="not_yet_treated"`` because Remark 3.1
+       lowest-dose-as-control is not yet implemented).
     2. ``PanelProfile.treatment_varies_within_unit == False`` (per-unit
-       full-path dose constancy, matching ``ContinuousDiD.fit()``'s
+       full-path dose constancy on the treatment column, the
+       profile-side proxy for ``ContinuousDiD.fit()``'s
        ``df.groupby(unit)[dose].nunique() > 1`` rejection).
-    3. ``PanelProfile.is_balanced == True`` (``ContinuousDiD`` requires
-       a balanced panel).
+    3. ``PanelProfile.is_balanced == True``.
     4. Absence of the ``duplicate_unit_time_rows`` alert
        (``ContinuousDiD``'s precompute path silently resolves
-       duplicate ``(unit, time)`` cells via last-row-wins, so
-       duplicates must be removed before fitting).
-    5. ``treatment_dose.dose_min > 0`` — ``ContinuousDiD.fit()``
-       requires strictly positive treated doses (``D > 0`` for
-       treated units) and raises ``ValueError`` on negative dose
-       support (``continuous_did.py:287-294``). The field-level
-       ``dose_min`` is computed over non-zero doses only, so
-       ``dose_min > 0`` is the operational check.
+       duplicate ``(unit, time)`` cells via last-row-wins).
+    5. ``treatment_dose.dose_min > 0`` — strictly positive treated
+       doses; ``ContinuousDiD.fit()`` raises ``ValueError`` on
+       negative dose support (``continuous_did.py:287-294``).
+
+    These five checks are necessary but **not sufficient**:
+    ``ContinuousDiD.fit()`` takes a separate ``first_treat`` column
+    (which ``profile_panel`` does not see) and applies additional
+    validation: rejects NaN ``first_treat`` rows, recodes
+    ``+inf`` to 0 with a ``UserWarning``, rejects negative
+    ``first_treat``, drops units with ``first_treat > 0`` AND
+    ``dose == 0``, and force-zeroes ``first_treat == 0`` rows whose
+    ``dose != 0`` with a ``UserWarning``. A panel that passes all
+    five profile-side screens can still surface warnings, drop rows,
+    or raise at fit time depending on the ``first_treat`` column the
+    caller supplies. Treat the profile-side set as a pre-flight
+    screen, not the complete contract.
 
     ``has_zero_dose`` is a row-level fact ("at least one observation has
     dose == 0"); it is NOT a substitute for ``has_never_treated``, which
@@ -688,10 +703,12 @@ def _compute_treatment_dose(
 ) -> Optional[TreatmentDoseShape]:
     """Compute distributional shape for a continuous-treatment dose column.
 
-    Returns ``None`` unless ``treatment_type == "continuous"``.
-    Descriptive only — these fields do not gate ``ContinuousDiD``;
-    consult ``PanelProfile.has_never_treated`` and
-    ``PanelProfile.treatment_varies_within_unit`` for that.
+    Returns ``None`` unless ``treatment_type == "continuous"``. Most
+    fields are descriptive distributional context; ``dose_min > 0``
+    is one of the profile-side screening checks for ``ContinuousDiD``
+    (see :class:`TreatmentDoseShape` docstring for the full screening
+    set and the ``first_treat`` validation that
+    ``ContinuousDiD.fit()`` applies separately).
     """
     if treatment_type != "continuous":
         return None

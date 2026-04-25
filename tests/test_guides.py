@@ -67,6 +67,20 @@ def test_content_stability_autonomous_fingerprints():
         "`dose_min > 0`: the estimator hard-rejects negative treated "
         "dose support at line 287-294 of continuous_did.py."
     )
+    # The five profile-side screening checks are necessary but not
+    # sufficient: `ContinuousDiD.fit()` takes a separate `first_treat`
+    # column (which `profile_panel` does not see) and applies
+    # additional validation. The autonomous guide must explicitly
+    # mention the `first_treat` validation surface so an agent
+    # passing the profile-side screen still knows to validate the
+    # `first_treat` column they will supply to `fit()`.
+    assert "first_treat" in text, (
+        "ContinuousDiD documentation must mention the separate "
+        "`first_treat` column that `ContinuousDiD.fit()` validates "
+        "(NaN/inf/negative rejection, dose=0 unit drops, force-zero "
+        "coercion). The five profile-side screening checks alone are "
+        "necessary but not sufficient for fit-time success."
+    )
 
 
 def test_autonomous_contains_worked_examples_section():

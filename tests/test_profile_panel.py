@@ -1107,12 +1107,13 @@ def test_treatment_dose_continuous_zero_baseline():
     assert dose.dose_max == pytest.approx(4.0)
 
 
-def test_treatment_dose_does_not_gate_continuous_did():
-    """Regression: TreatmentDoseShape fields are descriptive only, not
-    ContinuousDiD prerequisites. The authoritative gates are
-    `has_never_treated` (unit-level) and `treatment_varies_within_unit`
-    (per-unit full-path constancy). Two contradictory cases verify the
-    distinction:
+def test_treatment_dose_descriptive_fields_supplement_existing_gates():
+    """Regression: most TreatmentDoseShape fields are descriptive
+    distributional context that supplements (does not replace) the
+    existing top-level `PanelProfile` screening checks. The relevant
+    profile-side gates `has_never_treated` (unit-level) and
+    `treatment_varies_within_unit` (per-unit full-path constancy)
+    fire correctly on the contradictory cases below:
 
     1. `0,0,d,d` within-unit dose path: a single unit toggles between
        zero (pre-treatment) and a single nonzero dose `d` (post). The
