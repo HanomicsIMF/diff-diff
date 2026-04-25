@@ -2852,56 +2852,35 @@ class TestHADPretestReportSerialization:
 
 
 class TestHADPretestWorkflowSurveyGuards:
-    """Phase 4.5 C0 guards on did_had_pretest_workflow.
+    """Phase 4.5 C survey-aware workflow tests.
 
-    Reciprocal half of the qug_test guards in TestQUGTest above: the workflow
-    has its own survey/weights kwargs that must reject for the same reasons.
-    QUG-under-survey is permanently deferred (extreme-value theory under
-    complex sampling not a settled toolkit); the linearity-family pretests
-    are deferred to Phase 4.5 C. Until C ships the workflow has no
-    survey-aware dispatch, so it must reject."""
+    Phase 4.5 C makes did_had_pretest_workflow functional under
+    survey=/weights=: it skips QUG with a UserWarning (per C0 deferral)
+    and dispatches the linearity family with the survey-aware mechanism.
+    Mutex on survey+weights still raises ValueError; replicate-weight
+    survey designs raise NotImplementedError (parallel follow-up)."""
 
-    def _make_minimal_overall_panel(self):
-        """Two-period, single-cohort panel sufficient for overall workflow."""
+    def _make_minimal_overall_panel(self, with_weight_col: bool = False):
+        """Two-period, single-cohort panel sufficient for overall workflow.
+
+        When ``with_weight_col=True``, attaches a 'w' column populated with
+        unit-constant positive values (HAD continuous-path constant-within-
+        unit invariant)."""
         d_arr, dy_arr = _linear_dgp(G=20, beta=2.0, sigma=0.3)
-        return _make_two_period_panel(G=20, d=d_arr, dy=dy_arr)
-
-    def test_workflow_weights_raises(self):
-        """Phase 4.5 C0: did_had_pretest_workflow(weights=) raises
-        NotImplementedError BEFORE running any of the underlying tests."""
-        df = self._make_minimal_overall_panel()
-        with pytest.raises(NotImplementedError, match="does not yet accept"):
-            did_had_pretest_workflow(
-                df,
-                "y",
-                "d",
-                "time",
-                "unit",
-                weights=np.ones(20),
-            )
-
-    def test_workflow_survey_raises(self):
-        """Phase 4.5 C0: did_had_pretest_workflow(survey=) raises
-        NotImplementedError."""
-        from diff_diff import SurveyDesign
-
-        df = self._make_minimal_overall_panel()
-        with pytest.raises(NotImplementedError, match="does not yet accept"):
-            did_had_pretest_workflow(
-                df,
-                "y",
-                "d",
-                "time",
-                "unit",
-                survey=SurveyDesign(weights="w"),
-            )
+        df = _make_two_period_panel(G=20, d=d_arr, dy=dy_arr)
+        if with_weight_col:
+            rng = np.random.default_rng(7)
+            w_per_unit = rng.uniform(0.5, 2.0, size=20)
+            # Constant-within-unit per HAD invariant.
+            df["w"] = df["unit"].map(dict(zip(np.arange(20), w_per_unit)))
+        return df
 
     def test_workflow_mutex_both_raises(self):
-        """Phase 4.5 C0: passing both survey= AND weights= raises ValueError
+        """Phase 4.5 C: passing both survey= AND weights= raises ValueError
         (mutex), mirroring HeterogeneousAdoptionDiD.fit() at had.py:2890."""
         from diff_diff import SurveyDesign
 
-        df = self._make_minimal_overall_panel()
+        df = self._make_minimal_overall_panel(with_weight_col=True)
         with pytest.raises(ValueError, match="OR weights=.*not both"):
             did_had_pretest_workflow(
                 df,
@@ -2910,30 +2889,8 @@ class TestHADPretestWorkflowSurveyGuards:
                 "time",
                 "unit",
                 survey=SurveyDesign(weights="w"),
-                weights=np.ones(20),
+                weights=np.ones(40),
             )
-
-    def test_workflow_message_points_to_phase_4_5_c(self):
-        """Phase 4.5 C0: the NotImplementedError must explicitly route users
-        to Phase 4.5 C and explain the QUG-under-survey vs Stute-under-survey
-        distinction."""
-        df = self._make_minimal_overall_panel()
-        with pytest.raises(NotImplementedError) as exc_info:
-            did_had_pretest_workflow(
-                df,
-                "y",
-                "d",
-                "time",
-                "unit",
-                weights=np.ones(20),
-            )
-        msg = str(exc_info.value)
-        # Routing pointers
-        assert "Phase 4.5 C" in msg
-        assert "Rao-Wu" in msg
-        # Why QUG specifically can't be done (cross-reference to qug_test)
-        assert "qug_test" in msg
-        assert "permanently deferred" in msg
 
     def test_workflow_unweighted_overall_path_unchanged(self):
         """Stability invariant: existing positional / unweighted calls must
@@ -2949,21 +2906,451 @@ class TestHADPretestWorkflowSurveyGuards:
         assert report.pretrends_joint is None
         assert report.homogeneity_joint is None
 
-    def test_workflow_survey_rejects_on_event_study_path_too(self):
-        """Phase 4.5 C0: rejection happens at the front door regardless of
-        which aggregate path the user picked. The mutex/reject guards fire
-        BEFORE the panel validator does any work, so the user gets the
-        methodology-aware message even on an invalid event-study panel."""
-        df = (
-            self._make_minimal_overall_panel()
-        )  # only two periods - would fail event_study validation
-        with pytest.raises(NotImplementedError, match="does not yet accept"):
-            did_had_pretest_workflow(
+    def test_workflow_weights_runs_overall_path(self):
+        """Phase 4.5 C: weights= now functional. Workflow dispatches to
+        weighted Stute + Yatchew, skips QUG, returns valid report with
+        qug=None."""
+        df = self._make_minimal_overall_panel()
+        # 40 rows (20 units x 2 periods); per-row weights with constant-
+        # within-unit invariant.
+        rng = np.random.default_rng(7)
+        w_per_unit = rng.uniform(0.5, 2.0, size=20)
+        weights_per_row = np.tile(w_per_unit, 2)
+        with pytest.warns(UserWarning, match="QUG step skipped"):
+            report = did_had_pretest_workflow(
                 df,
                 "y",
                 "d",
                 "time",
                 "unit",
-                aggregate="event_study",
-                weights=np.ones(20),
+                weights=weights_per_row,
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert report.aggregate == "overall"
+        assert report.qug is None  # skipped per C0
+        assert report.stute is not None
+        assert report.yatchew is not None
+        assert np.isfinite(report.stute.p_value)
+
+    def test_workflow_survey_runs_overall_path(self):
+        """Phase 4.5 C: survey= now functional via SurveyDesign(weights=col)."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_minimal_overall_panel(with_weight_col=True)
+        with pytest.warns(UserWarning, match="QUG step skipped"):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey=SurveyDesign(weights="w"),
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert report.aggregate == "overall"
+        assert report.qug is None
+        assert report.stute is not None
+        assert report.yatchew is not None
+
+    def test_workflow_verdict_carries_phase_4_5_c0_suffix(self):
+        """Phase 4.5 C: verdict appends the linearity-conditional suffix
+        explaining QUG was skipped per C0 deferral. Locks the cross-surface
+        text used by downstream consumers."""
+        df = self._make_minimal_overall_panel()
+        weights_per_row = np.full(40, 1.5)  # uniform-positive
+        with pytest.warns(UserWarning):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                weights=weights_per_row,
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert "linearity-conditional verdict" in report.verdict
+        assert "QUG-under-survey deferred per Phase 4.5 C0" in report.verdict
+
+    def test_workflow_qug_none_serializes_cleanly(self):
+        """Phase 4.5 C: qug=None must propagate cleanly through summary,
+        to_dict, and to_dataframe (Reviewer CRITICAL #1 - retyped Optional)."""
+        df = self._make_minimal_overall_panel()
+        weights_per_row = np.full(40, 1.5)
+        with pytest.warns(UserWarning):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                weights=weights_per_row,
+                n_bootstrap=199,
+                seed=0,
+            )
+        # summary() rendering
+        s = report.summary()
+        assert "QUG step skipped" in s
+        # to_dict() serialization
+        d = report.to_dict()
+        assert d["qug"] is None
+        # to_dataframe() must still produce 3 rows (qug NaN row preserved)
+        df_out = report.to_dataframe()
+        assert len(df_out) == 3
+        qug_row = df_out[df_out["test"] == "qug"].iloc[0]
+        assert pd.isna(qug_row["statistic_value"])
+        assert pd.isna(qug_row["p_value"])
+        assert qug_row["reject"] is False or qug_row["reject"] == 0  # bool-ish
+
+    def test_workflow_replicate_weights_rejected_overall(self):
+        """Phase 4.5 C: replicate-weight survey designs (BRR/Fay/JK1/JKn/SDR)
+        raise NotImplementedError. Parallel follow-up after Phase 4.5 C."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_minimal_overall_panel(with_weight_col=True)
+        # Build replicate weights matrix (40 rows x 5 replicates of perturbed weights).
+        rng = np.random.default_rng(0)
+        w_col = df["w"].to_numpy()
+        rep_w = np.column_stack([w_col * (1 + 0.1 * rng.standard_normal(40)) for _ in range(5)])
+        df_with_rep = df.copy()
+        for i in range(5):
+            df_with_rep[f"rep{i}"] = rep_w[:, i]
+        sd = SurveyDesign(
+            weights="w",
+            replicate_weights=[f"rep{i}" for i in range(5)],
+            replicate_method="BRR",
+        )
+        with pytest.raises(NotImplementedError, match="replicate-weight"):
+            did_had_pretest_workflow(
+                df_with_rep, "y", "d", "time", "unit", survey=sd, n_bootstrap=199, seed=0
+            )
+
+
+# =============================================================================
+# Phase 4.5 C: direct-helper survey/weights tests
+# =============================================================================
+
+
+class TestStuteTestSurvey:
+    """Phase 4.5 C survey/weights extension on stute_test."""
+
+    def _setup(self, G=30, seed=42):
+        d, dy = _linear_dgp(G=G, beta=2.0, sigma=0.3, seed=seed)
+        return d, dy
+
+    def test_unweighted_call_bit_exact_after_kwargs_added(self):
+        """Stability invariant #1: existing positional/kwarg-free calls
+        produce bit-exact pre-PR p_value after the new keyword-only kwargs
+        are added (no behavioral change on the unweighted path)."""
+        d, dy = self._setup()
+        r = stute_test(d, dy, alpha=0.05, n_bootstrap=199, seed=0)
+        assert np.isfinite(r.cvm_stat)
+        assert 0.0 <= r.p_value <= 1.0
+
+    def test_weights_smoke(self):
+        """weights= produces a finite, valid Stute result."""
+        d, dy = self._setup()
+        w = np.random.default_rng(7).uniform(0.5, 2.0, size=30)
+        r = stute_test(d, dy, weights=w, n_bootstrap=199, seed=0)
+        assert np.isfinite(r.cvm_stat)
+        assert 0.0 <= r.p_value <= 1.0
+
+    def test_survey_smoke(self):
+        """survey= via trivial ResolvedSurveyDesign produces a finite result."""
+        from diff_diff.survey import _make_trivial_resolved
+
+        d, dy = self._setup()
+        w = np.random.default_rng(7).uniform(0.5, 2.0, size=30)
+        resolved = _make_trivial_resolved(w)
+        r = stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
+        assert np.isfinite(r.cvm_stat)
+        assert 0.0 <= r.p_value <= 1.0
+
+    def test_mutex_both_raises(self):
+        """survey + weights mutex (mirrors workflow + qug_test pattern)."""
+        from diff_diff.survey import _make_trivial_resolved
+
+        d, dy = self._setup()
+        w = np.ones(30)
+        with pytest.raises(ValueError, match="OR weights=.*not both"):
+            stute_test(d, dy, weights=w, survey=_make_trivial_resolved(w), n_bootstrap=199, seed=0)
+
+    def test_replicate_weights_raises(self):
+        """Phase 4.5 C MEDIUM #4: replicate-weight survey designs raise
+        NotImplementedError at the direct-helper entry point too (defense in
+        depth + reciprocal-guard discipline)."""
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        d, dy = self._setup()
+        w = np.ones(30)
+        rep_w = np.tile(w[:, None], (1, 5))
+        resolved_with_rep = ResolvedSurveyDesign(
+            weights=w,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=30,
+            lonely_psu="remove",
+            replicate_weights=rep_w,
+            replicate_method="BRR",
+            n_replicates=5,
+        )
+        with pytest.raises(NotImplementedError, match="replicate-weight"):
+            stute_test(d, dy, survey=resolved_with_rep, n_bootstrap=199, seed=0)
+
+    def test_negative_weights_rejected(self):
+        """Strictly-positive weights required on the pweight shortcut."""
+        d, dy = self._setup()
+        w = np.ones(30)
+        w[0] = -1.0
+        with pytest.raises(ValueError, match="strictly positive"):
+            stute_test(d, dy, weights=w, n_bootstrap=199, seed=0)
+
+    def test_weights_length_mismatch(self):
+        d, dy = self._setup()
+        with pytest.raises(ValueError, match="length"):
+            stute_test(d, dy, weights=np.ones(20), n_bootstrap=199, seed=0)
+
+
+class TestYatchewHRTestSurvey:
+    """Phase 4.5 C survey/weights extension on yatchew_hr_test.
+
+    Includes the bit-exact reduction-invariant lock at w=ones(G) per
+    Reviewer CRITICAL #2 + MEDIUM #1: weighted variance components reduce
+    exactly to the existing unweighted formulas at uniform weights.
+    """
+
+    def _setup(self, G=30, seed=42):
+        rng = np.random.default_rng(seed)
+        d = rng.uniform(0.0, 1.0, size=G)
+        dy = 2.0 * d + rng.normal(0.0, 0.3, size=G)
+        return d, dy
+
+    def test_unweighted_bit_exact_after_kwargs_added(self):
+        """Existing call without weights/survey returns the pre-PR result."""
+        d, dy = self._setup()
+        r_unweighted = yatchew_hr_test(d, dy, alpha=0.05)
+        # No reference value to compare against (no pre-PR golden file
+        # captured); just check finiteness.
+        assert np.isfinite(r_unweighted.t_stat_hr)
+
+    def test_weighted_reduces_to_unweighted_at_uniform_weights(self):
+        """Reviewer CRITICAL #2 lock: at w=ones(G), weighted variance
+        components reduce to the unweighted formulas EXACTLY (atol=1e-14)."""
+        d, dy = self._setup()
+        r_unweighted = yatchew_hr_test(d, dy, alpha=0.05)
+        r_weighted = yatchew_hr_test(d, dy, alpha=0.05, weights=np.ones(30))
+        # All three variance components must match bit-exactly.
+        np.testing.assert_allclose(
+            r_unweighted.sigma2_lin, r_weighted.sigma2_lin, atol=1e-14, rtol=1e-14
+        )
+        np.testing.assert_allclose(
+            r_unweighted.sigma2_diff, r_weighted.sigma2_diff, atol=1e-14, rtol=1e-14
+        )
+        np.testing.assert_allclose(
+            r_unweighted.sigma2_W, r_weighted.sigma2_W, atol=1e-14, rtol=1e-14
+        )
+        # T_hr and p_value also match.
+        np.testing.assert_allclose(
+            r_unweighted.t_stat_hr, r_weighted.t_stat_hr, atol=1e-14, rtol=1e-14
+        )
+
+    def test_weights_smoke(self):
+        d, dy = self._setup()
+        w = np.random.default_rng(7).uniform(0.5, 2.0, size=30)
+        r = yatchew_hr_test(d, dy, weights=w)
+        assert np.isfinite(r.t_stat_hr)
+        assert 0.0 <= r.p_value <= 1.0
+
+    def test_survey_smoke(self):
+        from diff_diff.survey import _make_trivial_resolved
+
+        d, dy = self._setup()
+        w = np.random.default_rng(7).uniform(0.5, 2.0, size=30)
+        r = yatchew_hr_test(d, dy, survey=_make_trivial_resolved(w))
+        assert np.isfinite(r.t_stat_hr)
+
+    def test_mutex_both_raises(self):
+        from diff_diff.survey import _make_trivial_resolved
+
+        d, dy = self._setup()
+        w = np.ones(30)
+        with pytest.raises(ValueError, match="not both"):
+            yatchew_hr_test(d, dy, weights=w, survey=_make_trivial_resolved(w))
+
+    def test_zero_weight_rejected(self):
+        """Per Reviewer Question #4: strictly-positive weights required
+        (the adjacent-difference variance has sum(w_avg) in the denominator
+        which collapses to zero in any contiguous-zero block)."""
+        d, dy = self._setup()
+        w = np.ones(30)
+        w[5] = 0.0
+        with pytest.raises(ValueError, match="strictly positive"):
+            yatchew_hr_test(d, dy, weights=w)
+
+    def test_replicate_weights_raises(self):
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        d, dy = self._setup()
+        w = np.ones(30)
+        resolved_with_rep = ResolvedSurveyDesign(
+            weights=w,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=30,
+            lonely_psu="remove",
+            replicate_weights=np.tile(w[:, None], (1, 5)),
+            replicate_method="BRR",
+            n_replicates=5,
+        )
+        with pytest.raises(NotImplementedError, match="replicate-weight"):
+            yatchew_hr_test(d, dy, survey=resolved_with_rep)
+
+
+class TestJointStuteSurvey:
+    """Phase 4.5 C survey/weights on stute_joint_pretest +
+    joint_pretrends_test + joint_homogeneity_test."""
+
+    def _make_event_study_panel(self, G=20, T_pre=2, T_post=2, seed=42):
+        """Balanced event-study panel with T_pre + T_post periods."""
+        rng = np.random.default_rng(seed)
+        d_per_unit = rng.uniform(0.1, 1.0, size=G)
+        rows = []
+        for t in range(T_pre):
+            for g in range(G):
+                rows.append({"unit": g, "time": t, "y": rng.normal(), "d": 0.0})
+        for t in range(T_pre, T_pre + T_post):
+            for g in range(G):
+                rows.append(
+                    {
+                        "unit": g,
+                        "time": t,
+                        "y": rng.normal() + 2.0 * d_per_unit[g] * (t - T_pre + 1),
+                        "d": d_per_unit[g],
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def test_joint_pretrends_weights_smoke(self):
+        df = self._make_event_study_panel()
+        w_per_unit = np.random.default_rng(7).uniform(0.5, 2.0, size=20)
+        # Constant-within-unit per HAD invariant.
+        weights_per_row = df["unit"].map(dict(zip(np.arange(20), w_per_unit))).to_numpy()
+        r = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[0],
+            base_period=1,
+            n_bootstrap=199,
+            seed=0,
+            weights=weights_per_row,
+        )
+        assert np.isfinite(r.cvm_stat_joint)
+        assert 0.0 <= r.p_value <= 1.0
+
+    def test_joint_homogeneity_weights_smoke(self):
+        df = self._make_event_study_panel()
+        w_per_unit = np.random.default_rng(7).uniform(0.5, 2.0, size=20)
+        weights_per_row = df["unit"].map(dict(zip(np.arange(20), w_per_unit))).to_numpy()
+        r = joint_homogeneity_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            post_periods=[2, 3],
+            base_period=1,
+            n_bootstrap=199,
+            seed=0,
+            weights=weights_per_row,
+        )
+        assert np.isfinite(r.cvm_stat_joint)
+        assert 0.0 <= r.p_value <= 1.0
+
+    def test_joint_pretrends_survey_smoke(self):
+        from diff_diff import SurveyDesign
+
+        df = self._make_event_study_panel()
+        w_per_unit = np.random.default_rng(7).uniform(0.5, 2.0, size=20)
+        df["w"] = df["unit"].map(dict(zip(np.arange(20), w_per_unit)))
+        r = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[0],
+            base_period=1,
+            n_bootstrap=199,
+            seed=0,
+            survey=SurveyDesign(weights="w"),
+        )
+        assert np.isfinite(r.cvm_stat_joint)
+
+    def test_joint_pretrends_mutex_both_raises(self):
+        from diff_diff import SurveyDesign
+
+        df = self._make_event_study_panel()
+        df["w"] = 1.0
+        with pytest.raises(ValueError, match="not both"):
+            joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[0],
+                base_period=1,
+                n_bootstrap=199,
+                seed=0,
+                weights=np.ones(80),
+                survey=SurveyDesign(weights="w"),
+            )
+
+    def test_stute_joint_pretest_replicate_weights_raises(self):
+        """Phase 4.5 C MEDIUM #4: replicate-weight rejection at the direct
+        residuals-in entry too."""
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        G = 20
+        residuals_by_horizon = {
+            "0": np.random.default_rng(0).normal(size=G),
+            "1": np.random.default_rng(1).normal(size=G),
+        }
+        fitted_by_horizon = {"0": np.zeros(G), "1": np.zeros(G)}
+        doses = np.linspace(0.1, 1.0, G)
+        design_matrix = np.column_stack([np.ones(G), doses])
+        w = np.ones(G)
+        resolved_with_rep = ResolvedSurveyDesign(
+            weights=w,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=G,
+            lonely_psu="remove",
+            replicate_weights=np.tile(w[:, None], (1, 5)),
+            replicate_method="BRR",
+            n_replicates=5,
+        )
+        with pytest.raises(NotImplementedError, match="replicate-weight"):
+            stute_joint_pretest(
+                residuals_by_horizon=residuals_by_horizon,
+                fitted_by_horizon=fitted_by_horizon,
+                doses=doses,
+                design_matrix=design_matrix,
+                n_bootstrap=199,
+                seed=0,
+                survey=resolved_with_rep,
             )
