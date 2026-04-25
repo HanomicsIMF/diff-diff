@@ -122,6 +122,16 @@ def test_overall_ci_covers_truth(phase1_results):
     assert ci_low <= TREATMENT_EFFECT <= ci_high, (ci_low, ci_high)
 
 
+def test_overall_ci_endpoints_match_quoted(phase1_results):
+    """Section 3 narrative quotes '95% CI: 11.3 to 12.8'. Lock the
+    rounded endpoints so prose drift fails this test."""
+    ci_low, ci_high = phase1_results.overall_conf_int
+    # CI lower endpoint rounds to 11.3 -> band covers 11.0..11.6
+    assert 11.0 <= ci_low <= 11.6, ci_low
+    # CI upper endpoint rounds to 12.8 -> band covers 12.5..13.1
+    assert 12.5 <= ci_high <= 13.1, ci_high
+
+
 def test_joiners_leavers_consistent(phase1_results):
     """Section 3 narrative quotes joiners ~12.1 and leavers ~11.9, both
     positive and within sampling uncertainty of each other."""
@@ -140,6 +150,26 @@ def test_event_study_horizons_cover_truth(event_study_results):
         ci = es[l]["conf_int"]
         assert 11.5 <= eff <= 13.3, (l, eff)
         assert ci[0] <= TREATMENT_EFFECT <= ci[1], (l, ci)
+
+
+def test_event_study_ci_endpoints_match_quoted(event_study_results):
+    """Section 4 narrative quotes l=1 CI [11.4, 13.3] and l=2 CI
+    [11.5, 13.6]. Lock the rounded endpoints so prose drift fails."""
+    es = event_study_results.event_study_effects
+    # l=1 CI [11.4, 13.3]
+    assert 11.1 <= es[1]["conf_int"][0] <= 11.7, es[1]["conf_int"]
+    assert 13.0 <= es[1]["conf_int"][1] <= 13.6, es[1]["conf_int"]
+    # l=2 CI [11.5, 13.6]
+    assert 11.2 <= es[2]["conf_int"][0] <= 11.8, es[2]["conf_int"]
+    assert 13.3 <= es[2]["conf_int"][1] <= 13.9, es[2]["conf_int"]
+
+
+def test_event_study_significance(event_study_results):
+    """Section 5 stakeholder template claims 'bootstrap p < 0.01 at both
+    post-treatment horizons'. Lock that significance threshold."""
+    es = event_study_results.event_study_effects
+    assert es[1]["p_value"] < 0.01, es[1]["p_value"]
+    assert es[2]["p_value"] < 0.01, es[2]["p_value"]
 
 
 def test_placebo_horizons_cover_zero(event_study_results):
