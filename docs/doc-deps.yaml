@@ -102,6 +102,7 @@ sources:
         section: "DifferenceInDifferences"
         type: user_guide
       - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -145,6 +146,7 @@ sources:
         section: "CallawaySantAnna"
         type: user_guide
       - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -314,6 +316,7 @@ sources:
         section: "ChaisemartinDHaultfoeuille"
         type: user_guide
       - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -692,6 +695,7 @@ sources:
         section: "Results API"
         type: user_guide
       - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
       - path: docs/methodology/REGISTRY.md
         section: "SyntheticDiD"
@@ -760,6 +764,7 @@ sources:
     drift_risk: low
     docs:
       - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
         note: "Public API surface"
 

@@ -293,11 +293,19 @@ print(results.summary())
 
 This step is CRITICAL and most often skipped. Run at least one of:
 
-### HonestDiD (Rambachan & Roth 2023) — recommended
+### HonestDiD (Rambachan & Roth 2023) - recommended
 Bounds on the treatment effect under violations of parallel trends.
-Works with MultiPeriodDiD and CallawaySantAnna results only. For CS,
-requires `aggregate='event_study'` or `aggregate='all'` so that event
-study effects are available.
+Works with MultiPeriodDiD, CallawaySantAnna, and ChaisemartinDHaultfoeuille
+(dCDH) results.
+
+- For CS: requires `aggregate='event_study'` or `aggregate='all'` so that
+  event study effects are available.
+- For dCDH: requires `L_max >= 1` (multi-horizon mode). Bounds use placebo
+  estimates `DID^{pl}_l` as pre-period coefficients rather than standard
+  event-study pre-treatment coefficients, and use diagonal variance (no
+  full VCV available for dCDH); a `UserWarning` is emitted at runtime.
+  See `docs/methodology/REGISTRY.md` "Note (HonestDiD integration)" under
+  ChaisemartinDHaultfoeuille for the full caveats.
 
 ```python
 from diff_diff import compute_honest_did
