@@ -425,7 +425,9 @@ class ChaisemartinDHaultfoeuilleResults:
         "method": str, "n_valid_horizons": int}``. Populated when
         ``by_path`` is a positive int AND ``n_bootstrap > 0``. The
         band itself is applied per-horizon as ``cband_conf_int`` on
-        ``path_effects[path]["horizons"][l]``. Empty-state contract:
+        ``path_effects[path]["horizons"][l]`` and rendered as
+        ``cband_lower`` / ``cband_upper`` columns on
+        ``to_dataframe(level="by_path")``. Empty-state contract:
         ``None`` when not requested (no bootstrap or ``by_path is None``);
         ``{}`` when requested but no path passed both gates (``>=2``
         valid horizons with finite bootstrap SE ``> 0`` AND a strict
@@ -1632,6 +1634,8 @@ class ChaisemartinDHaultfoeuilleResults:
                         "conf_int_lower",
                         "conf_int_upper",
                         "n_obs",
+                        "cband_lower",
+                        "cband_upper",
                     ]
                 )
             rows = []
@@ -1655,6 +1659,12 @@ class ChaisemartinDHaultfoeuilleResults:
                 )
                 for lag_key in sorted(placebo_horizons.keys()):
                     ph_entry = placebo_horizons[lag_key]
+                    # Placebos do not get joint sup-t bands in this
+                    # release (only positive event-study horizons do —
+                    # mirrors OVERALL placebo / event-study sup-t
+                    # convention). Emit NaN cband columns for schema
+                    # parity with the OVERALL level="event_study" table.
+                    ph_cband = ph_entry.get("cband_conf_int", (np.nan, np.nan))
                     rows.append(
                         {
                             "path": path,
@@ -1668,10 +1678,17 @@ class ChaisemartinDHaultfoeuilleResults:
                             "conf_int_lower": ph_entry["conf_int"][0],
                             "conf_int_upper": ph_entry["conf_int"][1],
                             "n_obs": ph_entry["n_obs"],
+                            "cband_lower": ph_cband[0] if ph_cband else np.nan,
+                            "cband_upper": ph_cband[1] if ph_cband else np.nan,
                         }
                     )
                 for l_h in sorted(horizons.keys()):
                     h_entry = horizons[l_h]
+                    # Per-path joint sup-t band (when populated) mirrors
+                    # OVERALL `level="event_study"` cband emission. Absent
+                    # key / missing path entry -> NaN columns. Pinned at
+                    # `TestByPathSupTBands::test_path_sup_t_to_dataframe_emits_cband_columns`.
+                    h_cband = h_entry.get("cband_conf_int", (np.nan, np.nan))
                     rows.append(
                         {
                             "path": path,
@@ -1685,6 +1702,8 @@ class ChaisemartinDHaultfoeuilleResults:
                             "conf_int_lower": h_entry["conf_int"][0],
                             "conf_int_upper": h_entry["conf_int"][1],
                             "n_obs": h_entry["n_obs"],
+                            "cband_lower": h_cband[0] if h_cband else np.nan,
+                            "cband_upper": h_cband[1] if h_cband else np.nan,
                         }
                     )
             return pd.DataFrame(rows)

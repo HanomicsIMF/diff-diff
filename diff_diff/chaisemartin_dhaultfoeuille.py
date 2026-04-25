@@ -437,9 +437,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         ``c_p`` (constructed from a fresh shared-weights multiplier-
         bootstrap draw per path) is surfaced at top level as
         ``results.path_sup_t_bands[path] = {"crit_value", "alpha",
-        "n_bootstrap", "method", "n_valid_horizons"}`` and applied
+        "n_bootstrap", "method", "n_valid_horizons"}``, applied
         per-horizon as ``cband_conf_int`` on
-        ``path_effects[path]["horizons"][l]``. Bands cover joint
+        ``path_effects[path]["horizons"][l]``, and rendered as
+        ``cband_lower`` / ``cband_upper`` columns on
+        ``results.to_dataframe(level="by_path")`` (mirroring the
+        OVERALL ``level="event_study"`` schema). Bands cover joint
         inference WITHIN a single path across horizons; they do NOT
         provide simultaneous coverage across paths. Python-only
         library extension; R ``did_multiplegt_dyn`` provides no joint

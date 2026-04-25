@@ -5871,6 +5871,80 @@ class TestByPathSupTBands:
             for l_h, h in entry["horizons"].items():
                 assert "cband_conf_int" not in h
 
+    def test_path_sup_t_to_dataframe_emits_cband_columns(self):
+        """``to_dataframe(level="by_path")`` includes ``cband_lower`` /
+        ``cband_upper`` columns mirroring the OVERALL
+        ``level="event_study"`` table at ``:1495-1496,1531-1532``.
+
+        For positive-horizon rows of paths with a finite sup-t crit,
+        the columns equal the per-horizon ``cband_conf_int`` tuple. For
+        placebo rows (negative horizons) and rows of paths absent from
+        ``path_sup_t_bands``, the columns are NaN. The empty-window
+        fallback (``path_effects == {}``) also includes the columns in
+        its canonical schema."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(data, by_path=3, L_max=3, n_bootstrap=200)
+        df = res.to_dataframe(level="by_path")
+        assert "cband_lower" in df.columns
+        assert "cband_upper" in df.columns
+        # Per-row alignment with `path_effects[path]["horizons"][l]
+        # ["cband_conf_int"]`. Only positive horizons can have populated
+        # cband (placebos and unbanded paths get NaN).
+        for _, row in df.iterrows():
+            path = row["path"]
+            horizon = int(row["horizon"])
+            if horizon > 0 and path in res.path_sup_t_bands:
+                # Should match the horizon's cband_conf_int.
+                expected_cband = res.path_effects[path]["horizons"][horizon].get(
+                    "cband_conf_int"
+                )
+                if expected_cband is not None:
+                    np.testing.assert_allclose(row["cband_lower"], expected_cband[0])
+                    np.testing.assert_allclose(row["cband_upper"], expected_cband[1])
+            else:
+                assert np.isnan(row["cband_lower"]), (
+                    f"path={path} horizon={horizon}: cband_lower should be NaN "
+                    f"(placebo / unbanded path), got {row['cband_lower']}"
+                )
+                assert np.isnan(row["cband_upper"])
+
+    def test_path_sup_t_to_dataframe_empty_path_fallback_has_cband_columns(self):
+        """The ``path_effects == {}`` fallback DataFrame schema includes
+        the cband columns for parity with the populated-path schema."""
+        rng = np.random.default_rng(0)
+        rows = []
+        # Empty-window panel: switchers at t=3, L_max=3 -> window past panel.
+        for g in (1, 2, 3, 4):
+            for t in range(4):
+                d = 1 if t >= 3 else 0
+                rows.append(
+                    {"group": g, "period": t, "treatment": d, "outcome": rng.normal()}
+                )
+        for g in (5, 6):
+            for t in range(4):
+                rows.append(
+                    {"group": g, "period": t, "treatment": 0, "outcome": rng.normal()}
+                )
+        data = pd.DataFrame(rows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, twfe_diagnostic=False, placebo=False
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+        assert res.path_effects == {}
+        df = res.to_dataframe(level="by_path")
+        assert df.empty
+        assert "cband_lower" in df.columns
+        assert "cband_upper" in df.columns
+
     def test_path_sup_t_strict_majority_gate_at_exact_50pct(self, monkeypatch):
         """The 50%-finite-draws gate is **strict majority**, not >=:
         the implementation requires ``finite_mask.sum() > 0.5 *
