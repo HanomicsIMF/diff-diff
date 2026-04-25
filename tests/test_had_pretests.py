@@ -4189,3 +4189,56 @@ class TestPhase45CR1Regressions:
                 seed=0,
                 weights=weights_undersized,
             )
+
+    # --- R12 P3: positive FPC-only survey coverage ------------------------
+
+    def test_stute_test_fpc_only_survey_smoke(self):
+        """R12 P3: positive smoke for FPC-only survey designs on the Stute
+        family. Phase 4.5 C narrows survey support to pweight+PSU+FPC; the
+        previous test matrix covered pweight-only and PSU-only but no FPC
+        case, so the FPC scaling branch in
+        generate_survey_multiplier_weights_batch was unpinned by direct
+        regression."""
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        d, dy = _linear_dgp(G=30, beta=2.0, sigma=0.3)
+        # Construct an FPC-only design: no strata, no PSU, but FPC = N=200
+        # (population size) so f = G/N = 0.15. The bootstrap helper applies
+        # a sqrt(1 - f) scaling to the multipliers under FPC.
+        w = np.ones(30)
+        resolved = ResolvedSurveyDesign(
+            weights=w,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=np.full(30, 200.0),
+            n_strata=0,
+            n_psu=30,
+            lonely_psu="remove",
+        )
+        r = stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
+        assert np.isfinite(r.cvm_stat)
+        assert 0.0 <= r.p_value <= 1.0
+
+    def test_workflow_overall_fpc_only_survey_smoke(self):
+        """R12 P3: positive smoke for FPC-only on the workflow path."""
+        from diff_diff import SurveyDesign
+
+        df = self._make_overall_panel(with_w_col=True)
+        # FPC value > G to satisfy the helper's "FPC must be >= n_units" guard.
+        df["fpc"] = 200.0
+        with pytest.warns(UserWarning, match="QUG step skipped"):
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey=SurveyDesign(weights="w", fpc="fpc"),
+                n_bootstrap=199,
+                seed=0,
+            )
+        assert report.aggregate == "overall"
+        assert report.qug is None
+        assert report.stute is not None and np.isfinite(report.stute.p_value)
+        assert report.yatchew is not None and np.isfinite(report.yatchew.p_value)
