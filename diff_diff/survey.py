@@ -706,9 +706,11 @@ def make_pweight_design(weights: np.ndarray) -> "ResolvedSurveyDesign":
     Parameters
     ----------
     weights : np.ndarray, shape (n_obs,)
-        Per-observation positive weights. Caller is responsible for any
-        non-negativity / per-unit-constancy validation. Typical usage is
-        positional (``make_pweight_design(arr)``); the parameter name
+        Per-observation positive weights. Must be 1-D (shape ``(n_obs,)``);
+        scalars, 0-D arrays, and column-vector inputs (shape ``(n, 1)``)
+        raise ``ValueError`` at the front door. Caller is responsible for
+        any non-negativity / per-unit-constancy validation. Typical usage
+        is positional (``make_pweight_design(arr)``); the parameter name
         ``weights`` collides linguistically with the deprecated
         ``weights=`` kwarg on HAD surfaces, so prefer positional form.
 
@@ -719,8 +721,23 @@ def make_pweight_design(weights: np.ndarray) -> "ResolvedSurveyDesign":
         ``n_strata=0``, ``n_psu=n_obs`` (each observation is its own PSU
         under the trivial design), ``lonely_psu="remove"``,
         ``replicate_weights=None``.
+
+    Raises
+    ------
+    ValueError
+        If ``weights`` is not 1-D (PR #376 R3 P1: catches scalar / 0-D /
+        column-vector inputs with a clear front-door message instead of
+        bubbling a low-level numpy or dataclass exception).
     """
     w = np.asarray(weights, dtype=np.float64)
+    if w.ndim != 1:
+        raise ValueError(
+            f"make_pweight_design: weights must be 1-dimensional (1-D, shape "
+            f"(n_obs,)), got shape {w.shape}. Common mistakes: scalar / 0-D "
+            f"input (`make_pweight_design(1.0)`); column-vector "
+            f"(`make_pweight_design(df[['w']].to_numpy())` produces (n, 1) "
+            f"-- use `df['w'].to_numpy()` for (n,)); 2-D matrix input."
+        )
     n_obs = int(w.shape[0])
     return ResolvedSurveyDesign(
         weights=w,

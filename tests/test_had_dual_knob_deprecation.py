@@ -132,6 +132,48 @@ class TestPublicHelpers:
 
         assert _make_trivial_resolved is make_pweight_design
 
+    def test_make_pweight_design_rejects_scalar(self):
+        """PR #376 R3 P1: scalar / 0-D inputs raise a clear front-door
+        ValueError instead of bubbling a low-level numpy or dataclass
+        exception (was: `1.0` would fail at `int(w.shape[0])` with
+        `IndexError: tuple index out of range`)."""
+        with pytest.raises(ValueError, match="weights must be 1-dimensional"):
+            make_pweight_design(1.0)
+
+    def test_make_pweight_design_rejects_zero_d_array(self):
+        """PR #376 R3 P1: `np.array(1.0)` (0-D ndarray) raises ValueError."""
+        with pytest.raises(ValueError, match="weights must be 1-dimensional"):
+            make_pweight_design(np.array(1.0))
+
+    def test_make_pweight_design_rejects_column_vector(self):
+        """PR #376 R3 P1: `(n, 1)` column vectors raise ValueError pointing
+        users to `df['w'].to_numpy()` instead of `df[['w']].to_numpy()`."""
+        with pytest.raises(ValueError, match="weights must be 1-dimensional"):
+            make_pweight_design(np.ones((5, 1)))
+
+    def test_array_in_helpers_legacy_weights_scalar_raises_value_error(self, array_in_data):
+        """PR #376 R3 P1: deprecated `weights=scalar` on array-in helpers
+        also raises ValueError (the shim routes through make_pweight_design,
+        which catches scalars at its front door)."""
+        d, dy = array_in_data
+        with pytest.raises(ValueError, match="weights must be 1-dimensional"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                stute_test(d, dy, weights=1.0, n_bootstrap=199, seed=0)
+        with pytest.raises(ValueError, match="weights must be 1-dimensional"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                yatchew_hr_test(d, dy, weights=1.0)
+
+    def test_qug_test_legacy_weights_scalar_raises_value_error(self, array_in_doses):
+        """PR #376 R3 P1: deprecated `weights=scalar` on qug_test also raises
+        ValueError (the shim routes through make_pweight_design before the
+        NotImplementedError gate)."""
+        with pytest.raises(ValueError, match="weights must be 1-dimensional"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                qug_test(array_in_doses, weights=1.0)
+
 
 class TestArrayInTypeGuard:
     """Array-in helpers reject SurveyDesign (cannot resolve column names).
