@@ -1612,6 +1612,74 @@ class TestSDIDSurveyJackknifeFullDesign:
                 survey_design=sd,
             )
 
+    def test_jackknife_full_design_all_certainty_psu_returns_zero_se(
+        self, sdid_survey_data_jk_well_formed
+    ):
+        """R12 P1 fix: all-singleton-strata + ``lonely_psu='certainty'``
+        returns SE=0 (legitimate zero variance), not NaN.
+
+        Mirrors the broader survey contract from
+        ``tests/test_survey.py::test_all_certainty_psu_zero_vcov``:
+        certainty PSUs are sampled with certainty (no sampling
+        variance). When every stratum is singleton + certainty, the
+        Rust & Rao stratified jackknife sums zero variance
+        contributions across strata — this is a legitimate zero, not
+        an "every stratum was skipped → undefined" case. The previous
+        code conflated the two and returned ``SE = NaN``.
+
+        Test: collapse the well-formed jackknife fixture so every unit
+        is its own stratum AND its own PSU (all 30 strata are
+        singletons). Under ``lonely_psu='certainty'``, the fit must
+        return SE = 0 exactly, with NaN inference fields downstream
+        (via ``safe_inference``). Under ``lonely_psu='remove'``, the
+        same design returns SE = NaN with the "every stratum was
+        skipped" warning.
+        """
+        df = sdid_survey_data_jk_well_formed.copy()
+        # Each unit is its own stratum AND its own PSU (all strata
+        # singletons).
+        df["stratum"] = df["unit"]
+        df["psu"] = df["unit"]
+
+        # Under "certainty": legitimate zero-variance contributors → SE=0.
+        sd_certainty = SurveyDesign(
+            weights="weight", strata="stratum", psu="psu", lonely_psu="certainty"
+        )
+        est_cert = SyntheticDiD(variance_method="jackknife", seed=42)
+        result_cert = est_cert.fit(
+            df,
+            outcome="outcome",
+            treatment="treated",
+            unit="unit",
+            time="time",
+            post_periods=[6, 7, 8, 9],
+            survey_design=sd_certainty,
+        )
+        assert np.isfinite(result_cert.se)
+        assert result_cert.se == 0.0
+        # Inference downstream from SE=0 is NaN via safe_inference (zero
+        # SE → undefined t-statistic / p-value / CI).
+        assert np.isnan(result_cert.t_stat)
+        assert np.isnan(result_cert.p_value)
+
+        # Under "remove": same design returns SE=NaN with the "every
+        # stratum was skipped" warning (no contributing stratum).
+        sd_remove = SurveyDesign(
+            weights="weight", strata="stratum", psu="psu", lonely_psu="remove"
+        )
+        est_rem = SyntheticDiD(variance_method="jackknife", seed=42)
+        with pytest.warns(UserWarning, match=r"every stratum was skipped"):
+            result_rem = est_rem.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd_remove,
+            )
+        assert np.isnan(result_rem.se)
+
     def test_jackknife_full_design_lonely_psu_certainty_equivalent_to_remove(
         self, sdid_survey_data_jk_well_formed
     ):

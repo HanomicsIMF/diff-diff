@@ -1088,6 +1088,7 @@ class SyntheticDiD(DifferenceInDifferences):
                     psu_treated=_psu_treated,
                     fpc_control=_fpc_control,
                     fpc_treated=_fpc_treated,
+                    lonely_psu=_lonely_psu_mode,
                 )
             else:
                 # Fixed-weight jackknife (R's synthdid Algorithm 3)
@@ -2270,6 +2271,7 @@ class SyntheticDiD(DifferenceInDifferences):
         psu_treated: Optional[np.ndarray],
         fpc_control: Optional[np.ndarray],
         fpc_treated: Optional[np.ndarray],
+        lonely_psu: str = "remove",
     ) -> Tuple[float, np.ndarray]:
         """PSU-level leave-one-out jackknife with stratum aggregation.
 
@@ -2420,9 +2422,22 @@ class SyntheticDiD(DifferenceInDifferences):
             )
             n_h = len(psus_in_h)
             if n_h < 2:
-                # Stratum contributes 0 DoF; silent skip matches R
-                # `survey::svyjkn`'s lonely-PSU handling and is documented
-                # in the Rust & Rao (1996) stratified jackknife Note.
+                # Singleton-stratum handling. R12 P1 fix: distinguish
+                # ``"certainty"`` from ``"remove"`` semantics. Both end
+                # up adding zero variance for this stratum, but
+                # ``"certainty"`` is an *explicit* zero-variance
+                # contributor (the stratum is sampled with certainty,
+                # so no sampling variance — this is a documented
+                # legitimate zero, not a "skipped/undefined" case).
+                # Mark as contributing so the all-singleton design
+                # under ``"certainty"`` returns ``SE = 0.0`` instead
+                # of falling through to the "every stratum was
+                # skipped → NaN" branch (matches `survey.py`'s
+                # ``test_all_certainty_psu_zero_vcov`` contract).
+                # ``"remove"`` continues to silently skip — matches R
+                # ``survey::svyjkn`` lonely-PSU="remove".
+                if lonely_psu == "certainty":
+                    any_stratum_contributed = True
                 continue
 
             # Per-stratum FPC. ``fpc_*`` arrays are stratum-constant by
