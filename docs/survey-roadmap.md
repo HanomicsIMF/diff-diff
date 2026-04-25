@@ -44,7 +44,7 @@ Weighted `solve_logit()` in `linalg.py` — survey weights enter IRLS as
 
 | Estimator | Survey Support | Notes |
 |-----------|----------------|-------|
-| SyntheticDiD | pweight (placebo / jackknife / bootstrap); strata/PSU/FPC (bootstrap only via PR #352 weighted FW + Rao-Wu) | Treated means survey-weighted; omega composed with control weights post-optimization. Bootstrap survey path uses weighted-FW + Rao-Wu rescaling per draw |
+| SyntheticDiD | pweight (placebo / jackknife / bootstrap); strata/PSU/FPC (all three methods — bootstrap via PR #355 weighted FW + Rao-Wu; placebo via stratified permutation + weighted FW; jackknife via PSU-level LOO with stratum aggregation). `lonely_psu="adjust"` not supported on the jackknife path (use `"remove"` / `"certainty"` or switch to `bootstrap`). | Treated means survey-weighted; omega composed with control weights post-optimization. Bootstrap survey path uses weighted-FW + Rao-Wu rescaling per draw. Placebo full-design permutes pseudo-treated within strata containing actual treated units (requires at least one stratum with `n_c > n_t`; exact-count designs raise Case D `ValueError`). Jackknife full-design leaves out one PSU at a time and aggregates per Rust & Rao (1996); full-census strata (`f_h ≥ 1`) short-circuit to zero contribution. |
 | TROP | pweight | Population-weighted ATT aggregation; model fitting unchanged |
 
 ### Phase 6: Advanced Features (v2.7.6)
@@ -53,12 +53,16 @@ Weighted `solve_logit()` in `linalg.py` — survey weights enter IRLS as
   multiplier at PSU (CS, Imputation, TwoStage, Continuous, Efficient)
   and Rao-Wu rescaled (SA, SyntheticDiD, TROP). SyntheticDiD bootstrap
   composes Rao-Wu rescaled per-draw weights with the **weighted Frank-Wolfe**
-  variant (PR #352): each draw solves the weighted objective
+  variant (PR #355): each draw solves the weighted objective
   ``min ||A·diag(rw)·ω - b||² + ζ²·Σ rw_i ω_i²`` and composes
   ``ω_eff = rw·ω/Σ(rw·ω)`` for the SDID estimator. See REGISTRY.md
   §SyntheticDiD ``Note (survey + bootstrap composition)`` for the full
-  derivation. SDID's `placebo` and `jackknife` paths still reject
-  strata/PSU/FPC (separate methodology gap; tracked in TODO.md).
+  derivation. SyntheticDiD's `placebo` and `jackknife` methods now also
+  support full strata/PSU/FPC designs: placebo via stratified permutation
+  + the same weighted FW kernel; jackknife via PSU-level LOO with
+  stratum aggregation (Rust & Rao 1996). See REGISTRY.md §SyntheticDiD
+  "Note (survey + placebo composition)" and "Note (survey + jackknife
+  composition)" for objectives and limitations.
 - **Replicate weight variance**: BRR, Fay's BRR, JK1, JKn, SDR.
   12 of 16 estimators supported (not SyntheticDiD, TROP, BaconDecomposition, or WooldridgeDiD)
 - **DEFF diagnostics**: per-coefficient design effects vs SRS baseline
@@ -223,8 +227,7 @@ the limitation and suggested alternative.
 
 | Estimator | Limitation | Alternative |
 |-----------|-----------|-------------|
-| SyntheticDiD | `variance_method='placebo'` or `'jackknife'` + strata/PSU/FPC | Use `variance_method='bootstrap'` for full-design surveys (PR #352 weighted-FW + Rao-Wu composition). Placebo's control-index permutation and jackknife's LOO allocator need their own weighted derivations on top of the weighted-FW kernel; tracked in TODO.md as a follow-up. |
-| SyntheticDiD | Replicate weights | Pre-existing limitation: no replicate-weight survey support on SDID. |
+| SyntheticDiD | Replicate weights | Pre-existing limitation: no replicate-weight survey support on SDID. All three variance methods (bootstrap, placebo, jackknife) now support pweight-only and strata/PSU/FPC designs; replicate-weight designs remain rejected. |
 | TROP | Replicate weights | Use strata/PSU/FPC design with Rao-Wu rescaled bootstrap |
 | BaconDecomposition | Replicate weights | Diagnostic only, no inference |
 | ImputationDiD | `pretrends=True` + replicate weights | Use analytical survey design instead |

@@ -8,10 +8,18 @@ variance methods (placebo, bootstrap, jackknife), and records rejection
 rates at α ∈ {0.01, 0.05, 0.10} plus the ratio of mean estimated SE to
 the empirical sampling SD of τ̂.
 
-The ``stratified_survey`` DGP is bootstrap-only — placebo and jackknife
-still reject full strata/PSU/FPC survey designs (tracked in ``TODO.md``),
-so the harness skips those method × DGP cells via the per-DGP
-``survey_design_factory`` in the ``DGPSpec`` registry (PR #352 R5 P3).
+The ``stratified_survey`` DGP runs bootstrap and jackknife; placebo is
+skipped because its cohort packs all treated units into stratum 1,
+which has 0 never-treated units, so the stratified-permutation
+allocator is structurally infeasible on this DGP (raises Case B —
+treated-containing stratum with zero controls — at fit-time).
+Jackknife is reported
+with a documented anti-conservatism caveat — with only 2 PSUs per
+stratum, the stratified PSU-level jackknife formula has 1 effective DoF
+per stratum, a known limitation (see REGISTRY §SyntheticDiD "Note
+(survey + jackknife composition)"). The harness skips unsupported
+method × DGP cells via the per-DGP ``survey_design_factory`` in the
+``DGPSpec`` registry.
 
 The output JSON underwrites the calibration table in
 ``docs/methodology/REGISTRY.md`` §SyntheticDiD, including the
@@ -227,13 +235,29 @@ def _stratified_survey_dgp(seed: int) -> Tuple[pd.DataFrame, List[int]]:
 def _stratified_survey_design(df: pd.DataFrame) -> Tuple[Any, Tuple[str, ...]]:
     """Build the SurveyDesign for the stratified_survey DGP.
 
-    Methods supported: bootstrap only — placebo / jackknife reject
-    strata/PSU/FPC at fit-time (separate methodology gap).
+    Methods supported on this DGP:
+    * **bootstrap** — weighted-FW + Rao-Wu (PR #355). Calibration
+      validated here.
+    * **jackknife** — PSU-level LOO with stratum aggregation (Rust &
+      Rao 1996). Reported here with a known anti-conservatism caveat:
+      with ``psu_per_stratum=2``, within-stratum jackknife has only
+      ``n_h - 1 = 1`` effective DoF per stratum, which is a well-
+      documented limitation of the stratified jackknife formula when
+      PSU counts are low. The reported ``se_over_truesd`` is expected
+      to land below 1; this is not a bug — users needing tight SE
+      calibration with few PSUs should prefer ``bootstrap``.
+    * **placebo** — NOT supported on this DGP: the treated cohort packs
+      into stratum 1 (which has 0 never-treated units by construction),
+      so the stratified-permutation allocator raises Case B (zero
+      controls in a treated-containing stratum) at fit-time. This is a
+      property of the DGP, not of the placebo allocator; the placebo
+      survey method is exercised by
+      ``tests/test_survey_phase5.py::TestSDIDSurveyPlaceboFullDesign``.
     """
     from diff_diff import SurveyDesign
     return (
         SurveyDesign(weights="weight", strata="stratum", psu="psu", fpc="fpc"),
-        ("bootstrap",),
+        ("bootstrap", "jackknife"),
     )
 
 
@@ -273,10 +297,14 @@ def _fit_one(
     """Fit SDID and return (att, se, p_value); (None, None, None) on failure.
 
     For survey DGPs the harness passes a SurveyDesign via ``survey_design``;
-    fit() routes it through the bootstrap survey path (PR #352) when
-    method=='bootstrap'. The DGP's ``survey_design_factory`` declares which
-    methods are supported, so the caller skips unsupported methods entirely
-    rather than catching the resulting NotImplementedError here.
+    ``fit()`` routes strata/PSU/FPC designs through the method-specific
+    survey variance path — bootstrap (PR #355 weighted-FW + Rao-Wu),
+    placebo (stratified permutation + weighted-FW), or jackknife (PSU-
+    level LOO with stratum aggregation). The DGP's
+    ``survey_design_factory`` declares which methods are supported on
+    that specific DGP, so the caller skips unsupported methods entirely
+    rather than catching the resulting NotImplementedError / Case B-D
+    ValueError here.
     """
     try:
         with warnings.catch_warnings():

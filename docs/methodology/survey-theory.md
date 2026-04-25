@@ -358,14 +358,25 @@ an IF representation.
 Two estimators in diff-diff --- **SyntheticDiD** and **TROP** --- involve
 non-smooth optimization steps (synthetic control weight selection, optimal
 transport maps) that do not fit cleanly into the smooth-functional framework.
-Their survey support is limited to bootstrap-only variance estimation: the
-bootstrap resamples PSUs within strata (Rao-Wu rescaled), bypassing the need
-for an IF. For SyntheticDiD, each draw re-runs the full estimator on resampled
-data. For TROP, per-observation treatment effects (tau_it) are deterministic
-given the data and do not depend on survey weights, so the Rao-Wu path
-precomputes tau values once and only varies the ATT aggregation weights across
-draws (see REGISTRY.md for the documented optimization). The TSL/IF-based
-argument in this document does not extend to these estimators.
+Their survey variance estimators bypass the TSL/IF framework entirely and use
+resampling / permutation-style allocators tailored to each method's role:
+
+- **TROP** uses Rao-Wu rescaled bootstrap at the PSU level. Per-observation
+  treatment effects (tau_it) are deterministic given the data and do not
+  depend on survey weights, so the Rao-Wu path precomputes tau values once
+  and only varies the ATT aggregation weights across draws (see REGISTRY.md
+  for the documented optimization).
+- **SyntheticDiD** supports all three variance methods under full
+  strata/PSU/FPC designs. ``bootstrap`` uses hybrid pairs-bootstrap + Rao-Wu
+  rescaling composed with a weighted Frank-Wolfe kernel (each draw re-runs
+  the full estimator on the resampled panel). ``placebo`` uses stratified
+  permutation + weighted Frank-Wolfe (pseudo-treated sampled within each
+  treated-containing stratum). ``jackknife`` uses PSU-level leave-one-out
+  with Rust-Rao stratum aggregation (fixed ω, λ — no refit per LOO). See
+  the bullets under "4.2b. SyntheticDiD survey resampling allocators" below
+  and REGISTRY.md §SyntheticDiD for the full derivations. Replicate-weight
+  designs remain rejected (no replicate-weight variance path). The TSL/IF-
+  based argument in this document does not extend to these estimators.
 
 ### 4.3. Under survey weighting, the same IF form applies
 
@@ -689,7 +700,7 @@ Each estimator uses one of three variance strategies under survey designs:
 | EfficientDiD | TSL on EIFs | all weight types |
 | ContinuousDiD | TSL sandwich | all weight types |
 | StackedDiD | TSL sandwich | pweight only |
-| SyntheticDiD | Bootstrap only | Not IF-amenable (Section 4.2a) |
+| SyntheticDiD | Bootstrap / permutation / PSU-LOO | Not IF-amenable (Section 4.2a); all three variance methods support full strata/PSU/FPC designs |
 | TROP | Bootstrap only | Not IF-amenable (Section 4.2a) |
 | BaconDecomposition | Diagnostic only | Weighted descriptives, no inference |
 
@@ -725,7 +736,7 @@ Two bootstrap strategies interact with survey designs:
 - **Rao-Wu rescaled bootstrap** (SunAbraham, TROP): Draws PSUs
   with replacement within strata and rescales observation weights. Each draw
   re-runs the full estimator on the resampled data.
-- **Hybrid pairs-bootstrap + Rao-Wu rescaling** (SyntheticDiD, PR #352):
+- **Hybrid pairs-bootstrap + Rao-Wu rescaling** (SyntheticDiD, PR #355):
   SDID's full-design bootstrap is NOT a standalone Rao-Wu bootstrap. Each
   draw first performs the unit-level pairs-bootstrap resampling that
   Arkhangelsky et al. (2021) Algorithm 2 specifies (``boot_idx = rng.choice(n_total)``),
@@ -735,10 +746,59 @@ Two bootstrap strategies interact with survey designs:
   ``min ||A·diag(rw)·ω - b||² + ζ²·Σ rw_i ω_i²`` on the resampled panel,
   and ``ω_eff = rw·ω / Σ(rw·ω)`` is composed for the SDID estimator.
   See REGISTRY.md §SyntheticDiD ``Note (survey + bootstrap composition)``
-  for the full objective and the argmin-set caveat. SDID's `placebo` and
-  `jackknife` methods still reject strata/PSU/FPC (the placebo permutation
-  allocator and jackknife LOO mass need their own weighted derivations;
-  tracked in TODO.md as a follow-up).
+  for the full objective and the argmin-set caveat.
+
+- **Stratified permutation placebo** (SyntheticDiD): SDID's full-design
+  placebo variance allocator (triggered when ``strata`` and/or ``psu``
+  is declared on the ``SurveyDesign``). For each placebo draw,
+  pseudo-treated indices are sampled uniformly without replacement
+  from controls *within each stratum containing actual treated units*
+  (classical stratified permutation test — Pesarin 2001).
+  Pseudo-treated means are survey-weighted; weighted-FW re-estimates
+  ω and λ per draw with ``rw_control`` threaded into both loss and
+  regularization. Post-optimization composition
+  ``ω_eff = rw · ω / Σ(rw · ω)`` with zero-mass retry. SE follows
+  Arkhangelsky Algorithm 4:
+  ``sqrt((r-1)/r) · std(placebo_estimates, ddof=1)``. Fit-time
+  feasibility guards raise ``ValueError`` on three failure cases:
+  Case B (treated stratum has 0 controls), Case C (fewer controls
+  than treated in a treated stratum), and Case D (every treated
+  stratum is exact-count ``n_c == n_t`` → permutation support = 1).
+  ``SurveyDesign(fpc=...)`` is a documented no-op for placebo —
+  permutation tests are conditional on the observed sample (Pesarin
+  2001 §1.5), so the sampling fraction does not enter Algorithm 4 or
+  its survey extension. An ``fpc=`` column emits a ``UserWarning`` and
+  is not part of the placebo dispatch trigger. See REGISTRY.md
+  §SyntheticDiD ``Note (survey + placebo composition)``.
+
+- **PSU-level leave-one-out with stratum aggregation** (SyntheticDiD):
+  SDID's full-design jackknife variance allocator, matching the
+  canonical Rust & Rao (1996) stratified jackknife form:
+  ``SE² = Σ_h (1 - f_h) · (n_h - 1)/n_h · Σ_{j∈h} (τ̂_{(h,j)} - τ̄_h)²``
+  where ``f_h = n_h_sampled / fpc[h]`` is the per-stratum sampling
+  fraction (population-count FPC form, matching ``SurveyDesign.resolve``).
+  Fixed weights per LOO: ω subsetted over kept controls, composed with
+  kept ``w_control``, renormalized; λ held at the fit-time value. Strata
+  with ``n_h < 2`` are silently skipped (stratum-level variance
+  unidentified; matches R ``survey::svyjkn`` under
+  ``lonely_psu="remove"`` / ``"certainty"``). Full-census strata
+  (``f_h ≥ 1``) short-circuit to zero contribution before any LOO
+  feasibility check. ``SE = 0`` is returned for legitimate zero
+  variance (every stratum full-census, or exact-zero within-stratum
+  dispersion); ``SE = NaN`` with a ``UserWarning`` is reserved for
+  undefined cases (all strata skipped, or any delete-one replicate in
+  a non-full-census contributing stratum is undefined). Unstratified
+  single-PSU designs short-circuit to ``SE = NaN``.
+  ``SurveyDesign(lonely_psu="adjust")`` is **not yet supported** on
+  this path and raises ``NotImplementedError``; use
+  ``variance_method="bootstrap"`` or ``lonely_psu="remove"`` /
+  ``"certainty"``. **Known limitation**: with ``n_h = 2`` per stratum,
+  the stratified PSU-level jackknife has only 1 effective DoF per
+  stratum and tends to be anti-conservative (see REGISTRY §SyntheticDiD
+  calibration table for the ``stratified_survey × jackknife`` row).
+  Users with few PSUs per stratum should prefer
+  ``variance_method="bootstrap"``, which validates at near-nominal
+  calibration on the same DGP.
 
 ---
 

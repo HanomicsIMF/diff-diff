@@ -247,18 +247,29 @@ class SyntheticDiD(DifferenceInDifferences):
             out before computing the SDID estimator.
         survey_design : SurveyDesign, optional
             Survey design specification. Only pweight weight_type is
-            supported. Support matrix (PR #352):
+            supported. Replicate-weight designs are rejected. All three
+            variance methods support both pweight-only and full
+            strata/PSU/FPC designs:
 
                 method     pweight-only     strata/PSU/FPC
-                bootstrap  ✓ weighted FW    ✓ weighted FW + Rao-Wu
-                placebo    ✓                ✗ NotImplementedError
-                jackknife  ✓                ✗ NotImplementedError
+                bootstrap  ✓ weighted FW    ✓ weighted FW + Rao-Wu (PR #355)
+                placebo    ✓                ✓ stratified permutation + weighted FW
+                jackknife  ✓                ✓ PSU-level LOO + stratum aggregation
 
-            The bootstrap path composes Rao-Wu rescaled weights per draw
-            with the weighted-Frank-Wolfe kernel; see REGISTRY.md
-            §SyntheticDiD ``Note (survey + bootstrap composition)``.
-            ``placebo`` and ``jackknife`` still reject strata/PSU/FPC
-            (separate methodology gap tracked in TODO.md).
+            - **Bootstrap** composes Rao-Wu rescaled weights per draw with
+              the weighted-Frank-Wolfe kernel; see REGISTRY.md §SyntheticDiD
+              ``Note (survey + bootstrap composition)``.
+            - **Placebo** under full design uses within-stratum permutation
+              (pseudo-treated sampled from controls in each treated-containing
+              stratum) with weighted-FW refit per draw; fit-time feasibility
+              guards raise ``ValueError`` when a treated stratum has fewer
+              controls than treated units (see ``Note (survey + placebo
+              composition)``).
+            - **Jackknife** under full design uses PSU-level LOO with
+              stratum aggregation (Rust & Rao 1996); anti-conservative with
+              few PSUs per stratum — prefer ``bootstrap`` when tight SE
+              calibration matters in that regime (see ``Note (survey +
+              jackknife composition)``).
 
         Returns
         -------
@@ -293,10 +304,12 @@ class SyntheticDiD(DifferenceInDifferences):
               targeted error instead of a bootstrap-exhaustion
               failure (PR #355 R8 P1).
         NotImplementedError
-            If ``survey_design`` with strata/PSU/FPC is provided with
-            ``variance_method='placebo'`` or ``'jackknife'``. Bootstrap
-            + any survey design (pweight-only or full design) is
-            supported via PR #352's weighted-FW + Rao-Wu composition.
+            If ``survey_design`` carries replicate weights (BRR/Fay/JK1/
+            JKn/SDR) — SyntheticDiD has no replicate-weight variance
+            path. All three variance methods (placebo, bootstrap,
+            jackknife) accept pweight-only and full strata/PSU/FPC
+            analytical designs; only replicate-weight designs are
+            rejected.
         """
         # Validate inputs
         if outcome is None or treatment is None or unit is None or time is None:
@@ -317,23 +330,68 @@ class SyntheticDiD(DifferenceInDifferences):
             _validate_unit_constant_survey,
         )
 
+        # R11 P1 fix: FPC is a documented no-op on placebo (Pesarin 2001
+        # §1.5 — permutation tests condition on the observed sample), but
+        # ``SurveyDesign.resolve()`` itself enforces ``FPC >= n_PSU``
+        # design-validity constraints (survey.py:349-368). On placebo,
+        # those constraints would block legitimate fits for a design
+        # element that doesn't enter the placebo math. Drop FPC from a
+        # copy of the survey design before resolution so placebo
+        # bypasses the validator entirely; emit the FPC no-op warning
+        # at the same time. The original survey_design object is
+        # preserved (caller's reference unchanged).
+        survey_design_for_resolve = survey_design
+        if (
+            self.variance_method == "placebo"
+            and survey_design is not None
+            and getattr(survey_design, "fpc", None) is not None
+        ):
+            # R13 P3 fix: validate the FPC column name exists in `data`
+            # before dropping. Otherwise a typoed ``fpc="fpc_typo"`` is
+            # silently ignored on the placebo path (the missing-column
+            # check inside ``SurveyDesign.resolve()`` never runs because
+            # we strip FPC pre-resolve). Raise the same targeted error
+            # ``resolve()`` would have raised so input-spec mistakes
+            # surface even when the value is mathematically a no-op.
+            fpc_col = survey_design.fpc
+            if fpc_col not in data.columns:
+                raise ValueError(
+                    f"FPC column '{fpc_col}' not found in data"
+                )
+            import dataclasses as _dc
+            warnings.warn(
+                "SurveyDesign(fpc=...) is a no-op on "
+                "variance_method='placebo': permutation tests are "
+                "conditional on the observed sample (Pesarin 2001 §1.5), "
+                "so the sampling fraction does not enter Algorithm 4 or "
+                "its stratified-permutation survey extension. The FPC "
+                "column is dropped from the resolved survey design for "
+                "the placebo fit (this also bypasses the FPC >= n_PSU "
+                "design-validity check in SurveyDesign.resolve()). Use "
+                "variance_method='bootstrap' or 'jackknife' if you need "
+                "FPC to participate in the variance computation.",
+                UserWarning,
+                stacklevel=2,
+            )
+            survey_design_for_resolve = _dc.replace(survey_design, fpc=None)
+
         resolved_survey, survey_weights, survey_weight_type, survey_metadata = (
-            _resolve_survey_for_fit(survey_design, data, "analytical")
+            _resolve_survey_for_fit(survey_design_for_resolve, data, "analytical")
         )
         # Reject replicate-weight designs — SyntheticDiD has no replicate-
         # weight variance path. Analytical (pweight / strata / PSU / FPC)
-        # designs are supported per the PR #352 matrix (bootstrap covers
-        # full design via weighted-FW + Rao-Wu; placebo / jackknife
-        # accept pweight-only, reject strata/PSU/FPC).
+        # designs are supported across all three variance methods:
+        # bootstrap via weighted-FW + Rao-Wu (PR #355); placebo via
+        # stratified permutation + weighted FW; jackknife via PSU-level
+        # LOO with stratum aggregation (Rust & Rao 1996).
         if resolved_survey is not None and resolved_survey.uses_replicate_variance:
             raise NotImplementedError(
                 "SyntheticDiD does not support replicate-weight survey "
-                "designs. Analytical survey designs are supported: "
-                "variance_method='bootstrap' accepts both pweight-only "
-                "and strata/PSU/FPC designs (PR #352), while "
-                "variance_method='placebo' and 'jackknife' accept "
-                "pweight-only. See docs/methodology/REGISTRY.md "
-                "§SyntheticDiD for the full survey support matrix."
+                "designs. Analytical designs are supported across all "
+                "three variance methods (placebo, bootstrap, jackknife), "
+                "for both pweight-only and full strata/PSU/FPC. See "
+                "docs/methodology/REGISTRY.md §SyntheticDiD for the "
+                "full survey support matrix."
             )
         # Validate pweight only
         if resolved_survey is not None and resolved_survey.weight_type != "pweight":
@@ -342,32 +400,14 @@ class SyntheticDiD(DifferenceInDifferences):
                 f"Got '{resolved_survey.weight_type}'."
             )
 
-        # Strata/PSU/FPC support matrix (PR #352):
-        #   bootstrap  → supported via weighted Frank-Wolfe + Rao-Wu rescaling
-        #                (this PR; see _bootstrap_se Rao-Wu branch).
-        #   placebo / jackknife → NotImplemented for full designs (separate
-        #                methodology gap; resampling allocators differ between
-        #                bootstrap pairs and placebo permutations / jackknife
-        #                LOO). Tracked in TODO.md as a follow-up.
-        if (
-            resolved_survey is not None
-            and (
-                resolved_survey.strata is not None
-                or resolved_survey.psu is not None
-                or resolved_survey.fpc is not None
-            )
-            and self.variance_method in ("placebo", "jackknife")
-        ):
-            raise NotImplementedError(
-                f"SyntheticDiD with variance_method='{self.variance_method}' "
-                "does not yet support survey designs with strata/PSU/FPC. "
-                "Pweight-only pseudo-population weights work with placebo / "
-                "jackknife. Strata/PSU/FPC support requires per-method "
-                "Rao-Wu / wild-bootstrap derivations on the placebo "
-                "allocator and the jackknife LOO mass; tracked in TODO.md "
-                "(SDID survey support follow-up). Use "
-                "variance_method='bootstrap' for full survey designs."
-            )
+        # Strata/PSU/FPC support matrix:
+        #   bootstrap  → supported via weighted Frank-Wolfe + hybrid
+        #                pairs-bootstrap + Rao-Wu rescaling (PR #355;
+        #                see _bootstrap_se Rao-Wu branch).
+        #   placebo    → supported via stratified permutation + weighted
+        #                Frank-Wolfe (this PR; _placebo_variance_se_survey).
+        #   jackknife  → supported via PSU-level LOO with stratum
+        #                aggregation (this PR; _jackknife_se_survey).
 
         # Validate treatment is binary
         validate_binary(data[treatment].values, "treatment")
@@ -469,8 +509,17 @@ class SyntheticDiD(DifferenceInDifferences):
             # sees a generic bootstrap-exhaustion message instead of a
             # targeted FPC/design error. Validate upstream so the user
             # gets a clean error before the bootstrap loop even starts.
+            #
+            # R10 P1 fix: gate this validator on variance methods that
+            # actually use FPC. Bootstrap (Rao-Wu) and jackknife (Rust
+            # & Rao stratum aggregation) both consume FPC; placebo is
+            # documented as FPC-no-op (Pesarin 2001 §1.5 — permutation
+            # tests condition on the observed sample). Running the
+            # validator on placebo would block legitimate placebo fits
+            # for a constraint that doesn't apply to permutation math.
             if (
-                resolved_survey_unit.psu is None
+                self.variance_method in ("bootstrap", "jackknife")
+                and resolved_survey_unit.psu is None
                 and resolved_survey_unit.fpc is not None
             ):
                 if resolved_survey_unit.strata is None:
@@ -742,6 +791,231 @@ class SyntheticDiD(DifferenceInDifferences):
         treated_pre_trajectory = Y_pre_treated_mean
         treated_post_trajectory = Y_post_treated_mean
 
+        # Detect full-design survey (strata/PSU/FPC). The unit-collapsed
+        # ``resolved_survey_unit`` carries the per-unit strata/psu/fpc
+        # arrays ordered as [control..., treated...] to match the
+        # downstream variance-method column layout.
+        _full_design_survey = (
+            resolved_survey_unit is not None
+            and (
+                resolved_survey_unit.strata is not None
+                or resolved_survey_unit.psu is not None
+                or resolved_survey_unit.fpc is not None
+            )
+        )
+        if _full_design_survey:
+            _n_c = len(control_units)
+            _strata_control = (
+                resolved_survey_unit.strata[:_n_c]
+                if resolved_survey_unit.strata is not None
+                else None
+            )
+            _strata_treated = (
+                resolved_survey_unit.strata[_n_c:]
+                if resolved_survey_unit.strata is not None
+                else None
+            )
+            _psu_control = (
+                resolved_survey_unit.psu[:_n_c]
+                if resolved_survey_unit.psu is not None
+                else None
+            )
+            _psu_treated = (
+                resolved_survey_unit.psu[_n_c:]
+                if resolved_survey_unit.psu is not None
+                else None
+            )
+            _fpc_control = (
+                resolved_survey_unit.fpc[:_n_c]
+                if resolved_survey_unit.fpc is not None
+                else None
+            )
+            _fpc_treated = (
+                resolved_survey_unit.fpc[_n_c:]
+                if resolved_survey_unit.fpc is not None
+                else None
+            )
+        else:
+            _strata_control = None
+            _strata_treated = None
+            _psu_control = None
+            _psu_treated = None
+            _fpc_control = None
+            _fpc_treated = None
+
+        # Placebo routes to the survey allocator whenever **strata or
+        # PSU** is declared (FPC alone does NOT flip dispatch). For
+        # PSU-without-strata designs, the whole panel is synthesized
+        # as a single stratum (stratified permutation degenerates to
+        # global within-stratum permutation, still dispatched through
+        # the weighted-FW path).
+        #
+        # FPC handling on placebo (R8 P1 fix): permutation tests are
+        # conditional on the observed sample (Pesarin 2001 §1.5), so
+        # the sampling fraction does not enter Algorithm 4 or its
+        # stratified-permutation extension. Including FPC in the
+        # dispatch trigger would silently switch numerics (weighted-FW
+        # vs unweighted-FW + post-hoc composition) on a survey design
+        # element that has no place in the placebo math. Drop FPC from
+        # the dispatch condition; emit a ``UserWarning`` below if FPC
+        # is set with placebo to surface the no-op contract.
+        _placebo_use_survey_path = (
+            self.variance_method == "placebo"
+            and resolved_survey_unit is not None
+            and (
+                resolved_survey_unit.strata is not None
+                or resolved_survey_unit.psu is not None
+            )
+        )
+        # NOTE: the FPC no-op warning for placebo is emitted earlier
+        # (before ``_resolve_survey_for_fit``); ``resolved_survey_unit.fpc``
+        # is already None on the placebo path because the FPC column is
+        # dropped from a copy of the survey design pre-resolve. No
+        # duplicate warning here.
+
+        # Jackknife routes to the survey allocator whenever PSU or FPC or
+        # strata is declared. PSU-without-strata is treated as a single
+        # stratum (Rust & Rao 1996 JK1 form) inside
+        # ``_jackknife_se_survey``.
+        _jackknife_use_survey_path = (
+            _full_design_survey and self.variance_method == "jackknife"
+        )
+
+        # Synthesize a single stratum for PSU/FPC-without-strata designs
+        # so the placebo / jackknife survey paths can treat them as the
+        # JK1 / global-permutation degenerate case of the stratified
+        # allocator. The `_strata_*_eff` arrays are passed to the survey
+        # methods; the original `_strata_*` arrays stay None so other
+        # code paths (REGISTRY, metadata) see the true design.
+        if _full_design_survey and _strata_control is None:
+            _strata_control_eff: np.ndarray = np.zeros(
+                len(control_units), dtype=np.int64
+            )
+            _strata_treated_eff: np.ndarray = np.zeros(
+                len(treated_units), dtype=np.int64
+            )
+        else:
+            _strata_control_eff = _strata_control  # type: ignore[assignment]
+            _strata_treated_eff = _strata_treated  # type: ignore[assignment]
+
+        # Fit-time feasibility guard for stratified-permutation placebo
+        # (per `feedback_front_door_over_retry_swallow.md`). Case B / Case C
+        # are hard failures — partial-permutation fallback would silently
+        # change the null-distribution semantics and produce an incoherent
+        # test. Must run *before* the retry loop below swallows ValueErrors
+        # via `except (ValueError, LinAlgError, ZeroDivisionError): continue`.
+        if _placebo_use_survey_path:
+            unique_treated_strata, treated_counts = np.unique(
+                _strata_treated_eff, return_counts=True
+            )
+            has_nondegenerate_stratum = False
+            assert w_control is not None  # always set on full-design survey
+            for h, n_t_h in zip(unique_treated_strata, treated_counts):
+                n_c_h = int(np.sum(_strata_control_eff == h))
+                if n_c_h == 0:
+                    raise ValueError(
+                        "Stratified-permutation placebo requires at least "
+                        f"one control per stratum containing treated units; "
+                        f"stratum {h} has 0 controls and {int(n_t_h)} "
+                        "treated units. Either rebalance the panel, drop "
+                        f"stratum {h} from the design, or use "
+                        "variance_method='bootstrap' (which supports the "
+                        "same full survey design via weighted-FW + Rao-Wu "
+                        "without a permutation-feasibility constraint)."
+                    )
+                if n_c_h < int(n_t_h):
+                    raise ValueError(
+                        "Stratified-permutation placebo requires at least "
+                        "n_treated controls per stratum containing treated "
+                        "units (for exact-count within-stratum "
+                        f"permutation); stratum {h} has {n_c_h} controls "
+                        f"but {int(n_t_h)} treated units. Either rebalance "
+                        "the panel, drop the undersupplied stratum, or use "
+                        "variance_method='bootstrap' (which supports the "
+                        "same full survey design via weighted-FW + Rao-Wu "
+                        "without a permutation-feasibility constraint)."
+                    )
+                # Case E (R9 P1) — row-count guards passed (n_c_h ≥ n_t_h)
+                # but the stratum has fewer positive-weight controls
+                # than treated. The placebo allocator computes pseudo-
+                # treated means as ``np.average(Y, weights=w_control[idx])``;
+                # if too few controls have positive weight, draws can
+                # pick all-zero-weight subsets (ZeroDivisionError on
+                # np.average) and the retry loop swallows them as a
+                # generic ``n_successful=0`` warning + ``SE=0.0``.
+                # Front-door the targeted error.
+                w_in_h = w_control[_strata_control_eff == h]
+                n_c_h_positive = int(np.sum(w_in_h > 0))
+                if n_c_h_positive < int(n_t_h):
+                    raise ValueError(
+                        "Stratified-permutation placebo requires at least "
+                        "n_treated controls with positive survey weight "
+                        "per stratum containing treated units (the "
+                        "pseudo-treated mean uses survey-weighted "
+                        f"averaging); stratum {h} has {n_c_h_positive} "
+                        f"positive-weight controls (out of {n_c_h} total) "
+                        f"but {int(n_t_h)} treated units. Either rebalance "
+                        "the panel, drop the undersupplied stratum, or use "
+                        "variance_method='bootstrap' (which supports the "
+                        "same full survey design via weighted-FW + Rao-Wu "
+                        "without a per-draw positive-mass constraint)."
+                    )
+                # Non-degenerate iff this stratum yields ≥2 distinct
+                # positive-mass pseudo-treated draws. Two necessary
+                # conditions, both required:
+                #   * ``n_c_h > n_t_h`` — raw without-replacement count
+                #     allows multiple subsets (otherwise only the
+                #     "all-controls-as-pseudo-treated" subset exists,
+                #     regardless of weights — Case D classical shape).
+                #   * ``n_c_h_positive >= 2`` — at least 2 distinct
+                #     positive-mass means are reachable. With only 1
+                #     positive-weight control, every successful pick
+                #     reduces to that single control's mean (zero-
+                #     weight cohabitants contribute 0 to numerator and
+                #     denominator), regardless of how many subsets the
+                #     raw allocator can construct (Case D effective
+                #     single-support shape, R11 P1).
+                if n_c_h > int(n_t_h) and n_c_h_positive >= 2:
+                    has_nondegenerate_stratum = True
+            # Case D: every treated stratum is effectively single-
+            # support, so the placebo null collapses to a single
+            # positive-mass allocation. Two paths into this:
+            #   * Raw exact-count (``n_c_h == n_t_h`` for every treated
+            #     stratum, R4 P1): the without-replacement permutation
+            #     yields a single subset, every draw is identical.
+            #   * Effective single-support (``n_c_h_positive < 2`` for
+            #     every treated stratum, R11 P1): positive-mass picks
+            #     reduce to a single distinct mean even when raw count
+            #     counts are larger, because zero-weight controls
+            #     contribute 0 to numerator and denominator. Successful
+            #     draws all collapse to the unique positive-weight
+            #     subset.
+            # Both shapes produce SE = FP noise (~1e-16) — reject up
+            # front rather than silently reporting a near-zero SE.
+            if not has_nondegenerate_stratum:
+                detail = ", ".join(
+                    f"stratum {h}: n_c={int(np.sum(_strata_control_eff == h))}, "
+                    f"n_c_positive={int(np.sum(w_control[_strata_control_eff == h] > 0))}, "
+                    f"n_t={int(n_t_h)}"
+                    for h, n_t_h in zip(unique_treated_strata, treated_counts)
+                )
+                raise ValueError(
+                    "Stratified-permutation placebo support is degenerate: "
+                    "every treated-containing stratum has fewer than 2 "
+                    "positive-weight controls, so within-stratum "
+                    "permutation yields a single distinct positive-mass "
+                    f"pseudo-treated mean across all draws ({detail}). "
+                    "The resulting placebo distribution collapses to one "
+                    "point and SE is not a meaningful null estimate. At "
+                    "least one treated stratum must have ≥2 positive-"
+                    "weight controls (and n_c_positive > n_t for the "
+                    "test to have ≥2 distinct allocations). Either "
+                    "rebalance the panel, or use "
+                    "variance_method='bootstrap' (which supports the "
+                    "same full survey design via weighted-FW + Rao-Wu "
+                    "without a permutation-feasibility constraint)."
+                )
+
         # Compute standard errors on normalized Y, rescale to original units.
         # Variance procedures resample / permute indices (independent of Y
         # values) so RNG streams stay aligned across scales.
@@ -749,7 +1023,7 @@ class SyntheticDiD(DifferenceInDifferences):
             # Paper-faithful pairs bootstrap (Algorithm 2 step 2): re-estimate
             # ω̂_b and λ̂_b via Frank-Wolfe on each draw. With survey designs
             # the FW switches to the weighted-FW variant and Rao-Wu rescaling
-            # supplies per-draw weights (PR #352). Pweight-only designs use
+            # supplies per-draw weights (PR #355). Pweight-only designs use
             # constant w_control across draws; full designs use Rao-Wu draws.
             # Determine which survey path the bootstrap should use:
             #   - resolved_survey_unit + strata/PSU/FPC → Rao-Wu rescaling
@@ -758,17 +1032,9 @@ class SyntheticDiD(DifferenceInDifferences):
             #     bootstrap branch sets `_pweight_only` from `w_control`
             #     when resolved_survey is None).
             #   - non-survey → pass nothing (legacy path).
-            full_design = (
-                resolved_survey_unit is not None
-                and (
-                    resolved_survey_unit.strata is not None
-                    or resolved_survey_unit.psu is not None
-                    or resolved_survey_unit.fpc is not None
-                )
-            )
-            _boot_resolved_survey = resolved_survey_unit if full_design else None
-            _boot_w_control = w_control if not full_design else None
-            _boot_w_treated = w_treated if not full_design else None
+            _boot_resolved_survey = resolved_survey_unit if _full_design_survey else None
+            _boot_w_control = w_control if not _full_design_survey else None
+            _boot_w_treated = w_treated if not _full_design_survey else None
 
             se_n, bootstrap_estimates_n = self._bootstrap_se(
                 Y_pre_control_n,
@@ -788,17 +1054,66 @@ class SyntheticDiD(DifferenceInDifferences):
             placebo_effects = np.asarray(bootstrap_estimates_n) * Y_scale
             inference_method = "bootstrap"
         elif self.variance_method == "jackknife":
-            # Fixed-weight jackknife (R's synthdid Algorithm 3)
-            se_n, jackknife_estimates_n = self._jackknife_se(
-                Y_pre_control_n,
-                Y_post_control_n,
-                Y_pre_treated_n,
-                Y_post_treated_n,
-                unit_weights,
-                time_weights,
-                w_treated=w_treated,
-                w_control=w_control,
-            )
+            if _jackknife_use_survey_path:
+                # PSU-level LOO + stratum aggregation (Rust & Rao 1996).
+                assert w_control is not None and w_treated is not None
+                # R5 P1 fix: validate ``lonely_psu`` mode. The survey
+                # jackknife currently skips singleton strata (n_h < 2)
+                # unconditionally — equivalent to R ``survey::svyjkn``'s
+                # ``"remove"`` and ``"certainty"`` modes (both zero-
+                # contribution for singleton strata). ``"adjust"`` (use
+                # overall mean for singleton strata) is not implemented
+                # for SDID jackknife; reject upfront rather than silently
+                # treating it as ``"remove"``.
+                _lonely_psu_mode = getattr(
+                    resolved_survey_unit, "lonely_psu", "remove"
+                )
+                if _lonely_psu_mode not in ("remove", "certainty"):
+                    raise NotImplementedError(
+                        f"SurveyDesign(lonely_psu={_lonely_psu_mode!r}) is "
+                        "not supported on the SDID jackknife survey path. "
+                        "'remove' and 'certainty' are equivalent here "
+                        "(both contribute 0 variance for singleton strata, "
+                        "which is the canonical Rust & Rao 1996 behavior). "
+                        "'adjust' requires an overall-mean fallback per "
+                        "stratum that is not yet implemented for SDID "
+                        "jackknife; use variance_method='bootstrap' (which "
+                        "supports all three ``lonely_psu`` modes via the "
+                        "weighted-FW + Rao-Wu path) or switch the design "
+                        "to lonely_psu='remove'."
+                    )
+                # Unstratified designs use the synthesized single stratum
+                # (``_strata_*_eff``) so the loop reduces to classical
+                # JK1 (single-stratum PSU-LOO).
+                se_n, jackknife_estimates_n = self._jackknife_se_survey(
+                    Y_pre_control_n,
+                    Y_post_control_n,
+                    Y_pre_treated_n,
+                    Y_post_treated_n,
+                    unit_weights,
+                    time_weights,
+                    w_control=w_control,
+                    w_treated=w_treated,
+                    strata_control=_strata_control_eff,
+                    strata_treated=_strata_treated_eff,
+                    psu_control=_psu_control,
+                    psu_treated=_psu_treated,
+                    fpc_control=_fpc_control,
+                    fpc_treated=_fpc_treated,
+                    lonely_psu=_lonely_psu_mode,
+                )
+            else:
+                # Fixed-weight jackknife (R's synthdid Algorithm 3)
+                se_n, jackknife_estimates_n = self._jackknife_se(
+                    Y_pre_control_n,
+                    Y_post_control_n,
+                    Y_pre_treated_n,
+                    Y_post_treated_n,
+                    unit_weights,
+                    time_weights,
+                    w_treated=w_treated,
+                    w_control=w_control,
+                )
             se = se_n * Y_scale
             placebo_effects = np.asarray(jackknife_estimates_n) * Y_scale
             inference_method = "jackknife"
@@ -806,18 +1121,39 @@ class SyntheticDiD(DifferenceInDifferences):
             # Use placebo-based variance (R's synthdid Algorithm 4).
             # Placebo re-estimates ω, λ inside the loop; it must receive the
             # normalized zetas and operate on normalized Y.
-            se_n, placebo_effects_n = self._placebo_variance_se(
-                Y_pre_control_n,
-                Y_post_control_n,
-                Y_pre_treated_mean_n,
-                Y_post_treated_mean_n,
-                n_treated=len(treated_units),
-                zeta_omega=zeta_omega_n,
-                zeta_lambda=zeta_lambda_n,
-                min_decrease=min_decrease,
-                replications=self.n_bootstrap,
-                w_control=w_control,
-            )
+            if _placebo_use_survey_path:
+                # Stratified permutation + weighted-FW (Pesarin 2001).
+                # PSU/FPC-without-strata designs use a synthesized single
+                # stratum (``_strata_*_eff``), which makes the stratified
+                # permutation degenerate to a global within-stratum
+                # permutation dispatched through the weighted-FW path.
+                assert w_control is not None
+                se_n, placebo_effects_n = self._placebo_variance_se_survey(
+                    Y_pre_control_n,
+                    Y_post_control_n,
+                    Y_pre_treated_mean_n,
+                    Y_post_treated_mean_n,
+                    strata_control=_strata_control_eff,
+                    treated_strata=_strata_treated_eff,
+                    zeta_omega=zeta_omega_n,
+                    zeta_lambda=zeta_lambda_n,
+                    min_decrease=min_decrease,
+                    replications=self.n_bootstrap,
+                    w_control=w_control,
+                )
+            else:
+                se_n, placebo_effects_n = self._placebo_variance_se(
+                    Y_pre_control_n,
+                    Y_post_control_n,
+                    Y_pre_treated_mean_n,
+                    Y_post_treated_mean_n,
+                    n_treated=len(treated_units),
+                    zeta_omega=zeta_omega_n,
+                    zeta_lambda=zeta_lambda_n,
+                    min_decrease=min_decrease,
+                    replications=self.n_bootstrap,
+                    w_control=w_control,
+                )
             se = se_n * Y_scale
             placebo_effects = np.asarray(placebo_effects_n) * Y_scale
             inference_method = "placebo"
@@ -915,8 +1251,31 @@ class SyntheticDiD(DifferenceInDifferences):
             treated_post_trajectory=treated_post_trajectory,
             time_weights_array=time_weights,
         )
-        self.results_._loo_unit_ids = loo_unit_ids
-        self.results_._loo_roles = loo_roles
+        # Explicit LOO granularity flag for ``get_loo_effects_df``. The
+        # non-survey and pweight-only jackknife paths run unit-level LOO
+        # (one estimate per unit, matching ``control_unit_ids +
+        # treated_unit_ids``); the full-design survey jackknife runs
+        # PSU-level LOO and returns a flat PSU-indexed replicate array.
+        # Unit-level positional join onto ``_loo_unit_ids`` is well-
+        # defined only for the unit-level path.
+        if inference_method == "jackknife":
+            self.results_._loo_granularity = (
+                "psu" if _jackknife_use_survey_path else "unit"
+            )
+        else:
+            self.results_._loo_granularity = None
+        # Only populate unit-level LOO bookkeeping when the granularity
+        # is actually unit-level (R7 P3). Leaving ``_loo_unit_ids`` /
+        # ``_loo_roles`` populated on the PSU path would cause
+        # ``_loo_unit_ids is not None`` availability checks (e.g.,
+        # ``practitioner.py`` / canned guidance) to call
+        # ``get_loo_effects_df()`` and hit ``NotImplementedError``.
+        if self.results_._loo_granularity == "unit":
+            self.results_._loo_unit_ids = loo_unit_ids
+            self.results_._loo_roles = loo_roles
+        else:
+            self.results_._loo_unit_ids = None
+            self.results_._loo_roles = None
         self.results_._fit_snapshot = fit_snapshot
 
         self._unit_weights = unit_weights
@@ -1391,13 +1750,12 @@ class SyntheticDiD(DifferenceInDifferences):
         # Ensure we have enough controls for the split
         n_pseudo_control = n_control - n_treated
         if n_pseudo_control < 1:
-            # Fallback guidance. Placebo and jackknife reject strata/PSU/FPC,
-            # but bootstrap (PR #352) supports both pweight-only and
-            # full-design surveys, so it's always a valid fallback.
+            # Fallback guidance. All three variance methods support
+            # pweight-only and full-design surveys (PR #355 and this PR).
             fallback = (
-                "variance_method='bootstrap' (supports pweight-only and "
-                "strata/PSU/FPC survey designs), variance_method='jackknife' "
-                "(pweight-only only), or adding more control units"
+                "variance_method='bootstrap' or 'jackknife' (both support "
+                "pweight-only and strata/PSU/FPC survey designs), or adding "
+                "more control units"
                 if w_control is not None
                 else "variance_method='bootstrap', variance_method='jackknife', "
                 "or adding more control units"
@@ -1495,13 +1853,14 @@ class SyntheticDiD(DifferenceInDifferences):
 
         if n_successful < 2:
             # Same fallback guidance as the pre-replication guard above.
-            # Bootstrap (PR #352) supports pweight-only + strata/PSU/FPC
-            # survey designs, so it's always a valid fallback for survey
-            # users even when placebo fails.
+            # Bootstrap and jackknife both support pweight-only + full
+            # strata/PSU/FPC survey designs, so either is a valid
+            # fallback for survey users (though jackknife is anti-
+            # conservative with few PSUs per stratum — see REGISTRY).
             fallback = (
-                "variance_method='bootstrap' (supports pweight-only and "
-                "strata/PSU/FPC survey designs), variance_method='jackknife' "
-                "(pweight-only only), or increasing the number of control units"
+                "variance_method='bootstrap' or 'jackknife' (both support "
+                "pweight-only and strata/PSU/FPC survey designs), or "
+                "increasing the number of control units"
                 if w_control is not None
                 else "variance_method='bootstrap' or variance_method='jackknife' "
                 "or increasing the number of control units"
@@ -1530,6 +1889,191 @@ class SyntheticDiD(DifferenceInDifferences):
         se = np.sqrt((n_successful - 1) / n_successful) * np.std(placebo_estimates, ddof=1)
 
         return se, placebo_estimates
+
+    def _placebo_variance_se_survey(
+        self,
+        Y_pre_control: np.ndarray,
+        Y_post_control: np.ndarray,
+        Y_pre_treated_mean: np.ndarray,
+        Y_post_treated_mean: np.ndarray,
+        strata_control: np.ndarray,
+        treated_strata: np.ndarray,
+        zeta_omega: float = 0.0,
+        zeta_lambda: float = 0.0,
+        min_decrease: float = 1e-5,
+        replications: int = 200,
+        w_control: Optional[np.ndarray] = None,
+    ) -> Tuple[float, np.ndarray]:
+        """Stratified-permutation placebo variance for survey designs.
+
+        Extends Algorithm 4 of Arkhangelsky et al. (2021) to strata/PSU/FPC
+        designs by restricting pseudo-treated sampling to controls in the
+        same stratum as actual treated units (Pesarin 2001 stratified
+        permutation test). Weighted Frank-Wolfe re-estimates ω and λ per
+        draw on the pseudo-panel with per-control survey weights flowing
+        into both the loss and the regularizer.
+
+        The PSU axis is intentionally not randomized — within-stratum unit-
+        level permutation is the classical stratified permutation test
+        (Pesarin 2001 Ch. 3-4). PSU-level permutation on few PSUs (2-8
+        typical) produces near-degenerate permutation support and poor
+        power. Asymmetry with the jackknife allocator (which respects PSU)
+        is by design; see REGISTRY.md §SyntheticDiD "Allocator asymmetry".
+
+        Parameters
+        ----------
+        Y_pre_control, Y_post_control : np.ndarray
+            Control outcomes, shapes (n_pre, n_control) / (n_post, n_control).
+        Y_pre_treated_mean, Y_post_treated_mean : np.ndarray
+            Survey-weighted treated means, shapes (n_pre,) / (n_post,).
+        strata_control : np.ndarray
+            Per-control stratum labels (already resolved via
+            ``collapse_survey_to_unit_level``), shape (n_control,).
+        treated_strata : np.ndarray
+            Per-treated-unit stratum labels, shape (n_treated,).
+        zeta_omega, zeta_lambda, min_decrease : float
+            Weighted-FW hyperparameters (already normalized by Y_scale).
+        replications : int, default 200
+            Number of placebo draws.
+        w_control : np.ndarray
+            Per-control survey weights, shape (n_control,). Required for
+            survey path (passed through from fit-time resolved weights).
+
+        Returns
+        -------
+        tuple
+            ``(se, placebo_effects)`` where ``se = sqrt((r-1)/r) * std(...)``
+            (Algorithm 4 SE formula) and ``placebo_effects`` is the array
+            of successful pseudo-τ̂ values.
+
+        References
+        ----------
+        Arkhangelsky et al. (2021), *American Economic Review*, Algorithm 4.
+        Pesarin (2001), *Multivariate Permutation Tests*, Ch. 3-4.
+        Pesarin & Salmaso (2010), *Permutation Tests for Complex Data*.
+        """
+        rng = np.random.default_rng(self.seed)
+
+        # Build per-stratum control index map (strata containing treated units)
+        unique_treated_strata, treated_counts_per_stratum = np.unique(
+            treated_strata, return_counts=True
+        )
+        control_idx_per_stratum: Dict[Any, np.ndarray] = {}
+        for h in unique_treated_strata:
+            control_idx_per_stratum[h] = np.where(strata_control == h)[0]
+
+        placebo_estimates = []
+
+        for _ in range(replications):
+            try:
+                pseudo_treated_parts = []
+                for h, n_treated_h in zip(
+                    unique_treated_strata, treated_counts_per_stratum
+                ):
+                    controls_in_h = control_idx_per_stratum[h]
+                    pseudo_treated_h = rng.choice(
+                        controls_in_h, size=int(n_treated_h), replace=False
+                    )
+                    pseudo_treated_parts.append(pseudo_treated_h)
+                pseudo_treated_idx = np.concatenate(pseudo_treated_parts)
+
+                # Pseudo-control = all controls \ pseudo-treated. Keep the
+                # non-treated-stratum controls AND the unsampled controls
+                # within each treated stratum.
+                sampled_set = set(pseudo_treated_idx.tolist())
+                pseudo_control_mask = np.array(
+                    [i not in sampled_set for i in range(len(strata_control))]
+                )
+                pseudo_control_idx = np.where(pseudo_control_mask)[0]
+
+                # Pseudo-panel
+                Y_pre_pseudo_control = Y_pre_control[:, pseudo_control_idx]
+                Y_post_pseudo_control = Y_post_control[:, pseudo_control_idx]
+                pseudo_w_tr = w_control[pseudo_treated_idx]
+                pseudo_w_co = w_control[pseudo_control_idx]
+
+                # Pseudo-treated means (survey-weighted)
+                Y_pre_pseudo_treated_mean = np.average(
+                    Y_pre_control[:, pseudo_treated_idx],
+                    axis=1,
+                    weights=pseudo_w_tr,
+                )
+                Y_post_pseudo_treated_mean = np.average(
+                    Y_post_control[:, pseudo_treated_idx],
+                    axis=1,
+                    weights=pseudo_w_tr,
+                )
+
+                # Weighted FW for unit weights
+                pseudo_omega = compute_sdid_unit_weights_survey(
+                    Y_pre_pseudo_control,
+                    Y_pre_pseudo_treated_mean,
+                    rw_control=pseudo_w_co,
+                    zeta_omega=zeta_omega,
+                    min_decrease=min_decrease,
+                )
+
+                # Compose ω_eff = rw · ω / Σ(rw · ω). Zero-mass guard:
+                # degenerate draw where FW sparsified onto zero-survey-
+                # weight controls; retry (same convention as bootstrap
+                # PR #355 R12 P1).
+                omega_scaled = pseudo_w_co * pseudo_omega
+                total = omega_scaled.sum()
+                if total <= 0:
+                    continue
+                omega_eff = omega_scaled / total
+
+                # Weighted FW for time weights
+                pseudo_lambda = compute_time_weights_survey(
+                    Y_pre_pseudo_control,
+                    Y_post_pseudo_control,
+                    rw_control=pseudo_w_co,
+                    zeta_lambda=zeta_lambda,
+                    min_decrease=min_decrease,
+                )
+
+                tau = compute_sdid_estimator(
+                    Y_pre_pseudo_control,
+                    Y_post_pseudo_control,
+                    Y_pre_pseudo_treated_mean,
+                    Y_post_pseudo_treated_mean,
+                    omega_eff,
+                    pseudo_lambda,
+                )
+                if np.isfinite(tau):
+                    placebo_estimates.append(float(tau))
+
+            except (ValueError, LinAlgError, ZeroDivisionError):
+                continue
+
+        placebo_estimates_arr = np.array(placebo_estimates)
+        n_successful = len(placebo_estimates_arr)
+
+        if n_successful < 2:
+            warnings.warn(
+                f"Only {n_successful} placebo replications completed successfully "
+                f"on the survey path. Standard error cannot be estimated reliably. "
+                "Consider variance_method='bootstrap' (supports the same full "
+                "design via weighted-FW + Rao-Wu) or rebalance the panel.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return 0.0, placebo_estimates_arr
+
+        failure_rate = 1 - (n_successful / replications)
+        if failure_rate > 0.05:
+            warnings.warn(
+                f"Only {n_successful}/{replications} stratified-permutation "
+                f"placebo replications succeeded ({failure_rate:.1%} failure "
+                "rate). Standard errors may be unreliable.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        se = np.sqrt((n_successful - 1) / n_successful) * np.std(
+            placebo_estimates_arr, ddof=1
+        )
+        return se, placebo_estimates_arr
 
     def _jackknife_se(
         self,
@@ -1722,6 +2266,380 @@ class SyntheticDiD(DifferenceInDifferences):
         se = np.sqrt((n - 1) / n * ss)
 
         return se, jackknife_estimates
+
+    def _jackknife_se_survey(
+        self,
+        Y_pre_control: np.ndarray,
+        Y_post_control: np.ndarray,
+        Y_pre_treated: np.ndarray,
+        Y_post_treated: np.ndarray,
+        unit_weights: np.ndarray,
+        time_weights: np.ndarray,
+        w_control: np.ndarray,
+        w_treated: np.ndarray,
+        strata_control: np.ndarray,
+        strata_treated: np.ndarray,
+        psu_control: Optional[np.ndarray],
+        psu_treated: Optional[np.ndarray],
+        fpc_control: Optional[np.ndarray],
+        fpc_treated: Optional[np.ndarray],
+        lonely_psu: str = "remove",
+    ) -> Tuple[float, np.ndarray]:
+        """PSU-level leave-one-out jackknife with stratum aggregation.
+
+        Extends Algorithm 3 of Arkhangelsky et al. (2021) to survey designs
+        via the stratified PSU-level jackknife variance estimator (Rust &
+        Rao 1996)::
+
+            V_J = Σ_h (1 - f_h) · (n_h - 1)/n_h · Σ_{j∈h} (τ̂_{(h,j)} - τ̄_h)²
+
+        where ``n_h`` is the number of PSUs in stratum h, ``f_h = n_h/N_h``
+        is the sampling fraction (0 if no FPC), and ``τ̄_h`` is the
+        stratum-level mean of LOO estimates.
+
+        Semantics:
+        * **λ fixed** (not re-estimated per LOO) — matches non-survey
+          Algorithm 3. Jackknife is variance-approximation; re-estimating
+          λ per LOO conflates weight-estimation uncertainty (bootstrap's
+          domain) with sampling uncertainty.
+        * **ω subset + rw-composed-renormalize** (not re-estimated) — same
+          rationale. Control units inside the dropped PSU are removed;
+          remaining ω is composed with remaining survey weights and
+          renormalized.
+        * **Strata with n_h < 2 are silently skipped** (lonely-PSU case,
+          matches R ``survey::svyjkn``). They contribute 0 to the total
+          variance. If every stratum is skipped, ``SE=NaN`` with a
+          ``UserWarning``.
+        * **Undefined LOOs within a contributing stratum → SE=NaN.** The
+          Rust & Rao formula requires every PSU-LOO in a contributing
+          stratum (``n_h ≥ 2``) to produce a defined ``τ̂_{(h,j)}``. If
+          any single LOO is undefined — (a) deletion removes all treated
+          units, (b) kept ``ω_eff`` mass is zero, (c) kept treated
+          survey mass is zero, (d) the SDID estimator raises or returns
+          non-finite τ̂ — the overall SE is undefined and the method
+          returns ``NaN`` with a targeted ``UserWarning`` naming the
+          stratum / PSU / reason. Silently skipping the missing LOO
+          while still applying the full ``(n_h-1)/n_h`` factor would
+          systematically under-scale variance (silently wrong SE).
+
+        PSU-None fallback: if ``psu_control is None``, each unit is treated
+        as its own PSU within its stratum (matches PR #355 R8 P1
+        implicit-PSU Rao-Wu semantics).
+
+        Parameters
+        ----------
+        Y_pre_control, Y_post_control : np.ndarray
+            Control outcomes.
+        Y_pre_treated, Y_post_treated : np.ndarray
+            Treated outcomes (raw per-unit, not averaged).
+        unit_weights, time_weights : np.ndarray
+            Fit-time ω, λ (kept fixed across LOOs).
+        w_control, w_treated : np.ndarray
+            Per-unit survey weights.
+        strata_control, strata_treated : np.ndarray
+            Per-unit stratum labels.
+        psu_control, psu_treated : np.ndarray, optional
+            Per-unit PSU labels. ``None`` → each unit is its own PSU.
+        fpc_control, fpc_treated : np.ndarray, optional
+            Per-unit FPC values (stratum-constant population counts from
+            ``survey.py::SurveyDesign.resolve``, validated constant within
+            each stratum).
+
+        Returns
+        -------
+        tuple
+            ``(se, tau_loo_all)`` where ``se`` is the stratum-aggregated
+            jackknife SE (NaN if every stratum was skipped) and
+            ``tau_loo_all`` is the flat array of successful LOO estimates
+            (not grouped per stratum).
+
+        References
+        ----------
+        Arkhangelsky et al. (2021), *American Economic Review*, Algorithm 3.
+        Rust & Rao (1996), *Statistical Methods in Medical Research*, 5(3),
+        283-310, "Variance Estimation for Complex Surveys Using Replication
+        Techniques".
+        """
+        n_control = Y_pre_control.shape[1]
+        n_treated = Y_pre_treated.shape[1]
+
+        # Build unit-level (stratum, psu, fpc, is_control, local_idx) index.
+        # ``local_idx`` is the position in its arm (control_idx in [0,n_c)
+        # or treated_idx in [0,n_t)). We loop over (stratum, psu) groups.
+        if psu_control is None:
+            # Each control unit is its own PSU — use the control's own index.
+            psu_control_eff = np.arange(n_control, dtype=np.int64)
+        else:
+            psu_control_eff = np.asarray(psu_control)
+        if psu_treated is None:
+            psu_treated_eff = np.arange(n_control, n_control + n_treated, dtype=np.int64)
+        else:
+            psu_treated_eff = np.asarray(psu_treated)
+
+        # Per-stratum PSU enumeration. PSU labels are globally unique
+        # within strata by ``SurveyDesign.resolve`` (see survey.py
+        # L308-L320 ``nest=False`` validation), so a (stratum, psu) pair
+        # uniquely identifies a PSU.
+        unique_strata_all = np.unique(
+            np.concatenate([strata_control, strata_treated])
+        )
+
+        # Short-circuit: unstratified single-PSU design. ``strata_*`` arrays
+        # are always populated after ``_resolve_survey_for_fit``, so a
+        # single-stratum + single-PSU design is detectable as one unique
+        # PSU across both arms.
+        all_psus = np.concatenate([psu_control_eff, psu_treated_eff])
+        if len(unique_strata_all) == 1 and len(np.unique(all_psus)) < 2:
+            return np.nan, np.array([])
+
+        # Precompute fixed-ω composition for the FULL sample (for LOOs that
+        # drop only treated PSUs — control ω/w_control unchanged).
+        omega_eff_full = unit_weights * w_control
+        if omega_eff_full.sum() <= 0:
+            # Fit-time guard should have caught this, but double-check for
+            # defense-in-depth.
+            warnings.warn(
+                "Jackknife survey SE cannot be computed: the effective "
+                "control omega mass (ω · w_control) sums to zero.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return np.nan, np.array([])
+        omega_eff_full = omega_eff_full / omega_eff_full.sum()
+
+        total_variance = 0.0
+        tau_loo_all: List[float] = []
+        any_stratum_contributed = False
+        # Undefined-replicate tracking (PR #365 R1 P0 fix). The Rust & Rao
+        # (1996) formula assumes every sampled PSU within a contributing
+        # stratum has a defined delete-one replicate `τ̂_{(h,j)}`. If any
+        # LOO within a contributing stratum (n_h ≥ 2) is undefined — e.g.,
+        # all treated units are in that PSU, or the kept ω_eff mass is
+        # zero, or the SDID estimator raises — the stratified SE formula
+        # does not apply and the overall SE is undefined. Return NaN
+        # rather than silently skipping the missing replicate while still
+        # applying the full (n_h-1)/n_h factor (which would underscale).
+        undefined_replicate_stratum: Optional[Any] = None
+        undefined_replicate_psu: Optional[Any] = None
+        undefined_replicate_reason: str = ""
+
+        for h in unique_strata_all:
+            # PSUs in stratum h (across both arms)
+            control_in_h_mask = strata_control == h
+            treated_in_h_mask = strata_treated == h
+            psus_in_h_control = psu_control_eff[control_in_h_mask]
+            psus_in_h_treated = psu_treated_eff[treated_in_h_mask]
+            psus_in_h = np.unique(
+                np.concatenate([psus_in_h_control, psus_in_h_treated])
+            )
+            n_h = len(psus_in_h)
+            if n_h < 2:
+                # Singleton-stratum handling. R12 P1 fix: distinguish
+                # ``"certainty"`` from ``"remove"`` semantics. Both end
+                # up adding zero variance for this stratum, but
+                # ``"certainty"`` is an *explicit* zero-variance
+                # contributor (the stratum is sampled with certainty,
+                # so no sampling variance — this is a documented
+                # legitimate zero, not a "skipped/undefined" case).
+                # Mark as contributing so the all-singleton design
+                # under ``"certainty"`` returns ``SE = 0.0`` instead
+                # of falling through to the "every stratum was
+                # skipped → NaN" branch (matches `survey.py`'s
+                # ``test_all_certainty_psu_zero_vcov`` contract).
+                # ``"remove"`` continues to silently skip — matches R
+                # ``survey::svyjkn`` lonely-PSU="remove".
+                if lonely_psu == "certainty":
+                    any_stratum_contributed = True
+                continue
+
+            # Per-stratum FPC. ``fpc_*`` arrays are stratum-constant by
+            # SurveyDesign.resolve (survey.py L343-L347). Read from either
+            # arm; prefer control if any controls in the stratum.
+            if fpc_control is not None and control_in_h_mask.any():
+                fpc_h = float(fpc_control[control_in_h_mask][0])
+                f_h = n_h / fpc_h if fpc_h > 0 else 0.0
+            elif fpc_treated is not None and treated_in_h_mask.any():
+                fpc_h = float(fpc_treated[treated_in_h_mask][0])
+                f_h = n_h / fpc_h if fpc_h > 0 else 0.0
+            else:
+                f_h = 0.0
+
+            # R6 P1 fix: full-census short-circuit. When f_h >= 1 the
+            # Rust & Rao factor ``(1 - f_h) <= 0`` zeros this stratum's
+            # contribution to total variance regardless of within-
+            # stratum dispersion. Skip the delete-one feasibility loop
+            # entirely — otherwise an undefined LOO inside a full-
+            # census stratum (e.g., all treated in the dropped PSU)
+            # would mistakenly short-circuit the whole design to
+            # ``SE=NaN``, even though the stratum contributes zero by
+            # legitimate design. Mark as contributing (so the overall
+            # result returns ``SE=0`` or a finite non-zero from other
+            # strata, not ``NaN`` from the "no stratum contributed"
+            # branch).
+            if f_h >= 1.0:
+                any_stratum_contributed = True
+                continue
+
+            tau_loo_h: List[float] = []
+            stratum_has_undefined_replicate = False
+            for j in psus_in_h:
+                # Mask: kept units across both arms
+                control_kept_mask = psu_control_eff != j
+                treated_kept_mask = psu_treated_eff != j
+
+                # If this PSU contains no units in either arm, it cannot
+                # produce a meaningful LOO (and should not have been
+                # enumerated); treat as undefined for defensive consistency.
+                if control_kept_mask.all() and treated_kept_mask.all():
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "PSU contains no units in either arm"
+                    )
+                    break
+
+                # All treated removed → LOO yields an undefined SDID
+                # estimator (no treated mean to compare). The Rust & Rao
+                # formula expects τ̂_{(h,j)} defined for every j; skipping
+                # this PSU while keeping the (n_h-1)/n_h factor would
+                # underscale variance (R1 P0).
+                if not treated_kept_mask.any():
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "deletion removes all treated units (no treated "
+                        "mean for the LOO SDID estimator)"
+                    )
+                    break
+
+                # Control ω composition on kept controls
+                omega_kept = unit_weights[control_kept_mask]
+                w_control_kept = w_control[control_kept_mask]
+                omega_eff_kept = omega_kept * w_control_kept
+                if omega_eff_kept.sum() <= 0:
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "kept omega_eff mass is zero (all remaining "
+                        "controls have zero fit-time or survey weight)"
+                    )
+                    break
+                omega_eff_kept = omega_eff_kept / omega_eff_kept.sum()
+
+                # Treated mean on kept treated units (survey-weighted)
+                w_treated_kept = w_treated[treated_kept_mask]
+                if w_treated_kept.sum() <= 0:
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "kept treated survey mass is zero"
+                    )
+                    break
+                Y_pre_t_mean = np.average(
+                    Y_pre_treated[:, treated_kept_mask],
+                    axis=1,
+                    weights=w_treated_kept,
+                )
+                Y_post_t_mean = np.average(
+                    Y_post_treated[:, treated_kept_mask],
+                    axis=1,
+                    weights=w_treated_kept,
+                )
+
+                try:
+                    tau_j = compute_sdid_estimator(
+                        Y_pre_control[:, control_kept_mask],
+                        Y_post_control[:, control_kept_mask],
+                        Y_pre_t_mean,
+                        Y_post_t_mean,
+                        omega_eff_kept,
+                        time_weights,
+                    )
+                except (ValueError, LinAlgError, ZeroDivisionError):
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "SDID estimator raised on the LOO panel"
+                    )
+                    break
+
+                if not np.isfinite(tau_j):
+                    stratum_has_undefined_replicate = True
+                    undefined_replicate_stratum = h
+                    undefined_replicate_psu = j
+                    undefined_replicate_reason = (
+                        "SDID estimator returned non-finite τ̂"
+                    )
+                    break
+                tau_loo_h.append(float(tau_j))
+
+            if stratum_has_undefined_replicate:
+                # Record the partial LOOs for the returned array (useful
+                # for debugging) but stop accumulating variance — the
+                # stratified Rust & Rao formula requires all n_h
+                # replicates.
+                tau_loo_all.extend(tau_loo_h)
+                break
+
+            if len(tau_loo_h) == n_h:
+                tau_bar_h = np.mean(tau_loo_h)
+                ss_h = float(
+                    np.sum((np.asarray(tau_loo_h) - tau_bar_h) ** 2)
+                )
+                total_variance += (1.0 - f_h) * (n_h - 1) / n_h * ss_h
+                any_stratum_contributed = True
+            tau_loo_all.extend(tau_loo_h)
+
+        tau_loo_arr = np.asarray(tau_loo_all)
+        if undefined_replicate_stratum is not None:
+            # R1 P0 fix: Rust & Rao's stratified jackknife formula requires
+            # every LOO within a contributing stratum to be defined. When
+            # one is missing, the design is not covered by the formula and
+            # the SE is undefined; returning a finite value on the
+            # remaining replicates (still multiplied by (n_h-1)/n_h) would
+            # systematically under-scale variance.
+            warnings.warn(
+                "Jackknife survey SE is undefined: delete-one replicate "
+                f"for stratum {undefined_replicate_stratum} PSU "
+                f"{undefined_replicate_psu} is not computable "
+                f"({undefined_replicate_reason}). The stratified Rust & "
+                "Rao (1996) jackknife formula requires τ̂_{(h,j)} defined "
+                "for every j in every contributing stratum. Returning "
+                "SE=NaN. Consider variance_method='bootstrap' (supports "
+                "the same full design without a per-LOO feasibility "
+                "constraint) or rebalance the panel so every PSU has at "
+                "least one treated and one non-zero-mass control unit "
+                "after deletion.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return np.nan, tau_loo_arr
+        if not any_stratum_contributed:
+            warnings.warn(
+                "Jackknife survey SE is undefined because every stratum "
+                "was skipped (insufficient PSUs per stratum for variance "
+                "contribution). Returning SE=NaN. Consider "
+                "variance_method='bootstrap' (supports the same full "
+                "design) or rebalance the panel.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return np.nan, tau_loo_arr
+
+        # R5 P1 fix: legitimate zero variance (e.g., full-census FPC with
+        # f_h = 1 for every contributing stratum → (1 - f_h) = 0 factor
+        # zeros the contribution even when within-stratum dispersion is
+        # non-zero; or exact-zero within-stratum dispersion when all
+        # LOOs produce identical τ̂). Rust & Rao gives V_J = 0, not
+        # undefined. Reserve NaN for the "all strata skipped" /
+        # undefined-replicate cases above; compute SE = 0 otherwise.
+        variance_nonneg = max(total_variance, 0.0)
+        return float(np.sqrt(variance_nonneg)), tau_loo_arr
 
     def get_params(self) -> Dict[str, Any]:
         """Get estimator parameters."""

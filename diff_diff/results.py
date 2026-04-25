@@ -882,6 +882,12 @@ class SyntheticDiDResults:
         # Plain attributes rather than dataclass fields so asdict()-style
         # recursion cannot serialize internal panel state.
         self._loo_unit_ids: Optional[List[Any]] = None
+        # Granularity of the `placebo_effects` LOO array: "unit" (non-
+        # survey + pweight-only jackknife), "psu" (full-design survey
+        # jackknife), or None (non-jackknife variance methods). Governs
+        # which accessors are well-defined. Set by `fit()` at result
+        # construction time.
+        self._loo_granularity: Optional[str] = None
         self._loo_roles: Optional[List[str]] = None
         self._fit_snapshot: Optional[_SyntheticDiDFitSnapshot] = None
 
@@ -1103,9 +1109,25 @@ class SyntheticDiDResults:
         """
         Per-unit leave-one-out ATT from the jackknife variance pass.
 
-        Requires ``variance_method='jackknife'``; raises ValueError otherwise.
+        Requires ``variance_method='jackknife'`` (``ValueError`` otherwise)
+        and unit-level LOO granularity (``NotImplementedError`` for the
+        full-design survey jackknife path, which uses PSU-level LOO).
 
-        The underlying values come from the jackknife loops in
+        Available on:
+        * non-survey jackknife fits (classical Arkhangelsky Algorithm 3).
+        * pweight-only survey jackknife fits (Algorithm 3 with post-hoc
+          ω_eff composition; PSU labels in ``survey_metadata`` come from
+          implicit-PSU metadata but the LOO remains unit-level).
+
+        Blocked on:
+        * full-design survey jackknife fits (strata / PSU / FPC set in
+          ``SurveyDesign``) — the underlying replicates are PSU-level
+          ``τ̂_{(h,j)}`` (Rust & Rao 1996), not unit-level. See
+          ``result.placebo_effects`` for the raw PSU-level replicate
+          array and REGISTRY §SyntheticDiD "Note (survey + jackknife
+          composition)" for the aggregation formula.
+
+        The underlying unit-level values come from the jackknife loops in
         ``SyntheticDiD._jackknife_se``: control LOO estimates fill the
         first ``n_control`` positions (in the order of the control units
         seen by fit), then treated LOO estimates fill the next
@@ -1132,6 +1154,30 @@ class SyntheticDiDResults:
                 f"This result used variance_method='{self.variance_method}'. "
                 "Re-fit with SyntheticDiD(variance_method='jackknife') to "
                 "obtain per-unit leave-one-out estimates."
+            )
+        # Survey-jackknife fits use PSU-level LOO (Rust & Rao 1996) with
+        # stratum aggregation rather than unit-level LOO. The returned
+        # ``placebo_effects`` array in that path is a flat list of
+        # PSU-level τ̂_{(h,j)} replicates (variable length, ordered by
+        # stratum then PSU), not a length-N unit-indexed array. Mapping
+        # these onto the fit-time unit IDs would mislabel PSU replicates
+        # as unit effects. Block the accessor when the explicit
+        # granularity flag set by ``fit()`` is "psu". We key off the
+        # granularity flag rather than ``survey_metadata.n_psu`` because
+        # pweight-only survey jackknife fits also populate ``n_psu`` via
+        # implicit-PSU metadata (``survey.py`` L749-L753) but still run
+        # unit-level LOO, so the ``n_psu`` heuristic would false-positive.
+        if getattr(self, "_loo_granularity", None) == "psu":
+            raise NotImplementedError(
+                "get_loo_effects_df() is unit-level-LOO only. This fit used "
+                "the full-design survey jackknife (PSU-level LOO with "
+                "stratum aggregation, Rust & Rao 1996); the underlying "
+                "replicates are PSU-level, not unit-level, so joining them "
+                "back to fit-time unit IDs is not well-defined. See "
+                "``result.placebo_effects`` for the raw PSU-level replicate "
+                "array and ``docs/methodology/REGISTRY.md`` §SyntheticDiD "
+                "\"Note (survey + jackknife composition)\" for the "
+                "aggregation formula."
             )
         if self._loo_unit_ids is None or self._loo_roles is None or self.placebo_effects is None:
             raise ValueError(

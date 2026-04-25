@@ -1032,7 +1032,7 @@ Returned by `SyntheticDiD.fit()`.
 
 **Validation diagnostics** (call after `fit()`):
 - `get_weight_concentration(top_k=5)` - effective N and top-k weight share; flags fragile synthetic controls dominated by a few donor units
-- `get_loo_effects_df()` - per-unit leave-one-out influence from the jackknife pass (DataFrame includes both control and treated rows). Requires `variance_method="jackknife"`; raises `ValueError` if LOO is unavailable (see the method docstring for the full set of conditions, e.g. single treated unit or only one control with nonzero effective weight)
+- `get_loo_effects_df()` - per-unit leave-one-out influence from the jackknife pass (DataFrame includes both control and treated rows). Requires `variance_method="jackknife"` with unit-level LOO granularity: available on non-survey and pweight-only jackknife fits; raises `NotImplementedError` on full-design survey jackknife (PSU-level LOO, see `result.placebo_effects` for raw PSU-level replicates) and `ValueError` when LOO is unavailable (single treated unit, only one control with nonzero effective weight, etc.)
 - `in_time_placebo()` - re-estimate on shifted fake treatment dates in the pre-period; near-zero placebo ATTs indicate a credible design
 - `sensitivity_to_zeta_omega()` - re-estimate across a grid of unit-weight regularization values; checks ATT robustness to the auto-selected zeta_omega
 
@@ -1674,7 +1674,7 @@ sd_female, data_female = sd.subpopulation(data, mask=lambda df: df['sex'] == 'F'
 **Key features:**
 - Taylor Series Linearization (TSL) variance with strata + PSU + FPC
 - Replicate weight variance: BRR, Fay's BRR, JK1, JKn, SDR (13 of 16 estimators, including dCDH)
-- Survey-aware bootstrap: multiplier at PSU (Hall-Mammen wild; dCDH, staggered) or Rao-Wu rescaled (SunAbraham, SyntheticDiD, TROP). SyntheticDiD bootstrap composes Rao-Wu rescaled per-draw weights with the weighted Frank-Wolfe variant of `_sc_weight_fw` (PR #352): each draw solves `min ||A·diag(rw)·ω - b||² + ζ²·Σ rw_i ω_i²` and composes `ω_eff = rw·ω/Σ(rw·ω)` for the SDID estimator. Pweight-only fits use constant `rw = w_control`; full designs use Rao-Wu. SDID's placebo and jackknife paths still reject strata/PSU/FPC (separate methodology gap, tracked in TODO.md)
+- Survey-aware bootstrap: multiplier at PSU (Hall-Mammen wild; dCDH, staggered) or Rao-Wu rescaled (SunAbraham, SyntheticDiD, TROP). SyntheticDiD bootstrap composes Rao-Wu rescaled per-draw weights with the weighted Frank-Wolfe variant of `_sc_weight_fw` (PR #355): each draw solves `min ||A·diag(rw)·ω - b||² + ζ²·Σ rw_i ω_i²` and composes `ω_eff = rw·ω/Σ(rw·ω)` for the SDID estimator. Pweight-only fits use constant `rw = w_control`; full designs use Rao-Wu. SDID's placebo (stratified permutation + weighted FW) and jackknife (PSU-level LOO with stratum aggregation, Rust & Rao 1996) paths also support pweight-only and full strata/PSU/FPC designs
 - DEFF diagnostics, subpopulation analysis, weight trimming (`trim_weights`)
 - Repeated cross-sections: `CallawaySantAnna(panel=False)`
 - Compatibility matrix: see `docs/choosing_estimator.rst` Survey Design Support section

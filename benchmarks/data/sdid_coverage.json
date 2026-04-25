@@ -4,7 +4,7 @@
     "n_bootstrap": 200,
     "library_version": "3.2.0",
     "backend": "rust",
-    "generated_at": "2026-04-24T13:01:54.876774+00:00",
+    "generated_at": "2026-04-24T21:08:20.185764+00:00",
     "total_elapsed_sec": 2420.61,
     "methods": [
       "placebo",
@@ -156,17 +156,17 @@
         "se_over_truesd": 1.1297002530566618
       },
       "jackknife": {
-        "n_successful_fits": 0,
+        "n_successful_fits": 500,
         "rejection_rate": {
-          "0.01": null,
-          "0.05": null,
-          "0.10": null
+          "0.01": 0.358,
+          "0.05": 0.45,
+          "0.10": 0.512
         },
-        "mean_se": null,
-        "true_sd_tau_hat": null,
-        "se_over_truesd": null
+        "mean_se": 0.20686834633234263,
+        "true_sd_tau_hat": 0.4512243070193919,
+        "se_over_truesd": 0.4584601119980272
       },
-      "_elapsed_sec": 16.48
+      "_elapsed_sec": 18.62
     }
   }
 }
