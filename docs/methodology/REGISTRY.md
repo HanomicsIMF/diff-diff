@@ -1585,16 +1585,17 @@ Convergence criterion: stop when objective decrease < min_decrease² (default mi
   3. Weighted Frank-Wolfe re-estimates ω and λ on the pseudo-panel using `compute_sdid_unit_weights_survey(rw_control=w_control[pseudo_control_idx], ...)` and `compute_time_weights_survey(...)`. Post-optimization composition `ω_eff = rw·ω/Σ(rw·ω)` with zero-mass retry.
   4. SDID estimator on the pseudo-panel; Algorithm 4 SE `sqrt((r-1)/r)·std(placebo_estimates, ddof=1)`.
 
-  **Fit-time feasibility guards** (per `feedback_front_door_over_retry_swallow.md`): three distinct failure cases are rejected *before* entering the retry loop, each with a targeted `ValueError`:
+  **Fit-time feasibility guards** (per `feedback_front_door_over_retry_swallow.md`): four distinct failure cases are rejected *before* entering the retry loop, each with a targeted `ValueError`:
   * **Case B** (`n_controls_h == 0` for some treated-containing stratum): the stratum has treated units but no controls — no pseudo-treated set can be drawn.
   * **Case C** (`0 < n_controls_h < n_treated_h`): the stratum has fewer controls than treated units, so exact-count without-replacement sampling is impossible.
+  * **Case E** (row-count guards passed but `n_positive_weight_controls_h < n_treated_h`): the stratum has enough raw controls but too few have positive survey weight. Since the pseudo-treated mean uses `np.average(Y, weights=w_control[idx])`, draws can pick all-zero-weight subsets (ZeroDivisionError on np.average) and the retry loop would swallow them as a generic ``n_successful=0`` warning + ``SE=0.0``.
   * **Case D** (`n_controls_h == n_treated_h` for *every* treated stratum): the permutation support is `∏_h C(n_c_h, n_t_h) = 1` — only one allocation is possible, every placebo draw reproduces the same pseudo-treated set, and the null distribution collapses to a single point (SE = FP noise ~1e-16). At least one treated stratum must satisfy `n_c_h > n_t_h` for the test to have ≥2 distinct allocations.
 
-  Partial-permutation fallback is rejected for all three cases — it would silently change the null distribution and produce an incoherent test.
+  Partial-permutation fallback is rejected for all four cases — it would silently change the null distribution and produce an incoherent test.
 
   **Scope note — what is NOT randomized:** the stratum marginal is preserved exactly by construction (each draw pulls the same count per treated stratum). The PSU axis is not randomized (permutation is unit-level within strata). This is conservative under clustering (ignores within-stratum PSU correlation in the null) but aligns with the classical stratified permutation test literature. See Pesarin (2001) *Multivariate Permutation Tests*, Ch. 3-4; Pesarin & Salmaso (2010) *Permutation Tests for Complex Data*.
 
-  **Validation:** no external R/Julia parity anchor (neither package defines survey-weighted SDID placebo). Correctness rests on: (a) stratum-membership contract enforced by construction + monkeypatch regression test, (b) Case B / Case C / Case D front-door guards with targeted-message regression tests, (c) SE-differs-from-pweight-only cross-surface sanity, (d) deterministic-dispatch regression.
+  **Validation:** no external R/Julia parity anchor (neither package defines survey-weighted SDID placebo). Correctness rests on: (a) stratum-membership contract enforced by construction + per-draw `rng.choice` interception regression that captures every actual sampled `pseudo_treated_idx` and asserts each sampled control's stratum membership ⊆ treated-strata set, (b) Case B / C / D / E front-door guards with targeted-message regression tests, (c) SE-differs-from-pweight-only cross-surface sanity, (d) deterministic-dispatch regression.
 
 - **Note (survey + jackknife composition):** PSU-level leave-one-out with stratum aggregation (Rust & Rao 1996). For a design with strata `h = 1..H` and PSUs `j = 1..n_h` within each stratum:
 

@@ -737,45 +737,86 @@ class TestSDIDSurveyPlaceboFullDesign:
 
         Stratified permutation preserves the treated-stratum marginal
         exactly — pseudo-treated never picks from strata with no actual
-        treated units. Seeded RNG; monkeypatch the per-draw recorder.
+        treated units. Patches ``rng.choice`` inside the per-draw loop
+        to record every actual ``pseudo_treated_idx`` and asserts each
+        sampled control's stratum membership ⊆ treated-strata set
+        across every draw (R9 P3 — direct allocator inspection rather
+        than just dispatch arg recording).
         """
+        # Capture every np.random.Generator.choice call inside the per-
+        # draw loop. ``_placebo_variance_se_survey`` constructs a fresh
+        # rng = np.random.default_rng(self.seed), so monkey-patching at
+        # the class level on Generator doesn't intercept it. Instead we
+        # wrap ``np.random.default_rng`` to return a recording-aware rng.
+        captured_pseudo_treated_strata: list[set] = []
+
+        # Run the fit and intercept rng.choice via a thin Generator wrapper.
         est = SyntheticDiD(variance_method="placebo", n_bootstrap=30, seed=123)
 
-        captured_strata_across_draws = []
-        real_method = est._placebo_variance_se_survey
-
-        def record_strata(*args, **kwargs):
-            strata_control = kwargs.get("strata_control")
-            treated_strata = kwargs.get("treated_strata")
-            if strata_control is None:
-                strata_control = args[4]
-            if treated_strata is None:
-                treated_strata = args[5]
-            captured_strata_across_draws.append(
-                (np.asarray(strata_control).copy(), np.asarray(treated_strata).copy())
-            )
-            return real_method(*args, **kwargs)
-
-        est._placebo_variance_se_survey = record_strata  # type: ignore[assignment]
-        est.fit(
-            sdid_survey_data_full_design,
-            outcome="outcome",
-            treatment="treated",
-            unit="unit",
-            time="time",
-            post_periods=[6, 7, 8, 9],
-            survey_design=sdid_survey_design_full,
+        # Build the resolved strata arrays the same way fit() does so we
+        # can map sampled control indices back to their stratum.
+        # sdid_survey_data_full_design layout: stratum 0 has treated
+        # 0-4 + controls 5-14, stratum 1 has controls 15-29.
+        treated_units = list(range(5))
+        control_units = list(range(5, 30))
+        unit_to_stratum = (
+            sdid_survey_data_full_design.groupby("unit")["stratum"].first().to_dict()
         )
-        # Verify the survey method was called and received the expected
-        # strata arrays. The per-draw pseudo-treated-stratum invariant
-        # is enforced by construction inside the method (rng.choice on
-        # controls_in_h), so the test confirms the dispatch contract.
-        assert len(captured_strata_across_draws) == 1
-        s_c, s_t = captured_strata_across_draws[0]
-        # Treated all in stratum 0 per fixture.
-        assert set(np.unique(s_t).tolist()) == {0}
-        # Control strata span {0, 1}.
-        assert set(np.unique(s_c).tolist()) == {0, 1}
+        strata_control = np.array([unit_to_stratum[u] for u in control_units])
+        treated_strata_set = set(unit_to_stratum[u] for u in treated_units)
+
+        # Wrap np.random.default_rng to install a Generator with an
+        # instrumented `choice`.
+        import numpy as _np
+
+        original_default_rng = _np.random.default_rng
+
+        class _RecordingChoiceGenerator:
+            def __init__(self, inner: _np.random.Generator):
+                self._inner = inner
+
+            def choice(self, a, *args, **kwargs):  # type: ignore[override]
+                idx = self._inner.choice(a, *args, **kwargs)
+                # `a` is controls_in_h (control-array positions).
+                # idx is the picked subset (also control-array positions).
+                picked_strata = strata_control[np.asarray(idx)]
+                captured_pseudo_treated_strata.append(set(picked_strata.tolist()))
+                return idx
+
+            def permutation(self, *args, **kwargs):  # type: ignore[override]
+                return self._inner.permutation(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        def fake_default_rng(seed=None):
+            return _RecordingChoiceGenerator(original_default_rng(seed))
+
+        try:
+            _np.random.default_rng = fake_default_rng  # type: ignore[assignment]
+            est.fit(
+                sdid_survey_data_full_design,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sdid_survey_design_full,
+            )
+        finally:
+            _np.random.default_rng = original_default_rng  # type: ignore[assignment]
+
+        # We expect ≥1 rng.choice call per replication × treated-stratum.
+        # All treated are in stratum 0, so each draw produces exactly one
+        # choice over stratum-0 controls.
+        assert len(captured_pseudo_treated_strata) >= 30
+        # Every sampled pseudo-treated subset must come from a stratum
+        # that contains actual treated units (here, only stratum 0).
+        for draw_strata in captured_pseudo_treated_strata:
+            assert draw_strata.issubset(treated_strata_set), (
+                f"sampled stratum {draw_strata} not subset of "
+                f"treated_strata_set {treated_strata_set}"
+            )
 
     def test_placebo_full_design_raises_on_zero_control_stratum(
         self, sdid_survey_data_full_design
@@ -789,6 +830,44 @@ class TestSDIDSurveyPlaceboFullDesign:
         est = SyntheticDiD(variance_method="placebo", n_bootstrap=30, seed=7)
         with pytest.raises(
             ValueError, match=r"at least one control per stratum.*has 0 controls"
+        ):
+            est.fit(
+                df,
+                outcome="outcome",
+                treatment="treated",
+                unit="unit",
+                time="time",
+                post_periods=[6, 7, 8, 9],
+                survey_design=sd,
+            )
+
+    def test_placebo_full_design_raises_on_zero_weight_controls_in_stratum(
+        self, sdid_survey_data_full_design
+    ):
+        """R9 P1 fix: Case E — treated stratum has raw controls but
+        zero positive-weight controls.
+
+        Row-count guards (Case B/C) pass because stratum 0 has 10 raw
+        controls vs 5 treated. But the placebo allocator computes
+        pseudo-treated means as ``np.average(Y, weights=w_control)``;
+        if every stratum-0 control has weight 0, every draw's pseudo-
+        treated subset has zero weight sum (ZeroDivisionError on
+        np.average). Previously the retry loop swallowed each failure
+        and the fit reported ``SE=0.0`` with a generic
+        ``n_successful=0`` warning. The new Case E fit-time guard
+        rejects up-front with a targeted ValueError.
+        """
+        df = sdid_survey_data_full_design.copy()
+        # Zero out survey weights for all stratum-0 controls (units 5-14).
+        # Treated units (0-4) and stratum-1 controls (15-29) keep
+        # positive weights, so Cases B/C still pass.
+        df.loc[df["unit"].isin(range(5, 15)), "weight"] = 0.0
+
+        sd = SurveyDesign(weights="weight", strata="stratum", psu="psu")
+        est = SyntheticDiD(variance_method="placebo", n_bootstrap=30, seed=42)
+        with pytest.raises(
+            ValueError,
+            match=r"at least n_treated controls with positive survey weight",
         ):
             est.fit(
                 df,

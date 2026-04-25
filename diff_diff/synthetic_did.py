@@ -869,6 +869,7 @@ class SyntheticDiD(DifferenceInDifferences):
                 _strata_treated_eff, return_counts=True
             )
             has_nondegenerate_stratum = False
+            assert w_control is not None  # always set on full-design survey
             for h, n_t_h in zip(unique_treated_strata, treated_counts):
                 n_c_h = int(np.sum(_strata_control_eff == h))
                 if n_c_h == 0:
@@ -893,6 +894,31 @@ class SyntheticDiD(DifferenceInDifferences):
                         "variance_method='bootstrap' (which supports the "
                         "same full survey design via weighted-FW + Rao-Wu "
                         "without a permutation-feasibility constraint)."
+                    )
+                # Case E (R9 P1) — row-count guards passed (n_c_h ≥ n_t_h)
+                # but the stratum has fewer positive-weight controls
+                # than treated. The placebo allocator computes pseudo-
+                # treated means as ``np.average(Y, weights=w_control[idx])``;
+                # if too few controls have positive weight, draws can
+                # pick all-zero-weight subsets (ZeroDivisionError on
+                # np.average) and the retry loop swallows them as a
+                # generic ``n_successful=0`` warning + ``SE=0.0``.
+                # Front-door the targeted error.
+                w_in_h = w_control[_strata_control_eff == h]
+                n_c_h_positive = int(np.sum(w_in_h > 0))
+                if n_c_h_positive < int(n_t_h):
+                    raise ValueError(
+                        "Stratified-permutation placebo requires at least "
+                        "n_treated controls with positive survey weight "
+                        "per stratum containing treated units (the "
+                        "pseudo-treated mean uses survey-weighted "
+                        f"averaging); stratum {h} has {n_c_h_positive} "
+                        f"positive-weight controls (out of {n_c_h} total) "
+                        f"but {int(n_t_h)} treated units. Either rebalance "
+                        "the panel, drop the undersupplied stratum, or use "
+                        "variance_method='bootstrap' (which supports the "
+                        "same full survey design via weighted-FW + Rao-Wu "
+                        "without a per-draw positive-mass constraint)."
                     )
                 if n_c_h > int(n_t_h):
                     has_nondegenerate_stratum = True
