@@ -78,7 +78,7 @@ from diff_diff.local_linear import (
 )
 from diff_diff.survey import (
     HAD_DEPRECATION_MSG_SURVEY_KWARG,
-    HAD_DEPRECATION_MSG_WEIGHTS_KWARG_DATA_IN,
+    HAD_DEPRECATION_MSG_WEIGHTS_KWARG_HAD_FIT,
     HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN,
     SurveyMetadata,
     compute_survey_metadata,
@@ -2927,7 +2927,7 @@ class HeterogeneousAdoptionDiD:
             survey_design = survey
         elif weights is not None:
             warnings.warn(
-                HAD_DEPRECATION_MSG_WEIGHTS_KWARG_DATA_IN,
+                HAD_DEPRECATION_MSG_WEIGHTS_KWARG_HAD_FIT,
                 DeprecationWarning,
                 stacklevel=2,
             )
