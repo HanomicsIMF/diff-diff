@@ -1109,24 +1109,29 @@ def test_treatment_dose_continuous_zero_baseline():
 
 def test_treatment_dose_descriptive_fields_supplement_existing_gates():
     """Regression: most TreatmentDoseShape fields are descriptive
-    distributional context that supplements (does not replace) the
-    existing top-level `PanelProfile` screening checks. The relevant
-    profile-side gates `has_never_treated` (unit-level) and
-    `treatment_varies_within_unit` (per-unit full-path constancy)
-    fire correctly on the contradictory cases below:
+    distributional context. The agent-side preflight checks the
+    profile exposes for the standard ContinuousDiD workflow (where
+    `first_treat` is derived from the same dose column passed to
+    `profile_panel`) include `has_never_treated` and
+    `treatment_varies_within_unit`. The two cases below exercise
+    those preflight signals, which are predictive under the
+    standard workflow but are not the literal `ContinuousDiD.fit()`
+    gates (the estimator's own gates key off `first_treat`):
 
     1. `0,0,d,d` within-unit dose path: a single unit toggles between
        zero (pre-treatment) and a single nonzero dose `d` (post). The
        PanelProfile.treatment_varies_within_unit field correctly fires
-       True (matching ContinuousDiD.fit()'s
-       `df.groupby(unit)[dose].nunique() > 1` rejection at line 224 of
-       continuous_did.py). TreatmentDoseShape carries descriptive
-       context only.
+       True. This IS the actual fit-time gate (line 222-228 of
+       continuous_did.py uses `df.groupby(unit)[dose].nunique() > 1`
+       independent of `first_treat`).
     2. Row-level zeros without never-treated: every unit eventually
        gets treated, but pre-treatment rows have dose=0. has_zero_dose
        fires True (row-level), while has_never_treated correctly fires
-       False (unit-level). ContinuousDiD requires has_never_treated,
-       which is the authoritative gate the agent must consult."""
+       False (unit-level). Under the standard workflow this signals
+       no `first_treat == 0` units exist, so the agent should expect
+       ContinuousDiD's `n_control == 0` rejection unless they
+       deliberately relabel some units (force-zero coercion path,
+       methodology shifts)."""
     # Case 1: 0,0,d,d within-unit path
     rows1 = []
     for u in range(1, 21):
@@ -1143,8 +1148,9 @@ def test_treatment_dose_descriptive_fields_supplement_existing_gates():
     assert profile1.treatment_type == "continuous"
     assert profile1.treatment_varies_within_unit is True, (
         "treatment_varies_within_unit must fire True on `0,0,d,d` paths "
-        "(matching ContinuousDiD.fit() unit-level full-path nunique check); "
-        "this is the authoritative gate, not any TreatmentDoseShape field."
+        "(matching ContinuousDiD.fit() unit-level full-path nunique check at "
+        "line 222-228 of continuous_did.py); this is an actual fit-time gate "
+        "that holds independent of `first_treat`."
     )
 
     # Case 2: row-level zeros, no never-treated units
@@ -1163,23 +1169,29 @@ def test_treatment_dose_descriptive_fields_supplement_existing_gates():
     assert dose2 is not None
     assert dose2.has_zero_dose is True, "row-level zero dose rows are present"
     assert profile2.has_never_treated is False, (
-        "every unit eventually treated -> has_never_treated must be False; "
-        "ContinuousDiD requires has_never_treated, so this panel fails the "
-        "authoritative gate even though row-level has_zero_dose==True."
+        "every unit eventually treated -> has_never_treated must be False, "
+        "even though row-level has_zero_dose==True. Under the standard "
+        "ContinuousDiD workflow, has_never_treated==False signals to the "
+        "agent that no `first_treat == 0` units exist; the panel will fail "
+        "ContinuousDiD's `n_control == 0` check unless the agent relabels."
     )
 
 
 def test_treatment_dose_min_flags_negative_dose_continuous_panels():
     """Regression: a balanced, never-treated, time-invariant continuous
-    panel that otherwise satisfies every documented `ContinuousDiD`
-    field-based gate must still be rejected at fit time when the
-    treated-dose support is negative. `ContinuousDiD.fit()` raises
-    `ValueError` at `continuous_did.py:287-294` ("Dose must be strictly
-    positive for treated units (D > 0)"). The guide and docstring
-    therefore list `treatment_dose.dose_min > 0` as a ContinuousDiD
-    pre-fit gate; this test asserts that an agent reading
-    `dose_min == -1.5` knows the panel is out of ContinuousDiD scope
-    even though all other gates pass."""
+    panel with negative non-zero treated doses fails the standard-
+    workflow `dose_min > 0` preflight check. Under the standard
+    workflow (`first_treat` derived from the dose column), the
+    negative-dose units would be labeled `first_treat > 0` and
+    `ContinuousDiD.fit()` would raise `ValueError` at
+    `continuous_did.py:287-294` ("Dose must be strictly positive for
+    treated units (D > 0)"). Agents who deliberately relabel
+    negative-dose units as `first_treat == 0` instead would trigger
+    the force-zero coercion path with a `UserWarning`, but the
+    methodology shifts. This test asserts that the profile correctly
+    surfaces `dose_min < 0` so an agent can choose between
+    re-encoding the treatment, relabeling, or routing to a different
+    estimator before reaching `fit()`."""
     rng = np.random.default_rng(41)
     rows = []
     for u in range(1, 21):
@@ -1197,18 +1209,20 @@ def test_treatment_dose_min_flags_negative_dose_continuous_panels():
             rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
     df = pd.DataFrame(rows)
     profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
-    # All other ContinuousDiD gates pass:
+    # All other standard-workflow preflight checks pass:
     assert profile.treatment_type == "continuous"
     assert profile.has_never_treated is True
     assert profile.treatment_varies_within_unit is False
     assert profile.is_balanced is True
     assert "duplicate_unit_time_rows" not in {a.code for a in profile.alerts}
-    # But dose_min > 0 fails: ContinuousDiD would raise at fit time.
+    # But dose_min > 0 fails: under the standard workflow,
+    # ContinuousDiD.fit() would raise on the negative-dose treated
+    # units. (Relabel-to-`first_treat==0` would coerce instead.)
     dose = profile.treatment_dose
     assert dose is not None
     assert dose.dose_min < 0, (
         "Fixture must have negative dose_min so the agent's "
-        "ContinuousDiD pre-fit gate check (`dose_min > 0`) correctly "
+        "standard-workflow preflight check (`dose_min > 0`) correctly "
         "fires False on this panel."
     )
 

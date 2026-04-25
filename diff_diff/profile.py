@@ -67,51 +67,67 @@ class TreatmentDoseShape:
 
     Populated on :class:`PanelProfile` only when ``treatment_type ==
     "continuous"``; ``None`` otherwise. Most fields are descriptive
-    distributional context. ``dose_min > 0`` is also one of the
-    **profile-side screening checks** an agent runs before calling
-    ``ContinuousDiD.fit()``.
+    distributional context.
 
-    The profile-side screening checks (everything ``profile_panel``
-    can see from the four columns it accepts) are:
+    **profile_panel only sees the dose column**, not the separate
+    ``first_treat`` column ``ContinuousDiD.fit()`` consumes. The
+    estimator's actual fit-time gates key off ``first_treat`` (it
+    defines never-treated controls as ``first_treat == 0``,
+    force-zeroes nonzero ``dose`` on ``first_treat == 0`` rows with a
+    ``UserWarning``, drops units where ``first_treat > 0`` AND
+    ``dose == 0``, and rejects negative dose only among treated units
+    where ``first_treat > 0``; see ``continuous_did.py:276-327`` and
+    ``:348-360``). The profile-side facts below are therefore
+    **conservative agent-side preflight checks**, predictive of
+    ``ContinuousDiD.fit()`` success **only under the standard
+    workflow** where the agent derives ``first_treat`` from the same
+    dose column the profile reports on (``first_treat == 0`` for
+    units that are never treated according to the dose column;
+    ``first_treat`` set to the first treated period for the rest):
 
     1. ``PanelProfile.has_never_treated == True`` (unit-level
-       never-treated existence on the treatment column; this is the
-       profile-side proxy for ``ContinuousDiD``'s ``P(D=0) > 0``
-       requirement, which the estimator enforces under both
+       all-zero treatment existence). Under the standard workflow
+       this implies a ``first_treat == 0`` unit will exist; the
+       estimator requires ``P(D=0) > 0`` under both
        ``control_group="never_treated"`` and
        ``control_group="not_yet_treated"`` because Remark 3.1
-       lowest-dose-as-control is not yet implemented).
+       lowest-dose-as-control is not yet implemented. Agents who
+       label positive-dose units as ``first_treat == 0`` (relabeling
+       trick) trigger the force-zero coercion path instead and can
+       still fit, but should document the methodological choice.
     2. ``PanelProfile.treatment_varies_within_unit == False`` (per-unit
-       full-path dose constancy on the treatment column, the
-       profile-side proxy for ``ContinuousDiD.fit()``'s
-       ``df.groupby(unit)[dose].nunique() > 1`` rejection).
-    3. ``PanelProfile.is_balanced == True``.
-    4. Absence of the ``duplicate_unit_time_rows`` alert
-       (``ContinuousDiD``'s precompute path silently resolves
-       duplicate ``(unit, time)`` cells via last-row-wins).
-    5. ``treatment_dose.dose_min > 0`` — strictly positive treated
-       doses; ``ContinuousDiD.fit()`` raises ``ValueError`` on
-       negative dose support (``continuous_did.py:287-294``).
+       full-path dose constancy on the treatment column). This IS
+       the actual fit-time gate, matching ``ContinuousDiD.fit()``'s
+       ``df.groupby(unit)[dose].nunique() > 1`` rejection at line
+       222-228; not first_treat-dependent.
+    3. ``PanelProfile.is_balanced == True``. Actual fit-time gate
+       (``continuous_did.py:329-338``).
+    4. Absence of the ``duplicate_unit_time_rows`` alert. The
+       precompute path silently resolves duplicate ``(unit, time)``
+       cells via last-row-wins (``continuous_did.py:818-823``);
+       agents must remove duplicates to avoid silent overwrite.
+    5. ``treatment_dose.dose_min > 0``. ``ContinuousDiD.fit()``
+       raises ``ValueError`` on negative dose only for
+       ``first_treat > 0`` units (``continuous_did.py:287-294``);
+       under the standard workflow this maps to ``dose_min > 0`` on
+       the treatment column. Negative-dose units labeled as
+       ``first_treat == 0`` are coerced to dose=0 instead, with a
+       ``UserWarning``.
 
-    These five checks are necessary but **not sufficient**:
-    ``ContinuousDiD.fit()`` takes a separate ``first_treat`` column
-    (which ``profile_panel`` does not see) and applies additional
-    validation: rejects NaN ``first_treat`` rows, recodes
-    ``+inf`` to 0 with a ``UserWarning``, rejects negative
-    ``first_treat``, drops units with ``first_treat > 0`` AND
-    ``dose == 0``, and force-zeroes ``first_treat == 0`` rows whose
-    ``dose != 0`` with a ``UserWarning``. A panel that passes all
-    five profile-side screens can still surface warnings, drop rows,
-    or raise at fit time depending on the ``first_treat`` column the
-    caller supplies. Treat the profile-side set as a pre-flight
-    screen, not the complete contract.
+    Practical rule: under the standard workflow, panels that fail
+    any of (1) or (5) require either re-encoding the treatment to
+    non-negative support, supplying never-treated controls, or
+    accepting the force-zero coercion path. Failures of (2), (3),
+    or (4) are hard fit-time stops independent of how ``first_treat``
+    is constructed.
 
     ``has_zero_dose`` is a row-level fact ("at least one observation has
     dose == 0"); it is NOT a substitute for ``has_never_treated``, which
-    is the unit-level field ContinuousDiD actually requires. A panel can
-    have ``has_zero_dose == True`` (pre-treatment zero rows) while
-    ``has_never_treated == False`` (every unit eventually treated), in
-    which case ContinuousDiD would still reject the panel.
+    is the unit-level field. A panel can have ``has_zero_dose == True``
+    (pre-treatment zero rows) while ``has_never_treated == False`` (every
+    unit eventually treated), in which case the standard-workflow agent
+    would conclude no never-treated controls exist before calling
+    ``ContinuousDiD.fit()``.
     """
 
     n_distinct_doses: int
