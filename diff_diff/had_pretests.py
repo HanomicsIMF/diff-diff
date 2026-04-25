@@ -614,10 +614,19 @@ class HADPretestReport:
         ``pretrends_joint is not None and
         np.isfinite(pretrends_joint.p_value)``,
         ``np.isfinite(homogeneity_joint.p_value)``, AND none of the
-        three rejects. On the **survey/weights path** (Phase 4.5 C): the
-        QUG-conclusiveness gate is dropped (qug=None per C0 deferral);
-        ``True`` iff at least one linearity test is conclusive AND no
-        conclusive test rejects (linearity-conditional admissibility).
+        three rejects. On the **survey/weights path** (Phase 4.5 C) the
+        QUG-conclusiveness gate is dropped (``qug=None`` per C0
+        deferral); the linearity-conditional rule splits by aggregate:
+
+        - ``aggregate="overall"`` survey: True iff at least one of
+          Stute/Yatchew is conclusive AND no conclusive test rejects.
+        - ``aggregate="event_study"`` survey: True iff
+          ``pretrends_joint`` is non-None and conclusive,
+          ``homogeneity_joint`` is conclusive, AND neither rejects.
+          (Both joint variants must be conclusive on the event-study
+          path - same step-2 + step-3 closure as the unweighted
+          aggregate, just without the QUG step.)
+
         Mirrors Phase 3's ``bool(np.isfinite(p_value))`` convention - no
         ``.conclusive()`` helper on any result dataclass.
     verdict : str
