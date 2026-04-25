@@ -5661,23 +5661,54 @@ class TestByPathSupTBands:
             assert entry["method"] == "multiplier_bootstrap"
             assert entry["n_valid_horizons"] >= 2
 
-    def test_path_sup_t_seed_reproducibility(self):
-        """Same seed -> bit-identical ``crit_value`` for every path."""
+    @pytest.mark.parametrize("bootstrap_weights", ["rademacher", "mammen", "webb"])
+    def test_path_sup_t_seed_reproducibility(self, bootstrap_weights):
+        """Same seed -> bit-identical ``crit_value`` for every path,
+        across all three multiplier-weight families. Pins that the
+        per-path sup-t branch correctly threads ``bootstrap_weights``
+        through ``_generate_psu_or_group_weights`` and that
+        Rademacher / Mammen / Webb each produce a finite, reproducible
+        crit (the helper handles all three uniformly under the
+        existing OVERALL sup-t machinery; this is a per-path direct
+        regression on that contract)."""
         data = _by_path_three_path_data()
         _est_a, res_a = self._fit_with_bootstrap(
-            data, by_path=3, L_max=3, n_bootstrap=200, seed=42
+            data,
+            by_path=3,
+            L_max=3,
+            n_bootstrap=200,
+            seed=42,
+            bootstrap_weights=bootstrap_weights,
         )
         _est_b, res_b = self._fit_with_bootstrap(
-            data, by_path=3, L_max=3, n_bootstrap=200, seed=42
+            data,
+            by_path=3,
+            L_max=3,
+            n_bootstrap=200,
+            seed=42,
+            bootstrap_weights=bootstrap_weights,
         )
         assert res_a.path_sup_t_bands is not None
         assert res_b.path_sup_t_bands is not None
         assert set(res_a.path_sup_t_bands.keys()) == set(res_b.path_sup_t_bands.keys())
+        # At least one path should produce a finite crit on this fixture
+        # (3 paths each with 3 valid horizons under all three weight
+        # families); pinning that the new dispatch path actually fires
+        # for `mammen` / `webb`, not just `rademacher`.
+        assert len(res_a.path_sup_t_bands) >= 1, (
+            f"bootstrap_weights={bootstrap_weights}: expected at least "
+            f"one path with a finite crit; got empty dict"
+        )
         for path in res_a.path_sup_t_bands:
             crit_a = res_a.path_sup_t_bands[path]["crit_value"]
             crit_b = res_b.path_sup_t_bands[path]["crit_value"]
+            assert np.isfinite(crit_a), (
+                f"bootstrap_weights={bootstrap_weights} path={path}: "
+                f"crit_value not finite ({crit_a})"
+            )
             assert crit_a == crit_b, (
-                f"path={path}: seed-pinned crits diverge: {crit_a} vs {crit_b}"
+                f"bootstrap_weights={bootstrap_weights} path={path}: "
+                f"seed-pinned crits diverge: {crit_a} vs {crit_b}"
             )
 
     def test_path_sup_t_skipped_when_path_has_only_one_valid_horizon(self):
