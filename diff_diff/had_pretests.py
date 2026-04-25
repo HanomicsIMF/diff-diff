@@ -2804,14 +2804,19 @@ def did_had_pretest_workflow(
        decision gate). Extreme-order-statistic tests are not smooth
        functionals of the empirical CDF and have no off-the-shelf
        survey-aware analog. See :func:`qug_test` Notes.
-    2. Survey support for the linearity-family pretests (:func:`stute_test`,
-       :func:`yatchew_hr_test`, :func:`stute_joint_pretest`,
-       :func:`joint_pretrends_test`, :func:`joint_homogeneity_test`) is
-       planned for Phase 4.5 C via Rao-Wu rescaled bootstrap. Until that
-       ships those sister pretests still raise bare ``TypeError`` on
-       ``survey=`` / ``weights=`` because their signatures are closed
-       (no kwargs added) -- adding rejection-only kwargs in C0 then
-       implementing in C is API churn for no user benefit.
+    2. Survey support for the linearity-family pretests is planned for
+       Phase 4.5 C, with mechanism varying by test: Rao-Wu rescaled
+       bootstrap for the Stute family (:func:`stute_test`,
+       :func:`stute_joint_pretest`, :func:`joint_pretrends_test`,
+       :func:`joint_homogeneity_test`) -- weighted multipliers + PSU
+       clustering in the bootstrap draw; weighted OLS residuals +
+       weighted variance estimator for :func:`yatchew_hr_test` (Yatchew
+       1997 is a closed-form variance-ratio test, not bootstrap-based).
+       Until C ships, those sister pretests still raise bare
+       ``TypeError`` on ``survey=`` / ``weights=`` because their
+       signatures are closed (no kwargs added) -- adding rejection-only
+       kwargs in C0 then implementing in C is API churn for no user
+       benefit.
 
     Until Phase 4.5 C ships, run the workflow without ``survey`` /
     ``weights`` kwargs and verify identification manually.
@@ -2848,8 +2853,13 @@ def did_had_pretest_workflow(
             "QUG-under-survey is permanently deferred (extreme-value "
             "theory under complex sampling is not a settled toolkit; see "
             "qug_test docstring for the methodology rationale). Survey "
-            "support for stute_test, yatchew_hr_test, and joint variants "
-            "is planned for Phase 4.5 C via Rao-Wu rescaled bootstrap. "
+            "support for the linearity-family pretests is planned for "
+            "Phase 4.5 C, with mechanism varying by test: Rao-Wu "
+            "rescaled bootstrap for the Stute family (stute_test, "
+            "stute_joint_pretest, joint_pretrends_test, "
+            "joint_homogeneity_test); weighted OLS residuals + weighted "
+            "variance estimator for yatchew_hr_test (Yatchew 1997 is a "
+            "closed-form variance-ratio test, not bootstrap-based). "
             "Until that ships, run the workflow without survey/weights "
             "kwargs and verify identification manually."
         )
