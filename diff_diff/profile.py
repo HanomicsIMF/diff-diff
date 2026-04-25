@@ -87,13 +87,19 @@ class TreatmentDoseShape:
        lowest-dose-as-control not yet implemented), because the
        canonical setup ties ``first_treat == 0`` to ``D_i == 0``.
        Failure means no never-treated controls exist on the dose
-       column — the documented fixes are to re-encode the treatment
-       to a scale that contains a true never-treated group, or to
-       route to a different estimator (linear DiD with continuous
-       covariate, ``HeterogeneousAdoptionDiD`` for graded
-       adoption). Do **not** relabel positive-dose units as
-       ``first_treat == 0``: REGISTRY does not document this as a
-       routing option.
+       column. ``ContinuousDiD`` as currently implemented does not
+       apply (the paper's lowest-dose-as-control fallback in Remark
+       3.1 is not implemented here). Routing alternatives that do
+       not require ``P(D=0) > 0``: ``HeterogeneousAdoptionDiD`` for
+       graded-adoption designs, or linear DiD with the treatment
+       as a continuous covariate. Re-encoding the treatment column
+       to a different scale is an agent-side preprocessing choice
+       that changes the estimand; it is **not** documented in
+       REGISTRY as a supported fallback. Do **not** relabel
+       positive-dose units as ``first_treat == 0`` either: that
+       triggers ``fit()``'s force-zero coercion path, which is
+       implementation behavior for inconsistent inputs and is also
+       not a documented routing option.
     2. ``PanelProfile.treatment_varies_within_unit == False``
        (per-unit full-path dose constancy on the dose column). This
        IS the actual fit-time gate, matching
@@ -117,8 +123,13 @@ class TreatmentDoseShape:
        Under the canonical setup, treated units carry their dose
        across all periods so ``dose_min`` over non-zero values
        reflects the smallest treated dose. Failure means some
-       treated units have negative dose — re-encode the treatment
-       to a non-negative scale, or route to a different estimator.
+       treated units have negative dose; ``ContinuousDiD`` as
+       currently implemented does not apply. Routing alternatives:
+       ``HeterogeneousAdoptionDiD`` or linear DiD with the
+       treatment as a continuous covariate. Re-encoding the
+       treatment to a non-negative scale is an agent-side
+       preprocessing choice that changes the estimand; not
+       documented in REGISTRY as a supported fallback.
        The estimator's force-zero coercion on ``first_treat == 0``
        rows with nonzero ``dose`` is implementation behavior for
        inconsistent inputs (e.g. an accidentally-nonzero row on a

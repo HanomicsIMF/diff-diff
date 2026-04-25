@@ -1135,12 +1135,16 @@ def test_treatment_dose_descriptive_fields_supplement_existing_gates():
        False (unit-level). With a `first_treat` column consistent
        with the dose column on per-unit treated/untreated status,
        `ContinuousDiD.fit()` will reject the panel via
-       `n_control == 0`. The registry-documented fixes are to
-       re-encode the treatment column to a non-negative scale that
-       contains a true never-treated group, or to route to a
-       different estimator (linear DiD with continuous covariate,
-       or `HeterogeneousAdoptionDiD`) — not to relabel units to
-       manufacture controls via the force-zero coercion path."""
+       `n_control == 0`. `ContinuousDiD` as currently implemented
+       does not apply (Remark 3.1 lowest-dose-as-control is not
+       implemented). Routing alternatives that do not require
+       `P(D=0) > 0` include linear DiD with the treatment as a
+       continuous covariate and `HeterogeneousAdoptionDiD` for
+       graded-adoption designs. Re-encoding the treatment column
+       is an agent-side preprocessing choice that changes the
+       estimand and is not documented in REGISTRY. Do not relabel
+       units to manufacture controls via the force-zero coercion
+       path."""
     # Case 1: 0,0,d,d within-unit path
     rows1 = []
     for u in range(1, 21):
@@ -1179,11 +1183,14 @@ def test_treatment_dose_descriptive_fields_supplement_existing_gates():
     assert dose2.has_zero_dose is True, "row-level zero dose rows are present"
     assert profile2.has_never_treated is False, (
         "every unit eventually treated -> has_never_treated must be False, "
-        "even though row-level has_zero_dose==True. Under the standard "
-        "ContinuousDiD workflow, has_never_treated==False signals to the "
+        "even though row-level has_zero_dose==True. Under the canonical "
+        "ContinuousDiD setup, has_never_treated==False signals to the "
         "agent that no `first_treat == 0` units exist; ContinuousDiD.fit() "
-        "will reject the panel via `n_control == 0`. The documented fixes "
-        "are to re-encode the treatment or route to a different estimator."
+        "will reject the panel via `n_control == 0`. ContinuousDiD as "
+        "currently implemented does not apply on this panel; routing "
+        "alternatives include HeterogeneousAdoptionDiD or linear DiD with "
+        "a continuous covariate. Re-encoding is an agent-side preprocessing "
+        "choice not documented in REGISTRY as a supported fallback."
     )
 
 
@@ -1197,14 +1204,18 @@ def test_treatment_dose_min_flags_negative_dose_continuous_panels():
     status (negative-dose units labeled `first_treat > 0`),
     `ContinuousDiD.fit()` would raise `ValueError` at
     `continuous_did.py:287-294` ("Dose must be strictly positive for
-    treated units (D > 0)"). The registry-documented fixes are to
-    re-encode the treatment to a non-negative scale or route to a
-    different estimator; the force-zero coercion path on
-    `first_treat == 0` rows is implementation behavior for
-    inconsistent inputs and is not a documented routing option. This
-    test asserts that the profile correctly surfaces `dose_min < 0`
-    so an agent can pick between re-encoding and a different
-    estimator before reaching `fit()`."""
+    treated units (D > 0)"). `ContinuousDiD` as currently
+    implemented does not apply on this panel. Routing alternatives
+    that do not require `P(D=0) > 0` include
+    `HeterogeneousAdoptionDiD` and linear DiD with a continuous
+    covariate; re-encoding the treatment to a non-negative scale is
+    an agent-side preprocessing choice that changes the estimand
+    and is not documented in REGISTRY as a supported fallback. The
+    force-zero coercion path on `first_treat == 0` rows is
+    implementation behavior for inconsistent inputs and is not a
+    documented routing option. This test asserts that the profile
+    correctly surfaces `dose_min < 0` so an agent can choose an
+    alternative estimator before reaching `fit()`."""
     rng = np.random.default_rng(41)
     rows = []
     for u in range(1, 21):
@@ -1222,7 +1233,7 @@ def test_treatment_dose_min_flags_negative_dose_continuous_panels():
             rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
     df = pd.DataFrame(rows)
     profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
-    # All other standard-workflow preflight checks pass:
+    # All other canonical-setup preflight checks pass:
     assert profile.treatment_type == "continuous"
     assert profile.has_never_treated is True
     assert profile.treatment_varies_within_unit is False
@@ -1232,9 +1243,11 @@ def test_treatment_dose_min_flags_negative_dose_continuous_panels():
     # (per-unit time-invariant dose + separate first_treat with
     # negative-dose units labeled first_treat > 0), fit() would raise
     # at line 287-294 ("Dose must be strictly positive for treated
-    # units"). The documented fixes are to re-encode the treatment to
-    # a non-negative scale or route to a different estimator;
-    # relabeling-to-first_treat==0 is not a documented routing option.
+    # units"). ContinuousDiD as currently implemented does not apply.
+    # Routing alternatives include HeterogeneousAdoptionDiD or linear
+    # DiD with a continuous covariate; re-encoding is an agent-side
+    # preprocessing choice not documented in REGISTRY as a fallback.
+    # Relabeling-to-first_treat==0 is not a documented routing option.
     dose = profile.treatment_dose
     assert dose is not None
     assert dose.dose_min < 0, (

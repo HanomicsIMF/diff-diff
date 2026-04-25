@@ -241,17 +241,20 @@ view. Every field below appears as a top-level key in that dict.
   treated units carry their constant dose across all periods so
   `dose_min` over non-zero values is the smallest treated dose).
 
-  When `has_never_treated == False` or `dose_min <= 0`, the
-  registry-documented fixes are to re-encode the treatment column
-  to a non-negative scale that contains a true never-treated group,
-  or to route to a different estimator (`HeterogeneousAdoptionDiD`,
-  linear DiD with a continuous covariate). Do **not** relabel
-  positive-dose or negative-dose units as `first_treat == 0`:
-  `ContinuousDiD.fit()`'s force-zero coercion on `first_treat == 0`
-  rows with nonzero `dose` is implementation behavior for
-  inconsistent inputs (e.g., an accidentally-nonzero row on a
-  never-treated unit), not a method for manufacturing never-treated
-  controls — REGISTRY does not document it as a routing option.
+  When `has_never_treated == False` or `dose_min <= 0`,
+  `ContinuousDiD` as currently implemented does not apply (Remark
+  3.1 lowest-dose-as-control is not implemented). Routing
+  alternatives that do not require `P(D=0) > 0`:
+  `HeterogeneousAdoptionDiD` for graded-adoption designs, or
+  linear DiD with the treatment as a continuous covariate.
+  Re-encoding the treatment column (shifting, absolute value,
+  etc.) is an agent-side preprocessing choice that changes the
+  estimand and is not documented in REGISTRY as a supported
+  fallback. Do not relabel positive- or negative-dose units as
+  `first_treat == 0`: that triggers the force-zero coercion
+  path, which is implementation behavior for inconsistent inputs
+  (e.g., an accidentally-nonzero row on a never-treated unit),
+  not a documented routing option.
 
   The agent must still validate the supplied `first_treat` column
   independently: it must contain at least one `first_treat == 0`
@@ -560,13 +563,18 @@ When `treatment_type == "continuous"`:
   overwritten with last-row-wins (a hard preflight veto, not a
   fit-time raise — the agent must deduplicate before fitting); (a)
   and (e) hold under the canonical setup. When (a) or (e) fails,
-  the documented fixes are to re-encode the treatment to a
-  non-negative scale that includes a true never-treated group, or
-  to route to a different estimator. Do not relabel positive-dose
-  or negative-dose units as `first_treat == 0` to manufacture
-  controls: that triggers `ContinuousDiD.fit()`'s force-zero
-  coercion path (`UserWarning`), which is implementation behavior
-  for inconsistent inputs, not a documented methodological option.
+  `ContinuousDiD` as currently implemented does not apply (Remark
+  3.1 lowest-dose-as-control is not implemented). Routing
+  alternatives that do not require `P(D=0) > 0` are
+  `HeterogeneousAdoptionDiD` (graded adoption) and linear DiD with
+  a continuous covariate. Re-encoding the treatment column is an
+  agent-side preprocessing choice that changes the estimand and is
+  not documented in REGISTRY as a supported fallback. Do not
+  relabel positive-dose or negative-dose units as
+  `first_treat == 0` to manufacture controls: that triggers
+  `ContinuousDiD.fit()`'s force-zero coercion path
+  (`UserWarning`), which is implementation behavior for
+  inconsistent inputs, not a documented methodological option.
   Note that staggered adoption IS supported natively (adoption
   timing is expressed via the `first_treat` column, not via
   within-unit dose variation), and `ContinuousDiD.fit()` applies
@@ -586,15 +594,10 @@ When `treatment_type == "continuous"`:
   graded rather than binary.
 
 See the `TreatmentDoseShape` field reference in §2 for the full
-preflight-vs-gate breakdown: items (2) and (3) are hard fit-time
-raises, (4) is a silent last-row-wins overwrite the agent must
-prevent by deduplicating before fit, and (1) and (5) are
-standard-workflow proxies — when either fails, the
-registry-documented fixes are to re-encode the treatment column
-to a non-negative scale that contains a true never-treated group
-or to route to a different estimator. The remaining
-`treatment_dose` sub-fields provide descriptive context only;
-§5.2 walks through the screen -> fit -> validation flow.
+preflight-vs-gate breakdown and the routing-alternative discussion
+when (a) or (e) fails. The remaining `treatment_dose` sub-fields
+are descriptive context only; §5.2 walks through the screen -> fit
+-> validation flow.
 
 ### §4.8 Few treated units (one or a handful)
 
@@ -889,16 +892,19 @@ Reasoning chain:
    treated/untreated status, `ContinuousDiD.fit()` would reject
    the panel under both `control_group="never_treated"` and
    `control_group="not_yet_treated"` because Remark 3.1
-   lowest-dose-as-control is not yet implemented. The
-   registry-documented options are: (a) re-encode the treatment
-   to a scale that contains a true never-treated group; or (b)
-   route to a different estimator (linear DiD with a continuous
+   lowest-dose-as-control is not yet implemented. `ContinuousDiD`
+   as currently implemented does not apply on this panel.
+   Available routing alternatives that do not require
+   `P(D=0) > 0`: linear DiD with the treatment as a continuous
    covariate, or `HeterogeneousAdoptionDiD` for graded-adoption
-   designs) that does not require `P(D=0) > 0`. Do not relabel
-   not-yet-treated units as `first_treat == 0` to manufacture
-   controls; the force-zero coercion path is implementation
-   behavior for inconsistent inputs, not a documented method for
-   manufacturing never-treated controls.
+   designs. Re-encoding the treatment to a scale that contains a
+   true never-treated group is an agent-side preprocessing choice
+   that changes the estimand; it is not documented in REGISTRY as
+   a supported fallback. Do not relabel not-yet-treated units as
+   `first_treat == 0` to manufacture controls; the force-zero
+   coercion path is implementation behavior for inconsistent
+   inputs, not a documented method for manufacturing
+   never-treated controls.
 5. Counter-example: had `treatment_dose.dose_min < 0` (continuous
    panel with some negative-valued treated doses, e.g. a
    centered-around-zero treatment encoding), with a `first_treat`
