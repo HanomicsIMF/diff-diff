@@ -409,9 +409,17 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         depends on ``L_max``). Binary treatment only — non-binary
         treatment + ``by_path`` is deferred. Also incompatible with
         ``controls``, ``trends_linear``, ``trends_nonparam``,
-        ``heterogeneity``, ``design2``, ``honest_did``,
-        ``survey_design``, and ``n_bootstrap > 0`` for the initial
-        release (each combination raises ``NotImplementedError``).
+        ``heterogeneity``, ``design2``, ``honest_did``, and
+        ``survey_design`` (each combination raises
+        ``NotImplementedError`` in the current release).
+
+        Compatible with ``n_bootstrap > 0`` — the top-k paths are
+        enumerated once on the observed data (paths held fixed across
+        bootstrap draws, matching R ``did_multiplegt_dyn(..., by_path,
+        bootstrap=B)``) and bootstrap SE / percentile CI / percentile
+        p-value are written to ``path_effects[path]["horizons"][l]``
+        in place of the analytical fields. See REGISTRY.md for the
+        full bootstrap contract.
 
         SE convention: per-path IF parallels the joiners / leavers
         construction — the switcher-side contribution is zeroed for
@@ -948,14 +956,6 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "by_path requires L_max >= 1. The path window spans "
                     "[F_g - 1, F_g - 1 + L_max] and therefore depends on "
                     "the event-study horizon. Set L_max when calling fit()."
-                )
-            if self.n_bootstrap > 0:
-                raise NotImplementedError(
-                    "by_path combined with n_bootstrap > 0 is deferred to a "
-                    "future release: the methodology choice of whether to "
-                    "hold the path set fixed or re-enumerate paths within "
-                    "each bootstrap draw has not been resolved. Use the "
-                    "analytical plug-in SE (n_bootstrap=0) for now."
                 )
             if controls is not None:
                 raise NotImplementedError(
@@ -2602,6 +2602,35 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     }
                     eligible_group_ids_bootstrap = np.asarray(_eligible_group_ids)
 
+            # Collect per-(path, horizon) bootstrap inputs when by_path is
+            # active. Uses the sibling helper to walk the same enumeration
+            # / per-path IF / cohort-recentering pipeline that
+            # `_compute_path_effects` uses (kept separate per the review
+            # architectural preference — see `_collect_path_bootstrap_inputs`).
+            path_bootstrap_inputs = None
+            if (
+                self.by_path is not None
+                and L_max is not None
+                and L_max >= 1
+                and multi_horizon_dids is not None
+                and path_effects is not None
+                and len(path_effects) > 0
+            ):
+                path_bootstrap_inputs = _collect_path_bootstrap_inputs(
+                    D_mat=D_mat,
+                    Y_mat=Y_mat,
+                    N_mat=N_mat,
+                    baselines=baselines,
+                    first_switch_idx=first_switch_idx_arr,
+                    switch_direction=switch_direction_arr,
+                    T_g=T_g_arr,
+                    L_max=L_max,
+                    by_path=self.by_path,
+                    eligible_mask_var=eligible_mask_var,
+                    multi_horizon_dids=multi_horizon_dids,
+                    path_effects=path_effects,
+                )
+
             br = self._compute_dcdh_bootstrap(
                 n_groups_for_overall=n_groups_for_overall_var,
                 u_centered_overall=U_centered_overall,
@@ -2612,6 +2641,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 placebo_inputs=placebo_inputs,
                 multi_horizon_inputs=mh_boot_inputs,
                 placebo_horizon_inputs=pl_boot_inputs,
+                path_bootstrap_inputs=path_bootstrap_inputs,
                 group_id_to_psu_code=group_id_to_psu_code_bootstrap,
                 eligible_group_ids=eligible_group_ids_bootstrap,
                 u_per_period_overall=U_centered_pp_overall,
@@ -2640,6 +2670,16 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             # See REGISTRY.md ChaisemartinDHaultfoeuille `Note
             # (bootstrap inference surface)` and the regression test
             # ``test_bootstrap_p_value_and_ci_propagated_to_top_level``.
+            # Bootstrap contract: once the caller opts into n_bootstrap > 0,
+            # bootstrap SE / percentile CI / percentile p-value replace the
+            # analytical values. When the bootstrap SE comes back non-finite
+            # (e.g., n_bootstrap too small, degenerate bootstrap distribution,
+            # zero-IF target), the full inference tuple goes to NaN rather
+            # than silently falling back to analytical — mixing bootstrap-
+            # contract and analytical-contract semantics within one result
+            # object would be a public-surface inconsistency. Same treatment
+            # applies to the event_study_effects propagation below and the
+            # path_effects propagation further down.
             if np.isfinite(br.overall_se):
                 overall_se = br.overall_se
                 overall_p = br.overall_p_value if br.overall_p_value is not None else np.nan
@@ -2650,26 +2690,43 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     alpha=self.alpha,
                     df=_inference_df(_df_survey, resolved_survey),
                 )[0]
-            if joiners_available and br.joiners_se is not None and np.isfinite(br.joiners_se):
-                joiners_se = br.joiners_se
-                joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
-                joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
-                joiners_t = safe_inference(
-                    joiners_att,
-                    joiners_se,
-                    alpha=self.alpha,
-                    df=_inference_df(_df_survey, resolved_survey),
-                )[0]
-            if leavers_available and br.leavers_se is not None and np.isfinite(br.leavers_se):
-                leavers_se = br.leavers_se
-                leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
-                leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
-                leavers_t = safe_inference(
-                    leavers_att,
-                    leavers_se,
-                    alpha=self.alpha,
-                    df=_inference_df(_df_survey, resolved_survey),
-                )[0]
+            else:
+                overall_se = np.nan
+                overall_p = np.nan
+                overall_ci = (np.nan, np.nan)
+                overall_t = np.nan
+            if joiners_available:
+                if br.joiners_se is not None and np.isfinite(br.joiners_se):
+                    joiners_se = br.joiners_se
+                    joiners_p = br.joiners_p_value if br.joiners_p_value is not None else np.nan
+                    joiners_ci = br.joiners_ci if br.joiners_ci is not None else (np.nan, np.nan)
+                    joiners_t = safe_inference(
+                        joiners_att,
+                        joiners_se,
+                        alpha=self.alpha,
+                        df=_inference_df(_df_survey, resolved_survey),
+                    )[0]
+                else:
+                    joiners_se = np.nan
+                    joiners_p = np.nan
+                    joiners_ci = (np.nan, np.nan)
+                    joiners_t = np.nan
+            if leavers_available:
+                if br.leavers_se is not None and np.isfinite(br.leavers_se):
+                    leavers_se = br.leavers_se
+                    leavers_p = br.leavers_p_value if br.leavers_p_value is not None else np.nan
+                    leavers_ci = br.leavers_ci if br.leavers_ci is not None else (np.nan, np.nan)
+                    leavers_t = safe_inference(
+                        leavers_att,
+                        leavers_se,
+                        alpha=self.alpha,
+                        df=_inference_df(_df_survey, resolved_survey),
+                    )[0]
+                else:
+                    leavers_se = np.nan
+                    leavers_p = np.nan
+                    leavers_ci = (np.nan, np.nan)
+                    leavers_t = np.nan
 
         # ------------------------------------------------------------------
         # Step 20: Build the results dataclass
@@ -2703,7 +2760,11 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 }
             }
 
-        # Phase 2: propagate bootstrap results to event_study_effects
+        # Phase 2: propagate bootstrap results to event_study_effects.
+        # Same bootstrap-contract rule as the overall/joiners/leavers block
+        # above and the path_effects block below: non-finite bootstrap SE
+        # writes NaN to the full inference tuple rather than falling back
+        # to analytical.
         if bootstrap_results is not None and bootstrap_results.event_study_ses:
             for l_h in bootstrap_results.event_study_ses:
                 if l_h in event_study_effects:
@@ -2718,8 +2779,8 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         if bootstrap_results.event_study_p_values
                         else None
                     )
+                    eff = event_study_effects[l_h]["effect"]
                     if bs_se is not None and np.isfinite(bs_se):
-                        eff = event_study_effects[l_h]["effect"]
                         event_study_effects[l_h]["se"] = bs_se
                         event_study_effects[l_h]["p_value"] = bs_p if bs_p is not None else np.nan
                         event_study_effects[l_h]["conf_int"] = (
@@ -2728,6 +2789,11 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         event_study_effects[l_h]["t_stat"] = safe_inference(
                             eff, bs_se, alpha=self.alpha, df=None
                         )[0]
+                    else:
+                        event_study_effects[l_h]["se"] = np.nan
+                        event_study_effects[l_h]["p_value"] = np.nan
+                        event_study_effects[l_h]["conf_int"] = (np.nan, np.nan)
+                        event_study_effects[l_h]["t_stat"] = np.nan
 
             # Add sup-t bands to event_study_effects entries
             if bootstrap_results.cband_crit_value is not None:
@@ -2740,6 +2806,69 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             eff - crit * se,
                             eff + crit * se,
                         )
+
+        # Phase 3: propagate bootstrap results to path_effects (by_path).
+        # Mirrors the event_study propagation above: replace the analytical
+        # SE / p-value / CI with the bootstrap percentile statistics
+        # (Round-10 library convention — `br.path_p_values` and
+        # `br.path_cis` are already percentile-based via
+        # `compute_effect_bootstrap_stats`), and re-derive the t-stat
+        # from the bootstrap SE via `safe_inference` per the anti-pattern
+        # rule. Point estimates (`effect`, `n_obs`, `n_groups`,
+        # `frequency_rank`) are unchanged from the analytical path.
+        if (
+            bootstrap_results is not None
+            and bootstrap_results.path_ses
+            and path_effects is not None
+        ):
+            for path_key, horizon_ses in bootstrap_results.path_ses.items():
+                if path_key not in path_effects:
+                    continue
+                for l_h, bs_se in horizon_ses.items():
+                    if l_h not in path_effects[path_key]["horizons"]:
+                        continue
+                    bs_ci = (
+                        bootstrap_results.path_cis.get(path_key, {}).get(l_h)
+                        if bootstrap_results.path_cis
+                        else None
+                    )
+                    bs_p = (
+                        bootstrap_results.path_p_values.get(path_key, {}).get(l_h)
+                        if bootstrap_results.path_p_values
+                        else None
+                    )
+                    # Bootstrap replaces analytical inference for
+                    # this (path, horizon) regardless of outcome. If
+                    # the bootstrap SE is non-finite (e.g., n_bootstrap
+                    # too small, degenerate bootstrap distribution, or
+                    # zero-IF path inherited from the analytical
+                    # degenerate-cohort branch), the full inference
+                    # tuple goes to NaN — we must NOT fall back to
+                    # analytical inference here, since the caller
+                    # explicitly chose the bootstrap path by setting
+                    # n_bootstrap > 0. Falling back would silently mix
+                    # bootstrap-contract semantics with analytical-
+                    # contract semantics within the same result
+                    # object.
+                    eff_p = path_effects[path_key]["horizons"][l_h]["effect"]
+                    if bs_se is not None and np.isfinite(bs_se):
+                        path_effects[path_key]["horizons"][l_h]["se"] = bs_se
+                        path_effects[path_key]["horizons"][l_h]["p_value"] = (
+                            bs_p if bs_p is not None else np.nan
+                        )
+                        path_effects[path_key]["horizons"][l_h]["conf_int"] = (
+                            bs_ci if bs_ci is not None else (np.nan, np.nan)
+                        )
+                        path_effects[path_key]["horizons"][l_h]["t_stat"] = (
+                            safe_inference(eff_p, bs_se, alpha=self.alpha, df=None)[0]
+                        )
+                    else:
+                        path_effects[path_key]["horizons"][l_h]["se"] = np.nan
+                        path_effects[path_key]["horizons"][l_h]["p_value"] = np.nan
+                        path_effects[path_key]["horizons"][l_h]["conf_int"] = (
+                            np.nan, np.nan,
+                        )
+                        path_effects[path_key]["horizons"][l_h]["t_stat"] = np.nan
 
         # When L_max >= 1 and the per-group path is active, sync
         # overall_* from event_study_effects[1] AFTER bootstrap propagation
@@ -2905,8 +3034,20 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                         if bootstrap_results.placebo_horizon_p_values
                         else None
                     )
+                    # Same bootstrap-contract rule as overall / joiners /
+                    # leavers / event_study_effects / path_effects above:
+                    # once the caller opts into n_bootstrap > 0, the
+                    # bootstrap output replaces analytical inference on
+                    # this surface regardless of outcome. Non-finite
+                    # bootstrap SE writes NaN to the full inference tuple
+                    # rather than silently leaving analytical values in
+                    # place — that would mix bootstrap-contract and
+                    # analytical-contract semantics in the same rendered
+                    # output (dynamic placebo rows appear in
+                    # `results.to_dataframe(level="event_study")` alongside
+                    # positive-horizon entries).
+                    eff = placebo_event_study_dict[neg_key]["effect"]
                     if bs_se is not None and np.isfinite(bs_se):
-                        eff = placebo_event_study_dict[neg_key]["effect"]
                         placebo_event_study_dict[neg_key]["se"] = bs_se
                         placebo_event_study_dict[neg_key]["p_value"] = (
                             bs_p if bs_p is not None else np.nan
@@ -2920,6 +3061,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             alpha=self.alpha,
                             df=_inference_df(_df_survey, resolved_survey),
                         )[0]
+                    else:
+                        placebo_event_study_dict[neg_key]["se"] = np.nan
+                        placebo_event_study_dict[neg_key]["p_value"] = np.nan
+                        placebo_event_study_dict[neg_key]["conf_int"] = (
+                            np.nan, np.nan,
+                        )
+                        placebo_event_study_dict[neg_key]["t_stat"] = np.nan
 
         # Phase 2: build normalized_effects with SE
         normalized_effects_out: Optional[Dict[int, Dict[str, Any]]] = None
@@ -5137,6 +5285,132 @@ def _compute_path_effects(
         }
 
     return path_effects
+
+
+def _collect_path_bootstrap_inputs(
+    D_mat: np.ndarray,
+    Y_mat: np.ndarray,
+    N_mat: np.ndarray,
+    baselines: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    T_g: np.ndarray,
+    L_max: int,
+    by_path: int,
+    eligible_mask_var: np.ndarray,
+    multi_horizon_dids: Dict[int, Dict[str, Any]],
+    path_effects: Dict[Tuple[int, ...], Dict[str, Any]],
+) -> Dict[Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]]:
+    """
+    Collect per-(path, horizon) inputs for the bootstrap mixin.
+
+    Walks the same path enumeration / per-path IF / cohort-recentering
+    pipeline that ``_compute_path_effects`` uses, but returns the
+    intermediate ``(U_centered_path, n_l_path, effect_path)`` triples
+    needed by ``_compute_dcdh_bootstrap``. Lives as a sibling of
+    ``_compute_path_effects`` (not extending it) to keep the
+    already-large analytical helper focused and avoid a polymorphic
+    return shape. The bootstrap-only recomputation is O(n_paths *
+    n_groups * L_max), which is small compared to the bootstrap draw
+    loop itself.
+
+    The point estimate per ``(path, horizon)`` is read from
+    ``path_effects`` to stay bit-identical with the analytical pass;
+    the bootstrap distribution gets centered on this value by
+    ``_bootstrap_one_target`` downstream.
+
+    Returns a nested dict ``{path: {horizon: (U_centered, n, effect, None)}}``;
+    the 4th slot is always ``None`` because per-path survey-cell IFs
+    are a future wave item (the ``by_path + survey_design`` combination
+    is gated out before this helper runs).
+
+    ``_enumerate_treatment_paths`` is called again here (the analytical
+    pass already called it inside ``_compute_path_effects``). The
+    enumeration result is deterministic given identical arguments, so
+    the selected paths and group masks will match bit-for-bit. The
+    surrounding ``warnings.catch_warnings`` suppresses the overflow
+    ``UserWarning`` from the re-enumeration — the analytical pass has
+    already surfaced that warning to the caller, and re-emitting it
+    from the bootstrap helper would be a spurious duplicate.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        selected_paths, path_to_group_mask, _ = _enumerate_treatment_paths(
+            D_mat=D_mat,
+            first_switch_idx=first_switch_idx,
+            N_mat=N_mat,
+            L_max=L_max,
+            by_path=by_path,
+        )
+
+    n_groups = D_mat.shape[0]
+    cohort_keys = [
+        (
+            float(baselines[g]),
+            int(first_switch_idx[g]),
+            int(switch_direction[g]),
+        )
+        for g in range(n_groups)
+    ]
+    unique_c: Dict[Tuple[float, int, int], int] = {}
+    cid = np.zeros(n_groups, dtype=int)
+    for g in range(n_groups):
+        if not eligible_mask_var[g]:
+            cid[g] = -1
+            continue
+        key = cohort_keys[g]
+        if key not in unique_c:
+            unique_c[key] = len(unique_c)
+        cid[g] = unique_c[key]
+    cohort_id_eligible = cid[eligible_mask_var]
+
+    path_bootstrap_inputs: Dict[
+        Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]
+    ] = {}
+
+    for path in selected_paths:
+        switcher_mask = path_to_group_mask[path]
+
+        per_path_if = _compute_per_group_if_multi_horizon(
+            D_mat=D_mat,
+            Y_mat=Y_mat,
+            N_mat=N_mat,
+            baselines=baselines,
+            first_switch_idx=first_switch_idx,
+            switch_direction=switch_direction,
+            T_g=T_g,
+            L_max=L_max,
+            set_ids=None,
+            compute_per_period=False,
+            switcher_subset_mask=switcher_mask,
+        )
+
+        horizon_inputs: Dict[int, Tuple[np.ndarray, int, float, None]] = {}
+        path_analytical = path_effects.get(path)
+        if path_analytical is None:
+            continue
+
+        for l_h in range(1, L_max + 1):
+            U_l_path, _ = per_path_if[l_h]
+            did_g_l = multi_horizon_dids[l_h].get("did_g_l")
+            if did_g_l is None:
+                continue
+            n_l_path = int(np.sum(switcher_mask & ~np.isnan(did_g_l)))
+            if n_l_path == 0:
+                continue
+
+            U_l_path_elig = U_l_path[eligible_mask_var]
+            U_centered_path = _cohort_recenter(U_l_path_elig, cohort_id_eligible)
+
+            effect_path = float(
+                path_analytical["horizons"][l_h]["effect"]
+            )
+            horizon_inputs[l_h] = (U_centered_path, n_l_path, effect_path, None)
+
+        if horizon_inputs:
+            path_bootstrap_inputs[path] = horizon_inputs
+
+    return path_bootstrap_inputs
 
 
 def _compute_per_group_if_placebo_horizon(

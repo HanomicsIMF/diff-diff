@@ -130,6 +130,22 @@ class DCDHBootstrapResults:
     placebo_horizon_p_values: Optional[Dict[int, float]] = field(default=None, repr=False)
     cband_crit_value: Optional[float] = None
 
+    # --- Phase 3: per-path bootstrap (by_path) ---
+    # Keyed by path tuple -> horizon -> scalar/pair. Populated only when
+    # by_path + n_bootstrap > 0 is active; `None` otherwise. Percentile
+    # CI + percentile p-value per library Round-10 convention; caller
+    # (fit()) propagates these to path_effects[path]["horizons"][l]
+    # directly and computes a SE-derived t-stat via `safe_inference`.
+    path_ses: Optional[Dict[Tuple[int, ...], Dict[int, float]]] = field(
+        default=None, repr=False
+    )
+    path_cis: Optional[Dict[Tuple[int, ...], Dict[int, Tuple[float, float]]]] = field(
+        default=None, repr=False
+    )
+    path_p_values: Optional[Dict[Tuple[int, ...], Dict[int, float]]] = field(
+        default=None, repr=False
+    )
+
 
 @dataclass
 class ChaisemartinDHaultfoeuilleResults:
@@ -684,21 +700,97 @@ class ChaisemartinDHaultfoeuilleResults:
         is_delta = (
             self.L_max is not None and self.L_max >= 2 and self.cost_benefit_delta is not None
         )
+        # Footer labeling is keyed off what the displayed fields actually
+        # are — with the bootstrap-contract NaN-on-invalid fix on the fit()
+        # side, ``self.overall_se`` is NaN when the bootstrap produced
+        # non-finite output, so the "multiplier-bootstrap percentile
+        # inference" claim correctly fires only when the displayed overall
+        # SE / p-value / CI were actually populated from finite bootstrap
+        # output. The event-study fallback branch also checks that at
+        # least one horizon has a finite SE before claiming bootstrap was
+        # "used for event-study horizon inference" — otherwise every
+        # bootstrap inference field is NaN and we fall through to the
+        # "bootstrap attempted but invalid" note. The `any_finite_*`
+        # predicate below expands the check to cover joiners / leavers /
+        # path_effects too: by_path zeros switcher contributions for non-
+        # path groups while keeping controls intact, so a per-path
+        # bootstrap target can produce a finite SE even when the overall
+        # / event-study bootstrap is degenerate (e.g., a reversible panel
+        # where the overall mix of joiners + leavers produces a zero
+        # centered IF while individual paths do not). Without this
+        # broader predicate, the footer would falsely claim "produced
+        # non-finite SE on every target" while a finite per-path
+        # bootstrap SE sits in the rendered output below.
+        event_study_has_finite_bootstrap_se = (
+            self.event_study_effects is not None
+            and any(
+                np.isfinite(entry.get("se", np.nan))
+                for entry in self.event_study_effects.values()
+            )
+        )
+        joiners_has_finite_bootstrap_se = (
+            self.joiners_se is not None and np.isfinite(self.joiners_se)
+        )
+        leavers_has_finite_bootstrap_se = (
+            self.leavers_se is not None and np.isfinite(self.leavers_se)
+        )
+        path_effects_has_finite_bootstrap_se = (
+            self.path_effects is not None
+            and any(
+                np.isfinite(h.get("se", np.nan))
+                for entry in self.path_effects.values()
+                for h in entry.get("horizons", {}).values()
+            )
+        )
+        any_finite_bootstrap_inference = (
+            np.isfinite(self.overall_se)
+            or event_study_has_finite_bootstrap_se
+            or joiners_has_finite_bootstrap_se
+            or leavers_has_finite_bootstrap_se
+            or path_effects_has_finite_bootstrap_se
+        )
         if self.bootstrap_results is not None and np.isfinite(self.overall_se) and not is_delta:
             lines.append("Note: p-value and CI are multiplier-bootstrap percentile inference")
             lines.append(
                 f"      ({self.bootstrap_results.n_bootstrap} iterations, "
                 f"{self.bootstrap_results.weight_type} weights)."
             )
-        elif self.bootstrap_results is not None and is_delta:
+        elif (
+            self.bootstrap_results is not None
+            and is_delta
+            and event_study_has_finite_bootstrap_se
+        ):
             lines.append(
                 f"Note: delta SE is delta-method (normal-theory) from per-horizon "
                 f"bootstrap SEs ({self.bootstrap_results.n_bootstrap} iterations)."
             )
-        elif self.bootstrap_results is not None:
+        elif self.bootstrap_results is not None and event_study_has_finite_bootstrap_se:
             lines.append(
                 f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
                 f"used for event-study horizon inference."
+            )
+        elif self.bootstrap_results is not None and any_finite_bootstrap_inference:
+            # Overall / event-study degenerated but joiners / leavers /
+            # path_effects still have finite bootstrap SE. Point the reader
+            # at the targets that succeeded rather than claiming a blanket
+            # failure.
+            live_targets = []
+            if joiners_has_finite_bootstrap_se:
+                live_targets.append("joiners")
+            if leavers_has_finite_bootstrap_se:
+                live_targets.append("leavers")
+            if path_effects_has_finite_bootstrap_se:
+                live_targets.append("per-path")
+            lines.append(
+                f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
+                f"produced non-finite SE on the overall/event-study target; "
+                f"{', '.join(live_targets)} bootstrap inference is populated."
+            )
+        elif self.bootstrap_results is not None:
+            lines.append(
+                f"Note: bootstrap ({self.bootstrap_results.n_bootstrap} iterations) "
+                f"was requested but produced non-finite SE on every target; all "
+                f"inference fields are NaN-consistent per the bootstrap contract."
             )
         else:
             lines.append(

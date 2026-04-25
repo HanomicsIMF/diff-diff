@@ -8,7 +8,9 @@ plumbing, and the results dataclass round-trip. Methodology validation
 against R) lives in ``test_methodology_chaisemartin_dhaultfoeuille.py``.
 """
 
+import json
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -3781,21 +3783,6 @@ class TestByPathGates:
                     treatment="treatment",
                 )
 
-    def test_forbids_n_bootstrap(self):
-        data = _by_path_three_path_data()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3, n_bootstrap=5)
-            with pytest.raises(NotImplementedError, match="n_bootstrap"):
-                est.fit(
-                    data,
-                    outcome="outcome",
-                    group="group",
-                    time="period",
-                    treatment="treatment",
-                    L_max=2,
-                )
-
     @pytest.mark.parametrize(
         "fit_kwargs, msg",
         [
@@ -4197,3 +4184,804 @@ class TestByPathEdgeCases:
                     # Point estimate is finite (only SE/inference NaN)
                     assert np.isfinite(h["effect"])
         assert any_nan, "Expected at least one NaN-SE (path, horizon) entry"
+
+
+@pytest.mark.slow
+class TestByPathBootstrap:
+    """
+    ``by_path`` combined with ``n_bootstrap > 0``.
+
+    Each top-k path has its pre-computed cohort-centered IF passed to the
+    existing multiplier-bootstrap mixin, which runs `n_bootstrap` draws
+    per (path, horizon) target and returns bootstrap SE / percentile CI /
+    percentile p-value. ``path_effects[path]["horizons"][l]`` is
+    overwritten post-bootstrap with those fields; ``t_stat`` is re-derived
+    from the bootstrap SE via ``safe_inference`` per the project anti-
+    pattern rule. Point estimates are unchanged from the analytical path.
+
+    Marked ``@pytest.mark.slow`` because each test runs a real bootstrap
+    with at least 100 draws. See the plan file for the SE convention
+    decision (fix paths across draws, library-consistent percentile CI).
+    """
+
+    def _fit_with_bootstrap(
+        self,
+        data,
+        by_path: int,
+        L_max: int = 3,
+        n_bootstrap: int = 100,
+        bootstrap_weights: str = "rademacher",
+        seed: int = 42,
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=by_path,
+                n_bootstrap=n_bootstrap,
+                bootstrap_weights=bootstrap_weights,
+                seed=seed,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            results = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=L_max,
+            )
+        return est, results
+
+    def test_point_estimates_preserved(self):
+        """Bootstrap fit must leave path_effects[p]['horizons'][l]['effect']
+        bit-identical to the analytical fit."""
+        data = _by_path_three_path_data()
+        _est_a, res_a = _fit_by_path(data, by_path=3, L_max=3)
+        _est_b, res_b = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=100, seed=42
+        )
+        assert res_a.path_effects is not None and res_b.path_effects is not None
+        assert set(res_a.path_effects.keys()) == set(res_b.path_effects.keys())
+        for path, entry_a in res_a.path_effects.items():
+            entry_b = res_b.path_effects[path]
+            for l_h, h_a in entry_a["horizons"].items():
+                h_b = entry_b["horizons"][l_h]
+                if np.isnan(h_a["effect"]):
+                    assert np.isnan(h_b["effect"])
+                else:
+                    np.testing.assert_allclose(
+                        h_b["effect"], h_a["effect"], atol=1e-14, rtol=1e-14,
+                        err_msg=f"path={path} l={l_h}: bootstrap changed effect",
+                    )
+
+    def test_bootstrap_se_finite_and_positive(self):
+        """On the hand-built 3-path panel, every non-degenerate (path, horizon)
+        produces a positive finite bootstrap SE."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42
+        )
+        assert res.path_effects is not None
+        any_finite = False
+        for path, entry in res.path_effects.items():
+            for l_h, h in entry["horizons"].items():
+                if h["n_obs"] >= 2:  # skip degenerate singletons
+                    assert np.isfinite(h["se"]) or np.isnan(h["se"]), (
+                        f"path={path} l={l_h}: bootstrap SE is non-finite "
+                        f"and not NaN: {h['se']}"
+                    )
+                    if np.isfinite(h["se"]):
+                        assert h["se"] > 0, (
+                            f"path={path} l={l_h}: bootstrap SE is not "
+                            f"positive: {h['se']}"
+                        )
+                        any_finite = True
+        assert any_finite, "No (path, horizon) produced a finite bootstrap SE"
+
+    def test_bootstrap_se_close_to_analytical_on_well_conditioned(self):
+        """
+        On the cohort-clean fixture scenario (path assignment deterministic
+        on F_g so every cohort is single-path), analytical and bootstrap
+        SEs compute the same within-path marginal variance, so they must
+        agree within Monte Carlo noise on (path, horizon) cells with
+        ``n_obs >= 10``. Runs on the committed R-parity fixture so no
+        extra panel construction is required.
+        """
+        golden_path = (
+            Path(__file__).parents[1]
+            / "benchmarks"
+            / "data"
+            / "dcdh_dynr_golden_values.json"
+        )
+        if not golden_path.exists():
+            pytest.skip(
+                f"dCDH golden values file not found at {golden_path}; "
+                "run: Rscript benchmarks/R/generate_dcdh_dynr_test_values.R"
+            )
+        with open(golden_path) as f:
+            sc = json.load(f)["scenarios"].get("multi_path_reversible_by_path")
+        if sc is None:
+            pytest.skip("scenario 'multi_path_reversible_by_path' absent")
+
+        data = pd.DataFrame(sc["data"])
+
+        # Analytical pass (n_bootstrap=0)
+        _est_a, res_a = _fit_by_path(data, by_path=3, L_max=3)
+        # Bootstrap pass with 500 draws for tighter Monte Carlo variance
+        _est_b, res_b = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=500, seed=2026
+        )
+        assert res_a.path_effects is not None
+        assert res_b.path_effects is not None
+
+        for path in res_a.path_effects:
+            for l_h, h_a in res_a.path_effects[path]["horizons"].items():
+                h_b = res_b.path_effects[path]["horizons"][l_h]
+                if h_a["n_obs"] < 10:
+                    continue
+                se_a = h_a["se"]
+                se_b = h_b["se"]
+                if not (np.isfinite(se_a) and np.isfinite(se_b)):
+                    continue
+                # 30% rtol envelope covers Monte Carlo variance at n=500
+                # on cohort-clean single-path cohorts.
+                rtol = abs(se_b - se_a) / se_a
+                assert rtol < 0.30, (
+                    f"path={path} l={l_h}: bootstrap SE diverges from "
+                    f"analytical beyond Monte Carlo envelope — "
+                    f"analytical={se_a:.4f} bootstrap={se_b:.4f} "
+                    f"rtol={rtol:.3f}"
+                )
+
+    def test_degenerate_cohort_still_nan(self):
+        """All-singleton cohort panel: bootstrap SE on path subsets must
+        remain NaN (inherited from the zero-IF coercion in
+        ``bootstrap_utils.compute_effect_bootstrap_stats``)."""
+        panel = pd.DataFrame(
+            {
+                "group": [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
+                "period": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2],
+                "treatment": [0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1],
+                "outcome": [
+                    10.0, 13.0, 14.0,
+                    10.0, 11.0, 9.0,
+                    10.0, 11.0, 12.0,
+                    10.0, 11.0, 12.0,
+                ],
+            }
+        )
+        _est, res = self._fit_with_bootstrap(
+            panel, by_path=2, L_max=1, n_bootstrap=100, seed=42
+        )
+        assert res.path_effects is not None
+        any_nan = False
+        for entry in res.path_effects.values():
+            for h in entry["horizons"].values():
+                if np.isnan(h["se"]):
+                    any_nan = True
+                    assert np.isnan(h["t_stat"])
+                    assert np.isnan(h["p_value"])
+                    lo, hi = h["conf_int"]
+                    assert np.isnan(lo) and np.isnan(hi)
+                    assert np.isfinite(h["effect"])
+        assert any_nan, (
+            "Expected at least one NaN-SE (path, horizon) entry under "
+            "singleton-cohort panel"
+        )
+
+    @pytest.mark.parametrize("weights", ["rademacher", "mammen", "webb"])
+    def test_bootstrap_weights_variants(self, weights):
+        """All three multiplier flavors produce finite bootstrap SE on the
+        3-path hand-built panel."""
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=100,
+            bootstrap_weights=weights, seed=42,
+        )
+        assert res.path_effects is not None
+        any_finite = False
+        for entry in res.path_effects.values():
+            for h in entry["horizons"].values():
+                if np.isfinite(h["se"]) and h["se"] > 0:
+                    any_finite = True
+        assert any_finite, (
+            f"bootstrap_weights={weights!r} produced no finite per-path SE"
+        )
+
+    def test_bootstrap_seed_reproducibility(self):
+        """Two fits with the same seed must produce bit-identical
+        per-(path, horizon) bootstrap SE."""
+        data = _by_path_three_path_data()
+        _est1, res1 = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=100, seed=2026,
+        )
+        _est2, res2 = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=100, seed=2026,
+        )
+        assert res1.path_effects is not None and res2.path_effects is not None
+        for path, entry1 in res1.path_effects.items():
+            entry2 = res2.path_effects[path]
+            for l_h, h1 in entry1["horizons"].items():
+                h2 = entry2["horizons"][l_h]
+                if np.isnan(h1["se"]):
+                    assert np.isnan(h2["se"])
+                else:
+                    np.testing.assert_array_equal(
+                        h1["se"], h2["se"],
+                        err_msg=f"path={path} l={l_h}: seed reproducibility broke",
+                    )
+
+    def test_inference_fields_match_bootstrap_results(self):
+        """
+        The post-bootstrap overwrite must take ``p_value`` and ``conf_int``
+        from the percentile bootstrap (``br.path_p_values`` and
+        ``br.path_cis``), not from a normal-theory recomputation. This
+        pins the Round-10 library convention and prevents regression to a
+        hybrid inference surface.
+        """
+        data = _by_path_three_path_data()
+        _est_a, res_a = _fit_by_path(data, by_path=3, L_max=3)
+        _est_b, res_b = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42,
+        )
+        assert res_a.path_effects is not None
+        assert res_b.path_effects is not None
+
+        found_changed_ci = False
+        for path, entry_a in res_a.path_effects.items():
+            for l_h, h_a in entry_a["horizons"].items():
+                h_b = res_b.path_effects[path]["horizons"][l_h]
+                se_a, se_b = h_a["se"], h_b["se"]
+                ci_a, ci_b = h_a["conf_int"], h_b["conf_int"]
+                if (
+                    np.isfinite(se_a)
+                    and np.isfinite(se_b)
+                    and np.isfinite(ci_a[0])
+                    and np.isfinite(ci_b[0])
+                ):
+                    # The bootstrap CI in general differs from the
+                    # analytical normal-theory CI (percentile vs
+                    # normal). We require the CI to NOT match the
+                    # analytical normal-theory CI computed from the
+                    # bootstrap SE — that would signal a regression to
+                    # `safe_inference(effect, bootstrap_se, ...)`.
+                    # Percentile CI is asymmetric around the point
+                    # estimate in general; normal-theory CI is always
+                    # symmetric (lo = eff - k*se, hi = eff + k*se). If
+                    # |hi - eff| differs from |eff - lo| by more than
+                    # 1e-9 the CI is asymmetric -> definitely
+                    # percentile, not normal-theory. Symmetric
+                    # percentile CIs still pass this test (small n or
+                    # symmetric bootstrap sample); we only require
+                    # *at least one* asymmetric cell across all (path,
+                    # horizon) entries to confirm the percentile path.
+                    eff = h_b["effect"]
+                    lo_b, hi_b = ci_b
+                    if abs((hi_b - eff) - (eff - lo_b)) > 1e-9:
+                        found_changed_ci = True
+                        break
+            if found_changed_ci:
+                break
+
+        # t-stat is SE-derived on bootstrap path too (anti-pattern rule).
+        # Assert the t-stat equals effect / se to within float precision.
+        for path, entry_b in res_b.path_effects.items():
+            for l_h, h_b in entry_b["horizons"].items():
+                if np.isfinite(h_b["se"]) and h_b["se"] > 0:
+                    expected_t = h_b["effect"] / h_b["se"]
+                    np.testing.assert_allclose(
+                        h_b["t_stat"], expected_t, atol=1e-10, rtol=1e-10,
+                        err_msg=(
+                            f"path={path} l={l_h}: t_stat should be "
+                            f"SE-derived per anti-pattern rule"
+                        ),
+                    )
+
+        assert found_changed_ci, (
+            "Expected at least one percentile CI that is asymmetric "
+            "around the point estimate (non-symmetric bounds) to prove "
+            "the bootstrap path uses percentile CI rather than a "
+            "normal-theory recomputation. If this fails, the bootstrap "
+            "bootstrap distribution was symmetric by chance — bump "
+            "n_bootstrap or change the seed and re-run."
+        )
+
+    def test_inference_fields_equal_bootstrap_results_directly(self):
+        """
+        Pin direct equality between ``path_effects[path]["horizons"][l]``
+        and ``bootstrap_results.path_{ses, cis, p_values}[path][l]``.
+        If the ``fit()`` propagation drifts (e.g., a regression that
+        recomputes normal-theory stats from the SE), these exact-match
+        assertions fail even if the asymmetric-CI check in
+        ``test_inference_fields_match_bootstrap_results`` happens to
+        pass.
+        """
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42,
+        )
+        assert res.path_effects is not None
+        br = res.bootstrap_results
+        assert br is not None
+        assert br.path_ses is not None
+        assert br.path_cis is not None
+        assert br.path_p_values is not None
+
+        checked = 0
+        for path, entry in res.path_effects.items():
+            for l_h, h in entry["horizons"].items():
+                se_br = br.path_ses.get(path, {}).get(l_h)
+                p_br = br.path_p_values.get(path, {}).get(l_h)
+                ci_br = br.path_cis.get(path, {}).get(l_h)
+                if se_br is None:
+                    continue
+                if np.isfinite(se_br):
+                    np.testing.assert_array_equal(
+                        h["se"], se_br,
+                        err_msg=(
+                            f"path={path} l={l_h}: path_effects se "
+                            f"{h['se']} != bootstrap_results.path_ses {se_br}"
+                        ),
+                    )
+                    np.testing.assert_array_equal(
+                        h["p_value"], p_br if p_br is not None else np.nan,
+                        err_msg=(
+                            f"path={path} l={l_h}: path_effects p_value "
+                            f"{h['p_value']} != "
+                            f"bootstrap_results.path_p_values {p_br}"
+                        ),
+                    )
+                    lo_e, hi_e = h["conf_int"]
+                    assert ci_br is not None
+                    lo_br, hi_br = ci_br
+                    np.testing.assert_array_equal(
+                        [lo_e, hi_e], [lo_br, hi_br],
+                        err_msg=(
+                            f"path={path} l={l_h}: path_effects conf_int "
+                            f"{(lo_e, hi_e)} != "
+                            f"bootstrap_results.path_cis {(lo_br, hi_br)}"
+                        ),
+                    )
+                    checked += 1
+        assert checked > 0, (
+            "Expected at least one (path, horizon) with direct equality "
+            "between path_effects inference fields and bootstrap_results"
+        )
+
+    def test_overflow_warning_fires_exactly_once_under_bootstrap(self):
+        """
+        When ``by_path > n_observed_paths``, ``_enumerate_treatment_paths``
+        emits a ``UserWarning``. The bootstrap helper
+        ``_collect_path_bootstrap_inputs`` re-calls the enumerator, so
+        without suppression the warning would fire twice on a bootstrap
+        fit — once from the analytical pass and once from the bootstrap
+        pass. Pin that the bootstrap path surfaces the warning exactly
+        once (analytical-pass emission only; bootstrap-pass emission
+        suppressed because it is a spurious duplicate of the same
+        fact).
+        """
+        data = _by_path_three_path_data()  # 3 observed paths
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=10,  # overflow: more than 3 observed paths
+                n_bootstrap=50,
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+        overflow_warnings = [
+            w for w in caught
+            if "exceeds the number of observed paths" in str(w.message)
+            or "more than the observed number of paths" in str(w.message)
+            or "requested but only" in str(w.message)
+        ]
+        assert len(overflow_warnings) == 1, (
+            f"Expected exactly one overflow UserWarning under "
+            f"by_path + n_bootstrap, got {len(overflow_warnings)}. "
+            f"Messages: {[str(w.message) for w in overflow_warnings]}"
+        )
+
+    def test_bootstrap_se_tracks_analytical_on_mixed_path_cohorts(self):
+        """
+        On mixed-path cohort panels — where a ``(D_{g,1}, F_g, S_g)``
+        cohort spans multiple observed paths — the analytical by_path
+        SE diverges from R's per-path re-run convention (documented in
+        REGISTRY.md as the "cross-path cohort-sharing SE" deviation).
+        Because ``_collect_path_bootstrap_inputs`` feeds the multiplier
+        bootstrap the exact same full-panel cohort-centered path IF as
+        the analytical path, bootstrap SE is a Monte Carlo analog of
+        analytical SE — it inherits the same divergence from R rather
+        than fixing it.
+
+        This regression pins that property: on a hand-built panel with
+        two paths sharing one cohort, bootstrap SE tracks analytical
+        SE within Monte Carlo noise (~30% rtol at n=500). If a future
+        refactor switched bootstrap target construction to a per-path
+        re-run (would fix the R divergence but break this parity),
+        the test fails and the REGISTRY note would need a compensating
+        update.
+        """
+        # Hand-built panel: cohort (D_{g,1}=0, F_g=2, S_g=+1) contains
+        # two paths — (0, 1, 1) and (0, 1, 0) — at L_max=2. Plus
+        # never-treated controls.
+        rng = np.random.default_rng(1234)
+        rows = []
+        # Groups 1-6: F_g=2, path (0, 1, 1)
+        for g in (1, 2, 3, 4, 5, 6):
+            D = [0, 1, 1]
+            for t, d in enumerate(D):
+                y = d * 2.0 + rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Groups 7-9: F_g=2, path (0, 1, 0) — SAME cohort as above
+        for g in (7, 8, 9):
+            D = [0, 1, 0]
+            for t, d in enumerate(D):
+                y = d * 2.0 + rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        # Never-treated controls
+        for g in (10, 11, 12, 13):
+            for t in range(3):
+                y = rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        data = pd.DataFrame(rows)
+
+        _est_a, res_a = _fit_by_path(data, by_path=2, L_max=2)
+        _est_b, res_b = self._fit_with_bootstrap(
+            data, by_path=2, L_max=2, n_bootstrap=500, seed=2026
+        )
+        assert res_a.path_effects is not None
+        assert res_b.path_effects is not None
+
+        checked = 0
+        for path, entry_a in res_a.path_effects.items():
+            for l_h, h_a in entry_a["horizons"].items():
+                h_b = res_b.path_effects[path]["horizons"][l_h]
+                se_a, se_b = h_a["se"], h_b["se"]
+                if not (np.isfinite(se_a) and np.isfinite(se_b)):
+                    continue
+                # Bootstrap SE is a Monte Carlo analog of analytical
+                # SE: both use the same full-panel cohort-centered IF,
+                # so on mixed-path cohorts they agree with each other
+                # even as they jointly diverge from R's per-path re-
+                # run convention. 30% rtol covers n=500 Monte Carlo
+                # variance at this sample size.
+                rtol = abs(se_b - se_a) / se_a
+                assert rtol < 0.30, (
+                    f"path={path} l={l_h}: bootstrap SE diverges from "
+                    f"analytical beyond Monte Carlo envelope on mixed-"
+                    f"path cohort panel — "
+                    f"analytical={se_a:.4f} bootstrap={se_b:.4f} "
+                    f"rtol={rtol:.3f}. The REGISTRY Bootstrap SE note "
+                    f"says bootstrap SE is a Monte Carlo analog of "
+                    f"analytical SE; if this test fails, either the "
+                    f"implementation changed to a per-path re-run or "
+                    f"the Monte Carlo noise is higher than expected — "
+                    f"bump n_bootstrap or review the bootstrap "
+                    f"propagation path."
+                )
+                checked += 1
+        assert checked > 0, (
+            "Expected at least one (path, horizon) with finite "
+            "analytical + bootstrap SE for the parity check"
+        )
+
+    def test_nan_contract_extends_to_placebo_event_study_horizons(self):
+        """
+        Dynamic placebo horizons go through their own bootstrap
+        propagation block at
+        ``chaisemartin_dhaultfoeuille.py::placebo_event_study_dict``
+        and surface in ``results.placebo_event_study`` and
+        ``results.to_dataframe(level="event_study")`` (negative-horizon
+        rows). Pin the same NaN-on-invalid contract as the positive
+        horizons: ``n_bootstrap=1`` on a panel with valid placebo
+        eligibility must yield NaN SE / t / p / CI on every placebo
+        entry, not the analytical values populated in the build step
+        before bootstrap propagation.
+        """
+        # Longer panel (T=5) so placebo horizons have enough cells.
+        rng = np.random.default_rng(42)
+        rows = []
+        for g in (1, 2, 3, 4, 5, 6):
+            for t in range(5):
+                d = 1 if t >= 2 else 0
+                y = d * 2.0 + rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": d, "outcome": y})
+        for g in (7, 8):
+            for t in range(5):
+                y = rng.normal(0, 0.1)
+                rows.append({"group": g, "period": t, "treatment": 0, "outcome": y})
+        data = pd.DataFrame(rows)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            est = ChaisemartinDHaultfoeuille(
+                n_bootstrap=1,  # forces non-finite bootstrap SE
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=True,  # enable placebo surface
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=2,
+            )
+
+        # If the panel + L_max produced placebo horizons, each must be
+        # NaN-consistent. If no placebos were produced, skip — the test
+        # relies on having at least one placebo row to exercise the
+        # propagation path.
+        if res.placebo_event_study is None or not res.placebo_event_study:
+            pytest.skip(
+                "placebo_event_study empty on this panel; cannot exercise "
+                "the placebo bootstrap propagation path"
+            )
+        for lag_key, entry in res.placebo_event_study.items():
+            assert np.isnan(entry["se"]), (
+                f"placebo_event_study[{lag_key}].se must be NaN under "
+                f"n_bootstrap=1; got {entry['se']}"
+            )
+            assert np.isnan(entry["t_stat"])
+            assert np.isnan(entry["p_value"])
+            lo, hi = entry["conf_int"]
+            assert np.isnan(lo) and np.isnan(hi)
+            # Effect may be NaN legitimately when N_pl_l == 0 for this
+            # lag (panel/horizon eligibility, not a bootstrap artifact).
+            # We only assert the inference-field NaN contract here.
+
+        # `to_dataframe(level="event_study")` surfaces these rows too.
+        # Negative-horizon rows must also show NaN in the inference
+        # columns.
+        df_es = res.to_dataframe(level="event_study")
+        negative_rows = df_es[df_es["horizon"] < 0]
+        if len(negative_rows) > 0:
+            for col in ("se", "t_stat", "p_value",
+                        "conf_int_lower", "conf_int_upper"):
+                assert negative_rows[col].isna().all(), (
+                    f"to_dataframe(level='event_study') negative-horizon "
+                    f"column {col!r} must be NaN under n_bootstrap=1; "
+                    f"got {negative_rows[col].tolist()}"
+                )
+
+    def test_summary_footer_mixed_validity_surfaces_live_targets(self):
+        """
+        Mixed-validity case: overall_se / event_study_ses degenerate to
+        NaN while joiners_se / leavers_se / path_effects horizons retain
+        finite bootstrap inference. ``by_path`` zeros switcher-side
+        contributions outside the selected path while keeping the control
+        pool intact, so path-level bootstrap targets can stay finite even
+        when the overall/event-study IF degenerates on a reversible
+        panel. The footer must point the reader at the live targets
+        rather than falsely claiming "non-finite SE on every target."
+
+        Uses a healthy bootstrap fit and post-hoc mutates overall_se /
+        event_study_effects to NaN, pinning the footer logic in
+        isolation from the (hard-to-engineer) natural reversible DGP
+        that produces this exact mixed-validity state.
+        """
+        data = _by_path_three_path_data()
+        _est, res = self._fit_with_bootstrap(
+            data, by_path=3, L_max=3, n_bootstrap=200, seed=42,
+        )
+        # Sanity: healthy fit has finite overall and path SEs.
+        assert np.isfinite(res.overall_se)
+        assert res.path_effects is not None
+        any_finite_path = any(
+            np.isfinite(h["se"])
+            for e in res.path_effects.values()
+            for h in e["horizons"].values()
+        )
+        assert any_finite_path
+
+        # Force overall + event_study to NaN while leaving path_effects
+        # untouched — simulates the reversible-panel scenario where the
+        # overall IF is identically zero but the by_path subset IF is
+        # not.
+        res.overall_se = float("nan")
+        res.overall_t_stat = float("nan")
+        res.overall_p_value = float("nan")
+        res.overall_conf_int = (float("nan"), float("nan"))
+        if res.event_study_effects is not None:
+            for entry in res.event_study_effects.values():
+                entry["se"] = float("nan")
+                entry["t_stat"] = float("nan")
+                entry["p_value"] = float("nan")
+                entry["conf_int"] = (float("nan"), float("nan"))
+
+        summary_text = res.summary()
+        # Must NOT claim "non-finite SE on every target"
+        assert "produced non-finite SE on every target" not in summary_text, (
+            "Footer falsely claims all-target failure while path_effects "
+            "still has finite bootstrap SE. Summary tail:\n"
+            f"{summary_text[-400:]}"
+        )
+        # Must NOT claim "multiplier-bootstrap percentile inference"
+        # (overall_se is NaN so the headline inference is not bootstrap
+        # percentile).
+        assert "multiplier-bootstrap percentile inference" not in summary_text
+        # Must mention "per-path bootstrap inference is populated"
+        assert (
+            "per-path" in summary_text
+            and "bootstrap inference is populated" in summary_text
+        ), (
+            "Footer must surface which targets retain finite bootstrap "
+            "inference when overall/event-study degenerates. Summary "
+            "tail:\n"
+            f"{summary_text[-400:]}"
+        )
+
+    def test_nan_contract_extends_to_overall_and_event_study_horizons(self):
+        """
+        The bootstrap-contract NaN-on-invalid rule applies to every
+        dCDH public inference surface, not just ``path_effects``. Pin
+        that ``n_bootstrap=1`` (which cannot produce a finite bootstrap
+        SE from a one-element distribution) propagates NaN to
+        ``overall_*``, ``joiners_*`` / ``leavers_*`` (when available),
+        AND each ``event_study_effects[l]`` entry. Prevents regression
+        to the pre-fix pattern where invalid bootstrap silently left
+        analytical values in place on these surfaces while
+        ``path_effects`` was NaN-consistent — a cross-surface
+        inconsistency inside a single result object.
+        """
+        data = _by_path_three_path_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                n_bootstrap=1,
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+
+        assert np.isnan(res.overall_se), (
+            f"n_bootstrap=1: overall_se must be NaN (bootstrap "
+            f"contract), got {res.overall_se}"
+        )
+        assert np.isnan(res.overall_t_stat)
+        assert np.isnan(res.overall_p_value)
+        lo, hi = res.overall_conf_int
+        assert np.isnan(lo) and np.isnan(hi)
+        # Point estimate stays finite across bootstrap invalidity
+        assert np.isfinite(res.overall_att)
+
+        if res.joiners_se is not None:
+            assert np.isnan(res.joiners_se)
+            assert np.isnan(res.joiners_p_value)
+            jlo, jhi = res.joiners_conf_int
+            assert np.isnan(jlo) and np.isnan(jhi)
+        if res.leavers_se is not None:
+            assert np.isnan(res.leavers_se)
+            assert np.isnan(res.leavers_p_value)
+            llo, lhi = res.leavers_conf_int
+            assert np.isnan(llo) and np.isnan(lhi)
+
+        assert res.event_study_effects is not None
+        for l_h, entry in res.event_study_effects.items():
+            assert np.isnan(entry["se"]), (
+                f"n_bootstrap=1: event_study_effects[{l_h}].se must be "
+                f"NaN, got {entry['se']}"
+            )
+            assert np.isnan(entry["t_stat"])
+            assert np.isnan(entry["p_value"])
+            elo, ehi = entry["conf_int"]
+            assert np.isnan(elo) and np.isnan(ehi)
+            assert np.isfinite(entry["effect"])
+
+        # summary() must NOT claim "multiplier-bootstrap percentile
+        # inference" when the displayed overall SE is NaN, and it must
+        # NOT claim "used for event-study horizon inference" when every
+        # event_study_effects entry has NaN SE. It should fall through
+        # to the "bootstrap was requested but produced non-finite SE"
+        # note.
+        summary_text = res.summary()
+        assert "multiplier-bootstrap percentile inference" not in summary_text, (
+            "summary() incorrectly labels NaN-inference as "
+            "'multiplier-bootstrap percentile inference'"
+        )
+        assert (
+            "produced non-finite SE" in summary_text
+            or "inference fields are NaN-consistent" in summary_text
+        ), (
+            f"summary() footer must acknowledge the invalid-bootstrap "
+            f"state when all inference fields are NaN. Got:\n{summary_text[-400:]}"
+        )
+
+    def test_degenerate_bootstrap_distribution_yields_nan_tuple(self):
+        """
+        When the bootstrap SE comes back non-finite for a ``(path,
+        horizon)`` (e.g., ``n_bootstrap=1`` produces a one-element
+        distribution whose std is zero / ill-defined), the overwrite
+        block must replace the full inference tuple with NaN rather
+        than falling back to the analytical values. This pins the
+        bootstrap-contract semantics — once the user opts into
+        ``n_bootstrap > 0``, all per-path inference is bootstrap-
+        derived or NaN-consistent, never silently analytical.
+        """
+        data = _by_path_three_path_data()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                n_bootstrap=1,
+                bootstrap_weights="rademacher",
+                seed=42,
+                twfe_diagnostic=False,
+                placebo=False,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+        assert res.path_effects is not None
+        br = res.bootstrap_results
+        assert br is not None and br.path_ses is not None
+
+        any_nan = False
+        for path, entry in res.path_effects.items():
+            for l_h, h in entry["horizons"].items():
+                bs_se = br.path_ses.get(path, {}).get(l_h)
+                # A one-draw bootstrap cannot produce a finite SE (std
+                # of a singleton is 0 → coerced to NaN by
+                # bootstrap_utils.compute_effect_bootstrap_stats).
+                if bs_se is None or not np.isfinite(bs_se):
+                    any_nan = True
+                    assert np.isnan(h["se"]), (
+                        f"path={path} l={l_h}: bootstrap returned non-"
+                        f"finite SE but path_effects.se={h['se']} "
+                        f"(expected NaN — must not fall back to "
+                        f"analytical under the bootstrap contract)"
+                    )
+                    assert np.isnan(h["t_stat"]), (
+                        f"path={path} l={l_h}: t_stat={h['t_stat']} "
+                        f"(expected NaN when bootstrap SE is non-finite)"
+                    )
+                    assert np.isnan(h["p_value"]), (
+                        f"path={path} l={l_h}: p_value={h['p_value']} "
+                        f"(expected NaN when bootstrap SE is non-finite)"
+                    )
+                    lo, hi = h["conf_int"]
+                    assert np.isnan(lo) and np.isnan(hi), (
+                        f"path={path} l={l_h}: conf_int=({lo}, {hi}) "
+                        f"(expected (nan, nan) when bootstrap SE is "
+                        f"non-finite)"
+                    )
+                    # Point estimate stays finite (bootstrap does not
+                    # touch effect values)
+                    assert np.isfinite(h["effect"]), (
+                        f"path={path} l={l_h}: effect={h['effect']} "
+                        f"(bootstrap must not overwrite the point "
+                        f"estimate)"
+                    )
+        assert any_nan, (
+            "Expected at least one (path, horizon) to land in the "
+            "non-finite-SE bootstrap branch with n_bootstrap=1"
+        )
