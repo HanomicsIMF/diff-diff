@@ -1030,7 +1030,13 @@ def _compose_verdict(
 # =============================================================================
 
 
-def qug_test(d: np.ndarray, alpha: float = 0.05) -> QUGTestResults:
+def qug_test(
+    d: np.ndarray,
+    alpha: float = 0.05,
+    *,
+    survey: Any = None,
+    weights: Optional[np.ndarray] = None,
+) -> QUGTestResults:
     """Run the QUG null test for the support infimum (paper Theorem 4).
 
     Tests ``H_0: d_lower = 0`` using the order-statistic ratio
@@ -1050,6 +1056,12 @@ def qug_test(d: np.ndarray, alpha: float = 0.05) -> QUGTestResults:
         Post-period dose vector. Must be 1D numeric and contain no NaN.
     alpha : float, default 0.05
         One-sided significance level. Must satisfy ``0 < alpha < 1``.
+    survey : SurveyDesign or None, keyword-only, default None
+        Permanently rejected with ``NotImplementedError`` (Phase 4.5 C0
+        decision gate). See *Notes -- Survey/weighted data*.
+    weights : np.ndarray or None, keyword-only, default None
+        Permanently rejected with ``NotImplementedError`` (Phase 4.5 C0
+        decision gate). See *Notes -- Survey/weighted data*.
 
     Returns
     -------
@@ -1061,13 +1073,34 @@ def qug_test(d: np.ndarray, alpha: float = 0.05) -> QUGTestResults:
     ------
     ValueError
         If ``d`` is not 1D numeric or contains NaN, or if ``alpha`` is
-        not in ``(0, 1)``.
+        not in ``(0, 1)``, or if ``survey`` and ``weights`` are both
+        non-None (mutex).
+    NotImplementedError
+        If ``survey`` or ``weights`` is non-None. See
+        *Notes -- Survey/weighted data*.
 
     Notes
     -----
     Tie-break: when ``D_{(1)} == D_{(2)}`` the statistic is undefined.
     The test returns ``t_stat=NaN, p_value=NaN, reject=False`` with a
     ``UserWarning`` rather than raising.
+
+    Survey/weighted data: QUG is permanently deferred under survey-weighted
+    or pweight inputs (Phase 4.5 C0 decision gate, 2026-04). The test
+    statistic uses extreme order statistics ``(D_{(1)}, D_{(2)})``, which
+    are NOT smooth functionals of the empirical CDF -- standard survey
+    machinery (Binder TSL linearization, Rao-Wu rescaled bootstrap) does
+    not yield a calibrated test, and under cluster sampling the
+    ``Exp(1)/Exp(1)`` limit law's independence assumption breaks. The
+    extreme-value-theory-under-unequal-probability-sampling literature
+    (Quintos et al. 2001, Beirlant et al.) addresses tail-index
+    estimation, not boundary tests; no off-the-shelf survey-aware QUG
+    exists. Use joint Stute via :func:`did_had_pretest_workflow`
+    (``aggregate="event_study"``) for survey-aware HAD pretesting once
+    Phase 4.5 C ships -- Stute tests a smooth empirical-CDF functional
+    and admits a Rao-Wu rescaled bootstrap. See
+    ``docs/methodology/REGISTRY.md`` § "QUG Null Test" for the full
+    methodology note.
 
     References
     ----------
@@ -1076,6 +1109,47 @@ def qug_test(d: np.ndarray, alpha: float = 0.05) -> QUGTestResults:
     """
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must satisfy 0 < alpha < 1, got {alpha}.")
+
+    # Mutex on survey/weights, mirroring HeterogeneousAdoptionDiD.fit()
+    # at had.py:2890 so users get a consistent error across the HAD
+    # surface area.
+    if survey is not None and weights is not None:
+        raise ValueError(
+            "Pass survey=<SurveyDesign> OR weights=<array>, not both. "
+            "qug_test does not yet accept either kwarg (Phase 4.5 C0 "
+            "decision gate); see the NotImplementedError below for the "
+            "methodology rationale."
+        )
+
+    # Phase 4.5 C0 decision gate: QUG-under-survey is permanently deferred.
+    # Extreme-order-statistic functionals are not smooth in the empirical
+    # CDF, so standard survey machinery (Binder TSL linearization, Rao-Wu
+    # rescaled bootstrap) does not provide a calibrated test. See
+    # REGISTRY.md § "QUG Null Test" for the full methodology note.
+    if survey is not None or weights is not None:
+        raise NotImplementedError(
+            "qug_test does not support survey= / weights= kwargs.\n"
+            "\n"
+            "QUG (de Chaisemartin et al. 2026, Theorem 4) tests "
+            "H_0: d_lower = 0 via the ratio of the two smallest order "
+            "statistics, T = D_(1) / (D_(2) - D_(1)). "
+            "Extreme-order-statistic functionals are not smooth in the "
+            "empirical CDF, so standard survey machinery (Binder "
+            "linearization, Rao-Wu rescaled bootstrap) does not provide "
+            "a calibrated test. Under cluster sampling the Exp(1)/Exp(1) "
+            "limit law's independence assumption breaks. The literature "
+            "on extreme-value theory under unequal-probability sampling "
+            "(Quintos et al. 2001, Beirlant et al.) addresses tail-index "
+            "estimation, not boundary tests; no off-the-shelf "
+            "survey-aware QUG exists.\n"
+            "\n"
+            "For survey-aware HAD pretesting, use joint Stute (Phase 4.5 "
+            "C, planned) via did_had_pretest_workflow(..., survey=..., "
+            "aggregate=...). Stute tests a smooth empirical-CDF "
+            "functional and admits a Rao-Wu rescaled bootstrap. See "
+            "docs/methodology/REGISTRY.md § 'QUG Null Test' for the "
+            "full methodology note."
+        )
 
     d_arr = _validate_1d_numeric(d, "d")
     critical_value = 1.0 / alpha - 1.0
@@ -2641,6 +2715,8 @@ def did_had_pretest_workflow(
     seed: Optional[int] = None,
     *,
     aggregate: str = "overall",
+    survey: Any = None,
+    weights: Optional[np.ndarray] = None,
 ) -> HADPretestReport:
     """Run the HAD pre-test workflow (paper Section 4.2-4.3).
 
@@ -2692,6 +2768,12 @@ def did_had_pretest_workflow(
         deterministic.
     aggregate : str, keyword-only, default ``"overall"``
         Dispatch mode. Invalid values raise ``ValueError``.
+    survey : SurveyDesign or None, keyword-only, default None
+        Currently rejected with ``NotImplementedError``. See
+        *Notes -- Survey/weighted data*.
+    weights : np.ndarray or None, keyword-only, default None
+        Currently rejected with ``NotImplementedError``. See
+        *Notes -- Survey/weighted data*.
 
     Returns
     -------
@@ -2706,8 +2788,38 @@ def did_had_pretest_workflow(
     Raises
     ------
     ValueError
-        On invalid ``aggregate`` or any downstream front-door failure
-        (panel balance, dtype, dose invariant).
+        On invalid ``aggregate``, ``survey`` and ``weights`` both
+        non-None, or any downstream front-door failure (panel balance,
+        dtype, dose invariant).
+    NotImplementedError
+        If ``survey`` or ``weights`` is non-None. See
+        *Notes -- Survey/weighted data*.
+
+    Notes
+    -----
+    Survey/weighted data: the workflow does not yet accept ``survey=`` /
+    ``weights=`` kwargs. Two reasons:
+
+    1. QUG-under-survey is **permanently deferred** (Phase 4.5 C0
+       decision gate). Extreme-order-statistic tests are not smooth
+       functionals of the empirical CDF and have no off-the-shelf
+       survey-aware analog. See :func:`qug_test` Notes.
+    2. Survey support for the linearity-family pretests is planned for
+       Phase 4.5 C, with mechanism varying by test: Rao-Wu rescaled
+       bootstrap for the Stute family (:func:`stute_test`,
+       :func:`stute_joint_pretest`, :func:`joint_pretrends_test`,
+       :func:`joint_homogeneity_test`) -- weighted multipliers + PSU
+       clustering in the bootstrap draw; weighted OLS residuals +
+       weighted variance estimator for :func:`yatchew_hr_test` (Yatchew
+       1997 is a closed-form variance-ratio test, not bootstrap-based).
+       Until C ships, those sister pretests still raise bare
+       ``TypeError`` on ``survey=`` / ``weights=`` because their
+       signatures are closed (no kwargs added) -- adding rejection-only
+       kwargs in C0 then implementing in C is API churn for no user
+       benefit.
+
+    Until Phase 4.5 C ships, run the workflow without ``survey`` /
+    ``weights`` kwargs and verify identification manually.
 
     References
     ----------
@@ -2717,6 +2829,39 @@ def did_had_pretest_workflow(
     if aggregate not in _VALID_AGGREGATES:
         raise ValueError(
             f"aggregate must be one of {list(_VALID_AGGREGATES)!r}; " f"got {aggregate!r}."
+        )
+
+    # Mutex on survey/weights, mirroring HeterogeneousAdoptionDiD.fit()
+    # at had.py:2890.
+    if survey is not None and weights is not None:
+        raise ValueError(
+            "Pass survey=<SurveyDesign> OR weights=<array>, not both. "
+            "did_had_pretest_workflow does not yet accept either kwarg "
+            "(Phase 4.5 C0 + Phase 4.5 C); see the NotImplementedError "
+            "below for the methodology rationale."
+        )
+
+    # Phase 4.5 C0 decision gate (workflow surface). QUG-under-survey is
+    # permanently deferred; the linearity-family pretests are deferred to
+    # Phase 4.5 C. Until C ships, the workflow has no survey-aware
+    # dispatch and rejects the kwargs at the front door.
+    if survey is not None or weights is not None:
+        raise NotImplementedError(
+            "did_had_pretest_workflow does not yet accept survey= / "
+            "weights= kwargs.\n"
+            "\n"
+            "QUG-under-survey is permanently deferred (extreme-value "
+            "theory under complex sampling is not a settled toolkit; see "
+            "qug_test docstring for the methodology rationale). Survey "
+            "support for the linearity-family pretests is planned for "
+            "Phase 4.5 C, with mechanism varying by test: Rao-Wu "
+            "rescaled bootstrap for the Stute family (stute_test, "
+            "stute_joint_pretest, joint_pretrends_test, "
+            "joint_homogeneity_test); weighted OLS residuals + weighted "
+            "variance estimator for yatchew_hr_test (Yatchew 1997 is a "
+            "closed-form variance-ratio test, not bootstrap-based). "
+            "Until that ships, run the workflow without survey/weights "
+            "kwargs and verify identification manually."
         )
 
     if aggregate == "event_study":
