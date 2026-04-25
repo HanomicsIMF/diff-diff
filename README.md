@@ -113,7 +113,7 @@ Full guide: `diff_diff.get_llm_guide("practitioner")`.
 - [StackedDiD](https://diff-diff.readthedocs.io/en/stable/api/stacked_did.html) - Wing, Freedman & Hollingsworth (2024) stacked DiD with Q-weights and sub-experiments
 - [EfficientDiD](https://diff-diff.readthedocs.io/en/stable/api/efficient_did.html) - Chen, Sant'Anna & Xie (2025) efficient DiD with optimal weighting for tighter SEs
 - [TROP](https://diff-diff.readthedocs.io/en/stable/api/trop.html) - Triply Robust Panel estimator (Athey et al. 2025) with nuclear norm factor adjustment
-- [StaggeredTripleDifference](https://diff-diff.readthedocs.io/en/stable/api/index.html) - Ortiz-Villavicencio & Sant'Anna (2025) staggered DDD with group-time ATT
+- [StaggeredTripleDifference](https://diff-diff.readthedocs.io/en/stable/api/staggered.html#staggeredtripledifference) - Ortiz-Villavicencio & Sant'Anna (2025) staggered DDD with group-time ATT
 - [WooldridgeDiD](https://diff-diff.readthedocs.io/en/stable/api/wooldridge_etwfe.html) - Wooldridge (2023, 2025) ETWFE: saturated OLS, logit/Poisson QMLE (ASF-based ATT). Alias `ETWFE`.
 - [BaconDecomposition](https://diff-diff.readthedocs.io/en/stable/api/bacon.html) - Goodman-Bacon (2021) decomposition for diagnosing TWFE bias in staggered settings
 
