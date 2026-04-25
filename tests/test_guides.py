@@ -20,10 +20,19 @@ def test_default_is_concise():
 
 
 def test_full_is_largest():
-    lengths = {v: len(get_llm_guide(v)) for v in ("concise", "full", "practitioner", "autonomous")}
+    """`llms-full.txt` is the API-docs roll-up; it should remain larger
+    than the short `concise` summary and the workflow-prose
+    `practitioner` guide. The `autonomous` reference guide is
+    deliberately excluded from this comparison: it serves a different
+    audience (LLM agents reasoning about estimator choice) and has
+    grown organically through Wave 1 + Wave 2 review rounds with
+    estimator-matrix detail, worked examples, and contract citations
+    that don't have a counterpart in `llms-full.txt`'s API roll-up.
+    Either of the two can be larger without violating any user-facing
+    invariant."""
+    lengths = {v: len(get_llm_guide(v)) for v in ("concise", "full", "practitioner")}
     assert lengths["full"] > lengths["concise"]
     assert lengths["full"] > lengths["practitioner"]
-    assert lengths["full"] > lengths["autonomous"]
 
 
 def test_content_stability_practitioner_workflow():
