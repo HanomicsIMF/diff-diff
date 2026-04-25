@@ -2942,6 +2942,31 @@ class HeterogeneousAdoptionDiD:
             # so downstream code (legacy `if survey is not None:` branch)
             # consumes the input transparently.
             survey = survey_design
+
+        # Type guard on the data-in surface (PR #376 R8 P1): HAD.fit()
+        # accepts a SurveyDesign that gets resolved against `data` at fit
+        # time; a pre-resolved ResolvedSurveyDesign (or its
+        # make_pweight_design factory output) goes to the array-in pretest
+        # helpers, NOT to fit(). Reject explicitly with migration guidance
+        # rather than letting `survey.resolve(data)` AttributeError or
+        # `survey.weights` (a numpy array on Resolved) be misinterpreted as
+        # a column name. Mirrors the array-in helpers' isinstance-SurveyDesign
+        # rejection in stute_test/yatchew_hr_test/stute_joint_pretest.
+        if survey is not None and not hasattr(survey, "resolve"):
+            raise TypeError(
+                "HeterogeneousAdoptionDiD.fit: `survey_design=` accepts a "
+                "SurveyDesign instance (column-referencing, gets "
+                "`.resolve(data)`'d at fit time) on the data-in estimator "
+                "surface. Got "
+                f"{type(survey).__name__} (no `.resolve()` method). "
+                "If you have a pre-resolved ResolvedSurveyDesign or used "
+                "`make_pweight_design(arr)`, that pattern is for the "
+                "array-in pretest helpers (`stute_test`, `yatchew_hr_test`, "
+                "`stute_joint_pretest`). On HAD.fit, add the weights as a "
+                "column on `data` and pass "
+                "`survey_design=SurveyDesign(weights='col_name', ...)`."
+            )
+
         # Dispatch the event-study path to a dedicated method so the
         # single-period path stays unchanged (Phase 2a contract preserved).
         # Note: event_study returns HeterogeneousAdoptionDiDEventStudyResults

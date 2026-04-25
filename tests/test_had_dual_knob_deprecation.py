@@ -692,6 +692,79 @@ class TestHADFitDeprecation:
                 weights=np.ones(n),
             )
 
+    def test_fit_rejects_pre_resolved_design_overall(self, two_period_panel):
+        """PR #376 R8 P1: HAD.fit() data-in surface must reject a
+        pre-resolved ResolvedSurveyDesign with TypeError pointing users to
+        `SurveyDesign(weights='col_name', ...)`. Mirrors the array-in
+        helpers' rejection of SurveyDesign — the data-in/array-in surface
+        split is symmetric."""
+        df = two_period_panel
+        n = len(df)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        # survey_design=ResolvedSurveyDesign should raise TypeError.
+        with pytest.raises(TypeError, match=r"`survey_design=` accepts a SurveyDesign"):
+            est.fit(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                survey_design=make_pweight_design(np.ones(n // 2)),
+            )
+
+    def test_fit_rejects_pre_resolved_design_event_study(self, event_study_continuous_panel):
+        """PR #376 R8 P1: same TypeError on aggregate='event_study'."""
+        df = event_study_continuous_panel
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", n_bootstrap=99, seed=0)
+        with pytest.raises(TypeError, match=r"`survey_design=` accepts a SurveyDesign"):
+            est.fit(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                survey_design=make_pweight_design(np.ones(200)),
+            )
+
+    def test_fit_rejects_pre_resolved_design_via_legacy_alias_overall(self, two_period_panel):
+        """PR #376 R8 P1: deprecated `survey=ResolvedSurveyDesign` (alias)
+        also raises TypeError after the alias rebinding."""
+        df = two_period_panel
+        n = len(df)
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
+        with pytest.raises(TypeError, match=r"`survey_design=` accepts a SurveyDesign"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                est.fit(
+                    df,
+                    "y",
+                    "d",
+                    "time",
+                    "unit",
+                    survey=make_pweight_design(np.ones(n // 2)),
+                )
+
+    def test_fit_rejects_pre_resolved_design_via_legacy_alias_event_study(
+        self, event_study_continuous_panel
+    ):
+        """PR #376 R8 P1: deprecated `survey=ResolvedSurveyDesign` (alias)
+        on event-study path also raises TypeError."""
+        df = event_study_continuous_panel
+        est = HeterogeneousAdoptionDiD(design="continuous_at_zero", n_bootstrap=99, seed=0)
+        with pytest.raises(TypeError, match=r"`survey_design=` accepts a SurveyDesign"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                est.fit(
+                    df,
+                    "y",
+                    "d",
+                    "time",
+                    "unit",
+                    aggregate="event_study",
+                    survey=make_pweight_design(np.ones(200)),
+                )
+
     def test_legacy_positional_call_back_compat(self, two_period_panel):
         """PR #376 R4 P1: pre-PR positional call shape for `survey`,
         `weights`, `cband` MUST still work (the consolidation is additive,
