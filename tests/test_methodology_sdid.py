@@ -1608,14 +1608,31 @@ class TestJackknifeSERParity:
         kwargs = dict(captured["kwargs"])
         kwargs["replications"] = replications
         kwargs["_placebo_indices"] = r_perms
-        se_n, _ = sdid._placebo_variance_se(*captured["args"], **kwargs)
+        se_n, placebo_effects_n = sdid._placebo_variance_se(
+            *captured["args"], **kwargs
+        )
         Y_scale = sdid.results_.zeta_omega / kwargs["zeta_omega"]
         py_se = se_n * Y_scale
+        py_taus = np.asarray(placebo_effects_n) * Y_scale
         # Match R within cross-library FW tolerance (Rust vs R BLAS
         # reductions differ at sub-ULP; 1e-8 absorbs that without
         # masking a real divergence).
         assert abs(py_se - r_se) < 1e-8, (
             f"Python placebo SE {py_se} != R {r_se} (delta {py_se - r_se})"
+        )
+        # Per-draw τ regression: equal-SE doesn't imply equal sample, and
+        # the placebo τ vector is user-visible through ``placebo_effects``
+        # and feeds the empirical placebo p-value (synthetic_did.py
+        # around L1164-L1170). Compare elementwise so a permutation that
+        # diverged at a single draw — but happened to leave sd() unchanged
+        # — still trips the regression.
+        r_taus = np.asarray(payload["R_PLACEBO_TAUS"], dtype=float)
+        assert r_taus.shape == py_taus.shape == (replications,), (
+            f"shape mismatch: r {r_taus.shape}, py {py_taus.shape}"
+        )
+        np.testing.assert_allclose(
+            py_taus, r_taus, atol=1e-8, rtol=1e-8,
+            err_msg="Per-draw placebo τ diverges from R despite SE match",
         )
 
 

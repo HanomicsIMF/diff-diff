@@ -1709,9 +1709,17 @@ class SyntheticDiD(DifferenceInDifferences):
 
         1. Randomly sample N₀ control indices (permutation)
         2. Designate last N₁ as pseudo-treated, first (N₀-N₁) as pseudo-controls
-        3. Re-estimate both omega and lambda on the permuted data (from
-           uniform initialization, fresh start), matching R's behavior where
-           ``update.omega=TRUE, update.lambda=TRUE`` are passed via ``opts``
+        3. Re-estimate both omega and lambda on the permuted data with
+           ``update.omega=TRUE, update.lambda=TRUE`` semantics. Per-draw FW
+           is warm-started from the fit-time weights — ω is initialized with
+           ``sum_normalize(init_omega[pseudo_control_idx])`` and λ is
+           initialized with ``init_lambda`` — matching R's
+           ``vcov.R::placebo_se`` ``weights.boot$omega = sum_normalize(
+           weights$omega[ind[1:N0_placebo]])`` warm-start. The global FW
+           optimum is init-independent (strict convexity), but the 100-iter
+           pre-sparsify pass converges to different sparsification patterns
+           under uniform vs warm init on a handful of draws — warm-start
+           closes the resulting sub-percent SE drift against R.
         4. Compute SDID estimate with re-estimated weights
         5. Repeat `replications` times
         6. SE = sqrt((r-1)/r) * sd(estimates)
@@ -1736,6 +1744,21 @@ class SyntheticDiD(DifferenceInDifferences):
             Convergence threshold for Frank-Wolfe (for re-estimation).
         replications : int, default=200
             Number of placebo replications.
+        init_omega : np.ndarray, optional
+            Fit-time unit weights used to warm-start per-draw ω FW.
+            Subset to pseudo-controls and renormalized inside the loop;
+            mirrors R's ``weights.boot$omega = sum_normalize(weights$omega[
+            ind[1:N0_placebo]])``. Cold-start (uniform init) when ``None``.
+        init_lambda : np.ndarray, optional
+            Fit-time time weights used to warm-start per-draw λ FW;
+            mirrors R passing ``weights.boot$lambda = weights$lambda``
+            through. Cold-start when ``None``.
+        _placebo_indices : np.ndarray, optional
+            Private R-parity test seam. When provided, each row of shape
+            ``(replications, n_control)`` replaces the per-draw
+            ``rng.permutation(n_control)`` so a Python fit can consume
+            R's exact permutation sequence and produce a bit-identical SE
+            (see ``test_placebo_se_matches_r``).
 
         Returns
         -------
