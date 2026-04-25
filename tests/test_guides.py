@@ -95,7 +95,7 @@ def test_autonomous_contains_worked_examples_section():
     assert "§5.1 Binary staggered panel with never-treated controls" in text
     assert 'control_group="never_treated"' in text
     # §5.2: continuous dose -> ContinuousDiD prerequisites via treatment_dose
-    assert "§5.2 Continuous-dose panel with zero baseline" in text
+    assert "§5.2 Continuous-dose panel with zero-dose controls" in text
     assert "TreatmentDoseShape(" in text
     # §5.3: count-shaped outcome -> WooldridgeDiD QMLE
     assert "§5.3 Count-shaped outcome" in text

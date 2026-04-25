@@ -665,20 +665,28 @@ mislead. `PanelProfile.outcome_shape` exposes the relevant facts:
 
 - `outcome_shape.is_count_like == True` (integer-valued, non-negative,
   has zeros, right-skewed, more than two distinct values) - linear-OLS
-  DiD on the raw count works for the point estimate but asymptotic SEs
-  assume normal-shaped errors that a right-skewed distribution can
-  violate. Consider `WooldridgeDiD(method="poisson")`, which estimates
-  the overall ATT as an ASF-based outcome-scale difference (per-cell
-  average of `E[exp(η_1)] - E[exp(η_0)]`, Wooldridge 2023; see
-  REGISTRY.md §WooldridgeDiD nonlinear / ASF path) under QMLE, with
-  correctly-calibrated SEs. The headline `overall_att` is a difference
-  on the outcome scale, NOT a multiplicative ratio; a proportional
-  interpretation can be derived post-hoc as `overall_att / E[Y_0]` if
-  desired but is not the estimator's reported scalar. Linear-OLS DiD
-  with cluster-robust SEs remains a defensible choice when the count
-  is large enough that the normal approximation holds; the shape field
-  flags the consideration, not a rule. §5.3 walks through this pattern
-  with a concrete profile.
+  DiD imposes an additive functional form on a non-negative count
+  outcome: estimates are unbiased for the linear ATT (and the
+  estimator already uses cluster-robust SEs that do not assume
+  Gaussian errors), but the linear model can be inefficient on count
+  data and can produce counterfactual predictions outside the
+  non-negative support. `WooldridgeDiD(method="poisson")` is the
+  multiplicative (log-link) ETWFE alternative — it respects the
+  non-negative support, matches the typical generative process for
+  count data, and uses QMLE sandwich SEs that are robust to
+  distributional misspecification (Wooldridge 2023). It estimates the
+  overall ATT as an ASF-based outcome-scale difference (per-cell
+  average of `E[exp(η_1)] - E[exp(η_0)]`; see REGISTRY.md
+  §WooldridgeDiD nonlinear / ASF path). The headline `overall_att` is
+  a difference on the outcome scale, NOT a multiplicative ratio; a
+  proportional interpretation can be derived post-hoc as
+  `overall_att / E[Y_0]` if desired but is not the estimator's
+  reported scalar. The choice between linear-OLS DiD and Poisson
+  ETWFE is about which functional form (additive vs. multiplicative)
+  best summarizes the treatment effect on the count outcome, not
+  about whether SEs are calibrated. The shape field flags the
+  consideration; §5.3 walks through this pattern with a concrete
+  profile.
 - `outcome_shape.is_bounded_unit == True` (values in `[0, 1]`,
   e.g. a proportion) - linear DiD can produce predictions outside
   `[0, 1]` and inference at the boundary is questionable. No
@@ -756,12 +764,16 @@ Reasoning chain:
    `compute_honest_did(results)` before reporting through
    `BusinessReport(results, data=df)`.
 
-### §5.2 Continuous-dose panel with zero baseline
+### §5.2 Continuous-dose panel with zero-dose controls
 
 A panel of 100 firms observed across 6 years, with 20 untreated firms
-(dose 0), 30 firms at dose 1.0, 30 at dose 2.5, and 20 at dose 4.0,
-each holding their dose constant once treated (block-style adoption in
-year 3). `profile_panel(...)` returns the relevant facts:
+(dose 0 in every period), 30 firms at dose 1.0 (in every period),
+30 at dose 2.5 (in every period), and 20 at dose 4.0 (in every
+period). The dose column is time-invariant per unit; adoption timing
+is carried separately via the `first_treat` column passed to
+`ContinuousDiD.fit()` (e.g. `first_treat=3` for treated firms,
+`first_treat=0` for the never-treated). `profile_panel(...)` returns
+the relevant facts:
 
 ```
 PanelProfile(
@@ -880,25 +892,34 @@ Reasoning chain:
 1. Same staggered-binary narrowing as §5.1 (CS/SA/dCDH/Imputation/
    TwoStage/Stacked/ETWFE/EfficientDiD applicable).
 2. `outcome_shape.is_count_like == True` AND
-   `outcome_shape.value_min >= 0` -> linear-OLS DiD on the raw count
-   gives unbiased point estimates but its asymptotic SEs assume
-   normal-shaped errors that a right-skewed count distribution
-   violates. `WooldridgeDiD(method="poisson")` (QMLE) estimates the
-   overall ATT as an ASF-based outcome-scale difference: the per-cell
-   average of `E[exp(η_1)] - E[exp(η_0)]` (Wooldridge 2023; see
-   REGISTRY.md §WooldridgeDiD nonlinear / ASF path), with
-   correctly-calibrated SEs under quasi-MLE. The Poisson fitter
+   `outcome_shape.value_min >= 0` -> linear-OLS DiD imposes an
+   additive functional form on a non-negative count outcome:
+   estimates are unbiased for the linear ATT and the implementation
+   already uses cluster-robust SEs that do not assume Gaussian
+   errors. The trade-off is functional-form / efficiency, not
+   inference calibration: the linear model can be inefficient on
+   count data and may produce counterfactual predictions outside the
+   non-negative support, while `WooldridgeDiD(method="poisson")`
+   (QMLE) imposes a multiplicative (log-link) functional form that
+   respects the non-negative support and matches the typical
+   generative process for count data. It estimates the overall ATT
+   as an ASF-based outcome-scale difference: the per-cell average of
+   `E[exp(η_1)] - E[exp(η_0)]` (Wooldridge 2023; see REGISTRY.md
+   §WooldridgeDiD nonlinear / ASF path), with QMLE sandwich SEs that
+   are robust to distributional misspecification. The Poisson fitter
    hard-rejects negative outcomes (`y < 0` raises `ValueError` at
-   line ~1105 of `wooldridge.py`), which is why `is_count_like` gates
-   on `value_min >= 0`.
-3. Decision: fit `WooldridgeDiD(method="poisson")` for the primary
-   estimate; report the headline `overall_att` as a difference on the
-   outcome scale (the same units as the count), not as a
-   multiplicative ratio. A proportional / percent-change reading can
-   be derived post-hoc by dividing the ATT by an estimate of
-   `E[Y_0]`, but the estimator's reported scalar is the difference.
-   Optionally fit a linear DiD as a robustness check and document
-   that both estimands are on the same scale.
+   line ~1105 of `wooldridge.py`), which is why `is_count_like`
+   gates on `value_min >= 0`.
+3. Decision: fit `WooldridgeDiD(method="poisson")` if you want a
+   multiplicative effect summary (with the outcome-scale headline
+   reported as a difference; a percent-change reading can be derived
+   post-hoc as `overall_att / E[Y_0]`). Fit linear-OLS DiD if the
+   additive ATT is the right summary and counterfactual predictions
+   stay safely within the non-negative support — the cluster-robust
+   SEs are calibrated either way. Document which functional form
+   the headline reflects either way; the two estimands are on the
+   same outcome scale but parameterize the treatment effect
+   differently.
 4. Caveat: when the outcome includes structural zeros that violate
    Poisson conditional moments (overdispersion), consider negative
    binomial QMLE or a hurdle model; the current suite does not
