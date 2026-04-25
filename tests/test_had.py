@@ -3389,7 +3389,7 @@ class TestHADSurvey:
         panel_with_w = panel.assign(w=row_w)
         sd = SurveyDesign(weights="w")
         est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
-        with pytest.raises(ValueError, match="OR weights"):
+        with pytest.raises(ValueError, match="at most one of"):
             est.fit(
                 panel_with_w,
                 "outcome",

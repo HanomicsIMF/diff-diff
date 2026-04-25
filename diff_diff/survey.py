@@ -678,22 +678,39 @@ class ResolvedSurveyDesign:
         return True  # Any resolved survey design uses the survey vcov path
 
 
-def _make_trivial_resolved(weights: np.ndarray) -> "ResolvedSurveyDesign":
-    """Construct a trivial pweight-only ResolvedSurveyDesign (no strata/PSU/FPC).
+def make_pweight_design(weights: np.ndarray) -> "ResolvedSurveyDesign":
+    """Construct a pweight-only ResolvedSurveyDesign from a raw weight array.
 
-    Used by survey-aware code paths invoked via a bare per-row ``weights``
-    array (the pweight shortcut). Routing through this synthetic resolved
-    design lets the same bootstrap / variance kernel handle both the
-    ``weights=`` shortcut and the full ``survey=SurveyDesign(...)`` path
-    uniformly. Mirrors the PR #363 synthetic-trivial-resolved pattern that
-    fixed sup-t under the ``weights=`` shortcut on
-    ``HeterogeneousAdoptionDiD.fit()``.
+    Use this on the array-in HAD pretest helpers (``stute_test``,
+    ``yatchew_hr_test``, ``stute_joint_pretest``) when the caller has only
+    a per-observation weight array and no PSU/strata/FPC structure::
+
+        from diff_diff import stute_test, make_pweight_design
+        result = stute_test(d, dy, survey_design=make_pweight_design(w))
+
+    For the data-in HAD surfaces (``HeterogeneousAdoptionDiD.fit``,
+    ``did_had_pretest_workflow``, ``joint_pretrends_test``,
+    ``joint_homogeneity_test``), prefer adding the weights as a column on
+    your dataframe and passing ``SurveyDesign(weights="col_name")`` instead;
+    those surfaces resolve column references against ``data`` at fit time
+    (the standard library convention used by ContinuousDiD, EfficientDiD,
+    and ChaisemartinDHaultfoeuille).
+
+    Internal note: this constructs a synthetic ``ResolvedSurveyDesign`` with
+    each observation as its own PSU and no strata/FPC, so PSU-level
+    multiplier-bootstrap kernels reduce bit-exactly to per-observation
+    Mammen draws while sharing the survey-aware code path with full PSU /
+    strata / FPC designs (mirrors the PR #363 synthetic-trivial-resolved
+    pattern).
 
     Parameters
     ----------
     weights : np.ndarray, shape (n_obs,)
         Per-observation positive weights. Caller is responsible for any
-        non-negativity / per-unit-constancy validation.
+        non-negativity / per-unit-constancy validation. Typical usage is
+        positional (``make_pweight_design(arr)``); the parameter name
+        ``weights`` collides linguistically with the deprecated
+        ``weights=`` kwarg on HAD surfaces, so prefer positional form.
 
     Returns
     -------
@@ -715,6 +732,48 @@ def _make_trivial_resolved(weights: np.ndarray) -> "ResolvedSurveyDesign":
         n_psu=n_obs,
         lonely_psu="remove",
     )
+
+
+_make_trivial_resolved = make_pweight_design
+
+
+# Three-way mutex error messages for `survey_design=` / `survey=` / `weights=`
+# kwargs across the 8 HAD surfaces (HeterogeneousAdoptionDiD.fit +
+# did_had_pretest_workflow + 5 pretest helpers + qug_test). The migration
+# target text differs between data-in surfaces (which can resolve
+# ``SurveyDesign(weights="col_name")`` against ``data``) and array-in
+# surfaces (which take pre-resolved ``ResolvedSurveyDesign`` and use
+# ``make_pweight_design(arr)`` for the pweight-only convenience). Defined
+# here to avoid circular imports between had.py and had_pretests.py.
+HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN = (
+    "Pass at most one of `survey_design=`, `survey=`, or `weights=`. "
+    "`survey=` and `weights=` are deprecated aliases of `survey_design=` "
+    "and will be removed in the next minor release. Prefer "
+    "`survey_design=SurveyDesign(weights='col_name', ...)`."
+)
+HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN = (
+    "Pass at most one of `survey_design=`, `survey=`, or `weights=`. "
+    "`survey=` and `weights=` are deprecated aliases of `survey_design=` "
+    "and will be removed in the next minor release. Prefer "
+    "`survey_design=make_pweight_design(arr)` for pweight-only or "
+    "`survey_design=<pre-resolved ResolvedSurveyDesign>` for full "
+    "PSU/strata/FPC."
+)
+HAD_DEPRECATION_MSG_SURVEY_KWARG = (
+    "`survey=` is deprecated; use `survey_design=` instead "
+    "(same accepted types). Will be removed in the next minor release."
+)
+HAD_DEPRECATION_MSG_WEIGHTS_KWARG_DATA_IN = (
+    "`weights=np.ndarray` is deprecated; add the weights as a column on "
+    "`data` and pass `survey_design=SurveyDesign(weights='col_name')` "
+    "instead. Will be removed in the next minor release."
+)
+HAD_DEPRECATION_MSG_WEIGHTS_KWARG_ARRAY_IN = (
+    "`weights=np.ndarray` is deprecated on array-in pretest helpers; use "
+    "`survey_design=make_pweight_design(weights)` instead "
+    "(import `make_pweight_design` from `diff_diff`). Will be removed in "
+    "the next minor release."
+)
 
 
 @dataclass

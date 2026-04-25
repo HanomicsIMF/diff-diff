@@ -76,7 +76,13 @@ from diff_diff.local_linear import (
     BiasCorrectedFit,
     bias_corrected_local_linear,
 )
-from diff_diff.survey import SurveyMetadata, compute_survey_metadata
+from diff_diff.survey import (
+    HAD_DEPRECATION_MSG_SURVEY_KWARG,
+    HAD_DEPRECATION_MSG_WEIGHTS_KWARG_DATA_IN,
+    HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN,
+    SurveyMetadata,
+    compute_survey_metadata,
+)
 from diff_diff.utils import safe_inference
 
 __all__ = [
@@ -2783,6 +2789,8 @@ class HeterogeneousAdoptionDiD:
         unit_col: str,
         first_treat_col: Optional[str] = None,
         aggregate: str = "overall",
+        *,
+        survey_design: Any = None,
         survey: Any = None,
         weights: Optional[np.ndarray] = None,
         cband: bool = True,
@@ -2835,7 +2843,7 @@ class HeterogeneousAdoptionDiD:
             CIs per horizon; joint cross-horizon covariance is deferred
             to a follow-up PR. Staggered-timing panels are auto-filtered
             to the last-treatment cohort with a ``UserWarning``.
-        survey : SurveyDesign or None
+        survey_design : SurveyDesign or None, keyword-only
             Survey design (sampling weights + optional strata / PSU / FPC)
             for design-based inference on the two continuous-dose paths
             (``continuous_at_zero``, ``continuous_near_d_lower``). Passes
@@ -2847,25 +2855,20 @@ class HeterogeneousAdoptionDiD:
             FPC) must be constant within unit (sampling-unit-level
             assignment); within-unit variance raises ``ValueError``.
             Replicate-weight designs raise ``NotImplementedError``
-            (Phase 4.5 C). Phase 4.5 B support matrix: survey / weights
-            are now accepted on ALL design × aggregate combinations
-            (continuous × {overall, event-study}, mass-point × {overall,
-            event-study}); HAD pretests (``qug_test``, ``stute_test``,
-            ``yatchew_hr_test``, joint variants,
-            ``did_had_pretest_workflow``) still don't accept
-            survey/weights — deferred to Phase 4.5 C / C0.
-        weights : np.ndarray or None
-            Per-row sampling weights as a lightweight shortcut equivalent
-            to ``survey=SurveyDesign(weights=<col>)``. Produces the same
-            ATT; the SE uses the analytical weighted HC1 sandwich
-            (continuous: CCT-2014 weighted-robust; mass-point: pweight
-            2SLS sandwich) rather than Binder-TSL. Must be constant
-            within each unit; row-order aligned with ``data`` (index
-            labels are resolved to positional offsets via
-            ``data.index.get_indexer``, so custom non-RangeIndex inputs
-            work as long as ``data.index`` is unique). Mutually
-            exclusive with ``survey=`` — passing both raises
-            ``ValueError``.
+            (Phase 4.5 C). Mutually exclusive with the deprecated
+            ``survey=`` and ``weights=`` aliases.
+        survey : SurveyDesign or None, keyword-only
+            DEPRECATED alias of ``survey_design=``. Will be removed in
+            the next minor release; prefer ``survey_design=``.
+        weights : np.ndarray or None, keyword-only
+            DEPRECATED alias for the per-row pweight shortcut. Prefer
+            adding the weights as a column on ``data`` and passing
+            ``survey_design=SurveyDesign(weights='col_name')`` instead.
+            Will be removed in the next minor release. Currently
+            preserved as the analytical-HC1-sandwich shortcut (continuous:
+            CCT-2014 weighted-robust; mass-point: pweight 2SLS sandwich)
+            with the per-row → per-unit aggregation invariant intact.
+            Mutually exclusive with ``survey_design=`` and ``survey=``.
         cband : bool, default True
             Phase 4.5 B: controls the multiplier-bootstrap simultaneous
             confidence band on the weighted event-study path. When
@@ -2882,19 +2885,43 @@ class HeterogeneousAdoptionDiD:
         -------
         HeterogeneousAdoptionDiDResults
         """
-        # ---- aggregate / survey / weights validation ----
+        # ---- aggregate / survey_design / survey / weights validation ----
         if aggregate not in _VALID_AGGREGATES:
             raise ValueError(
                 f"Invalid aggregate={aggregate!r}. Must be one of " f"{_VALID_AGGREGATES}."
             )
-        if survey is not None and weights is not None:
-            raise ValueError(
-                "Pass survey=<SurveyDesign> OR weights=<array>, not both. "
-                "For SurveyDesign-composed inference (PSU, strata, FPC, "
-                "replicate weights), use survey=. For a simple pweight-only "
-                "shortcut, use weights=; it is internally equivalent to "
-                "survey=SurveyDesign(weights=w)."
+        # Three-way mutex on survey_design / survey / weights (data-in pattern).
+        n_set = sum(x is not None for x in (survey_design, survey, weights))
+        if n_set > 1:
+            raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN)
+
+        # Soft deprecation: route legacy survey=/weights= aliases to
+        # survey_design=. The internal back-end paths (legacy weights= and
+        # survey= routing below) are unchanged; only the entry signature
+        # wraps them. The bit-exact back-compat invariant is preserved
+        # because we only rebind names, not values, and the legacy `survey`
+        # / `weights` variables are re-derived from `survey_design` for
+        # downstream consumption.
+        if survey is not None:
+            warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+            survey_design = survey
+        elif weights is not None:
+            warnings.warn(
+                HAD_DEPRECATION_MSG_WEIGHTS_KWARG_DATA_IN,
+                DeprecationWarning,
+                stacklevel=2,
             )
+            # weights= shortcut preserved as-is on the back end (the
+            # downstream `if weights is not None:` branch consumes the
+            # raw array directly via _aggregate_unit_weights). Don't
+            # rebind survey_design here — the array is not a
+            # SurveyDesign and survey_design= cannot accept arrays.
+        else:
+            # Canonical path: survey_design= may be None or a SurveyDesign
+            # instance. Map back to the internal `survey` variable name
+            # so downstream code (legacy `if survey is not None:` branch)
+            # consumes the input transparently.
+            survey = survey_design
         # Dispatch the event-study path to a dedicated method so the
         # single-period path stays unchanged (Phase 2a contract preserved).
         # Note: event_study returns HeterogeneousAdoptionDiDEventStudyResults

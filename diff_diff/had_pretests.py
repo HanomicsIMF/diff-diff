@@ -75,7 +75,15 @@ from diff_diff.had import (
     _validate_had_panel,
     _validate_had_panel_event_study,
 )
-from diff_diff.survey import _make_trivial_resolved
+from diff_diff.survey import (
+    HAD_DEPRECATION_MSG_SURVEY_KWARG,
+    HAD_DEPRECATION_MSG_WEIGHTS_KWARG_ARRAY_IN,
+    HAD_DEPRECATION_MSG_WEIGHTS_KWARG_DATA_IN,
+    HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN,
+    HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN,
+    SurveyDesign,
+    make_pweight_design,
+)
 from diff_diff.utils import _generate_mammen_weights
 
 __all__ = [
@@ -99,6 +107,7 @@ _MIN_G_STUTE = 10
 _MIN_G_YATCHEW = 3
 _MIN_N_BOOTSTRAP = 99
 _STUTE_LARGE_G_THRESHOLD = 100_000
+
 
 # Scale-invariant tolerance for detecting a numerically exact linear OLS fit.
 # The ratio SSR / TSS = sum(eps^2) / sum((dy - dybar)^2) equals 1 - R^2
@@ -1201,6 +1210,7 @@ def qug_test(
     d: np.ndarray,
     alpha: float = 0.05,
     *,
+    survey_design: Any = None,
     survey: Any = None,
     weights: Optional[np.ndarray] = None,
 ) -> QUGTestResults:
@@ -1223,12 +1233,16 @@ def qug_test(
         Post-period dose vector. Must be 1D numeric and contain no NaN.
     alpha : float, default 0.05
         One-sided significance level. Must satisfy ``0 < alpha < 1``.
+    survey_design : ResolvedSurveyDesign or None, keyword-only, default None
+        Permanently rejected with ``NotImplementedError`` (Phase 4.5 C0
+        decision gate). Surface-symmetric kwarg with the rest of the HAD
+        family; see *Notes -- Survey/weighted data*.
     survey : SurveyDesign or None, keyword-only, default None
-        Permanently rejected with ``NotImplementedError`` (Phase 4.5 C0
-        decision gate). See *Notes -- Survey/weighted data*.
+        DEPRECATED alias of ``survey_design=``. Will be removed in the
+        next minor release.
     weights : np.ndarray or None, keyword-only, default None
-        Permanently rejected with ``NotImplementedError`` (Phase 4.5 C0
-        decision gate). See *Notes -- Survey/weighted data*.
+        DEPRECATED alias of ``survey_design=make_pweight_design(arr)``.
+        Will be removed in the next minor release.
 
     Returns
     -------
@@ -1240,11 +1254,11 @@ def qug_test(
     ------
     ValueError
         If ``d`` is not 1D numeric or contains NaN, or if ``alpha`` is
-        not in ``(0, 1)``, or if ``survey`` and ``weights`` are both
-        non-None (mutex).
+        not in ``(0, 1)``, or if more than one of
+        ``survey_design``/``survey``/``weights`` is non-None (mutex).
     NotImplementedError
-        If ``survey`` or ``weights`` is non-None. See
-        *Notes -- Survey/weighted data*.
+        If any of ``survey_design``, ``survey``, ``weights`` is non-None.
+        See *Notes -- Survey/weighted data*.
 
     Notes
     -----
@@ -1277,25 +1291,36 @@ def qug_test(
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must satisfy 0 < alpha < 1, got {alpha}.")
 
-    # Mutex on survey/weights, mirroring HeterogeneousAdoptionDiD.fit()
-    # at had.py:2890 so users get a consistent error across the HAD
-    # surface area.
-    if survey is not None and weights is not None:
-        raise ValueError(
-            "Pass survey=<SurveyDesign> OR weights=<array>, not both. "
-            "qug_test does not yet accept either kwarg (Phase 4.5 C0 "
-            "decision gate); see the NotImplementedError below for the "
-            "methodology rationale."
+    # Three-way mutex on survey_design / survey / weights. Mirrors the
+    # consolidation pattern in HeterogeneousAdoptionDiD.fit() so users get
+    # a consistent error across the HAD surface area. The migration target
+    # text differs by surface (data-in vs array-in); qug_test is array-in.
+    n_set = sum(x is not None for x in (survey_design, survey, weights))
+    if n_set > 1:
+        raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN)
+
+    # Soft deprecation: route legacy survey=/weights= aliases through
+    # survey_design= for the gated NotImplementedError below.
+    if survey is not None:
+        warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+        survey_design = survey
+    elif weights is not None:
+        warnings.warn(
+            HAD_DEPRECATION_MSG_WEIGHTS_KWARG_ARRAY_IN,
+            DeprecationWarning,
+            stacklevel=2,
         )
+        survey_design = make_pweight_design(np.asarray(weights, dtype=np.float64))
 
     # Phase 4.5 C0 decision gate: QUG-under-survey is permanently deferred.
     # Extreme-order-statistic functionals are not smooth in the empirical
     # CDF, so standard survey machinery (Binder TSL linearization, Rao-Wu
     # rescaled bootstrap) does not provide a calibrated test. See
     # REGISTRY.md § "QUG Null Test" for the full methodology note.
-    if survey is not None or weights is not None:
+    if survey_design is not None:
         raise NotImplementedError(
-            "qug_test does not support survey= / weights= kwargs.\n"
+            "qug_test does not support survey_design= / survey= / "
+            "weights= kwargs.\n"
             "\n"
             "QUG (de Chaisemartin et al. 2026, Theorem 4) tests "
             "H_0: d_lower = 0 via the ratio of the two smallest order "
@@ -1311,7 +1336,7 @@ def qug_test(
             "boundary tests; no off-the-shelf survey-aware QUG exists.\n"
             "\n"
             "For survey-aware HAD pretesting, use the joint Stute family "
-            "via did_had_pretest_workflow(..., survey=..., "
+            "via did_had_pretest_workflow(..., survey_design=..., "
             "aggregate=...) -- shipped in Phase 4.5 C. The workflow "
             "skips the QUG step under survey/weights with a UserWarning "
             "and runs the linearity family with a PSU-level Mammen "
@@ -1418,8 +1443,9 @@ def stute_test(
     n_bootstrap: int = 999,
     seed: Optional[int] = None,
     *,
-    weights: Optional[np.ndarray] = None,
+    survey_design: Any = None,
     survey: Any = None,
+    weights: Optional[np.ndarray] = None,
 ) -> StuteTestResults:
     """Run the Stute Cramer-von Mises linearity test (paper Appendix D).
 
@@ -1446,19 +1472,22 @@ def stute_test(
     seed : int or None, default None
         Seed for ``np.random.default_rng``. Pass an integer for
         reproducible results.
-    weights : np.ndarray or None, keyword-only, default None
-        Per-unit positive weights for the pweight shortcut. Mutually
-        exclusive with ``survey``. When supplied, the bootstrap is routed
-        through a synthetic trivial ``ResolvedSurveyDesign`` (no
-        strata/PSU/FPC) so that the same survey-aware kernel handles both
-        entry points. See *Notes -- Survey/weighted data*.
-    survey : ResolvedSurveyDesign or None, keyword-only, default None
-        Already-resolved survey design (per-unit). Triggers the survey-
-        aware Stute calibration: PSU-level Mammen multipliers via
+    survey_design : ResolvedSurveyDesign or None, keyword-only, default None
+        Already-resolved survey design (per-unit). Array-in helpers
+        accept ``ResolvedSurveyDesign`` ONLY; passing a ``SurveyDesign``
+        raises ``TypeError`` with migration guidance. For the pweight-only
+        shortcut, use ``survey_design=make_pweight_design(arr)``. Triggers
+        the survey-aware Stute calibration: PSU-level Mammen multipliers
+        via
         :func:`diff_diff.bootstrap_utils.generate_survey_multiplier_weights_batch`,
         broadcast to per-unit residual perturbation, with weighted CvM
-        recompute. Replicate-weight designs raise ``NotImplementedError``
-        (deferred to a parallel follow-up after Phase 4.5 C).
+        recompute. Replicate-weight designs raise ``NotImplementedError``.
+    survey : ResolvedSurveyDesign or None, keyword-only, default None
+        DEPRECATED alias of ``survey_design=``. Will be removed in the
+        next minor release.
+    weights : np.ndarray or None, keyword-only, default None
+        DEPRECATED alias of ``survey_design=make_pweight_design(arr)``.
+        Will be removed in the next minor release.
 
     Returns
     -------
@@ -1524,14 +1553,48 @@ def stute_test(
             f"Got n_bootstrap={n_bootstrap}."
         )
 
-    # Phase 4.5 C: survey/weights mutex + replicate-weight rejection.
-    # Mirrors the C0 pattern from qug_test and HeterogeneousAdoptionDiD.fit().
-    if survey is not None and weights is not None:
-        raise ValueError(
-            "stute_test: pass survey=<ResolvedSurveyDesign> OR weights=<array>, "
-            "not both. survey= triggers full PSU-aware bootstrap; weights= is "
-            "the pweight shortcut routed through a synthetic trivial design."
+    # Three-way mutex on survey_design / survey / weights (array-in pattern).
+    n_set = sum(x is not None for x in (survey_design, survey, weights))
+    if n_set > 1:
+        raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN)
+
+    # Type guard: array-in helpers reject SurveyDesign (cannot resolve column
+    # names without `data`).
+    if survey_design is not None and isinstance(survey_design, SurveyDesign):
+        raise TypeError(
+            "stute_test: `survey_design=` accepts a pre-resolved "
+            "ResolvedSurveyDesign only (array-in helpers have no `data` to "
+            "resolve column names against). For pweight-only, use "
+            "`survey_design=make_pweight_design(arr)`. For full PSU/strata/"
+            "FPC, pre-resolve via `SurveyDesign(...).resolve(data)` and pass "
+            "the result."
         )
+
+    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=.
+    # The bit-exact normalization-order invariant requires passing UNNORMALIZED
+    # weights to make_pweight_design; the unified path's mean=1 step (~line
+    # 1669) fires downstream EXACTLY ONCE.
+    if survey is not None:
+        warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+        survey_design = survey
+    elif weights is not None:
+        warnings.warn(
+            HAD_DEPRECATION_MSG_WEIGHTS_KWARG_ARRAY_IN,
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        survey_design = make_pweight_design(np.asarray(weights, dtype=np.float64))
+
+    # Internal alias rebind: downstream code uses `survey` and `weights` as
+    # internal variable names (Phase 4.5 C convention). After the deprecation
+    # block, fold the canonical survey_design back into the legacy variable
+    # names so the unchanged downstream logic consumes the input transparently.
+    survey = survey_design
+    weights = None  # weights= alias has been folded into survey_design
+
+    # Replicate-weight rejection: the per-replicate weight-ratio rescaling for
+    # the OLS-on-residuals refit step is not covered by the multiplier-bootstrap
+    # composition. Parallel follow-up after Phase 4.5 C.
     if survey is not None and getattr(survey, "replicate_weights", None) is not None:
         raise NotImplementedError(
             "stute_test: replicate-weight survey designs (BRR/Fay/JK1/JKn/SDR) "
@@ -1721,7 +1784,7 @@ def stute_test(
         # (broadcast to per-obs perturbation), weighted OLS refit, weighted
         # CvM recompute. Routes via synthetic trivial ResolvedSurveyDesign
         # for the weights= shortcut to share the same kernel.
-        resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        resolved_for_boot = survey if survey is not None else make_pweight_design(w_arr)
         # R10 P1: reject stratified designs explicitly until a derived
         # Stute-specific correction lands. The HAD sup-t bootstrap
         # (had.py:2120+) applies a within-stratum demean +
@@ -1833,8 +1896,9 @@ def yatchew_hr_test(
     dy: np.ndarray,
     alpha: float = 0.05,
     *,
-    weights: Optional[np.ndarray] = None,
+    survey_design: Any = None,
     survey: Any = None,
+    weights: Optional[np.ndarray] = None,
 ) -> YatchewTestResults:
     """Run the Yatchew heteroskedasticity-robust linearity test.
 
@@ -1858,17 +1922,23 @@ def yatchew_hr_test(
         Dose and first-difference outcome vectors.
     alpha : float, default 0.05
         One-sided significance level.
-    weights : np.ndarray or None, keyword-only, default None
-        Per-unit STRICTLY POSITIVE weights for the pweight shortcut.
-        Mutually exclusive with ``survey``. See *Notes -- Survey/weighted data*.
-    survey : ResolvedSurveyDesign or None, keyword-only, default None
-        Already-resolved survey design (per-unit). When supplied, the OLS
+    survey_design : ResolvedSurveyDesign or None, keyword-only, default None
+        Already-resolved survey design (per-unit). Array-in helpers accept
+        ``ResolvedSurveyDesign`` ONLY; passing a ``SurveyDesign`` raises
+        ``TypeError``. For pweight-only, use
+        ``survey_design=make_pweight_design(arr)``. When supplied, the OLS
         baseline becomes weighted OLS and all three variance components
         become their pweight-sandwich analogs. PSU clustering is NOT
         propagated through the variance-ratio statistic (would require
         deriving a survey-aware variance-of-variance estimator; out of
         scope per Phase 4.5 C). Replicate-weight designs raise
         ``NotImplementedError``.
+    survey : ResolvedSurveyDesign or None, keyword-only, default None
+        DEPRECATED alias of ``survey_design=``. Will be removed in the
+        next minor release.
+    weights : np.ndarray or None, keyword-only, default None
+        DEPRECATED alias of ``survey_design=make_pweight_design(arr)``.
+        Will be removed in the next minor release.
 
     Returns
     -------
@@ -1956,11 +2026,38 @@ def yatchew_hr_test(
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must satisfy 0 < alpha < 1, got {alpha}.")
 
-    # Phase 4.5 C: survey/weights mutex + replicate-weight rejection.
-    if survey is not None and weights is not None:
-        raise ValueError(
-            "yatchew_hr_test: pass survey=<ResolvedSurveyDesign> OR " "weights=<array>, not both."
+    # Three-way mutex on survey_design / survey / weights (array-in pattern).
+    n_set = sum(x is not None for x in (survey_design, survey, weights))
+    if n_set > 1:
+        raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN)
+
+    # Type guard: array-in helpers reject SurveyDesign.
+    if survey_design is not None and isinstance(survey_design, SurveyDesign):
+        raise TypeError(
+            "yatchew_hr_test: `survey_design=` accepts a pre-resolved "
+            "ResolvedSurveyDesign only (array-in helpers have no `data` to "
+            "resolve column names against). For pweight-only, use "
+            "`survey_design=make_pweight_design(arr)`. For full PSU/strata/"
+            "FPC, pre-resolve via `SurveyDesign(...).resolve(data)`."
         )
+
+    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=.
+    if survey is not None:
+        warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+        survey_design = survey
+    elif weights is not None:
+        warnings.warn(
+            HAD_DEPRECATION_MSG_WEIGHTS_KWARG_ARRAY_IN,
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        survey_design = make_pweight_design(np.asarray(weights, dtype=np.float64))
+
+    # Internal alias rebind for back-compat with downstream code.
+    survey = survey_design
+    weights = None
+
+    # Replicate-weight rejection.
     if survey is not None and getattr(survey, "replicate_weights", None) is not None:
         raise NotImplementedError(
             "yatchew_hr_test: replicate-weight survey designs (BRR/Fay/JK1/JKn/"
@@ -2516,8 +2613,9 @@ def stute_joint_pretest(
     n_bootstrap: int = 999,
     seed: Optional[int] = None,
     null_form: str = "custom",
-    weights: Optional[np.ndarray] = None,
+    survey_design: Any = None,
     survey: Any = None,
+    weights: Optional[np.ndarray] = None,
 ) -> StuteJointResult:
     """Joint Cramer-von Mises pretest across multiple horizons.
 
@@ -2563,21 +2661,25 @@ def stute_joint_pretest(
         (``"mean_independence"`` | ``"linearity"`` | ``"custom"``).
         The wrappers :func:`joint_pretrends_test` and
         :func:`joint_homogeneity_test` set this automatically.
-    weights : np.ndarray or None, keyword-only, default None
-        Per-unit positive weights (Phase 4.5 C). When supplied, the
-        per-horizon CvM uses :func:`_cvm_statistic_weighted` and the
-        bootstrap routes through a synthetic trivial
-        ``ResolvedSurveyDesign``. Mutually exclusive with ``survey``.
+    survey_design : ResolvedSurveyDesign or None, keyword-only, default None
+        Already-resolved per-unit survey design (Phase 4.5 C). Array-in
+        helpers accept ``ResolvedSurveyDesign`` ONLY; passing a
+        ``SurveyDesign`` raises ``TypeError``. For pweight-only, use
+        ``survey_design=make_pweight_design(arr)``. When supplied, the
+        bootstrap is a PSU-level Mammen multiplier bootstrap with the
+        multiplier matrix shared across horizons within each replicate
+        (preserves both vector-valued empirical-process unit-level
+        dependence + PSU clustering). Replicate-weight designs raise
+        ``NotImplementedError``; non-pweight weight types are rejected.
+        Variance-unidentified designs (``df_survey <= 0``) return NaN
+        with a ``UserWarning`` instead of calibrating against an
+        all-zero multiplier matrix.
     survey : ResolvedSurveyDesign or None, keyword-only, default None
-        Already-resolved per-unit survey design (Phase 4.5 C). When
-        supplied, the bootstrap is a PSU-level Mammen multiplier
-        bootstrap with the multiplier matrix shared across horizons
-        within each replicate (preserves both vector-valued empirical-
-        process unit-level dependence + PSU clustering). Replicate-
-        weight designs raise ``NotImplementedError``; non-pweight
-        weight types are rejected. Variance-unidentified designs
-        (``df_survey <= 0``) return NaN with a ``UserWarning`` instead
-        of calibrating against an all-zero multiplier matrix.
+        DEPRECATED alias of ``survey_design=``. Will be removed in the
+        next minor release.
+    weights : np.ndarray or None, keyword-only, default None
+        DEPRECATED alias of ``survey_design=make_pweight_design(arr)``.
+        Will be removed in the next minor release.
 
     Returns
     -------
@@ -2602,13 +2704,38 @@ def stute_joint_pretest(
         negative values, ``n_bootstrap < _MIN_N_BOOTSTRAP``, or invalid
         ``alpha``. ``G < _MIN_G_STUTE`` does NOT raise; see Returns.
     """
-    # Phase 4.5 C: survey/weights mutex + replicate-weight rejection
-    # (mirrors stute_test, yatchew_hr_test, did_had_pretest_workflow).
-    if survey is not None and weights is not None:
-        raise ValueError(
-            "stute_joint_pretest: pass survey=<ResolvedSurveyDesign> OR "
-            "weights=<array>, not both."
+    # Three-way mutex on survey_design / survey / weights (array-in pattern).
+    n_set = sum(x is not None for x in (survey_design, survey, weights))
+    if n_set > 1:
+        raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_ARRAY_IN)
+
+    # Type guard: array-in helpers reject SurveyDesign.
+    if survey_design is not None and isinstance(survey_design, SurveyDesign):
+        raise TypeError(
+            "stute_joint_pretest: `survey_design=` accepts a pre-resolved "
+            "ResolvedSurveyDesign only (array-in helpers have no `data` to "
+            "resolve column names against). For pweight-only, use "
+            "`survey_design=make_pweight_design(arr)`. For full PSU/strata/"
+            "FPC, pre-resolve via `SurveyDesign(...).resolve(data)`."
         )
+
+    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=.
+    if survey is not None:
+        warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+        survey_design = survey
+    elif weights is not None:
+        warnings.warn(
+            HAD_DEPRECATION_MSG_WEIGHTS_KWARG_ARRAY_IN,
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        survey_design = make_pweight_design(np.asarray(weights, dtype=np.float64))
+
+    # Internal alias rebind for back-compat with downstream code.
+    survey = survey_design
+    weights = None
+
+    # Replicate-weight rejection.
     if survey is not None and getattr(survey, "replicate_weights", None) is not None:
         raise NotImplementedError(
             "stute_joint_pretest: replicate-weight survey designs (BRR/Fay/JK1/"
@@ -2935,7 +3062,7 @@ def stute_joint_pretest(
         # broadcasts the SAME multipliers, preserving both the
         # vector-valued empirical-process unit-level dependence (paper
         # convention) AND PSU clustering (Krieger-Pfeffermann 1997).
-        resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        resolved_for_boot = survey if survey is not None else make_pweight_design(w_arr)
         # R10 P1: reject stratified designs explicitly until a derived
         # Stute-specific correction lands (mirrors stute_test
         # single-horizon).
@@ -3151,8 +3278,9 @@ def joint_pretrends_test(
     alpha: float = 0.05,
     n_bootstrap: int = 999,
     seed: Optional[int] = None,
-    weights: Optional[np.ndarray] = None,
+    survey_design: Any = None,
     survey: Any = None,
+    weights: Optional[np.ndarray] = None,
 ) -> StuteJointResult:
     """Joint Stute pre-trends test (paper Section 4.2 step 2).
 
@@ -3189,23 +3317,46 @@ def joint_pretrends_test(
         handling follows the HAD contract (staggered auto-filter warns
         and proceeds on last cohort; solo cohort proceeds).
     alpha, n_bootstrap, seed : as in :func:`stute_test`.
-    weights : np.ndarray or None, keyword-only, default None
-        Per-row positive weights (Phase 4.5 C). Aggregated to per-unit
-        via :func:`diff_diff.had._aggregate_unit_weights` (constant-
-        within-unit invariant enforced). On staggered panels the
-        wrapper subsets ``weights`` to the surviving cohort BEFORE
-        aggregation. Mutually exclusive with ``survey``.
-    survey : SurveyDesign or None, keyword-only, default None
+    survey_design : SurveyDesign or None, keyword-only, default None
         Survey design (Phase 4.5 C). Resolved on the filtered panel;
         replicate-weight designs raise ``NotImplementedError``;
         ``weight_type`` must be ``"pweight"``. Forwarded to
         :func:`stute_joint_pretest` as a per-unit
-        ``ResolvedSurveyDesign``.
+        ``ResolvedSurveyDesign``. Mutually exclusive with the deprecated
+        ``survey=`` and ``weights=`` aliases.
+    survey : SurveyDesign or None, keyword-only, default None
+        DEPRECATED alias of ``survey_design=``. Will be removed in the
+        next minor release.
+    weights : np.ndarray or None, keyword-only, default None
+        DEPRECATED alias for the per-row pweight shortcut. Prefer
+        ``survey_design=SurveyDesign(weights='col_name')`` against your
+        dataframe instead. Will be removed in the next minor release.
 
     Returns
     -------
     StuteJointResult with ``null_form = "mean_independence"``.
     """
+    # Three-way mutex on survey_design / survey / weights (data-in pattern).
+    n_set = sum(x is not None for x in (survey_design, survey, weights))
+    if n_set > 1:
+        raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN)
+
+    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=.
+    if survey is not None:
+        warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+        survey_design = survey
+    elif weights is not None:
+        warnings.warn(
+            HAD_DEPRECATION_MSG_WEIGHTS_KWARG_DATA_IN,
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # weights= shortcut preserved as-is on the back end.
+
+    # Internal alias rebind: downstream code uses `survey` and `weights`.
+    if survey_design is not None and survey is None:
+        survey = survey_design
+
     if len(pre_periods) == 0:
         raise ValueError(
             "pre_periods must be non-empty. Workflow dispatch handles "
@@ -3380,6 +3531,17 @@ def joint_pretrends_test(
 
     design_matrix = np.ones((G, 1), dtype=np.float64)
 
+    # Internal forwarding: pass survey_design= directly to stute_joint_pretest
+    # to avoid emitting the deprecation warning on every internal call. The
+    # canonical kwarg is the same on both ends; the warning fires ONCE at the
+    # user-facing front door (this wrapper) when the user passed a deprecated
+    # alias.
+    if resolved_unit is not None:
+        joint_survey_design = resolved_unit
+    elif weights_unit is not None:
+        joint_survey_design = make_pweight_design(weights_unit)
+    else:
+        joint_survey_design = None
     return stute_joint_pretest(
         residuals_by_horizon=residuals_by_horizon,
         fitted_by_horizon=fitted_by_horizon,
@@ -3389,8 +3551,7 @@ def joint_pretrends_test(
         n_bootstrap=n_bootstrap,
         seed=seed,
         null_form="mean_independence",
-        weights=weights_unit if resolved_unit is None else None,
-        survey=resolved_unit,
+        survey_design=joint_survey_design,
     )
 
 
@@ -3407,8 +3568,9 @@ def joint_homogeneity_test(
     alpha: float = 0.05,
     n_bootstrap: int = 999,
     seed: Optional[int] = None,
-    weights: Optional[np.ndarray] = None,
+    survey_design: Any = None,
     survey: Any = None,
+    weights: Optional[np.ndarray] = None,
 ) -> StuteJointResult:
     """Joint Stute homogeneity-linearity test (paper Section 4.3 joint).
 
@@ -3440,19 +3602,43 @@ def joint_homogeneity_test(
     first_treat_col : str or None
         Forwarded to the underlying panel validator.
     alpha, n_bootstrap, seed : as in :func:`stute_test`.
-    weights : np.ndarray or None, keyword-only, default None
-        Per-row positive weights (Phase 4.5 C). See
-        :func:`joint_pretrends_test` for the contract; semantics are
-        identical (per-unit aggregation, staggered subsetting,
-        replicate-weight rejection).
-    survey : SurveyDesign or None, keyword-only, default None
+    survey_design : SurveyDesign or None, keyword-only, default None
         Survey design (Phase 4.5 C). Same contract as
-        :func:`joint_pretrends_test`.
+        :func:`joint_pretrends_test`. Mutually exclusive with the
+        deprecated ``survey=`` and ``weights=`` aliases.
+    survey : SurveyDesign or None, keyword-only, default None
+        DEPRECATED alias of ``survey_design=``. Will be removed in the
+        next minor release.
+    weights : np.ndarray or None, keyword-only, default None
+        DEPRECATED alias for the per-row pweight shortcut. Prefer
+        ``survey_design=SurveyDesign(weights='col_name')`` against your
+        dataframe instead. Will be removed in the next minor release.
 
     Returns
     -------
     StuteJointResult with ``null_form = "linearity"``.
     """
+    # Three-way mutex on survey_design / survey / weights (data-in pattern).
+    n_set = sum(x is not None for x in (survey_design, survey, weights))
+    if n_set > 1:
+        raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN)
+
+    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=.
+    if survey is not None:
+        warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+        survey_design = survey
+    elif weights is not None:
+        warnings.warn(
+            HAD_DEPRECATION_MSG_WEIGHTS_KWARG_DATA_IN,
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # weights= shortcut preserved as-is on the back end.
+
+    # Internal alias rebind: downstream code uses `survey` and `weights`.
+    if survey_design is not None and survey is None:
+        survey = survey_design
+
     if len(post_periods) == 0:
         raise ValueError(
             "post_periods must be non-empty. Workflow dispatch handles "
@@ -3613,6 +3799,13 @@ def joint_homogeneity_test(
 
     design_matrix = np.column_stack([np.ones(G, dtype=np.float64), d_arr.astype(np.float64)])
 
+    # Internal forwarding via canonical kwarg (avoids deprecation warning).
+    if resolved_unit is not None:
+        joint_survey_design = resolved_unit
+    elif weights_unit is not None:
+        joint_survey_design = make_pweight_design(weights_unit)
+    else:
+        joint_survey_design = None
     return stute_joint_pretest(
         residuals_by_horizon=residuals_by_horizon,
         fitted_by_horizon=fitted_by_horizon,
@@ -3622,8 +3815,7 @@ def joint_homogeneity_test(
         n_bootstrap=n_bootstrap,
         seed=seed,
         null_form="linearity",
-        weights=weights_unit if resolved_unit is None else None,
-        survey=resolved_unit,
+        survey_design=joint_survey_design,
     )
 
 
@@ -3750,6 +3942,7 @@ def did_had_pretest_workflow(
     seed: Optional[int] = None,
     *,
     aggregate: str = "overall",
+    survey_design: Any = None,
     survey: Any = None,
     weights: Optional[np.ndarray] = None,
 ) -> HADPretestReport:
@@ -3803,17 +3996,24 @@ def did_had_pretest_workflow(
         deterministic.
     aggregate : str, keyword-only, default ``"overall"``
         Dispatch mode. Invalid values raise ``ValueError``.
-    survey : SurveyDesign or None, keyword-only, default None
+    survey_design : SurveyDesign or None, keyword-only, default None
         Survey design for design-based pretest inference. Linearity-family
         pretests use PSU-level Mammen multiplier bootstrap (Stute family)
         and weighted OLS + weighted variance components (Yatchew). The QUG
         step is skipped under survey with a ``UserWarning`` (permanent
         deferral per Phase 4.5 C0). Replicate-weight designs raise
-        ``NotImplementedError``. Mutually exclusive with ``weights``.
+        ``NotImplementedError``. Mutually exclusive with the deprecated
+        ``survey=`` and ``weights=`` aliases.
+    survey : SurveyDesign or None, keyword-only, default None
+        DEPRECATED alias of ``survey_design=``. Will be removed in the
+        next minor release; prefer ``survey_design=``.
     weights : np.ndarray or None, keyword-only, default None
-        Per-row positive weights for the pweight shortcut. Mutually
-        exclusive with ``survey``. Routed through a synthetic trivial
-        ``ResolvedSurveyDesign`` so the same kernel handles both paths.
+        DEPRECATED alias for the per-row pweight shortcut. Prefer adding
+        the weights as a column on ``data`` and passing
+        ``survey_design=SurveyDesign(weights='col_name')`` instead. Will
+        be removed in the next minor release. Currently routed through a
+        synthetic trivial ``ResolvedSurveyDesign`` so the same kernel
+        handles both paths.
 
     Returns
     -------
@@ -3885,19 +4085,43 @@ def did_had_pretest_workflow(
             f"aggregate must be one of {list(_VALID_AGGREGATES)!r}; " f"got {aggregate!r}."
         )
 
-    # Phase 4.5 C: survey/weights mutex + presence detection. R6 P1 fix:
-    # do NOT call _resolve_pretest_unit_weights on the FULL panel here --
-    # under aggregate='event_study' the panel may be staggered and the
-    # cohort filter at _validate_multi_period_panel can drop units. If
-    # those dropped units have zero/invalid weights, eager full-panel
-    # resolution would abort an otherwise-valid event-study run. Defer
-    # resolution to the per-aggregate branches: overall path resolves on
-    # the original data (no filtering); event-study path lets the joint
-    # wrappers handle resolution on data_filtered.
-    if survey is not None and weights is not None:
-        raise ValueError(
-            "did_had_pretest_workflow: pass survey=<SurveyDesign> OR " "weights=<array>, not both."
+    # Three-way mutex on survey_design / survey / weights (data-in pattern).
+    # R6 P1 fix: do NOT call _resolve_pretest_unit_weights on the FULL panel
+    # here -- under aggregate='event_study' the panel may be staggered and the
+    # cohort filter at _validate_multi_period_panel can drop units. If those
+    # dropped units have zero/invalid weights, eager full-panel resolution
+    # would abort an otherwise-valid event-study run. Defer resolution to the
+    # per-aggregate branches: overall path resolves on the original data (no
+    # filtering); event-study path lets the joint wrappers handle resolution
+    # on data_filtered.
+    n_set = sum(x is not None for x in (survey_design, survey, weights))
+    if n_set > 1:
+        raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN)
+
+    # Soft deprecation: route legacy survey=/weights= aliases to survey_design=.
+    # The internal back-end paths (_resolve_pretest_unit_weights + per-aggregate
+    # dispatch) consume `survey` and `weights` as internal variable names, so
+    # rebind both for back-compat with the unchanged downstream logic. The
+    # bit-exact regression invariant is preserved because we only rebind names,
+    # not values.
+    if survey is not None:
+        warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+        survey_design = survey
+    elif weights is not None:
+        warnings.warn(
+            HAD_DEPRECATION_MSG_WEIGHTS_KWARG_DATA_IN,
+            DeprecationWarning,
+            stacklevel=2,
         )
+        # weights= shortcut preserved as-is on the back end. Don't rebind
+        # survey_design -- the array is not a SurveyDesign.
+
+    # Internal alias rebind: downstream code uses `survey` (when set, a
+    # SurveyDesign or pre-resolved). Map the canonical input back so the
+    # unchanged downstream `if survey is not None:` branches consume it.
+    if survey_design is not None and survey is None:
+        survey = survey_design
+
     use_survey_path = (survey is not None) or (weights is not None)
 
     if use_survey_path:
@@ -4012,8 +4236,11 @@ def did_had_pretest_workflow(
                 alpha=alpha,
                 n_bootstrap=n_bootstrap,
                 seed=seed,
+                # Internal forwarding: pass via canonical kwargs to skip
+                # deprecation warnings on internal calls. The user-facing
+                # warning has already fired at the workflow's front door.
+                survey_design=joint_survey,
                 weights=joint_weights,
-                survey=joint_survey,
             )
         else:
             pretrends_joint = None
@@ -4031,8 +4258,10 @@ def did_had_pretest_workflow(
             alpha=alpha,
             n_bootstrap=n_bootstrap,
             seed=seed,
+            # Internal forwarding via canonical kwargs (skip deprecation
+            # warnings; the user-facing one fired at the workflow front door).
+            survey_design=joint_survey,
             weights=joint_weights,
-            survey=joint_survey,
         )
 
         # Event-study `all_pass`. On the unweighted path, every implemented
@@ -4109,21 +4338,28 @@ def did_had_pretest_workflow(
     # already aggregated to per-unit (weights_unit / resolved_unit); the
     # _aggregate_first_difference call above also collapses to per-unit
     # (one row per unit), so weights_unit and resolved_unit are aligned.
+    # Internal forwarding uses the canonical survey_design= kwarg to skip
+    # deprecation warnings; the user-facing warning has already fired at the
+    # workflow's front door.
+    if resolved_unit is not None:
+        per_test_survey_design = resolved_unit
+    elif weights_unit is not None:
+        per_test_survey_design = make_pweight_design(weights_unit)
+    else:
+        per_test_survey_design = None
     stute_res = stute_test(
         d_arr,
         dy_arr,
         alpha=alpha,
         n_bootstrap=n_bootstrap,
         seed=seed,
-        weights=weights_unit if resolved_unit is None else None,
-        survey=resolved_unit,
+        survey_design=per_test_survey_design,
     )
     yatchew_res = yatchew_hr_test(
         d_arr,
         dy_arr,
         alpha=alpha,
-        weights=weights_unit if resolved_unit is None else None,
-        survey=resolved_unit,
+        survey_design=per_test_survey_design,
     )
 
     # `all_pass` must be conclusive under the paper's four-step workflow
