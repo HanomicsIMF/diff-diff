@@ -770,10 +770,16 @@ class TestDCDHDynRParityByPathControls:
     On the ``multi_path_reversible`` DGP, every switcher shares
     baseline ``D_{g,1}=0``, so R's per-path control pool reduces to
     the global control pool we use — and the per-baseline OLS
-    residualization coefficients coincide. Per-path point estimates
-    then match R exactly (measured rtol ~1e-11). Per-path SE inherits
-    the documented cross-path cohort-sharing deviation (Phase 2
-    envelope, ~6.5% rtol on this scenario).
+    residualization coefficients coincide on the one-observation-per-
+    ``(g, t)`` panel this fixture produces. Per-path point estimates
+    then match R bit-exactly (measured rtol ~1e-11). On
+    multi-observation-per-cell panels the library's equal-cell-
+    weighting first stage diverges from R's ``N_gt``-weighted first
+    stage per the existing DID^X cell-weighting deviation documented
+    in ``docs/methodology/REGISTRY.md`` "Note (Phase 3 DID^X covariate
+    adjustment)" — that deviation is independent of the by_path lift.
+    Per-path SE inherits the documented cross-path cohort-sharing
+    deviation (Phase 2 envelope, ~6.5% rtol on this scenario).
 
     **On multi-baseline switcher panels** the residualization
     coefficients vary per path under R's per-path call, producing a

@@ -714,9 +714,15 @@ scenarios$multi_path_reversible_by_path_placebo <- list(
 # then disaggregates per path. **The two strategies coincide on
 # single-baseline switcher panels** (every switcher shares D_{g,1}=0)
 # because R's per-path control pool then equals the global control pool
-# — `multi_path_reversible` is built precisely for this property, so
+# # — `multi_path_reversible` is built precisely for this property, so
 # per-path event-study point estimates and switcher counts must match R
-# exactly. Per-path SE inherits the documented cross-path cohort-sharing
+# bit-exactly on the one-observation-per-(g,t) DGP this generator
+# produces. (On panels with multiple observations per `(g, t)` cell, the
+# library's equal-cell-weighting first stage diverges from R's `N_gt`-
+# weighted first stage per the existing DID^X cell-weighting deviation
+# in `docs/methodology/REGISTRY.md` "Note (Phase 3 DID^X covariate
+# adjustment)" — that deviation is independent of the by_path lift.)
+# Per-path SE inherits the documented cross-path cohort-sharing
 # deviation from R for `path_effects`. On multi-baseline switcher panels
 # the residualization coefficients can diverge per path between Python
 # and R; the production fit emits a `UserWarning` in that configuration.

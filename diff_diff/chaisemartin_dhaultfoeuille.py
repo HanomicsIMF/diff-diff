@@ -429,11 +429,15 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         when switchers have different baseline values. Our global-
         residualization architecture coincides with R on single-
         baseline panels (every switcher shares the same ``D_{g,1}``)
-        and per-path point estimates match exactly. On multi-baseline
-        panels, point estimates can diverge — a ``UserWarning`` is
-        emitted at fit-time when this configuration is detected.
-        SE inherits the cross-path cohort-sharing deviation from R
-        documented for ``path_effects``.
+        and per-path point estimates match exactly on the one-
+        observation-per-``(g, t)`` regime; on multi-observation-per-
+        cell panels the existing DID^X cell-weighting deviation from
+        R applies (see ``docs/methodology/REGISTRY.md`` "Note (Phase
+        3 DID^X covariate adjustment)"; independent of the by_path
+        lift). On multi-baseline switcher panels, point estimates can
+        diverge — a ``UserWarning`` is emitted at fit-time when this
+        configuration is detected. SE inherits the cross-path cohort-
+        sharing deviation from R documented for ``path_effects``.
 
         Compatible with ``n_bootstrap > 0`` -- the top-k paths are
         enumerated once on the observed data (paths held fixed across
@@ -1467,9 +1471,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         #
         # When controls are specified, residualize Y_mat by partialling
         # out covariate effects per baseline treatment group. This
-        # transforms Y_mat in-place so ALL downstream DID computations
-        # (per-period and per-group multi-horizon) automatically produce
-        # covariate-adjusted estimates. See Web Appendix Section 1.2.
+        # transforms Y_mat so the per-group multi-horizon DID path
+        # (event_study_effects, overall_att, joiners/leavers, by_path
+        # surfaces, placebos, sup-t bands) automatically produces
+        # covariate-adjusted estimates. The per-period DID path
+        # (per_period_effects) intentionally remains on raw outcomes —
+        # it uses binary joiner/leaver categorization and is not part
+        # of the DID^X contract per REGISTRY.md "Note (Phase 3 DID^X
+        # covariate adjustment)". See Web Appendix Section 1.2.
         # ------------------------------------------------------------------
         covariate_diagnostics: Optional[Dict[str, Any]] = None
         _switch_metadata_computed = False
