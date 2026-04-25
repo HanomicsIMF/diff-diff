@@ -123,3 +123,24 @@ Bootstrap inference results for Sun-Abraham estimation.
    :members:
    :undoc-members:
    :show-inheritance:
+
+StaggeredTripleDifference
+-------------------------
+
+Ortiz-Villavicencio & Sant'Anna (2025) staggered triple-difference (DDD) estimator
+with group-time ATT identification under heterogeneous treatment timing.
+
+.. autoclass:: diff_diff.StaggeredTripleDifference
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+StaggeredTripleDiffResults
+--------------------------
+
+Results container for ``StaggeredTripleDifference`` estimation.
+
+.. autoclass:: diff_diff.StaggeredTripleDiffResults
+   :members:
+   :undoc-members:
+   :show-inheritance:

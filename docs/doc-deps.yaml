@@ -170,6 +170,20 @@ sources:
         type: methodology
       - path: docs/api/staggered.rst
         type: api_reference
+      - path: docs/tutorials/16_survey_did.ipynb
+        type: tutorial
+        note: "StaggeredTripleDifference appears in survey-DiD examples"
+      - path: README.md
+        section: "Estimators (one-line catalog entry)"
+        type: user_guide
+      - path: docs/references.rst
+        type: user_guide
+      - path: diff_diff/guides/llms-full.txt
+        section: "StaggeredTripleDifference"
+        type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
+        type: user_guide
 
   # ── SunAbraham ──────────────────────────────────────────────────────
 
@@ -191,6 +205,9 @@ sources:
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "SunAbraham"
+        type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -217,6 +234,9 @@ sources:
       - path: diff_diff/guides/llms-full.txt
         section: "ImputationDiD"
         type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
+        type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
 
@@ -240,6 +260,9 @@ sources:
       - path: diff_diff/guides/llms-full.txt
         section: "TwoStageDiD"
         type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
+        type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
 
@@ -262,6 +285,9 @@ sources:
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "EfficientDiD"
+        type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -323,6 +349,9 @@ sources:
       - path: diff_diff/guides/llms-full.txt
         section: "ContinuousDiD"
         type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
+        type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
       - path: docs/practitioner_decision_tree.rst
@@ -348,6 +377,9 @@ sources:
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "SyntheticDiD"
+        type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
       - path: docs/practitioner_decision_tree.rst
         section: "Few Test Markets"
@@ -377,6 +409,9 @@ sources:
       - path: diff_diff/guides/llms-full.txt
         section: "TripleDifference"
         type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
+        type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
 
@@ -399,6 +434,9 @@ sources:
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "StackedDiD"
+        type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -423,6 +461,9 @@ sources:
       - path: diff_diff/guides/llms-full.txt
         section: "WooldridgeDiD"
         type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
+        type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
 
@@ -445,6 +486,9 @@ sources:
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "TROP"
+        type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
       - path: docs/choosing_estimator.rst
         type: user_guide
@@ -471,6 +515,9 @@ sources:
       - path: diff_diff/guides/llms-full.txt
         section: "HonestDiD"
         type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Diagnostics and Sensitivity Analysis"
+        type: user_guide
 
   # ── BaconDecomposition ───���─────────────────────────────────────────
 
@@ -482,10 +529,19 @@ sources:
         type: methodology
       - path: docs/api/bacon.rst
         type: api_reference
+      - path: docs/tutorials/02_staggered_did.ipynb
+        type: tutorial
+        note: "Bacon decomposition diagnostics for staggered DiD"
       - path: README.md
         section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: docs/references.rst
+        type: user_guide
+      - path: diff_diff/guides/llms-full.txt
+        section: "BaconDecomposition"
+        type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Estimators"
         type: user_guide
 
   # ── Diagnostics & analysis ───────���─────────────────────────────────
@@ -583,6 +639,9 @@ sources:
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "Survey"
+        type: user_guide
+      - path: diff_diff/guides/llms.txt
+        section: "Survey Support"
         type: user_guide
       - path: docs/choosing_estimator.rst
         section: "Survey Design Support"
