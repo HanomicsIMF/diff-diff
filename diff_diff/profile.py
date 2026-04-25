@@ -91,10 +91,12 @@ class TreatmentDoseShape:
        estimator requires ``P(D=0) > 0`` under both
        ``control_group="never_treated"`` and
        ``control_group="not_yet_treated"`` because Remark 3.1
-       lowest-dose-as-control is not yet implemented. Agents who
-       label positive-dose units as ``first_treat == 0`` (relabeling
-       trick) trigger the force-zero coercion path instead and can
-       still fit, but should document the methodological choice.
+       lowest-dose-as-control is not yet implemented. Failure of
+       this preflight is **not** an opportunity to relabel
+       positive-dose units as ``first_treat == 0`` to manufacture
+       controls — that is not a documented methodological option in
+       the registry. Re-encode the treatment column or pick a
+       different estimator instead.
     2. ``PanelProfile.treatment_varies_within_unit == False`` (per-unit
        full-path dose constancy on the treatment column). This IS
        the actual fit-time gate, matching ``ContinuousDiD.fit()``'s
@@ -105,21 +107,29 @@ class TreatmentDoseShape:
     4. Absence of the ``duplicate_unit_time_rows`` alert. The
        precompute path silently resolves duplicate ``(unit, time)``
        cells via last-row-wins (``continuous_did.py:818-823``);
-       agents must remove duplicates to avoid silent overwrite.
+       this is **not** a fit-time raise. Agents must deduplicate
+       before fit because ``ContinuousDiD`` will otherwise overwrite
+       silently.
     5. ``treatment_dose.dose_min > 0``. ``ContinuousDiD.fit()``
        raises ``ValueError`` on negative dose only for
        ``first_treat > 0`` units (``continuous_did.py:287-294``);
        under the standard workflow this maps to ``dose_min > 0`` on
-       the treatment column. Negative-dose units labeled as
-       ``first_treat == 0`` are coerced to dose=0 instead, with a
-       ``UserWarning``.
+       the treatment column. ``ContinuousDiD.fit()`` separately
+       force-zeroes any nonzero ``dose`` on ``first_treat == 0``
+       rows with a ``UserWarning`` — that coercion is implementation
+       behavior for inconsistent inputs, not a methodological
+       fallback for re-encoding negative-dose units.
 
     Practical rule: under the standard workflow, panels that fail
-    any of (1) or (5) require either re-encoding the treatment to
-    non-negative support, supplying never-treated controls, or
-    accepting the force-zero coercion path. Failures of (2), (3),
-    or (4) are hard fit-time stops independent of how ``first_treat``
-    is constructed.
+    (1) or (5) require either re-encoding the treatment column to a
+    non-negative scale that includes a true never-treated group, or
+    routing to a different estimator
+    (e.g. ``HeterogeneousAdoptionDiD`` for graded-adoption panels,
+    or linear DiD with the treatment as a continuous covariate).
+    Failures of (2) or (3) are hard fit-time raises independent of
+    how ``first_treat`` is constructed; failure of (4) is a silent
+    last-row-wins overwrite that the agent must prevent by
+    deduplicating before fit.
 
     ``has_zero_dose`` is a row-level fact ("at least one observation has
     dose == 0"); it is NOT a substitute for ``has_never_treated``, which

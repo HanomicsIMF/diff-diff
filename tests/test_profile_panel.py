@@ -1128,10 +1128,13 @@ def test_treatment_dose_descriptive_fields_supplement_existing_gates():
        gets treated, but pre-treatment rows have dose=0. has_zero_dose
        fires True (row-level), while has_never_treated correctly fires
        False (unit-level). Under the standard workflow this signals
-       no `first_treat == 0` units exist, so the agent should expect
-       ContinuousDiD's `n_control == 0` rejection unless they
-       deliberately relabel some units (force-zero coercion path,
-       methodology shifts)."""
+       no `first_treat == 0` units exist; `ContinuousDiD.fit()` will
+       reject the panel via `n_control == 0`. The registry-documented
+       fixes are to re-encode the treatment column to a non-negative
+       scale that contains a true never-treated group, or to route to
+       a different estimator (linear DiD with continuous covariate,
+       or `HeterogeneousAdoptionDiD`) — not to relabel units to
+       manufacture controls via the force-zero coercion path."""
     # Case 1: 0,0,d,d within-unit path
     rows1 = []
     for u in range(1, 21):
@@ -1172,8 +1175,9 @@ def test_treatment_dose_descriptive_fields_supplement_existing_gates():
         "every unit eventually treated -> has_never_treated must be False, "
         "even though row-level has_zero_dose==True. Under the standard "
         "ContinuousDiD workflow, has_never_treated==False signals to the "
-        "agent that no `first_treat == 0` units exist; the panel will fail "
-        "ContinuousDiD's `n_control == 0` check unless the agent relabels."
+        "agent that no `first_treat == 0` units exist; ContinuousDiD.fit() "
+        "will reject the panel via `n_control == 0`. The documented fixes "
+        "are to re-encode the treatment or route to a different estimator."
     )
 
 
@@ -1185,12 +1189,13 @@ def test_treatment_dose_min_flags_negative_dose_continuous_panels():
     negative-dose units would be labeled `first_treat > 0` and
     `ContinuousDiD.fit()` would raise `ValueError` at
     `continuous_did.py:287-294` ("Dose must be strictly positive for
-    treated units (D > 0)"). Agents who deliberately relabel
-    negative-dose units as `first_treat == 0` instead would trigger
-    the force-zero coercion path with a `UserWarning`, but the
-    methodology shifts. This test asserts that the profile correctly
-    surfaces `dose_min < 0` so an agent can choose between
-    re-encoding the treatment, relabeling, or routing to a different
+    treated units (D > 0)"). The registry-documented fixes are to
+    re-encode the treatment to a non-negative scale or route to a
+    different estimator; the force-zero coercion path on
+    `first_treat == 0` rows is implementation behavior for
+    inconsistent inputs and is not a documented routing option. This
+    test asserts that the profile correctly surfaces `dose_min < 0`
+    so an agent can pick between re-encoding and a different
     estimator before reaching `fit()`."""
     rng = np.random.default_rng(41)
     rows = []

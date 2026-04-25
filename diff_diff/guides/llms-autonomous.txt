@@ -238,15 +238,19 @@ view. Every field below appears as a top-level key in that dict.
   287-294; negative-dose units labeled as `first_treat == 0` are
   coerced to dose=0 with a `UserWarning` instead of raising).
 
-  Agents who depart from the standard workflow — e.g., relabel
-  positive-dose units as `first_treat == 0` to manufacture
-  never-treated controls (force-zero coercion path), or supply a
-  `first_treat` column derived from a separate timing variable —
-  trigger the additional `first_treat`-side validation
-  (`UserWarning` on NaN/inf/coerce, `ValueError` on negative
-  `first_treat`) and may fit panels that fail (1) or (5) above. See
-  §5.2 for the standard-workflow walkthrough and counter-examples.
-  Sub-fields:
+  When `has_never_treated == False` or `dose_min <= 0`, the
+  registry-documented fixes are to re-encode the treatment column
+  to a non-negative scale that contains a true never-treated group,
+  or to route to a different estimator (`HeterogeneousAdoptionDiD`,
+  linear DiD with a continuous covariate). Do **not** relabel
+  positive-dose or negative-dose units as `first_treat == 0`:
+  `ContinuousDiD.fit()`'s force-zero coercion on `first_treat == 0`
+  rows with nonzero `dose` is implementation behavior for
+  inconsistent inputs, not a method for manufacturing never-treated
+  controls — REGISTRY does not document it as a routing option, and
+  the estimator still requires actual `P(D=0) > 0` because Remark
+  3.1 lowest-dose-as-control is not yet implemented. See §5.2 for
+  the worked example and counter-examples. Sub-fields:
     - `n_distinct_doses: int` - count of distinct non-NaN dose values
       (including zero if observed). Useful supplement to the gate
       checks for understanding the dose support.
@@ -540,16 +544,23 @@ When `treatment_type == "continuous"`:
   silently resolves duplicate cells via last-row-wins); and (e)
   strictly positive treated doses (`treatment_dose.dose_min > 0`).
   `fit()` raises `ValueError` on (b) and (c) regardless of how
-  `first_treat` is constructed; duplicate rows in (d) coerce silently
-  regardless of `first_treat`; (a) and (e) are
-  `first_treat`-dependent: agents who relabel positive- or
-  negative-dose units as `first_treat == 0` trigger the force-zero
-  coercion path with a `UserWarning` and can still fit. Note that
-  staggered adoption IS supported natively (adoption timing is
-  expressed via the `first_treat` column, not via within-unit dose
-  variation), and `ContinuousDiD.fit()` applies additional
-  validation on the `first_treat` column itself — see the paragraph
-  below and §2 for the full list. The estimator exposes several dose-indexed targets
+  `first_treat` is constructed; duplicate rows in (d) are silently
+  overwritten with last-row-wins (so this is a hard preflight veto,
+  not a fit-time raise — the agent must deduplicate before
+  fitting); (a) and (e) are tied to the standard workflow's
+  proxy semantics on the dose column. When (a) or (e) fails, the
+  documented fixes are to re-encode the treatment to a non-negative
+  scale that includes a true never-treated group, or to route to a
+  different estimator. Do not relabel positive-dose or
+  negative-dose units as `first_treat == 0` to manufacture
+  controls: that triggers `ContinuousDiD.fit()`'s force-zero
+  coercion path (`UserWarning`), which is implementation behavior
+  for inconsistent inputs, not a documented methodological option.
+  Note that staggered adoption IS supported natively (adoption
+  timing is expressed via the `first_treat` column, not via
+  within-unit dose variation), and `ContinuousDiD.fit()` applies
+  additional validation on the `first_treat` column itself — see
+  the paragraph below and §2 for the full list. The estimator exposes several dose-indexed targets
   that
   require different assumptions: `ATT(d|d)` (effect of dose `d` on
   units that received `d`) and `ATT^{loc}` (binarized overall ATT)
@@ -563,32 +574,16 @@ When `treatment_type == "continuous"`:
   scalar first-stage adoption summary. Useful when adoption is
   graded rather than binary.
 
-The agent-side preflight checks an agent runs from `PanelProfile`
-under the standard workflow (deriving `first_treat` from the same
-dose column passed to `profile_panel`) are:
-`has_never_treated == True` (proxy for `first_treat == 0` units
-existing — required under both `control_group="never_treated"` and
-`control_group="not_yet_treated"` because Remark 3.1
-lowest-dose-as-control is not yet implemented),
-`treatment_varies_within_unit == False` (the actual fit-time gate
-on per-unit full-path dose constancy, line 222-228), `is_balanced
-== True` (actual fit-time gate at line 329-338), absence of the
-`duplicate_unit_time_rows` alert (the precompute path silently
-resolves duplicate cells via last-row-wins), and
-`treatment_dose.dose_min > 0` (under the standard workflow, the
-proxy for the strictly-positive-treated-dose requirement at line
-287-294). Items (1) and (5) are first_treat-dependent: agents who
-relabel positive-dose units as `first_treat == 0` (or label
-negative-dose units that way) trigger ContinuousDiD's force-zero
-coercion path with a `UserWarning` and may still fit panels that
-fail those preflight checks. Items (2), (3), (4) are hard fit-time
-stops that hold regardless of how `first_treat` is constructed.
 See the `TreatmentDoseShape` field reference in §2 for the full
-contract. The
-remaining `treatment_dose` sub-fields (`n_distinct_doses`,
-`dose_max/mean`, `has_zero_dose`) provide descriptive context about
-the dose support; §5.2 walks through the screen -> fit -> validation
-flow.
+preflight-vs-gate breakdown: items (2) and (3) are hard fit-time
+raises, (4) is a silent last-row-wins overwrite the agent must
+prevent by deduplicating before fit, and (1) and (5) are
+standard-workflow proxies — when either fails, the
+registry-documented fixes are to re-encode the treatment column
+to a non-negative scale that contains a true never-treated group
+or to route to a different estimator. The remaining
+`treatment_dose` sub-fields provide descriptive context only;
+§5.2 walks through the screen -> fit -> validation flow.
 
 ### §4.8 Few treated units (one or a handful)
 
@@ -861,22 +856,12 @@ Reasoning chain:
    eventual dose-response interpretation, but not themselves
    preflight checks.
 
-   `treatment_varies_within_unit`, `is_balanced`, and the
-   duplicate-row check are hard fit-time stops independent of how
-   `first_treat` is constructed. `has_never_treated` and
-   `dose_min > 0` are first_treat-dependent: `ContinuousDiD.fit()`
-   defines never-treated controls as `first_treat == 0` rows (NOT
-   from the dose column) and force-zeroes nonzero `dose` on those
-   rows with a `UserWarning`. Agents who relabel positive-dose
-   units as `first_treat == 0` (to manufacture controls) or
-   negative-dose units as `first_treat == 0` (to coerce them away)
-   may still fit panels that fail (1) or (5), but the methodology
-   shifts and the warnings should be documented. `fit()` also
-   rejects NaN `first_treat` rows, recodes `+inf` to 0 with a
-   `UserWarning`, rejects negative `first_treat`, and drops units
-   with `first_treat > 0` AND `dose == 0`. Construct `first_treat`
-   carefully when the dose column does not already encode the
-   never-treated convention.
+   See §2 `TreatmentDoseShape` for the full preflight-vs-gate
+   breakdown and the explicit warning against relabeling-to-
+   manufacture-controls. `fit()` also rejects NaN `first_treat`
+   rows, recodes `+inf` to 0 with a `UserWarning`, rejects negative
+   `first_treat`, and drops units with `first_treat > 0` AND
+   `dose == 0`.
 3. Counter-example: had `treatment_varies_within_unit == True` (any
    unit's full dose path - including pre-treatment zeros - has more
    than one distinct value, e.g., a `0,0,d,d` adoption path with
@@ -890,26 +875,29 @@ Reasoning chain:
    under standard-workflow `first_treat` would reject the panel
    under both `control_group="never_treated"` and
    `control_group="not_yet_treated"` because Remark 3.1
-   lowest-dose-as-control is not yet implemented. The agent has
-   options: (a) supply `first_treat` matching the dose-column
-   never-treated convention (the panel will then fail
-   `n_control == 0`); (b) deliberately relabel some
-   not-yet-treated units as `first_treat == 0` to manufacture
-   controls — the dose on those rows is force-zeroed with a
-   `UserWarning` and the methodology shifts to a "near-untreated"
-   reading; (c) use a different estimator (linear DiD or
-   `HeterogeneousAdoptionDiD`) that does not require `P(D=0) > 0`.
+   lowest-dose-as-control is not yet implemented. The
+   registry-documented options are: (a) re-encode the treatment to
+   a scale that contains a true never-treated group; or (b) route
+   to a different estimator (linear DiD with a continuous covariate,
+   or `HeterogeneousAdoptionDiD` for graded-adoption designs) that
+   does not require `P(D=0) > 0`. Do not relabel not-yet-treated
+   units as `first_treat == 0` to manufacture controls; the
+   force-zero coercion path is implementation behavior for
+   inconsistent inputs, not a documented method for manufacturing
+   never-treated controls.
 5. Counter-example: had `treatment_dose.dose_min < 0` (continuous
    panel with some negative-valued treated doses, e.g. a
    centered-around-zero treatment encoding), `ContinuousDiD.fit()`
-   would raise at line 287-294 ("Dose must be strictly positive
-   for treated units (D > 0)") if the agent labels the
-   negative-dose units as `first_treat > 0`. The same negative-dose
-   units labeled as `first_treat == 0` would be coerced to dose=0
-   with a `UserWarning` instead. The principled fixes are to
-   re-encode the treatment to non-negative support (e.g., shift or
-   absolute value, with the methodology change documented) or to
-   route to a different estimator.
+   under standard-workflow `first_treat` (negative-dose units
+   labeled `first_treat > 0`) would raise at line 287-294
+   ("Dose must be strictly positive for treated units (D > 0)").
+   The principled fixes are to re-encode the treatment to a
+   non-negative support (e.g. shift or absolute value, with the
+   methodology change documented and the new estimand reported on
+   the re-encoded scale) or to route to a different estimator. Do
+   not relabel negative-dose units as `first_treat == 0` to coerce
+   them away — that is implementation behavior for inconsistent
+   inputs, not a documented routing option.
 6. Fit `ContinuousDiD`; the result object exposes the dose-response
    curve (`ATT(d)`) and average causal response (`ACRT(d)`); choose
    the headline estimand based on the business question (overall
