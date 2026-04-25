@@ -3824,3 +3824,73 @@ class TestPhase45CR1Regressions:
             did_had_pretest_workflow(
                 df, "y", "d", "time", "unit", weights=w_2d, n_bootstrap=199, seed=0
             )
+
+    # --- R5 P1: lonely_psu='adjust' singleton-strata rejection ------------
+
+    def _make_singleton_strata_resolved(self, G=30, lonely_psu="adjust"):
+        """Resolved survey design with one PSU per stratum (singleton strata).
+        Under lonely_psu='adjust' the bootstrap helper pools singletons with
+        nonzero multipliers, but the variance target requires a pseudo-stratum
+        centering transform not derived for the Stute CvM."""
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        # G strata, each with exactly 1 PSU (each unit is its own stratum +
+        # PSU). Tests the worst-case singleton-pooling regime.
+        strata = np.arange(G, dtype=np.int64)
+        psu = np.arange(G, dtype=np.int64)
+        return ResolvedSurveyDesign(
+            weights=np.ones(G),
+            weight_type="pweight",
+            strata=strata,
+            psu=psu,
+            fpc=None,
+            n_strata=G,
+            n_psu=G,
+            lonely_psu=lonely_psu,
+        )
+
+    def test_stute_test_lonely_psu_adjust_singletons_raises(self):
+        """R5 P1: Stute survey path explicitly rejects
+        lonely_psu='adjust' with singleton strata (mirrors HAD sup-t
+        bootstrap)."""
+        d, dy = _linear_dgp(G=30)
+        resolved = self._make_singleton_strata_resolved(G=30, lonely_psu="adjust")
+        with pytest.raises(NotImplementedError, match="lonely_psu='adjust'"):
+            stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
+
+    def test_stute_joint_pretest_lonely_psu_adjust_singletons_raises(self):
+        """R5 P1: joint-Stute survey path explicitly rejects
+        lonely_psu='adjust' with singleton strata."""
+        G = 20
+        residuals_by_horizon = {
+            "0": np.random.default_rng(0).normal(size=G),
+            "1": np.random.default_rng(1).normal(size=G),
+        }
+        fitted_by_horizon = {"0": np.zeros(G), "1": np.zeros(G)}
+        doses = np.linspace(0.1, 1.0, G)
+        design_matrix = np.column_stack([np.ones(G), doses])
+        resolved = self._make_singleton_strata_resolved(G=G, lonely_psu="adjust")
+        with pytest.raises(NotImplementedError, match="lonely_psu='adjust'"):
+            stute_joint_pretest(
+                residuals_by_horizon=residuals_by_horizon,
+                fitted_by_horizon=fitted_by_horizon,
+                doses=doses,
+                design_matrix=design_matrix,
+                n_bootstrap=199,
+                seed=0,
+                survey=resolved,
+            )
+
+    def test_stute_test_lonely_psu_remove_singletons_returns_nan(self):
+        """R5 P1: under lonely_psu='remove' (or 'certainty'), singleton
+        strata produce all-zero multipliers in the bootstrap helper.
+        The df_survey<=0 guard catches this and returns NaN with a
+        UserWarning (rather than the spurious p≈1/(B+1) without the
+        guard). Confirms that the explicit 'adjust' rejection above
+        does NOT change behavior on the well-defined 'remove' /
+        'certainty' modes."""
+        d, dy = _linear_dgp(G=30)
+        resolved = self._make_singleton_strata_resolved(G=30, lonely_psu="remove")
+        with pytest.warns(UserWarning, match="variance-unidentified"):
+            r = stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
+        assert np.isnan(r.p_value)

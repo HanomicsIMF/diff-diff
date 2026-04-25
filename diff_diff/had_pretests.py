@@ -1017,6 +1017,35 @@ def _cvm_statistic(eps_sorted: np.ndarray, d_sorted: np.ndarray) -> float:
     return float(np.sum(cumsum_tie_safe * cumsum_tie_safe) / (G * G))
 
 
+def _has_lonely_psu_adjust_singletons(resolved: Any) -> bool:
+    """Detect singleton strata under ``lonely_psu='adjust'``.
+
+    Returns ``True`` iff (a) the resolved design uses
+    ``lonely_psu='adjust'`` AND (b) at least one stratum has fewer than
+    2 PSUs. Under those conditions, the bootstrap multiplier helper
+    pools singletons into a pseudo-stratum with NONZERO multipliers
+    while the analytical variance target requires a pseudo-stratum
+    centering transform that is not derived for the Stute CvM
+    (Phase 4.5 C R5 P1; mirrors the explicit lonely-PSU reject on
+    HeterogeneousAdoptionDiD's sup-t bootstrap at ``had.py:2081-2118``).
+    """
+    if getattr(resolved, "lonely_psu", "remove") != "adjust":
+        return False
+    strata_arr = resolved.strata
+    if strata_arr is None:
+        return False
+    psu_arr = resolved.psu
+    for h in np.unique(strata_arr):
+        mask_h = np.asarray(strata_arr) == h
+        if psu_arr is not None:
+            n_psu_h = int(np.unique(np.asarray(psu_arr)[mask_h]).shape[0])
+        else:
+            n_psu_h = int(mask_h.sum())
+        if n_psu_h < 2:
+            return True
+    return False
+
+
 def _cvm_statistic_weighted(
     eps_sorted: np.ndarray, d_sorted: np.ndarray, w_sorted: np.ndarray
 ) -> float:
@@ -1672,14 +1701,38 @@ def stute_test(
         # CvM recompute. Routes via synthetic trivial ResolvedSurveyDesign
         # for the weights= shortcut to share the same kernel.
         resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        # R5 P1: reject lonely_psu='adjust' singleton-strata designs
+        # explicitly (mirrors HAD sup-t bootstrap at had.py:2081-2118).
+        # The bootstrap helper pools singletons into a pseudo-stratum with
+        # NONZERO multipliers, but the matching variance target requires
+        # a pseudo-stratum centering transform that is not derived for
+        # the Stute CvM. Other lonely_psu modes ("remove" / "certainty")
+        # produce zero multipliers for singletons and are caught by the
+        # df_survey guard below.
+        if _has_lonely_psu_adjust_singletons(resolved_for_boot):
+            raise NotImplementedError(
+                "stute_test: SurveyDesign(lonely_psu='adjust') with "
+                "singleton strata is not yet supported on the multiplier "
+                "bootstrap. The bootstrap helper pools singletons with "
+                "nonzero multipliers but the matching analytical "
+                "variance target requires a pseudo-stratum centering "
+                "transform that has not been derived for the Stute CvM. "
+                "Use lonely_psu='remove' (drops singleton contributions) "
+                "or 'certainty' (zero-variance singletons), or pre-"
+                "process the panel to remove singleton strata."
+            )
         # R3 P0: variance-unidentified survey-design guard. When
         # n_psu - n_strata <= 0 (e.g. unstratified single-PSU, or one PSU
-        # per stratum), generate_survey_multiplier_weights_batch returns
-        # an all-zero multiplier matrix. Without this guard, the code
-        # below would treat zero perturbations as a valid bootstrap law
-        # and emit p_value = 1/(B+1) for any positive observed CvM
-        # (spurious rejection). Mirrors compute_survey_vcov's
-        # df_survey-driven NaN treatment elsewhere in the package.
+        # per stratum under lonely_psu='remove'/'certainty'),
+        # generate_survey_multiplier_weights_batch returns an all-zero
+        # multiplier matrix. Without this guard, the code below would
+        # treat zero perturbations as a valid bootstrap law and emit
+        # p_value = 1/(B+1) for any positive observed CvM (spurious
+        # rejection). Mirrors compute_survey_vcov's df_survey-driven
+        # NaN treatment elsewhere in the package. The lonely_psu='adjust'
+        # singleton case (which has nonzero multipliers but a separate
+        # methodology gap) is already rejected above, so this branch
+        # only catches genuinely degenerate designs.
         df_survey = resolved_for_boot.df_survey
         if df_survey is None or df_survey <= 0:
             warnings.warn(
@@ -2840,6 +2893,22 @@ def stute_joint_pretest(
         # vector-valued empirical-process unit-level dependence (paper
         # convention) AND PSU clustering (Krieger-Pfeffermann 1997).
         resolved_for_boot = survey if survey is not None else _make_trivial_resolved(w_arr)
+        # R5 P1: reject lonely_psu='adjust' singleton-strata designs
+        # explicitly (mirrors stute_test single-horizon and HAD sup-t
+        # bootstrap).
+        if _has_lonely_psu_adjust_singletons(resolved_for_boot):
+            raise NotImplementedError(
+                "stute_joint_pretest: SurveyDesign(lonely_psu='adjust') "
+                "with singleton strata is not yet supported on the "
+                "multiplier bootstrap. The bootstrap helper pools "
+                "singletons with nonzero multipliers but the matching "
+                "analytical variance target requires a pseudo-stratum "
+                "centering transform that has not been derived for the "
+                "Stute CvM. Use lonely_psu='remove' (drops singleton "
+                "contributions) or 'certainty' (zero-variance "
+                "singletons), or pre-process the panel to remove "
+                "singleton strata."
+            )
         # R3 P0: variance-unidentified survey-design guard (mirrors
         # stute_test single-horizon).
         df_survey = resolved_for_boot.df_survey
